@@ -21,8 +21,9 @@ if [ ! -f ~/.claude/.claude.json ]; then
 fi
 ln -sf ~/.claude/.claude.json ~/.claude.json
 
-echo "── Enabling pnpm via corepack ──"
-corepack enable pnpm
+echo "── Configuring pnpm store ──"
+# corepack is enabled at image build (Dockerfile); just point the store at the
+# named volume. PATH tweak so pnpm's global-bin check doesn't abort the write.
 export PATH="/home/node/.local/share/pnpm/bin:$PATH"
 pnpm config set store-dir /home/node/.pnpm-store --global
 

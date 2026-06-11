@@ -45,7 +45,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
     ports:
-      - "5433:5432"
+      # Randomized host port to avoid collisions with other local stacks.
+      - "26663:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U helix -d helix"]
       interval: 5s
@@ -58,9 +59,10 @@ services:
     volumes:
       - azurite-data:/data
     ports:
-      - "10000:10000"
-      - "10001:10001"
-      - "10002:10002"
+      # Randomized host ports (container ports stay at Azurite defaults).
+      - "37604:10000"
+      - "26585:10001"
+      - "40209:10002"
 
 volumes:
   helix-node-modules:

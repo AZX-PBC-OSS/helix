@@ -18,6 +18,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
+# ── pnpm via corepack ────────────────────────────────────────
+# Enable as root so the shims land in /usr/local/bin (root-owned). Doing this
+# in post-create would fail with EACCES since that runs as `node`.
+RUN corepack enable pnpm
+
 # ── Everything below runs as the unprivileged `node` user ────
 USER node
 
