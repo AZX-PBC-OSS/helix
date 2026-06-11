@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    // Target/runtime: Node 24 LTS line. ESM throughout.
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    // Strictness — boring and reviewable beats permissive (architecture §1).
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // ESM hygiene: every import's type-ness is explicit, each file is an island
+    // the transpiler can process alone (tsx / vitest / native node type-strip).
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+
+    // M0 runs from source (tsx); per-package `typecheck` is `tsc` with no emit.
+    "noEmit": true
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@helix/edge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@helix/shared": "workspace:*",
+    "fastify": "catalog:"
+  },
+  "devDependencies": {
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}
