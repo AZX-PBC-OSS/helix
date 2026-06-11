@@ -5,5 +5,4 @@ pnpm-lock.yaml
 *.tsbuildinfo
 
 # Hand-maintained planning docs — prose, not subject to code style.
-platform-architecture.md
-platform-project-plan.md
+docs
