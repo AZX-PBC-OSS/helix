@@ -1,0 +1,74 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      DATABASE_URL: postgresql://helix:helix@db:5432/helix
+      # Azurite well-known emulator credentials. Endpoints point at the
+      # `azurite` service over the compose network.
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMA==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1"
+    volumes:
+      # `consistent`, deliberately: the container gets no SSH key (security
+      # boundary), so this bind mount is the *only* way files leave the
+      # container. We want the host view to always be authoritative-current —
+      # no staleness window on our one egress path. Perf cost is marginal on
+      # VirtioFS, and the hot churn (node_modules/pnpm-store) is on named
+      # volumes below, so it doesn't pay the consistency tax anyway.
+      - ..:/workspace:consistent
+      # pnpm monorepo: keep node_modules off the macOS bind mount (perf) and
+      # persist the pnpm store so reinstalls are near-instant across rebuilds.
+      - helix-node-modules:/workspace/node_modules
+      - pnpm-store:/home/node/.pnpm-store
+      - playwright-cache:/home/node/.cache/ms-playwright
+      # AI CLI config persisted across container rebuilds (log in once, stays).
+      - claude-config:/home/node/.claude
+      - codex-config:/home/node/.codex
+      - opencode-config:/home/node/.config/opencode
+      - opencode-data:/home/node/.local/share/opencode
+    command: sleep infinity
+    depends_on:
+      db:
+        condition: service_healthy
+      azurite:
+        condition: service_started
+
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: helix
+      POSTGRES_PASSWORD: helix
+      POSTGRES_DB: helix
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helix -d helix"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data
+    volumes:
+      - azurite-data:/data
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+
+volumes:
+  helix-node-modules:
+  pnpm-store:
+  playwright-cache:
+  pgdata:
+  azurite-data:
+  claude-config:
+  codex-config:
+  opencode-config:
+  opencode-data:

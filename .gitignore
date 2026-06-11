@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local devcontainer env override (consumed by docker-compose env_file)
+.devcontainer/.env.local
+
+# Logs / OS
+*.log
+.DS_Store
+
+# Test / tooling caches
+coverage/
+.vitest/
+playwright-report/
+test-results/

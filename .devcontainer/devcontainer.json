@@ -1,0 +1,41 @@
+{
+  "name": "Helix (AZX Platform — AI Sandbox)",
+  "dockerComposeFile": ["docker-compose.yml"],
+  "service": "app",
+
+  "remoteUser": "node",
+  "workspaceFolder": "/workspace",
+
+  // Sandbox enforcement: no SSH agent forwarding, no interactive git prompts.
+  // Keeps coding agents running inside the container from pushing or auth'ing
+  // as the host user.
+  "remoteEnv": {
+    "SSH_AUTH_SOCK": null,
+    "SSH_AGENT_PID": null,
+    "GIT_TERMINAL_PROMPT": "0"
+  },
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  // Host browser access. Ports are not yet pinned by any app (M0); these are
+  // the planned defaults — adjust as apps come online.
+  "forwardPorts": [5173, 3001, 8080, 10000],
+  "portsAttributes": {
+    "5173": { "label": "portal-web (Vite)" },
+    "3001": { "label": "azx-portal API" },
+    "8080": { "label": "azx-edge" },
+    "10000": { "label": "Azurite Blob" }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "Prisma.prisma",
+        "vitest.explorer"
+      ]
+    }
+  }
+}
