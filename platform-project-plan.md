@@ -19,7 +19,7 @@
 ## 2. Monorepo layout
 
 ```
-azx-platform/
+helix/
   apps/
     edge/            # azx-edge data plane
     portal/          # azx-portal API
