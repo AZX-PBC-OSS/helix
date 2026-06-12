@@ -12,6 +12,9 @@ export default defineConfig([
     "**/coverage/**",
     "**/*.tsbuildinfo",
     "apps/portal/src/db/generated/**",
+    // Example apps are standalone projects, not part of the platform source
+    // tree — they have their own build and aren't subject to platform lint.
+    "examples/**",
   ]),
   {
     files: ["**/*.{js,mjs,ts}"],

@@ -1,0 +1,108 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  --accent: #6366f1;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+#app {
+  max-width: 32rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+.tagline {
+  margin: 0.25rem 0 1.5rem;
+  color: #94a3b8;
+}
+
+#note-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+#note-input {
+  flex: 1;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #334155;
+  border-radius: 0.5rem;
+  background: #1e293b;
+  color: inherit;
+  font-size: 1rem;
+}
+
+#note-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+#note-form button {
+  padding: 0 1.1rem;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+#note-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+#note-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  background: #1e293b;
+  border-radius: 0.5rem;
+}
+
+.note-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.delete {
+  background: transparent;
+  color: #94a3b8;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.9rem;
+}
+
+.delete:hover {
+  color: #f87171;
+}
+
+#empty {
+  color: #64748b;
+  text-align: center;
+  margin-top: 2rem;
+}

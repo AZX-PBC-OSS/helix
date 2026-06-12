@@ -9,3 +9,6 @@ apps/portal/src/db/generated
 
 # Hand-maintained planning docs — prose, not subject to code style.
 docs
+
+# Example apps are standalone projects with their own build, not platform source.
+examples

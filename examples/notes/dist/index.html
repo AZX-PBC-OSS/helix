@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#6366f1" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <title>Notes — AZX</title>
+    <script type="module" crossorigin src="./assets/index-wM0vVh8L.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Dt-M1kmj.css">
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>Notes</h1>
+        <p class="tagline">A self-contained AZX app — everything stays in your browser.</p>
+      </header>
+      <form id="note-form" autocomplete="off">
+        <input
+          id="note-input"
+          name="note"
+          type="text"
+          placeholder="Write a note and press Enter…"
+        />
+        <button type="submit">Add</button>
+      </form>
+      <ul id="note-list" aria-live="polite"></ul>
+      <p id="empty" hidden>No notes yet. Add your first one above.</p>
+    </main>
+  </body>
+</html>

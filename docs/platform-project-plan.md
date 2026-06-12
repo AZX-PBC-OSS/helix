@@ -28,6 +28,7 @@ helix/
     shared/          # zod schemas: manifest, registry, API contracts
     cli/             # azx CLI (npm-distributed; `azx deploy` etc.)
     deploy-skill/    # agent skill bundle (v1)
+  examples/          # reference apps to `azx deploy`; built dist/ is committed
   infra/             # IaC for Azure (minimal at first)
   .devcontainer/
 ```

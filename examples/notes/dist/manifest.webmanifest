@@ -1,0 +1,16 @@
+{
+  "name": "Notes — AZX",
+  "short_name": "Notes",
+  "description": "A self-contained example notes app for the AZX platform.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

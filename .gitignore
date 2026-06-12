@@ -7,6 +7,16 @@ dist/
 build/
 *.tsbuildinfo
 
+# Example apps commit their built dist/ so `azx deploy` works without a build step.
+# Re-include after the global dist/ ignore above: un-ignore the directory, then
+# its contents (git won't descend into an excluded directory otherwise).
+!examples/**/dist/
+!examples/**/dist/**
+
+# Examples are standalone projects built with a throwaway local install
+# (`pnpm install --ignore-workspace`); their lockfiles aren't tracked.
+examples/**/pnpm-lock.yaml
+
 # Generated Prisma client (rebuilt on install via the portal's postinstall)
 apps/portal/src/db/generated/
 
