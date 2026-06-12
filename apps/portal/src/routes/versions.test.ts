@@ -105,6 +105,36 @@ describe("POST /api/v1/apps/:slug/versions", () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it("rejects upload and promote on an archived app (409 conflict)", async () => {
+    const slug = uniqueSlug();
+    await createApp(slug);
+    await upload(slug, await simpleBundle());
+    await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/archive`,
+      headers: authHeader(),
+    });
+
+    const uploadRes = await upload(slug, await simpleBundle());
+    expect(uploadRes.statusCode).toBe(409);
+    expect(uploadRes.json().error.code).toBe("conflict");
+
+    const promoteRes = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/versions/1/promote`,
+      headers: authHeader(),
+    });
+    expect(promoteRes.statusCode).toBe(409);
+
+    const rollbackRes = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/rollback`,
+      headers: authHeader(),
+      payload: {},
+    });
+    expect(rollbackRes.statusCode).toBe(409);
+  });
+
   it("404s for an unknown app", async () => {
     const res = await upload(uniqueSlug(), await simpleBundle());
     expect(res.statusCode).toBe(404);

@@ -41,6 +41,7 @@ export function toApp(row: AppRow): App {
     displayName: row.displayName,
     visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupId),
     currentVersionId: row.currentVersionId,
+    archivedAt: row.archivedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });

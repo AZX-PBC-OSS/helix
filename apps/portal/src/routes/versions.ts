@@ -18,6 +18,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
       if (!appRow) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
+      rejectArchived(appRow);
 
       const data = await req.file();
       if (!data) {
@@ -69,6 +70,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
       if (!appRow) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
+      rejectArchived(appRow);
       const number = parseVersionNumber(req.params.number);
       const target = await app.prisma.version.findUnique({
         where: { appId_number: { appId: appRow.id, number } },
@@ -109,6 +111,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
       if (!appRow) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
+      rejectArchived(appRow);
 
       const target =
         toNumber !== undefined
@@ -142,6 +145,13 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
       return toApp(updated);
     },
   );
+}
+
+/** Archived apps are frozen: no uploads or pointer moves until unarchived. */
+function rejectArchived(appRow: { slug: string; archivedAt: Date | null }): void {
+  if (appRow.archivedAt) {
+    throw new AppError("conflict", `app "${appRow.slug}" is archived; unarchive it first`);
+  }
 }
 
 function parseVersionNumber(raw: string): number {

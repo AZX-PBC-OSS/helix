@@ -21,6 +21,8 @@ export const AppSchema = z.object({
   visibility: VisibilitySchema,
   /** The version currently served; null before the first deploy. */
   currentVersionId: z.uuid().nullable(),
+  /** When set, the app is archived: the edge serves 410 + Clear-Site-Data (§7). */
+  archivedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

@@ -54,6 +54,7 @@ describe("row mappers validate against the shared schema", () => {
       visibilityMode: "private",
       visibilityGroupId: null,
       currentVersionId: null,
+      archivedAt: null,
       createdAt: NOW,
       updatedAt: NOW,
     };
@@ -63,9 +64,25 @@ describe("row mappers validate against the shared schema", () => {
       displayName: "Cost Explorer",
       visibility: { mode: "private" },
       currentVersionId: null,
+      archivedAt: null,
       createdAt: NOW.toISOString(),
       updatedAt: NOW.toISOString(),
     });
+  });
+
+  it("maps an archived apps row with an ISO archivedAt", () => {
+    const row: AppRow = {
+      id: APP_ID,
+      slug: "cost-explorer",
+      displayName: "Cost Explorer",
+      visibilityMode: "private",
+      visibilityGroupId: null,
+      currentVersionId: null,
+      archivedAt: NOW,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    expect(toApp(row).archivedAt).toBe(NOW.toISOString());
   });
 
   it("maps a versions row to a wire Version", () => {

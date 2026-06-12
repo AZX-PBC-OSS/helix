@@ -46,4 +46,53 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     }
     return toApp(row);
   });
+
+  // Archive an app: the edge serves 410 + Clear-Site-Data for it (architecture
+  // §7). Mutating — requires the dev token. Idempotent.
+  app.post<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/archive",
+    { preHandler: authenticate },
+    async (req) => {
+      const actor = requireActor(req);
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      if (row.archivedAt) {
+        return toApp(row); // already archived — idempotent
+      }
+      const updated = await app.prisma.app.update({
+        where: { id: row.id },
+        data: { archivedAt: new Date() },
+      });
+      await app.prisma.auditEvent.create({
+        data: { appId: row.id, actor: actor.sub, action: "app.archive", metadata: {} },
+      });
+      return toApp(updated);
+    },
+  );
+
+  // Un-archive an app. Mutating — requires the dev token. Idempotent.
+  app.post<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/unarchive",
+    { preHandler: authenticate },
+    async (req) => {
+      const actor = requireActor(req);
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      if (!row.archivedAt) {
+        return toApp(row); // not archived — idempotent
+      }
+      const updated = await app.prisma.app.update({
+        where: { id: row.id },
+        data: { archivedAt: null },
+      });
+      await app.prisma.auditEvent.create({
+        data: { appId: row.id, actor: actor.sub, action: "app.unarchive", metadata: {} },
+      });
+      return toApp(updated);
+    },
+  );
 }

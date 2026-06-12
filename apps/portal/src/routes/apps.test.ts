@@ -53,6 +53,62 @@ describe("POST /api/v1/apps", () => {
   });
 });
 
+describe("POST /api/v1/apps/:slug/archive and /unarchive", () => {
+  it("archives and unarchives an app, idempotently, with audit events", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({ slug, displayName: "Archivable" });
+    expect(created.json().archivedAt).toBeNull();
+
+    const archived = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/archive`,
+      headers: authHeader(),
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json().archivedAt).not.toBeNull();
+
+    // Idempotent: re-archiving keeps the original timestamp.
+    const again = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/archive`,
+      headers: authHeader(),
+    });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().archivedAt).toBe(archived.json().archivedAt);
+
+    const unarchived = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/unarchive`,
+      headers: authHeader(),
+    });
+    expect(unarchived.statusCode).toBe(200);
+    expect(unarchived.json().archivedAt).toBeNull();
+
+    const appId = created.json().id;
+    const events = await t.prisma.auditEvent.findMany({ where: { appId } });
+    const actions = events.map((e) => e.action);
+    expect(actions).toContain("app.archive");
+    expect(actions).toContain("app.unarchive");
+    // Idempotent re-archive must not have produced a second archive event.
+    expect(actions.filter((a) => a === "app.archive")).toHaveLength(1);
+  });
+
+  it("requires auth (401) and 404s on unknown slug", async () => {
+    const noAuth = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${uniqueSlug()}/archive`,
+    });
+    expect(noAuth.statusCode).toBe(401);
+
+    const missing = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${uniqueSlug()}/archive`,
+      headers: authHeader(),
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+});
+
 describe("GET /api/v1/apps and /:slug", () => {
   it("round-trips a group-visibility app and 404s on unknown", async () => {
     const slug = uniqueSlug();
