@@ -46,8 +46,8 @@ describe("GET / (demo dashboard)", () => {
     expect(res.headers["content-type"]).toContain("text/html");
 
     const html = res.body;
-    // Deployed app: linked to <slug>.localtest.me and shows its live version.
-    expect(html).toContain(`href="https://${live.slug}.localtest.me"`);
+    // Deployed app: linked to the dev edge (scheme + port) and shows its live version.
+    expect(html).toContain(`href="http://${live.slug}.localtest.me:8080"`);
     expect(html).toContain("Deployed App");
     expect(html).toContain("live · v1");
     // Never-deployed app: shown but flagged, no live link required.
@@ -64,16 +64,16 @@ describe("GET / (demo dashboard)", () => {
     expect(res.body).toContain("&lt;script&gt;");
   });
 
-  it("honours APP_BASE_DOMAIN for link hosts", async () => {
-    const prev = process.env.APP_BASE_DOMAIN;
-    process.env.APP_BASE_DOMAIN = "azx-labs.com";
+  it("honours APP_PUBLIC_BASE for link origins", async () => {
+    const prev = process.env.APP_PUBLIC_BASE;
+    process.env.APP_PUBLIC_BASE = "https://azx-labs.com";
     try {
       const live = await seedApp("Prod Domain App", { deploy: true });
       const res = await t.app.inject({ method: "GET", url: "/" });
       expect(res.body).toContain(`href="https://${live.slug}.azx-labs.com"`);
     } finally {
-      if (prev === undefined) delete process.env.APP_BASE_DOMAIN;
-      else process.env.APP_BASE_DOMAIN = prev;
+      if (prev === undefined) delete process.env.APP_PUBLIC_BASE;
+      else process.env.APP_PUBLIC_BASE = prev;
     }
   });
 });
