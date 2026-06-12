@@ -13,9 +13,11 @@
   "dependencies": {
     "@helix/shared": "workspace:*",
     "archiver": "catalog:",
+    "openid-client": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@helix/dev-idp": "workspace:*",
     "@types/archiver": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"

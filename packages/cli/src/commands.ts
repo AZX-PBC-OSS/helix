@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 import type { App, Version, Visibility } from "@helix/shared";
-import { CliError, type PortalClient } from "./client.js";
+import { CliError, PortalClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { zipDirectory } from "./zip.js";
+import { runDeviceLogin } from "./auth/deviceFlow.js";
+import { deleteTokens, writeTokens } from "./auth/tokenStore.js";
 
 function requireSlug(config: ResolvedConfig): string {
   if (!config.slug) {
@@ -109,4 +111,31 @@ export async function rollbackCommand(
     toNumber ? `Rolled back to version ${toNumber}.` : `Rolled back to previous version.`,
   );
   printApp(app);
+}
+
+/**
+ * `azx login` — OIDC device flow against the issuer the portal advertises.
+ * Stores tokens in the XDG cache; nothing here is auto-launched on 401
+ * (agents and CI run headless — they use AZX_TOKEN).
+ */
+export async function loginCommand(client: PortalClient, config: ResolvedConfig): Promise<void> {
+  const { issuer, cliClientId } = await client.getAuthConfig();
+  const tokens = await runDeviceLogin({ issuer, clientId: cliClientId, log: console.log });
+  await writeTokens(issuer, tokens);
+
+  // Prove the token against the portal and greet the actor.
+  const authed = new PortalClient(config.portalUrl, tokens.accessToken);
+  const me = await authed.me();
+  console.log(`Logged in as ${me.name ?? me.sub} (${me.sub}).`);
+}
+
+export async function logoutCommand(client: PortalClient): Promise<void> {
+  const { issuer } = await client.getAuthConfig();
+  const forgot = await deleteTokens(issuer);
+  console.log(forgot ? "Logged out (local tokens forgotten)." : "Already logged out.");
+}
+
+export async function whoamiCommand(client: PortalClient): Promise<void> {
+  const me = await client.me();
+  console.log(`${me.sub} (via ${me.via}${me.name ? `, ${me.name}` : ""})`);
 }

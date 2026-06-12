@@ -4,15 +4,22 @@ import { CliError, PortalClient } from "./client.js";
 import {
   createCommand,
   deployCommand,
+  loginCommand,
+  logoutCommand,
   promoteCommand,
   rollbackCommand,
   versionsCommand,
+  whoamiCommand,
 } from "./commands.js";
+import { makeTokenProvider } from "./auth/session.js";
 import { resolveConfig } from "./config.js";
 
 const USAGE = `azx — Helix deploy CLI
 
 Usage:
+  azx login                # sign in via the browser (OIDC device flow)
+  azx logout
+  azx whoami
   azx deploy   [--dir <dir>] [--bundle <zip>] [--promote]
   azx create   [--display-name <name>] [--visibility <v>]
   azx versions
@@ -20,7 +27,8 @@ Usage:
   azx rollback [number]
 
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
-Env:  AZX_PORTAL_URL, AZX_TOKEN.   Config file: azx.json { slug, portalUrl, dir }
+Env:  AZX_PORTAL_URL, AZX_TOKEN (static token — skips login; CI/scripts).
+Config file: azx.json { slug, portalUrl, dir }
 Visibility: private | group:<id> | password | public
 `;
 
@@ -40,9 +48,23 @@ async function main(): Promise<void> {
     bundle: values.bundle,
     token: values.token,
   });
-  const client = new PortalClient(config.portalUrl, config.token);
+  // AZX_TOKEN/--token wins; otherwise tokens come from the `azx login` cache
+  // (with silent refresh) via the provider.
+  const client = new PortalClient(
+    config.portalUrl,
+    makeTokenProvider({ portalUrl: config.portalUrl, staticToken: config.token }),
+  );
 
   switch (command) {
+    case "login":
+      await loginCommand(client, config);
+      break;
+    case "logout":
+      await logoutCommand(client);
+      break;
+    case "whoami":
+      await whoamiCommand(client);
+      break;
     case "deploy":
       await deployCommand(client, config, { promote: values.promote });
       break;

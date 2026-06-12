@@ -21,12 +21,12 @@ is wherever you're standing.
 Each setting is resolved **flags → environment → `azx.json` → built-in default**
 (first match wins):
 
-| Setting    | Flag           | Env              | `azx.json` key | Default                 |
-| ---------- | -------------- | ---------------- | -------------- | ----------------------- |
-| App slug   | `--slug`       | —                | `slug`         | _(required)_            |
-| Portal URL | `--portal-url` | `AZX_PORTAL_URL` | `portalUrl`    | `http://localhost:3001` |
-| Build dir  | `--dir`        | —                | `dir`          | `dist`                  |
-| Auth token | `--token`      | `AZX_TOKEN`      | —              | _(required to mutate)_  |
+| Setting    | Flag           | Env              | `azx.json` key | Default                  |
+| ---------- | -------------- | ---------------- | -------------- | ------------------------ |
+| App slug   | `--slug`       | —                | `slug`         | _(required)_             |
+| Portal URL | `--portal-url` | `AZX_PORTAL_URL` | `portalUrl`    | `http://localhost:3001`  |
+| Build dir  | `--dir`        | —                | `dir`          | `dist`                   |
+| Auth token | `--token`      | `AZX_TOKEN`      | —              | _(`azx login` if unset)_ |
 
 A minimal `azx.json` is just:
 
@@ -40,6 +40,9 @@ A minimal `azx.json` is just:
 ## Commands
 
 ```
+azx login                                                   # browser sign-in (OIDC device flow)
+azx logout                                                  # forget the cached tokens
+azx whoami                                                  # who the portal thinks you are
 azx create   [--display-name <name>] [--visibility <v>]   # register the app
 azx deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a version
 azx versions                                               # list versions
@@ -50,6 +53,22 @@ azx rollback [number]                                      # revert the live poi
 `deploy` uploads the bundle as a **preview**; `--promote` flips it live in the
 same step (architecture §5.1). `visibility` is `private | group:<id> | password
 | public`.
+
+## Authentication (M3)
+
+Two paths, in precedence order:
+
+1. **Static token** — `AZX_TOKEN` / `--token`. Sends the value as a bearer
+   token verbatim. This is the CI/scripts path, and also how the portal's
+   dev-token stub keeps working (`AZX_TOKEN=$PORTAL_DEV_TOKEN`). It is never
+   accepted by a production portal.
+2. **`azx login`** — the OIDC device flow. The CLI asks the portal
+   (`GET /api/v1/auth/config`) which issuer to use (the local dev IdP on
+   `:3002` in dev; Entra later), prints a verification URL + code, and polls
+   while you approve in a browser. Tokens land in
+   `~/.config/azx/tokens.json` (mode 0600, keyed by issuer) and are silently
+   renewed with the refresh token. On 401, nothing is auto-launched — agents
+   run headless; the error says to run `azx login`.
 
 ## Running it
 
