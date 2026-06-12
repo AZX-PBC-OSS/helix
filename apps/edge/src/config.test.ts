@@ -29,9 +29,12 @@ describe("parseConnectionString", () => {
 });
 
 describe("loadConfig", () => {
+  // The platform is HTTPS-only, so dev config must carry TLS material.
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+    EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
+    EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
   };
 
   it("applies defaults and the fail-closed auth flag", () => {
@@ -42,8 +45,11 @@ describe("loadConfig", () => {
     expect(config.allowUnauthenticated).toBe(false);
     expect(config.reconcileIntervalMs).toBe(60_000);
     expect(config.auth).toBeNull();
-    expect(config.tls).toBeNull();
-    expect(config.publicScheme).toBe("http");
+    expect(config.tls).toEqual({
+      certFile: "/certs/localtest-me.pem",
+      keyFile: "/certs/localtest-me-key.pem",
+    });
+    expect(config.publicScheme).toBe("https");
     expect(config.publicPort).toBe(8080);
   });
 
@@ -72,16 +78,21 @@ describe("loadConfig", () => {
     ).toThrow(/refused in production/);
   });
 
+  const noTls = {
+    DATABASE_URL: ENV.DATABASE_URL,
+    AZURE_STORAGE_CONNECTION_STRING: ENV.AZURE_STORAGE_CONNECTION_STRING,
+  };
+
+  it("requires TLS outside production (HTTPS-only platform)", () => {
+    expect(() => loadConfig(noTls)).toThrow(/TLS is required/);
+    // Production opts out: ingress owns the cert, the edge runs HTTP behind it.
+    const prod = loadConfig({ ...noTls, NODE_ENV: "production" });
+    expect(prod.tls).toBeNull();
+    expect(prod.publicScheme).toBe("https");
+  });
+
   it("requires TLS cert and key together", () => {
-    expect(() => loadConfig({ ...ENV, EDGE_TLS_CERT_FILE: "/c.pem" })).toThrow(/together/);
-    const config = loadConfig({
-      ...ENV,
-      EDGE_TLS_CERT_FILE: "/c.pem",
-      EDGE_TLS_KEY_FILE: "/k.pem",
-    });
-    expect(config.tls).toEqual({ certFile: "/c.pem", keyFile: "/k.pem" });
-    // TLS implies https public URLs unless overridden.
-    expect(config.publicScheme).toBe("https");
+    expect(() => loadConfig({ ...noTls, EDGE_TLS_CERT_FILE: "/c.pem" })).toThrow(/together/);
   });
 });
 
@@ -89,6 +100,8 @@ describe("auth config", () => {
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+    EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
+    EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
   };
   // 32 zero bytes, base64.
   const SECRET = Buffer.alloc(32).toString("base64");
@@ -139,18 +152,22 @@ describe("publicOrigin", () => {
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+    EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
+    EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
   };
 
-  it("builds host URLs from config, omitting scheme-default ports", () => {
-    const dev = loadConfig({ ...ENV, EDGE_PUBLIC_SCHEME: "https", EDGE_PUBLIC_PORT: "8080" });
+  it("builds https host URLs from config, omitting the default 443", () => {
+    const dev = loadConfig({ ...ENV, EDGE_PUBLIC_PORT: "8080" });
     expect(publicOrigin(dev, "auth")).toBe("https://auth.localtest.me:8080");
     expect(publicOrigin(dev, "demo")).toBe("https://demo.localtest.me:8080");
 
+    // Production: ingress terminates TLS (no edge cert), public port 443.
     const prod = loadConfig({
-      ...ENV,
+      DATABASE_URL: ENV.DATABASE_URL,
+      AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
       EDGE_BASE_DOMAIN: "azx-labs.com",
-      EDGE_PUBLIC_SCHEME: "https",
       EDGE_PUBLIC_PORT: "443",
+      NODE_ENV: "production",
     });
     expect(publicOrigin(prod, "auth")).toBe("https://auth.azx-labs.com");
     expect(publicOrigin(prod, null)).toBe("https://azx-labs.com");

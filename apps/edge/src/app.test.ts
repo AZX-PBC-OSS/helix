@@ -20,7 +20,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
     },
     auth: null,
     allowUnauthenticated: true,
-    publicScheme: "http",
+    publicScheme: "https",
     publicPort: 8080,
     tls: null,
     reconcileIntervalMs: 60_000,

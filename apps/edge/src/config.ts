@@ -64,14 +64,21 @@ export interface EdgeConfig {
    */
   allowUnauthenticated: boolean;
   /**
-   * How the edge is addressed from outside (redirect/cookie URLs). In dev the
-   * edge terminates TLS itself (mkcert); in prod it sits behind ingress, so
-   * the public scheme is not derivable from the listener.
+   * Scheme for externally built URLs (redirect targets, cookie origins). The
+   * platform is **HTTPS-only** — always `https`. Dev terminates TLS at the
+   * edge (mkcert); prod terminates at ingress and the edge speaks plain HTTP
+   * behind it, but the *public* origin is https either way.
    */
-  publicScheme: "https" | "http";
+  publicScheme: "https";
   /** Public port for built URLs; scheme-default ports are omitted. */
   publicPort: number;
-  /** Dev TLS termination (mkcert) — prod stays plain HTTP behind ingress. */
+  /**
+   * Edge-terminated TLS (mkcert in dev). **Required outside production** — the
+   * platform is HTTPS-only (`__Host-` cookies need Secure; app crypto APIs
+   * like `crypto.randomUUID`/SubtleCrypto need a secure context). In
+   * production this is null: ingress owns the cert and the edge runs plain
+   * HTTP behind it.
+   */
   tls: { certFile: string; keyFile: string } | null;
   /** Full projection reload interval — the LISTEN/NOTIFY safety net. */
   reconcileIntervalMs: number;
@@ -201,12 +208,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
   }
   const tls = certFile && keyFile ? { certFile, keyFile } : null;
 
-  const publicScheme =
-    env.EDGE_PUBLIC_SCHEME === "https" || env.EDGE_PUBLIC_SCHEME === "http"
-      ? env.EDGE_PUBLIC_SCHEME
-      : tls
-        ? ("https" as const)
-        : ("http" as const);
+  // HTTPS-only platform: outside production the edge must terminate TLS itself
+  // (mkcert). `__Host-` cookies require Secure, and hosted apps' crypto APIs
+  // (`crypto.randomUUID`, SubtleCrypto) only exist in a secure context — so a
+  // plain-HTTP dev edge is never allowed. Production opts out only by being
+  // production: ingress owns the cert and the edge runs HTTP behind it.
+  if (!tls && env.NODE_ENV !== "production") {
+    throw new Error(
+      "TLS is required for local dev (the platform is HTTPS-only): set " +
+        "EDGE_TLS_CERT_FILE and EDGE_TLS_KEY_FILE. Re-run .devcontainer/post-create.sh " +
+        "to generate the mkcert certs for *.localtest.me.",
+    );
+  }
 
   return {
     baseDomain: (env.EDGE_BASE_DOMAIN ?? "localtest.me").toLowerCase(),
@@ -220,7 +233,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     },
     auth: loadAuthConfig(env),
     allowUnauthenticated,
-    publicScheme,
+    publicScheme: "https",
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     tls,
     reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
@@ -234,8 +247,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
  */
 export function publicOrigin(config: EdgeConfig, hostLabelOrNull: string | null): string {
   const host = hostLabelOrNull ? `${hostLabelOrNull}.${config.baseDomain}` : config.baseDomain;
-  const isDefault =
-    (config.publicScheme === "https" && config.publicPort === 443) ||
-    (config.publicScheme === "http" && config.publicPort === 80);
-  return `${config.publicScheme}://${host}${isDefault ? "" : `:${config.publicPort}`}`;
+  // HTTPS-only: omit the port only when it is the https default (443).
+  const port = config.publicPort === 443 ? "" : `:${config.publicPort}`;
+  return `${config.publicScheme}://${host}${port}`;
 }
