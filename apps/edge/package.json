@@ -10,9 +10,13 @@
   },
   "dependencies": {
     "@helix/shared": "workspace:*",
-    "fastify": "catalog:"
+    "fastify": "catalog:",
+    "pg": "catalog:",
+    "undici": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/pg": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"
   }
