@@ -59,8 +59,7 @@ export function parseConnectionString(connectionString: string): {
     accountName,
     accountKey: pairs.get("AccountKey"),
     // An explicit BlobEndpoint (Azurite) wins; otherwise derive the Azure one.
-    blobEndpoint:
-      pairs.get("BlobEndpoint") ?? `${protocol}://${accountName ?? ""}.blob.${suffix}`,
+    blobEndpoint: pairs.get("BlobEndpoint") ?? `${protocol}://${accountName ?? ""}.blob.${suffix}`,
   });
 
   return {

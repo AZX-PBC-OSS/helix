@@ -44,7 +44,8 @@ export class LiveRegistry implements RegistryReader {
     // Read-only projection queries only — two connections is plenty.
     this.#pool = new pg.Pool({ connectionString: opts.databaseUrl, max: 2 });
     this.#projection = new RegistryProjection(this.#pool, {
-      onLoadError: (err) => this.#log.warn({ err }, "registry projection load failed; serving stale"),
+      onLoadError: (err) =>
+        this.#log.warn({ err }, "registry projection load failed; serving stale"),
     });
   }
 
