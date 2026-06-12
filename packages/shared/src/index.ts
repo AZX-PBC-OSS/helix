@@ -6,3 +6,4 @@ export * from "./version.js";
 export * from "./manifest.js";
 export * from "./health.js";
 export * from "./api.js";
+export * from "./auth.js";

@@ -46,6 +46,8 @@ export const API_ERROR_CODES = [
   "slug_taken",
   "bundle_invalid",
   "unauthorized",
+  /** Authenticated but not allowed — reserved for v1 RBAC. */
+  "forbidden",
   "conflict",
   "internal",
 ] as const;
