@@ -1,0 +1,91 @@
+// Helix control-plane registry — the source of truth (architecture §7).
+// The portal owns this schema and all migrations; the edge never writes and
+// hand-writes SQL against a cached projection (project plan §1, §6).
+//
+// Models map 1:1 onto the @helix/shared zod schemas (App, Version) — the DB is
+// the source of truth for shape, zod validates the API boundary, and a thin
+// mapper (src/db/mappers.ts) bridges the two. Enum values are kept identical to
+// VERSION_STATUSES / VISIBILITY_MODES in @helix/shared (a test asserts this).
+
+generator client {
+  // Prisma 7's Rust-engine-free client. ESM output, generated into the package
+  // so imports use explicit .js specifiers under nodenext.
+  provider        = "prisma-client"
+  output          = "../src/db/generated"
+  moduleFormat    = "esm"
+  runtime         = "nodejs"
+  importFileExtension = "js"
+}
+
+datasource db {
+  // Prisma 7: the connection URL lives in prisma.config.ts (for Migrate) and is
+  // supplied at runtime via the pg driver adapter in src/db/client.ts.
+  provider = "postgresql"
+}
+
+enum VersionStatus {
+  preview
+  live
+  archived
+}
+
+enum VisibilityMode {
+  private
+  group
+  password
+  public
+}
+
+/// A registered app. `slug` is the subdomain label and the isolation boundary.
+/// `currentVersionId` is the live pointer — null before the first promote;
+/// "deploy" flips it, "rollback" flips it back (architecture §4.3).
+model App {
+  id                String         @id @default(uuid()) @db.Uuid
+  slug              String         @unique
+  displayName       String
+  // Visibility is a discriminated union in zod; stored flattened here so it is
+  // queryable/indexable (only `group` carries a payload).
+  visibilityMode    VisibilityMode
+  visibilityGroupId String?
+  // The live version pointer. One-to-one with Version; SetNull so deleting a
+  // version (only via app cascade in practice) can't dangle the pointer.
+  currentVersionId  String?        @unique @db.Uuid
+  currentVersion    Version?       @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions          Version[]      @relation("AppVersions")
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@map("apps")
+}
+
+/// An immutable deploy. Assets live in Blob under `blobPrefix`
+/// (`apps/<appId>/<number>/`). `number` is per-app monotonic, 1-based.
+model Version {
+  id            String        @id @default(uuid()) @db.Uuid
+  appId         String        @db.Uuid
+  app           App           @relation("AppVersions", fields: [appId], references: [id], onDelete: Cascade)
+  number        Int
+  blobPrefix    String
+  status        VersionStatus @default(preview)
+  createdAt     DateTime      @default(now())
+  // Back-relation for the live pointer (the app, if any, currently serving this).
+  currentForApp App?          @relation("CurrentVersion")
+
+  @@unique([appId, number])
+  @@index([appId, status])
+  @@map("versions")
+}
+
+/// Append-only deploy/registry events. `actor` is the authenticated subject
+/// (M1: the dev-token actor; M3 swaps the source, not the shape).
+model AuditEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  appId     String?  @db.Uuid
+  actor     String
+  action    String
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([appId, createdAt])
+  @@map("audit_events")
+}

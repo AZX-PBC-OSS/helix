@@ -4,5 +4,8 @@ coverage
 pnpm-lock.yaml
 *.tsbuildinfo
 
+# Generated Prisma client
+apps/portal/src/db/generated
+
 # Hand-maintained planning docs — prose, not subject to code style.
 docs

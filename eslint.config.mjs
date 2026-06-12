@@ -6,7 +6,13 @@ import { defineConfig, globalIgnores } from "eslint/config";
 // Flat config per the typescript-eslint quick-start.
 // https://typescript-eslint.io/getting-started/
 export default defineConfig([
-  globalIgnores(["**/dist/**", "**/node_modules/**", "**/coverage/**", "**/*.tsbuildinfo"]),
+  globalIgnores([
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/coverage/**",
+    "**/*.tsbuildinfo",
+    "apps/portal/src/db/generated/**",
+  ]),
   {
     files: ["**/*.{js,mjs,ts}"],
     extends: [js.configs.recommended, tseslint.configs.recommended],

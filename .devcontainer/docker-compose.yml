@@ -8,9 +8,16 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql://helix:helix@db:5432/helix
+      # Dedicated test database (created + migrated by vitest global setup).
+      TEST_DATABASE_URL: postgresql://helix:helix@db:5432/helix_test
       # Azurite well-known emulator credentials. Endpoints point at the
       # `azurite` service over the compose network.
       AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMA==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1"
+      # Blob container for app bundles.
+      BLOB_CONTAINER: app-bundles
+      # M1 deploy auth stub: bearer token required on mutating portal routes
+      # (replaced by real OIDC/Entra in M3).
+      PORTAL_DEV_TOKEN: dev-deploy-token
     volumes:
       # `consistent`, deliberately: the container gets no SSH key (security
       # boundary), so this bind mount is the *only* way files leave the
@@ -55,7 +62,10 @@ services:
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
-    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data
+    # --skipApiVersionCheck: the storage SDK sends a newer x-ms-version than
+    # older Azurite images accept; skip the check so the blob integration tests
+    # run against this emulator.
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data --skipApiVersionCheck
     volumes:
       - azurite-data:/data
     ports:

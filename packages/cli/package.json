@@ -1,0 +1,23 @@
+{
+  "name": "@helix/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "azx": "./src/bin.ts"
+  },
+  "scripts": {
+    "azx": "tsx src/bin.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@helix/shared": "workspace:*",
+    "archiver": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/archiver": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

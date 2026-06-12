@@ -5,3 +5,4 @@ export * from "./app.js";
 export * from "./version.js";
 export * from "./manifest.js";
 export * from "./health.js";
+export * from "./api.js";

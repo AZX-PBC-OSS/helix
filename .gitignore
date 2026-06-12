@@ -7,6 +7,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Generated Prisma client (rebuilt on install via the portal's postinstall)
+apps/portal/src/db/generated/
+
 # Env / secrets
 .env
 .env.*

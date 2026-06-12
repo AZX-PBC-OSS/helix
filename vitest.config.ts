@@ -7,5 +7,7 @@ export default defineConfig({
   test: {
     include: ["{apps,packages}/*/src/**/*.test.ts"],
     environment: "node",
+    // Ensure the test database exists + is migrated before any suite runs.
+    globalSetup: ["./vitest.globalSetup.ts"],
   },
 });

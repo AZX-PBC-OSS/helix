@@ -6,21 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Helix** is the AZX App Platform: secure hosting for vibe-coded AI apps. The whole design rests on one stance — **every hosted app is untrusted code** — and contains the blast radius per app rather than trying to verify app code. Read `docs/platform-architecture.md` (the _what & why_) and `docs/platform-project-plan.md` (the _with what & in what order_) before making non-trivial decisions; section references like "§4.2" or "project plan §6" throughout the code point into these.
 
-**Current status: M0 — Skeleton.** Monorepo scaffold, lint/format/test wiring, shared zod schemas, and empty Fastify apps that boot and health-check. No routing, auth, registry, or gateway yet — those are M1–M4 (see project plan §4).
+**Current status: M1 — Registry + deploys (control plane core).** The portal owns a Postgres schema (apps, versions, audit) via Prisma 7 and exposes a versioned REST API: create/list/get apps, upload a bundle (zip validation + static-files-only check + CSP courtesy lint + store to Blob), list versions, and promote/rollback the live pointer. The `azx` CLI (`packages/cli`) drives deploys. Auth is a dev-token stub on mutating routes (real OIDC/Entra is M3); the edge, registry projection, and gateway are still M2–M4 (see project plan §4).
 
 ## Commands (from repo root)
 
-| Command | What |
-| --- | --- |
-| `pnpm install` | Install all workspace deps |
-| `pnpm typecheck` | `tsc --noEmit` across every package (`pnpm -r typecheck`) |
-| `pnpm lint` / `pnpm lint:fix` | ESLint (flat config + typescript-eslint) |
-| `pnpm format` / `pnpm format:check` | Prettier write / verify |
-| `pnpm test` | Vitest run across the workspace |
-| `pnpm test:watch` | Vitest watch mode |
-| `pnpm dev:edge` | Run azx-edge (`:8080`, `GET /health`) |
-| `pnpm dev:portal` | Run azx-portal (`:3001`, `GET /health`) |
-| `./check-and-lint.sh` | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first) |
+| Command                                  | What                                                                                               |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `pnpm install`                           | Install all workspace deps                                                                         |
+| `pnpm typecheck`                         | `tsc --noEmit` across every package (`pnpm -r typecheck`)                                          |
+| `pnpm lint` / `pnpm lint:fix`            | ESLint (flat config + typescript-eslint)                                                           |
+| `pnpm format` / `pnpm format:check`      | Prettier write / verify                                                                            |
+| `pnpm test`                              | Vitest run across the workspace                                                                    |
+| `pnpm test:watch`                        | Vitest watch mode                                                                                  |
+| `pnpm dev:edge`                          | Run azx-edge (`:8080`, `GET /health`)                                                              |
+| `pnpm dev:portal`                        | Run azx-portal (`:3001`, registry + deploy API)                                                    |
+| `pnpm --filter @helix/portal db:migrate` | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                 |
+| `pnpm --filter @helix/cli azx -- <cmd>`  | Run the `azx` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`)                          |
+| `./check-and-lint.sh`                    | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first) |
+
+The portal API lives under `/api/v1`. Mutating routes require `Authorization: Bearer $PORTAL_DEV_TOKEN` (dev stub); reads are open. Deploys land as `preview` versions — promotion to live is a separate step (architecture §5.1).
 
 Run a single test file or filter by name:
 
@@ -40,10 +44,10 @@ Work inside the **dev container** (VS Code: _Reopen in Container_). It provides 
 The system is **two deployable containers plus managed storage**, split along the trust boundary (architecture §3):
 
 - **`apps/edge` — azx-edge, the data plane.** Stateless. Will terminate all `*.azx-labs.com` (untrusted app-user) traffic: host routing, session auth + OIDC handoff, CSP injection, asset serving from Blob, and the entire `/_api/*` gateway (LLM proxy, app data, quotas, metering, audit). Runs with a read-only registry projection and no secret-write access.
-- **`apps/portal` — azx-portal, the control plane.** Privileged: portal UI/API, deploy endpoint, registry writes, capability approvals. Not routable from app subdomains. Owns the Postgres schema and all migrations (Prisma, lands in M1); the edge only reads a cached projection.
+- **`apps/portal` — azx-portal, the control plane.** Privileged: portal UI/API, deploy endpoint, registry writes, capability approvals. Not routable from app subdomains. Owns the Postgres schema and all migrations (Prisma 7, pg driver adapter); the edge only reads a cached projection.
 - **`packages/shared` — `@helix/shared`.** zod schemas validated at every boundary (visibility, app, version, manifest, health), with inferred types exported alongside. Re-exported from `src/index.ts`; consumed via `workspace:*`. Note `@helix/shared` exports `./src/index.ts` directly (no build step).
 
-`apps/portal-web` (React SPA), `packages/cli` (`azx` CLI), `packages/deploy-skill`, and `infra/` appear in the target layout (project plan §2) but land in later milestones.
+`packages/cli` — `@helix/cli`, the `azx` CLI — landed in M1 (zips a build dir or a prebuilt bundle and drives the deploy API). `apps/portal-web` (React SPA), `packages/deploy-skill`, and `infra/` appear in the target layout (project plan §2) but land in later milestones.
 
 ### The edge is the trusted path
 
