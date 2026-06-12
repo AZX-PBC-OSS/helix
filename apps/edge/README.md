@@ -14,25 +14,25 @@ HTML responses carry the §4.4 baseline CSP and `Cache-Control: no-cache` (point
 
 ## Configuration
 
-| Env var                                           | Default                                  | Meaning                                                                                            |
-| ------------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                                    | (required)                               | Postgres: registry projection (read) + sessions (read/write)                                       |
-| `AZURE_STORAGE_CONNECTION_STRING`                 | (required)                               | Blob/Azurite for asset reads                                                                       |
-| `BLOB_CONTAINER`                                  | `app-bundles`                            | Container the portal deploys into                                                                  |
-| `EDGE_BASE_DOMAIN`                                | `localtest.me`                           | Apps serve on `<slug>.<this>`; auth on `auth.<this>`                                               |
-| `EDGE_OIDC_ISSUER`                                | unset                                    | OIDC issuer (dev: `http://localhost:3002`; later: Entra). All four auth vars set together, or none |
-| `EDGE_OIDC_CLIENT_ID` / `_CLIENT_SECRET`          | unset                                    | The edge's confidential client at the issuer                                                       |
-| `EDGE_AUTH_SECRET`                                | unset                                    | base64, ≥32 bytes; HKDF-derived into handoff + flow-cookie keys                                    |
-| `EDGE_OIDC_ALLOW_INSECURE`                        | unset                                    | Permit an `http://` issuer (local dev-idp only)                                                    |
-| `EDGE_OIDC_GROUPS_CLAIM` / `EDGE_OIDC_SCOPES`     | `groups` / `openid profile email groups` | Claim + scopes for group visibility                                                                |
-| `EDGE_SESSION_TTL_MS` / `EDGE_SESSION_REFRESH_MS` | 8 h / 1 h                                | Hard session cap / silent-refresh due time                                                         |
-| `EDGE_TLS_CERT_FILE` / `EDGE_TLS_KEY_FILE`        | unset                                    | Dev TLS termination (mkcert; `__Host-` cookies need Secure). Prod: unset, behind ingress           |
-| `EDGE_PUBLIC_SCHEME` / `EDGE_PUBLIC_PORT`         | derived (https when TLS) / listen port   | How redirect/cookie URLs are built                                                                 |
-| `EDGE_DEV_ALLOW_UNAUTHENTICATED`                  | unset                                    | **Dev only** (refused in production): skip the session gate                                        |
-| `EDGE_RECONCILE_INTERVAL_MS`                      | `60000`                                  | Projection full-reload safety net                                                                  |
-| `EDGE_PORT` / `PORT`                              | `8080`                                   | Listen port                                                                                        |
+| Env var                                           | Default                                  | Meaning                                                                                                                                    |
+| ------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DATABASE_URL`                                    | (required)                               | Postgres: registry projection (read) + sessions (read/write)                                                                               |
+| `AZURE_STORAGE_CONNECTION_STRING`                 | (required)                               | Blob/Azurite for asset reads                                                                                                               |
+| `BLOB_CONTAINER`                                  | `app-bundles`                            | Container the portal deploys into                                                                                                          |
+| `EDGE_BASE_DOMAIN`                                | `localtest.me`                           | Apps serve on `<slug>.<this>`; auth on `auth.<this>`                                                                                       |
+| `EDGE_OIDC_ISSUER`                                | unset                                    | OIDC issuer (dev: `http://localhost:3002`; later: Entra). All four auth vars set together, or none                                         |
+| `EDGE_OIDC_CLIENT_ID` / `_CLIENT_SECRET`          | unset                                    | The edge's confidential client at the issuer                                                                                               |
+| `EDGE_AUTH_SECRET`                                | unset                                    | base64, ≥32 bytes; HKDF-derived into handoff + flow-cookie keys                                                                            |
+| `EDGE_OIDC_ALLOW_INSECURE`                        | unset                                    | Permit an `http://` issuer (local dev-idp only)                                                                                            |
+| `EDGE_OIDC_GROUPS_CLAIM` / `EDGE_OIDC_SCOPES`     | `groups` / `openid profile email groups` | Claim + scopes for group visibility                                                                                                        |
+| `EDGE_SESSION_TTL_MS` / `EDGE_SESSION_REFRESH_MS` | 8 h / 1 h                                | Hard session cap / silent-refresh due time                                                                                                 |
+| `EDGE_TLS_CERT_FILE` / `EDGE_TLS_KEY_FILE`        | (required in dev)                        | Edge-terminated TLS (mkcert). **Required outside production** — the platform is HTTPS-only. Prod leaves them unset (ingress owns the cert) |
+| `EDGE_PUBLIC_PORT`                                | listen port                              | Public port for built redirect/cookie URLs (prod: 443; the scheme is always https)                                                         |
+| `EDGE_DEV_ALLOW_UNAUTHENTICATED`                  | unset                                    | **Dev only** (refused in production): skip the session gate. Does **not** relax TLS                                                        |
+| `EDGE_RECONCILE_INTERVAL_MS`                      | `60000`                                  | Projection full-reload safety net                                                                                                          |
+| `EDGE_PORT` / `PORT`                              | `8080`                                   | Listen port                                                                                                                                |
 
-Fail-closed stance: with no auth block and no dev bypass, app hosts serve nothing (503). The bypass throws under `NODE_ENV=production`.
+Two fail-closed stances. **Transport:** the platform is HTTPS-only — outside `NODE_ENV=production` the edge refuses to boot without `EDGE_TLS_*` (`__Host-` cookies need Secure; app crypto APIs need a secure context). **Auth:** with no auth block and no dev bypass, app hosts serve nothing (503); the bypass throws under production.
 
 ## Dev workflow (in the dev container)
 

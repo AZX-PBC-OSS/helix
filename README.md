@@ -2,49 +2,120 @@
 
 Secure hosting for vibe-coded AI apps. See [`platform-architecture.md`](./platform-architecture.md)
 (the _what & why_) and [`platform-project-plan.md`](./platform-project-plan.md) (the _with
-what & in what order_).
+what & in what order_). The whole design rests on one stance — **every hosted app is
+untrusted code** — and contains the blast radius per app instead of trying to verify it.
 
-> **Status: M0 — Skeleton.** Monorepo scaffold, lint/format/test wiring, shared zod
-> schemas, and empty Fastify apps that boot and health-check. No routing, auth,
-> registry, or gateway yet — those are M1–M4.
+> **Status: M3 (local half) — Auth.** Registry + deploys (portal API + `azx` CLI), edge
+> serving on `*.localtest.me`, and the §4.2 / Appendix A auth flow against a **local OIDC
+> issuer**: central callback on `auth.<base>`, one-time handoff token, `__Host-session`
+> cookies, server-side sessions, group visibility, silent refresh, `/_api/me`. Portal
+> mutating routes take bearer JWTs; the CLI logs in via the OIDC device flow. The `/_api/*`
+> gateway (M4) and a real Entra registration (M3 tail) are next.
 
 ## Layout
 
 ```
 apps/
-  edge/      # azx-edge — data plane (Fastify). Hard rule: dependency-minimal.
-  portal/    # azx-portal — control plane (Fastify; Prisma lands in M1)
+  edge/        # azx-edge — data plane (Fastify). Hard rule: dependency-minimal.
+  portal/      # azx-portal — control plane (Fastify + Prisma). Owns the schema.
+  dev-idp/     # local OIDC issuer (oidc-provider). Dev only, never deployed.
 packages/
-  shared/    # @helix/shared — zod schemas: visibility, app, version, manifest
-.devcontainer/   # VS Code dev container; also runs Postgres 18 + Azurite
+  shared/      # @helix/shared — zod schemas: visibility, app, version, manifest, auth
+  cli/         # azx — the deploy CLI (azx login / deploy / promote / …)
+examples/      # reference apps to `azx deploy` (hello-world, notes); built dist/ committed
+.devcontainer/ # VS Code dev container; also runs Postgres 18 + Azurite
 ```
 
-`apps/portal-web`, `packages/cli`, `packages/deploy-skill`, and `infra/` are in the
-target layout (project plan §2) but land in later milestones.
+`apps/portal-web`, `packages/deploy-skill`, and `infra/` are in the target layout
+(project plan §2) but land in later milestones.
 
 ## Prerequisites
 
-Open the repo in the dev container (VS Code: _Reopen in Container_). It provides Node
-24, pnpm, and the `db` (Postgres) + `azurite` (Blob) services, with `DATABASE_URL` and
-`AZURE_STORAGE_CONNECTION_STRING` already in the environment. `pnpm install` runs on
-create.
+Open the repo in the **dev container** (VS Code: _Reopen in Container_). It provides Node 24,
+pnpm, and the `db` (Postgres) + `azurite` (Blob) services, with `DATABASE_URL`,
+`AZURE_STORAGE_CONNECTION_STRING`, and the M3 auth env (`EDGE_OIDC_*`, `EDGE_AUTH_SECRET`,
+`PORTAL_OIDC_*`, `EDGE_TLS_*`) already set. `pnpm install` runs on create, and post-create
+generates a mkcert wildcard cert for `*.localtest.me` into `.devcontainer/certs/`
+(gitignored).
+
+### The platform is HTTPS-only
+
+There is no plain-HTTP mode, even locally. `__Host-` session cookies require `Secure`, and
+hosted apps' crypto APIs (`crypto.randomUUID`, SubtleCrypto) only exist in a
+[secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) — so
+the edge **refuses to boot in dev without TLS**. The dev container terminates TLS itself with
+mkcert; production terminates at ingress. The one-time cost: your **host browser will warn on
+the self-signed cert** the first time you open an app — accept it (or import
+`.devcontainer/certs/caroot/rootCA.pem` into your OS/browser trust store to silence it). Node
+processes inside the container already trust the CA via `NODE_EXTRA_CA_CERTS`.
+
+## Local dev: the three processes
+
+```bash
+pnpm dev:idp      # :3002 — local OIDC issuer (apps/dev-idp). Fixture users below.
+pnpm dev:portal   # :3001 — registry + deploy API
+pnpm dev:edge     # :8080 — HTTPS. Apps at https://<slug>.localtest.me:8080,
+                  #         login on https://auth.localtest.me:8080
+```
+
+`*.localtest.me` resolves to `127.0.0.1`, so app subdomains and the auth host work with no
+`/etc/hosts` edits. Fixture identities at the IdP (pick one on the login page):
+
+| User              | Groups                        |
+| ----------------- | ----------------------------- |
+| `alice@azx.dev`   | `eng-team`, `platform-admins` |
+| `bob@azx.dev`     | `eng-team`                    |
+| `mallory@azx.dev` | _none_ (for group-denial)     |
+
+The dev container sets `EDGE_DEV_ALLOW_UNAUTHENTICATED=true`, which skips the **session gate**
+(handy while iterating on an app) but not TLS — apps still serve over HTTPS. To exercise the
+real login flow, run the edge with that flag cleared:
+
+```bash
+EDGE_DEV_ALLOW_UNAUTHENTICATED= pnpm dev:edge
+```
+
+## Deploy an app and log in
+
+```bash
+# 1. Sign the CLI in (OIDC device flow against the dev IdP). Or export
+#    AZX_TOKEN=$PORTAL_DEV_TOKEN to use the static dev token instead.
+cd examples/notes
+node --import tsx ../../packages/cli/src/bin.ts login     # prints a URL + code; pick alice
+
+# 2. Register + deploy + promote (slug/dir come from azx.json):
+node --import tsx ../../packages/cli/src/bin.ts create
+node --import tsx ../../packages/cli/src/bin.ts deploy --promote
+
+# 3. Open it (accept the cert warning the first time):
+open https://notes.localtest.me:8080/
+```
+
+With the gate on (no bypass), an unauthenticated visit 302s to the login page; pick a fixture
+user and you land back on the app with a host-scoped session. `GET /_api/me` returns the
+signed-in user. See [`apps/edge/README.md`](./apps/edge/README.md) for the request flow and
+config, [`apps/dev-idp/README.md`](./apps/dev-idp/README.md) for the IdP, and
+[`packages/cli/README.md`](./packages/cli/README.md) for the CLI and its auth.
 
 ## Commands (from the repo root)
 
-| Command                             | What                                     |
-| ----------------------------------- | ---------------------------------------- |
-| `pnpm install`                      | Install all workspace deps               |
-| `pnpm typecheck`                    | `tsc` across every package               |
-| `pnpm lint`                         | ESLint (flat config + typescript-eslint) |
-| `pnpm format` / `pnpm format:check` | Prettier write / verify                  |
-| `pnpm test`                         | Vitest across the workspace              |
-| `pnpm dev:edge`                     | Run azx-edge (`:8080`, `GET /health`)    |
-| `pnpm dev:portal`                   | Run azx-portal (`:3001`, `GET /health`)  |
+| Command                     | What                                             |
+| --------------------------- | ------------------------------------------------ |
+| `pnpm install`              | Install all workspace deps                       |
+| `pnpm typecheck`            | `tsc` across every package                       |
+| `pnpm lint` / `pnpm format` | ESLint / Prettier                                |
+| `pnpm test`                 | Vitest across the workspace                      |
+| `pnpm dev:idp`              | Local OIDC issuer (`:3002`)                      |
+| `pnpm dev:portal`           | azx-portal (`:3001`, registry + deploy API)      |
+| `pnpm dev:edge`             | azx-edge (`:8080`, HTTPS)                        |
+| `./check-and-lint.sh`       | Poor-man's CI: typecheck + lint + format + tests |
 
 ## Conventions
 
-- **TypeScript everywhere, ESM, Node LTS.** Strict `tsconfig.base.json`, extended per package.
+- **TypeScript everywhere, ESM, Node 24.** Strict `tsconfig.base.json`, extended per package.
 - **Versions via the pnpm catalog** in `pnpm-workspace.yaml` — bump in one place.
 - **zod at every boundary** (`@helix/shared`); inferred types travel with the schemas.
 - Adding a runtime dependency to `apps/edge` requires justification at review time
   (project plan §6) — it is code inside the trusted path.
+- **M3 auth code gets adversarial tests with it, not after.** The OIDC handoff is the most
+  security-sensitive path in the platform (`apps/edge/src/auth/adversarial.test.ts`).
