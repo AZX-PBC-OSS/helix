@@ -35,7 +35,8 @@ and the local `pnpm-lock.yaml` are git-ignored.)
 ## Deploy
 
 Deploying is a job for the `azx` CLI (`packages/cli`), independent of how an app
-was built. The portal must be running (`pnpm dev:portal`, on `:3001`) with
+was built — see [`packages/cli/README.md`](../packages/cli/README.md) for the
+full reference. The portal must be running (`pnpm dev:portal`, on `:3001`) with
 Postgres + Azurite up (they are, in the dev container). Mutating routes need the
 dev-token stub, which the CLI reads from `AZX_TOKEN`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env -S tsx
-import { parseArgs } from "node:util";
+import { parseCliArgs } from "./args.js";
 import { CliError, PortalClient } from "./client.js";
 import {
   createCommand,
@@ -25,20 +25,7 @@ Visibility: private | group:<id> | password | public
 `;
 
 async function main(): Promise<void> {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      slug: { type: "string" },
-      "portal-url": { type: "string" },
-      dir: { type: "string" },
-      bundle: { type: "string" },
-      token: { type: "string" },
-      promote: { type: "boolean" },
-      "display-name": { type: "string" },
-      visibility: { type: "string" },
-      help: { type: "boolean" },
-    },
-  });
+  const { values, positionals } = parseCliArgs(process.argv.slice(2));
 
   const command = positionals[0];
   if (!command || values.help) {

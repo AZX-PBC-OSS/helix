@@ -10,19 +10,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands (from repo root)
 
-| Command                                  | What                                                                                               |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `pnpm install`                           | Install all workspace deps                                                                         |
-| `pnpm typecheck`                         | `tsc --noEmit` across every package (`pnpm -r typecheck`)                                          |
-| `pnpm lint` / `pnpm lint:fix`            | ESLint (flat config + typescript-eslint)                                                           |
-| `pnpm format` / `pnpm format:check`      | Prettier write / verify                                                                            |
-| `pnpm test`                              | Vitest run across the workspace                                                                    |
-| `pnpm test:watch`                        | Vitest watch mode                                                                                  |
-| `pnpm dev:edge`                          | Run azx-edge (`:8080`, `GET /health`)                                                              |
-| `pnpm dev:portal`                        | Run azx-portal (`:3001`, registry + deploy API)                                                    |
-| `pnpm --filter @helix/portal db:migrate` | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                 |
-| `pnpm --filter @helix/cli azx -- <cmd>`  | Run the `azx` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`)                          |
-| `./check-and-lint.sh`                    | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first) |
+| Command                                  | What                                                                                                                                                                              |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install`                           | Install all workspace deps                                                                                                                                                        |
+| `pnpm typecheck`                         | `tsc --noEmit` across every package (`pnpm -r typecheck`)                                                                                                                         |
+| `pnpm lint` / `pnpm lint:fix`            | ESLint (flat config + typescript-eslint)                                                                                                                                          |
+| `pnpm format` / `pnpm format:check`      | Prettier write / verify                                                                                                                                                           |
+| `pnpm test`                              | Vitest run across the workspace                                                                                                                                                   |
+| `pnpm test:watch`                        | Vitest watch mode                                                                                                                                                                 |
+| `pnpm dev:edge`                          | Run azx-edge (`:8080`, `GET /health`)                                                                                                                                             |
+| `pnpm dev:portal`                        | Run azx-portal (`:3001`, registry + deploy API)                                                                                                                                   |
+| `pnpm --filter @helix/portal db:migrate` | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                                                                                                |
+| `pnpm --filter @helix/cli azx -- <cmd>`  | Run the `azx` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`). Runs in `packages/cli`; for real deploys run it from an app dir instead — see `packages/cli/README.md` |
+| `./check-and-lint.sh`                    | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first)                                                                                |
 
 The portal API lives under `/api/v1`. Mutating routes require `Authorization: Bearer $PORTAL_DEV_TOKEN` (dev stub); reads are open. Deploys land as `preview` versions — promotion to live is a separate step (architecture §5.1).
 
