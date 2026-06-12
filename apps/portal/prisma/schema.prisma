@@ -52,6 +52,7 @@ model App {
   currentVersionId  String?        @unique @db.Uuid
   currentVersion    Version?       @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
   versions          Version[]      @relation("AppVersions")
+  sessions          Session[]
   /// Archived apps return 410 + Clear-Site-Data at the edge (architecture §7).
   archivedAt        DateTime?
   createdAt         DateTime       @default(now())
@@ -76,6 +77,34 @@ model Version {
   @@unique([appId, number])
   @@index([appId, status])
   @@map("versions")
+}
+
+/// App-user session state (architecture Appendix A.4) — **edge-owned data**.
+/// The portal migrates this table but never reads or writes it in v0; the
+/// edge does, with hand-written SQL (apps/edge/src/auth/sessions.ts).
+///
+/// `id` doubles as the handoff token's `jti`; `tokenHash` (sha256 of the
+/// cookie value, so a DB read-leak never yields usable cookies) is NULL while
+/// the handoff is minted but not yet redeemed. Redemption binds it atomically
+/// — that UPDATE is what makes the handoff single-use.
+model Session {
+  id           String    @id @db.Uuid
+  tokenHash    String?   @unique
+  appId        String    @db.Uuid
+  app          App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+  userOid      String
+  displayName  String
+  /// Group-id snapshot at login/refresh (refresh re-evaluates membership).
+  groups       Json      @default("[]")
+  createdAt    DateTime  @default(now())
+  activatedAt  DateTime?
+  /// Silent re-auth (prompt=none) is due after this instant.
+  refreshDueAt DateTime
+  /// Hard cap — the session is dead regardless of activity.
+  expiresAt    DateTime
+
+  @@index([expiresAt])
+  @@map("sessions")
 }
 
 /// Append-only deploy/registry events. `actor` is the authenticated subject
