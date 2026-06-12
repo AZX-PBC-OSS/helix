@@ -12,6 +12,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
     baseDomain: "localtest.me",
     databaseUrl: "postgresql://unused",
     blob: {
+      provider: "azure",
       accountName: "devstoreaccount1",
       accountKey: Buffer.from("dGVzdA==", "base64"),
       endpoint: "http://azurite:10000/devstoreaccount1",

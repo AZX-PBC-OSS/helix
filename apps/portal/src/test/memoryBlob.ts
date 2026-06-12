@@ -19,7 +19,7 @@ export class InMemoryBlobStore implements BlobStore {
   readonly objects = new Map<string, StoredObject>();
 
   async putObject(key: string, body: Readable | Buffer, opts?: PutObjectOptions): Promise<void> {
-    if (opts?.ifNoneMatch === "*" && this.objects.has(key)) {
+    if (opts?.createOnly && this.objects.has(key)) {
       throw new Error(`blob already exists: ${key}`);
     }
     const buf = Buffer.isBuffer(body) ? body : await streamToBuffer(body);

@@ -5,7 +5,8 @@ import { z } from "zod";
  * §3: config selects implementations per environment). Everything the request
  * path needs is parsed and validated here so handlers never read process.env.
  */
-export interface BlobConfig {
+export interface AzureBlobConfig {
+  provider: "azure";
   accountName: string;
   /** Decoded shared key (the connection string carries it base64-encoded). */
   accountKey: Buffer;
@@ -13,6 +14,14 @@ export interface BlobConfig {
   endpoint: string;
   container: string;
 }
+
+/**
+ * Discriminated union over blob storage providers. Azure-only in v0
+ * (architecture §8 — providers stay behind internal seams): a new provider is
+ * a new member here plus a {@link ../blob/client.js BlobReader} implementation
+ * selected in `createBlobReader`; nothing downstream of the interface changes.
+ */
+export type BlobConfig = AzureBlobConfig;
 
 export interface EdgeConfig {
   /** Apps are served on `<slug>.<baseDomain>` (architecture §4.1). */
@@ -75,6 +84,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required (registry projection reads Postgres)");
   }
+  // Azure is the only v0 provider, so its connection string is the only blob
+  // config input. A future BLOB_PROVIDER switch dispatches here to build a
+  // different BlobConfig member from that provider's own env.
   const connectionString = env.AZURE_STORAGE_CONNECTION_STRING;
   if (!connectionString) {
     throw new Error("AZURE_STORAGE_CONNECTION_STRING is required (asset serving reads Blob)");
@@ -85,6 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     baseDomain: (env.EDGE_BASE_DOMAIN ?? "localtest.me").toLowerCase(),
     databaseUrl,
     blob: {
+      provider: "azure",
       accountName,
       accountKey,
       endpoint: blobEndpoint,

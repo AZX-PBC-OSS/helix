@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 import { Pool } from "undici";
-import type { BlobConfig } from "../config.js";
+import type { AzureBlobConfig, BlobConfig } from "../config.js";
 import { signRequest } from "./signing.js";
 
 /**
@@ -32,18 +32,26 @@ export interface BlobReader {
   close(): Promise<void>;
 }
 
+/** Build the reader for the configured provider (Azure-only in v0). */
+export function createBlobReader(config: BlobConfig): BlobReader {
+  switch (config.provider) {
+    case "azure":
+      return new UndiciBlobReader(config);
+  }
+}
+
 function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
 /** Streams blobs from Azure Blob Storage / Azurite via undici. */
 export class UndiciBlobReader implements BlobReader {
-  #config: BlobConfig;
+  #config: AzureBlobConfig;
   #pool: Pool;
   /** Path prefix carried by the endpoint itself (Azurite: /devstoreaccount1). */
   #basePath: string;
 
-  constructor(config: BlobConfig) {
+  constructor(config: AzureBlobConfig) {
     this.#config = config;
     const endpoint = new URL(config.endpoint);
     this.#pool = new Pool(endpoint.origin);

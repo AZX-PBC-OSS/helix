@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool as PgPool } from "pg";
 import { Pool as UndiciPool } from "undici";
-import { parseConnectionString, type BlobConfig } from "../config.js";
+import { parseConnectionString, type AzureBlobConfig } from "../config.js";
 import { signRequest } from "../blob/signing.js";
 
 /**
@@ -16,11 +16,17 @@ export const TEST_DATABASE_URL =
 
 const TEST_CONTAINER = "app-bundles-test";
 
-export function testBlobConfig(): BlobConfig {
+export function testBlobConfig(): AzureBlobConfig {
   const cs = process.env.AZURE_STORAGE_CONNECTION_STRING;
   if (!cs) throw new Error("AZURE_STORAGE_CONNECTION_STRING is required for integration tests");
   const { accountName, accountKey, blobEndpoint } = parseConnectionString(cs);
-  return { accountName, accountKey, endpoint: blobEndpoint, container: TEST_CONTAINER };
+  return {
+    provider: "azure",
+    accountName,
+    accountKey,
+    endpoint: blobEndpoint,
+    container: TEST_CONTAINER,
+  };
 }
 
 /** A unique, valid DNS-label slug per call (parallel-safe across test files). */
@@ -70,12 +76,12 @@ export async function deleteApp(pool: PgPool, appId: string): Promise<void> {
 
 /** Signed PUTs into Azurite for seeding (and proving the signer end to end). */
 export class TestBlobWriter {
-  #config: BlobConfig;
+  #config: AzureBlobConfig;
   #pool: UndiciPool;
   #basePath: string;
   #containerReady: Promise<void> | null = null;
 
-  constructor(config: BlobConfig = testBlobConfig()) {
+  constructor(config: AzureBlobConfig = testBlobConfig()) {
     this.#config = config;
     const endpoint = new URL(config.endpoint);
     this.#pool = new UndiciPool(endpoint.origin);

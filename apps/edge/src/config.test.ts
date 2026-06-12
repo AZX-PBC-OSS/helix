@@ -37,6 +37,7 @@ describe("loadConfig", () => {
   it("applies defaults and the fail-closed auth flag", () => {
     const config = loadConfig({ ...ENV });
     expect(config.baseDomain).toBe("localtest.me");
+    expect(config.blob.provider).toBe("azure");
     expect(config.blob.container).toBe("app-bundles");
     expect(config.allowUnauthenticated).toBe(false);
     expect(config.reconcileIntervalMs).toBe(60_000);

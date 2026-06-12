@@ -1,6 +1,6 @@
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
-import { UndiciBlobReader } from "./blob/client.js";
+import { createBlobReader } from "./blob/client.js";
 import { LiveRegistry, type RegistryLogger } from "./registry/listener.js";
 
 // Bind 0.0.0.0 — inside the container the port is reached across the Docker
@@ -9,7 +9,7 @@ const port = Number(process.env.EDGE_PORT ?? process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const config = loadConfig();
-const blob = new UndiciBlobReader(config.blob);
+const blob = createBlobReader(config.blob);
 
 // The registry logs through the app's logger, but buildApp needs the registry
 // — bridge the cycle with a late-bound reference.

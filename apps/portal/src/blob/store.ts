@@ -5,10 +5,10 @@ export interface PutObjectOptions {
   /** Content-Type stored on the blob (served back by the edge in M2). */
   contentType?: string;
   /**
-   * Optimistic-concurrency guard. Pass `"*"` to fail if the blob already
-   * exists — versions are immutable, so a key is never overwritten.
+   * Fail if the key already exists — versions are immutable, so a key is
+   * never overwritten. Provider-neutral; on Azure this is `If-None-Match: *`.
    */
-  ifNoneMatch?: string;
+  createOnly?: boolean;
 }
 
 /**
@@ -44,7 +44,7 @@ export class AzureBlobStore implements BlobStore {
   async putObject(key: string, body: Readable | Buffer, opts?: PutObjectOptions): Promise<void> {
     await this.#ensureContainer();
     const block = this.#container.getBlockBlobClient(key);
-    const conditions = opts?.ifNoneMatch ? { ifNoneMatch: opts.ifNoneMatch } : undefined;
+    const conditions = opts?.createOnly ? { ifNoneMatch: "*" } : undefined;
     const blobHTTPHeaders = opts?.contentType ? { blobContentType: opts.contentType } : undefined;
 
     if (Buffer.isBuffer(body)) {

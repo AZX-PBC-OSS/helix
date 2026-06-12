@@ -98,7 +98,7 @@ async function allocateVersion(prisma: PrismaClient, appId: string): Promise<Ver
 
 /**
  * Second pass over the validated zip: stream each regular-file entry to Blob,
- * one at a time, never overwriting (`ifNoneMatch: "*"` — versions are immutable).
+ * one at a time, never overwriting (`createOnly` — versions are immutable).
  */
 function uploadEntries(zipPath: string, blobStore: BlobStore, blobPrefix: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -136,7 +136,7 @@ function uploadEntries(zipPath: string, blobStore: BlobStore, blobPrefix: string
             return;
           }
           blobStore
-            .putObject(`${blobPrefix}${rel}`, stream, { contentType, ifNoneMatch: "*" })
+            .putObject(`${blobPrefix}${rel}`, stream, { contentType, createOnly: true })
             .then(() => {
               if (!settled) zipfile.readEntry();
             })

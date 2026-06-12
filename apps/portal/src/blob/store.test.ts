@@ -62,11 +62,11 @@ describe.skipIf(skipReason)("AzureBlobStore against Azurite", () => {
     expect(await store.exists(`test/${randomUUID()}/nope`)).toBe(false);
   });
 
-  it("refuses to overwrite an existing key (ifNoneMatch '*')", async () => {
+  it("refuses to overwrite an existing key (createOnly)", async () => {
     const key = `test/${randomUUID()}/once.txt`;
-    await store.putObject(key, Buffer.from("first"), { ifNoneMatch: "*" });
+    await store.putObject(key, Buffer.from("first"), { createOnly: true });
     await expect(
-      store.putObject(key, Buffer.from("second"), { ifNoneMatch: "*" }),
+      store.putObject(key, Buffer.from("second"), { createOnly: true }),
     ).rejects.toThrow();
   });
 });
