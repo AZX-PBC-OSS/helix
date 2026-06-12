@@ -8,6 +8,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   validation_failed: 400,
   bundle_invalid: 400,
   unauthorized: 401,
+  forbidden: 403,
   not_found: 404,
   slug_taken: 409,
   conflict: 409,

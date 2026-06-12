@@ -21,11 +21,13 @@
     "@prisma/client": "catalog:",
     "fastify": "catalog:",
     "fastify-plugin": "catalog:",
+    "jose": "catalog:",
     "pg": "catalog:",
     "yauzl": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@helix/dev-idp": "workspace:*",
     "@types/archiver": "catalog:",
     "@types/pg": "catalog:",
     "@types/yauzl": "catalog:",

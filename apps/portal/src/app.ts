@@ -6,10 +6,12 @@ import type { BlobStore } from "./blob/store.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { blobPlugin } from "./plugins/blob.js";
 import { errorsPlugin } from "./plugins/errors.js";
+import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
 import { MAX_TOTAL_BYTES } from "./deploy/limits.js";
 import { appRoutes } from "./routes/apps.js";
 import { versionRoutes } from "./routes/versions.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { authRoutes } from "./routes/auth.js";
 
 /**
  * azx-portal — the control plane (architecture §3, §7). Privileged: registry
@@ -22,6 +24,8 @@ export interface BuildAppOptions {
   /** Inject a PrismaClient and BlobStore (tests). Defaults build real ones. */
   prisma?: PrismaClient;
   blobStore?: BlobStore;
+  /** Inject the auth verifier chain / public config (tests). */
+  auth?: AuthPluginOptions;
 }
 
 export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
@@ -32,6 +36,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(errorsPlugin);
   app.register(prismaPlugin, { client: opts.prisma });
   app.register(blobPlugin, { store: opts.blobStore });
+  app.register(authPlugin, opts.auth ?? {});
   // One bundle file per upload; cap the (compressed) upload size.
   app.register(multipart, { limits: { files: 1, fileSize: MAX_TOTAL_BYTES } });
 
@@ -46,6 +51,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(appRoutes);
   app.register(versionRoutes);
   app.register(dashboardRoutes);
+  app.register(authRoutes);
 
   return app;
 }

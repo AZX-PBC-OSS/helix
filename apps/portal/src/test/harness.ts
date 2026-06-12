@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import FormData from "form-data";
 import type { FastifyInstance } from "fastify";
-import { buildApp } from "../app.js";
+import { buildApp, type BuildAppOptions } from "../app.js";
 import { createPrismaClient, type PrismaClient } from "../db/client.js";
 import { InMemoryBlobStore } from "./memoryBlob.js";
 
@@ -25,10 +25,10 @@ export interface TestApp {
  * The injected PrismaClient is owned here (the prisma plugin won't disconnect
  * it), so `close()` disposes it.
  */
-export function buildTestApp(): TestApp {
+export function buildTestApp(opts: Pick<BuildAppOptions, "auth"> = {}): TestApp {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   const blob = new InMemoryBlobStore();
-  const app = buildApp({ prisma, blobStore: blob });
+  const app = buildApp({ prisma, blobStore: blob, ...opts });
   return {
     app,
     prisma,
