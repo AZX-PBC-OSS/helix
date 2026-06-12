@@ -9,6 +9,7 @@ import { errorsPlugin } from "./plugins/errors.js";
 import { MAX_TOTAL_BYTES } from "./deploy/limits.js";
 import { appRoutes } from "./routes/apps.js";
 import { versionRoutes } from "./routes/versions.js";
+import { dashboardRoutes } from "./routes/dashboard.js";
 
 /**
  * azx-portal — the control plane (architecture §3, §7). Privileged: registry
@@ -44,6 +45,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
 
   app.register(appRoutes);
   app.register(versionRoutes);
+  app.register(dashboardRoutes);
 
   return app;
 }
