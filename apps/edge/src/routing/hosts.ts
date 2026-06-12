@@ -2,12 +2,12 @@ import { SLUG_PATTERN } from "@helix/shared";
 
 /**
  * Host classification — the two-router discipline (architecture §3, decision
- * 12): every request is either app-subdomain traffic or platform traffic, keyed
- * strictly by hostname, and control-plane handlers are never mounted on app
- * hosts. M2 only serves assets on app hosts and `/health` on platform hosts;
- * `auth.`/`portal.` get real platform roles in M3+.
+ * 12): every request is app-subdomain traffic, auth-service traffic, or other
+ * platform traffic, keyed strictly by hostname; control-plane handlers are
+ * never mounted on app hosts. `auth.<base>` is the central OIDC callback host
+ * (architecture §4.2, Appendix A) — its routes answer nowhere else.
  */
-export type HostClass = { kind: "app"; slug: string } | { kind: "platform" };
+export type HostClass = { kind: "app"; slug: string } | { kind: "auth" } | { kind: "platform" };
 
 /**
  * Subdomain labels that can never be apps — reserved for platform services
@@ -31,6 +31,9 @@ export function classifyHost(hostHeader: string | undefined, baseDomain: string)
   }
 
   const label = host.slice(0, -suffix.length);
+  if (label === "auth") {
+    return { kind: "auth" };
+  }
   // Exactly one label (no dots), shaped like a valid app slug, not reserved.
   if (label.includes(".") || !SLUG_PATTERN.test(label) || RESERVED_SUBDOMAINS.has(label)) {
     return { kind: "platform" };

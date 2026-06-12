@@ -23,17 +23,56 @@ export interface AzureBlobConfig {
  */
 export type BlobConfig = AzureBlobConfig;
 
+/**
+ * OIDC + session configuration for app-user auth (architecture §4.2,
+ * Appendix A). Provider-generic on purpose: locally the issuer is
+ * apps/dev-idp; the Entra swap is env-only.
+ */
+export interface AuthConfig {
+  issuerUrl: string;
+  clientId: string;
+  clientSecret: string;
+  /** ID-token claim carrying group ids (Entra and dev-idp: `groups`). */
+  groupsClaim: string;
+  scopes: string;
+  /** Permit a plain-http issuer — local dev-idp only. */
+  allowInsecureIdp: boolean;
+  /** ≥32 bytes; HKDF-derived into the handoff + flow-cookie keys. */
+  secret: Buffer;
+  /** Hard session cap (Appendix A.4: hours, not weeks). */
+  sessionTtlMs: number;
+  /** Silent re-auth (prompt=none) due after this much of the session. */
+  refreshAfterMs: number;
+  handoffTtlSec: number;
+  clockToleranceSec: number;
+}
+
 export interface EdgeConfig {
   /** Apps are served on `<slug>.<baseDomain>` (architecture §4.1). */
   baseDomain: string;
   databaseUrl: string;
   blob: BlobConfig;
   /**
-   * M2 dev-only bypass (project plan §4 M2): app content is only served when
-   * this is set. M3 replaces the flag with real sessions; the default stays
-   * fail-closed so a production edge without auth config serves nothing.
+   * Auth is fail-closed in two layers: with `auth: null` and the dev bypass
+   * unset, app hosts serve nothing; the bypass itself is refused in
+   * production builds.
+   */
+  auth: AuthConfig | null;
+  /**
+   * Dev-only bypass: serve app content without sessions. Pre-M3 meaning
+   * ("serve at all") narrows to "skip the session gate" once auth lands.
    */
   allowUnauthenticated: boolean;
+  /**
+   * How the edge is addressed from outside (redirect/cookie URLs). In dev the
+   * edge terminates TLS itself (mkcert); in prod it sits behind ingress, so
+   * the public scheme is not derivable from the listener.
+   */
+  publicScheme: "https" | "http";
+  /** Public port for built URLs; scheme-default ports are omitted. */
+  publicPort: number;
+  /** Dev TLS termination (mkcert) — prod stays plain HTTP behind ingress. */
+  tls: { certFile: string; keyFile: string } | null;
   /** Full projection reload interval — the LISTEN/NOTIFY safety net. */
   reconcileIntervalMs: number;
 }
@@ -78,6 +117,63 @@ export function parseConnectionString(connectionString: string): {
   };
 }
 
+const AuthEnvSchema = z.object({
+  issuerUrl: z.url(),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+  secret: z.base64().min(1),
+});
+
+/**
+ * Parse the auth block. All-or-nothing: no auth env at all returns null (the
+ * edge boots fail-closed and app hosts serve nothing without the dev bypass);
+ * a partial block is a config error worth failing loudly on.
+ */
+function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
+  const present = [
+    env.EDGE_OIDC_ISSUER,
+    env.EDGE_OIDC_CLIENT_ID,
+    env.EDGE_OIDC_CLIENT_SECRET,
+    env.EDGE_AUTH_SECRET,
+  ].filter((v) => v !== undefined && v !== "");
+  if (present.length === 0) return null;
+  if (present.length < 4) {
+    throw new Error(
+      "Partial auth config: EDGE_OIDC_ISSUER, EDGE_OIDC_CLIENT_ID, " +
+        "EDGE_OIDC_CLIENT_SECRET and EDGE_AUTH_SECRET must all be set together",
+    );
+  }
+
+  const parsed = AuthEnvSchema.parse({
+    issuerUrl: env.EDGE_OIDC_ISSUER,
+    clientId: env.EDGE_OIDC_CLIENT_ID,
+    clientSecret: env.EDGE_OIDC_CLIENT_SECRET,
+    secret: env.EDGE_AUTH_SECRET,
+  });
+  const secret = Buffer.from(parsed.secret, "base64");
+  if (secret.length < 32) {
+    throw new Error("EDGE_AUTH_SECRET must decode to at least 32 bytes");
+  }
+  const allowInsecureIdp = env.EDGE_OIDC_ALLOW_INSECURE === "true";
+  if (new URL(parsed.issuerUrl).protocol !== "https:" && !allowInsecureIdp) {
+    throw new Error("EDGE_OIDC_ISSUER must be https (or set EDGE_OIDC_ALLOW_INSECURE=true in dev)");
+  }
+
+  return {
+    issuerUrl: parsed.issuerUrl.replace(/\/+$/, ""),
+    clientId: parsed.clientId,
+    clientSecret: parsed.clientSecret,
+    groupsClaim: env.EDGE_OIDC_GROUPS_CLAIM ?? "groups",
+    scopes: env.EDGE_OIDC_SCOPES ?? "openid profile email groups",
+    allowInsecureIdp,
+    secret,
+    sessionTtlMs: Number(env.EDGE_SESSION_TTL_MS ?? 8 * 60 * 60 * 1000),
+    refreshAfterMs: Number(env.EDGE_SESSION_REFRESH_MS ?? 60 * 60 * 1000),
+    handoffTtlSec: 30,
+    clockToleranceSec: 5,
+  };
+}
+
 /** Load and validate the edge config from the environment; throws on gaps. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
   const databaseUrl = env.DATABASE_URL;
@@ -93,6 +189,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
   }
   const { accountName, accountKey, blobEndpoint } = parseConnectionString(connectionString);
 
+  const allowUnauthenticated = env.EDGE_DEV_ALLOW_UNAUTHENTICATED === "true";
+  if (allowUnauthenticated && env.NODE_ENV === "production") {
+    throw new Error("EDGE_DEV_ALLOW_UNAUTHENTICATED is a dev bypass and is refused in production");
+  }
+
+  const certFile = env.EDGE_TLS_CERT_FILE;
+  const keyFile = env.EDGE_TLS_KEY_FILE;
+  if ((certFile && !keyFile) || (!certFile && keyFile)) {
+    throw new Error("EDGE_TLS_CERT_FILE and EDGE_TLS_KEY_FILE must be set together");
+  }
+  const tls = certFile && keyFile ? { certFile, keyFile } : null;
+
+  const publicScheme =
+    env.EDGE_PUBLIC_SCHEME === "https" || env.EDGE_PUBLIC_SCHEME === "http"
+      ? env.EDGE_PUBLIC_SCHEME
+      : tls
+        ? ("https" as const)
+        : ("http" as const);
+
   return {
     baseDomain: (env.EDGE_BASE_DOMAIN ?? "localtest.me").toLowerCase(),
     databaseUrl,
@@ -103,7 +218,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
       endpoint: blobEndpoint,
       container: env.BLOB_CONTAINER ?? "app-bundles",
     },
-    allowUnauthenticated: env.EDGE_DEV_ALLOW_UNAUTHENTICATED === "true",
+    auth: loadAuthConfig(env),
+    allowUnauthenticated,
+    publicScheme,
+    publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
+    tls,
     reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
   };
+}
+
+/**
+ * The externally visible origin for a given host label + base domain —
+ * redirect targets and cookie URLs are always built from config, never from
+ * request headers. Scheme-default ports are omitted.
+ */
+export function publicOrigin(config: EdgeConfig, hostLabelOrNull: string | null): string {
+  const host = hostLabelOrNull ? `${hostLabelOrNull}.${config.baseDomain}` : config.baseDomain;
+  const isDefault =
+    (config.publicScheme === "https" && config.publicPort === 443) ||
+    (config.publicScheme === "http" && config.publicPort === 80);
+  return `${config.publicScheme}://${host}${isDefault ? "" : `:${config.publicPort}`}`;
 }

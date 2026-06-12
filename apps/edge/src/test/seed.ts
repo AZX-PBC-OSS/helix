@@ -47,7 +47,13 @@ export interface SeededApp {
  */
 export async function seedApp(
   pool: PgPool,
-  opts: { slug?: string; live?: boolean; archived?: boolean } = {},
+  opts: {
+    slug?: string;
+    live?: boolean;
+    archived?: boolean;
+    visibilityMode?: "private" | "group" | "password" | "public";
+    visibilityGroupId?: string;
+  } = {},
 ): Promise<SeededApp> {
   const appId = randomUUID();
   const versionId = randomUUID();
@@ -55,9 +61,15 @@ export async function seedApp(
   const blobPrefix = `apps/${appId}/1/`;
 
   await pool.query(
-    `INSERT INTO apps (id, slug, "displayName", "visibilityMode", "archivedAt", "createdAt", "updatedAt")
-     VALUES ($1, $2, $2, 'private', $3, now(), now())`,
-    [appId, slug, opts.archived ? new Date() : null],
+    `INSERT INTO apps (id, slug, "displayName", "visibilityMode", "visibilityGroupId", "archivedAt", "createdAt", "updatedAt")
+     VALUES ($1, $2, $2, $3::"VisibilityMode", $4, $5, now(), now())`,
+    [
+      appId,
+      slug,
+      opts.visibilityMode ?? "private",
+      opts.visibilityGroupId ?? null,
+      opts.archived ? new Date() : null,
+    ],
   );
   await pool.query(
     `INSERT INTO versions (id, "appId", number, "blobPrefix", status, "createdAt")
@@ -72,6 +84,44 @@ export async function seedApp(
 
 export async function deleteApp(pool: PgPool, appId: string): Promise<void> {
   await pool.query(`DELETE FROM apps WHERE id = $1`, [appId]); // versions cascade
+}
+
+/**
+ * Insert an already-redeemed session row (the post-handoff state), returning
+ * the cookie token. Mirrors what /_auth/complete writes; integration tests
+ * use it to start from "logged in" without driving the IdP.
+ */
+export async function seedSession(
+  pool: PgPool,
+  opts: {
+    appId: string;
+    tokenHash: string;
+    userOid?: string;
+    displayName?: string;
+    groups?: string[];
+    /** Offsets from now, in ms. */
+    refreshDueInMs?: number;
+    expiresInMs?: number;
+  },
+): Promise<{ sessionId: string }> {
+  const sessionId = randomUUID();
+  await pool.query(
+    `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", groups,
+                           "activatedAt", "refreshDueAt", "expiresAt")
+     VALUES ($1, $2, $3, $4, $5, $6, now(),
+             now() + make_interval(secs => $7), now() + make_interval(secs => $8))`,
+    [
+      sessionId,
+      opts.tokenHash,
+      opts.appId,
+      opts.userOid ?? "user-oid-1",
+      opts.displayName ?? "Test User",
+      JSON.stringify(opts.groups ?? []),
+      (opts.refreshDueInMs ?? 60 * 60 * 1000) / 1000,
+      (opts.expiresInMs ?? 8 * 60 * 60 * 1000) / 1000,
+    ],
+  );
+  return { sessionId };
 }
 
 /** Signed PUTs into Azurite for seeding (and proving the signer end to end). */

@@ -30,8 +30,16 @@ describe("classifyHost", () => {
     expect(classifyHost(undefined, BASE)).toEqual({ kind: "platform" });
   });
 
+  it("classifies the auth host as its own kind", () => {
+    expect(classifyHost("auth.localtest.me", BASE)).toEqual({ kind: "auth" });
+    expect(classifyHost("Auth.localtest.me:8443", BASE)).toEqual({ kind: "auth" });
+    // Only an exact label on the base domain — never nested or elsewhere.
+    expect(classifyHost("auth.evil.com", BASE)).toEqual({ kind: "platform" });
+    expect(classifyHost("a.auth.localtest.me", BASE)).toEqual({ kind: "platform" });
+  });
+
   it("reserves platform subdomains", () => {
-    for (const label of ["auth", "portal", "api", "www"]) {
+    for (const label of ["portal", "api", "www"]) {
       expect(classifyHost(`${label}.localtest.me`, BASE)).toEqual({ kind: "platform" });
     }
   });

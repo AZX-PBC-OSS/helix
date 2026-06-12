@@ -60,6 +60,8 @@ describe("LiveRegistry against the test database", () => {
       slug: live.slug,
       archived: false,
       blobPrefix: live.blobPrefix,
+      visibilityMode: "private",
+      visibilityGroupId: null,
     });
     // Preview-only app: known, but nothing live to serve.
     expect(registry.getApp(preview.slug)?.blobPrefix).toBeNull();

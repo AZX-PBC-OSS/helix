@@ -7,12 +7,18 @@
  * data path doesn't depend on the portal or a healthy DB connection — only
  * the very first load gates serving (isLoaded()).
  */
+import type { VisibilityMode } from "@helix/shared";
+
 export interface RegistryEntry {
   appId: string;
   slug: string;
   archived: boolean;
   /** Live version's blob prefix (`apps/<appId>/<n>/`), null if nothing live. */
   blobPrefix: string | null;
+  /** Access rule (architecture §4.2); checked at login and on every request. */
+  visibilityMode: VisibilityMode;
+  /** The group that may open the app — only when `visibilityMode` is `group`. */
+  visibilityGroupId: string | null;
 }
 
 export interface RegistryReader {
@@ -27,6 +33,8 @@ interface ProjectionRow {
   slug: string;
   archived: boolean;
   blob_prefix: string | null;
+  visibility_mode: VisibilityMode;
+  visibility_group_id: string | null;
 }
 
 /** Narrow query seam: `pg.Pool#query` shaped, fake-able in unit tests. */
@@ -37,7 +45,8 @@ export interface ProjectionQuerier {
 // Prisma created camelCase columns (no @map), so identifiers must be quoted —
 // unquoted they would silently lowercase and fail.
 const PROJECTION_SQL = `
-  SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix
+  SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
+         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupId" AS visibility_group_id
   FROM apps a
   LEFT JOIN versions v ON v.id = a."currentVersionId"
 `;
@@ -94,6 +103,8 @@ export class RegistryProjection implements RegistryReader {
           slug: row.slug,
           archived: row.archived,
           blobPrefix: row.blob_prefix,
+          visibilityMode: row.visibility_mode,
+          visibilityGroupId: row.visibility_group_id,
         });
       }
       this.#map = next;

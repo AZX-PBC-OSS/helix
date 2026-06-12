@@ -5,7 +5,17 @@ import type { BlobReader } from "./blob/client.js";
 import type { RegistryReader } from "./registry/projection.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { makeAssetHandler } from "./serving/assets.js";
-import { sendMethodNotAllowed, sendNotFound } from "./errors.js";
+import { sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
+import { deriveAuthKeys } from "./auth/secrets.js";
+import type { OidcClient } from "./auth/oidc.js";
+import type { SessionStore } from "./auth/sessions.js";
+import { makeCallbackHandler, makeStartHandler } from "./auth/routes/authHost.js";
+import {
+  makeAuthCompleteHandler,
+  makeLogoutHandler,
+  makeMeHandler,
+} from "./auth/routes/appHost.js";
+import { makeSessionGate } from "./auth/gate.js";
 
 /**
  * azx-edge — the data plane (architecture §3). Stateless; terminates all
@@ -22,6 +32,23 @@ export interface EdgeDeps {
   config: EdgeConfig;
   registry: RegistryReader;
   blob: BlobReader;
+  /** Session persistence; required for the auth routes to exist. */
+  sessions?: SessionStore | null;
+  /** IdP client; required for the auth routes to exist. */
+  oidc?: OidcClient | null;
+  /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
+  https?: { cert: Buffer; key: Buffer } | null;
+}
+
+/** Platform path namespaces on app hosts — never composed into blob keys. */
+function isReservedAppPath(rawUrl: string): boolean {
+  const pathname = rawUrl.split("?", 1)[0] ?? "";
+  return (
+    pathname === "/_auth" ||
+    pathname.startsWith("/_auth/") ||
+    pathname === "/_api" ||
+    pathname.startsWith("/_api/")
+  );
 }
 
 declare module "fastify" {
@@ -33,12 +60,41 @@ declare module "fastify" {
 
 export function buildApp(deps: EdgeDeps): FastifyInstance {
   const { config } = deps;
+  // The https/http generics differ; the instance is used identically, so the
+  // assertion keeps one return type rather than a generic explosion.
   const app = Fastify({
     // Quiet during tests; structured JSON logs otherwise.
     logger: process.env.NODE_ENV !== "test",
-  });
+    ...(deps.https ? { https: deps.https } : {}),
+  }) as unknown as FastifyInstance;
 
-  const serveAsset = makeAssetHandler(deps);
+  // Auth routes exist only when the whole auth stack is wired (config block +
+  // session store + OIDC client); otherwise they fail closed below.
+  const authRuntime =
+    config.auth && deps.sessions && deps.oidc
+      ? {
+          config,
+          auth: config.auth,
+          keys: deriveAuthKeys(config.auth.secret),
+          registry: deps.registry,
+          sessions: deps.sessions,
+          oidc: deps.oidc,
+        }
+      : null;
+  const gate = authRuntime
+    ? makeSessionGate({ config, auth: authRuntime.auth, sessions: authRuntime.sessions })
+    : null;
+  const serveAsset = makeAssetHandler({ ...deps, gate });
+
+  const handleStart = authRuntime ? makeStartHandler(authRuntime) : null;
+  const handleCallback = authRuntime ? makeCallbackHandler(authRuntime) : null;
+  const handleAuthComplete = authRuntime ? makeAuthCompleteHandler(authRuntime) : null;
+  const appApiRuntime =
+    authRuntime && gate
+      ? { config, registry: deps.registry, sessions: authRuntime.sessions, gate }
+      : null;
+  const handleMe = appApiRuntime ? makeMeHandler(appApiRuntime) : null;
+  const handleLogout = appApiRuntime ? makeLogoutHandler(appApiRuntime) : null;
 
   // The two-router discipline (architecture §3, decision 12): every request
   // is classified by hostname exactly once, and the two worlds never mix —
@@ -69,11 +125,83 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     },
   });
 
+  // Appendix A steps 1–7 live on the auth host; on app hosts these are just
+  // asset paths (an app may legitimately ship /start.html etc. — the asset
+  // handler sees the same URL it always did).
+  for (const [url, handler] of [
+    ["/start", handleStart],
+    ["/callback", handleCallback],
+  ] as const) {
+    app.route({
+      method: "GET",
+      url,
+      handler: async (req, reply) => {
+        if (req.hostClass.kind === "auth") {
+          if (handler) {
+            await handler(req, reply);
+          } else {
+            sendUnavailable(reply, "Sign-in is not configured on this edge.");
+          }
+          return;
+        }
+        if (req.hostClass.kind === "app") {
+          await serveAsset(req, reply, req.hostClass.slug);
+          return;
+        }
+        sendNotFound(reply);
+      },
+    });
+  }
+
+  // Appendix A step 8: handoff redemption, on app hosts only.
+  app.route({
+    method: "GET",
+    url: "/_auth/complete",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleAuthComplete) {
+        await handleAuthComplete(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  app.route({
+    method: "POST",
+    url: "/_auth/logout",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleLogout) {
+        await handleLogout(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // Appendix A.6: the one thing an app may ask about its user.
+  app.route({
+    method: "GET",
+    url: "/_api/me",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleMe) {
+        await handleMe(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
   app.route({
     method: ["GET", "HEAD"],
     url: "/*",
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app") {
+        // `/_auth/*` and `/_api/*` are platform namespaces — anything not
+        // explicitly routed above 404s rather than reaching the blob store.
+        if (isReservedAppPath(req.raw.url ?? "/")) {
+          sendNotFound(reply);
+          return;
+        }
         await serveAsset(req, reply, req.hostClass.slug);
         return;
       }

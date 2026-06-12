@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
 import type { EdgeConfig } from "./config.js";
-import { FakeBlobReader, FakeRegistry } from "./test/fakes.js";
+import { FakeBlobReader, FakeRegistry, registryEntry } from "./test/fakes.js";
 
 const APP_ID = "11111111-1111-4111-8111-111111111111";
 const PREFIX = `apps/${APP_ID}/1/`;
@@ -18,7 +18,11 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
       endpoint: "http://azurite:10000/devstoreaccount1",
       container: "app-bundles",
     },
+    auth: null,
     allowUnauthenticated: true,
+    publicScheme: "http",
+    publicPort: 8080,
+    tls: null,
     reconcileIntervalMs: 60_000,
     ...overrides,
   };
@@ -32,7 +36,7 @@ function buildTestEdge(opts: {
   const blob = opts.blob ?? new FakeBlobReader();
   const registry =
     opts.registry ??
-    new FakeRegistry([{ appId: APP_ID, slug: "demo", archived: false, blobPrefix: PREFIX }]);
+    new FakeRegistry([registryEntry({ appId: APP_ID, slug: "demo", blobPrefix: PREFIX })]);
   const app = buildApp({ config: testConfig(opts.config), registry, blob });
   return { app, blob };
 }
@@ -161,9 +165,7 @@ describe("app hosts: registry states", () => {
 
   it("404s an app with no live version, identically to unknown", async () => {
     const { app } = buildTestEdge({
-      registry: new FakeRegistry([
-        { appId: APP_ID, slug: "fresh", archived: false, blobPrefix: null },
-      ]),
+      registry: new FakeRegistry([registryEntry({ appId: APP_ID, slug: "fresh" })]),
     });
     const res = await app.inject({ url: "/", headers: { host: "fresh.localtest.me" } });
     expect(res.statusCode).toBe(404);
@@ -173,7 +175,7 @@ describe("app hosts: registry states", () => {
   it("410s an archived app with Clear-Site-Data", async () => {
     const { app } = buildTestEdge({
       registry: new FakeRegistry([
-        { appId: APP_ID, slug: "old", archived: true, blobPrefix: PREFIX },
+        registryEntry({ appId: APP_ID, slug: "old", archived: true, blobPrefix: PREFIX }),
       ]),
     });
     const res = await app.inject({ url: "/", headers: { host: "old.localtest.me" } });

@@ -22,6 +22,8 @@ const ROW = {
   slug: "demo",
   archived: false,
   blob_prefix: "apps/11111111-1111-4111-8111-111111111111/3/",
+  visibility_mode: "private",
+  visibility_group_id: null,
 };
 
 describe("RegistryProjection", () => {
@@ -39,6 +41,7 @@ describe("RegistryProjection", () => {
           ROW,
           { ...ROW, id: "2", slug: "old", archived: true },
           { ...ROW, id: "3", slug: "new", blob_prefix: null },
+          { ...ROW, id: "4", slug: "team", visibility_mode: "group", visibility_group_id: "g1" },
         ],
       ]),
     );
@@ -48,9 +51,13 @@ describe("RegistryProjection", () => {
       slug: "demo",
       archived: false,
       blobPrefix: ROW.blob_prefix,
+      visibilityMode: "private",
+      visibilityGroupId: null,
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();
+    expect(projection.getApp("team")?.visibilityMode).toBe("group");
+    expect(projection.getApp("team")?.visibilityGroupId).toBe("g1");
     expect(projection.getApp("nope")).toBeUndefined();
   });
 

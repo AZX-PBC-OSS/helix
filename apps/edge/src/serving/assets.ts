@@ -2,39 +2,34 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { EdgeConfig } from "../config.js";
 import type { BlobReader, BlobGetResult } from "../blob/client.js";
 import type { RegistryReader } from "../registry/projection.js";
+import type { SessionGate } from "../auth/gate.js";
 import { sendGone, sendNotFound, sendUnavailable } from "../errors.js";
 import { normalizeRequestPath } from "./paths.js";
 import { APP_CSP } from "./csp.js";
 
 /**
- * The app-host request path (architecture §4.3): resolve slug → live version →
- * blob key, stream the asset. Single-page apps get `/` → index.html plus an
- * index.html fallback for HTML-accepting misses (client-side routers).
+ * The app-host request path (architecture §4.3): resolve slug → live version
+ * → session gate → blob key, stream the asset. Single-page apps get `/` →
+ * index.html plus an index.html fallback for HTML-accepting misses
+ * (client-side routers). Assets are served only after the auth check — there
+ * are no public blob endpoints.
  */
 export interface AssetHandlerDeps {
   config: EdgeConfig;
   registry: RegistryReader;
   blob: BlobReader;
+  /** The session gate; absent only when the auth stack isn't wired. */
+  gate?: SessionGate | null;
 }
 
 export function makeAssetHandler(deps: AssetHandlerDeps) {
-  const { config, registry, blob } = deps;
+  const { config, registry, blob, gate } = deps;
 
   return async function assetHandler(
     req: FastifyRequest,
     reply: FastifyReply,
     slug: string,
   ): Promise<void> {
-    // M2 has no sessions; serving is gated on the dev bypass so the default
-    // is fail-closed until M3 auth lands (project plan §4 M2).
-    if (!config.allowUnauthenticated) {
-      sendUnavailable(
-        reply,
-        "App serving requires authentication (M3). Set EDGE_DEV_ALLOW_UNAUTHENTICATED=true for local dev.",
-      );
-      return;
-    }
-
     if (!registry.isLoaded()) {
       sendUnavailable(reply, "Registry unavailable; try again shortly.");
       return;
@@ -53,6 +48,21 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     if (!entry.blobPrefix) {
       sendNotFound(reply);
       return;
+    }
+
+    // The session gate (architecture §4.2). The dev bypass narrows its M2
+    // meaning to "skip the gate" — serving still requires the registry entry
+    // above, and loadConfig refuses the flag in production.
+    if (!config.allowUnauthenticated) {
+      if (!gate) {
+        sendUnavailable(
+          reply,
+          "App serving requires authentication. Configure EDGE_OIDC_* (or set EDGE_DEV_ALLOW_UNAUTHENTICATED=true for local dev).",
+        );
+        return;
+      }
+      const session = await gate(req, reply, entry);
+      if (!session) return; // the gate already responded (302/401)
     }
 
     const path = normalizeRequestPath(req.raw.url ?? "/");

@@ -11,11 +11,14 @@
   "dependencies": {
     "@helix/shared": "workspace:*",
     "fastify": "catalog:",
+    "jose": "catalog:",
+    "openid-client": "catalog:",
     "pg": "catalog:",
     "undici": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@helix/dev-idp": "workspace:*",
     "@types/pg": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"

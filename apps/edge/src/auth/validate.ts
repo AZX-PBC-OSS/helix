@@ -1,0 +1,66 @@
+import { SLUG_PATTERN } from "@helix/shared";
+import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
+
+/**
+ * Parameter validation for the auth host (architecture Appendix A.1 step 2):
+ * `rd` validation is what stops `/start` being an open redirector, and the
+ * `app` lookup is what stops handoffs being minted for hosts we don't serve.
+ */
+
+const MAX_RD_LENGTH = 2000;
+// eslint-disable-next-line no-control-regex
+const CONTROL_OR_SPACE = /[\x00-\x20\x7f]/;
+
+/**
+ * A return path is acceptable only if it is a same-origin absolute path:
+ * starts with exactly one `/`, no scheme, no authority, no control chars,
+ * and survives URL resolution without changing origin. Null = reject.
+ */
+export function validateReturnPath(rd: string | undefined): string | null {
+  if (rd === undefined || rd === "") return "/";
+  if (rd.length > MAX_RD_LENGTH) return null;
+  if (CONTROL_OR_SPACE.test(rd)) return null;
+  // `//host`, `/\host` and `\…` are network-path / IE-style absolute URLs.
+  if (!rd.startsWith("/") || rd.startsWith("//") || rd.startsWith("/\\")) return null;
+
+  // Round-trip: resolved against a known origin, it must stay on that origin
+  // and remain path-only (catches encodings the prefix checks miss).
+  let resolved: URL;
+  try {
+    resolved = new URL(rd, "https://rd-probe.invalid");
+  } catch {
+    return null;
+  }
+  if (resolved.origin !== "https://rd-probe.invalid") return null;
+  return rd;
+}
+
+export type AppForAuth =
+  | { kind: "ok"; entry: RegistryEntry }
+  | { kind: "unknown" }
+  | { kind: "registry-unavailable" }
+  /** password/public visibility — v1 modes; auth fails closed on them. */
+  | { kind: "unsupported-mode" };
+
+/** Resolve and vet the `app` parameter / host slug for the login flow. */
+export function resolveAppForAuth(registry: RegistryReader, slug: string | undefined): AppForAuth {
+  if (!registry.isLoaded()) return { kind: "registry-unavailable" };
+  if (!slug || !SLUG_PATTERN.test(slug)) return { kind: "unknown" };
+  const entry = registry.getApp(slug);
+  // Archived apps answer like unknown ones here — no session minting, and no
+  // distinguishing the two through the auth host.
+  if (!entry || entry.archived) return { kind: "unknown" };
+  if (entry.visibilityMode !== "private" && entry.visibilityMode !== "group") {
+    return { kind: "unsupported-mode" };
+  }
+  return { kind: "ok", entry };
+}
+
+/** Does this session's group snapshot satisfy the app's visibility rule? */
+export function visibilityAllows(entry: RegistryEntry, groups: string[]): boolean {
+  if (entry.visibilityMode === "private") return true;
+  if (entry.visibilityMode === "group") {
+    return entry.visibilityGroupId !== null && groups.includes(entry.visibilityGroupId);
+  }
+  return false; // password/public never pass the session gate in v0
+}

@@ -1,0 +1,169 @@
+import * as oidc from "openid-client";
+import type { AuthConfig } from "../config.js";
+
+/**
+ * The edge's view of the IdP, behind a narrow interface (the fake in
+ * test/fakes.ts drives unit tests; integration tests hit the real dev-idp).
+ * openid-client does the heavy lifting — discovery, code exchange, ID-token
+ * signature/nonce/state validation — and this wrapper reduces its surface to
+ * exactly what the auth routes need.
+ */
+
+export interface AuthorizeParams {
+  state: string;
+  nonce: string;
+  codeChallenge: string;
+  /** Set for silent refresh (Appendix A.5). */
+  prompt?: "none";
+}
+
+/** What a completed login tells us about the user — nothing else leaves. */
+export interface OidcIdentity {
+  /** IdP subject (Entra: the object id). */
+  oid: string;
+  displayName: string;
+  groups: string[];
+}
+
+export type ExchangeOutcome =
+  /** Code exchanged, ID token valid. */
+  | { kind: "ok"; identity: OidcIdentity }
+  /** A prompt=none round-trip needs interactive login instead. */
+  | { kind: "interaction-required" }
+  /** Tampered/expired/foreign response — no detail leaves this module. */
+  | { kind: "invalid" };
+
+export interface ExchangeChecks {
+  state: string;
+  nonce: string;
+  codeVerifier: string;
+}
+
+export interface OidcClient {
+  /** False until discovery succeeds — auth routes 503 meanwhile. */
+  isReady(): boolean;
+  authorizationUrl(params: AuthorizeParams): string;
+  exchangeCode(callbackUrl: URL, checks: ExchangeChecks): Promise<ExchangeOutcome>;
+}
+
+export function newOidcState(): string {
+  return oidc.randomState();
+}
+export function newOidcNonce(): string {
+  return oidc.randomNonce();
+}
+export function newCodeVerifier(): string {
+  return oidc.randomPKCECodeVerifier();
+}
+export function codeChallengeFor(verifier: string): Promise<string> {
+  return oidc.calculatePKCECodeChallenge(verifier);
+}
+
+const SILENT_LOGIN_ERRORS = new Set(["login_required", "interaction_required", "consent_required"]);
+
+export interface OidcLogger {
+  info(msg: string): void;
+  warn(obj: object, msg: string): void;
+}
+
+/** openid-client implementation with never-throw boot discovery + retry. */
+export class OpenIdConnectClient implements OidcClient {
+  #auth: AuthConfig;
+  #redirectUri: string;
+  #log: OidcLogger;
+  #config: oidc.Configuration | null = null;
+  #retry: NodeJS.Timeout | null = null;
+  #stopped = false;
+
+  constructor(auth: AuthConfig, redirectUri: string, log: OidcLogger) {
+    this.#auth = auth;
+    this.#redirectUri = redirectUri;
+    this.#log = log;
+  }
+
+  /** Begin discovery; failures log and retry (mirrors LiveRegistry's stance). */
+  async start(): Promise<void> {
+    await this.#discoverOnce();
+  }
+
+  stop(): void {
+    this.#stopped = true;
+    if (this.#retry) clearTimeout(this.#retry);
+  }
+
+  async #discoverOnce(): Promise<void> {
+    try {
+      this.#config = await oidc.discovery(
+        new URL(this.#auth.issuerUrl),
+        this.#auth.clientId,
+        this.#auth.clientSecret,
+        undefined,
+        this.#auth.allowInsecureIdp ? { execute: [oidc.allowInsecureRequests] } : undefined,
+      );
+      this.#log.info(`OIDC discovery complete for ${this.#auth.issuerUrl}`);
+    } catch (err) {
+      this.#log.warn({ err }, `OIDC discovery failed for ${this.#auth.issuerUrl}; retrying in 5s`);
+      if (!this.#stopped) {
+        this.#retry = setTimeout(() => void this.#discoverOnce(), 5000);
+        this.#retry.unref();
+      }
+    }
+  }
+
+  isReady(): boolean {
+    return this.#config !== null;
+  }
+
+  #requireConfig(): oidc.Configuration {
+    if (!this.#config) throw new Error("OIDC discovery has not completed");
+    return this.#config;
+  }
+
+  authorizationUrl(params: AuthorizeParams): string {
+    return oidc
+      .buildAuthorizationUrl(this.#requireConfig(), {
+        redirect_uri: this.#redirectUri,
+        scope: this.#auth.scopes,
+        state: params.state,
+        nonce: params.nonce,
+        code_challenge: params.codeChallenge,
+        code_challenge_method: "S256",
+        ...(params.prompt ? { prompt: params.prompt } : {}),
+      })
+      .toString();
+  }
+
+  async exchangeCode(callbackUrl: URL, checks: ExchangeChecks): Promise<ExchangeOutcome> {
+    try {
+      const tokens = await oidc.authorizationCodeGrant(this.#requireConfig(), callbackUrl, {
+        expectedState: checks.state,
+        expectedNonce: checks.nonce,
+        pkceCodeVerifier: checks.codeVerifier,
+      });
+      const claims = tokens.claims();
+      if (!claims || typeof claims.sub !== "string") {
+        return { kind: "invalid" };
+      }
+      const rawGroups = claims[this.#auth.groupsClaim];
+      const groups = Array.isArray(rawGroups)
+        ? rawGroups.filter((g): g is string => typeof g === "string")
+        : [];
+      const displayName =
+        [claims.name, claims.preferred_username, claims.email].find(
+          (v): v is string => typeof v === "string" && v.length > 0,
+        ) ?? claims.sub;
+      return { kind: "ok", identity: { oid: claims.sub, displayName, groups } };
+    } catch (err) {
+      if (
+        err instanceof oidc.AuthorizationResponseError &&
+        SILENT_LOGIN_ERRORS.has(err.error ?? "")
+      ) {
+        return { kind: "interaction-required" };
+      }
+      // Everything else — bad state, bad nonce, bad code, IdP down — is one
+      // opaque failure to the caller; detail goes to logs only.
+      this.#log.warn({ err }, "OIDC code exchange failed");
+      return { kind: "invalid" };
+    }
+  }
+}
