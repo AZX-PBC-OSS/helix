@@ -1,0 +1,23 @@
+{
+  "name": "@helix/dev-idp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "oidc-provider": "catalog:"
+  },
+  "devDependencies": {
+    "@types/oidc-provider": "catalog:",
+    "openid-client": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

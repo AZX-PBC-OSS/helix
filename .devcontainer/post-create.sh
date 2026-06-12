@@ -30,6 +30,21 @@ pnpm config set store-dir /home/node/.pnpm-store --global
 echo "── Installing Playwright system deps ──"
 sudo env "PATH=$PATH" npx -y playwright@latest install-deps chromium
 
+echo "── Generating local TLS certs (mkcert) ──"
+# Wildcard cert for *.localtest.me so the edge can terminate TLS in dev —
+# __Host- cookies demand Secure (project plan §3). Idempotent; gitignored.
+# NODE_EXTRA_CA_CERTS (compose) makes Node trust the CA in-container; to quiet
+# host-browser warnings, import certs/caroot/rootCA.pem into the host trust
+# store (optional — the warning is harmless for dev).
+CERT_DIR=/workspace/.devcontainer/certs
+export CAROOT="$CERT_DIR/caroot"
+if [ ! -f "$CERT_DIR/localtest-me.pem" ] && command -v mkcert >/dev/null; then
+  mkdir -p "$CAROOT"
+  mkcert -cert-file "$CERT_DIR/localtest-me.pem" \
+         -key-file "$CERT_DIR/localtest-me-key.pem" \
+         "*.localtest.me" localtest.me
+fi
+
 # ── Workspace install (guarded) ──
 # The monorepo isn't scaffolded yet (M0). Only install once a workspace exists.
 if [ -f /workspace/package.json ] || [ -f /workspace/pnpm-workspace.yaml ]; then

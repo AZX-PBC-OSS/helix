@@ -4,8 +4,10 @@ FROM mcr.microsoft.com/devcontainers/typescript-node:24-bookworm
 
 # ── System packages ──────────────────────────────────────────
 # postgresql-client → psql/pg_isready against the db service.
+# mkcert → local wildcard TLS cert for *.localtest.me (M3: __Host- cookies
+# demand Secure, so the edge terminates TLS in dev; see post-create.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        postgresql-client jq fzf vim less \
+        postgresql-client jq fzf vim less mkcert \
     && rm -rf /var/lib/apt/lists/*
 
 # ── gh CLI ───────────────────────────────────────────────────

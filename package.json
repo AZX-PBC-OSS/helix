@@ -10,6 +10,7 @@
   "scripts": {
     "dev:edge": "pnpm --filter @helix/edge dev",
     "dev:portal": "pnpm --filter @helix/portal dev",
+    "dev:idp": "pnpm --filter @helix/dev-idp dev",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
