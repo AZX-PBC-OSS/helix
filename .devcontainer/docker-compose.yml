@@ -18,6 +18,9 @@ services:
       # M1 deploy auth stub: bearer token required on mutating portal routes
       # (replaced by real OIDC/Entra in M3).
       PORTAL_DEV_TOKEN: dev-deploy-token
+      # M2 edge auth bypass — dev container only. Without it the edge serves
+      # no app content (fail-closed default until M3 sessions land).
+      EDGE_DEV_ALLOW_UNAUTHENTICATED: "true"
     volumes:
       # `consistent`, deliberately: the container gets no SSH key (security
       # boundary), so this bind mount is the *only* way files leave the
