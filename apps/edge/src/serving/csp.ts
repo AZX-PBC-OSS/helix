@@ -16,6 +16,15 @@
  * vibe-coded app, so inline scripts/styles, eval, wasm and the curated CDN
  * allowlist are permitted; `img-src https:` stays open (navigation exfil
  * exists regardless — §4.4's honest trade-off).
+ *
+ * `worker-src 'self'` is safe only because SERVICE-worker registration is
+ * refused at the asset handler (the `Service-Worker` request header check in
+ * assets.ts): a root-scoped service worker would observe the handoff token
+ * on `/_auth/complete` navigations. Plain web workers remain available.
+ *
+ * The policy is attached to EVERY app response, not just HTML — any
+ * browser-active document type (SVG, XHTML, XML) can carry script, and CSP
+ * on inert assets is harmless.
  */
 const CDN_ALLOWLIST = [
   "https://cdnjs.cloudflare.com",

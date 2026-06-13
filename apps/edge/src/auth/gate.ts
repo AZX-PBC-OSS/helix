@@ -67,6 +67,20 @@ function sendUnauthenticated(reply: FastifyReply): void {
     .send({ error: { code: "unauthorized", message: "Authentication required" } });
 }
 
+function sendRefreshRequired(reply: FastifyReply): void {
+  reply
+    .status(401)
+    .header("cache-control", "no-store")
+    .type("application/json; charset=utf-8")
+    .send({ error: { code: "refresh_required", message: "Session refresh required" } });
+}
+
+/** Is this request inside the `/_api/*` platform namespace? */
+function isApiPath(rawUrl: string): boolean {
+  const pathname = rawUrl.split("?", 1)[0] ?? "";
+  return pathname === "/_api" || pathname.startsWith("/_api/");
+}
+
 export function makeSessionGate(deps: SessionGateDeps): SessionGate {
   return async function requireSession(req, reply, entry): Promise<Session | null> {
     const token = parseCookieHeader(req.headers.cookie).get(SESSION_COOKIE);
@@ -97,11 +111,20 @@ export function makeSessionGate(deps: SessionGateDeps): SessionGate {
       return null;
     }
 
-    // Refresh due: only navigations take the detour (Appendix A.5);
-    // subresources keep being served until hard expiry.
-    if (session.refreshDueAt.getTime() <= Date.now() && isNavigation(req)) {
-      redirectToStart(req, reply, deps, entry, { silent: true });
-      return null;
+    // Refresh due: navigations take the silent-refresh detour (Appendix
+    // A.5). For `/_api/*` the due time is an authorization boundary — the
+    // group snapshot is stale, so fetches get a 401 the app can react to
+    // (reload into the navigation path) rather than 8 more hours of service
+    // on old groups. Passive assets stay lenient until hard expiry.
+    if (session.refreshDueAt.getTime() <= Date.now()) {
+      if (isNavigation(req)) {
+        redirectToStart(req, reply, deps, entry, { silent: true });
+        return null;
+      }
+      if (isApiPath(req.raw.url ?? "/")) {
+        sendRefreshRequired(reply);
+        return null;
+      }
     }
 
     return session;

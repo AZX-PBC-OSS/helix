@@ -6,6 +6,7 @@ import type { RegistryReader } from "./registry/projection.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { makeAssetHandler } from "./serving/assets.js";
 import { sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
+import { normalizeRequestPath } from "./serving/paths.js";
 import { deriveAuthKeys } from "./auth/secrets.js";
 import type { OidcClient } from "./auth/oidc.js";
 import type { SessionStore } from "./auth/sessions.js";
@@ -40,15 +41,26 @@ export interface EdgeDeps {
   https?: { cert: Buffer; key: Buffer } | null;
 }
 
-/** Platform path namespaces on app hosts — never composed into blob keys. */
+/**
+ * Platform path namespaces on app hosts — never composed into blob keys.
+ * Checked against BOTH the raw URL and the percent-decoded path the asset
+ * handler will actually resolve (`/_api%2fme` decodes to `/_api/me` and must
+ * be reserved too, not fall through to a blob named `_api/me`).
+ */
 function isReservedAppPath(rawUrl: string): boolean {
-  const pathname = rawUrl.split("?", 1)[0] ?? "";
-  return (
-    pathname === "/_auth" ||
-    pathname.startsWith("/_auth/") ||
-    pathname === "/_api" ||
-    pathname.startsWith("/_api/")
-  );
+  const raw = rawUrl.split("?", 1)[0] ?? "";
+  const decoded = normalizeRequestPath(rawUrl);
+  for (const pathname of decoded === null ? [raw] : [raw, decoded]) {
+    if (
+      pathname === "/_auth" ||
+      pathname.startsWith("/_auth/") ||
+      pathname === "/_api" ||
+      pathname.startsWith("/_api/")
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 declare module "fastify" {

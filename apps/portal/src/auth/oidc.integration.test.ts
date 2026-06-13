@@ -18,7 +18,10 @@ beforeAll(async () => {
   idp = await startDevIdp();
   portal = buildTestApp({
     auth: {
-      verifiers: [createOidcVerifier({ issuer: idp.issuer, audience: PORTAL_AUDIENCE })],
+      verifiers: [
+        // allowInsecure: the in-process dev-idp serves plain http.
+        createOidcVerifier({ issuer: idp.issuer, audience: PORTAL_AUDIENCE, allowInsecure: true }),
+      ],
       publicConfig: { issuer: idp.issuer, cliClientId: "azx-cli" },
     },
   });

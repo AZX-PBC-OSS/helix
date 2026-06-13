@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 
 /**
@@ -33,6 +34,11 @@ export interface OidcVerifierOptions {
   audience: string;
   /** Injectable key resolver (tests); defaults to the issuer's remote JWKS. */
   getKey?: JWTVerifyGetKey;
+  /**
+   * Permit an `http:` issuer/JWKS (the local dev IdP). Off by default: a
+   * plaintext JWKS fetch would let a network attacker supply signing keys.
+   */
+  allowInsecure?: boolean;
 }
 
 function claimString(value: unknown): string | undefined {
@@ -46,6 +52,17 @@ function claimString(value: unknown): string | undefined {
  * unchanged; email/name enrich the actor when present.
  */
 export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
+  // Same posture as the edge (config.ts): the JWKS is the root of trust for
+  // every portal mutation, so plaintext transport to it is a boot error, not
+  // a runtime surprise — and the dev escape hatch refuses to exist in prod.
+  if (opts.allowInsecure && process.env.NODE_ENV === "production") {
+    throw new Error("PORTAL_OIDC_ALLOW_INSECURE is a dev flag and is refused in production");
+  }
+  if (new URL(opts.issuer).protocol !== "https:" && !opts.allowInsecure) {
+    throw new Error(
+      "PORTAL_OIDC_ISSUER must be https (or set PORTAL_OIDC_ALLOW_INSECURE=true in dev)",
+    );
+  }
   let getKey: JWTVerifyGetKey | null = opts.getKey ?? null;
 
   async function resolveKey(): Promise<JWTVerifyGetKey> {
@@ -54,9 +71,21 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
     // request retries (the IdP may simply not be up yet in dev).
     const res = await fetch(`${opts.issuer}/.well-known/openid-configuration`);
     if (!res.ok) throw new Error(`OIDC discovery failed: ${res.status}`);
-    const doc = (await res.json()) as { jwks_uri?: string };
+    const doc = (await res.json()) as { issuer?: string; jwks_uri?: string };
+    // The discovery document feeds the trust chain: its issuer must be the
+    // one we were configured for, and the JWKS it points at must be https
+    // (a same-https issuer redirecting key fetches to http is an attack).
+    if (doc.issuer !== opts.issuer) {
+      throw new Error(
+        `OIDC discovery issuer mismatch: expected ${opts.issuer}, got ${doc.issuer ?? "none"}`,
+      );
+    }
     if (!doc.jwks_uri) throw new Error("OIDC discovery document has no jwks_uri");
-    getKey = createRemoteJWKSet(new URL(doc.jwks_uri));
+    const jwksUrl = new URL(doc.jwks_uri);
+    if (jwksUrl.protocol !== "https:" && !opts.allowInsecure) {
+      throw new Error(`OIDC discovery returned a non-https jwks_uri: ${doc.jwks_uri}`);
+    }
+    getKey = createRemoteJWKSet(jwksUrl);
     return getKey;
   }
 
@@ -72,6 +101,10 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
           algorithms: ["RS256", "ES256"],
           clockTolerance: 5,
         });
+        // jose only *enforces* exp/iat when present — a token without them
+        // would never expire. Absence must fail (same rule as the edge's
+        // handoff verifier).
+        if (typeof payload.exp !== "number" || typeof payload.iat !== "number") return null;
         const sub = claimString(payload.sub);
         if (!sub) return null;
         const email = claimString(payload.email);
@@ -93,9 +126,14 @@ export function createDevTokenVerifier(expected: string, actorSub: string): Toke
   if (process.env.NODE_ENV === "production") {
     throw new Error("PORTAL_DEV_TOKEN is a dev/CI verifier and is refused in production");
   }
+  const expectedBuf = Buffer.from(expected);
   return {
     async verify(token: string): Promise<Actor | null> {
-      if (token !== expected) return null;
+      // Constant-time compare; the length check leaks only the length.
+      const tokenBuf = Buffer.from(token);
+      if (tokenBuf.length !== expectedBuf.length || !timingSafeEqual(tokenBuf, expectedBuf)) {
+        return null;
+      }
       return { sub: actorSub, via: "dev-token" };
     },
   };

@@ -40,7 +40,7 @@ describe("makeTokenProvider", () => {
 
   it("returns a cached unexpired token without refreshing", async () => {
     await writeTokens(
-      ISSUER,
+      { portalUrl: PORTAL, issuer: ISSUER },
       {
         accessToken: "at",
         refreshToken: "rt",
@@ -57,7 +57,7 @@ describe("makeTokenProvider", () => {
 
   it("refreshes within the expiry margin and persists the renewal", async () => {
     await writeTokens(
-      ISSUER,
+      { portalUrl: PORTAL, issuer: ISSUER },
       {
         accessToken: "old",
         refreshToken: "rt",
@@ -77,12 +77,12 @@ describe("makeTokenProvider", () => {
 
     expect(await provider()).toBe("new");
     expect(d.refresh).toHaveBeenCalledWith(ISSUER, "azx-cli", "rt");
-    expect(await readTokens(ISSUER, storePath)).toEqual(renewed);
+    expect(await readTokens({ portalUrl: PORTAL, issuer: ISSUER }, storePath)).toEqual(renewed);
   });
 
   it("treats a refused refresh as logged out, not an error", async () => {
     await writeTokens(
-      ISSUER,
+      { portalUrl: PORTAL, issuer: ISSUER },
       { accessToken: "old", refreshToken: "rt", expiresAt: Date.now() - 1, clientId: "azx-cli" },
       storePath,
     );
@@ -95,9 +95,29 @@ describe("makeTokenProvider", () => {
     expect(await provider()).toBeUndefined();
   });
 
+  it("never sends a token cached for portal A to portal B (same issuer)", async () => {
+    // The verified review attack: a planted azx.json points the CLI at a
+    // hostile portal whose /auth/config echoes the REAL issuer. The cached
+    // credential is bound to portal A's origin and must not surface.
+    await writeTokens(
+      { portalUrl: PORTAL, issuer: ISSUER },
+      {
+        accessToken: "at",
+        refreshToken: "rt",
+        expiresAt: Date.now() + 600_000,
+        clientId: "azx-cli",
+      },
+      storePath,
+    );
+    const d = deps(); // getAuthConfig advertises the same (real) issuer
+    const provider = makeTokenProvider({ portalUrl: "https://evil.example" }, d);
+    expect(await provider()).toBeUndefined();
+    expect(d.refresh).not.toHaveBeenCalled();
+  });
+
   it("an expired token without a refresh token means logged out", async () => {
     await writeTokens(
-      ISSUER,
+      { portalUrl: PORTAL, issuer: ISSUER },
       { accessToken: "old", expiresAt: Date.now() - 1, clientId: "azx-cli" },
       storePath,
     );

@@ -147,6 +147,17 @@ describe("the happy path (everything the attacks try to subvert)", () => {
     expect(setCookie).not.toContain("Domain");
   });
 
+  it("the /start redirect is no-store and never leaks app/rd via Referer", async () => {
+    const edge = buildAuthEdge();
+    const start = await edge.app.inject({
+      url: "/start?app=appa&rd=/page",
+      headers: AUTH_HOST,
+    });
+    expect(start.statusCode).toBe(302);
+    expect(start.headers["cache-control"]).toBe("no-store");
+    expect(start.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
   it("silent=1 requests prompt=none from the IdP", async () => {
     const edge = buildAuthEdge();
     await login(edge, { silent: true });
@@ -167,6 +178,7 @@ describe("the happy path (everything the attacks try to subvert)", () => {
       headers: { ...AUTH_HOST, cookie: `${FLOW_COOKIE}=${flowCookie}` },
     });
     expect(res.statusCode).toBe(302);
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
     const restart = new URL(res.headers.location as string);
     expect(restart.host).toBe("auth.localtest.me:8080");
     expect(restart.pathname).toBe("/start");

@@ -26,14 +26,14 @@ export interface AuthPluginOptions {
   /** Inject a verifier chain (tests). Defaults are built from the env. */
   verifiers?: TokenVerifier[];
   /** Public IdP discovery info served at /api/v1/auth/config. */
-  publicConfig?: { issuer: string; cliClientId: string } | null;
+  publicConfig?: { issuer: string; cliClientId: string; audience?: string } | null;
 }
 
 declare module "fastify" {
   interface FastifyInstance {
     tokenVerifiers: TokenVerifier[];
     /** null = OIDC not configured (dev-token-only portal). */
-    authPublicConfig: { issuer: string; cliClientId: string } | null;
+    authPublicConfig: { issuer: string; cliClientId: string; audience?: string } | null;
   }
 }
 
@@ -42,7 +42,15 @@ function verifiersFromEnv(): TokenVerifier[] {
   const issuer = process.env.PORTAL_OIDC_ISSUER;
   const audience = process.env.PORTAL_OIDC_AUDIENCE;
   if (issuer && audience) {
-    chain.push(createOidcVerifier({ issuer: issuer.replace(/\/+$/, ""), audience }));
+    chain.push(
+      createOidcVerifier({
+        issuer: issuer.replace(/\/+$/, ""),
+        audience,
+        // The verifier requires https unless this is set; it refuses the
+        // flag in production. Dev needs it: the local IdP is plain http.
+        allowInsecure: process.env.PORTAL_OIDC_ALLOW_INSECURE === "true",
+      }),
+    );
   } else if (issuer || audience) {
     throw new Error("PORTAL_OIDC_ISSUER and PORTAL_OIDC_AUDIENCE must be set together");
   }
@@ -76,6 +84,9 @@ export const authPlugin = fp<AuthPluginOptions>(
           ? {
               issuer: issuer.replace(/\/+$/, ""),
               cliClientId: process.env.AZX_CLI_CLIENT_ID ?? "azx-cli",
+              ...(process.env.PORTAL_OIDC_AUDIENCE
+                ? { audience: process.env.PORTAL_OIDC_AUDIENCE }
+                : {}),
             }
           : null,
     );

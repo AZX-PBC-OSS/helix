@@ -5,10 +5,13 @@ import { defaultTokenPath, readTokens, writeTokens, type StoredTokens } from "./
 /**
  * Token acquisition for every authenticated CLI call. Precedence:
  * `AZX_TOKEN`/`--token` (static — the dev-token/CI path) wins outright;
- * otherwise the cache for the portal's issuer, silently refreshed when
- * within a minute of expiry. `undefined` means "not logged in" — the caller
- * turns that into a friendly "run `azx login`" error. No flow is ever
- * auto-launched: agents and CI run headless.
+ * otherwise the cache entry bound to this portal's origin (and the issuer it
+ * advertises), silently refreshed when within a minute of expiry.
+ * `undefined` means "not logged in" — the caller turns that into a friendly
+ * "run `azx login`" error. No flow is ever auto-launched: agents and CI run
+ * headless. The portal-origin binding is load-bearing: `portalUrl` can come
+ * from a repo's `azx.json`, and a planted URL must never receive a token
+ * minted for a different portal.
  */
 
 export type TokenProvider = () => Promise<string | undefined>;
@@ -47,7 +50,8 @@ export function makeTokenProvider(
     if (opts.staticToken) return opts.staticToken;
 
     const { issuer, cliClientId } = await deps.getAuthConfig(opts.portalUrl);
-    const stored = await readTokens(issuer, deps.storePath);
+    const key = { portalUrl: opts.portalUrl, issuer };
+    const stored = await readTokens(key, deps.storePath);
     if (!stored) return undefined;
 
     if (stored.expiresAt - REFRESH_MARGIN_MS > Date.now()) {
@@ -61,7 +65,7 @@ export function makeTokenProvider(
         stored.clientId || cliClientId,
         stored.refreshToken,
       );
-      await writeTokens(issuer, renewed, deps.storePath);
+      await writeTokens(key, renewed, deps.storePath);
       return renewed.accessToken;
     } catch {
       // Refresh refused (revoked/expired) — logged out, not an error.

@@ -23,7 +23,12 @@ beforeAll(async () => {
   edge = buildTestApp({
     auth: {
       verifiers: [
-        createOidcVerifier({ issuer: ISSUER, audience: AUDIENCE, getKey: jwks }),
+        createOidcVerifier({
+          issuer: ISSUER,
+          audience: AUDIENCE,
+          getKey: jwks,
+          allowInsecure: true,
+        }),
         // The dev token rides along, as in the real env-built chain.
         {
           verify: async (t) =>

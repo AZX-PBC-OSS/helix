@@ -29,6 +29,7 @@ beforeAll(async () => {
     issuer: ISSUER,
     audience: AUDIENCE,
     getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+    allowInsecure: true, // the fixture issuer is http
   });
 });
 
@@ -40,7 +41,10 @@ interface MintOptions {
   issuer?: string;
   audience?: string;
   sub?: string | null;
-  expiresIn?: string;
+  /** `null` mints a token with NO exp claim. */
+  expiresIn?: string | null;
+  /** When false, mints a token with NO iat claim. */
+  issuedAt?: boolean;
   key?: SignKey;
   claims?: Record<string, unknown>;
 }
@@ -52,9 +56,9 @@ async function mint(opts: MintOptions = {}): Promise<string> {
   })
     .setProtectedHeader({ alg: "RS256" })
     .setIssuer(opts.issuer ?? ISSUER)
-    .setAudience(opts.audience ?? AUDIENCE)
-    .setIssuedAt();
-  jwt = jwt.setExpirationTime(opts.expiresIn ?? "5m");
+    .setAudience(opts.audience ?? AUDIENCE);
+  if (opts.issuedAt !== false) jwt = jwt.setIssuedAt();
+  if (opts.expiresIn !== null) jwt = jwt.setExpirationTime(opts.expiresIn ?? "5m");
   return jwt.sign(opts.key ?? rightKey);
 }
 
@@ -90,6 +94,14 @@ describe("createOidcVerifier", () => {
 
   it("rejects an expired token", async () => {
     expect(await verifier.verify(await mint({ expiresIn: "-1m" }))).toBeNull();
+  });
+
+  it("rejects a token with no exp claim (jose only enforces exp when present)", async () => {
+    expect(await verifier.verify(await mint({ expiresIn: null }))).toBeNull();
+  });
+
+  it("rejects a token with no iat claim", async () => {
+    expect(await verifier.verify(await mint({ issuedAt: false }))).toBeNull();
   });
 
   it("rejects a signature from a different key", async () => {
@@ -130,6 +142,42 @@ describe("createOidcVerifier", () => {
 
   it("rejects malformed JWT structure", async () => {
     expect(await verifier.verify("!!.!!.!!")).toBeNull();
+  });
+});
+
+describe("createOidcVerifier transport security", () => {
+  it("refuses a non-https issuer without the insecure flag", () => {
+    expect(() => createOidcVerifier({ issuer: ISSUER, audience: AUDIENCE })).toThrow(/https/);
+  });
+
+  it("refuses the insecure flag in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() =>
+      createOidcVerifier({ issuer: ISSUER, audience: AUDIENCE, allowInsecure: true }),
+    ).toThrow(/production/);
+    vi.unstubAllEnvs();
+  });
+
+  function stubDiscovery(doc: Record<string, unknown>): void {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(doc), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }
+
+  it("rejects a discovery document whose issuer differs from the configured one", async () => {
+    const https = createOidcVerifier({ issuer: "https://idp.test", audience: AUDIENCE });
+    stubDiscovery({ issuer: "https://other.test", jwks_uri: "https://idp.test/jwks" });
+    // The throw is swallowed into a null verdict; the key stays unresolved.
+    expect(await https.verify(await mint({ issuer: "https://idp.test" }))).toBeNull();
+  });
+
+  it("rejects a discovery document pointing at an http jwks_uri", async () => {
+    const https = createOidcVerifier({ issuer: "https://idp.test", audience: AUDIENCE });
+    stubDiscovery({ issuer: "https://idp.test", jwks_uri: "http://idp.test/jwks" });
+    expect(await https.verify(await mint({ issuer: "https://idp.test" }))).toBeNull();
   });
 });
 

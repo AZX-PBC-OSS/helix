@@ -38,5 +38,7 @@ export type PortalMeResponse = z.infer<typeof PortalMeResponseSchema>;
 export const AuthConfigResponseSchema = z.object({
   issuer: z.url(),
   cliClientId: z.string().min(1),
+  /** Expected token audience — part of what the CLI binds cached tokens to. */
+  audience: z.string().min(1).optional(),
 });
 export type AuthConfigResponse = z.infer<typeof AuthConfigResponseSchema>;

@@ -57,6 +57,17 @@ beforeAll(async () => {
     contentType: "text/javascript; charset=utf-8",
     etag: '"js-1"',
   });
+  edge.blob.set(`${PREFIX}favicon.svg`, {
+    body: "<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>",
+    contentType: "image/svg+xml",
+  });
+  edge.blob.set(`${PREFIX}vendor..min.js`, {
+    body: "//..",
+    contentType: "text/javascript; charset=utf-8",
+  });
+  // Decoy assets inside the reserved namespaces — these must never serve.
+  edge.blob.set(`${PREFIX}_api/me`, { body: "leaked", contentType: "text/plain" });
+  edge.blob.set(`${PREFIX}_auth/complete`, { body: "leaked", contentType: "text/plain" });
   await edge.app.ready();
 });
 
@@ -87,8 +98,30 @@ describe("app hosts: asset serving", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
     // Non-HTML: cacheable briefly, private (M3 makes app content authed)…
     expect(res.headers["cache-control"]).toBe("private, max-age=300");
-    // …and no CSP — the policy governs documents.
-    expect(res.headers["content-security-policy"]).toBeUndefined();
+    // …and still CSP'd — every app response carries the policy, because any
+    // browser-active document type (SVG, XML) can execute script.
+    expect(res.headers["content-security-policy"]).toContain("connect-src 'self'");
+  });
+
+  it("sends the full app CSP on browser-active non-HTML documents (SVG)", async () => {
+    const res = await edge.app.inject({ url: "/favicon.svg", headers: HOST });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/svg+xml");
+    const csp = res.headers["content-security-policy"] as string;
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+  });
+
+  it("refuses service-worker registration fetches (Service-Worker header)", async () => {
+    const res = await edge.app.inject({
+      url: "/assets/app.js",
+      headers: { ...HOST, "service-worker": "script" },
+    });
+    expect(res.statusCode).toBe(403);
+    // The same asset without the registration header serves normally.
+    const plain = await edge.app.inject({ url: "/assets/app.js", headers: HOST });
+    expect(plain.statusCode).toBe(200);
   });
 
   it("serves / as index.html with CSP and no-cache", async () => {
@@ -142,6 +175,30 @@ describe("app hosts: asset serving", () => {
     const res = await edge.app.inject({ url: "/..%2fsecrets", headers: HOST });
     expect(res.statusCode).toBe(404);
     expect(edge.blob.requests.length).toBe(before); // never reached the blob
+  });
+
+  it("404s percent-encoded reserved-namespace paths instead of serving assets", async () => {
+    // The asset handler percent-decodes, so `/_api%2fme` would otherwise
+    // resolve the blob `_api/me` — the reserved check must see the decoded
+    // path too. The bundle ships matching assets to prove they never serve.
+    for (const url of ["/_api%2fme", "/%5fapi/me", "/_auth%2fcomplete"]) {
+      const before = edge.blob.requests.length;
+      const res = await edge.app.inject({ url, headers: HOST });
+      expect(res.statusCode, url).toBe(404);
+      expect(edge.blob.requests.length, url).toBe(before); // never reached the blob
+    }
+  });
+
+  it("serves filenames containing `..` that are not traversal segments", async () => {
+    const res = await edge.app.inject({ url: "/vendor..min.js", headers: HOST });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe("//..");
+    // And a missing one is a plain 404, not a 500 from the escape bug-trap.
+    const missing = await edge.app.inject({
+      url: "/foo..bar.js",
+      headers: { ...HOST, accept: "*/*" },
+    });
+    expect(missing.statusCode).toBe(404);
   });
 
   it("405s non-GET/HEAD with Allow", async () => {

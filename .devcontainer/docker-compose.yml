@@ -25,6 +25,9 @@ services:
       # from the host browser and in-container back-channels.
       PORTAL_OIDC_ISSUER: http://localhost:3002
       PORTAL_OIDC_AUDIENCE: urn:helix:portal
+      # The portal requires an https issuer/JWKS unless this dev flag is set
+      # (refused under NODE_ENV=production) — the local IdP is plain http.
+      PORTAL_OIDC_ALLOW_INSECURE: "true"
       AZX_CLI_CLIENT_ID: azx-cli
       # M2 edge auth bypass — dev container only. M3 narrows it to "skip the
       # session gate"; without it (and with the auth block below) the edge

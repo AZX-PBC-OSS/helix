@@ -121,7 +121,7 @@ The proxy injects a Content-Security-Policy on every app response. The design pr
 - Inline scripts, inline styles, event-handler attributes, and `eval` are permitted. A single-file Claude-generated HTML app deploys and runs untouched.
 - A **platform-curated CDN allowlist** (cdnjs, jsdelivr, unpkg, esm.sh, Google Fonts, Tailwind CDN, …) is in script/style/font sources by default. Yes, some of these serve arbitrary packages — but "untrusted code runs in the app's origin" is already the baseline assumption; the boundary is data flow, not code provenance.
 - `img-src https: data: blob:` — open. Honest trade-off: image URLs are an exfiltration channel, but CSP cannot stop navigation-based exfil (`location.href=...`) anyway, so hermetic sealing was never on the table. The goal is funneling routine data flow through the gateway, not perfection.
-- `wasm-unsafe-eval` and `worker-src blob:` available without ceremony — not a real boundary under this threat model.
+- `wasm-unsafe-eval` and `worker-src 'self' blob:` available without ceremony — not a real boundary under this threat model. **Service workers are the one exception:** the edge refuses any request carrying the `Service-Worker` registration header, so apps cannot install one. A root-scoped service worker is a persistent same-origin network proxy — it would observe the handoff token on `/_auth/complete` (A.3) and could convert a user's in-browser visit into a headless server-side session. Plain web workers are unaffected; offline/PWA support could return later as a per-app declared capability.
 
 **The feedback loop is the real UX.** App authors are assumed to know nothing about CSP, and the deploy skill won't always be in the loop. So:
 
@@ -312,6 +312,8 @@ A bearer credential meaning "this user, authenticated, destined for appA" that t
 - **Single-use** (the proxy records and rejects replays) — kills replay
 - **Audience-bound to the target app** — a token captured by a malicious app is worthless on any other subdomain
 - **Signed by the auth service** — nobody else can mint one
+
+Audience binding does not protect the token from *the target app itself*: a service worker registered by the app would see the `/_auth/complete` request URL — token included — before the edge does, and could exfiltrate it for a headless redemption. That is why service-worker registration is blocked at the edge (§4.4); the residual risk of URL transport is then bounded by the TTL + single-use properties above.
 
 This is the most security-sensitive code path in the platform: every guarantee depends on a small amount of code getting state validation, token burning, and audience checks exactly right. It gets a dedicated design review and adversarial tests.
 

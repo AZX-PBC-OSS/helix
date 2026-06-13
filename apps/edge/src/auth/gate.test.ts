@@ -184,6 +184,32 @@ describe("silent refresh triggering", () => {
     });
     expect(res.statusCode).toBe(200);
   });
+
+  it("401s refresh-due /_api/* fetches with refresh_required", async () => {
+    // Unlike passive assets, the API namespace treats the refresh due-time
+    // as an authorization boundary: the group snapshot is stale, so fetches
+    // stop being served on it (matters for the M4 gateway, which is fetches).
+    const edge = buildGatedEdge();
+    const token = await seedSession(edge.sessions, { refreshDueInMs: -1000 });
+    const res = await edge.app.inject({
+      url: "/_api/me",
+      headers: { ...HOST, ...FETCH, ...sessionHeader(token) },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.json()).toMatchObject({ error: { code: "refresh_required" } });
+  });
+
+  it("still serves /_api/me before the refresh is due", async () => {
+    const edge = buildGatedEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await edge.app.inject({
+      url: "/_api/me",
+      headers: { ...HOST, ...FETCH, ...sessionHeader(token) },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ user: { displayName: "Alice Anders" } });
+  });
 });
 
 describe("per-request visibility re-check", () => {

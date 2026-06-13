@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       await loginCommand(client, config);
       break;
     case "logout":
-      await logoutCommand(client);
+      await logoutCommand(config);
       break;
     case "whoami":
       await whoamiCommand(client);

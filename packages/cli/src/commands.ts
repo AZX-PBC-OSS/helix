@@ -119,9 +119,12 @@ export async function rollbackCommand(
  * (agents and CI run headless — they use AZX_TOKEN).
  */
 export async function loginCommand(client: PortalClient, config: ResolvedConfig): Promise<void> {
-  const { issuer, cliClientId } = await client.getAuthConfig();
+  const { issuer, cliClientId, audience } = await client.getAuthConfig();
   const tokens = await runDeviceLogin({ issuer, clientId: cliClientId, log: console.log });
-  await writeTokens(issuer, tokens);
+  // Bound to THIS portal's origin: a different portal (e.g. one planted via
+  // a repo's azx.json) never receives this credential, even if it advertises
+  // the same issuer.
+  await writeTokens({ portalUrl: config.portalUrl, issuer }, tokens, undefined, { audience });
 
   // Prove the token against the portal and greet the actor.
   const authed = new PortalClient(config.portalUrl, tokens.accessToken);
@@ -129,9 +132,8 @@ export async function loginCommand(client: PortalClient, config: ResolvedConfig)
   console.log(`Logged in as ${me.name ?? me.sub} (${me.sub}).`);
 }
 
-export async function logoutCommand(client: PortalClient): Promise<void> {
-  const { issuer } = await client.getAuthConfig();
-  const forgot = await deleteTokens(issuer);
+export async function logoutCommand(config: ResolvedConfig): Promise<void> {
+  const forgot = await deleteTokens(config.portalUrl);
   console.log(forgot ? "Logged out (local tokens forgotten)." : "Already logged out.");
 }
 

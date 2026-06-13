@@ -102,6 +102,10 @@ export function makeStartHandler(rt: AuthHostRuntime) {
         serializeFlowCookie(await mintFlowToken(flow, rt.keys.flowKey), FLOW_TTL_SEC),
       )
       .header("cache-control", "no-store")
+      // The URL we're ON carries app + rd; keep it out of Referer headers on
+      // the IdP round-trip (modern defaults already strip the path, but be
+      // explicit — same posture as /complete).
+      .header("referrer-policy", "no-referrer")
       .redirect(authorizeUrl, 302);
   };
 }
@@ -142,7 +146,7 @@ export function makeCallbackHandler(rt: AuthHostRuntime) {
       const restart = new URL(`${publicOrigin(rt.config, "auth")}/start`);
       restart.searchParams.set("app", entry.slug);
       restart.searchParams.set("rd", flow.rd);
-      reply.redirect(restart.toString(), 302);
+      reply.header("referrer-policy", "no-referrer").redirect(restart.toString(), 302);
       return;
     }
     if (outcome.kind !== "ok") {
