@@ -7,3 +7,4 @@ export * from "./manifest.js";
 export * from "./health.js";
 export * from "./api.js";
 export * from "./auth.js";
+export * from "./llm.js";

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppSchema } from "./app.js";
+import { CapabilitiesSchema } from "./manifest.js";
 import { VersionSchema } from "./version.js";
 import { VisibilitySchema } from "./visibility.js";
 
@@ -15,8 +16,16 @@ export const CreateAppRequestSchema = z.object({
   slug: AppSchema.shape.slug,
   displayName: AppSchema.shape.displayName,
   visibility: VisibilitySchema.default({ mode: "private" }),
+  /** Optional per-app capability grant set at create time (architecture §6.3). */
+  capabilities: CapabilitiesSchema.optional(),
 });
 export type CreateAppRequest = z.infer<typeof CreateAppRequestSchema>;
+
+/** `PUT /api/v1/apps/:slug/manifest` body — replaces the app's capability grants. */
+export const SetManifestRequestSchema = z.object({
+  capabilities: CapabilitiesSchema,
+});
+export type SetManifestRequest = z.infer<typeof SetManifestRequestSchema>;
 
 /** A single deploy-time advisory from the CSP courtesy lint (architecture §4.4). */
 export const CspWarningSchema = z.object({
@@ -49,6 +58,12 @@ export const API_ERROR_CODES = [
   /** Authenticated but not allowed — reserved for v1 RBAC. */
   "forbidden",
   "conflict",
+  /** Gateway: requested model is not in the app's manifest allowlist (§6.3). */
+  "model_not_allowed",
+  /** Gateway: the app's daily token budget is exhausted (§6.1). */
+  "quota_exceeded",
+  /** Gateway: a configured capability is not available on this edge. */
+  "capability_unavailable",
   "internal",
 ] as const;
 export const ApiErrorCodeSchema = z.enum(API_ERROR_CODES);
