@@ -1,10 +1,14 @@
 import { queryOptions } from "@tanstack/react-query";
 import { z } from "zod";
 import {
+  AppManifestSchema,
   AppSchema,
   AuthConfigResponseSchema,
+  GatewayAuditPageSchema,
   HealthStatusSchema,
+  PlatformUsageSchema,
   PortalMeResponseSchema,
+  UsageSummarySchema,
   VersionSchema,
 } from "@helix/shared";
 import { fetchJson } from "./client";
@@ -28,6 +32,50 @@ export const versionsQuery = (slug: string) =>
     queryFn: () =>
       fetchJson(z.array(VersionSchema), `/api/v1/apps/${encodeURIComponent(slug)}/versions`),
   });
+
+/** An app's capability manifest (M4 gateway grants). Open read. */
+export const manifestQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["apps", slug, "manifest"],
+    queryFn: () =>
+      fetchJson(AppManifestSchema, `/api/v1/apps/${encodeURIComponent(slug)}/manifest`),
+  });
+
+/**
+ * Per-app gateway usage over a rolling day window. Bearer-gated server-side, so
+ * callers should gate this on `authenticated` via the query's `enabled` option.
+ */
+export const usageQuery = (slug: string, windowDays = 1) =>
+  queryOptions({
+    queryKey: ["apps", slug, "usage", windowDays],
+    queryFn: () =>
+      fetchJson(
+        UsageSummarySchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/usage?window=${windowDays}`,
+      ),
+  });
+
+/** Cross-app gateway audit log, newest-first. Bearer-gated server-side. */
+export const gatewayAuditQuery = (
+  params: { app?: string; outcome?: string; limit?: number } = {},
+) =>
+  queryOptions({
+    queryKey: ["gateway", "audit", params],
+    queryFn: () => {
+      const q = new URLSearchParams();
+      if (params.app) q.set("app", params.app);
+      if (params.outcome) q.set("outcome", params.outcome);
+      if (params.limit) q.set("limit", String(params.limit));
+      const qs = q.toString();
+      return fetchJson(GatewayAuditPageSchema, `/api/v1/gateway/audit${qs ? `?${qs}` : ""}`);
+    },
+  });
+
+/** Platform-wide gateway rollup (admin Platform + workspace /usage). Bearer-gated. */
+export const platformUsageQuery = queryOptions({
+  queryKey: ["gateway", "usage"],
+  queryFn: () => fetchJson(PlatformUsageSchema, "/api/v1/gateway/usage"),
+});
 
 export const meQuery = queryOptions({
   queryKey: ["me"],

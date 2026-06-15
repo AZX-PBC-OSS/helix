@@ -128,11 +128,13 @@ model AuditEvent {
 
 /// Per-call gateway ledger (architecture §6.1/§6.3, §8) — metering + audit for
 /// every `/_api/*` capability use: (app, user, capability, model, tokens,
-/// outcome). **Edge-written data**, like `sessions`: the portal migrates this
-/// table but never reads or writes it; the edge INSERTs a row per call and SUMs
-/// today's tokens for the per-app daily budget, both via hand-written SQL
-/// (apps/edge/src/gateway/usage.ts). No FK to `apps` (mirrors AuditEvent) — the
-/// ledger outlives any single app row.
+/// outcome). **Edge-written data**, like `sessions`: only the edge INSERTs (one
+/// row per call) and SUMs today's tokens for the per-app daily budget, via
+/// hand-written SQL (apps/edge/src/gateway/usage.ts). The portal owns the schema
+/// and **reads** it for display (usage tab, audit log, platform rollups —
+/// apps/portal/src/routes/usage.ts) but never writes. No FK to `apps` (mirrors
+/// AuditEvent) — the ledger outlives any single app row, so reads left-join the
+/// slug and tolerate its absence.
 model GatewayCall {
   id           String   @id @default(uuid()) @db.Uuid
   appId        String   @db.Uuid
@@ -147,6 +149,10 @@ model GatewayCall {
   outcome      String
   createdAt    DateTime @default(now())
 
+  /// Per-app windowed reads (edge budget + portal usage tab) and the audit
+  /// cursor.
   @@index([appId, createdAt])
+  /// Platform-wide rollups (architecture §8) scan by time across all apps.
+  @@index([createdAt])
   @@map("gateway_calls")
 }

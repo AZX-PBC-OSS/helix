@@ -2,10 +2,16 @@ import {
   AppManifestSchema,
   AppSchema,
   CapabilitiesSchema,
+  GatewayCallSchema,
+  PlatformUsageSchema,
+  UsageSummarySchema,
   VersionSchema,
   type AppManifest,
   type App,
   type Capabilities,
+  type GatewayCall,
+  type PlatformUsage,
+  type UsageSummary,
   type Version,
   type Visibility,
   type VisibilityMode,
@@ -84,4 +90,154 @@ export function toVersion(row: VersionRow): Version {
 /** Blob key prefix for a version's assets: `apps/<appId>/<number>/`. */
 export function blobPrefixFor(appId: string, number: number): string {
   return `apps/${appId}/${number}/`;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Read-side `gateway_calls` mappers (M4 metering).
+ *
+ * The edge writes the ledger; the portal only reads it for display. Aggregates
+ * come off raw SQL (`$queryRaw`), where SUM/COUNT land as number | bigint |
+ * string depending on the cast and driver — `num()` normalizes them, and every
+ * mapper validates through the shared schema so DB/contract drift fails loudly.
+ * ------------------------------------------------------------------------- */
+
+/** Coerce a SQL numeric (number | bigint | string) to a JS number. */
+function num(v: number | bigint | string | null | undefined): number {
+  return v == null ? 0 : Number(v);
+}
+
+/** Coerce a SQL timestamp (Date | string) to an ISO-8601 string. */
+function iso(v: Date | string): string {
+  return v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+}
+
+type SqlNum = number | bigint | string | null;
+
+export interface UsageOutcomeRow {
+  outcome: string;
+  requests: SqlNum;
+  inputTokens: SqlNum;
+  outputTokens: SqlNum;
+}
+export interface UsageModelRow {
+  model: string;
+  requests: SqlNum;
+  tokens: SqlNum;
+}
+export interface UsageSeriesRow {
+  bucket: Date | string;
+  tokens: SqlNum;
+  requests: SqlNum;
+}
+
+/** Assemble a per-app {@link UsageSummary} from the three aggregate queries. */
+export function toUsageSummary(input: {
+  appId: string;
+  windowDays: number;
+  outcomes: UsageOutcomeRow[];
+  models: UsageModelRow[];
+  series: UsageSeriesRow[];
+}): UsageSummary {
+  let requests = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let okRequests = 0;
+  const byOutcome: Record<string, number> = {};
+  for (const row of input.outcomes) {
+    const n = num(row.requests);
+    requests += n;
+    inputTokens += num(row.inputTokens);
+    outputTokens += num(row.outputTokens);
+    byOutcome[row.outcome] = (byOutcome[row.outcome] ?? 0) + n;
+    if (row.outcome === "ok") okRequests += n;
+  }
+  return UsageSummarySchema.parse({
+    appId: input.appId,
+    windowDays: input.windowDays,
+    requests,
+    inputTokens,
+    outputTokens,
+    errorRate: requests === 0 ? 0 : (requests - okRequests) / requests,
+    byOutcome,
+    byModel: input.models.map((m) => ({
+      model: m.model,
+      tokens: num(m.tokens),
+      requests: num(m.requests),
+    })),
+    series: input.series.map((s) => ({
+      bucket: iso(s.bucket),
+      tokens: num(s.tokens),
+      requests: num(s.requests),
+    })),
+  });
+}
+
+export interface GatewayCallRow {
+  id: string;
+  appId: string;
+  slug: string | null;
+  userOid: string;
+  capability: string;
+  model: string;
+  inputTokens: SqlNum;
+  outputTokens: SqlNum;
+  outcome: string;
+  createdAt: Date | string;
+}
+
+/** Map a joined `gateway_calls` row to the wire {@link GatewayCall}. */
+export function toGatewayCall(row: GatewayCallRow): GatewayCall {
+  return GatewayCallSchema.parse({
+    id: row.id,
+    appId: row.appId,
+    slug: row.slug,
+    userOid: row.userOid,
+    capability: row.capability,
+    model: row.model,
+    inputTokens: num(row.inputTokens),
+    outputTokens: num(row.outputTokens),
+    outcome: row.outcome,
+    createdAt: iso(row.createdAt),
+  });
+}
+
+export interface PlatformSeriesRow {
+  tokens: SqlNum;
+  requests: SqlNum;
+}
+export interface PlatformAppRow {
+  slug: string | null;
+  tokens: SqlNum;
+  requests: SqlNum;
+}
+export interface PlatformCapabilityRow {
+  capability: string;
+  tokens: SqlNum;
+}
+
+/** Assemble the platform-wide {@link PlatformUsage} rollup. */
+export function toPlatformUsage(input: {
+  daily: PlatformSeriesRow[];
+  byApp: PlatformAppRow[];
+  totals: { tokens: SqlNum; requests: SqlNum; activeUsers: SqlNum };
+  capabilityMix: PlatformCapabilityRow[];
+}): PlatformUsage {
+  return PlatformUsageSchema.parse({
+    tokens14d: input.daily.map((d) => num(d.tokens)),
+    requests14d: input.daily.map((d) => num(d.requests)),
+    byApp: input.byApp.map((a) => ({
+      slug: a.slug,
+      tokens: num(a.tokens),
+      requests: num(a.requests),
+    })),
+    totals: {
+      tokensMTD: num(input.totals.tokens),
+      requestsMTD: num(input.totals.requests),
+      activeUsers: num(input.totals.activeUsers),
+    },
+    capabilityMix: input.capabilityMix.map((c) => ({
+      capability: c.capability,
+      tokens: num(c.tokens),
+    })),
+  });
 }

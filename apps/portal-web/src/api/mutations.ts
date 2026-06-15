@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  AppManifestSchema,
   AppSchema,
   UploadVersionResponseSchema,
+  type Capabilities,
   type CreateAppRequest,
   type App,
   type UploadVersionResponse,
@@ -59,6 +61,20 @@ export function useArchiveApp() {
       { method: "POST" },
     ),
   );
+}
+
+/** Replace an app's capability manifest (M4 gateway grants). */
+export function useSetManifest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, capabilities }: { slug: string; capabilities: Capabilities }) =>
+      fetchJson(AppManifestSchema, `/api/v1/apps/${encodeURIComponent(slug)}/manifest`, {
+        method: "PUT",
+        body: { capabilities },
+      }),
+    onSuccess: (_manifest, { slug }) =>
+      void queryClient.invalidateQueries({ queryKey: ["apps", slug, "manifest"] }),
+  });
 }
 
 export function useUploadVersion() {

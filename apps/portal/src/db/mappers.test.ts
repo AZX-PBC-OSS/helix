@@ -5,7 +5,10 @@ import {
   blobPrefixFor,
   capabilitiesFromRow,
   toApp,
+  toGatewayCall,
   toManifest,
+  toPlatformUsage,
+  toUsageSummary,
   toVersion,
   visibilityFromColumns,
   visibilityToColumns,
@@ -128,6 +131,107 @@ describe("row mappers validate against the shared schema", () => {
       updatedAt: NOW,
     };
     expect(capabilitiesFromRow(row)).toEqual({ mcp: [], externalOrigins: [] });
+  });
+
+  // Read-side gateway_calls mappers (M4 metering). Aggregates arrive off raw
+  // SQL as number | bigint | string; assert they normalize and validate.
+  it("assembles a per-app UsageSummary, summing outcomes and computing the error rate", () => {
+    const summary = toUsageSummary({
+      appId: APP_ID,
+      windowDays: 1,
+      outcomes: [
+        { outcome: "ok", requests: 8, inputTokens: 1000n, outputTokens: "2000" },
+        { outcome: "error", requests: 1, inputTokens: 0, outputTokens: 0 },
+        { outcome: "quota_blocked", requests: 1, inputTokens: 0, outputTokens: 0 },
+      ],
+      models: [{ model: "claude-opus-4-8", requests: 9, tokens: 3000n }],
+      series: [{ bucket: NOW, tokens: 3000, requests: 10 }],
+    });
+    expect(summary).toEqual({
+      appId: APP_ID,
+      windowDays: 1,
+      requests: 10,
+      inputTokens: 1000,
+      outputTokens: 2000,
+      errorRate: 0.2,
+      byOutcome: { ok: 8, error: 1, quota_blocked: 1 },
+      byModel: [{ model: "claude-opus-4-8", tokens: 3000, requests: 9 }],
+      series: [{ bucket: NOW.toISOString(), tokens: 3000, requests: 10 }],
+    });
+  });
+
+  it("reports a zero error rate for an empty window", () => {
+    const summary = toUsageSummary({
+      appId: APP_ID,
+      windowDays: 7,
+      outcomes: [],
+      models: [],
+      series: [],
+    });
+    expect(summary.requests).toBe(0);
+    expect(summary.errorRate).toBe(0);
+  });
+
+  it("maps a joined gateway_calls row to a wire GatewayCall", () => {
+    const call = toGatewayCall({
+      id: "33333333-3333-4333-8333-333333333333",
+      appId: APP_ID,
+      slug: "cost-explorer",
+      userOid: "user-oid-1",
+      capability: "llm",
+      model: "claude-opus-4-8",
+      inputTokens: "1200",
+      outputTokens: 800n,
+      outcome: "ok",
+      createdAt: NOW,
+    });
+    expect(call).toEqual({
+      id: "33333333-3333-4333-8333-333333333333",
+      appId: APP_ID,
+      slug: "cost-explorer",
+      userOid: "user-oid-1",
+      capability: "llm",
+      model: "claude-opus-4-8",
+      inputTokens: 1200,
+      outputTokens: 800,
+      outcome: "ok",
+      createdAt: NOW.toISOString(),
+    });
+  });
+
+  it("tolerates a null slug (the ledger outlives deleted apps)", () => {
+    const call = toGatewayCall({
+      id: "33333333-3333-4333-8333-333333333333",
+      appId: APP_ID,
+      slug: null,
+      userOid: "u",
+      capability: "llm",
+      model: "claude-opus-4-8",
+      inputTokens: 0,
+      outputTokens: 0,
+      outcome: "refusal",
+      createdAt: NOW,
+    });
+    expect(call.slug).toBeNull();
+  });
+
+  it("assembles the platform-wide PlatformUsage rollup", () => {
+    const platform = toPlatformUsage({
+      daily: [
+        { tokens: 100n, requests: 2 },
+        { tokens: 0, requests: 0 },
+      ],
+      byApp: [{ slug: "cost-explorer", tokens: "100", requests: 2 }],
+      totals: { tokens: 100n, requests: 2, activeUsers: 1 },
+      capabilityMix: [{ capability: "llm", tokens: 100n }],
+    });
+    expect(platform).toEqual({
+      tokens14d: [100, 0],
+      requests14d: [2, 0],
+      byApp: [{ slug: "cost-explorer", tokens: 100, requests: 2 }],
+      totals: { tokensMTD: 100, requestsMTD: 2, activeUsers: 1 },
+      capabilityMix: [{ capability: "llm", tokens: 100 }],
+    });
   });
 
   it("maps a versions row to a wire Version", () => {

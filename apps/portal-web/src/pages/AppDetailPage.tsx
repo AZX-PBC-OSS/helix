@@ -3,13 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { appQuery, versionsQuery } from "../api/queries";
 import { Icon } from "../components/Icon";
-import {
-  Hint,
-  PreviewBadge,
-  StatusLine,
-  ToneBadge,
-  VisibilityBadge,
-} from "../components/primitives";
+import { Hint, StatusLine, ToneBadge, VisibilityBadge } from "../components/primitives";
 import { appHost, appUrl } from "../lib/format";
 import { appStatus, awaitingPromote, liveVersion } from "../lib/appStatus";
 import { useDeploy } from "../modals/DeployContext";
@@ -150,18 +144,10 @@ export function AppDetailPage() {
           >
             Versions
           </Tabs.Tab>
-          <Tabs.Tab
-            value="capabilities"
-            leftSection={<Icon name="shield" size={15} />}
-            rightSection={<PreviewBadge />}
-          >
+          <Tabs.Tab value="capabilities" leftSection={<Icon name="shield" size={15} />}>
             Capabilities
           </Tabs.Tab>
-          <Tabs.Tab
-            value="usage"
-            leftSection={<Icon name="gauge" size={15} />}
-            rightSection={<PreviewBadge />}
-          >
+          <Tabs.Tab value="usage" leftSection={<Icon name="gauge" size={15} />}>
             Usage
           </Tabs.Tab>
           <Tabs.Tab value="settings" leftSection={<Icon name="settings" size={15} />}>

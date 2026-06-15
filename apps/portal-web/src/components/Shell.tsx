@@ -30,13 +30,13 @@ interface NavItem {
 
 const WORKSPACE_NAV: NavItem[] = [
   { to: "/", label: "My Apps", icon: "grid" },
-  { to: "/usage", label: "Usage", icon: "gauge", preview: true },
+  { to: "/usage", label: "Usage", icon: "gauge" },
 ];
 
 const ADMIN_NAV: NavItem[] = [
   { to: "/admin/approvals", label: "Approvals", icon: "check", preview: true },
-  { to: "/admin/audit", label: "Audit Log", icon: "list", preview: true },
-  { to: "/admin/platform", label: "Platform", icon: "activity", preview: true },
+  { to: "/admin/audit", label: "Audit Log", icon: "list" },
+  { to: "/admin/platform", label: "Platform", icon: "activity" },
   { to: "/admin/registry", label: "All Apps", icon: "layers" },
   { to: "/admin/violations", label: "Violations", icon: "shield", preview: true },
 ];

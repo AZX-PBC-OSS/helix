@@ -1,62 +1,93 @@
 import { useState } from "react";
 import {
   Box,
+  Button,
   Card,
+  Center,
   Group,
+  Loader,
   SegmentedControl,
   SimpleGrid,
   Table,
   Text,
   TextInput,
 } from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
+import type { GatewayOutcome } from "@helix/shared";
+import { gatewayAuditQuery } from "../../api/queries";
+import { useAuth } from "../../auth/AuthProvider";
 import { Icon } from "../../components/Icon";
-import {
-  Hint,
-  PageHead,
-  PreviewBadge,
-  Stat,
-  ToneBadge,
-  type Tone,
-} from "../../components/primitives";
-import { fmtCount } from "../../lib/format";
-import { PREVIEW_AUDIT } from "../../preview/previewData";
+import { Hint, PageHead, Stat, ToneBadge, type Tone } from "../../components/primitives";
+import { fmtCount, timeAgo } from "../../lib/format";
 
-/** PREVIEW — the M4 gateway audit log: (app, user, capability, outcome, cost). */
+/** The M4 gateway audit log: (app, user, capability, model, tokens, outcome). */
 
-const OUT_META: Record<string, [Tone, string]> = {
+const OUT_META: Record<GatewayOutcome, [Tone, string]> = {
   ok: ["live", "ok"],
-  blocked: ["bad", "blocked"],
-  quota: ["warn", "quota"],
-  denied: ["bad", "denied"],
+  error: ["bad", "error"],
+  refusal: ["warn", "refusal"],
+  quota_blocked: ["warn", "quota"],
 };
 
+const AUDIT_LIMIT = 200;
+
 export function AuditPage() {
+  const { authenticated, login, loginAvailable } = useAuth();
   const [q, setQ] = useState("");
   const [out, setOut] = useState("all");
 
-  const rows = PREVIEW_AUDIT.filter((r) => {
-    if (out !== "all" && r.out !== out) return false;
-    if (q && !(r.app + r.user + r.cap + r.target).toLowerCase().includes(q.toLowerCase()))
-      return false;
-    return true;
+  const audit = useQuery({
+    ...gatewayAuditQuery({
+      ...(out !== "all" ? { outcome: out } : {}),
+      limit: AUDIT_LIMIT,
+    }),
+    enabled: authenticated,
   });
-  const totalCost = rows.reduce((s, r) => s + r.cost, 0);
+
+  const head = (
+    <PageHead
+      eyebrow="Control plane"
+      title="Gateway Audit Log"
+      sub="Every gateway call recorded as (app, user, capability, model, tokens, outcome) — the platform's single source of truth for who did what."
+    />
+  );
+
+  if (!authenticated) {
+    return (
+      <div className="az-stagger">
+        {head}
+        <Hint
+          icon="user"
+          tone="neutral"
+          action={
+            <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
+              Sign in
+            </Button>
+          }
+        >
+          The audit log requires a signed-in actor.
+        </Hint>
+      </div>
+    );
+  }
+
+  const all = audit.data?.rows ?? [];
+  const rows = all.filter((r) => {
+    if (!q) return true;
+    return `${r.slug ?? ""}${r.userOid}${r.capability}${r.model}`
+      .toLowerCase()
+      .includes(q.toLowerCase());
+  });
+  const totalTokens = rows.reduce((s, r) => s + r.inputTokens + r.outputTokens, 0);
+  const blocked = rows.filter((r) => r.outcome === "error" || r.outcome === "quota_blocked").length;
 
   return (
     <div className="az-stagger">
-      <PageHead
-        eyebrow="Control plane"
-        title={
-          <Group gap={12}>
-            Gateway Audit Log <PreviewBadge />
-          </Group>
-        }
-        sub="Every gateway call recorded as (app, user, capability, outcome, cost) — the platform's single source of truth for who did what. Mock events until M4."
-      />
+      {head}
 
       <Group gap={10} mb={18} wrap="wrap">
         <TextInput
-          placeholder="Filter by app, user, capability…"
+          placeholder="Filter by app, user, capability, model…"
           leftSection={<Icon name="search" size={14} />}
           value={q}
           onChange={(e) => setQ(e.currentTarget.value)}
@@ -69,95 +100,104 @@ export function AuditPage() {
           data={[
             { value: "all", label: "All" },
             { value: "ok", label: "OK" },
-            { value: "blocked", label: "Blocked" },
-            { value: "quota", label: "Quota" },
-            { value: "denied", label: "Denied" },
+            { value: "error", label: "Error" },
+            { value: "refusal", label: "Refusal" },
+            { value: "quota_blocked", label: "Quota" },
           ]}
         />
       </Group>
 
-      <SimpleGrid cols={{ base: 2, md: 4 }} spacing={18} mb={18}>
+      <SimpleGrid cols={{ base: 3 }} spacing={18} mb={18}>
         <Card p="14px 18px">
           <Stat label="Events shown" value={rows.length} icon="list" />
         </Card>
         <Card p="14px 18px">
-          <Stat label="Tokens" value={fmtCount(rows.reduce((s, r) => s + r.tok, 0))} icon="cpu" />
-        </Card>
-        <Card p="14px 18px">
-          <Stat label="Cost" value={`$${totalCost.toFixed(3)}`} icon="bolt" />
+          <Stat label="Tokens" value={fmtCount(totalTokens)} icon="cpu" />
         </Card>
         <Card p="14px 18px">
           <Stat
-            label="Blocked / denied"
-            value={rows.filter((r) => r.out === "blocked" || r.out === "denied").length}
-            tone="var(--az-bad)"
+            label="Error / quota"
+            value={blocked}
+            tone={blocked > 0 ? "var(--az-bad)" : undefined}
             icon="shield"
           />
         </Card>
       </SimpleGrid>
 
-      <Box
-        style={{
-          border: "1px solid var(--az-line)",
-          borderRadius: "var(--mantine-radius-lg)",
-          overflow: "hidden",
-          background: "var(--mantine-color-dark-7)",
-        }}
-      >
-        <Table verticalSpacing={10} horizontalSpacing="lg" className="az-mono" fz={12}>
-          <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
-            <Table.Tr>
-              <Table.Th>Time</Table.Th>
-              <Table.Th>App</Table.Th>
-              <Table.Th>User</Table.Th>
-              <Table.Th>Capability</Table.Th>
-              <Table.Th>Model / target</Table.Th>
-              <Table.Th style={{ textAlign: "right" }}>Tokens</Table.Th>
-              <Table.Th style={{ textAlign: "right" }}>Outcome</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {rows.map((r, i) => {
-              const [tone, label] = OUT_META[r.out] ?? OUT_META["ok"]!;
-              return (
-                <Table.Tr key={i}>
-                  <Table.Td c="dark.2">{r.t}</Table.Td>
-                  <Table.Td>
-                    <Text component="span" className="az-mono" fz={12} c="accent.4">
-                      {r.app}
+      {audit.isPending ? (
+        <Center py={60}>
+          <Loader size="sm" />
+        </Center>
+      ) : audit.isError ? (
+        <Hint icon="alert" tone="bad">
+          Couldn't load the audit log: {audit.error.message}
+        </Hint>
+      ) : (
+        <Box
+          style={{
+            border: "1px solid var(--az-line)",
+            borderRadius: "var(--mantine-radius-lg)",
+            overflow: "hidden",
+            background: "var(--mantine-color-dark-7)",
+          }}
+        >
+          <Table verticalSpacing={10} horizontalSpacing="lg" className="az-mono" fz={12}>
+            <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
+              <Table.Tr>
+                <Table.Th>Time</Table.Th>
+                <Table.Th>App</Table.Th>
+                <Table.Th>User</Table.Th>
+                <Table.Th>Capability</Table.Th>
+                <Table.Th>Model / target</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Tokens</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Outcome</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {rows.map((r) => {
+                const [tone, label] = OUT_META[r.outcome];
+                const tokens = r.inputTokens + r.outputTokens;
+                return (
+                  <Table.Tr key={r.id}>
+                    <Table.Td c="dark.2">{timeAgo(r.createdAt)}</Table.Td>
+                    <Table.Td>
+                      <Text component="span" className="az-mono" fz={12} c="accent.4">
+                        {r.slug ?? "—"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td c="dark.1">{r.userOid}</Table.Td>
+                    <Table.Td>{r.capability}</Table.Td>
+                    <Table.Td c="dark.2">{r.model}</Table.Td>
+                    <Table.Td className="az-tnum" style={{ textAlign: "right" }} c="dark.1">
+                      {tokens ? tokens.toLocaleString() : "—"}
+                    </Table.Td>
+                    <Table.Td style={{ textAlign: "right" }}>
+                      <ToneBadge tone={tone} style={{ padding: "2px 7px", fontSize: 10 }}>
+                        {label}
+                      </ToneBadge>
+                    </Table.Td>
+                  </Table.Tr>
+                );
+              })}
+              {rows.length === 0 && (
+                <Table.Tr>
+                  <Table.Td colSpan={7}>
+                    <Text ta="center" c="dark.2" py={24} ff="text" fz={13}>
+                      No gateway calls match these filters.
                     </Text>
                   </Table.Td>
-                  <Table.Td c={r.user.startsWith("anon") ? "dark.3" : "dark.1"}>{r.user}</Table.Td>
-                  <Table.Td>{r.cap}</Table.Td>
-                  <Table.Td c="dark.2">{r.target}</Table.Td>
-                  <Table.Td className="az-tnum" style={{ textAlign: "right" }} c="dark.1">
-                    {r.tok ? r.tok.toLocaleString() : "—"}
-                  </Table.Td>
-                  <Table.Td style={{ textAlign: "right" }}>
-                    <ToneBadge tone={tone} style={{ padding: "2px 7px", fontSize: 10 }}>
-                      {label}
-                    </ToneBadge>
-                  </Table.Td>
                 </Table.Tr>
-              );
-            })}
-            {rows.length === 0 && (
-              <Table.Tr>
-                <Table.Td colSpan={7}>
-                  <Text ta="center" c="dark.2" py={24} ff="text" fz={13}>
-                    No events match these filters.
-                  </Text>
-                </Table.Td>
-              </Table.Tr>
-            )}
-          </Table.Tbody>
-        </Table>
-      </Box>
+              )}
+            </Table.Tbody>
+          </Table>
+        </Box>
+      )}
 
       <Box mt={18}>
         <Hint icon="shield" tone="info">
-          The audit log streams to a write-only immutable sink, so the gateway&apos;s own DB
-          credentials can&apos;t rewrite history.
+          {audit.data?.nextBefore
+            ? `Showing the latest ${AUDIT_LIMIT} calls. Older history is paginated server-side.`
+            : "The edge writes this ledger; the portal only reads it (architecture §8)."}
         </Hint>
       </Box>
     </div>
