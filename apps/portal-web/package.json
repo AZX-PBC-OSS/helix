@@ -1,0 +1,41 @@
+{
+  "name": "@helix/portal-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc && tsc -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "@fontsource-variable/hanken-grotesk": "catalog:",
+    "@fontsource-variable/jetbrains-mono": "catalog:",
+    "@fontsource-variable/space-grotesk": "catalog:",
+    "@helix/shared": "workspace:*",
+    "@mantine/core": "catalog:",
+    "@mantine/dropzone": "catalog:",
+    "@mantine/hooks": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "openid-client": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-router": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@testing-library/react": "catalog:",
+    "@testing-library/user-event": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "jsdom": "catalog:",
+    "postcss": "catalog:",
+    "postcss-preset-mantine": "catalog:",
+    "postcss-simple-vars": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

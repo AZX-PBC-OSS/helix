@@ -10,6 +10,7 @@ const { issuer } = await startDevIdp({
   port,
   edgeClientSecret: process.env.IDP_EDGE_CLIENT_SECRET,
   edgeRedirectUris: process.env.IDP_EDGE_REDIRECT_URIS?.split(",").map((u) => u.trim()),
+  webRedirectUris: process.env.IDP_WEB_REDIRECT_URIS?.split(",").map((u) => u.trim()),
 });
 
 console.log(`[dev-idp] issuing as ${issuer} (never deploy this)`);

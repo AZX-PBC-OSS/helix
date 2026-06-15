@@ -1,0 +1,119 @@
+/* AZX control-plane chrome: blueprint backdrop, eyebrow labels, scrollbars.
+   Design tokens live in theme.ts (Mantine vars + --az-* semantics). */
+
+::selection {
+  background: var(--az-acc);
+  color: var(--az-acc-ink);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--mantine-color-dark-4);
+  border-radius: 20px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #333a41;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Atmospheric backdrop: faint blueprint grid + accent glow, top-right. */
+.az-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.az-backdrop::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background-image:
+    linear-gradient(var(--az-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--az-line) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(120% 90% at 78% -8%, #000 0%, transparent 62%);
+  opacity: 0.5;
+}
+.az-backdrop::after {
+  content: "";
+  position: absolute;
+  top: -30%;
+  right: -12%;
+  width: 60vw;
+  height: 60vw;
+  background: radial-gradient(circle, var(--az-acc-dim) 0%, transparent 60%);
+  filter: blur(20px);
+  opacity: 0.7;
+}
+
+/* Section eyebrow: mono, uppercase, letterspaced. */
+.az-eyebrow {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--mantine-color-dark-2);
+}
+
+.az-mono {
+  font-family: var(--mantine-font-family-monospace);
+}
+.az-tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes az-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Entrance: transform-only so resting state stays visible if it never runs. */
+@keyframes az-pop {
+  from {
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    transform: none;
+  }
+}
+.az-stagger > * {
+  animation: az-pop 0.5s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.az-stagger > *:nth-child(1) {
+  animation-delay: 0.02s;
+}
+.az-stagger > *:nth-child(2) {
+  animation-delay: 0.06s;
+}
+.az-stagger > *:nth-child(3) {
+  animation-delay: 0.1s;
+}
+.az-stagger > *:nth-child(4) {
+  animation-delay: 0.14s;
+}
+.az-stagger > *:nth-child(5) {
+  animation-delay: 0.18s;
+}
+.az-stagger > *:nth-child(6) {
+  animation-delay: 0.22s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001s !important;
+  }
+}

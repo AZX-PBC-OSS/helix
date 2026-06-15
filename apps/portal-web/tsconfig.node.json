@@ -1,0 +1,11 @@
+{
+  // vite.config.ts runs in node, not the browser — it gets node types and its
+  // own tiny project so the browser project can stay node-globals-free.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts"]
+}

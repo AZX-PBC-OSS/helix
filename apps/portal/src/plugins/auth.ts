@@ -26,14 +26,22 @@ export interface AuthPluginOptions {
   /** Inject a verifier chain (tests). Defaults are built from the env. */
   verifiers?: TokenVerifier[];
   /** Public IdP discovery info served at /api/v1/auth/config. */
-  publicConfig?: { issuer: string; cliClientId: string; audience?: string } | null;
+  publicConfig?: PublicAuthConfig | null;
+}
+
+export interface PublicAuthConfig {
+  issuer: string;
+  cliClientId: string;
+  /** Public client the portal SPA uses for code+PKCE in the browser. */
+  webClientId?: string;
+  audience?: string;
 }
 
 declare module "fastify" {
   interface FastifyInstance {
     tokenVerifiers: TokenVerifier[];
     /** null = OIDC not configured (dev-token-only portal). */
-    authPublicConfig: { issuer: string; cliClientId: string; audience?: string } | null;
+    authPublicConfig: PublicAuthConfig | null;
   }
 }
 
@@ -84,6 +92,7 @@ export const authPlugin = fp<AuthPluginOptions>(
           ? {
               issuer: issuer.replace(/\/+$/, ""),
               cliClientId: process.env.AZX_CLI_CLIENT_ID ?? "azx-cli",
+              webClientId: process.env.AZX_WEB_CLIENT_ID ?? "azx-portal-web",
               ...(process.env.PORTAL_OIDC_AUDIENCE
                 ? { audience: process.env.PORTAL_OIDC_AUDIENCE }
                 : {}),

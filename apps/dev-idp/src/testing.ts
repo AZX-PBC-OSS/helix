@@ -162,6 +162,8 @@ export interface AuthCodeResult {
   accessToken: string;
   /** Claims of the ID token (decoded, not verified — tests inspect these). */
   idTokenClaims: Record<string, unknown>;
+  /** Headers of the token response — CORS assertions for the SPA client. */
+  tokenResponseHeaders: Headers;
 }
 
 /** Decode a JWT payload without verification (test inspection only). */
@@ -172,18 +174,22 @@ export function decodeJwtPayload(jwt: string): Record<string, unknown> {
 }
 
 /**
- * Full authorization-code + PKCE login as a confidential client, completing
- * the picker via `?user=`. Captures the code from the redirect Location (the
- * redirect URI is never fetched), then exchanges it on the back channel.
+ * Full authorization-code + PKCE login, completing the picker via `?user=`.
+ * Captures the code from the redirect Location (the redirect URI is never
+ * fetched), then exchanges it. Confidential clients pass `clientSecret`
+ * (Basic auth on the exchange); public clients omit it and send `client_id`
+ * in the body, like a browser would. `origin` simulates a browser's Origin
+ * header on the token request (CORS assertions).
  */
 export async function runAuthCodeFlow(opts: {
   issuer: string;
   clientId: string;
-  clientSecret: string;
+  clientSecret?: string;
   redirectUri: string;
   userEmail: string;
   scope?: string;
   nonce?: string;
+  origin?: string;
 }): Promise<AuthCodeResult> {
   const session = new TestHttpSession();
   const verifier = randomBytes(32).toString("base64url");
@@ -229,18 +235,27 @@ export async function runAuthCodeFlow(opts: {
   }
   if (!code) throw new Error("no authorization code in redirect");
 
+  const tokenParams = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: opts.redirectUri,
+    code_verifier: verifier,
+  });
+  const tokenHeaders: Record<string, string> = {
+    "content-type": "application/x-www-form-urlencoded",
+  };
+  if (opts.clientSecret !== undefined) {
+    tokenHeaders.authorization = `Basic ${Buffer.from(`${opts.clientId}:${opts.clientSecret}`).toString("base64")}`;
+  } else {
+    tokenParams.set("client_id", opts.clientId);
+  }
+  if (opts.origin !== undefined) {
+    tokenHeaders.origin = opts.origin;
+  }
   const tokenRes = await fetch(`${opts.issuer}/token`, {
     method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      authorization: `Basic ${Buffer.from(`${opts.clientId}:${opts.clientSecret}`).toString("base64")}`,
-    },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: opts.redirectUri,
-      code_verifier: verifier,
-    }).toString(),
+    headers: tokenHeaders,
+    body: tokenParams.toString(),
   });
   const body = (await tokenRes.json()) as Record<string, string>;
   if (!tokenRes.ok || !body.id_token || !body.access_token) {
@@ -250,5 +265,6 @@ export async function runAuthCodeFlow(opts: {
     idToken: body.id_token,
     accessToken: body.access_token,
     idTokenClaims: decodeJwtPayload(body.id_token),
+    tokenResponseHeaders: tokenRes.headers,
   };
 }

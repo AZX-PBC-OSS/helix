@@ -12,6 +12,7 @@ import { appRoutes } from "./routes/apps.js";
 import { versionRoutes } from "./routes/versions.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { authRoutes } from "./routes/auth.js";
+import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
 
 /**
  * azx-portal — the control plane (architecture §3, §7). Privileged: registry
@@ -26,6 +27,11 @@ export interface BuildAppOptions {
   blobStore?: BlobStore;
   /** Inject the auth verifier chain / public config (tests). */
   auth?: AuthPluginOptions;
+  /**
+   * Built-SPA directory; null forces the stopgap dashboard (tests),
+   * undefined auto-detects ($PORTAL_WEB_DIST or apps/portal-web/dist).
+   */
+  spaDist?: string | null;
 }
 
 export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
@@ -50,8 +56,16 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
 
   app.register(appRoutes);
   app.register(versionRoutes);
-  app.register(dashboardRoutes);
   app.register(authRoutes);
+
+  // The real dashboard when a built SPA is present; the M2 stopgap otherwise.
+  const spaDist = opts.spaDist !== undefined ? opts.spaDist : resolveSpaDist();
+  app.decorate("spaDist", spaDist);
+  if (spaDist) {
+    app.register(spaRoutes);
+  } else {
+    app.register(dashboardRoutes);
+  }
 
   return app;
 }

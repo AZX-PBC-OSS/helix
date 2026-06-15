@@ -1,0 +1,17 @@
+{
+  // Browser bundle — the one package off the nodenext module system. Vite is
+  // the module loader here, so resolution is "bundler" (extensionless imports,
+  // package "exports" honored); all base strictness flags are inherited.
+  // vite.config.ts is node code and has its own project (tsconfig.node.json);
+  // `typecheck` runs both.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}

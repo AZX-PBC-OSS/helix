@@ -32,12 +32,14 @@ export const PortalMeResponseSchema = z.object({
 export type PortalMeResponse = z.infer<typeof PortalMeResponseSchema>;
 
 /**
- * `GET /api/v1/auth/config` (public): how the CLI discovers the IdP — its
- * only configuration is the portal URL.
+ * `GET /api/v1/auth/config` (public): how the CLI and the portal SPA discover
+ * the IdP — their only configuration is the portal URL.
  */
 export const AuthConfigResponseSchema = z.object({
   issuer: z.url(),
   cliClientId: z.string().min(1),
+  /** Public client the portal SPA uses for code+PKCE in the browser. */
+  webClientId: z.string().min(1).optional(),
   /** Expected token audience — part of what the CLI binds cached tokens to. */
   audience: z.string().min(1).optional(),
 });

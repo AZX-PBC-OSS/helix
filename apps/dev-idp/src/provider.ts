@@ -6,6 +6,7 @@ import {
   EDGE_CLIENT_ID,
   EDGE_CLIENT_SECRET_DEFAULT,
   PORTAL_AUDIENCE,
+  WEB_CLIENT_ID,
   findFixtureUser,
 } from "./fixtures.js";
 
@@ -14,6 +15,8 @@ export interface DevIdpOptions {
   edgeClientSecret?: string;
   /** Redirect URIs registered for the edge client. */
   edgeRedirectUris?: string[];
+  /** Redirect URIs registered for the portal SPA client. */
+  webRedirectUris?: string[];
 }
 
 /** Per-boot RSA keypair; consumers re-fetch JWKS on unknown `kid`. */
@@ -49,7 +52,25 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
           "http://auth.localtest.me:8080/callback",
         ],
       },
+      {
+        // The portal SPA: public browser client, code + PKCE (forced below).
+        // Redirects cover the Vite dev server and the portal-served bundle.
+        client_id: WEB_CLIENT_ID,
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+        redirect_uris: opts.webRedirectUris ?? [
+          "http://localhost:5173/auth/callback",
+          "http://localhost:3001/auth/callback",
+        ],
+      },
     ],
+
+    // oidc-provider denies browser CORS (token endpoint included) by default.
+    // Only the SPA client does its code exchange from browser JS, so it is the
+    // only client that gets CORS — the redirect-URI allowlist + PKCE remain
+    // the actual security boundary for a public client.
+    clientBasedCORS: (_ctx, _origin, client) => client?.clientId === WEB_CLIENT_ID,
 
     // Scope → claim mapping. With `conformIdTokenClaims: false` below these
     // land in the ID token itself (Entra-style), which the edge depends on —

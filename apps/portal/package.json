@@ -16,6 +16,7 @@
   "dependencies": {
     "@azure/storage-blob": "catalog:",
     "@fastify/multipart": "catalog:",
+    "@fastify/static": "catalog:",
     "@helix/shared": "workspace:*",
     "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",

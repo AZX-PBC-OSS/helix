@@ -45,6 +45,16 @@ function envelope(code: ApiErrorCode, message: string, details?: unknown): ApiEr
 export const errorsPlugin = fp(
   async (app) => {
     app.setNotFoundHandler((req, reply) => {
+      // SPA deep links (/apps/foo) fall back to the SPA index when a built
+      // bundle is being served (routes/spa.ts); API surface stays JSON.
+      if (
+        app.spaDist &&
+        req.method === "GET" &&
+        !req.url.startsWith("/api/") &&
+        !req.url.startsWith("/health")
+      ) {
+        return reply.sendFile("index.html");
+      }
       reply.status(404).send(envelope("not_found", `route ${req.method} ${req.url} not found`));
     });
 

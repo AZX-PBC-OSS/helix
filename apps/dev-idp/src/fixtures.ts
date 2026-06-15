@@ -54,5 +54,8 @@ export const CLI_CLIENT_ID = "azx-cli";
 export const EDGE_CLIENT_ID = "helix-edge";
 export const EDGE_CLIENT_SECRET_DEFAULT = "edge-dev-secret";
 
+/** Public client for the portal SPA — code + PKCE in the browser. */
+export const WEB_CLIENT_ID = "azx-portal-web";
+
 /** Every scope the dev IdP knows; grants are auto-approved with all of them. */
 export const ALL_SCOPES = "openid profile email groups offline_access";
