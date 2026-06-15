@@ -29,10 +29,14 @@ services:
       # (refused under NODE_ENV=production) — the local IdP is plain http.
       PORTAL_OIDC_ALLOW_INSECURE: "true"
       AZX_CLI_CLIENT_ID: azx-cli
-      # M2 edge auth bypass — dev container only. M3 narrows it to "skip the
-      # session gate"; without it (and with the auth block below) the edge
-      # runs the real login flow. Refused under NODE_ENV=production.
-      EDGE_DEV_ALLOW_UNAUTHENTICATED: "true"
+      # M2 edge auth bypass — dev container only, refused under
+      # NODE_ENV=production. "true" skips the session gate on app hosts (M2
+      # default, pre-auth). Now that the M3 auth block below is wired, we leave
+      # it OFF so dev mirrors reality: app navigations 302 into the real SSO
+      # flow, sessions are minted, and the session-gated `/_api/*` gateway is
+      # exercisable through the browser. Flip to "true" only to serve app
+      # content without login (e.g. debugging asset serving in isolation).
+      EDGE_DEV_ALLOW_UNAUTHENTICATED: "false"
       # M3 edge app-user auth, against the local dev IdP (`pnpm dev:idp`).
       # Dev-only well-known values, mirrored in apps/dev-idp fixtures.
       EDGE_OIDC_ISSUER: http://localhost:3002
