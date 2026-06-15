@@ -7,7 +7,7 @@
  * data path doesn't depend on the portal or a healthy DB connection — only
  * the very first load gates serving (isLoaded()).
  */
-import type { VisibilityMode } from "@helix/shared";
+import { LlmCapabilitySchema, type LlmCapability, type VisibilityMode } from "@helix/shared";
 
 export interface RegistryEntry {
   appId: string;
@@ -19,6 +19,22 @@ export interface RegistryEntry {
   visibilityMode: VisibilityMode;
   /** The group that may open the app — only when `visibilityMode` is `group`. */
   visibilityGroupId: string | null;
+  /**
+   * The app's LLM grant (manifest `capabilities.llm`, architecture §6.3), or
+   * null when the app has no LLM capability — the gateway 403s those. Parsed
+   * from the `capabilities` JSON at load time; malformed JSON yields null
+   * (fail-closed) rather than crashing the projection.
+   */
+  llm: LlmCapability | null;
+}
+
+/** Extract `capabilities.llm` from the raw JSON column, fail-closed to null. */
+function parseLlmCapability(capabilities: unknown): LlmCapability | null {
+  if (typeof capabilities !== "object" || capabilities === null) return null;
+  const llm = (capabilities as Record<string, unknown>).llm;
+  if (llm === undefined) return null;
+  const parsed = LlmCapabilitySchema.safeParse(llm);
+  return parsed.success ? parsed.data : null;
 }
 
 export interface RegistryReader {
@@ -35,6 +51,8 @@ interface ProjectionRow {
   blob_prefix: string | null;
   visibility_mode: VisibilityMode;
   visibility_group_id: string | null;
+  /** The `capabilities` JSONB column (pg parses it to an object). */
+  capabilities: unknown;
 }
 
 /** Narrow query seam: `pg.Pool#query` shaped, fake-able in unit tests. */
@@ -46,7 +64,8 @@ export interface ProjectionQuerier {
 // unquoted they would silently lowercase and fail.
 const PROJECTION_SQL = `
   SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
-         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupId" AS visibility_group_id
+         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupId" AS visibility_group_id,
+         a.capabilities AS capabilities
   FROM apps a
   LEFT JOIN versions v ON v.id = a."currentVersionId"
 `;
@@ -105,6 +124,7 @@ export class RegistryProjection implements RegistryReader {
           blobPrefix: row.blob_prefix,
           visibilityMode: row.visibility_mode,
           visibilityGroupId: row.visibility_group_id,
+          llm: parseLlmCapability(row.capabilities),
         });
       }
       this.#map = next;

@@ -1,4 +1,5 @@
 import { SLUG_PATTERN } from "@helix/shared";
+import { publicOrigin, type EdgeConfig } from "../config.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 
 /**
@@ -54,6 +55,21 @@ export function resolveAppForAuth(registry: RegistryReader, slug: string | undef
     return { kind: "unsupported-mode" };
   }
   return { kind: "ok", entry };
+}
+
+/**
+ * Cross-app CSRF guard for state-changing requests on app hosts (architecture
+ * §4.2): the `Origin` header must exactly match the app's own public origin.
+ * `SameSite` does not protect one app's `/_api/*` from a sibling subdomain's
+ * form/fetch POST riding the user's session, so the gateway and logout require
+ * a matching Origin. A missing Origin fails closed.
+ */
+export function isSameOrigin(
+  originHeader: string | string[] | undefined,
+  config: EdgeConfig,
+  slug: string,
+): boolean {
+  return typeof originHeader === "string" && originHeader === publicOrigin(config, slug);
 }
 
 /** Does this session's group snapshot satisfy the app's visibility rule? */

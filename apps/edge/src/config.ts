@@ -82,6 +82,18 @@ export interface EdgeConfig {
   tls: { certFile: string; keyFile: string } | null;
   /** Full projection reload interval — the LISTEN/NOTIFY safety net. */
   reconcileIntervalMs: number;
+  /**
+   * LLM gateway vendor settings (architecture §6.1, M4). Always present with
+   * defaults; whether the capability is *enabled* is gated separately by the
+   * presence of a vendor key (the {@link ./gateway/secrets-provider.js
+   * SecretProvider}), not by this block.
+   */
+  llm: {
+    /** Vendor origin (no path), e.g. `https://api.anthropic.com`. */
+    endpoint: string;
+    /** `anthropic-version` header value. */
+    anthropicVersion: string;
+  };
 }
 
 const ConnectionStringSchema = z.object({
@@ -237,6 +249,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     tls,
     reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
+    llm: {
+      endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
+      anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
+    },
   };
 }
 

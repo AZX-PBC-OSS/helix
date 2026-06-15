@@ -5,6 +5,42 @@ import { createBlobReader } from "./blob/client.js";
 import { LiveRegistry, type RegistryLogger } from "./registry/listener.js";
 import { OpenIdConnectClient } from "./auth/oidc.js";
 import { PgSessionStore, startSessionSweeper } from "./auth/sessions.js";
+import { EnvSecretProvider } from "./gateway/secrets-provider.js";
+import { AnthropicProvider, type LlmProvider } from "./gateway/provider.js";
+import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
+
+/**
+ * Dev convenience: load `apps/edge/.env.local` (gitignored) into process.env
+ * before config, so the vendor key need not be exported by hand. Real env wins
+ * — a value already set is never overwritten. Hand-rolled (no `dotenv`): the
+ * edge is dependency-minimal (project plan §6).
+ */
+function loadDotEnvLocal(): void {
+  let text: string;
+  try {
+    text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+  } catch {
+    return; // absent is normal (prod, CI)
+  }
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (key in process.env) continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+loadDotEnvLocal();
 
 // Bind 0.0.0.0 — inside the container the port is reached across the Docker
 // network / forwarded to the host.
@@ -56,7 +92,20 @@ const oidc = config.auth
     })
   : null;
 
-const app = buildApp({ config, registry, blob, sessions, oidc, https });
+// LLM gateway (M4). The metering/budget ledger comes up with the auth stack
+// (the capability requires a session); the vendor provider only when a key is
+// configured (otherwise the capability 503s — fail-closed, like auth).
+const usage: UsageStore | null = config.auth ? new PgUsageStore(config.databaseUrl) : null;
+const secrets = new EnvSecretProvider();
+const llmProvider: LlmProvider | null = secrets.has("anthropic")
+  ? new AnthropicProvider({
+      endpoint: config.llm.endpoint,
+      anthropicVersion: config.llm.anthropicVersion,
+      apiKey: secrets.vendorKey("anthropic"),
+    })
+  : null;
+
+const app = buildApp({ config, registry, blob, sessions, oidc, llmProvider, usage, https });
 logRef.current = {
   info: (msg) => app.log.info(msg),
   warn: (obj, msg) => app.log.warn(obj, msg),
@@ -74,6 +123,8 @@ app.addHook("onClose", async () => {
   oidc?.stop();
   await registry.stop();
   await sessions?.close();
+  await usage?.close();
+  await llmProvider?.close();
   await blob.close();
 });
 

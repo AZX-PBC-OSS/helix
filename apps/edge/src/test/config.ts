@@ -39,6 +39,7 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     publicPort: 8080,
     tls: null,
     reconcileIntervalMs: 60_000,
+    llm: { endpoint: "https://api.anthropic.com", anthropicVersion: "2023-06-01" },
     ...overrides,
   };
 }

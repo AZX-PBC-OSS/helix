@@ -17,6 +17,9 @@ import {
   makeMeHandler,
 } from "./auth/routes/appHost.js";
 import { makeSessionGate } from "./auth/gate.js";
+import { makeLlmHandler } from "./gateway/llm.js";
+import type { LlmProvider } from "./gateway/provider.js";
+import type { UsageStore } from "./gateway/usage.js";
 
 /**
  * azx-edge — the data plane (architecture §3). Stateless; terminates all
@@ -37,6 +40,10 @@ export interface EdgeDeps {
   sessions?: SessionStore | null;
   /** IdP client; required for the auth routes to exist. */
   oidc?: OidcClient | null;
+  /** LLM vendor provider (M4); null = no vendor key, capability 503s. */
+  llmProvider?: LlmProvider | null;
+  /** Gateway metering/budget ledger (M4); null disables the LLM capability. */
+  usage?: UsageStore | null;
   /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
   https?: { cert: Buffer; key: Buffer } | null;
 }
@@ -107,6 +114,18 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       : null;
   const handleMe = appApiRuntime ? makeMeHandler(appApiRuntime) : null;
   const handleLogout = appApiRuntime ? makeLogoutHandler(appApiRuntime) : null;
+  // The LLM gateway needs a session (gate) to attribute calls; provider/usage
+  // may still be null (no vendor key), in which case the handler returns 503.
+  const handleLlmChat =
+    appApiRuntime && gate
+      ? makeLlmHandler({
+          config,
+          registry: deps.registry,
+          gate,
+          provider: deps.llmProvider ?? null,
+          usage: deps.usage ?? null,
+        })
+      : null;
 
   // The two-router discipline (architecture §3, decision 12): every request
   // is classified by hostname exactly once, and the two worlds never mix —
@@ -197,6 +216,19 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleMe) {
         await handleMe(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // M4 gateway: the LLM capability (architecture §6.1). App hosts only.
+  app.route({
+    method: "POST",
+    url: "/_api/llm/chat",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleLlmChat) {
+        await handleLlmChat(req, reply, req.hostClass.slug);
         return;
       }
       sendNotFound(reply);

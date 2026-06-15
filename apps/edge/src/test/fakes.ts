@@ -1,6 +1,9 @@
 import { Readable } from "node:stream";
+import type { LlmChatRequest, LlmUsage } from "@helix/shared";
 import type { BlobGetOptions, BlobGetResult, BlobReader } from "../blob/client.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
+import type { LlmProvider, LlmStreamEvent } from "../gateway/provider.js";
+import type { GatewayCallRecord, UsageStore } from "../gateway/usage.js";
 import type { Session, SessionStore } from "../auth/sessions.js";
 import type {
   AuthorizeParams,
@@ -18,6 +21,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     blobPrefix: null,
     visibilityMode: "private",
     visibilityGroupId: null,
+    llm: null,
     ...overrides,
   };
 }
@@ -75,6 +79,53 @@ export class FakeBlobReader implements BlobReader {
       etag: blob.etag,
       body: Readable.from(opts.method === "HEAD" ? [] : [blob.body]),
     };
+  }
+
+  async close(): Promise<void> {}
+}
+
+/**
+ * Scripted LLM provider for unit/adversarial tests — never touches the network.
+ * Yields the configured text deltas then a `done` event; `onDelta` lets a test
+ * interleave or observe mid-stream (used to prove finish-in-flight).
+ */
+export class FakeLlmProvider implements LlmProvider {
+  /** Requests seen, for assertions (model, messages, etc.). */
+  readonly calls: LlmChatRequest[] = [];
+  deltas: string[] = ["Hello", " world"];
+  usage: LlmUsage = { inputTokens: 5, outputTokens: 2 };
+  stopReason = "end_turn";
+  /** When set, stream() throws before yielding anything. */
+  error: Error | null = null;
+  /** Awaited before each delta — a hook for interleaving/observation. */
+  onDelta?: (index: number) => Promise<void> | void;
+
+  async *stream(req: LlmChatRequest, opts: { signal: AbortSignal }): AsyncIterable<LlmStreamEvent> {
+    this.calls.push(req);
+    if (this.error) throw this.error;
+    let index = 0;
+    for (const text of this.deltas) {
+      if (opts.signal.aborted) return;
+      await this.onDelta?.(index++);
+      yield { type: "delta", text };
+    }
+    yield { type: "done", stopReason: this.stopReason, usage: this.usage };
+  }
+
+  async close(): Promise<void> {}
+}
+
+/** In-memory gateway ledger for tests; `usedToday` drives quota decisions. */
+export class FakeUsageStore implements UsageStore {
+  readonly records: GatewayCallRecord[] = [];
+  usedToday = 0;
+
+  async tokensUsedToday(): Promise<number> {
+    return this.usedToday;
+  }
+
+  async record(call: GatewayCallRecord): Promise<void> {
+    this.records.push(call);
   }
 
   async close(): Promise<void> {}

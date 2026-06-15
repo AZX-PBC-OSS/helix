@@ -1,18 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { LightMyRequestResponse } from "fastify";
 import { buildApp } from "../app.js";
 import { deriveAuthKeys } from "./secrets.js";
 import { mintHandoffToken } from "./handoff.js";
-import { hashSessionToken } from "./sessions.js";
+import { hashSessionToken, newSessionToken } from "./sessions.js";
 import { FLOW_COOKIE, SESSION_COOKIE } from "./cookies.js";
 import { mintFlowToken } from "./flow.js";
 import { testAuthConfig, testEdgeConfig, TEST_AUTH_SECRET } from "../test/config.js";
 import {
   FakeBlobReader,
+  FakeLlmProvider,
   FakeOidcClient,
   FakeRegistry,
   FakeSessionStore,
+  FakeUsageStore,
   registryEntry,
 } from "../test/fakes.js";
 
@@ -407,5 +410,120 @@ describe("the two-router discipline for auth routes", () => {
     });
     expect(complete.statusCode).toBe(404);
     await app.close();
+  });
+});
+
+/**
+ * The M4 LLM gateway as an attack surface (project plan §4, §6 — adversarial
+ * tests land with the code). Each block names what it kills. Provider + ledger
+ * are fakes; the containment properties are real.
+ */
+describe("attack: the /_api/llm/chat gateway", () => {
+  const GRANT = { models: ["claude-opus-4-8"], tokensPerDay: 1000 };
+  const ASK = { model: "claude-opus-4-8", messages: [{ role: "user", content: "hi" }] };
+
+  interface GatewayEdge {
+    app: FastifyInstance;
+    sessions: FakeSessionStore;
+    provider: FakeLlmProvider;
+    usage: FakeUsageStore;
+  }
+
+  function buildGatewayEdge(): GatewayEdge {
+    const sessions = new FakeSessionStore();
+    const provider = new FakeLlmProvider();
+    const usage = new FakeUsageStore();
+    const app = buildApp({
+      config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
+      registry: new FakeRegistry([
+        registryEntry({ appId: APP_A, slug: "appa", blobPrefix: "apps/a/1/", llm: GRANT }),
+        registryEntry({ appId: APP_B, slug: "appb", blobPrefix: "apps/b/1/", llm: GRANT }),
+      ]),
+      blob: new FakeBlobReader(),
+      sessions,
+      oidc: new FakeOidcClient(),
+      llmProvider: provider,
+      usage,
+    });
+    return { app, sessions, provider, usage };
+  }
+
+  async function seed(sessions: FakeSessionStore, appId: string): Promise<string> {
+    const id = randomUUID();
+    await sessions.createPending({
+      id,
+      appId,
+      user: { oid: "oid-alice", displayName: "Alice Anders", groups: [] },
+      refreshDueAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    const token = newSessionToken();
+    await sessions.redeem(id, appId, hashSessionToken(token));
+    return token;
+  }
+
+  function call(
+    edge: GatewayEdge,
+    token: string,
+    opts: { host: string; origin?: string | null },
+  ): Promise<LightMyRequestResponse> {
+    return edge.app.inject({
+      method: "POST",
+      url: "/_api/llm/chat",
+      headers: {
+        host: opts.host,
+        "sec-fetch-mode": "cors",
+        "content-type": "application/json",
+        ...(opts.origin === null ? {} : { origin: opts.origin ?? `https://${opts.host}:8080` }),
+        cookie: `${SESSION_COOKIE}=${token}`,
+      },
+      payload: ASK,
+    });
+  }
+
+  it("kills a sibling-subdomain CSRF POST riding the session", async () => {
+    const edge = buildGatewayEdge();
+    const token = await seed(edge.sessions, APP_A);
+    // appb tries to drive appa's gateway with appa's Origin spoof-attempt blocked
+    // by the Origin check; here a real appa request from a sibling origin.
+    const res = await call(edge, token, {
+      host: "appa.localtest.me",
+      origin: "https://appb.localtest.me:8080",
+    });
+    expect(res.statusCode).toBe(403);
+    expect(edge.provider.calls).toHaveLength(0);
+  });
+
+  it("a session minted for app A cannot spend app B's budget", async () => {
+    const edge = buildGatewayEdge();
+    const tokenA = await seed(edge.sessions, APP_A);
+    // Same cookie, app B host + app B origin: the gate looks the row up scoped
+    // to app B's id and finds nothing → 401, never attributed to app B.
+    const res = await call(edge, tokenA, { host: "appb.localtest.me" });
+    expect(res.statusCode).toBe(401);
+    expect(edge.provider.calls).toHaveLength(0);
+    expect(edge.usage.records).toHaveLength(0);
+  });
+
+  it("blocks a budget-exhausted app and audits the block", async () => {
+    const edge = buildGatewayEdge();
+    edge.usage.usedToday = 1000;
+    const token = await seed(edge.sessions, APP_A);
+    const res = await call(edge, token, { host: "appa.localtest.me" });
+    expect(res.statusCode).toBe(429);
+    expect(edge.usage.records[0]?.outcome).toBe("quota_blocked");
+  });
+
+  it("never relays upstream error detail (which could carry the vendor key) to the app", async () => {
+    const edge = buildGatewayEdge();
+    // Simulate a provider failure whose message embeds a secret-shaped string.
+    edge.provider.error = new Error("401 unauthorized: x-api-key sk-ant-SECRET-LEAK");
+    const token = await seed(edge.sessions, APP_A);
+    const res = await call(edge, token, { host: "appa.localtest.me" });
+    // The app sees a generic in-band SSE error, not the upstream detail.
+    expect(res.body).toContain("event: error");
+    expect(res.body).not.toContain("sk-ant-SECRET-LEAK");
+    expect(res.body).not.toContain("x-api-key");
+    expect(edge.usage.records[0]?.outcome).toBe("error");
   });
 });

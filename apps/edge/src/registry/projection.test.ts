@@ -24,6 +24,7 @@ const ROW = {
   blob_prefix: "apps/11111111-1111-4111-8111-111111111111/3/",
   visibility_mode: "private",
   visibility_group_id: null,
+  capabilities: {},
 };
 
 describe("RegistryProjection", () => {
@@ -53,12 +54,38 @@ describe("RegistryProjection", () => {
       blobPrefix: ROW.blob_prefix,
       visibilityMode: "private",
       visibilityGroupId: null,
+      llm: null,
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();
     expect(projection.getApp("team")?.visibilityMode).toBe("group");
     expect(projection.getApp("team")?.visibilityGroupId).toBe("g1");
     expect(projection.getApp("nope")).toBeUndefined();
+  });
+
+  it("parses the capabilities.llm grant, and fails closed to null on junk", async () => {
+    const projection = new RegistryProjection(
+      querierFor([
+        [
+          {
+            ...ROW,
+            slug: "granted",
+            capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 } },
+          },
+          { ...ROW, slug: "no-llm", capabilities: { data: { appScope: true } } },
+          { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
+          { ...ROW, slug: "bad-llm", capabilities: { llm: { models: "nope" } } },
+        ],
+      ]),
+    );
+    await projection.load();
+    expect(projection.getApp("granted")?.llm).toEqual({
+      models: ["claude-opus-4-8"],
+      tokensPerDay: 1000,
+    });
+    expect(projection.getApp("no-llm")?.llm).toBeNull();
+    expect(projection.getApp("bad-json")?.llm).toBeNull();
+    expect(projection.getApp("bad-llm")?.llm).toBeNull();
   });
 
   it("keeps serving the previous map when a reload fails", async () => {

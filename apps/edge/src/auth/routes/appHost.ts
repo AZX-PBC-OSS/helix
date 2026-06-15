@@ -1,7 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { MeResponseSchema } from "@helix/shared";
 import type { AuthConfig, EdgeConfig } from "../../config.js";
-import { publicOrigin } from "../../config.js";
 import type { RegistryEntry, RegistryReader } from "../../registry/projection.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../../errors.js";
 import {
@@ -14,7 +13,7 @@ import type { AuthKeys } from "../secrets.js";
 import type { SessionGate } from "../gate.js";
 import { verifyHandoffToken } from "../handoff.js";
 import { hashSessionToken, newSessionToken, type SessionStore } from "../sessions.js";
-import { resolveAppForAuth, validateReturnPath } from "../validate.js";
+import { isSameOrigin, resolveAppForAuth, validateReturnPath } from "../validate.js";
 
 /**
  * App-host side of auth (architecture Appendix A.1 step 8 + A.6): handoff
@@ -90,7 +89,7 @@ export function makeAuthCompleteHandler(rt: AppHostAuthRuntime) {
 }
 
 /** Shared app-resolution ladder for the session-backed app-host routes. */
-function resolveServingEntry(
+export function resolveServingEntry(
   registry: RegistryReader,
   slug: string,
   reply: FastifyReply,
@@ -155,7 +154,7 @@ export function makeLogoutHandler(rt: AppApiRuntime) {
     const entry = resolveServingEntry(rt.registry, slug, reply);
     if (!entry) return;
 
-    if (req.headers.origin !== publicOrigin(rt.config, entry.slug)) {
+    if (!isSameOrigin(req.headers.origin, rt.config, entry.slug)) {
       sendForbidden(reply);
       return;
     }
