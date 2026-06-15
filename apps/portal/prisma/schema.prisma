@@ -53,6 +53,11 @@ model App {
   currentVersion    Version?       @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
   versions          Version[]      @relation("AppVersions")
   sessions          Session[]
+  /// Per-app capability manifest (architecture §6.3) — what the gateway grants
+  /// and enforces. JSON matches @helix/shared `CapabilitiesSchema`; the edge
+  /// reads it through the registry projection. Defaults to the baseline (no
+  /// capabilities). Manifest versioning/approvals are a v1 control-plane feature.
+  capabilities      Json           @default("{}")
   /// Archived apps return 410 + Clear-Site-Data at the edge (architecture §7).
   archivedAt        DateTime?
   createdAt         DateTime       @default(now())
@@ -119,4 +124,29 @@ model AuditEvent {
 
   @@index([appId, createdAt])
   @@map("audit_events")
+}
+
+/// Per-call gateway ledger (architecture §6.1/§6.3, §8) — metering + audit for
+/// every `/_api/*` capability use: (app, user, capability, model, tokens,
+/// outcome). **Edge-written data**, like `sessions`: the portal migrates this
+/// table but never reads or writes it; the edge INSERTs a row per call and SUMs
+/// today's tokens for the per-app daily budget, both via hand-written SQL
+/// (apps/edge/src/gateway/usage.ts). No FK to `apps` (mirrors AuditEvent) — the
+/// ledger outlives any single app row.
+model GatewayCall {
+  id           String   @id @default(uuid()) @db.Uuid
+  appId        String   @db.Uuid
+  userOid      String
+  /// Capability invoked — `llm` in M4.
+  capability   String
+  /// Model the request asked for (post-allowlist).
+  model        String
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  /// `ok` | `error` | `refusal` | `quota_blocked`.
+  outcome      String
+  createdAt    DateTime @default(now())
+
+  @@index([appId, createdAt])
+  @@map("gateway_calls")
 }

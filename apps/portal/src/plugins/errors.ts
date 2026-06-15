@@ -12,6 +12,11 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   not_found: 404,
   slug_taken: 409,
   conflict: 409,
+  // Gateway codes (emitted by the edge, but the map is exhaustive over the
+  // shared code set).
+  model_not_allowed: 403,
+  quota_exceeded: 429,
+  capability_unavailable: 503,
   internal: 500,
 };
 

@@ -109,6 +109,73 @@ describe("POST /api/v1/apps/:slug/archive and /unarchive", () => {
   });
 });
 
+describe("manifest (capabilities) GET/PUT", () => {
+  it("stores capabilities at create time and returns them via the manifest", async () => {
+    const slug = uniqueSlug();
+    await createApp({
+      slug,
+      displayName: "LLM App",
+      capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 } },
+    });
+
+    const got = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
+    expect(got.statusCode).toBe(200);
+    expect(got.json()).toEqual({
+      app: slug,
+      visibility: { mode: "private" },
+      capabilities: {
+        llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 },
+        mcp: [],
+        externalOrigins: [],
+      },
+    });
+  });
+
+  it("defaults to the baseline grant set when capabilities are omitted", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Bare" });
+    const got = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
+    expect(got.json().capabilities).toEqual({ mcp: [], externalOrigins: [] });
+  });
+
+  it("replaces grants via PUT (auth required) and audits the change", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({ slug, displayName: "Editable" });
+
+    const noAuth = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${slug}/manifest`,
+      payload: { capabilities: { llm: { models: ["m"] } } },
+    });
+    expect(noAuth.statusCode).toBe(401);
+
+    const put = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: authHeader(),
+      payload: { capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 50 } } },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json().capabilities.llm).toEqual({
+      models: ["claude-opus-4-8"],
+      tokensPerDay: 50,
+    });
+
+    const events = await t.prisma.auditEvent.findMany({ where: { appId: created.json().id } });
+    expect(events.map((e) => e.action)).toContain("app.manifest.set");
+  });
+
+  it("404s setting a manifest on an unknown slug", async () => {
+    const res = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${uniqueSlug()}/manifest`,
+      headers: authHeader(),
+      payload: { capabilities: { llm: { models: ["m"] } } },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe("GET /api/v1/apps and /:slug", () => {
   it("round-trips a group-visibility app and 404s on unknown", async () => {
     const slug = uniqueSlug();

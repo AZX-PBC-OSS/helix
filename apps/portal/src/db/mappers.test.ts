@@ -3,7 +3,9 @@ import { VERSION_STATUSES, VISIBILITY_MODES } from "@helix/shared";
 import { VersionStatus, VisibilityMode } from "./generated/enums.js";
 import {
   blobPrefixFor,
+  capabilitiesFromRow,
   toApp,
+  toManifest,
   toVersion,
   visibilityFromColumns,
   visibilityToColumns,
@@ -54,6 +56,7 @@ describe("row mappers validate against the shared schema", () => {
       visibilityMode: "private",
       visibilityGroupId: null,
       currentVersionId: null,
+      capabilities: {},
       archivedAt: null,
       createdAt: NOW,
       updatedAt: NOW,
@@ -78,11 +81,53 @@ describe("row mappers validate against the shared schema", () => {
       visibilityMode: "private",
       visibilityGroupId: null,
       currentVersionId: null,
+      capabilities: {},
       archivedAt: NOW,
       createdAt: NOW,
       updatedAt: NOW,
     };
     expect(toApp(row).archivedAt).toBe(NOW.toISOString());
+  });
+
+  it("maps the capabilities column into a wire manifest, filling defaults", () => {
+    const row: AppRow = {
+      id: APP_ID,
+      slug: "cost-explorer",
+      displayName: "Cost Explorer",
+      visibilityMode: "group",
+      visibilityGroupId: "eng-team",
+      currentVersionId: null,
+      capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 } },
+      archivedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    const manifest = toManifest(row);
+    expect(manifest).toEqual({
+      app: "cost-explorer",
+      visibility: { mode: "group", groupId: "eng-team" },
+      capabilities: {
+        llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 },
+        mcp: [],
+        externalOrigins: [],
+      },
+    });
+  });
+
+  it("treats an empty capabilities column as the baseline grant set", () => {
+    const row: AppRow = {
+      id: APP_ID,
+      slug: "x",
+      displayName: "X",
+      visibilityMode: "private",
+      visibilityGroupId: null,
+      currentVersionId: null,
+      capabilities: {},
+      archivedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    expect(capabilitiesFromRow(row)).toEqual({ mcp: [], externalOrigins: [] });
   });
 
   it("maps a versions row to a wire Version", () => {

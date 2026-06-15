@@ -1,7 +1,11 @@
 import {
+  AppManifestSchema,
   AppSchema,
+  CapabilitiesSchema,
   VersionSchema,
+  type AppManifest,
   type App,
+  type Capabilities,
   type Version,
   type Visibility,
   type VisibilityMode,
@@ -44,6 +48,24 @@ export function toApp(row: AppRow): App {
     archivedAt: row.archivedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  });
+}
+
+/**
+ * Parse the `capabilities` JSON column into the shared `Capabilities` shape,
+ * filling baseline defaults. Validated so DB/contract drift fails at the
+ * boundary; the gateway depends on this shape (architecture §6.3).
+ */
+export function capabilitiesFromRow(row: AppRow): Capabilities {
+  return CapabilitiesSchema.parse(row.capabilities ?? {});
+}
+
+/** Map an `apps` row to the wire `AppManifest` (§6.3) — slug, visibility, grants. */
+export function toManifest(row: AppRow): AppManifest {
+  return AppManifestSchema.parse({
+    app: row.slug,
+    visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupId),
+    capabilities: capabilitiesFromRow(row),
   });
 }
 
