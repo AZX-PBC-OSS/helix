@@ -76,8 +76,14 @@ function CapBlock({
 interface Draft {
   models: string[];
   tokensPerDay: number | undefined;
-  appScope: boolean;
-  userScope: boolean;
+  /** §3.1 per-user private store. */
+  dataUser: boolean;
+  /** §3.2 append-only collections (write-from-app, owner reads via portal). */
+  collections: string[];
+  /** §3.3 world-readable shared keys. */
+  sharedRead: string[];
+  /** §3.3 app-writable shared keys. */
+  sharedWrite: string[];
   mcp: string[];
   externalOrigins: string[];
 }
@@ -86,11 +92,19 @@ function toDraft(c: Capabilities): Draft {
   return {
     models: c.llm?.models ?? [],
     tokensPerDay: c.llm?.tokensPerDay,
-    appScope: c.data?.appScope ?? false,
-    userScope: c.data?.userScope ?? false,
+    dataUser: c.data?.user ?? false,
+    collections: c.data?.collections ?? [],
+    sharedRead: c.data?.sharedRead ?? [],
+    sharedWrite: c.data?.sharedWrite ?? [],
     mcp: c.mcp,
     externalOrigins: c.externalOrigins,
   };
+}
+
+function hasDataGrant(d: Draft): boolean {
+  return (
+    d.dataUser || d.collections.length > 0 || d.sharedRead.length > 0 || d.sharedWrite.length > 0
+  );
 }
 
 /** Build the wire Capabilities from the editor draft, omitting empty blocks. */
@@ -104,8 +118,15 @@ function fromDraft(d: Draft): Capabilities {
           },
         }
       : {}),
-    ...(d.appScope || d.userScope
-      ? { data: { appScope: d.appScope, userScope: d.userScope } }
+    ...(hasDataGrant(d)
+      ? {
+          data: {
+            user: d.dataUser,
+            collections: d.collections,
+            sharedRead: d.sharedRead,
+            sharedWrite: d.sharedWrite,
+          },
+        }
       : {}),
     mcp: d.mcp,
     externalOrigins: d.externalOrigins,
@@ -124,10 +145,12 @@ function renderYaml(app: App, d: Draft): string {
     if (d.tokensPerDay !== undefined)
       lines.push(`    tokens_per_day: ${d.tokensPerDay.toLocaleString()}`);
   }
-  if (d.appScope || d.userScope) {
+  if (hasDataGrant(d)) {
     lines.push(`  data:`);
-    lines.push(`    app_scope: ${d.appScope}`);
-    lines.push(`    user_scope: ${d.userScope}`);
+    if (d.dataUser) lines.push(`    user: true`);
+    if (d.collections.length) lines.push(`    collections: [${d.collections.join(", ")}]`);
+    if (d.sharedRead.length) lines.push(`    shared_read: [${d.sharedRead.join(", ")}]`);
+    if (d.sharedWrite.length) lines.push(`    shared_write: [${d.sharedWrite.join(", ")}]`);
   }
   lines.push(`  mcp: [${d.mcp.join(", ")}]`);
   lines.push(`  external_origins: [${d.externalOrigins.join(", ")}]`);
@@ -235,21 +258,44 @@ export function CapabilitiesTab({ app }: { app: App }) {
             <CapBlock
               icon="db"
               title="App data storage"
-              desc="App- and user-scoped KV/document storage — removes the need for a custom backend."
+              desc="Three named scopes, not a symmetric KV — read and write are independent grants, so a contact harvester can be write-only from the browser."
             >
-              <Stack gap={4}>
+              <Stack gap={14}>
                 <Switch
-                  checked={draft.appScope}
-                  onChange={(e) => patch({ appScope: e.currentTarget.checked })}
-                  label="App-scoped store"
-                  description="/_api/data/app/*"
-                />
-                <Switch
-                  checked={draft.userScope}
-                  onChange={(e) => patch({ userScope: e.currentTarget.checked })}
+                  checked={draft.dataUser}
+                  onChange={(e) => patch({ dataUser: e.currentTarget.checked })}
                   label="User-scoped store"
-                  description="/_api/data/user/* — auto-partitioned per user"
+                  description="/_api/data/user/* — auto-partitioned per signed-in user (disabled for public apps)"
                 />
+                <TagsInput
+                  label="Collections (append-only)"
+                  description="POST /_api/data/collections/:name — the app appends; the owner drains here. No app-facing read."
+                  placeholder="add collection — e.g. contacts"
+                  value={draft.collections}
+                  onChange={(collections) => patch({ collections })}
+                  classNames={{ input: "az-mono" }}
+                />
+                <TagsInput
+                  label="Shared keys — readable by every visitor"
+                  description="GET /_api/data/shared/:key. Rare and dangerous: any visitor reads everything."
+                  placeholder="add shared-read key"
+                  value={draft.sharedRead}
+                  onChange={(sharedRead) => patch({ sharedRead })}
+                  classNames={{ input: "az-mono" }}
+                />
+                <TagsInput
+                  label="Shared keys — writable by the app frontend"
+                  description="PUT /_api/data/shared/:key. Usually empty — every visitor could mutate shared state."
+                  placeholder="add shared-write key"
+                  value={draft.sharedWrite}
+                  onChange={(sharedWrite) => patch({ sharedWrite })}
+                  classNames={{ input: "az-mono" }}
+                />
+                {(draft.sharedRead.length > 0 || draft.sharedWrite.length > 0) && (
+                  <ToneBadge tone="violet" icon="shield">
+                    shared keys on a public app need admin approval (v1)
+                  </ToneBadge>
+                )}
               </Stack>
             </CapBlock>
 

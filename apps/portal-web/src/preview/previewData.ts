@@ -128,7 +128,7 @@ export const PREVIEW_VIOLATIONS: PreviewViolation[] = [
 /** Capability manifest mock for the app-detail Capabilities tab (M4 shape, §6.3). */
 export const PREVIEW_CAPS = {
   llm: { models: ["gpt-5", "claude-fable-5"], tokensPerDay: 2_000_000 },
-  data: { appScope: true, userScope: true },
+  data: { user: true, collections: ["contacts"] },
   mcp: ["azure-billing"],
   origins: [] as string[],
 };
