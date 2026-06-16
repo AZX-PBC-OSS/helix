@@ -13,7 +13,7 @@ import { VisibilitySchema } from "./visibility.js";
  *   visibility: private
  *   capabilities:
  *     llm: { models: [gpt-5, claude-fable-5], tokens_per_day: 2_000_000 }
- *     data: { app_scope: true, user_scope: true }
+ *     data: { user: true, collections: [contacts] }
  *     mcp: [azure-billing]
  *     external_origins: []
  */
@@ -23,9 +23,25 @@ export const LlmCapabilitySchema = z.object({
 });
 export type LlmCapability = z.infer<typeof LlmCapabilitySchema>;
 
+/**
+ * App-data grants (app-data design §3/§4). The three scopes are named access
+ * patterns, not a symmetric KV — the writer and reader can be different
+ * principals, so read and write are independent grants:
+ *  - `user`: per-user private store, auto-partitioned by the session user (§3.1).
+ *  - `collections`: append-only from the app; the owner drains them via the
+ *    portal. There is deliberately NO app-facing read (§3.2) — the absence is
+ *    the security property.
+ *  - `sharedRead` / `sharedWrite`: app-scoped, world-readable keys (§3.3). Rare,
+ *    explicit, and dangerous; a write grant never implies a read grant.
+ * `writesPerDay` / `bytesPerDay` bound abuse on the open append surface (§7).
+ */
 export const DataCapabilitySchema = z.object({
-  appScope: z.boolean().default(false),
-  userScope: z.boolean().default(false),
+  user: z.boolean().default(false),
+  collections: z.array(z.string().min(1)).default([]),
+  sharedRead: z.array(z.string().min(1)).default([]),
+  sharedWrite: z.array(z.string().min(1)).default([]),
+  writesPerDay: z.int().positive().optional(),
+  bytesPerDay: z.int().positive().optional(),
 });
 export type DataCapability = z.infer<typeof DataCapabilitySchema>;
 

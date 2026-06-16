@@ -9,7 +9,7 @@ describe("AppManifestSchema", () => {
       visibility: { mode: "private" },
       capabilities: {
         llm: { models: ["gpt-5", "claude-fable-5"], tokensPerDay: 2_000_000 },
-        data: { appScope: true, userScope: true },
+        data: { user: true, collections: ["contacts"] },
         mcp: ["azure-billing"],
       },
     });
@@ -18,6 +18,11 @@ describe("AppManifestSchema", () => {
     // externalOrigins defaulted even though it was omitted.
     expect(parsed.capabilities.externalOrigins).toEqual([]);
     expect(parsed.capabilities.llm?.tokensPerDay).toBe(2_000_000);
+    // data sub-arrays default even when only some keys are given.
+    expect(parsed.capabilities.data?.user).toBe(true);
+    expect(parsed.capabilities.data?.collections).toEqual(["contacts"]);
+    expect(parsed.capabilities.data?.sharedRead).toEqual([]);
+    expect(parsed.capabilities.data?.sharedWrite).toEqual([]);
   });
 
   it("applies a baseline capabilities block when omitted entirely", () => {
