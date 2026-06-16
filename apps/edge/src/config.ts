@@ -195,9 +195,15 @@ function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
 
 /** Load and validate the edge config from the environment; throws on gaps. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
-  const databaseUrl = env.DATABASE_URL;
+  // The edge connects as the least-privilege runtime role (app-data design
+  // §2.1) — its grants are a tight union of the data-plane verbs, never the
+  // owner. `EDGE_DATABASE_URL` (helix_edge) is preferred; `DATABASE_URL` (the
+  // owner / migrate URL) is the fallback for setups without the role split.
+  const databaseUrl = env.EDGE_DATABASE_URL ?? env.DATABASE_URL;
   if (!databaseUrl) {
-    throw new Error("DATABASE_URL is required (registry projection reads Postgres)");
+    throw new Error(
+      "EDGE_DATABASE_URL or DATABASE_URL is required (registry projection reads Postgres)",
+    );
   }
   // Azure is the only v0 provider, so its connection string is the only blob
   // config input. A future BLOB_PROVIDER switch dispatches here to build a

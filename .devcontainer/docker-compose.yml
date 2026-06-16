@@ -7,7 +7,11 @@ services:
       - path: .env.local
         required: false
     environment:
+      # Migrations + portal runtime connect as the object owner (== helix_migrate
+      # in dev). The edge connects as the least-privilege runtime role instead
+      # (app-data design §2.1) — created by db-init/01-roles.sql.
       DATABASE_URL: postgresql://helix:helix@db:5432/helix
+      EDGE_DATABASE_URL: postgresql://helix_edge:helix_edge@db:5432/helix
       # Dedicated test database (created + migrated by vitest global setup).
       TEST_DATABASE_URL: postgresql://helix:helix@db:5432/helix_test
       # Azurite well-known emulator credentials. Endpoints point at the
@@ -86,6 +90,9 @@ services:
       POSTGRES_DB: helix
     volumes:
       - pgdata:/var/lib/postgresql
+      # App-data design §2.1: create the helix_edge/helix_portal runtime roles on
+      # first init (empty data dir only). Recreate the pgdata volume to re-run.
+      - ./db-init:/docker-entrypoint-initdb.d:ro
     ports:
       # Randomized host port to avoid collisions with other local stacks.
       - "26663:5432"

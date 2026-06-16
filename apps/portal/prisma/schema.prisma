@@ -156,3 +156,49 @@ model GatewayCall {
   @@index([createdAt])
   @@map("gateway_calls")
 }
+
+/// Per-user / per-app key-value store (architecture §6.1, app-data design
+/// §3.1/§3.3). **Edge-written data**, like sessions/gateway_calls: the edge
+/// reads & writes ONLY rows whose partition key is the caller's own
+/// (appId[, userOid]) — enforced by a hand-written WHERE AND by row-level
+/// security (the migration's `app_data_partition` policy, set per request from
+/// the verified session via SET LOCAL). The SELECT-all path does not exist for
+/// the edge role. JSONB value, app-supplied. No FK to `apps` (mirrors
+/// GatewayCall) so the data outlives an app row; the edge supplies
+/// `gen_random_uuid()` in raw SQL.
+model AppData {
+  id        String   @id @default(uuid()) @db.Uuid
+  appId     String   @db.Uuid
+  /// null = app-shared (§3.3); non-null = the owning user (§3.1).
+  userOid   String?
+  key       String
+  value     Json
+  updatedAt DateTime @default(now()) @updatedAt
+
+  /// One row per (app, user-or-shared, key); the gateway's partition is unique.
+  @@unique([appId, userOid, key])
+  @@map("app_data")
+}
+
+/// Append-only collection items (app-data design §3.2) — write-from-edge,
+/// read-from-portal. The asymmetry is a database-privilege split: the edge role
+/// has INSERT only (no SELECT/DELETE), so a compromised edge or a malicious app
+/// can add rows but can NEVER enumerate them; the owner-facing read/export/
+/// delete path runs on the privileged portal role. The migration's grants are
+/// the security property — there is no RLS here because there is no read to
+/// scope. No FK to `apps` (mirrors GatewayCall); the edge supplies
+/// `gen_random_uuid()` in raw SQL.
+model AppCollectionItem {
+  id         String   @id @default(uuid()) @db.Uuid
+  appId      String   @db.Uuid
+  collection String
+  /// The visitor who submitted, if authenticated; null on public/anon apps (§6).
+  userOid    String?
+  item       Json
+  /// Coarse abuse-triage metadata (hashed IP, UA) — never exposed to the app.
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([appId, collection, createdAt])
+  @@map("app_collection_items")
+}
