@@ -8,7 +8,7 @@ import {
 } from "@helix/shared";
 import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
-import type { SessionGate } from "../auth/gate.js";
+import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import { isSameOrigin } from "../auth/validate.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
@@ -30,7 +30,7 @@ import type { GatewayOutcome, UsageStore } from "./usage.js";
 export interface LlmGatewayRuntime {
   config: EdgeConfig;
   registry: RegistryReader;
-  gate: SessionGate;
+  resolveCaller: CallerResolver;
   /** Null when no vendor key is configured — the capability 503s. */
   provider: LlmProvider | null;
   usage: UsageStore | null;
@@ -75,9 +75,11 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     if (!entry) return;
 
     // Authn: a fetch with no/expired session gets 401 (the gate handles the
-    // navigation-vs-fetch split and refresh-due 401 for /_api/*).
-    const session = await rt.gate(req, reply, entry);
-    if (!session) return;
+    // navigation-vs-fetch split and refresh-due 401 for /_api/*). On `public`
+    // apps the caller is anonymous and the gate is skipped (app-data §6).
+    const caller = await rt.resolveCaller(req, reply, entry);
+    if (!caller) return;
+    const userOid = caller.authenticated ? caller.oid : ANON_USER_OID;
 
     // CSRF: a sibling subdomain must not POST to this app's gateway on the
     // user's session. SameSite doesn't cover cross-subdomain; Origin does.
@@ -120,7 +122,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
         await usage
           .record({
             appId: entry.appId,
-            userOid: session.user.oid,
+            userOid,
             capability: "llm",
             model: chat.model,
             inputTokens: 0,
@@ -145,7 +147,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
       await usage
         .record({
           appId: entry.appId,
-          userOid: session.user.oid,
+          userOid,
           capability: "llm",
           model: chat.model,
           inputTokens: finalUsage.inputTokens,

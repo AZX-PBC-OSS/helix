@@ -16,10 +16,12 @@ import {
   makeLogoutHandler,
   makeMeHandler,
 } from "./auth/routes/appHost.js";
-import { makeSessionGate } from "./auth/gate.js";
+import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
+import { makeDataHandlers } from "./gateway/data-handler.js";
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
+import type { AppDataStore } from "./gateway/data.js";
 
 /**
  * azx-edge — the data plane (architecture §3). Stateless; terminates all
@@ -44,6 +46,8 @@ export interface EdgeDeps {
   llmProvider?: LlmProvider | null;
   /** Gateway metering/budget ledger (M4); null disables the LLM capability. */
   usage?: UsageStore | null;
+  /** App-data store (M4/M5); null = the data capability 503s. */
+  appData?: AppDataStore | null;
   /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
   https?: { cert: Buffer; key: Buffer } | null;
 }
@@ -103,6 +107,10 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   const gate = authRuntime
     ? makeSessionGate({ config, auth: authRuntime.auth, sessions: authRuntime.sessions })
     : null;
+  // The gateway keys identity off a Caller (authenticated session, or anon for
+  // `public` apps — app-data design §6). The resolver wraps the gate with the
+  // public-app short-circuit; asset serving keeps its own public bypass.
+  const resolveCaller = gate ? makeCallerResolver(gate) : null;
   const serveAsset = makeAssetHandler({ ...deps, gate });
 
   const handleStart = authRuntime ? makeStartHandler(authRuntime) : null;
@@ -117,12 +125,24 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // The LLM gateway needs a session (gate) to attribute calls; provider/usage
   // may still be null (no vendor key), in which case the handler returns 503.
   const handleLlmChat =
-    appApiRuntime && gate
+    appApiRuntime && resolveCaller
       ? makeLlmHandler({
           config,
           registry: deps.registry,
-          gate,
+          resolveCaller,
           provider: deps.llmProvider ?? null,
+          usage: deps.usage ?? null,
+        })
+      : null;
+  // The data gateway needs a caller (session, or anon on public apps); the
+  // store may be null (capability 503s), like the LLM provider.
+  const dataHandlers =
+    appApiRuntime && resolveCaller
+      ? makeDataHandlers({
+          config,
+          registry: deps.registry,
+          resolveCaller,
+          store: deps.appData ?? null,
           usage: deps.usage ?? null,
         })
       : null;
@@ -234,6 +254,32 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       sendNotFound(reply);
     },
   });
+
+  // M4/M5 gateway: the app-data capability (app-data design §5.1). App hosts
+  // only. NOTE the deliberate absence of any collection read/list/delete verb —
+  // §3.2's write-only property is enforced by the route table AND the store
+  // type, and is covered by an adversarial test.
+  for (const [method, url, name] of [
+    ["PUT", "/_api/data/user/:key", "putUser"],
+    ["GET", "/_api/data/user/:key", "getUser"],
+    ["DELETE", "/_api/data/user/:key", "deleteUser"],
+    ["GET", "/_api/data/user", "listUser"],
+    ["POST", "/_api/data/collections/:name", "postCollection"],
+    ["GET", "/_api/data/shared/:key", "getShared"],
+    ["PUT", "/_api/data/shared/:key", "putShared"],
+  ] as const) {
+    app.route({
+      method,
+      url,
+      handler: async (req, reply) => {
+        if (req.hostClass.kind === "app" && dataHandlers) {
+          await dataHandlers[name](req, reply, req.hostClass.slug);
+          return;
+        }
+        sendNotFound(reply);
+      },
+    });
+  }
 
   app.route({
     method: ["GET", "HEAD"],

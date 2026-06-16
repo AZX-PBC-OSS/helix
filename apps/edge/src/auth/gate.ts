@@ -26,6 +26,54 @@ export type SessionGate = (
 ) => Promise<Session | null>;
 
 /**
+ * The metering/audit user id for an unauthenticated visitor (app-data design
+ * §6). Public apps have no stable principal — there is no anonymous identity
+ * in the system — so their gateway calls are attributed to this sentinel and
+ * `user`-scoped storage is unavailable to them.
+ */
+export const ANON_USER_OID = "anon";
+
+/**
+ * The principal a `/_api/*` gateway handler (or asset request) acts for.
+ * Private/group apps always yield an authenticated caller; `public` apps yield
+ * an unauthenticated one with no `user`-scope access (app-data design §6, the
+ * "no anon identity" starting point).
+ */
+export type Caller =
+  | { authenticated: true; oid: string; displayName: string; groups: string[] }
+  | { authenticated: false };
+
+/** Resolves the caller, or null after the underlying gate already responded. */
+export type CallerResolver = (
+  req: FastifyRequest,
+  reply: FastifyReply,
+  entry: RegistryEntry,
+) => Promise<Caller | null>;
+
+/**
+ * Wrap the session gate with the public-app short-circuit. `public` apps are
+ * served (and may call collection/shared data) without a session — the gate is
+ * never invoked, so no 302/401 is emitted. Every other visibility mode goes
+ * through the full gate (and `password` still fails closed there until it gains
+ * its own flow). This is the single seam the gateway keys identity off.
+ */
+export function makeCallerResolver(gate: SessionGate): CallerResolver {
+  return async function resolveCaller(req, reply, entry): Promise<Caller | null> {
+    if (entry.visibilityMode === "public") {
+      return { authenticated: false };
+    }
+    const session = await gate(req, reply, entry);
+    if (!session) return null;
+    return {
+      authenticated: true,
+      oid: session.user.oid,
+      displayName: session.user.displayName,
+      groups: session.user.groups,
+    };
+  };
+}
+
+/**
  * Top-level navigations get redirected into the login flow; subresource and
  * fetch requests get a 401 (redirecting a fetch breaks CORS, and the app
  * reloads into the navigation path anyway). `Sec-Fetch-Mode` is authoritative

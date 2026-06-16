@@ -8,6 +8,7 @@ import { PgSessionStore, startSessionSweeper } from "./auth/sessions.js";
 import { EnvSecretProvider } from "./gateway/secrets-provider.js";
 import { AnthropicProvider, type LlmProvider } from "./gateway/provider.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
+import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
 
 /**
  * Dev convenience: load `apps/edge/.env.local` (gitignored) into process.env
@@ -96,6 +97,9 @@ const oidc = config.auth
 // (the capability requires a session); the vendor provider only when a key is
 // configured (otherwise the capability 503s — fail-closed, like auth).
 const usage: UsageStore | null = config.auth ? new PgUsageStore(config.databaseUrl) : null;
+// App-data capability (app-data design §3): comes up with the auth stack, like
+// the meter — every data verb is gated and caller-scoped.
+const appData: AppDataStore | null = config.auth ? new PgAppDataStore(config.databaseUrl) : null;
 const secrets = new EnvSecretProvider();
 const llmProvider: LlmProvider | null = secrets.has("anthropic")
   ? new AnthropicProvider({
@@ -105,7 +109,17 @@ const llmProvider: LlmProvider | null = secrets.has("anthropic")
     })
   : null;
 
-const app = buildApp({ config, registry, blob, sessions, oidc, llmProvider, usage, https });
+const app = buildApp({
+  config,
+  registry,
+  blob,
+  sessions,
+  oidc,
+  llmProvider,
+  usage,
+  appData,
+  https,
+});
 logRef.current = {
   info: (msg) => app.log.info(msg),
   warn: (obj, msg) => app.log.warn(obj, msg),
@@ -124,6 +138,7 @@ app.addHook("onClose", async () => {
   await registry.stop();
   await sessions?.close();
   await usage?.close();
+  await appData?.close();
   await llmProvider?.close();
   await blob.close();
 });

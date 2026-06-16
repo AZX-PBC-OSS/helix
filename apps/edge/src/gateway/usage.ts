@@ -28,10 +28,20 @@ export interface GatewayCallRecord {
 export interface UsageStore {
   /** Total input+output tokens charged to this app since UTC midnight. */
   tokensUsedToday(appId: string): Promise<number>;
+  /**
+   * Count of successful app-data **write** calls today (app-data design §7) —
+   * the per-app `writesPerDay` budget window. Writes are the put/append verbs
+   * (`user.put`, `collection.append`, `shared.put`); reads and quota-blocks
+   * don't count.
+   */
+  dataWritesToday(appId: string): Promise<number>;
   /** Append one call to the ledger. */
   record(call: GatewayCallRecord): Promise<void>;
   close(): Promise<void>;
 }
+
+/** The `model` values recorded for app-data write verbs (see dataWritesToday). */
+export const DATA_WRITE_VERBS = ["user.put", "collection.append", "shared.put"] as const;
 
 export class PgUsageStore implements UsageStore {
   #pool: Pool;
@@ -54,6 +64,18 @@ export class PgUsageStore implements UsageStore {
     // 2^53 for any realistic daily token total.
     const row = result.rows[0] as { total: string | number } | undefined;
     return row ? Number(row.total) : 0;
+  }
+
+  async dataWritesToday(appId: string): Promise<number> {
+    const result = await this.#pool.query(
+      `SELECT COUNT(*)::int AS n
+       FROM gateway_calls
+       WHERE "appId" = $1 AND capability = 'data' AND outcome = 'ok'
+         AND model = ANY($2) AND "createdAt" >= date_trunc('day', now())`,
+      [appId, DATA_WRITE_VERBS],
+    );
+    const row = result.rows[0] as { n: string | number } | undefined;
+    return row ? Number(row.n) : 0;
   }
 
   async record(call: GatewayCallRecord): Promise<void> {

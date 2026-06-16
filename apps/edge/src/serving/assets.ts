@@ -64,8 +64,10 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
 
     // The session gate (architecture §4.2). The dev bypass narrows its M2
     // meaning to "skip the gate" — serving still requires the registry entry
-    // above, and loadConfig refuses the flag in production.
-    if (!config.allowUnauthenticated) {
+    // above, and loadConfig refuses the flag in production. `public` apps
+    // (app-data design §6) are served to everyone with no session and never
+    // touch the gate; every other mode stays behind it.
+    if (!config.allowUnauthenticated && entry.visibilityMode !== "public") {
       if (!gate) {
         sendUnavailable(
           reply,

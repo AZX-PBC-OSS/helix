@@ -55,6 +55,7 @@ describe("RegistryProjection", () => {
       visibilityMode: "private",
       visibilityGroupId: null,
       llm: null,
+      data: null,
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();
@@ -72,7 +73,7 @@ describe("RegistryProjection", () => {
             slug: "granted",
             capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 } },
           },
-          { ...ROW, slug: "no-llm", capabilities: { data: { appScope: true } } },
+          { ...ROW, slug: "no-llm", capabilities: { data: { user: true } } },
           { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
           { ...ROW, slug: "bad-llm", capabilities: { llm: { models: "nope" } } },
         ],
@@ -86,6 +87,33 @@ describe("RegistryProjection", () => {
     expect(projection.getApp("no-llm")?.llm).toBeNull();
     expect(projection.getApp("bad-json")?.llm).toBeNull();
     expect(projection.getApp("bad-llm")?.llm).toBeNull();
+  });
+
+  it("parses the capabilities.data grant, and fails closed to null on junk", async () => {
+    const projection = new RegistryProjection(
+      querierFor([
+        [
+          {
+            ...ROW,
+            slug: "granted",
+            capabilities: { data: { user: true, collections: ["contacts"] } },
+          },
+          { ...ROW, slug: "no-data", capabilities: { llm: { models: [] } } },
+          { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
+          { ...ROW, slug: "bad-data", capabilities: { data: { collections: "nope" } } },
+        ],
+      ]),
+    );
+    await projection.load();
+    expect(projection.getApp("granted")?.data).toEqual({
+      user: true,
+      collections: ["contacts"],
+      sharedRead: [],
+      sharedWrite: [],
+    });
+    expect(projection.getApp("no-data")?.data).toBeNull();
+    expect(projection.getApp("bad-json")?.data).toBeNull();
+    expect(projection.getApp("bad-data")?.data).toBeNull();
   });
 
   it("keeps serving the previous map when a reload fails", async () => {

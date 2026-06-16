@@ -7,7 +7,13 @@
  * data path doesn't depend on the portal or a healthy DB connection — only
  * the very first load gates serving (isLoaded()).
  */
-import { LlmCapabilitySchema, type LlmCapability, type VisibilityMode } from "@helix/shared";
+import {
+  DataCapabilitySchema,
+  LlmCapabilitySchema,
+  type DataCapability,
+  type LlmCapability,
+  type VisibilityMode,
+} from "@helix/shared";
 
 export interface RegistryEntry {
   appId: string;
@@ -26,6 +32,12 @@ export interface RegistryEntry {
    * (fail-closed) rather than crashing the projection.
    */
   llm: LlmCapability | null;
+  /**
+   * The app's data grant (manifest `capabilities.data`, app-data design §4), or
+   * null when the app has no data capability — the data gateway 403s those.
+   * Parsed fail-closed exactly like `llm`.
+   */
+  data: DataCapability | null;
 }
 
 /** Extract `capabilities.llm` from the raw JSON column, fail-closed to null. */
@@ -34,6 +46,15 @@ function parseLlmCapability(capabilities: unknown): LlmCapability | null {
   const llm = (capabilities as Record<string, unknown>).llm;
   if (llm === undefined) return null;
   const parsed = LlmCapabilitySchema.safeParse(llm);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Extract `capabilities.data` from the raw JSON column, fail-closed to null. */
+function parseDataCapability(capabilities: unknown): DataCapability | null {
+  if (typeof capabilities !== "object" || capabilities === null) return null;
+  const data = (capabilities as Record<string, unknown>).data;
+  if (data === undefined) return null;
+  const parsed = DataCapabilitySchema.safeParse(data);
   return parsed.success ? parsed.data : null;
 }
 
@@ -125,6 +146,7 @@ export class RegistryProjection implements RegistryReader {
           visibilityMode: row.visibility_mode,
           visibilityGroupId: row.visibility_group_id,
           llm: parseLlmCapability(row.capabilities),
+          data: parseDataCapability(row.capabilities),
         });
       }
       this.#map = next;

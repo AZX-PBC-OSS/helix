@@ -4,6 +4,7 @@ import type { BlobGetOptions, BlobGetResult, BlobReader } from "../blob/client.j
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 import type { LlmProvider, LlmStreamEvent } from "../gateway/provider.js";
 import type { GatewayCallRecord, UsageStore } from "../gateway/usage.js";
+import type { AppDataStore, CollectionMeta, UserKeyMeta } from "../gateway/data.js";
 import type { Session, SessionStore } from "../auth/sessions.js";
 import type {
   AuthorizeParams,
@@ -22,6 +23,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     visibilityMode: "private",
     visibilityGroupId: null,
     llm: null,
+    data: null,
     ...overrides,
   };
 }
@@ -124,8 +126,93 @@ export class FakeUsageStore implements UsageStore {
     return this.usedToday;
   }
 
+  /** Override in a test to force the writesPerDay budget; defaults to the live count. */
+  writesToday?: number;
+
+  async dataWritesToday(): Promise<number> {
+    if (this.writesToday !== undefined) return this.writesToday;
+    return this.records.filter(
+      (r) =>
+        r.capability === "data" &&
+        r.outcome === "ok" &&
+        ["user.put", "collection.append", "shared.put"].includes(r.model),
+    ).length;
+  }
+
   async record(call: GatewayCallRecord): Promise<void> {
     this.records.push(call);
+  }
+
+  async close(): Promise<void> {}
+}
+
+/**
+ * In-memory app-data store. Mirrors PgAppDataStore's caller-scoped contract:
+ * keyed strictly by (appId, userOid, key), so a test can never accidentally
+ * reach across the partition — the same property the RLS policy enforces in
+ * Postgres. Like the real store, it has no collection-enumeration method.
+ */
+export class FakeAppDataStore implements AppDataStore {
+  readonly rows = new Map<string, { value: unknown; updatedAt: string }>();
+
+  #k(appId: string, userOid: string, key: string): string {
+    return `${appId} ${userOid} ${key}`;
+  }
+
+  async getUserKey(appId: string, userOid: string, key: string): Promise<unknown> {
+    return this.rows.get(this.#k(appId, userOid, key))?.value ?? null;
+  }
+
+  async putUserKey(appId: string, userOid: string, key: string, value: unknown): Promise<string> {
+    const updatedAt = new Date().toISOString();
+    this.rows.set(this.#k(appId, userOid, key), { value, updatedAt });
+    return updatedAt;
+  }
+
+  async deleteUserKey(appId: string, userOid: string, key: string): Promise<boolean> {
+    return this.rows.delete(this.#k(appId, userOid, key));
+  }
+
+  async listUserKeys(appId: string, userOid: string): Promise<UserKeyMeta[]> {
+    const prefix = `${appId} ${userOid} `;
+    const out: UserKeyMeta[] = [];
+    for (const [k, v] of this.rows) {
+      if (k.startsWith(prefix)) out.push({ key: k.slice(prefix.length), updatedAt: v.updatedAt });
+    }
+    return out.sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  /** Appended collection items — write-only, mirroring the real store (no read API). */
+  readonly collectionItems: {
+    appId: string;
+    collection: string;
+    item: unknown;
+    userOid: string | null;
+    meta: CollectionMeta;
+  }[] = [];
+
+  async appendCollection(
+    appId: string,
+    collection: string,
+    item: unknown,
+    userOid: string | null,
+    meta: CollectionMeta,
+  ): Promise<void> {
+    this.collectionItems.push({ appId, collection, item, userOid, meta });
+  }
+
+  #sharedKey(appId: string, key: string): string {
+    return `${appId}  shared ${key}`;
+  }
+
+  async getShared(appId: string, key: string): Promise<unknown> {
+    return this.rows.get(this.#sharedKey(appId, key))?.value ?? null;
+  }
+
+  async putShared(appId: string, key: string, value: unknown): Promise<string> {
+    const updatedAt = new Date().toISOString();
+    this.rows.set(this.#sharedKey(appId, key), { value, updatedAt });
+    return updatedAt;
   }
 
   async close(): Promise<void> {}
