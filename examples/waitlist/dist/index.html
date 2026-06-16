@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#059669" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>Orbit — join the waitlist</title>
+    <script type="module" crossorigin src="./assets/index-DirYMNWv.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Bkvu1sd3.css">
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <p class="kicker">Orbit</p>
+        <h1>Be first in line.</h1>
+        <p class="tagline">
+          A <strong>public</strong> AZX app — no login. Visitors write their contact details into a
+          <em>write-only</em> collection that only the owner can read back, all enforced by the
+          gateway. There is no backend here, and no database credentials in this bundle.
+        </p>
+        <!-- Owner-seeded shared value (sharedRead). Hidden until it loads. -->
+        <p id="announce" class="announce" hidden></p>
+      </header>
+
+      <section class="card">
+        <form id="form" autocomplete="on">
+          <label>
+            Name
+            <input id="name" name="name" type="text" placeholder="Ada Lovelace" required />
+          </label>
+          <label>
+            Email
+            <input id="email" name="email" type="email" placeholder="ada@example.com" required />
+          </label>
+          <label>
+            What are you hoping to use Orbit for? <span class="muted">(optional)</span>
+            <textarea id="note" name="note" rows="3" placeholder="Tell us a little…"></textarea>
+          </label>
+          <button id="submit" type="submit">Join the waitlist</button>
+          <p id="status" class="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <details class="proof">
+        <summary>Wait — can other visitors read my submission?</summary>
+        <p>
+          No. The browser can only <code>POST</code> to
+          <code>/_api/data/collections/signups</code>. There is no read/list verb for collections at
+          the edge — and the edge's database role has <code>INSERT</code>-only, so even a compromised
+          edge couldn't dump the list. Press the button to watch a read attempt get refused:
+        </p>
+        <button id="prove" type="button">Try to read the signup list</button>
+        <pre id="prove-out" class="prove-out" aria-live="polite"></pre>
+      </details>
+
+      <footer>
+        <p>
+          The owner drains submissions from the portal
+          (<code>GET /api/v1/apps/waitlist/collections/signups</code>) — never from the browser.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

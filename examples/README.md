@@ -3,13 +3,15 @@
 Reference apps you can deploy to the platform with the `azx` CLI. They're the
 canonical answer to "what does a hosted AZX app look like?" — **static frontends
 only**. All dynamic capability (LLM calls, app data, integrations) flows through
-the edge gateway (`/_api/*`). The LLM proxy landed in M4; `chatbot` exercises it.
+the edge gateway (`/_api/*`). The LLM proxy landed in M4; `chatbot` exercises it,
+and `waitlist` exercises the app-data gateway.
 
 | App                            | What it shows                                                                                         |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
 | [`hello-world`](./hello-world) | The smallest deployable bundle: HTML + CSS + a line of JS.                                            |
 | [`notes`](./notes)             | A realistic self-contained SPA (localStorage), multiple asset types.                                  |
 | [`chatbot`](./chatbot)         | Streams Claude through the gateway (`/_api/llm/chat`) — no key in the app, manifest-granted, metered. |
+| [`waitlist`](./waitlist)       | A **public** contact harvester: write-only collections + owner-seeded shared read (`/_api/data/*`).   |
 
 Each app is a **standalone project** built with [Vite](https://vite.dev) — they
 are deliberately *not* part of the pnpm workspace, since they model the
