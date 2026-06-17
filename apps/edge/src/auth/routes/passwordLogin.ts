@@ -72,7 +72,12 @@ function ssoStartUrl(rt: PasswordLoginRuntime, slug: string, rd: string): string
   return url.toString();
 }
 
-function renderLoginPage(opts: { rd: string; error: string | null; ssoUrl: string }): string {
+function renderLoginPage(opts: {
+  rd: string;
+  error: string | null;
+  ssoUrl: string;
+  slug: string;
+}): string {
   const errorBlock = opts.error ? `<p class="err" role="alert">${escapeHtml(opts.error)}</p>` : "";
   return `<!doctype html>
 <html lang="en">
@@ -100,6 +105,8 @@ function renderLoginPage(opts: { rd: string; error: string | null; ssoUrl: strin
   .alt a { color: #8aa6ff; text-decoration: none; }
   .alt a:hover { text-decoration: underline; }
   p.foot { margin: 16px 0 0; font-size: 11.5px; color: #6b7280; text-align: center; }
+  .vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 </style>
 </head>
 <body>
@@ -109,6 +116,12 @@ function renderLoginPage(opts: { rd: string; error: string | null; ssoUrl: strin
     ${errorBlock}
     <form method="POST" action="/_auth/login">
       <input type="hidden" name="rd" value="${escapeHtml(opts.rd)}">
+      <!-- A stable per-app "username" so browsers/password managers can save and
+           offer the shared password (and to satisfy the password-form a11y
+           guidance). It carries no auth weight — the POST handler ignores it. -->
+      <label for="u" class="vh">App</label>
+      <input id="u" name="username" type="text" value="${escapeHtml(opts.slug)}"
+             autocomplete="username" readonly tabindex="-1" aria-hidden="true" class="vh">
       <label for="pw">Password</label>
       <input id="pw" name="password" type="password" autocomplete="current-password"
              autofocus required>
@@ -124,7 +137,13 @@ function renderLoginPage(opts: { rd: string; error: string | null; ssoUrl: strin
 
 function sendLoginPage(
   reply: FastifyReply,
-  opts: { rd: string; error: string | null; ssoUrl: string; status: 200 | 401 | 403 | 429 },
+  opts: {
+    rd: string;
+    error: string | null;
+    ssoUrl: string;
+    slug: string;
+    status: 200 | 401 | 403 | 429;
+  },
 ): void {
   reply
     .status(opts.status)
@@ -155,7 +174,13 @@ export function makePasswordLoginPageHandler(rt: PasswordLoginRuntime) {
       return;
     }
 
-    sendLoginPage(reply, { rd, error: null, ssoUrl: ssoStartUrl(rt, entry.slug, rd), status: 200 });
+    sendLoginPage(reply, {
+      rd,
+      error: null,
+      ssoUrl: ssoStartUrl(rt, entry.slug, rd),
+      slug: entry.slug,
+      status: 200,
+    });
   };
 }
 
@@ -189,6 +214,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       sendLoginPage(reply, {
         rd,
         ssoUrl,
+        slug: entry.slug,
         error: "Couldn't verify that request. Please try again.",
         status: 403,
       });
@@ -200,6 +226,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       sendLoginPage(reply, {
         rd,
         ssoUrl,
+        slug: entry.slug,
         error: "Too many attempts. Wait a few minutes and try again.",
         status: 429,
       });
@@ -210,7 +237,13 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       submitted !== "" && (await verifyPassword(submitted, entry.passwordHash, entry.passwordSalt));
     if (!ok) {
       rt.throttle.recordFailure(throttleKey);
-      sendLoginPage(reply, { rd, ssoUrl, error: "Incorrect password — try again.", status: 401 });
+      sendLoginPage(reply, {
+        rd,
+        ssoUrl,
+        slug: entry.slug,
+        error: "Incorrect password — try again.",
+        status: 401,
+      });
       return;
     }
 

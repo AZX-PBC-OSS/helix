@@ -100,6 +100,10 @@ describe("GET /_auth/login (the challenge page)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('name="password"');
     expect(res.body).toContain("/_auth/login");
+    // Hidden per-app username so password managers can save/offer the credential
+    // (and to satisfy the password-form a11y guidance).
+    expect(res.body).toContain('name="username"');
+    expect(res.body).toContain('autocomplete="username"');
     expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
     // A password app also admits SSO users — the page links to the auth host.
     expect(res.body).toContain("auth.localtest.me");
