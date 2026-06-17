@@ -6,6 +6,7 @@ import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Eyebrow, Hint, PreviewBadge, ToneBadge } from "../../components/primitives";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
+import { PasswordAccessCard } from "./PasswordAccessCard";
 
 const VISIBILITY_ROWS: Array<{
   mode: VisibilityMode;
@@ -54,8 +55,9 @@ export function SettingsTab({ app }: { app: App }) {
             <PreviewBadge milestone="M4" />
           </Group>
           <Text size="sm" c="dark.2" mb={16}>
-            Auth is terminated at the edge proxy — the app ships zero auth code. Changing visibility
-            after creation is an M4 portal action (going public will require approval).
+            Auth is terminated at the edge proxy — the app ships zero auth code. Password access is
+            managed on the right; switching between SSO modes is an M4 portal action (going public
+            will require approval).
           </Text>
           <Stack gap={10}>
             {VISIBILITY_ROWS.map((row) => {
@@ -121,6 +123,8 @@ export function SettingsTab({ app }: { app: App }) {
 
       <Grid.Col span={{ base: 12, md: 5 }}>
         <Stack gap={18}>
+          <PasswordAccessCard app={app} />
+
           <Card style={{ borderColor: "var(--az-bad-dim)" }}>
             <Eyebrow mb={4}>Lifecycle</Eyebrow>
             <Text size="sm" c="dark.2" mb={14} lh={1.5}>

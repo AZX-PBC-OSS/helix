@@ -2,13 +2,15 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AppManifestSchema,
   AppSchema,
+  PasswordCredentialResponseSchema,
   UploadVersionResponseSchema,
   type Capabilities,
   type CreateAppRequest,
   type App,
+  type PasswordCredentialResponse,
   type UploadVersionResponse,
 } from "@helix/shared";
-import { fetchJson, uploadFile } from "./client";
+import { fetchJson, requestVoid, uploadFile } from "./client";
 
 /**
  * Mutations against the portal registry. All of them invalidate the affected
@@ -74,6 +76,61 @@ export function useSetManifest() {
       }),
     onSuccess: (_manifest, { slug }) =>
       void queryClient.invalidateQueries({ queryKey: ["apps", slug, "manifest"] }),
+  });
+}
+
+/* ------------------------------------------------------------------------- *
+ * Shared-password access (`password` visibility). Enable/disable flip the app's
+ * visibility (invalidate the app), so they refetch the app + credential.
+ * ------------------------------------------------------------------------- */
+
+function invalidatePassword(queryClient: ReturnType<typeof useQueryClient>, slug: string) {
+  void queryClient.invalidateQueries({ queryKey: ["apps"] });
+  void queryClient.invalidateQueries({ queryKey: ["apps", slug] });
+  void queryClient.invalidateQueries({ queryKey: ["apps", slug, "password"] });
+}
+
+/** Enable password access (mints a passphrase) — returns the credential. */
+export function useEnablePassword() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug }: { slug: string }): Promise<PasswordCredentialResponse> =>
+      fetchJson(
+        PasswordCredentialResponseSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/access/password`,
+        { method: "POST" },
+      ),
+    onSuccess: (_res, { slug }) => invalidatePassword(queryClient, slug),
+  });
+}
+
+/** Rotate the password — reroll (no body) or set a manual one (≥12 chars). */
+export function useRotatePassword() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      password,
+    }: {
+      slug: string;
+      password?: string;
+    }): Promise<PasswordCredentialResponse> =>
+      fetchJson(
+        PasswordCredentialResponseSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/access/password/rotate`,
+        { method: "POST", body: password !== undefined ? { password } : {} },
+      ),
+    onSuccess: (_res, { slug }) => invalidatePassword(queryClient, slug),
+  });
+}
+
+/** Disable password access — reverts the app to private. */
+export function useDisablePassword() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug }: { slug: string }) =>
+      requestVoid(`/api/v1/apps/${encodeURIComponent(slug)}/access/password`, { method: "DELETE" }),
+    onSuccess: (_res, { slug }) => invalidatePassword(queryClient, slug),
   });
 }
 

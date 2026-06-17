@@ -6,6 +6,7 @@ import {
   AuthConfigResponseSchema,
   GatewayAuditPageSchema,
   HealthStatusSchema,
+  PasswordCredentialResponseSchema,
   PlatformUsageSchema,
   PortalMeResponseSchema,
   UsageSummarySchema,
@@ -39,6 +40,21 @@ export const manifestQuery = (slug: string) =>
     queryKey: ["apps", slug, "manifest"],
     queryFn: () =>
       fetchJson(AppManifestSchema, `/api/v1/apps/${encodeURIComponent(slug)}/manifest`),
+  });
+
+/**
+ * The current shared-password credential (cleartext). Bearer-gated server-side —
+ * gate it on `authenticated` AND password visibility via the query's `enabled`.
+ */
+export const passwordCredentialQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["apps", slug, "password"],
+    queryFn: () =>
+      fetchJson(
+        PasswordCredentialResponseSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/access/password`,
+      ),
+    retry: false,
   });
 
 /**

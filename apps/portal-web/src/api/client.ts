@@ -56,6 +56,22 @@ export async function fetchJson<Schema extends z.ZodType>(
   return schema.parse(await res.json()) as z.output<Schema>;
 }
 
+/** A mutation with no response body (e.g. a 204 DELETE) — errors still typed. */
+export async function requestVoid(
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<void> {
+  const res = await fetch(path, {
+    method: init.method ?? "POST",
+    headers: {
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+      ...authHeaders(),
+    },
+    ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
 /** Multipart upload (the deploy endpoint) — browser sets the boundary header. */
 export async function uploadFile<Schema extends z.ZodType>(
   schema: Schema,
