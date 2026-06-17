@@ -27,6 +27,34 @@ export const SetManifestRequestSchema = z.object({
 });
 export type SetManifestRequest = z.infer<typeof SetManifestRequestSchema>;
 
+/** A manually-set shared password must clear this bar (a generated one far exceeds it). */
+export const MIN_PASSWORD_LENGTH = 12;
+
+/**
+ * Body for `POST /api/v1/apps/:slug/access/password/rotate`. Omit `password` to
+ * reroll a fresh xkcd-style passphrase; supply one to set it manually (the
+ * shared-credential feature — see docs/features/authentication.md).
+ */
+export const SetPasswordRequestSchema = z.object({
+  password: z.string().min(MIN_PASSWORD_LENGTH).optional(),
+});
+export type SetPasswordRequest = z.infer<typeof SetPasswordRequestSchema>;
+
+/**
+ * Response from the password-access endpoints — the cleartext credential the
+ * owner shares out-of-band. Returned only over authenticated portal routes;
+ * never present in the manifest or any open read.
+ */
+export const PasswordCredentialResponseSchema = z.object({
+  /** The shared passphrase, in cleartext, for the owner to copy/share. */
+  password: z.string().min(1),
+  /** The app's public URL, prebuilt so the UI can offer a one-click copy. */
+  url: z.url(),
+  /** When the current password was set (ISO 8601). */
+  setAt: z.string(),
+});
+export type PasswordCredentialResponse = z.infer<typeof PasswordCredentialResponseSchema>;
+
 /** A single deploy-time advisory from the CSP courtesy lint (architecture §4.4). */
 export const CspWarningSchema = z.object({
   file: z.string(),
