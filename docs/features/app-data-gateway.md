@@ -1,0 +1,115 @@
+# App-data gateway
+
+**What it is.** `/_api/data/*` — the gateway's second capability (architecture §6.1, app-data
+design [§3/§5](../design/app-data-storage.md)). Untrusted apps get persistent storage without a
+backend of their own, in **three named access patterns** (not a symmetric KV — reader and
+writer can be different principals, so read and write are independent grants):
+
+- **`user`** (§3.1) — a per-user private store, auto-partitioned by the signed-in user. Public
+  apps have no user scope.
+- **`collections`** (§3.2) — **append-only** from the app; the owner drains them via the portal.
+  There is deliberately **no app-facing read** — the absence is the security property.
+- **`shared`** (§3.3) — app-scoped, world-readable-within-the-gate keys. Rare and dangerous;
+  a `sharedWrite` grant never implies `sharedRead`.
+
+Edge handler: `apps/edge/src/gateway/data-handler.ts` (`makeDataHandlers`). Store:
+`apps/edge/src/gateway/data.ts` (`PgAppDataStore`). Route table: `apps/edge/src/app.ts:262`.
+
+## How it works
+
+### The route table is part of the security model
+
+```
+PUT    /_api/data/user/:key          putUser
+GET    /_api/data/user/:key          getUser
+DELETE /_api/data/user/:key          deleteUser
+GET    /_api/data/user               listUser
+POST   /_api/data/collections/:name  postCollection   (append-only)
+GET    /_api/data/shared/:key        getShared
+PUT    /_api/data/shared/:key        putShared
+```
+
+Note the **deliberate absence** of any collection list/read/delete verb. The §3.2 write-only
+invariant is carried into the route table **and** the store type — `AppDataStore` has no
+`listCollection`/`getCollection` method at all — and an adversarial test asserts those paths
+404/405.
+
+### Shared preamble + per-verb checks
+
+`preamble()` reuses the LLM gateway's shape: resolve entry → resolve `Caller` (gate, or anon on
+public apps) → Origin/CSRF check **on mutations** → capability configured (`store` non-null,
+else 503) → app holds a `data` grant (`entry.data`, else 403). Then per verb:
+
+- **User scope** (`requireUser`) requires `entry.data.user` **and** an authenticated caller —
+  public apps get `403` ("requires a signed-in user").
+- **Collections** require the name to be in `entry.data.collections`; available to authenticated
+  **and** anonymous callers (the harvester is a public app). The response is `201` with **no
+  body** — the writer gets no row id and no read-back.
+- **Shared** requires the key to be in `entry.data.sharedRead` (read) or the narrower
+  `entry.data.sharedWrite` (write).
+
+Validation knobs: keys ≤ 256 chars with no control chars; values size-capped at **64 KiB** of
+opaque app JSON (`MAX_VALUE_BYTES`). Writes (`user.put`, `collection.append`, `shared.put`) go
+through `admitWrite` — a per-app daily `writesPerDay` budget, block-new like the LLM
+`tokensPerDay` (over budget → `429` + a `quota_blocked` meter row). Every verb meters into
+`gateway_calls` with `capability: "data"` and a `model` like `user.put` / `collection.append`.
+
+### Storage + the RLS partition
+
+`PgAppDataStore` uses hand-written SQL (no ORM):
+
+- **`app_data`** (user + shared) — every access runs in a transaction that sets the RLS
+  partition GUCs **from the verified session**:
+  `SELECT set_config('app.app_id', $1, true), set_config('app.user_oid', $2, true)` — the
+  parameterized, transaction-scoped (`SET LOCAL`) form, pgbouncer-safe, no string interpolation,
+  no app input. The values are server-derived (registry entry + session). The RLS policy on the
+  table (`FORCE`, so the table owner is subject too) admits a row only when `app_id` matches and
+  the row is either user-owned-by-this-user or shared (`userOid IS NULL`). Missing GUCs → zero
+  rows (fail closed).
+- **`app_collection_items`** (collections) — a plain `INSERT` with **no transaction or RLS**:
+  the edge role has `INSERT`-only on this table, which **is** the containment. There is no read
+  to scope. A coarse, non-reversible `meta` is stamped server-side (`triageMeta`: hashed IP +
+  truncated UA) and is never echoed to the app.
+
+### The owner-facing read side (portal)
+
+Because the edge cannot read collections, the **portal** is the exclusive read/export/erase
+endpoint (`apps/portal/src/routes/data.ts`), running on the privileged `helix_portal` role and
+bearer-gated like the usage routes:
+
+```
+GET    /api/v1/apps/:slug/collections/:name           paginate newest-first (?limit≤200, ?before=ISO)
+GET    /api/v1/apps/:slug/collections/:name/export    JSON or CSV, capped at 10,000 rows
+DELETE /api/v1/apps/:slug/collections/:name/items/:id GDPR-style single-item erasure → 204
+```
+
+The export surfaces truncation via an `x-helix-export-truncated` header rather than silently
+capping (app-data design §7). Wire shapes: `CollectionItem` / `CollectionItemsPage` in
+`packages/shared/src/data.ts`.
+
+### The role split is the real boundary
+
+| Table | `helix_edge` | `helix_portal` |
+| --- | --- | --- |
+| `app_data` | SELECT/INSERT/UPDATE/DELETE **+ RLS partition** | full |
+| `app_collection_items` | **INSERT only** (no SELECT/UPDATE/DELETE) | full |
+| `gateway_calls` | SELECT, INSERT (append) | full |
+| `apps`, `versions` | SELECT (projection) | full |
+
+Migrations: `20260616000001_edge_role_grants`, `20260616231036_app_data`,
+`20260616231730_app_collection_items` (under `apps/portal/prisma/migrations/`). Asserted by
+`apps/edge/src/registry/role-split.integration.test.ts`. A compromised edge cannot enumerate,
+update, or delete collection rows **regardless of what the app declares**.
+
+## Try it
+
+`examples/waitlist` is a public contact harvester that `POST`s to a collection; the owner drains
+it via the portal export API. See [examples.md](./examples.md).
+
+## Planned / not yet built
+
+- **`bytesPerDay`** and **per-IP rate limiting** are declared in the manifest but deferred —
+  they need a stored byte column / shared rate-limit state (app-data design §7); only item-size
+  caps and `writesPerDay` are enforced today.
+- **Tighter edge grants (Phase 5)** per the design doc — further narrowing of `helix_edge`.
+- Collections stay intentionally write-only from the app; no app-facing read is planned.

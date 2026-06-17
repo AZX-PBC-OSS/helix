@@ -1,16 +1,18 @@
 # Helix — AZX App Platform
 
-Secure hosting for vibe-coded AI apps. See [`platform-architecture.md`](./platform-architecture.md)
-(the _what & why_) and [`platform-project-plan.md`](./platform-project-plan.md) (the _with
-what & in what order_). The whole design rests on one stance — **every hosted app is
-untrusted code** — and contains the blast radius per app instead of trying to verify it.
+Secure hosting for vibe-coded AI apps. See [`docs/features/`](./docs/features/) for per-feature
+docs (the _what & how, today_), [`platform-architecture.md`](./platform-architecture.md) (the
+_what & why_), and [`platform-project-plan.md`](./platform-project-plan.md) (the _with what & in
+what order_). The whole design rests on one stance — **every hosted app is untrusted code** —
+and contains the blast radius per app instead of trying to verify it.
 
-> **Status: M3 (local half) — Auth.** Registry + deploys (portal API + `azx` CLI), edge
-> serving on `*.localtest.me`, and the §4.2 / Appendix A auth flow against a **local OIDC
-> issuer**: central callback on `auth.<base>`, one-time handoff token, `__Host-session`
-> cookies, server-side sessions, group visibility, silent refresh, `/_api/me`. Portal
-> mutating routes take bearer JWTs; the CLI logs in via the OIDC device flow. The `/_api/*`
-> gateway (M4) and a real Entra registration (M3 tail) are next.
+> **Status: M4 (local) — Gateway.** Registry + deploys (portal API + `azx` CLI), edge serving
+> on `*.localtest.me`, and the §4.2 / Appendix A auth flow against a **local OIDC issuer**
+> (central callback on `auth.<base>`, one-time handoff token, `__Host-session` cookies,
+> server-side sessions, group visibility, silent refresh, `/_api/me`; portal/CLI bearer JWTs),
+> **plus the `/_api/*` gateway running locally**: the LLM proxy (`/_api/llm/chat`) and app-data
+> (`/_api/data/*` — user / collection / shared) with a metering ledger and an edge/portal
+> Postgres role split. A real Entra registration (M3 tail) and the Azure deploy (M5) are next.
 
 ## Layout
 
@@ -18,16 +20,18 @@ untrusted code** — and contains the blast radius per app instead of trying to 
 apps/
   edge/        # azx-edge — data plane (Fastify). Hard rule: dependency-minimal.
   portal/      # azx-portal — control plane (Fastify + Prisma). Owns the schema.
+  portal-web/  # the portal SPA (Vite + React 19 + Mantine + TanStack Query)
   dev-idp/     # local OIDC issuer (oidc-provider). Dev only, never deployed.
 packages/
-  shared/      # @helix/shared — zod schemas: visibility, app, version, manifest, auth
+  shared/      # @helix/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage
   cli/         # azx — the deploy CLI (azx login / deploy / promote / …)
-examples/      # reference apps to `azx deploy` (hello-world, notes); built dist/ committed
+examples/      # reference apps to `azx deploy` (hello-world, notes, chatbot, waitlist); built dist/ committed
+docs/          # platform-architecture, project-plan, features/ (per-feature), design/ (app-data)
 .devcontainer/ # VS Code dev container; also runs Postgres 18 + Azurite
 ```
 
-`apps/portal-web`, `packages/deploy-skill`, and `infra/` are in the target layout
-(project plan §2) but land in later milestones.
+`packages/deploy-skill` and `infra/` are in the target layout (project plan §2) but land in
+later milestones.
 
 ## Prerequisites
 
@@ -108,6 +112,7 @@ config, [`apps/dev-idp/README.md`](./apps/dev-idp/README.md) for the IdP, and
 | `pnpm dev:idp`              | Local OIDC issuer (`:3002`)                      |
 | `pnpm dev:portal`           | azx-portal (`:3001`, registry + deploy API)      |
 | `pnpm dev:edge`             | azx-edge (`:8080`, HTTPS)                        |
+| `pnpm dev:web`              | portal SPA (`:5173`, proxies `/api` to :3001)    |
 | `./check-and-lint.sh`       | Poor-man's CI: typecheck + lint + format + tests |
 
 ## Conventions
