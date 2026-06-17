@@ -40,7 +40,7 @@ export type AppForAuth =
   | { kind: "ok"; entry: RegistryEntry }
   | { kind: "unknown" }
   | { kind: "registry-unavailable" }
-  /** password/public visibility — v1 modes; auth fails closed on them. */
+  /** `public` visibility — no session is ever minted, so SSO has nothing to do. */
   | { kind: "unsupported-mode" };
 
 /** Resolve and vet the `app` parameter / host slug for the login flow. */
@@ -51,7 +51,10 @@ export function resolveAppForAuth(registry: RegistryReader, slug: string | undef
   // Archived apps answer like unknown ones here — no session minting, and no
   // distinguishing the two through the auth host.
   if (!entry || entry.archived) return { kind: "unknown" };
-  if (entry.visibilityMode !== "private" && entry.visibilityMode !== "group") {
+  // SSO serves private, group, AND password apps: a `password` app is "the
+  // shared password OR any SSO user" (the password login UI links here). Only
+  // `public` has no session at all, so it can't use the OIDC flow.
+  if (entry.visibilityMode === "public") {
     return { kind: "unsupported-mode" };
   }
   return { kind: "ok", entry };

@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthConfig, EdgeConfig } from "../../config.js";
+import { publicOrigin } from "../../config.js";
 import type { RegistryEntry, RegistryReader } from "../../registry/projection.js";
 import { sendNotFound } from "../../errors.js";
 import { resolveServingEntry } from "./appHost.js";
@@ -63,7 +64,15 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function renderLoginPage(opts: { rd: string; error: string | null }): string {
+/** The OIDC start URL for this app — a password app also admits any SSO user. */
+function ssoStartUrl(rt: PasswordLoginRuntime, slug: string, rd: string): string {
+  const url = new URL(`${publicOrigin(rt.config, "auth")}/start`);
+  url.searchParams.set("app", slug);
+  url.searchParams.set("rd", rd);
+  return url.toString();
+}
+
+function renderLoginPage(opts: { rd: string; error: string | null; ssoUrl: string }): string {
   const errorBlock = opts.error ? `<p class="err" role="alert">${escapeHtml(opts.error)}</p>` : "";
   return `<!doctype html>
 <html lang="en">
@@ -86,7 +95,11 @@ function renderLoginPage(opts: { rd: string; error: string | null }): string {
            background: #4c7dff; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
   p.err { margin: 0 0 16px; padding: 10px 12px; border-radius: 9px;
           background: rgba(255,90,90,.12); color: #ff8d8d; font-size: 13px; }
-  p.foot { margin: 18px 0 0; font-size: 11.5px; color: #6b7280; text-align: center; }
+  .alt { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid #2a2e37;
+         text-align: center; font-size: 13px; }
+  .alt a { color: #8aa6ff; text-decoration: none; }
+  .alt a:hover { text-decoration: underline; }
+  p.foot { margin: 16px 0 0; font-size: 11.5px; color: #6b7280; text-align: center; }
 </style>
 </head>
 <body>
@@ -101,6 +114,7 @@ function renderLoginPage(opts: { rd: string; error: string | null }): string {
              autofocus required>
       <button type="submit">Continue</button>
     </form>
+    <p class="alt"><a href="${escapeHtml(opts.ssoUrl)}">Sign in with your account instead</a></p>
     <p class="foot">Protected by AZX</p>
   </main>
 </body>
@@ -110,7 +124,7 @@ function renderLoginPage(opts: { rd: string; error: string | null }): string {
 
 function sendLoginPage(
   reply: FastifyReply,
-  opts: { rd: string; error: string | null; status: 200 | 401 | 403 | 429 },
+  opts: { rd: string; error: string | null; ssoUrl: string; status: 200 | 401 | 403 | 429 },
 ): void {
   reply
     .status(opts.status)
@@ -141,7 +155,7 @@ export function makePasswordLoginPageHandler(rt: PasswordLoginRuntime) {
       return;
     }
 
-    sendLoginPage(reply, { rd, error: null, status: 200 });
+    sendLoginPage(reply, { rd, error: null, ssoUrl: ssoStartUrl(rt, entry.slug, rd), status: 200 });
   };
 }
 
@@ -157,6 +171,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const submitted = typeof body.password === "string" ? body.password : "";
     const rd = validateReturnPath(typeof body.rd === "string" ? body.rd : undefined) ?? "/";
+    const ssoUrl = ssoStartUrl(rt, entry.slug, rd);
 
     // CSRF: a sibling subdomain must not be able to drive a login. This is a
     // top-level form POST (no JS), so a same-origin submit may omit Origin —
@@ -173,6 +188,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
     ) {
       sendLoginPage(reply, {
         rd,
+        ssoUrl,
         error: "Couldn't verify that request. Please try again.",
         status: 403,
       });
@@ -183,6 +199,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
     if (rt.throttle.isBlocked(throttleKey)) {
       sendLoginPage(reply, {
         rd,
+        ssoUrl,
         error: "Too many attempts. Wait a few minutes and try again.",
         status: 429,
       });
@@ -193,7 +210,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       submitted !== "" && (await verifyPassword(submitted, entry.passwordHash, entry.passwordSalt));
     if (!ok) {
       rt.throttle.recordFailure(throttleKey);
-      sendLoginPage(reply, { rd, error: "Incorrect password — try again.", status: 401 });
+      sendLoginPage(reply, { rd, ssoUrl, error: "Incorrect password — try again.", status: 401 });
       return;
     }
 

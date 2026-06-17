@@ -91,7 +91,7 @@ function sessionCookie(res: { headers: Record<string, unknown> }): string | null
 }
 
 describe("GET /_auth/login (the challenge page)", () => {
-  it("serves the password form with a strict CSP", async () => {
+  it("serves the password form with a strict CSP and an SSO link", async () => {
     const res = await buildEdge().inject({
       method: "GET",
       url: "/_auth/login",
@@ -101,6 +101,9 @@ describe("GET /_auth/login (the challenge page)", () => {
     expect(res.body).toContain('name="password"');
     expect(res.body).toContain("/_auth/login");
     expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
+    // A password app also admits SSO users — the page links to the auth host.
+    expect(res.body).toContain("auth.localtest.me");
+    expect(res.body).toContain("/start?app=pw");
   });
 
   it("404s on a non-password app (no signal that login even exists)", async () => {

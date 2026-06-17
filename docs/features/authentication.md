@@ -89,10 +89,18 @@ app host** (no auth host, no handoff), so the OIDC review surface is untouched.
   async scrypt + `timingSafeEqual` (`password.ts`, fail-closed). On success it inserts an **active**
   session directly (`SessionStore.createActive` — no pending/redeem) and sets `__Host-session`.
 - **Identity.** Each login mints a fresh pseudonym (`pw_<random>`, `displayName: "Guest"`, no
-  groups), so visitors get isolated `user`-scope storage. No silent refresh — the session
-  hard-expires and re-prompts. `visibilityAllows` returns `true` for a password session (the
-  password was the proof); the gate redirects password-app navigations to the same-origin
+  groups), so visitors get isolated `user`-scope storage. No silent refresh for a password
+  session — the session hard-expires and re-prompts. `visibilityAllows` returns `true` for a
+  password session (the password was the proof); a cold navigation goes to the same-origin
   `/_auth/login` instead of the OIDC `/start`.
+- **SSO is also accepted.** A `password` app is *the shared password **or** any SSO user* — the
+  password is for externals; internal users just sign in. So `resolveAppForAuth` admits password
+  apps into the OIDC flow (only `public` is excluded — it has no session), the callback's
+  `visibilityAllows` lets any authenticated user through, and the login page links to
+  `auth.<base>/start?app=…`. An SSO session on a password app behaves like any other (real
+  identity + groups, silent refresh): the gate's refresh/visibility redirects target the auth
+  host, while only the *cold* redirect picks the password form — a password session never reaches
+  a refresh (its `refreshDueAt == expiresAt`).
 
 Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 `apps/portal/src/routes/access-password.test.ts` + `access/password.test.ts`.

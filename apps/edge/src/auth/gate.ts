@@ -54,8 +54,8 @@ export type CallerResolver = (
  * Wrap the session gate with the public-app short-circuit. `public` apps are
  * served (and may call collection/shared data) without a session — the gate is
  * never invoked, so no 302/401 is emitted. Every other visibility mode goes
- * through the full gate (and `password` still fails closed there until it gains
- * its own flow). This is the single seam the gateway keys identity off.
+ * through the full gate (a `password` app yields the visitor's pseudonymous or
+ * SSO session). This is the single seam the gateway keys identity off.
  */
 export function makeCallerResolver(gate: SessionGate): CallerResolver {
   return async function resolveCaller(req, reply, entry): Promise<Caller | null> {
@@ -90,30 +90,62 @@ export function isNavigation(req: FastifyRequest): boolean {
   return typeof accept === "string" && accept.includes("text/html");
 }
 
-function redirectToStart(
+function ssoStartUrl(
+  deps: SessionGateDeps,
+  entry: RegistryEntry,
+  rd: string,
+  silent: boolean,
+): URL {
+  const start = new URL(`${publicOrigin(deps.config, "auth")}/start`);
+  start.searchParams.set("app", entry.slug);
+  start.searchParams.set("rd", rd);
+  if (silent) start.searchParams.set("silent", "1");
+  return start;
+}
+
+/**
+ * Cold-login redirect (no session yet). `password` apps go to their own
+ * same-origin challenge (passwordLogin.ts) — which itself links to SSO, since a
+ * password app is "the shared password OR any SSO user"; every other mode goes
+ * straight to the OIDC auth host.
+ */
+function redirectToLogin(
   req: FastifyRequest,
   reply: FastifyReply,
   deps: SessionGateDeps,
   entry: RegistryEntry,
-  opts: { silent: boolean },
 ): void {
   // rd is server-derived (the URL actually requested) but validated anyway;
   // anything weird collapses to the app root.
   const rd = validateReturnPath(req.raw.url ?? "/") ?? "/";
-  // `password` apps don't use OIDC: their challenge is same-origin on the app
-  // host (passwordLogin.ts), so send them there instead of the auth host.
-  // There is no silent refresh for password — the prompt is just the form.
   if (entry.visibilityMode === "password") {
     const login = new URL(`${publicOrigin(deps.config, entry.slug)}/_auth/login`);
     login.searchParams.set("rd", rd);
     reply.header("cache-control", "no-store").redirect(login.toString(), 302);
     return;
   }
-  const start = new URL(`${publicOrigin(deps.config, "auth")}/start`);
-  start.searchParams.set("app", entry.slug);
-  start.searchParams.set("rd", rd);
-  if (opts.silent) start.searchParams.set("silent", "1");
-  reply.header("cache-control", "no-store").redirect(start.toString(), 302);
+  reply
+    .header("cache-control", "no-store")
+    .redirect(ssoStartUrl(deps, entry, rd, false).toString(), 302);
+}
+
+/**
+ * Silent SSO re-auth (prompt=none) for a warm session — group re-snapshot or
+ * the refresh window. Only SSO sessions ever reach here: a `password` session
+ * has `refreshDueAt == expiresAt` (so it expires into a cold login, not a
+ * refresh) and `password` visibility never fails the per-request check. So this
+ * always targets the OIDC auth host, even on a `password` app.
+ */
+function redirectToRefresh(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  deps: SessionGateDeps,
+  entry: RegistryEntry,
+): void {
+  const rd = validateReturnPath(req.raw.url ?? "/") ?? "/";
+  reply
+    .header("cache-control", "no-store")
+    .redirect(ssoStartUrl(deps, entry, rd, true).toString(), 302);
 }
 
 function sendUnauthenticated(reply: FastifyReply): void {
@@ -147,7 +179,7 @@ export function makeSessionGate(deps: SessionGateDeps): SessionGate {
       // No session (or hard-expired — lookup filters those): interactive
       // login for navigations, 401 for everything else.
       if (isNavigation(req)) {
-        redirectToStart(req, reply, deps, entry, { silent: false });
+        redirectToLogin(req, reply, deps, entry);
       } else {
         sendUnauthenticated(reply);
       }
@@ -161,7 +193,7 @@ export function makeSessionGate(deps: SessionGateDeps): SessionGate {
     // on the callback's 403, so this cannot loop.
     if (!visibilityAllows(entry, session.user.groups)) {
       if (isNavigation(req)) {
-        redirectToStart(req, reply, deps, entry, { silent: true });
+        redirectToRefresh(req, reply, deps, entry);
       } else {
         sendUnauthenticated(reply);
       }
@@ -175,7 +207,7 @@ export function makeSessionGate(deps: SessionGateDeps): SessionGate {
     // on old groups. Passive assets stay lenient until hard expiry.
     if (session.refreshDueAt.getTime() <= Date.now()) {
       if (isNavigation(req)) {
-        redirectToStart(req, reply, deps, entry, { silent: true });
+        redirectToRefresh(req, reply, deps, entry);
         return null;
       }
       if (isApiPath(req.raw.url ?? "/")) {

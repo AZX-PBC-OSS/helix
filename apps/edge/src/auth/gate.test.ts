@@ -253,6 +253,53 @@ describe("per-request visibility re-check", () => {
   });
 });
 
+describe("password apps also admit SSO sessions", () => {
+  function passwordEdge(): GatedEdge {
+    return buildGatedEdge(
+      new FakeRegistry([
+        registryEntry({
+          appId: APP_ID,
+          slug: "demo",
+          blobPrefix: PREFIX,
+          visibilityMode: "password",
+        }),
+      ]),
+    );
+  }
+
+  it("cold navigation goes to the same-origin password form (which links to SSO)", async () => {
+    const res = await passwordEdge().app.inject({ url: "/", headers: { ...HOST, ...NAVIGATE } });
+    expect(res.statusCode).toBe(302);
+    const loc = new URL(res.headers.location as string);
+    expect(loc.host).toBe("demo.localtest.me:8080");
+    expect(loc.pathname).toBe("/_auth/login");
+  });
+
+  it("serves a real (SSO) session — identity is irrelevant once authenticated", async () => {
+    const edge = passwordEdge();
+    const token = await seedSession(edge.sessions, { groups: ["eng-team"] });
+    const res = await edge.app.inject({
+      url: "/",
+      headers: { ...HOST, ...NAVIGATE, ...sessionHeader(token) },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("refresh-due routes to SSO silent re-auth, not the password form", async () => {
+    const edge = passwordEdge();
+    const token = await seedSession(edge.sessions, { refreshDueInMs: -1000 });
+    const res = await edge.app.inject({
+      url: "/",
+      headers: { ...HOST, ...NAVIGATE, ...sessionHeader(token) },
+    });
+    expect(res.statusCode).toBe(302);
+    const loc = new URL(res.headers.location as string);
+    expect(loc.host).toBe("auth.localtest.me:8080");
+    expect(loc.pathname).toBe("/start");
+    expect(loc.searchParams.get("silent")).toBe("1");
+  });
+});
+
 describe("attack: cookie tossing at the gate", () => {
   it("ignores near-name shadow cookies entirely", async () => {
     const edge = buildGatedEdge();

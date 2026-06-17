@@ -54,6 +54,11 @@ function buildAuthEdge(): AuthEdge {
       slug: "gated",
       visibilityMode: "password",
     }),
+    registryEntry({
+      appId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      slug: "open",
+      visibilityMode: "public",
+    }),
   ]);
   const sessions = new FakeSessionStore();
   const oidc = new FakeOidcClient();
@@ -259,15 +264,20 @@ describe("attack: open redirect via /start", () => {
     expect(res.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("404s unknown/archived apps and 503s v1 visibility modes", async () => {
+  it("404s unknown/archived apps, 503s public, but starts SSO for a password app", async () => {
     const edge = buildAuthEdge();
     expect((await edge.app.inject({ url: "/start?app=nope", headers: AUTH_HOST })).statusCode).toBe(
       404,
     );
     expect((await edge.app.inject({ url: "/start", headers: AUTH_HOST })).statusCode).toBe(404);
+    // public has no session to mint.
+    expect((await edge.app.inject({ url: "/start?app=open", headers: AUTH_HOST })).statusCode).toBe(
+      503,
+    );
+    // password apps also admit SSO users, so /start proceeds (302 to the IdP).
     expect(
       (await edge.app.inject({ url: "/start?app=gated", headers: AUTH_HOST })).statusCode,
-    ).toBe(503);
+    ).toBe(302);
   });
 });
 
