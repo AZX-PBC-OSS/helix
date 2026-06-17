@@ -26,6 +26,14 @@ export interface RegistryEntry {
   /** The group that may open the app — only when `visibilityMode` is `group`. */
   visibilityGroupId: string | null;
   /**
+   * scrypt hash + salt of the shared password — only when `visibilityMode` is
+   * `password` (docs/features/authentication.md). The edge verifies a login
+   * against these and holds nothing decryptable; the portal keeps the cleartext
+   * (encrypted) for re-display. Both null otherwise.
+   */
+  passwordHash: string | null;
+  passwordSalt: string | null;
+  /**
    * The app's LLM grant (manifest `capabilities.llm`, architecture §6.3), or
    * null when the app has no LLM capability — the gateway 403s those. Parsed
    * from the `capabilities` JSON at load time; malformed JSON yields null
@@ -72,6 +80,8 @@ interface ProjectionRow {
   blob_prefix: string | null;
   visibility_mode: VisibilityMode;
   visibility_group_id: string | null;
+  password_hash: string | null;
+  password_salt: string | null;
   /** The `capabilities` JSONB column (pg parses it to an object). */
   capabilities: unknown;
 }
@@ -86,6 +96,7 @@ export interface ProjectionQuerier {
 const PROJECTION_SQL = `
   SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
          a."visibilityMode"::text AS visibility_mode, a."visibilityGroupId" AS visibility_group_id,
+         a."passwordHash" AS password_hash, a."passwordSalt" AS password_salt,
          a.capabilities AS capabilities
   FROM apps a
   LEFT JOIN versions v ON v.id = a."currentVersionId"
@@ -145,6 +156,8 @@ export class RegistryProjection implements RegistryReader {
           blobPrefix: row.blob_prefix,
           visibilityMode: row.visibility_mode,
           visibilityGroupId: row.visibility_group_id,
+          passwordHash: row.password_hash,
+          passwordSalt: row.password_salt,
           llm: parseLlmCapability(row.capabilities),
           data: parseDataCapability(row.capabilities),
         });

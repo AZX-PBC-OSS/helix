@@ -16,6 +16,11 @@ import {
   makeLogoutHandler,
   makeMeHandler,
 } from "./auth/routes/appHost.js";
+import {
+  makePasswordLoginPageHandler,
+  makePasswordLoginSubmitHandler,
+} from "./auth/routes/passwordLogin.js";
+import { LoginThrottle } from "./auth/loginThrottle.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
@@ -48,6 +53,8 @@ export interface EdgeDeps {
   usage?: UsageStore | null;
   /** App-data store (M4/M5); null = the data capability 503s. */
   appData?: AppDataStore | null;
+  /** Shared-password login throttle; tests inject a low-threshold one. */
+  loginThrottle?: LoginThrottle | null;
   /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
   https?: { cert: Buffer; key: Buffer } | null;
 }
@@ -122,6 +129,24 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       : null;
   const handleMe = appApiRuntime ? makeMeHandler(appApiRuntime) : null;
   const handleLogout = appApiRuntime ? makeLogoutHandler(appApiRuntime) : null;
+  // The shared-password challenge (`password` visibility). Same-origin on the
+  // app host — no auth host, no handoff — so it lives outside authRuntime's
+  // OIDC surface. One throttle instance backs every app's login.
+  const passwordLoginRuntime = authRuntime
+    ? {
+        config,
+        auth: authRuntime.auth,
+        registry: deps.registry,
+        sessions: authRuntime.sessions,
+        throttle: deps.loginThrottle ?? new LoginThrottle(),
+      }
+    : null;
+  const handleLoginPage = passwordLoginRuntime
+    ? makePasswordLoginPageHandler(passwordLoginRuntime)
+    : null;
+  const handleLoginSubmit = passwordLoginRuntime
+    ? makePasswordLoginSubmitHandler(passwordLoginRuntime)
+    : null;
   // The LLM gateway needs a session (gate) to attribute calls; provider/usage
   // may still be null (no vendor key), in which case the handler returns 503.
   const handleLlmChat =
@@ -157,6 +182,22 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   app.addHook("onRequest", async (req) => {
     req.hostClass = classifyHost(req.headers.host, config.baseDomain);
   });
+
+  // The shared-password login form posts urlencoded. Hand-rolled parser (no
+  // @fastify/formbody — dep-minimal rule): URLSearchParams into a flat object.
+  app.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "string" },
+    (_req, body, done) => {
+      try {
+        const out: Record<string, string> = {};
+        for (const [k, v] of new URLSearchParams(body as string)) out[k] = v;
+        done(null, out);
+      } catch (err) {
+        done(err as Error);
+      }
+    },
+  );
 
   app.route({
     method: ["GET", "HEAD"],
@@ -203,6 +244,32 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       },
     });
   }
+
+  // Shared-password challenge (`password` visibility), on app hosts only. GET
+  // serves the login page; POST verifies and mints the session. Non-password
+  // apps 404 inside the handler (no signal).
+  app.route({
+    method: "GET",
+    url: "/_auth/login",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleLoginPage) {
+        await handleLoginPage(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+  app.route({
+    method: "POST",
+    url: "/_auth/login",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleLoginSubmit) {
+        await handleLoginSubmit(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
 
   // Appendix A step 8: handoff redemption, on app hosts only.
   app.route({

@@ -72,11 +72,42 @@ export function isSameOrigin(
   return typeof originHeader === "string" && originHeader === publicOrigin(config, slug);
 }
 
+/**
+ * CSRF guard for a top-level **form POST** (the shared-password login). Unlike
+ * the fetch()-driven mutations above — which always carry `Origin`, so
+ * {@link isSameOrigin}'s missing-fails-closed posture is right — a same-origin
+ * HTML form navigation legitimately *omits* `Origin` in several browsers
+ * (Firefox, Safari, some Chrome configs). So:
+ *
+ *  - `Sec-Fetch-Site`, where present, is authoritative (all current browsers):
+ *    accept `same-origin`/`none`, reject `same-site` (sibling subdomain) and
+ *    `cross-site`.
+ *  - Otherwise (older browsers): a *present* `Origin` must match; an *absent*
+ *    one is necessarily same-origin — a cross-origin POST always sends `Origin`,
+ *    which an attacker cannot strip — so it is accepted.
+ */
+export function isSameOriginFormPost(
+  originHeader: string | string[] | undefined,
+  secFetchSite: string | string[] | undefined,
+  config: EdgeConfig,
+  slug: string,
+): boolean {
+  if (typeof secFetchSite === "string" && secFetchSite !== "") {
+    return secFetchSite === "same-origin" || secFetchSite === "none";
+  }
+  if (originHeader === undefined) return true;
+  return isSameOrigin(originHeader, config, slug);
+}
+
 /** Does this session's group snapshot satisfy the app's visibility rule? */
 export function visibilityAllows(entry: RegistryEntry, groups: string[]): boolean {
   if (entry.visibilityMode === "private") return true;
   if (entry.visibilityMode === "group") {
     return entry.visibilityGroupId !== null && groups.includes(entry.visibilityGroupId);
   }
-  return false; // password/public never pass the session gate in v0
+  // A `password` session is itself proof of the password — it could only have
+  // been minted by the /_auth/login challenge (passwordLogin.ts). The OIDC
+  // callback never resolves password apps, so this branch is gate-only.
+  if (entry.visibilityMode === "password") return true;
+  return false; // public never passes the session gate
 }

@@ -33,6 +33,13 @@ export interface SessionStore {
   /** Insert the pending row at `/callback`; `id` doubles as the handoff jti. */
   createPending(session: Session): Promise<void>;
   /**
+   * Insert an already-active row, binding the cookie-token hash up front. The
+   * shared-password flow (`password` visibility) has no handoff to redeem — the
+   * challenge is same-origin on the app host — so it skips the pending/redeem
+   * dance and inserts the live session directly.
+   */
+  createActive(session: Session, tokenHash: string): Promise<void>;
+  /**
    * Atomically redeem the pending row for this app, binding the cookie-token
    * hash. False — already redeemed (replay), expired, unknown id, or an
    * appId mismatch — must yield a 403 with no cookie.
@@ -78,6 +85,23 @@ export class PgSessionStore implements SessionStore {
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         session.id,
+        session.appId,
+        session.user.oid,
+        session.user.displayName,
+        JSON.stringify(session.user.groups),
+        session.refreshDueAt,
+        session.expiresAt,
+      ],
+    );
+  }
+
+  async createActive(session: Session, tokenHash: string): Promise<void> {
+    await this.#pool.query(
+      `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", groups, "activatedAt", "refreshDueAt", "expiresAt")
+       VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8)`,
+      [
+        session.id,
+        tokenHash,
         session.appId,
         session.user.oid,
         session.user.displayName,

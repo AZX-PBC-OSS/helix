@@ -81,7 +81,7 @@ describe("public-app serving (no session)", () => {
     expect(res.headers.location).toContain("/start");
   });
 
-  it("still fails closed on a password app: no-cookie navigation redirects to /start", async () => {
+  it("gates a password app: no-cookie navigation redirects to the same-origin /_auth/login", async () => {
     const { app } = buildEdge({ visibilityMode: "password", slug: "pw" });
     const res = await app.inject({
       method: "GET",
@@ -89,7 +89,10 @@ describe("public-app serving (no session)", () => {
       headers: { host: "pw.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
     });
     expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toContain("/start");
+    // Same-origin app-host challenge, not the OIDC auth host.
+    expect(res.headers.location).toContain("pw.localtest.me");
+    expect(res.headers.location).toContain("/_auth/login");
+    expect(res.headers.location).not.toContain("/start");
   });
 });
 

@@ -62,6 +62,8 @@ describe("LiveRegistry against the test database", () => {
       blobPrefix: live.blobPrefix,
       visibilityMode: "private",
       visibilityGroupId: null,
+      passwordHash: null,
+      passwordSalt: null,
       llm: null,
       data: null,
     });

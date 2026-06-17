@@ -57,6 +57,19 @@ describe("PgSessionStore", () => {
     expect(found?.expiresAt.getTime()).toBeCloseTo(session.expiresAt.getTime(), -3);
   });
 
+  it("createActive inserts an immediately-live session (the password flow)", async () => {
+    const session = pendingSession({
+      user: { oid: "pw_abc123", displayName: "Guest", groups: [] },
+    });
+    const token = newSessionToken();
+    const hash = hashSessionToken(token);
+    await store.createActive(session, hash);
+    // No redeem needed — it's live on the next lookup.
+    const found = await store.lookup(hash, appId);
+    expect(found?.id).toBe(session.id);
+    expect(found?.user).toEqual({ oid: "pw_abc123", displayName: "Guest", groups: [] });
+  });
+
   it("refuses a second redeem of the same id (replay)", async () => {
     const session = pendingSession();
     await store.createPending(session);

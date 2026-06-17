@@ -22,6 +22,8 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     blobPrefix: null,
     visibilityMode: "private",
     visibilityGroupId: null,
+    passwordHash: null,
+    passwordSalt: null,
     llm: null,
     data: null,
     ...overrides,
@@ -268,6 +270,11 @@ export class FakeSessionStore implements SessionStore {
   async createPending(session: Session): Promise<void> {
     if (this.byId.has(session.id)) throw new Error(`duplicate session id ${session.id}`);
     this.byId.set(session.id, { ...session, tokenHash: null });
+  }
+
+  async createActive(session: Session, tokenHash: string): Promise<void> {
+    if (this.byId.has(session.id)) throw new Error(`duplicate session id ${session.id}`);
+    this.byId.set(session.id, { ...session, tokenHash });
   }
 
   async redeem(id: string, appId: string, tokenHash: string): Promise<boolean> {

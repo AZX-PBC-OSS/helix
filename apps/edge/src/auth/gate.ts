@@ -100,6 +100,15 @@ function redirectToStart(
   // rd is server-derived (the URL actually requested) but validated anyway;
   // anything weird collapses to the app root.
   const rd = validateReturnPath(req.raw.url ?? "/") ?? "/";
+  // `password` apps don't use OIDC: their challenge is same-origin on the app
+  // host (passwordLogin.ts), so send them there instead of the auth host.
+  // There is no silent refresh for password — the prompt is just the form.
+  if (entry.visibilityMode === "password") {
+    const login = new URL(`${publicOrigin(deps.config, entry.slug)}/_auth/login`);
+    login.searchParams.set("rd", rd);
+    reply.header("cache-control", "no-store").redirect(login.toString(), 302);
+    return;
+  }
   const start = new URL(`${publicOrigin(deps.config, "auth")}/start`);
   start.searchParams.set("app", entry.slug);
   start.searchParams.set("rd", rd);
