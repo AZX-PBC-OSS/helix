@@ -23,6 +23,10 @@ services:
       # M3 demotes it to one verifier in a chain (OIDC is the real path);
       # kept for CI/scripts, refused in production.
       PORTAL_DEV_TOKEN: dev-deploy-token
+      # Encrypts the shared-password credential at rest (apps/portal/src/access/
+      # password.ts). Dev-only well-known value, ≥32 bytes; set a real secret in
+      # prod. Only the portal needs it — the edge holds the hash, not this key.
+      PORTAL_SECRET: aGVsaXgtZGV2LXBvcnRhbC1zZWNyZXQtMzItYnl0ZXMh
       # M3 local IdP (`pnpm dev:idp`, apps/dev-idp). It runs in THIS container,
       # not as a compose service: an OIDC issuer is a single string enforced
       # by every client, and only localhost + port forwarding reads the same

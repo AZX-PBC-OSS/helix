@@ -68,6 +68,35 @@ behaviors:
 - **`POST /_auth/logout`** — Origin-checked, deletes the session row (immediate revocation,
   no async GC), clears the cookie.
 
+### Shared-password visibility (`password`)
+
+A single shared password on an app, for external demos — the URL + password are handed out (e.g.
+at a conference) without making the app `public`. Unlike SSO this is **entirely same-origin on the
+app host** (no auth host, no handoff), so the OIDC review surface is untouched.
+
+- **Storage (portal).** The owner manages the credential through authenticated routes —
+  `POST/GET/DELETE /api/v1/apps/:slug/access/password` and `…/rotate` (`apps/portal/src/routes/apps.ts`).
+  Enabling flips visibility to `password` and mints an xkcd-style passphrase
+  (`correct-horse-battery-staple`, `apps/portal/src/access/`). Two representations are stored
+  (`apps/portal/src/access/password.ts`): `passwordHash`/`passwordSalt` (scrypt) and `passwordEnc`
+  (AES-256-GCM under `PORTAL_SECRET`, decryptable for re-display). The password **never** appears in
+  `toApp`/`toManifest` or any open read.
+- **Projection.** Only `passwordHash`/`passwordSalt` reach the edge (registry projection); the edge
+  holds nothing decryptable.
+- **Challenge (edge).** `apps/edge/src/auth/routes/passwordLogin.ts` serves `GET /_auth/login` (a
+  whitelabeled form under its own strict CSP) and verifies `POST /_auth/login`: Origin-checked
+  (login-CSRF), brute-force throttled (`loginThrottle.ts` — 429), and the password re-derived with
+  async scrypt + `timingSafeEqual` (`password.ts`, fail-closed). On success it inserts an **active**
+  session directly (`SessionStore.createActive` — no pending/redeem) and sets `__Host-session`.
+- **Identity.** Each login mints a fresh pseudonym (`pw_<random>`, `displayName: "Guest"`, no
+  groups), so visitors get isolated `user`-scope storage. No silent refresh — the session
+  hard-expires and re-prompts. `visibilityAllows` returns `true` for a password session (the
+  password was the proof); the gate redirects password-app navigations to the same-origin
+  `/_auth/login` instead of the OIDC `/start`.
+
+Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
+`apps/portal/src/routes/access-password.test.ts` + `access/password.test.ts`.
+
 ### Crypto + key material
 
 - `apps/edge/src/auth/flow.ts` — the signed `__Host-oidc-flow` cookie (HS256, 10 min).
@@ -114,7 +143,6 @@ level as the old shared token, now attributed in the audit log. Per-app RBAC is 
 
 - **Real Entra registration** — the remaining M3 tail; the flow is designed to be config-only
   (issuer/client swap), already exercised end-to-end against the local issuer.
-- **`password` visibility** — fails closed today; needs its own challenge flow.
 - **`public` visibility** — wired through the `Caller` seam (anonymous, no `user`-scope data);
   serving/gateway honor it now.
 - **Per-app RBAC / ownership** on the portal side (v1).
