@@ -12,6 +12,10 @@ const TEST_DATABASE_URL =
 export const TEST_TOKEN = "test-token";
 process.env.PORTAL_DEV_TOKEN = TEST_TOKEN;
 
+// Shared-password credential encryption key (apps/portal/src/access/password.ts).
+// ≥32 bytes; only needs to exist for the access-password routes/crypto tests.
+process.env.PORTAL_SECRET ??= "test-portal-secret-test-portal-secret-32b";
+
 export interface TestApp {
   app: FastifyInstance;
   prisma: PrismaClient;

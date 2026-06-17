@@ -47,6 +47,15 @@ model App {
   // queryable/indexable (only `group` carries a payload).
   visibilityMode    VisibilityMode
   visibilityGroupId String?
+  // Shared-password credential for `password` visibility (docs/features/
+  // authentication.md). `passwordHash`/`passwordSalt` (scrypt) are PROJECTED to
+  // the edge to verify a login; `passwordEnc` (AES-256-GCM) is portal-only —
+  // decryptable here so the owner can re-display/copy the cleartext, never read
+  // by the edge. All null unless visibility is `password`.
+  passwordHash      String?
+  passwordSalt      String?
+  passwordEnc       String?
+  passwordSetAt     DateTime?
   // The live version pointer. One-to-one with Version; SetNull so deleting a
   // version (only via app cascade in practice) can't dangle the pointer.
   currentVersionId  String?        @unique @db.Uuid

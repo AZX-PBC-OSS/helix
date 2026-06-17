@@ -2,12 +2,21 @@ import type { FastifyInstance } from "fastify";
 import {
   CapabilitiesSchema,
   CreateAppRequestSchema,
+  PasswordCredentialResponseSchema,
   SetManifestRequestSchema,
+  SetPasswordRequestSchema,
 } from "@helix/shared";
 import { authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
 import { toApp, toManifest, visibilityToColumns } from "../db/mappers.js";
+import {
+  appPublicUrl,
+  decryptPassword,
+  encryptPassword,
+  generatePassphrase,
+  hashPassword,
+} from "../access/password.js";
 
 /** App registry routes: create, list, get (architecture §7). */
 export async function appRoutes(app: FastifyInstance): Promise<void> {
@@ -144,6 +153,152 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         },
       });
       return toManifest(updated);
+    },
+  );
+
+  /* --------------------------------------------------------------------- *
+   * Shared-password access (`password` visibility) — the cleartext credential
+   * an owner shares out-of-band for external demos (docs/features/
+   * authentication.md). All four routes are authenticated, including the GET:
+   * the password never appears in `toApp`/`toManifest` or any open read.
+   * --------------------------------------------------------------------- */
+
+  const credential = (slug: string, password: string, setAt: Date) =>
+    PasswordCredentialResponseSchema.parse({
+      password,
+      url: appPublicUrl(slug),
+      setAt: setAt.toISOString(),
+    });
+
+  // Enable password access: flip visibility to `password` and mint a passphrase
+  // if there isn't one. Idempotent — re-enabling returns the existing credential
+  // rather than rotating it out from under a URL already handed out.
+  app.post<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/access/password",
+    { preHandler: authenticate },
+    async (req, reply) => {
+      const actor = requireActor(req);
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      if (row.visibilityMode === "password" && row.passwordEnc && row.passwordSetAt) {
+        return credential(row.slug, decryptPassword(row.passwordEnc), row.passwordSetAt);
+      }
+      const password = generatePassphrase();
+      const setAt = new Date();
+      const { hash, salt } = await hashPassword(password);
+      await app.prisma.app.update({
+        where: { id: row.id },
+        data: {
+          visibilityMode: "password",
+          visibilityGroupId: null,
+          passwordHash: hash,
+          passwordSalt: salt,
+          passwordEnc: encryptPassword(password),
+          passwordSetAt: setAt,
+        },
+      });
+      await app.prisma.auditEvent.create({
+        data: {
+          appId: row.id,
+          actor: actor.sub,
+          action: "app.access.password.enable",
+          metadata: {},
+        },
+      });
+      reply.status(201);
+      return credential(row.slug, password, setAt);
+    },
+  );
+
+  // Rotate: reroll a fresh passphrase (no body) or set a manual one (`password`,
+  // ≥12 chars). Requires password access to already be enabled.
+  app.post<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/access/password/rotate",
+    { preHandler: authenticate },
+    async (req) => {
+      const { password: manual } = SetPasswordRequestSchema.parse(req.body ?? {});
+      const actor = requireActor(req);
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      if (row.visibilityMode !== "password") {
+        throw new AppError("conflict", "password access is not enabled for this app");
+      }
+      const password = manual ?? generatePassphrase();
+      const setAt = new Date();
+      const { hash, salt } = await hashPassword(password);
+      await app.prisma.app.update({
+        where: { id: row.id },
+        data: {
+          passwordHash: hash,
+          passwordSalt: salt,
+          passwordEnc: encryptPassword(password),
+          passwordSetAt: setAt,
+        },
+      });
+      await app.prisma.auditEvent.create({
+        data: {
+          appId: row.id,
+          actor: actor.sub,
+          action: "app.access.password.rotate",
+          metadata: { manual: manual !== undefined },
+        },
+      });
+      return credential(row.slug, password, setAt);
+    },
+  );
+
+  // Re-display the current credential. Authenticated read — never an open route.
+  app.get<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/access/password",
+    { preHandler: authenticate },
+    async (req) => {
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      if (row.visibilityMode !== "password" || !row.passwordEnc || !row.passwordSetAt) {
+        throw new AppError("not_found", "password access is not enabled for this app");
+      }
+      return credential(row.slug, decryptPassword(row.passwordEnc), row.passwordSetAt);
+    },
+  );
+
+  // Disable password access: revert to private and wipe the credential. Mutating,
+  // idempotent — a non-password app is already in the desired state.
+  app.delete<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/access/password",
+    { preHandler: authenticate },
+    async (req, reply) => {
+      const actor = requireActor(req);
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      if (row.visibilityMode === "password") {
+        await app.prisma.app.update({
+          where: { id: row.id },
+          data: {
+            visibilityMode: "private",
+            passwordHash: null,
+            passwordSalt: null,
+            passwordEnc: null,
+            passwordSetAt: null,
+          },
+        });
+        await app.prisma.auditEvent.create({
+          data: {
+            appId: row.id,
+            actor: actor.sub,
+            action: "app.access.password.disable",
+            metadata: {},
+          },
+        });
+      }
+      reply.status(204).send();
     },
   );
 }
