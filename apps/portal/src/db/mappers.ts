@@ -1,14 +1,18 @@
 import {
   AppManifestSchema,
   AppSchema,
+  ApprovalRequestSchema,
   CapabilitiesSchema,
+  CspViolationSchema,
   GatewayCallSchema,
   PlatformUsageSchema,
   UsageSummarySchema,
   VersionSchema,
   type AppManifest,
   type App,
+  type ApprovalRequest,
   type Capabilities,
+  type CspViolation,
   type GatewayCall,
   type PlatformUsage,
   type UsageSummary,
@@ -16,7 +20,11 @@ import {
   type Visibility,
   type VisibilityMode,
 } from "@helix/shared";
-import type { App as AppRow, Version as VersionRow } from "./client.js";
+import type {
+  App as AppRow,
+  ApprovalRequest as ApprovalRequestRow,
+  Version as VersionRow,
+} from "./client.js";
 
 /** Flattened visibility columns as stored on the `apps` row. */
 export interface VisibilityColumns {
@@ -72,6 +80,53 @@ export function toManifest(row: AppRow): AppManifest {
     app: row.slug,
     visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupId),
     capabilities: capabilitiesFromRow(row),
+  });
+}
+
+/**
+ * Map an `approval_requests` row to the wire {@link ApprovalRequest}, validated
+ * through the shared schema (deltas/status/risk shape fails loudly on drift).
+ * `app` is the joined registry row for the queue's slug/owner columns.
+ */
+export function toApprovalRequest(
+  row: ApprovalRequestRow,
+  app?: { slug: string; displayName: string },
+): ApprovalRequest {
+  return ApprovalRequestSchema.parse({
+    id: row.id,
+    appId: row.appId,
+    ...(app ? { appSlug: app.slug, appDisplayName: app.displayName } : {}),
+    status: row.status,
+    risk: row.risk,
+    deltas: row.deltas,
+    baseSnapshot: row.baseSnapshot,
+    requestedBy: row.requestedBy,
+    reason: row.reason,
+    decidedBy: row.decidedBy,
+    decisionNote: row.decisionNote,
+    createdAt: row.createdAt.toISOString(),
+    decidedAt: row.decidedAt?.toISOString() ?? null,
+  });
+}
+
+export interface CspViolationRow {
+  appId: string;
+  slug: string | null;
+  directive: string;
+  blockedUri: string;
+  count: SqlNum;
+  lastSeen: Date | string;
+}
+
+/** Map an aggregated `csp_reports` row to the wire {@link CspViolation}. */
+export function toCspViolation(row: CspViolationRow): CspViolation {
+  return CspViolationSchema.parse({
+    appId: row.appId,
+    appSlug: row.slug,
+    directive: row.directive,
+    blockedUri: row.blockedUri,
+    count: num(row.count),
+    lastSeen: iso(row.lastSeen),
   });
 }
 

@@ -156,13 +156,50 @@ describe("manifest (capabilities) GET/PUT", () => {
       payload: { capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 50 } } },
     });
     expect(put.statusCode).toBe(200);
-    expect(put.json().capabilities.llm).toEqual({
+    // Curated model + sub-baseline budget → all baseline, nothing pending.
+    expect(put.json().manifest.capabilities.llm).toEqual({
       models: ["claude-opus-4-8"],
       tokensPerDay: 50,
     });
+    expect(put.json().pending).toBeNull();
 
     const events = await t.prisma.auditEvent.findMany({ where: { appId: created.json().id } });
     expect(events.map((e) => e.action)).toContain("app.manifest.set");
+  });
+
+  it("write-gate: commits baseline deltas live but bundles elevated ones into a pending request", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({ slug, displayName: "Gated" });
+
+    const put = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: authHeader(),
+      payload: {
+        capabilities: {
+          // baseline: a data scope grant
+          data: { user: true },
+          // elevated: an arbitrary MCP server (high risk)
+          mcp: ["pagerduty"],
+        },
+      },
+    });
+    expect(put.statusCode).toBe(200);
+    const body = put.json();
+    // The pending part is NOT applied to the live manifest.
+    expect(body.manifest.capabilities.mcp).toEqual([]);
+    expect(body.manifest.capabilities.data.user).toBe(true);
+    expect(typeof body.pending).toBe("string");
+
+    const reqs = await t.prisma.approvalRequest.findMany({ where: { appId: created.json().id } });
+    expect(reqs).toHaveLength(1);
+    expect(reqs[0]?.status).toBe("pending");
+    expect(reqs[0]?.risk).toBe("high");
+
+    const events = await t.prisma.auditEvent.findMany({ where: { appId: created.json().id } });
+    expect(events.map((e) => e.action)).toEqual(
+      expect.arrayContaining(["app.manifest.set", "approval.request"]),
+    );
   });
 
   it("404s setting a manifest on an unknown slug", async () => {

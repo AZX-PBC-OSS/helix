@@ -1,0 +1,95 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { TokenVerifier } from "../plugins/auth.js";
+import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
+
+const ADMIN_GROUP = "platform-admins";
+const verifiers: TokenVerifier[] = [
+  {
+    verify: async (t) => {
+      if (t === "owner") return { sub: "owner@azx.io", via: "oidc", groups: [] };
+      if (t === "admin") return { sub: "admin@azx.io", via: "oidc", groups: [ADMIN_GROUP] };
+      return null;
+    },
+  },
+];
+const owner = { authorization: "Bearer owner" };
+const admin = { authorization: "Bearer admin" };
+
+let t: TestApp;
+
+beforeAll(async () => {
+  process.env.PORTAL_ADMIN_GROUP_ID = ADMIN_GROUP;
+  t = buildTestApp({ auth: { verifiers, publicConfig: null } });
+  await t.app.ready();
+});
+
+afterAll(async () => {
+  await t.close();
+});
+
+describe("GET /api/v1/csp/violations", () => {
+  it("aggregates reported violations for admins and refuses non-admins", async () => {
+    const slug = uniqueSlug();
+    const created = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: owner,
+      payload: { slug, displayName: "v" },
+    });
+    const appId = created.json().id as string;
+
+    // Seed two reports for the same blocked origin (simulating the edge sink).
+    for (let i = 0; i < 2; i++) {
+      await t.prisma.cspReport.create({
+        data: { appId, directive: "connect-src", blockedUri: "https://api.foo.com/x" },
+      });
+    }
+
+    const forbidden = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/csp/violations",
+      headers: owner,
+    });
+    expect(forbidden.statusCode).toBe(403);
+
+    const res = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/csp/violations",
+      headers: admin,
+    });
+    expect(res.statusCode).toBe(200);
+    const mine = res.json().violations.find((v: { appSlug: string }) => v.appSlug === slug);
+    expect(mine).toMatchObject({
+      directive: "connect-src",
+      blockedUri: "https://api.foo.com/x",
+      count: 2,
+    });
+  });
+});
+
+describe("POST /api/v1/apps/:slug/access/origin", () => {
+  it("opens a med-risk origin-grant request through the write-gate", async () => {
+    const slug = uniqueSlug();
+    const created = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: owner,
+      payload: { slug, displayName: "og" },
+    });
+
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/access/origin`,
+      headers: owner,
+      payload: { origin: "https://api.foo.com" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(typeof res.json().pending).toBe("string");
+    // Not applied until approved.
+    expect(res.json().manifest.capabilities.externalOrigins).toEqual([]);
+
+    const reqs = await t.prisma.approvalRequest.findMany({ where: { appId: created.json().id } });
+    expect(reqs).toHaveLength(1);
+    expect(reqs[0]?.risk).toBe("med");
+  });
+});

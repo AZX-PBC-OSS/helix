@@ -1,8 +1,8 @@
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "./generated/client.js";
+import { PrismaClient, Prisma } from "./generated/client.js";
 
-export { PrismaClient };
-export type { App, Version, AuditEvent } from "./generated/client.js";
+export { PrismaClient, Prisma };
+export type { App, Version, AuditEvent, ApprovalRequest } from "./generated/client.js";
 
 /**
  * Construct a PrismaClient backed by the pg driver adapter. Prisma 7 is

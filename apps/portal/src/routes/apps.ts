@@ -2,14 +2,23 @@ import type { FastifyInstance } from "fastify";
 import {
   CapabilitiesSchema,
   CreateAppRequestSchema,
+  OriginGrantRequestSchema,
   PasswordCredentialResponseSchema,
   SetManifestRequestSchema,
   SetPasswordRequestSchema,
+  SetVisibilityRequestSchema,
+  captureSnapshot,
+  classifyVisibilityChange,
+  touchedAreas,
+  type ManifestUpdateResult,
+  type VisibilityUpdateResult,
 } from "@helix/shared";
 import { authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
-import { toApp, toManifest, visibilityToColumns } from "../db/mappers.js";
+import { capabilitiesFromRow, toApp, toManifest, visibilityToColumns } from "../db/mappers.js";
+import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
+import { Prisma } from "../db/client.js";
 import {
   appPublicUrl,
   decryptPassword,
@@ -34,6 +43,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         data: {
           slug: body.slug,
           displayName: body.displayName,
+          ownerId: actor.sub,
           visibilityMode,
           visibilityGroupId,
           capabilities,
@@ -127,32 +137,112 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Replace an app's capability grants (architecture §6.3). Mutating — bearer
-  // token. The gateway picks the change up via the edge's registry projection.
-  // (Per-app approval policy is a v1 control-plane feature; v0 trusts any
-  // authenticated portal principal — same level as every other mutation here.)
+  // token. Routed through the approvals write-gate (docs/design/approvals.md §3):
+  // baseline deltas commit immediately (as before); elevated deltas (e.g. an
+  // arbitrary MCP server, a budget above threshold) are bundled into one pending
+  // ApprovalRequest and applied later on approve. The edge only ever sees the
+  // committed effective state via its registry projection — it never learns a
+  // request is open.
   app.put<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/manifest",
     { preHandler: authenticate },
-    async (req) => {
-      const { capabilities } = SetManifestRequestSchema.parse(req.body);
+    async (req): Promise<ManifestUpdateResult> => {
+      const { capabilities: requested, reason } = SetManifestRequestSchema.parse(req.body);
       const actor = requireActor(req);
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      const updated = await app.prisma.app.update({
-        where: { id: row.id },
-        data: { capabilities },
+      return applyCapabilityChange(app.prisma, { row, requested, actor: actor.sub, reason });
+    },
+  );
+
+  // One-click origin grant from the Violations screen (docs/design/approvals.md
+  // §6.2): add a single external origin through the same write-gate. Adding an
+  // origin is always elevated, so this opens a med-risk request.
+  app.post<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/access/origin",
+    { preHandler: authenticate },
+    async (req): Promise<ManifestUpdateResult> => {
+      const { origin, reason } = OriginGrantRequestSchema.parse(req.body);
+      const actor = requireActor(req);
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      const effective = capabilitiesFromRow(row);
+      const requested = {
+        ...effective,
+        externalOrigins: [...effective.externalOrigins, origin],
+      };
+      return applyCapabilityChange(app.prisma, { row, requested, actor: actor.sub, reason });
+    },
+  );
+
+  // Change how an app gates access (architecture §4.2). Reducing exposure
+  // (→ private/group) commits immediately; going **public** is elevated and
+  // opens an approval request (docs/design/approvals.md §3, §6.3). Enabling
+  // `password` visibility is NOT done here — it needs a minted credential, so
+  // it keeps its dedicated /access/password routes below.
+  app.post<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/visibility",
+    { preHandler: authenticate },
+    async (req): Promise<VisibilityUpdateResult> => {
+      const { visibility, reason } = SetVisibilityRequestSchema.parse(req.body);
+      const actor = requireActor(req);
+      if (visibility.mode === "password") {
+        throw new AppError(
+          "conflict",
+          "enable password access via POST /api/v1/apps/:slug/access/password (it mints the credential)",
+        );
+      }
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+
+      const change = classifyVisibilityChange(row.visibilityMode, visibility.mode);
+      if (!change) {
+        return { app: toApp(row), applied: [], pending: null }; // no-op
+      }
+
+      if (change.elevated) {
+        const baseSnapshot = captureSnapshot(
+          capabilitiesFromRow(row),
+          row.visibilityMode,
+          touchedAreas([change.delta]),
+        );
+        const pending = await app.prisma.$transaction((tx) =>
+          createApprovalRequest(tx, {
+            appId: row.id,
+            deltas: [change.delta],
+            risk: change.risk,
+            baseSnapshot,
+            requestedBy: actor.sub,
+            reason,
+          }),
+        );
+        return { app: toApp(row), applied: [], pending };
+      }
+
+      // Baseline reduction — apply now.
+      const { visibilityMode, visibilityGroupId } = visibilityToColumns(visibility);
+      const updated = await app.prisma.$transaction(async (tx) => {
+        const updated = await tx.app.update({
+          where: { id: row.id },
+          data: { visibilityMode, visibilityGroupId },
+        });
+        await tx.auditEvent.create({
+          data: {
+            appId: row.id,
+            actor: actor.sub,
+            action: "app.visibility.set",
+            metadata: { applied: [change.delta] as unknown as Prisma.InputJsonValue },
+          },
+        });
+        return updated;
       });
-      await app.prisma.auditEvent.create({
-        data: {
-          appId: row.id,
-          actor: actor.sub,
-          action: "app.manifest.set",
-          metadata: { capabilities },
-        },
-      });
-      return toManifest(updated);
+      return { app: toApp(updated), applied: [change.delta], pending: null };
     },
   );
 

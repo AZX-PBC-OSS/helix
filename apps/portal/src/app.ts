@@ -9,6 +9,8 @@ import { errorsPlugin } from "./plugins/errors.js";
 import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
 import { MAX_TOTAL_BYTES } from "./deploy/limits.js";
 import { appRoutes } from "./routes/apps.js";
+import { approvalRoutes } from "./routes/approvals.js";
+import { cspRoutes } from "./routes/csp.js";
 import { versionRoutes } from "./routes/versions.js";
 import { usageRoutes } from "./routes/usage.js";
 import { dataRoutes } from "./routes/data.js";
@@ -57,6 +59,8 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.register(appRoutes);
+  app.register(approvalRoutes);
+  app.register(cspRoutes);
   app.register(versionRoutes);
   app.register(usageRoutes);
   app.register(dataRoutes);
