@@ -1,7 +1,11 @@
 import { Box, Button, Card, Grid, Group, Stack, Text } from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router";
 import type { App, Version } from "@helix/shared";
 import { Bars } from "../../components/charts";
 import { Eyebrow, Hint, KV, Stat } from "../../components/primitives";
+import { approvalsQuery } from "../../api/queries";
+import { useAuth } from "../../auth/AuthProvider";
 import { timeAgo } from "../../lib/format";
 import { awaitingPromote, deployCadence, liveVersion } from "../../lib/appStatus";
 import { useDeploy } from "../../modals/DeployContext";
@@ -12,6 +16,13 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
   const pending = awaitingPromote(app, versions);
   const last = versions[0];
   const { openDeploy } = useDeploy();
+  const { authenticated } = useAuth();
+  // Pending capability/visibility approvals for this app (docs/design/approvals.md).
+  const approvals = useQuery({
+    ...approvalsQuery({ app: app.slug, status: "pending" }),
+    enabled: authenticated,
+  });
+  const pendingApprovals = approvals.data ?? [];
 
   return (
     <Grid gap={18} className="az-stagger">
@@ -64,6 +75,24 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
             >
               <b>v{pending.number}</b> is deployed to preview and awaiting promotion. Live traffic
               is unaffected until you promote.
+            </Hint>
+          )}
+          {pendingApprovals.length > 0 && (
+            <Hint
+              icon="shield"
+              tone="violet"
+              action={
+                <Button variant="default" size="xs" component={Link} to="/admin/approvals">
+                  Review
+                </Button>
+              }
+            >
+              <b>
+                {pendingApprovals.length} elevated change
+                {pendingApprovals.length > 1 ? "s" : ""}
+              </b>{" "}
+              awaiting admin approval. Baseline edits already applied; these grants stay off until
+              approved.
             </Hint>
           )}
           {versions.length === 0 && (

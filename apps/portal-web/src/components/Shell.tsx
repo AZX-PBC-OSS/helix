@@ -34,11 +34,11 @@ const WORKSPACE_NAV: NavItem[] = [
 ];
 
 const ADMIN_NAV: NavItem[] = [
-  { to: "/admin/approvals", label: "Approvals", icon: "check", preview: true },
+  { to: "/admin/approvals", label: "Approvals", icon: "check" },
   { to: "/admin/audit", label: "Audit Log", icon: "list" },
   { to: "/admin/platform", label: "Platform", icon: "activity" },
   { to: "/admin/registry", label: "All Apps", icon: "layers" },
-  { to: "/admin/violations", label: "Violations", icon: "shield", preview: true },
+  { to: "/admin/violations", label: "Violations", icon: "shield" },
 ];
 
 function Brand() {

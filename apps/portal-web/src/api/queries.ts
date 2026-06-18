@@ -3,7 +3,9 @@ import { z } from "zod";
 import {
   AppManifestSchema,
   AppSchema,
+  ApprovalRequestSchema,
   AuthConfigResponseSchema,
+  CspViolationsPageSchema,
   GatewayAuditPageSchema,
   HealthStatusSchema,
   PasswordCredentialResponseSchema,
@@ -40,6 +42,23 @@ export const manifestQuery = (slug: string) =>
     queryKey: ["apps", slug, "manifest"],
     queryFn: () =>
       fetchJson(AppManifestSchema, `/api/v1/apps/${encodeURIComponent(slug)}/manifest`),
+  });
+
+/**
+ * Approval requests (docs/design/approvals.md). `app` scopes to one app's queue
+ * (owner or admin); without it, the global admin queue. Bearer-gated server-side
+ * — callers gate on `authenticated` via the query's `enabled` option.
+ */
+export const approvalsQuery = (params: { app?: string; status?: string } = {}) =>
+  queryOptions({
+    queryKey: ["approvals", params],
+    queryFn: () => {
+      const q = new URLSearchParams();
+      if (params.app) q.set("app", params.app);
+      if (params.status) q.set("status", params.status);
+      const qs = q.toString();
+      return fetchJson(z.array(ApprovalRequestSchema), `/api/v1/approvals${qs ? `?${qs}` : ""}`);
+    },
   });
 
 /**
@@ -86,6 +105,12 @@ export const gatewayAuditQuery = (
       return fetchJson(GatewayAuditPageSchema, `/api/v1/gateway/audit${qs ? `?${qs}` : ""}`);
     },
   });
+
+/** Aggregated runtime CSP violations (admin Violations screen). Admin-gated. */
+export const cspViolationsQuery = queryOptions({
+  queryKey: ["csp", "violations"],
+  queryFn: () => fetchJson(CspViolationsPageSchema, "/api/v1/csp/violations"),
+});
 
 /** Platform-wide gateway rollup (admin Platform + workspace /usage). Bearer-gated. */
 export const platformUsageQuery = queryOptions({

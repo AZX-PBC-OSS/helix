@@ -339,9 +339,17 @@ export function CapabilitiesTab({ app }: { app: App }) {
             <Box mt={14}>
               <Hint icon="shield" tone="info">
                 Above-baseline grants (arbitrary MCP servers, external origins, large LLM budgets)
-                will require admin approval in v1. Today, saving applies the change directly.
+                pause for admin approval. Baseline edits apply immediately on save; elevated ones
+                open a request.
               </Hint>
             </Box>
+            {setManifest.data?.pending && (
+              <Box mt={10}>
+                <Hint icon="shield" tone="violet">
+                  Baseline changes applied. The elevated grants are now awaiting admin approval.
+                </Hint>
+              </Box>
+            )}
             {!authenticated ? (
               <Button
                 fullWidth
