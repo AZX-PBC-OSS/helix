@@ -4,6 +4,7 @@ export * from "./visibility.js";
 export * from "./app.js";
 export * from "./version.js";
 export * from "./manifest.js";
+export * from "./approval.js";
 export * from "./health.js";
 export * from "./api.js";
 export * from "./auth.js";

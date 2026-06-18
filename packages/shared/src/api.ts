@@ -24,8 +24,18 @@ export type CreateAppRequest = z.infer<typeof CreateAppRequestSchema>;
 /** `PUT /api/v1/apps/:slug/manifest` body — replaces the app's capability grants. */
 export const SetManifestRequestSchema = z.object({
   capabilities: CapabilitiesSchema,
+  /** Justification carried onto an approval request for any elevated deltas. */
+  reason: z.string().max(2000).optional(),
 });
 export type SetManifestRequest = z.infer<typeof SetManifestRequestSchema>;
+
+/** `POST /api/v1/apps/:slug/visibility` body — change how the app gates access. */
+export const SetVisibilityRequestSchema = z.object({
+  visibility: VisibilitySchema,
+  /** Justification carried onto the approval request when going public. */
+  reason: z.string().max(2000).optional(),
+});
+export type SetVisibilityRequest = z.infer<typeof SetVisibilityRequestSchema>;
 
 /** A manually-set shared password must clear this bar (a generated one far exceeds it). */
 export const MIN_PASSWORD_LENGTH = 12;
@@ -62,6 +72,30 @@ export const CspWarningSchema = z.object({
   hint: z.string(),
 });
 export type CspWarning = z.infer<typeof CspWarningSchema>;
+
+/** `POST /api/v1/apps/:slug/access/origin` body — request one external origin. */
+export const OriginGrantRequestSchema = z.object({
+  origin: z.url(),
+  reason: z.string().max(2000).optional(),
+});
+export type OriginGrantRequest = z.infer<typeof OriginGrantRequestSchema>;
+
+/** One aggregated runtime CSP violation (docs/design/approvals.md §6.2). */
+export const CspViolationSchema = z.object({
+  appId: z.string(),
+  appSlug: z.string().nullable(),
+  directive: z.string(),
+  blockedUri: z.string(),
+  count: z.number().int(),
+  lastSeen: z.string(),
+});
+export type CspViolation = z.infer<typeof CspViolationSchema>;
+
+/** `GET /api/v1/csp/violations` response. */
+export const CspViolationsPageSchema = z.object({
+  violations: z.array(CspViolationSchema),
+});
+export type CspViolationsPage = z.infer<typeof CspViolationsPageSchema>;
 
 /** `POST /api/v1/apps/:slug/versions` response — the new (preview) version + lint warnings. */
 export const UploadVersionResponseSchema = z.object({
