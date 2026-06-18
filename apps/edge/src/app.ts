@@ -24,6 +24,8 @@ import { LoginThrottle } from "./auth/loginThrottle.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
+import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
+import { CSP_REPORT_PATH } from "./serving/csp.js";
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
@@ -53,6 +55,8 @@ export interface EdgeDeps {
   usage?: UsageStore | null;
   /** App-data store (M4/M5); null = the data capability 503s. */
   appData?: AppDataStore | null;
+  /** CSP-violation report sink (§6.2); null = accept-and-drop. */
+  cspReports?: CspReportStore | null;
   /** Shared-password login throttle; tests inject a low-threshold one. */
   loginThrottle?: LoginThrottle | null;
   /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
@@ -73,7 +77,8 @@ function isReservedAppPath(rawUrl: string): boolean {
       pathname === "/_auth" ||
       pathname.startsWith("/_auth/") ||
       pathname === "/_api" ||
-      pathname.startsWith("/_api/")
+      pathname.startsWith("/_api/") ||
+      pathname === "/_csp-report"
     ) {
       return true;
     }
@@ -171,6 +176,12 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           usage: deps.usage ?? null,
         })
       : null;
+  // The CSP report sink is unauthenticated (browsers send no credentials with
+  // report beacons) and always available — it only ever appends.
+  const handleCspReport = makeCspReportHandler({
+    registry: deps.registry,
+    store: deps.cspReports ?? null,
+  });
 
   // The two-router discipline (architecture §3, decision 12): every request
   // is classified by hostname exactly once, and the two worlds never mix —
@@ -193,6 +204,21 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         const out: Record<string, string> = {};
         for (const [k, v] of new URLSearchParams(body as string)) out[k] = v;
         done(null, out);
+      } catch (err) {
+        done(err as Error);
+      }
+    },
+  );
+
+  // CSP violation reports arrive as `application/csp-report` (report-uri) or
+  // `application/reports+json` (Reporting-API) — both JSON bodies Fastify won't
+  // parse by default.
+  app.addContentTypeParser(
+    ["application/csp-report", "application/reports+json"],
+    { parseAs: "string" },
+    (_req, body, done) => {
+      try {
+        done(null, body ? JSON.parse(body as string) : undefined);
       } catch (err) {
         done(err as Error);
       }
@@ -347,6 +373,20 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       },
     });
   }
+
+  // CSP violation sink (§6.2): the app's `report-uri` posts here, same-origin.
+  // App hosts only; the report is appended (or dropped) and always 204s.
+  app.route({
+    method: "POST",
+    url: CSP_REPORT_PATH,
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app") {
+        await handleCspReport(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
 
   app.route({
     method: ["GET", "HEAD"],

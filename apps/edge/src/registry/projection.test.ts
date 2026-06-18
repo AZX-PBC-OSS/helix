@@ -56,6 +56,7 @@ describe("RegistryProjection", () => {
       visibilityGroupId: null,
       llm: null,
       data: null,
+      externalOrigins: [],
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();
@@ -114,6 +115,22 @@ describe("RegistryProjection", () => {
     expect(projection.getApp("no-data")?.data).toBeNull();
     expect(projection.getApp("bad-json")?.data).toBeNull();
     expect(projection.getApp("bad-data")?.data).toBeNull();
+  });
+
+  it("parses capabilities.externalOrigins, failing closed to [] on junk", async () => {
+    const projection = new RegistryProjection(
+      querierFor([
+        [
+          { ...ROW, slug: "granted", capabilities: { externalOrigins: ["https://api.foo.com"] } },
+          { ...ROW, slug: "none", capabilities: {} },
+          { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
+        ],
+      ]),
+    );
+    await projection.load();
+    expect(projection.getApp("granted")?.externalOrigins).toEqual(["https://api.foo.com"]);
+    expect(projection.getApp("none")?.externalOrigins).toEqual([]);
+    expect(projection.getApp("bad-json")?.externalOrigins).toEqual([]);
   });
 
   it("keeps serving the previous map when a reload fails", async () => {

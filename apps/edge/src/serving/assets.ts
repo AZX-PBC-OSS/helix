@@ -5,7 +5,7 @@ import type { RegistryReader } from "../registry/projection.js";
 import type { SessionGate } from "../auth/gate.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../errors.js";
 import { normalizeRequestPath } from "./paths.js";
-import { APP_CSP } from "./csp.js";
+import { buildAppCsp } from "./csp.js";
 
 /**
  * The app-host request path (architecture §4.3): resolve slug → live version
@@ -88,6 +88,8 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     const method = req.method === "HEAD" ? "HEAD" : "GET";
     const relPath = path === "/" ? "index.html" : path.slice(1);
     const ifNoneMatch = firstHeader(req.headers["if-none-match"]);
+    // Per-app CSP: baseline widened with this app's approved external origins.
+    const csp = buildAppCsp(entry.externalOrigins);
 
     let result = await getUnderPrefix(blob, entry.blobPrefix, relPath, { method, ifNoneMatch });
 
@@ -115,10 +117,7 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     const cacheControl = result.kind === "found" && !isHtml ? "private, max-age=300" : "no-cache";
 
     if (result.kind === "not-modified") {
-      reply
-        .status(304)
-        .header("cache-control", "no-cache")
-        .header("content-security-policy", APP_CSP);
+      reply.status(304).header("cache-control", "no-cache").header("content-security-policy", csp);
       if (result.etag) reply.header("etag", result.etag);
       reply.send();
       return;
@@ -131,7 +130,7 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
       .header("x-content-type-options", "nosniff")
       // On EVERY response, not just HTML: any browser-active document type
       // (SVG, XML, …) can carry script, and CSP on inert assets is harmless.
-      .header("content-security-policy", APP_CSP);
+      .header("content-security-policy", csp);
     if (result.contentLength) reply.header("content-length", result.contentLength);
     if (result.etag) reply.header("etag", result.etag);
     if (result.lastModified) reply.header("last-modified", result.lastModified);

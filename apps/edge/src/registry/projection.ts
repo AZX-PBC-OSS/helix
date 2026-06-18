@@ -8,6 +8,7 @@
  * the very first load gates serving (isLoaded()).
  */
 import {
+  CapabilitiesSchema,
   DataCapabilitySchema,
   LlmCapabilitySchema,
   type DataCapability,
@@ -46,6 +47,12 @@ export interface RegistryEntry {
    * Parsed fail-closed exactly like `llm`.
    */
   data: DataCapability | null;
+  /**
+   * Approved external origins (manifest `capabilities.externalOrigins`, §6.2)
+   * the app's CSP `connect-src`/`img-src` are widened to. Empty unless the
+   * approvals loop granted one. Parsed fail-closed to `[]`.
+   */
+  externalOrigins: string[];
 }
 
 /** Extract `capabilities.llm` from the raw JSON column, fail-closed to null. */
@@ -64,6 +71,12 @@ function parseDataCapability(capabilities: unknown): DataCapability | null {
   if (data === undefined) return null;
   const parsed = DataCapabilitySchema.safeParse(data);
   return parsed.success ? parsed.data : null;
+}
+
+/** Extract `capabilities.externalOrigins` from the raw JSON, fail-closed to []. */
+function parseExternalOrigins(capabilities: unknown): string[] {
+  const parsed = CapabilitiesSchema.safeParse(capabilities ?? {});
+  return parsed.success ? parsed.data.externalOrigins : [];
 }
 
 export interface RegistryReader {
@@ -160,6 +173,7 @@ export class RegistryProjection implements RegistryReader {
           passwordSalt: row.password_salt,
           llm: parseLlmCapability(row.capabilities),
           data: parseDataCapability(row.capabilities),
+          externalOrigins: parseExternalOrigins(row.capabilities),
         });
       }
       this.#map = next;

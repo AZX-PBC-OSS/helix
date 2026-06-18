@@ -26,6 +26,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     passwordSalt: null,
     llm: null,
     data: null,
+    externalOrigins: [],
     ...overrides,
   };
 }

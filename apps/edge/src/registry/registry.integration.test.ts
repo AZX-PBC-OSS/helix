@@ -66,6 +66,7 @@ describe("LiveRegistry against the test database", () => {
       passwordSalt: null,
       llm: null,
       data: null,
+      externalOrigins: [],
     });
     // Preview-only app: known, but nothing live to serve.
     expect(registry.getApp(preview.slug)?.blobPrefix).toBeNull();

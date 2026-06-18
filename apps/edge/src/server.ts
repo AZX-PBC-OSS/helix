@@ -9,6 +9,7 @@ import { EnvSecretProvider } from "./gateway/secrets-provider.js";
 import { AnthropicProvider, type LlmProvider } from "./gateway/provider.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
 import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
+import { PgCspReportStore } from "./serving/cspReport.js";
 
 /**
  * Dev convenience: load `apps/edge/.env.local` (gitignored) into process.env
@@ -100,6 +101,9 @@ const usage: UsageStore | null = config.auth ? new PgUsageStore(config.databaseU
 // App-data capability (app-data design §3): comes up with the auth stack, like
 // the meter — every data verb is gated and caller-scoped.
 const appData: AppDataStore | null = config.auth ? new PgAppDataStore(config.databaseUrl) : null;
+// CSP report sink (§6.2) — append-only, no auth needed; always on (the edge
+// always has a DB connection for the registry).
+const cspReports = new PgCspReportStore(config.databaseUrl);
 const secrets = new EnvSecretProvider();
 const llmProvider: LlmProvider | null = secrets.has("anthropic")
   ? new AnthropicProvider({
@@ -118,6 +122,7 @@ const app = buildApp({
   llmProvider,
   usage,
   appData,
+  cspReports,
   https,
 });
 logRef.current = {
@@ -139,6 +144,7 @@ app.addHook("onClose", async () => {
   await sessions?.close();
   await usage?.close();
   await appData?.close();
+  await cspReports.close();
   await llmProvider?.close();
   await blob.close();
 });

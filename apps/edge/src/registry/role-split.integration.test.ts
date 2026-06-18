@@ -59,6 +59,23 @@ describe("helix_edge least-privilege grants", () => {
         ),
       ).rejects.toThrow(/permission denied/i);
 
+      // CSP reports (§6.2): INSERT-only, write-from-edge. Append is granted…
+      await expect(
+        pool.query(
+          `INSERT INTO csp_reports (id, "appId", directive, "blockedUri")
+           VALUES (gen_random_uuid(), gen_random_uuid(), 'connect-src', 'https://x')`,
+        ),
+      ).resolves.toBeDefined();
+      // …but the edge can NEVER enumerate them (no SELECT grant).
+      await expect(pool.query("SELECT count(*) FROM csp_reports")).rejects.toThrow(
+        /permission denied/i,
+      );
+
+      // The approvals queue is portal-only — the edge has no grant at all.
+      await expect(pool.query("SELECT count(*) FROM approval_requests")).rejects.toThrow(
+        /permission denied/i,
+      );
+
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
     } finally {
