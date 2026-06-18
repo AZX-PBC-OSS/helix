@@ -75,14 +75,16 @@ Minimal IaC: resource group, two ACA apps (or one, if consolidated), Postgres fl
 
 ## 5. v1 backlog (rough order, re-plan after v0)
 
-1. **Portal SPA** — app list/detail, deploy history + rollback button, manifest editing. (Until here the portal is API + CLI only.)
-2. **Capabilities manifest + approvals** — per-app grants, baseline vs admin-approved, enforcement in the gateway.
-3. **App data API** — app-scoped and user-scoped KV (`/_api/data/*`), Postgres JSONB.
-4. **CSP feedback loop** — `report-to` endpoint, violation reports surfaced in portal as click-to-request origin grants; deploy-time courtesy lint.
-5. **Deploy skill + preview/promote** — agent skill bundle (no embedded credentials; device-code flow), preview deploys by default, human promote action (architecture §5.1).
-6. **Password/public visibility modes** — password gate, anonymous tier, per-IP limits, admin approval flag for public.
-7. **Session management** — admin session revocation, audit log UI.
-8. **Audit hardening + usage** — audit shipping to immutable blob (scheduled job), per-app usage views.
+Most of this was pulled forward against the local stack — M4/M5 (Azure deploy) buy little before there's a product people want to host, so v1 features came first. Status as of June 2026:
+
+1. **Portal SPA** — **done.** `apps/portal-web` (Vite + React 19 + Mantine + TanStack Query): app list/detail, version history with promote/rollback, create app, zip-upload deploy (CSP lint warnings rendered), archive/unarchive, a real capability-manifest editor, and browser sign-in (code+PKCE). Served statically by the portal; the unbuilt M4+ surfaces ship as labelled `PreviewBadge` mocks rather than silent fakes.
+2. **Capabilities manifest + approvals** — **partial.** Manifest is real and enforced: `GET`/`PUT /api/v1/apps/:slug/manifest`, and the gateway enforces the per-app model allowlist + daily token budget on every LLM call. _Remaining:_ the baseline-vs-admin-approved **approval workflow** — no approval table/routes yet; the portal Approvals screen is a `PreviewBadge` mock.
+3. **App data API** — **done (scope grew).** `/_api/data/*` in three scopes — per-user (RLS-partitioned via `SET LOCAL` GUCs from the verified session), write-only `collections` (no app-facing read; owner drains via the export API), and app-`shared` keys — backed by the `helix_edge` Postgres role split (INSERT-only metering/collections, RLS app-data, no registry write). Broader than the original app-/user-scoped JSONB KV sketch.
+4. **CSP feedback loop** — **partial.** Deploy-time courtesy lint is done (warnings surfaced on upload and in the SPA). _Remaining:_ the `report-to` endpoint on the edge and in-portal violation surfacing as click-to-request origin grants — the Violations screen is a `PreviewBadge` mock.
+5. **Deploy skill + preview/promote** — **partial.** Preview-by-default deploys + human promote/rollback are done (control plane + `azx` CLI), and the device-code flow exists (`azx login`/`logout`/`whoami`, XDG token cache). _Remaining:_ the `packages/deploy-skill` agent bundle (does not exist yet).
+6. **Password/public visibility modes** — **partial.** `password` visibility is done end to end (portal mints/stores an xkcd passphrase; edge serves a throttled same-origin `/_auth/login` challenge minting a pseudonymous `pw_<random>` session). `public` apps resolve to an anonymous caller in the gate. _Remaining:_ **per-IP limits for the anonymous tier** (password login is already per-IP throttled; anonymous byte/IP caps are deferred knobs — see the app-data design doc §7) and the **admin-approval flag for public** (UI badge only, no backing mechanism).
+7. **Session management** — **partial.** A real gateway audit read-side exists (`/api/v1/gateway/audit` + the portal Audit page over `gateway_calls`). _Remaining:_ **admin session revocation** — the portal migrates the `sessions` table but has no revoke route/UI.
+8. **Audit hardening + usage** — **partial.** Per-app and platform usage views are real and wired (`/api/v1/apps/:slug/usage`, `/api/v1/gateway/usage` + the Usage/Platform pages reading `gateway_calls`). _Remaining:_ **audit shipping to an immutable blob** (scheduled job).
 
 v1.x and beyond (fetch-proxy, MCP-as-REST, secret-backed connections, Git-connect builds) stay in the architecture doc §12; don't plan them yet.
 
