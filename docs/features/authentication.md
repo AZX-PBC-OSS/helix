@@ -60,6 +60,13 @@ behaviors:
   short-circuit: `public` apps yield an unauthenticated caller (`ANON_USER_OID = "anon"`) and
   skip the gate, while every other mode goes through it. This is the single identity seam the
   gateway keys off (see [llm-gateway.md](./llm-gateway.md), [app-data-gateway.md](./app-data-gateway.md)).
+- **`public` visibility — anonymous tier.** Going public is a high-risk change that routes through
+  the approval queue (`docs/design/approvals.md` §6.3); the portal **Settings → Visibility** card
+  is the real switcher for it (reductions apply immediately, public opens a request). At the
+  gateway the anonymous tier is **per-IP rate-limited** — `apps/edge/src/gateway/ipRateLimiter.ts`,
+  a fixed-window in-memory limiter mirroring `loginThrottle.ts`, caps every anonymous `/_api/*`
+  call per IP+app (`429 rate_limited`; `EDGE_ANON_RATE_LIMIT`/`EDGE_ANON_RATE_WINDOW_MS`).
+  Authenticated callers are never limited here — they answer to per-app budgets.
 
 ### Other app-host endpoints
 
@@ -151,6 +158,4 @@ level as the old shared token, now attributed in the audit log. Per-app RBAC is 
 
 - **Real Entra registration** — the remaining M3 tail; the flow is designed to be config-only
   (issuer/client swap), already exercised end-to-end against the local issuer.
-- **`public` visibility** — wired through the `Caller` seam (anonymous, no `user`-scope data);
-  serving/gateway honor it now.
 - **Per-app RBAC / ownership** on the portal side (v1).

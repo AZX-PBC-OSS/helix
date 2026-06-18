@@ -25,13 +25,16 @@ package on `moduleResolution: bundler` (the rest are nodenext).
   - **Capabilities** — a **real** manifest editor against `GET`/`PUT /api/v1/apps/:slug/manifest`
     (LLM models + budget, data flags/lists, external origins, MCP grants — see
     [capabilities-and-manifests.md](./capabilities-and-manifests.md)).
-  - **Settings** — visibility, archive/unarchive.
+  - **Settings** — a **real** visibility switcher (`POST /apps/:slug/visibility` via
+    `useSetVisibility`): reductions (→ private/group) apply immediately, going public opens a
+    confirm-with-reason approval request, and `password` mode defers to the shared-password card.
+    Plus archive/unarchive.
 - **Deploy modal** — a drag-and-drop **zip upload** that renders the CSP lint warnings inline
   (see [registry-and-deploys.md](./registry-and-deploys.md)).
 
 `src/api/queries.ts` / `mutations.ts` are TanStack Query hooks over a bearer-injecting client
 (`client.ts`): apps, versions, manifest, me, health; createApp, uploadVersion, setManifest,
-archive/unarchive.
+setVisibility, archive/unarchive.
 
 ### Browser sign-in (`src/auth/`)
 

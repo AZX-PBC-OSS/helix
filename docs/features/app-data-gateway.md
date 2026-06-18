@@ -53,6 +53,10 @@ opaque app JSON (`MAX_VALUE_BYTES`). Writes (`user.put`, `collection.append`, `s
 through `admitWrite` — a per-app daily `writesPerDay` budget, block-new like the LLM
 `tokensPerDay` (over budget → `429` + a `quota_blocked` meter row). Every verb meters into
 `gateway_calls` with `capability: "data"` and a `model` like `user.put` / `collection.append`.
+On `public` apps the **anonymous tier is also per-IP rate-limited** ahead of the store call (the
+shared preamble, before the size/budget checks): a fixed-window limiter keyed per IP+app
+(`ipRateLimiter.ts`) returns `429 rate_limited`. Rate-limited calls are deliberately **not**
+metered — a ledger row per throttled request would be its own write-amplification vector.
 
 ### Storage + the RLS partition
 
@@ -108,8 +112,9 @@ it via the portal export API. See [examples.md](./examples.md).
 
 ## Planned / not yet built
 
-- **`bytesPerDay`** and **per-IP rate limiting** are declared in the manifest but deferred —
-  they need a stored byte column / shared rate-limit state (app-data design §7); only item-size
-  caps and `writesPerDay` are enforced today.
+- **`bytesPerDay`** and **total-collection-size caps** are deferred — they need a stored byte
+  column (app-data design §7). Item-size caps, `writesPerDay`, and **per-IP rate limiting** of the
+  anonymous tier (`ipRateLimiter.ts`) are enforced today; a shared (DB/Redis) per-IP counter to
+  beat the per-process / N×instances limit is future hardening.
 - **Tighter edge grants (Phase 5)** per the design doc — further narrowing of `helix_edge`.
 - Collections stay intentionally write-only from the app; no app-facing read is planned.
