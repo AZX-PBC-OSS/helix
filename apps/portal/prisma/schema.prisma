@@ -43,6 +43,10 @@ model App {
   id                String         @id @default(uuid()) @db.Uuid
   slug              String         @unique
   displayName       String
+  /// Creator's `actor.sub`, set at `app.create`. Nullable: rows predating the
+  /// approvals work (docs/design/approvals.md §4) have no recorded owner. Drives
+  /// the admin queue "owner" column and "who may request/withdraw".
+  ownerId           String?
   // Visibility is a discriminated union in zod; stored flattened here so it is
   // queryable/indexable (only `group` carries a payload).
   visibilityMode    VisibilityMode
@@ -62,6 +66,7 @@ model App {
   currentVersion    Version?       @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
   versions          Version[]      @relation("AppVersions")
   sessions          Session[]
+  approvalRequests  ApprovalRequest[]
   /// Per-app capability manifest (architecture §6.3) — what the gateway grants
   /// and enforces. JSON matches @helix/shared `CapabilitiesSchema`; the edge
   /// reads it through the registry projection. Defaults to the baseline (no
@@ -133,6 +138,40 @@ model AuditEvent {
 
   @@index([appId, createdAt])
   @@map("audit_events")
+}
+
+/// A typed, pending change to an app's effective policy, awaiting a privileged
+/// decision (docs/design/approvals.md §2). The `apps` row holds only effective
+/// state; "requested state" is the set of open rows here. On approve, `deltas`
+/// are applied to the `apps` columns in one txn and the row is closed — the edge
+/// only ever sees the resulting effective-state change via the registry trigger,
+/// never this table (it has no grant on it).
+model ApprovalRequest {
+  id           String    @id @default(uuid()) @db.Uuid
+  appId        String    @db.Uuid
+  app          App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  /// pending | approved | denied | withdrawn | needs_changes (@helix/shared APPROVAL_STATUSES).
+  status       String
+  /// low | med | high — max risk across the deltas; stored for queue sort.
+  risk         String
+  /// The *elevated* subset of a change: typed Delta[] (@helix/shared §3).
+  deltas       Json
+  /// Effective values of the touched areas at request time (conflict detect + diff render).
+  baseSnapshot Json
+
+  requestedBy  String
+  reason       String?
+  decidedBy    String?
+  /// Required on deny / needs_changes.
+  decisionNote String?
+
+  createdAt    DateTime  @default(now())
+  decidedAt    DateTime?
+
+  @@index([status, createdAt]) // the admin queue
+  @@index([appId])             // the app-detail "pending" banner
+  @@map("approval_requests")
 }
 
 /// Per-call gateway ledger (architecture §6.1/§6.3, §8) — metering + audit for
@@ -210,4 +249,26 @@ model AppCollectionItem {
 
   @@index([appId, collection, createdAt])
   @@map("app_collection_items")
+}
+
+/// CSP violation reports (docs/design/approvals.md §6.2) — write-from-edge,
+/// read-from-portal, exactly like `app_collection_items`. The browser POSTs a
+/// violation to the edge's same-origin `/_csp-report` sink; the edge appends a
+/// row (INSERT-only grant — it can never enumerate them) and the portal reads
+/// them to surface the Violations screen, which feeds one-click origin-grant
+/// approval requests. No FK to `apps` (mirrors GatewayCall) — reports outlive an
+/// app row; the edge supplies `gen_random_uuid()` in raw SQL.
+model CspReport {
+  id          String   @id @default(uuid()) @db.Uuid
+  appId       String   @db.Uuid
+  /// The violated directive (e.g. `connect-src`).
+  directive   String
+  /// The blocked origin/URL the app tried to reach.
+  blockedUri  String
+  /// The document the violation occurred on, when reported.
+  documentUri String?
+  createdAt   DateTime @default(now())
+
+  @@index([appId, createdAt])
+  @@map("csp_reports")
 }

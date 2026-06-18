@@ -72,7 +72,17 @@ describe("createOidcVerifier", () => {
       via: "oidc",
       email: "alice@azx.dev",
       name: "Alice Anders",
+      groups: [],
     });
+  });
+
+  it("reads the groups claim, falling back to roles", async () => {
+    const groups = await verifier.verify(await mint({ claims: { groups: ["platform-admins"] } }));
+    expect(groups?.groups).toEqual(["platform-admins"]);
+    const roles = await verifier.verify(await mint({ claims: { roles: ["admins"] } }));
+    expect(roles?.groups).toEqual(["admins"]);
+    const none = await verifier.verify(await mint());
+    expect(none?.groups).toEqual([]);
   });
 
   it("falls back preferred_username → sub for the actor sub", async () => {
@@ -184,7 +194,11 @@ describe("createOidcVerifier transport security", () => {
 describe("createDevTokenVerifier", () => {
   it("matches only the exact token", async () => {
     const dev = createDevTokenVerifier("secret-token", "dev@azx.io");
-    expect(await dev.verify("secret-token")).toEqual({ sub: "dev@azx.io", via: "dev-token" });
+    expect(await dev.verify("secret-token")).toEqual({
+      sub: "dev@azx.io",
+      via: "dev-token",
+      groups: [],
+    });
     expect(await dev.verify("secret-token ")).toBeNull();
     expect(await dev.verify("other")).toBeNull();
   });

@@ -23,6 +23,12 @@ export interface Actor {
   via: string;
   name?: string;
   email?: string;
+  /**
+   * IdP group/role ids from the token (the `groups` claim, falling back to
+   * Entra's `roles`). Drives admin gating for approvals (docs/design/
+   * approvals.md §4); empty when the token carries neither claim.
+   */
+  groups: string[];
 }
 
 export interface TokenVerifier {
@@ -43,6 +49,12 @@ export interface OidcVerifierOptions {
 
 function claimString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** Read a string-array claim (`groups`/`roles`); tolerant of absence/garbage. */
+function claimStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
 /**
@@ -110,7 +122,8 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
         const email = claimString(payload.email);
         const name = claimString(payload.name);
         const preferred = claimString(payload.preferred_username);
-        return { sub: email ?? preferred ?? sub, via: "oidc", name, email };
+        const groups = claimStringArray(payload.groups ?? payload.roles);
+        return { sub: email ?? preferred ?? sub, via: "oidc", name, email, groups };
       } catch {
         return null;
       }
@@ -122,7 +135,11 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
  * The M1 static dev token, demoted to one verifier in the chain. Kept for
  * CI/scripts (`AZX_TOKEN`); refuses to exist in production.
  */
-export function createDevTokenVerifier(expected: string, actorSub: string): TokenVerifier {
+export function createDevTokenVerifier(
+  expected: string,
+  actorSub: string,
+  groups: string[] = [],
+): TokenVerifier {
   if (process.env.NODE_ENV === "production") {
     throw new Error("PORTAL_DEV_TOKEN is a dev/CI verifier and is refused in production");
   }
@@ -134,7 +151,7 @@ export function createDevTokenVerifier(expected: string, actorSub: string): Toke
       if (tokenBuf.length !== expectedBuf.length || !timingSafeEqual(tokenBuf, expectedBuf)) {
         return null;
       }
-      return { sub: actorSub, via: "dev-token" };
+      return { sub: actorSub, via: "dev-token", groups };
     },
   };
 }

@@ -32,7 +32,7 @@ beforeAll(async () => {
         // The dev token rides along, as in the real env-built chain.
         {
           verify: async (t) =>
-            t === "test-token" ? { sub: "dev@azx.io", via: "dev-token" } : null,
+            t === "test-token" ? { sub: "dev@azx.io", via: "dev-token", groups: [] } : null,
         },
       ],
       publicConfig: { issuer: ISSUER, cliClientId: "azx-cli" },

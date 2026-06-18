@@ -37,6 +37,16 @@ services:
       # (refused under NODE_ENV=production) — the local IdP is plain http.
       PORTAL_OIDC_ALLOW_INSECURE: "true"
       AZX_CLI_CLIENT_ID: azx-cli
+      # Approvals admin gate (docs/design/approvals.md §4): membership in this
+      # group id permits deciding requests. dev-idp ships alice in this group
+      # (apps/dev-idp fixtures `GROUP_PLATFORM_ADMINS`).
+      PORTAL_ADMIN_GROUP_ID: platform-admins
+      # Dev-only: let an admin decide their own request so a solo operator can
+      # drive the whole request→approve loop. Refused under NODE_ENV=production.
+      PORTAL_ALLOW_SELF_APPROVE: "true"
+      # Give the dev-token actor the admin group too (CI/scripts driving the
+      # approval loop without the OIDC device flow).
+      PORTAL_DEV_ACTOR_GROUPS: platform-admins
       # M2 edge auth bypass — dev container only, refused under
       # NODE_ENV=production. "true" skips the session gate on app hosts (M2
       # default, pre-auth). Now that the M3 auth block below is wired, we leave
