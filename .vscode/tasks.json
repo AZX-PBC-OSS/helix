@@ -1,0 +1,64 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dev: all",
+      "dependsOn": ["dev:idp", "dev:portal", "dev:edge", "dev:web"],
+      "dependsOrder": "parallel",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "dev:idp",
+      "detail": "Local OIDC issuer (:3002)",
+      "type": "shell",
+      "command": "pnpm dev:idp",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:portal",
+      "detail": "azx-portal (:3001, registry + deploy API)",
+      "type": "shell",
+      "command": "pnpm dev:portal",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:edge",
+      "detail": "azx-edge (:8080, HTTPS)",
+      "type": "shell",
+      "command": "pnpm dev:edge",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:web",
+      "detail": "portal SPA (:5173, proxies /api to :3001)",
+      "type": "shell",
+      "command": "pnpm dev:web",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    }
+  ]
+}
