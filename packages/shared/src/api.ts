@@ -124,6 +124,13 @@ export const API_ERROR_CODES = [
   "model_not_allowed",
   /** Gateway: the app's daily token budget is exhausted (§6.1). */
   "quota_exceeded",
+  /**
+   * Gateway: the anonymous tier's per-IP request budget is exhausted on a
+   * `public` app (app-data design §7). Distinct from `quota_exceeded` (per-app
+   * daily budget) so the app can tell per-IP throttling apart from running out
+   * of its own budget. HTTP 429.
+   */
+  "rate_limited",
   /** Gateway: a configured capability is not available on this edge. */
   "capability_unavailable",
   "internal",
