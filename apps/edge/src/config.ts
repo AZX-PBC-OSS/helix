@@ -94,6 +94,15 @@ export interface EdgeConfig {
     /** `anthropic-version` header value. */
     anthropicVersion: string;
   };
+  /**
+   * Per-IP rate limit for the anonymous tier on `public` apps (app-data design
+   * §7). Caps every anonymous `/_api/*` gateway call, keyed per IP+app within a
+   * fixed window — the anonymous writer/visitor has no per-user budget to
+   * charge, so this is the only per-source cap on an open public surface.
+   * Authenticated callers are never limited here (they answer to per-app
+   * budgets). `max: 0` disables the limiter.
+   */
+  anonRateLimit: { max: number; windowMs: number };
 }
 
 const ConnectionStringSchema = z.object({
@@ -258,6 +267,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     llm: {
       endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
       anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
+    },
+    anonRateLimit: {
+      max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),
+      windowMs: Number(env.EDGE_ANON_RATE_WINDOW_MS ?? 60_000),
     },
   };
 }

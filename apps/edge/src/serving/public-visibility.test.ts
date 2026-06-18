@@ -26,7 +26,13 @@ const APP_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PREFIX = "apps/b/1/";
 const MODEL = "claude-opus-4-8";
 
-function buildEdge(opts: { visibilityMode: VisibilityMode; slug?: string; withLlm?: boolean }): {
+function buildEdge(opts: {
+  visibilityMode: VisibilityMode;
+  slug?: string;
+  withLlm?: boolean;
+  /** Per-IP anon cap; omit to leave the limiter off (max 0). */
+  anonRateLimit?: { max: number; windowMs: number };
+}): {
   app: FastifyInstance;
   usage: FakeUsageStore;
 } {
@@ -39,7 +45,11 @@ function buildEdge(opts: { visibilityMode: VisibilityMode; slug?: string; withLl
   });
   const usage = new FakeUsageStore();
   const app = buildApp({
-    config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
+    config: testEdgeConfig({
+      auth: testAuthConfig(),
+      allowUnauthenticated: false,
+      ...(opts.anonRateLimit ? { anonRateLimit: opts.anonRateLimit } : {}),
+    }),
     registry: new FakeRegistry([
       registryEntry({
         appId: APP_ID,
@@ -130,5 +140,51 @@ describe("public-app LLM gateway (anonymous caller)", () => {
       payload: { model: MODEL, messages: [{ role: "user", content: "hi" }], stream: false },
     });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("public-app anonymous-tier per-IP rate limit (app-data design §7)", () => {
+  const chat = (app: FastifyInstance) =>
+    app.inject({
+      method: "POST",
+      url: "/_api/llm/chat",
+      headers: {
+        host: "pub.localtest.me",
+        origin: "https://pub.localtest.me:8080",
+        "sec-fetch-mode": "cors",
+        "content-type": "application/json",
+      },
+      payload: { model: MODEL, messages: [{ role: "user", content: "hi" }], stream: false },
+    });
+
+  it("blocks an anonymous caller past the per-IP budget with 429 rate_limited", async () => {
+    const { app } = buildEdge({
+      visibilityMode: "public",
+      withLlm: true,
+      anonRateLimit: { max: 2, windowMs: 60_000 },
+    });
+    expect((await chat(app)).statusCode).toBe(200);
+    expect((await chat(app)).statusCode).toBe(200);
+    const blocked = await chat(app);
+    expect(blocked.statusCode).toBe(429);
+    expect(JSON.parse(blocked.body).error.code).toBe("rate_limited");
+  });
+
+  it("does not meter rate-limited requests (no write-amplification under a flood)", async () => {
+    const { app, usage } = buildEdge({
+      visibilityMode: "public",
+      withLlm: true,
+      anonRateLimit: { max: 1, windowMs: 60_000 },
+    });
+    await chat(app); // allowed → metered
+    await chat(app); // blocked → must NOT meter
+    await chat(app); // blocked → must NOT meter
+    expect(usage.records).toHaveLength(1);
+    expect(usage.records[0]?.outcome).toBe("ok");
+  });
+
+  it("leaves the limiter off by default (no anonRateLimit override → unlimited)", async () => {
+    const { app } = buildEdge({ visibilityMode: "public", withLlm: true });
+    for (let i = 0; i < 5; i++) expect((await chat(app)).statusCode).toBe(200);
   });
 });

@@ -9,6 +9,7 @@ import { EnvSecretProvider } from "./gateway/secrets-provider.js";
 import { AnthropicProvider, type LlmProvider } from "./gateway/provider.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
 import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
+import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
 
 /**
@@ -113,6 +114,10 @@ const llmProvider: LlmProvider | null = secrets.has("anthropic")
     })
   : null;
 
+// Anonymous-tier per-IP gateway limiter (app-data design §7). Owned here so it
+// can be swept on an interval; passed into the app for both gateway handlers.
+const anonRateLimiter = new IpRateLimiter(config.anonRateLimit);
+
 const app = buildApp({
   config,
   registry,
@@ -123,6 +128,7 @@ const app = buildApp({
   usage,
   appData,
   cspReports,
+  anonRateLimiter,
   https,
 });
 logRef.current = {
@@ -137,8 +143,16 @@ const sweeper = sessions
       },
     })
   : null;
+// Drop elapsed per-IP buckets once per window so the map can't grow under a
+// flood of distinct source IPs. `unref` so it never holds the process open.
+const anonSweep =
+  anonRateLimiter.enabled && config.anonRateLimit.windowMs > 0
+    ? setInterval(() => anonRateLimiter.sweep(), config.anonRateLimit.windowMs)
+    : null;
+anonSweep?.unref();
 app.addHook("onClose", async () => {
   sweeper?.stop();
+  if (anonSweep) clearInterval(anonSweep);
   oidc?.stop();
   await registry.stop();
   await sessions?.close();

@@ -21,6 +21,7 @@ import {
   makePasswordLoginSubmitHandler,
 } from "./auth/routes/passwordLogin.js";
 import { LoginThrottle } from "./auth/loginThrottle.js";
+import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
@@ -59,6 +60,8 @@ export interface EdgeDeps {
   cspReports?: CspReportStore | null;
   /** Shared-password login throttle; tests inject a low-threshold one. */
   loginThrottle?: LoginThrottle | null;
+  /** Anonymous-tier per-IP gateway limiter; tests inject a low-threshold one. */
+  anonRateLimiter?: IpRateLimiter | null;
   /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
   https?: { cert: Buffer; key: Buffer } | null;
 }
@@ -123,6 +126,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // `public` apps — app-data design §6). The resolver wraps the gate with the
   // public-app short-circuit; asset serving keeps its own public bypass.
   const resolveCaller = gate ? makeCallerResolver(gate) : null;
+  // One limiter backs every public app's anonymous tier (app-data design §7).
+  // server.ts owns the instance so it can sweep it; tests inject a low one.
+  const anonRateLimiter = deps.anonRateLimiter ?? new IpRateLimiter(config.anonRateLimit);
   const serveAsset = makeAssetHandler({ ...deps, gate });
 
   const handleStart = authRuntime ? makeStartHandler(authRuntime) : null;
@@ -160,6 +166,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           config,
           registry: deps.registry,
           resolveCaller,
+          anonLimiter: anonRateLimiter,
           provider: deps.llmProvider ?? null,
           usage: deps.usage ?? null,
         })
@@ -172,6 +179,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           config,
           registry: deps.registry,
           resolveCaller,
+          anonLimiter: anonRateLimiter,
           store: deps.appData ?? null,
           usage: deps.usage ?? null,
         })

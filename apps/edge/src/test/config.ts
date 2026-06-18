@@ -40,6 +40,8 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     tls: null,
     reconcileIntervalMs: 60_000,
     llm: { endpoint: "https://api.anthropic.com", anthropicVersion: "2023-06-01" },
+    // Off by default in unit tests; suites that exercise it pass a low `max`.
+    anonRateLimit: { max: 0, windowMs: 60_000 },
     ...overrides,
   };
 }

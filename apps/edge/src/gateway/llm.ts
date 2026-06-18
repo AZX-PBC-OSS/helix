@@ -11,6 +11,7 @@ import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import { isSameOrigin } from "../auth/validate.js";
+import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
 import type { GatewayOutcome, UsageStore } from "./usage.js";
 
@@ -31,6 +32,8 @@ export interface LlmGatewayRuntime {
   config: EdgeConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
+  /** Per-IP limiter for the anonymous tier (public apps); null disables it. */
+  anonLimiter: IpRateLimiter | null;
   /** Null when no vendor key is configured — the capability 503s. */
   provider: LlmProvider | null;
   usage: UsageStore | null;
@@ -80,6 +83,14 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     const caller = await rt.resolveCaller(req, reply, entry);
     if (!caller) return;
     const userOid = caller.authenticated ? caller.oid : ANON_USER_OID;
+
+    // Per-IP cap for the anonymous tier (public apps): an anonymous caller has
+    // no per-user budget, so cap by IP (app-data design §7). Not metered — a
+    // ledger row per throttled call is itself a write-amplification vector.
+    if (anonRateLimited(rt.anonLimiter, req, entry, caller)) {
+      sendApiError(reply, 429, "rate_limited", "per-IP request budget exhausted");
+      return;
+    }
 
     // CSRF: a sibling subdomain must not POST to this app's gateway on the
     // user's session. SameSite doesn't cover cross-subdomain; Origin does.

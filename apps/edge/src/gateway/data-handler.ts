@@ -8,6 +8,7 @@ import type { RegistryEntry } from "../registry/projection.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import { isSameOrigin } from "../auth/validate.js";
 import type { AppDataStore, CollectionMeta } from "./data.js";
+import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import type { UsageStore } from "./usage.js";
 
 /**
@@ -26,6 +27,8 @@ export interface DataGatewayRuntime {
   config: EdgeConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
+  /** Per-IP limiter for the anonymous tier (public apps); null disables it. */
+  anonLimiter: IpRateLimiter | null;
   /** Null when the capability isn't configured on this edge — handlers 503. */
   store: AppDataStore | null;
   usage: UsageStore | null;
@@ -101,6 +104,15 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
 
     const caller = await rt.resolveCaller(req, reply, entry);
     if (!caller) return null;
+
+    // Per-IP cap for the anonymous tier (public apps): the open surface has no
+    // per-user budget to charge (app-data design §7). Checked before the store
+    // work; rate-limited requests are *not* metered — a `gateway_calls` row per
+    // throttled call would be its own write-amplification vector under a flood.
+    if (anonRateLimited(rt.anonLimiter, req, entry, caller)) {
+      sendApiError(reply, 429, "rate_limited", "per-IP request budget exhausted");
+      return null;
+    }
 
     if (opts.mutation && !isSameOrigin(req.headers.origin, rt.config, entry.slug)) {
       sendApiError(reply, 403, "forbidden", "Origin not allowed");
