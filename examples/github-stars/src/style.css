@@ -1,0 +1,145 @@
+:root {
+  --bg: #0b0c10;
+  --panel: #15171f;
+  --line: #262a36;
+  --fg: #e7e9ee;
+  --muted: #9aa1b1;
+  --accent: #6366f1;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.55;
+}
+
+#app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.whoami {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.whoami a {
+  color: var(--accent);
+}
+
+.lede {
+  color: var(--muted);
+  font-size: 15px;
+}
+
+form {
+  display: flex;
+  gap: 10px;
+  margin: 20px 0;
+}
+
+input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 14px;
+}
+
+button {
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.result {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+  background: var(--panel);
+}
+
+.result.ok {
+  border-color: var(--line);
+}
+
+.result.blocked {
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--line));
+}
+
+.result.error {
+  border-color: color-mix(in srgb, var(--bad) 50%, var(--line));
+}
+
+.result a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.desc {
+  color: var(--muted);
+  margin: 6px 0 12px;
+}
+
+.stats {
+  list-style: none;
+  display: flex;
+  gap: 22px;
+  padding: 0;
+  margin: 0;
+  flex-wrap: wrap;
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.9em;
+  background: #0e1016;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}

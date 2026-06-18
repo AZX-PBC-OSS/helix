@@ -4,14 +4,16 @@ Reference apps you can deploy to the platform with the `azx` CLI. They're the
 canonical answer to "what does a hosted AZX app look like?" — **static frontends
 only**. All dynamic capability (LLM calls, app data, integrations) flows through
 the edge gateway (`/_api/*`). The LLM proxy landed in M4; `chatbot` exercises it,
-and `waitlist` exercises the app-data gateway.
+`waitlist` exercises the app-data gateway, and `github-stars` exercises the CSP
+origin-grant approval loop.
 
-| App                            | What it shows                                                                                         |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| [`hello-world`](./hello-world) | The smallest deployable bundle: HTML + CSS + a line of JS.                                            |
-| [`notes`](./notes)             | A realistic self-contained SPA (localStorage), multiple asset types.                                  |
-| [`chatbot`](./chatbot)         | Streams Claude through the gateway (`/_api/llm/chat`) — no key in the app, manifest-granted, metered. |
-| [`waitlist`](./waitlist)       | A **public** contact harvester: write-only collections + owner-seeded shared read (`/_api/data/*`).   |
+| App                              | What it shows                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [`hello-world`](./hello-world)   | The smallest deployable bundle: HTML + CSS + a line of JS.                                            |
+| [`notes`](./notes)               | A realistic self-contained SPA (localStorage), multiple asset types.                                  |
+| [`chatbot`](./chatbot)           | Streams Claude through the gateway (`/_api/llm/chat`) — no key in the app, manifest-granted, metered. |
+| [`waitlist`](./waitlist)         | A **public** contact harvester: write-only collections + owner-seeded shared read (`/_api/data/*`).   |
+| [`github-stars`](./github-stars) | Fetches a public API **directly** — CSP-blocked until an admin approves the origin (the approval loop). |
 
 Each app is a **standalone project** built with [Vite](https://vite.dev) — they
 are deliberately *not* part of the pnpm workspace, since they model the
@@ -69,5 +71,7 @@ The deploy endpoint runs a courtesy CSP lint and warns (non-blocking) about
 external origins it would block at serve time. A handful of CDNs are
 pre-allowed and produce **no** warning — `cdn.jsdelivr.net`, `unpkg.com`,
 `esm.sh`, `cdn.tailwindcss.com`, and Google Fonts (see
-`apps/portal/src/deploy/csp-lint.ts`). Both example apps are fully self-hosted,
-so they deploy clean.
+`apps/portal/src/deploy/csp-lint.ts`). Most example apps are fully self-hosted,
+so they deploy clean — the exception is `github-stars`, which intentionally
+calls `api.github.com` to trigger that warning (and, at serve time, a real CSP
+violation) so you can walk the origin-grant approval loop.
