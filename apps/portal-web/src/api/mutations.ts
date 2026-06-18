@@ -5,6 +5,7 @@ import {
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
   UploadVersionResponseSchema,
+  VisibilityUpdateResultSchema,
   type ApprovalRequest,
   type Capabilities,
   type CreateAppRequest,
@@ -12,6 +13,8 @@ import {
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
   type UploadVersionResponse,
+  type Visibility,
+  type VisibilityUpdateResult,
 } from "@helix/shared";
 import { fetchJson, requestVoid, uploadFile } from "./client";
 
@@ -91,6 +94,41 @@ export function useSetManifest() {
       }),
     onSuccess: (_result, { slug }) => {
       void queryClient.invalidateQueries({ queryKey: ["apps", slug, "manifest"] });
+      void queryClient.invalidateQueries({ queryKey: ["approvals"] });
+    },
+  });
+}
+
+/**
+ * Change how an app gates access, through the approvals write-gate
+ * (docs/design/approvals.md §3, §6.3). Reducing exposure (→ private/group)
+ * applies immediately; going **public** is elevated and opens a pending request
+ * — the result reports which via `applied`/`pending`. Enabling `password` is a
+ * separate flow (it mints a credential) — see `useEnablePassword`.
+ */
+export function useSetVisibility() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      visibility,
+      reason,
+    }: {
+      slug: string;
+      visibility: Visibility;
+      reason?: string;
+    }): Promise<VisibilityUpdateResult> =>
+      fetchJson(
+        VisibilityUpdateResultSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/visibility`,
+        {
+          method: "POST",
+          body: { visibility, ...(reason !== undefined ? { reason } : {}) },
+        },
+      ),
+    onSuccess: (_result, { slug }) => {
+      void queryClient.invalidateQueries({ queryKey: ["apps"] });
+      void queryClient.invalidateQueries({ queryKey: ["apps", slug] });
       void queryClient.invalidateQueries({ queryKey: ["approvals"] });
     },
   });

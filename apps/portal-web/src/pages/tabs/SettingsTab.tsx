@@ -1,7 +1,18 @@
 import { useState } from "react";
-import { Button, Card, Center, Grid, Group, Stack, Text } from "@mantine/core";
-import type { App, VisibilityMode } from "@helix/shared";
-import { useArchiveApp } from "../../api/mutations";
+import {
+  Box,
+  Button,
+  Card,
+  Center,
+  Grid,
+  Group,
+  Stack,
+  Text,
+  TextInput,
+  Textarea,
+} from "@mantine/core";
+import type { App, Visibility, VisibilityMode } from "@helix/shared";
+import { useArchiveApp, useSetVisibility } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Eyebrow, Hint, PreviewBadge, ToneBadge } from "../../components/primitives";
@@ -43,8 +54,26 @@ const VISIBILITY_ROWS: Array<{
 export function SettingsTab({ app }: { app: App }) {
   const { authenticated, login, loginAvailable } = useAuth();
   const archive = useArchiveApp();
+  const setVisibility = useSetVisibility();
   const [confirming, setConfirming] = useState(false);
+  const [goingPublic, setGoingPublic] = useState(false);
+  const [reason, setReason] = useState("");
+  // Inline group-id editor, opened from the group row.
+  const [groupOpen, setGroupOpen] = useState(false);
+  const [groupId, setGroupId] = useState(
+    app.visibility.mode === "group" ? app.visibility.groupId : "",
+  );
   const archived = app.archivedAt !== null;
+  const current = app.visibility.mode;
+  // Leaving `password` mode goes through the password card's Disable (it wipes
+  // the minted credential); the switcher steps aside while it's active.
+  const passwordActive = current === "password";
+
+  // The last public request opened an approval (result.pending is the id).
+  const requested = setVisibility.data?.pending != null;
+
+  const apply = (visibility: Visibility, reason?: string) =>
+    setVisibility.mutate({ slug: app.slug, visibility, ...(reason ? { reason } : {}) });
 
   return (
     <Grid gap={18} align="flex-start" className="az-stagger">
@@ -52,72 +81,159 @@ export function SettingsTab({ app }: { app: App }) {
         <Card>
           <Group justify="space-between" mb={4}>
             <Eyebrow>Visibility</Eyebrow>
-            <PreviewBadge milestone="M4" />
           </Group>
           <Text size="sm" c="dark.2" mb={16}>
-            Auth is terminated at the edge proxy — the app ships zero auth code. Password access is
-            managed on the right; switching between SSO modes is an M4 portal action (going public
-            will require approval).
+            Auth is terminated at the edge proxy — the app ships zero auth code. Reducing exposure
+            (→ private / group) applies immediately; going public is an elevated change that pauses
+            for admin approval. Shared-password access is managed on the right.
           </Text>
-          <Stack gap={10}>
+
+          {!authenticated && (
+            <Hint
+              icon="user"
+              tone="neutral"
+              action={
+                <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
+                  Sign in
+                </Button>
+              }
+            >
+              Changing visibility needs a signed-in actor.
+            </Hint>
+          )}
+          {passwordActive && authenticated && (
+            <Hint icon="key" tone="neutral">
+              This app uses shared-password access. Disable it on the right to switch to another
+              mode.
+            </Hint>
+          )}
+
+          <Stack gap={10} mt={authenticated && !passwordActive ? 0 : 12}>
             {VISIBILITY_ROWS.map((row) => {
-              const on = app.visibility.mode === row.mode;
+              const on = current === row.mode;
+              // An action is offered only to a signed-in actor, only on a row
+              // that isn't already current, and only while not in password mode
+              // (password is owned by the card on the right). The `password` row
+              // itself never gets a switcher button — enabling it mints a
+              // credential, so it lives in PasswordAccessCard.
+              const actionable = authenticated && !passwordActive && !on && row.mode !== "password";
               return (
-                <Group
+                <div
                   key={row.mode}
-                  gap={13}
-                  p="13px 14px"
-                  align="flex-start"
-                  wrap="nowrap"
                   style={{
                     borderRadius: "var(--mantine-radius-md)",
                     background: on ? "var(--az-acc-dim)" : "var(--mantine-color-dark-6)",
                     border: `1px solid ${on ? "color-mix(in srgb, var(--az-acc) 34%, transparent)" : "var(--az-line)"}`,
-                    opacity: on ? 1 : 0.6,
+                    opacity: on || actionable ? 1 : 0.6,
                   }}
                 >
-                  <Center
-                    w={30}
-                    h={30}
-                    style={{
-                      borderRadius: 8,
-                      background: on ? "var(--az-acc)" : "var(--mantine-color-dark-5)",
-                      color: on ? "var(--az-acc-ink)" : "var(--mantine-color-dark-1)",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Icon name={row.icon} size={15} />
-                  </Center>
-                  <div>
-                    <Group gap={8}>
-                      <Text fw={600} fz={13.5}>
-                        {row.label}
+                  <Group gap={13} p="13px 14px" align="flex-start" wrap="nowrap">
+                    <Center
+                      w={30}
+                      h={30}
+                      style={{
+                        borderRadius: 8,
+                        background: on ? "var(--az-acc)" : "var(--mantine-color-dark-5)",
+                        color: on ? "var(--az-acc-ink)" : "var(--mantine-color-dark-1)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Icon name={row.icon} size={15} />
+                    </Center>
+                    <div style={{ flex: 1 }}>
+                      <Group gap={8}>
+                        <Text fw={600} fz={13.5}>
+                          {row.label}
+                        </Text>
+                        {on && (
+                          <ToneBadge tone="acc" style={{ fontSize: 8.5, padding: "1px 6px" }}>
+                            CURRENT
+                          </ToneBadge>
+                        )}
+                        {row.mode === "public" && (
+                          <ToneBadge tone="violet" style={{ fontSize: 8.5, padding: "1px 6px" }}>
+                            NEEDS APPROVAL
+                          </ToneBadge>
+                        )}
+                      </Group>
+                      <Text size="xs" c="dark.2" mt={3} lh={1.45}>
+                        {row.desc}
+                        {on && app.visibility.mode === "group" && (
+                          <>
+                            {" "}
+                            Group: <span className="az-mono">{app.visibility.groupId}</span>
+                          </>
+                        )}
                       </Text>
-                      {on && (
-                        <ToneBadge tone="acc" style={{ fontSize: 8.5, padding: "1px 6px" }}>
-                          CURRENT
-                        </ToneBadge>
-                      )}
-                      {row.mode === "public" && (
-                        <ToneBadge tone="violet" style={{ fontSize: 8.5, padding: "1px 6px" }}>
-                          NEEDS APPROVAL
-                        </ToneBadge>
-                      )}
+                    </div>
+                    {actionable && row.mode === "private" && (
+                      <Button
+                        variant="default"
+                        size="xs"
+                        loading={setVisibility.isPending}
+                        onClick={() => apply({ mode: "private" })}
+                      >
+                        Make private
+                      </Button>
+                    )}
+                    {actionable && row.mode === "group" && (
+                      <Button variant="default" size="xs" onClick={() => setGroupOpen((o) => !o)}>
+                        Restrict to group
+                      </Button>
+                    )}
+                    {actionable && row.mode === "public" && (
+                      <Button
+                        variant="default"
+                        size="xs"
+                        leftSection={<Icon name="globe" size={13} />}
+                        onClick={() => {
+                          setReason("");
+                          setGoingPublic(true);
+                        }}
+                      >
+                        Request public access
+                      </Button>
+                    )}
+                  </Group>
+                  {actionable && row.mode === "group" && groupOpen && (
+                    <Group gap={8} px={14} pb={13} align="flex-end" wrap="nowrap">
+                      <TextInput
+                        label="Directory group id"
+                        placeholder="e.g. eng-team or an Entra group GUID"
+                        value={groupId}
+                        onChange={(e) => setGroupId(e.currentTarget.value)}
+                        style={{ flex: 1 }}
+                        size="xs"
+                        classNames={{ input: "az-mono" }}
+                      />
+                      <Button
+                        size="xs"
+                        disabled={groupId.trim().length === 0 || setVisibility.isPending}
+                        loading={setVisibility.isPending}
+                        onClick={() => apply({ mode: "group", groupId: groupId.trim() })}
+                      >
+                        Apply
+                      </Button>
                     </Group>
-                    <Text size="xs" c="dark.2" mt={3} lh={1.45}>
-                      {row.desc}
-                      {on && app.visibility.mode === "group" && (
-                        <>
-                          {" "}
-                          Group: <span className="az-mono">{app.visibility.groupId}</span>
-                        </>
-                      )}
-                    </Text>
-                  </div>
-                </Group>
+                  )}
+                </div>
               );
             })}
           </Stack>
+
+          {requested && (
+            <Box mt={12}>
+              <Hint icon="shield" tone="violet">
+                Request opened — going public is awaiting admin approval. The app stays at its
+                current visibility until a reviewer approves.
+              </Hint>
+            </Box>
+          )}
+          {setVisibility.isError && !goingPublic && (
+            <Text size="xs" c="red" mt={10}>
+              {setVisibility.error.message}
+            </Text>
+          )}
         </Card>
       </Grid.Col>
 
@@ -184,6 +300,47 @@ export function SettingsTab({ app }: { app: App }) {
           </Card>
         </Stack>
       </Grid.Col>
+
+      <ConfirmDialog
+        opened={goingPublic}
+        icon="globe"
+        tone="var(--az-violet)"
+        toneDim="var(--az-violet-dim)"
+        title={`Request public access for ${app.displayName}?`}
+        body={
+          <Stack gap={10}>
+            <Text size="sm" c="dark.2" lh={1.5}>
+              Public apps serve to anyone with no sign-in — an anonymous tier with per-app quotas
+              and per-IP limits. This is a high-risk change, so it opens an approval request rather
+              than applying now; an admin must approve before the app goes live publicly.
+            </Text>
+            <Textarea
+              label="Reason for review (optional)"
+              placeholder="Why does this app need to be public?"
+              value={reason}
+              onChange={(e) => setReason(e.currentTarget.value)}
+              rows={3}
+            />
+          </Stack>
+        }
+        confirmLabel="Request approval"
+        loading={setVisibility.isPending}
+        error={setVisibility.isError ? setVisibility.error.message : null}
+        onConfirm={() =>
+          setVisibility.mutate(
+            {
+              slug: app.slug,
+              visibility: { mode: "public" },
+              ...(reason.trim() ? { reason: reason.trim() } : {}),
+            },
+            { onSuccess: () => setGoingPublic(false) },
+          )
+        }
+        onClose={() => {
+          setGoingPublic(false);
+          setVisibility.reset();
+        }}
+      />
 
       <ConfirmDialog
         opened={confirming}
