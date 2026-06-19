@@ -21,11 +21,13 @@
 ```
 helix/
   apps/
-    edge/            # azx-edge data plane
+    edge/            # azx-edge data/policy plane
     portal/          # azx-portal API
     portal-web/      # Vite + React SPA
+    egress/          # azx-egress mechanism plane (outbound HTTP, secret injection, SSRF)
   packages/
     shared/          # zod schemas: manifest, registry, API contracts
+    secret-store/    # SecretStore seam: dev envelope / prod Key Vault (portal + egress)
     cli/             # azx CLI (npm-distributed; `azx deploy` etc.)
     deploy-skill/    # agent skill bundle (v1)
   examples/          # reference apps to `azx deploy`; built dist/ is committed
@@ -70,8 +72,11 @@ The §4.2 / Appendix A flow: central callback on the auth host, OIDC against loc
 ### M4 — Gateway v0: LLM proxy
 `/_api/llm/*` on the edge: streaming proxy via the `LlmProvider` interface, per-app model allowlist, token budgets with finish-in-flight/block-new semantics, metering + audit records per call. Origin validation on `/_api/*` (CSRF — §4.2). Test quota edge cases against the fake provider; verify streaming against a real vendor.
 
+### M4.5 — Egress mechanism plane: fetch-proxy + secret-backed connections
+The `azx-egress` service (`apps/egress`, DB role `helix_egress`) as its own deployable unit from day one — **not** built in-edge and extracted later (architecture §3). The edge stays the policy plane (identity, authz, quota, audit) and hands a signed attested instruction to egress, which resolves connection secrets, injects credentials server-side, enforces SSRF controls, and makes the outbound call. Ships with: `/_api/fetch` on the edge; the `SecretStore` seam (`packages/secret-store` — dev envelope / prod Key Vault); secret CRUD + the manifest `connection` binding through the approval write-gate; a Secrets/Connections UI; the `helix_edge`-can't-read-`material` role-split assertion; and the adversarial SSRF suite (DNS-rebind, redirect-to-IMDS, header smuggling). Designs: `docs/design/fetch-proxy.md`, `docs/design/secrets-and-connections.md`.
+
 ### M5 — Azure + pilot
-Minimal IaC: resource group, two ACA apps (or one, if consolidated), Postgres flexible server, Blob, Key Vault, Entra app registration, wildcard DNS + cert on `azx-labs.com`. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway. **v0 done.**
+Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-permitted network zone**; edge/portal with no outbound internet route), Postgres flexible server, Blob, Key Vault, Entra app registration, wildcard DNS + cert on `azx-labs.com`. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway. **v0 done.**
 
 ## 5. v1 backlog (rough order, re-plan after v0)
 
@@ -86,7 +91,7 @@ Most of this was pulled forward against the local stack — M4/M5 (Azure deploy)
 7. **Session management** — **partial.** A real gateway audit read-side exists (`/api/v1/gateway/audit` + the portal Audit page over `gateway_calls`). _Remaining:_ **admin session revocation** — the portal migrates the `sessions` table but has no revoke route/UI.
 8. **Audit hardening + usage** — **partial.** Per-app and platform usage views are real and wired (`/api/v1/apps/:slug/usage`, `/api/v1/gateway/usage` + the Usage/Platform pages reading `gateway_calls`). _Remaining:_ **audit shipping to an immutable blob** (scheduled job).
 
-v1.x and beyond (fetch-proxy, MCP-as-REST, secret-backed connections, Git-connect builds) stay in the architecture doc §12; don't plan them yet.
+The fetch-proxy and secret-backed connections are now planned as **M4.5** (above) — built on the `azx-egress` mechanism plane from day one. The rest of v1.x and beyond (MCP-as-REST, Git-connect builds) stay in the architecture doc §12; don't plan them yet.
 
 ## 6. Working agreements
 

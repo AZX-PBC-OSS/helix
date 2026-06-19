@@ -1,7 +1,7 @@
 # AZX App Platform — Fetch Proxy (design doc)
 
 **Status:** Design draft v1 · June 2026
-**Companion to:** `platform-architecture.md` (§6.1 names it, §12 phases it v1.x), `platform-project-plan.md` (the v1.x backlog), `docs/design/app-data-storage.md` and `docs/design/approvals.md` (the gateway patterns this reuses), and `docs/platform-custom-backends-and-apis.md` §4 (the egress/SSRF lesson).
+**Companion to:** `platform-architecture.md` (§3 the `azx-egress` plane, §6.1 names it, §12/M4.5 phase it), `platform-project-plan.md` (the M4.5 milestone), `docs/design/secrets-and-connections.md` (the secret store + `connection` it consumes), `docs/design/app-data-storage.md` and `docs/design/approvals.md` (the gateway patterns this reuses), and `docs/platform-custom-backends-and-apis.md` §4 (the policy/mechanism split + egress/SSRF lesson).
 **Why this exists:** The fetch-proxy is the gateway's answer to "my app needs to call a third-party API." It is named everywhere and designed nowhere. The hard part is not the proxy — it is the **adoption story**: a vibe-coded app reaches us already written, with plain `fetch('https://…')` in it, and the proxy only earns its keep if integrating with it is closer to *zero edits* than *learn a new API*. This doc designs the mechanism in service of that.
 
 ---
@@ -132,20 +132,25 @@ An outbound HTTP proxy that an *untrusted* app drives is an SSRF engine if built
 - **No redirect following by default.** A `302` to `http://169.254.169.254/…` is the classic allowlist bypass. The proxy returns the redirect to the app as data; it does not chase it. (A future per-connection "follow redirects within the same allowlisted origin" knob is conceivable; default off.)
 - **Header safelist, both directions.** Strip hop-by-hop headers; refuse to forward `Cookie`/`Authorization` *from the app* on a connection-backed origin (the app must not override our injected secret, nor smuggle our session cookie outbound); strip `Set-Cookie` and other sensitive headers off the response. The session cookie and the internal identity header (custom-backends §6.2) never leave our plane.
 - **Response and time caps.** Max body size, max time, max concurrent proxied calls per app — a slow-loris or a 10 GB download is a DoS on the shared edge otherwise. Caps are config (`EDGE_FETCH_*`), mirroring the existing budget/limit env.
-- **Egress isolation, eventually its own zone.** Architecture §3 and §6.1 already flag that the fetch-proxy "may eventually become its own container purely for SSRF egress isolation." v1 runs it in-edge behind the controls above; the seam (an `EgressProvider` interface, §7) is drawn so extracting it to an egress-isolated container later is a transport swap, not a re-architecture — same move as the `LlmProvider` seam.
+- **Egress isolation — its own zone, from day one.** The outbound call is made by the separate `azx-egress` service (architecture §3), which lives in its own network egress zone: it is the only component with a route to the public internet, so an SSRF bug *in the edge* reaches nothing, and the network-layer egress policy (block private ranges / IMDS at the firewall, not just in app code) backs the application-layer checks above — the belt-and-suspenders the custom-backends §4 IMDS lesson demands. We build this split from the start rather than running in-edge and extracting later, which would mean shipping the blast radius first.
 
 This section gets the dedicated adversarial pass the auth handoff gets (project plan §6): rebinding, redirect-to-IMDS, header smuggling, allowlist-decode bypasses (the `/_api/fetch/` target must be validated both raw and percent-decoded, exactly as the edge already double-checks reserved paths).
 
-## 7. Mechanism: where it sits in the edge
+## 7. Mechanism: the policy/mechanism split across two services
 
-It reuses the gateway spine wholesale — the point of having one is that a new capability is mostly wiring:
+The call is handled by two services with a signed boundary between them (the policy/mechanism split of custom-backends §4). The **edge** is the policy plane and reuses the gateway spine wholesale; the **`azx-egress`** service is the mechanism plane and is the only thing that touches plaintext secrets or the public internet.
+
+**On the edge (policy):**
 
 - **Route.** `ALL /_api/fetch/*` on the app-host router (the same router that owns `/_api/llm/chat` and `/_api/data/*`), method preserved from the incoming request.
 - **Identity.** `resolveCaller(req, reply, entry)` (`apps/edge/src/auth/gate.ts`) yields the `(app, user)` `Caller`, or the anonymous caller on `public` apps (`ANON_USER_OID`). No new identity code.
 - **CSRF.** `isSameOrigin(...)` on every proxied call (it's a same-origin fetch by construction; reject anything else), identical to the data-handler's mutation check.
+- **Allowlist.** The target origin (parsed from the path, raw *and* percent-decoded) must be a `proxy`-mode entry in the registry projection (`proxyConnections`); else `403`, before anything leaves the edge.
 - **Quota.** A per-app daily request budget (`capabilities.fetch.requestsPerDay`), checked block-new/finish-in-flight against `gateway_calls` like the LLM token budget; the anonymous tier answers to the existing per-IP limiter (`apps/edge/src/gateway/ipRateLimiter.ts`) across all `/_api/*`, so the proxy inherits anon rate-limiting for free.
-- **Egress.** An `EgressProvider` seam (`stream(req, {signal}) → upstream response stream`) hand-rolled over undici — no new heavy dependency in the dependency-minimal edge (the standing hard rule). Pipes the upstream body straight through; never buffers.
-- **Metering.** One `gateway_calls` row per call: `capability = "fetch"`, `model = <target origin>` (the existing `model` column doubles as the sub-resource label, as it already does for data verbs like `user.put`), `inputTokens`/`outputTokens` null or repurposed as byte counts (§11), `outcome ∈ {ok, error, refusal, quota_blocked, forbidden}`. The `helix_edge` INSERT-only grant on `gateway_calls` means the proxy appends to the same immutable ledger; the Audit page (`/api/v1/gateway/audit`) and Usage rollups (`/api/v1/gateway/usage`, `/api/v1/apps/:slug/usage`) light up for `fetch` calls with **no portal changes** beyond a capability label in the filter UI.
+- **Attested instruction.** The edge mints a short-lived signed JWT `(app, user, capability, origin, connection?, request-id)` — same `jose`/HKDF primitives as the OIDC handoff token (`apps/edge/src/auth/{secrets,handoff}.ts`, new info string `helix-instruction-v1`) — and forwards the app's request + instruction to egress through the **`EgressProvider`** seam (an HTTP client to `EDGE_EGRESS_URL`, shaped like `LlmProvider`). The edge holds no secret and has no internet route; it can only *ask* egress to make a call it has authorized.
+- **Metering.** One `gateway_calls` row per call: `capability = "fetch"`, `model = <target origin>` (the existing `model` column doubles as the sub-resource label, as it already does for data verbs like `user.put`), byte counts in `inputTokens`/`outputTokens` (§11), `outcome ∈ {ok, error, refusal, quota_blocked, forbidden}`. Egress returns outcome + byte counts to the edge; the **edge** writes the row (it holds the `gateway_calls` INSERT grant and owns audit), so the immutable ledger and the Audit/Usage pages light up for `fetch` with **no portal changes** beyond a capability label.
+
+**On `azx-egress` (mechanism):** verifies the instruction signature (trusts the edge's attestation, never re-authenticates the user); if a `connection` is named, resolves it to plaintext via the `SecretStore` (`packages/secret-store`) under the `helix_egress` role and re-checks the global-secret grant; applies the §6 SSRF controls at the network layer; injects the credential per the connection's recipe; makes the `undici` call; streams the upstream body straight back through the edge to the browser (never buffers); updates the secret's `last_used_at`. It carries the fat outbound-HTTP dependencies the dependency-minimal edge must not (the mechanism-plane-carries-deps principle, custom-backends §4).
 
 ## 8. Threat mapping
 
@@ -162,11 +167,11 @@ It reuses the gateway spine wholesale — the point of having one is that a new 
 
 ## 9. Milestone fit
 
-Squarely v1.x, after the approval spine and CSP loop it builds on (both done — project plan §2/§6.2). Suggested phasing, each rung independently shippable:
+Milestone **M4.5** (project plan), after the approval spine and CSP loop it builds on (both done — project plan §2/§6.2). The `azx-egress` service is stood up as its own deployable unit first; the rungs then ride on it, each independently shippable:
 
-1. **Keyless proxy + path-prefix contract + allowlist + SSRF hardening.** `mode: 'proxy'` origins, no secrets. Audited and metered the day it ships. This alone replaces the "had to grant a CORS-broken origin direct" failures. The adversarial egress suite lands *with* it.
+1. **Stand up `azx-egress` + keyless proxy + path-prefix contract + allowlist + SSRF hardening.** The service, the `EgressProvider`/attested-instruction seam, and `mode: 'proxy'` origins with no secrets. Audited and metered the day it ships. This alone replaces the "had to grant a CORS-broken origin direct" failures. The adversarial egress suite lands *with* it.
 2. **The deploy-lint / Violations "route through proxy" offer.** The adoption surface (§3.3) — turns the existing one-click origin grant into a direct-or-proxy choice. Pure portal work on top of rung 1.
-3. **Secret-backed connections (header-bearer).** Portal secret storage + `connection` injection (§5). The unique-value rung; gated by Key Vault wiring (also a §12 v1.x item).
+3. **Secret-backed connections (header-bearer).** The `SecretStore` (`packages/secret-store` — dev envelope now, Key Vault for prod) + `connection` injection in egress (§5). The unique-value rung. (Designed in full in `docs/design/secrets-and-connections.md`.)
 4. **The transparent shim.** Opt-in serve-time injection (§3.2). Last because it's the most serve-path-invasive and the least security-load-bearing — the platform is fully usable without it; it's the adoption polish.
 
 ## 10. Open questions / deliberately deferred
@@ -174,5 +179,5 @@ Squarely v1.x, after the approval spine and CSP loop it builds on (both done —
 1. **Shim injection cost.** Is the streaming `<head>` transform cheap enough to enable broadly, or does it stay strictly opt-in forever? Needs a serve-path benchmark before rung 4. (Alternative: the deploy skill *adds* the shim reference to the bundle, trading zero-touch for zero serve-cost — viable for platform-first, useless for vibe-coded-first.)
 2. **Connection injection beyond header-bearer.** OAuth client-credentials (refresh server-side), query-param keys, mTLS. v1 ships header-bearer; the rest is connection-schema work, deferred.
 3. **Byte metering vs. token metering.** Reuse `inputTokens`/`outputTokens` as request/response byte counts, or add `gateway_calls` columns? Leaning reuse (no migration, the columns are already nullable) but it muddies the semantics — decide before rung 1.
-4. **Egress container extraction.** When does the in-edge `EgressProvider` become its own SSRF-isolated container (architecture §3)? Tie the trigger to the custom-backends §11 line — extract when the third real app needs an egress posture the in-edge proxy can't safely give (e.g. per-tenant egress IPs, network-level policy under arbitrary backends).
+4. **Stronger egress isolation, later.** `azx-egress` is its own SSRF-isolated container from day one (architecture §3), so the original "when do we extract it" question is moot. The remaining question is when egress needs a *heavier* posture — per-tenant egress IPs, or microVM/gVisor isolation once *untrusted code* runs in the egress path (custom backends, the rung ladder of custom-backends §3). Tie that to the §11 "third real app" line; the shared egress service is the right shape until then.
 5. **WebSocket / SSE upstream.** The proxy is request/response. Long-lived upstream connections (a third-party stream) are a different shape — defer to the custom-backends "long-lived connections" gap (memo §3, rung 0/1), don't bolt onto the fetch-proxy.
