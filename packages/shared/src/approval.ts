@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AppSchema } from "./app.js";
-import { CapabilitiesSchema, type Capabilities } from "./manifest.js";
+import { CapabilitiesSchema, type Capabilities, type FetchConnection } from "./manifest.js";
 import { AppManifestSchema } from "./manifest.js";
 import { type VisibilityMode } from "./visibility.js";
 
@@ -97,6 +97,8 @@ export const BASELINE_TOKENS = 1_000_000;
 /** App-data daily write/byte budgets at/under which a grant is baseline. */
 export const BASELINE_WRITES_PER_DAY = 10_000;
 export const BASELINE_BYTES_PER_DAY = 50_000_000;
+/** Fetch-proxy daily request budget at/under which a grant is baseline. */
+export const BASELINE_FETCH_REQUESTS_PER_DAY = 10_000;
 
 /** Models any app may request without approval. Anything else is elevated. */
 export const CURATED_LLM_MODELS: readonly string[] = [
@@ -141,6 +143,22 @@ function diffArray(before: string[], after: string[]): { added: string[]; remove
     added: after.filter((x) => !b.has(x)),
     removed: before.filter((x) => !a.has(x)),
   };
+}
+
+/**
+ * Canonical string key for a fetch proxy connection, used in delta paths and
+ * diffing: `https://api.foo.com` (keyless) or `https://api.foo.com→secret:name`
+ * (secret-bound). A secret-bound origin is strictly more sensitive, so changing
+ * the bound secret is a remove+add of distinct keys.
+ */
+function fetchOriginKey(c: { origin: string; connection?: string }): string {
+  return c.connection ? `${c.origin}→secret:${c.connection}` : c.origin;
+}
+function parseFetchOriginKey(key: string): { origin: string; connection?: string } {
+  const i = key.indexOf("→secret:");
+  return i === -1
+    ? { origin: key }
+    : { origin: key.slice(0, i), connection: key.slice(i + "→secret:".length) };
 }
 
 /**
@@ -230,10 +248,42 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     push({ path: `mcp[-${s}]`, from: s }, false, "low");
   }
 
-  // ── externalOrigins ── (any origin added is elevated)
+  // ── externalOrigins ── (any direct-CSP origin added is elevated)
   const origins = diffArray(eff.externalOrigins, req.externalOrigins);
   for (const o of origins.added) push({ path: `externalOrigins[+${o}]`, to: o }, true, "med");
   for (const o of origins.removed) push({ path: `externalOrigins[-${o}]`, from: o }, false, "low");
+
+  // ── fetch.origins ── (proxied origins; keyless = med, secret-bound = high)
+  const effFetch = (eff.fetch?.origins ?? []).map(fetchOriginKey);
+  const reqFetch = (req.fetch?.origins ?? []).map(fetchOriginKey);
+  const fetchOrigins = diffArray(effFetch, reqFetch);
+  for (const key of fetchOrigins.added) {
+    const bound = key.includes("→secret:");
+    push({ path: `fetch.origins[+${key}]`, to: key }, true, bound ? "high" : "med");
+  }
+  for (const key of fetchOrigins.removed) {
+    push({ path: `fetch.origins[-${key}]`, from: key }, false, "low");
+  }
+
+  // ── fetch.shim ── (serve-time ergonomics; never a privilege grant)
+  const effShim = eff.fetch?.shim ?? false;
+  const reqShim = req.fetch?.shim ?? false;
+  if (effShim !== reqShim) {
+    push({ path: "fetch.shim", from: effShim, to: reqShim }, false, "low");
+  }
+
+  // ── fetch.requestsPerDay budget ──
+  const effFetchReq = eff.fetch?.requestsPerDay;
+  const reqFetchReq = req.fetch?.requestsPerDay;
+  if (effFetchReq !== reqFetchReq) {
+    const reqPriv = budgetPrivilege(req.fetch !== undefined, reqFetchReq);
+    const increase = reqPriv > budgetPrivilege(eff.fetch !== undefined, effFetchReq);
+    push(
+      { path: "fetch.requestsPerDay", from: effFetchReq, to: reqFetchReq },
+      increase && reqPriv > BASELINE_FETCH_REQUESTS_PER_DAY,
+      "med",
+    );
+  }
 
   return { baselineDeltas: baseline, elevatedDeltas: elevated, risk: maxRisk(elevatedRisks) };
 }
@@ -305,6 +355,18 @@ function applyArray(caps: Capabilities, field: string, op: "+" | "-", item: stri
       caps.data = { ...data, [key]: add(data[key]) };
       return;
     }
+    case "fetch.origins": {
+      const fetch = ensureFetch(caps);
+      const has = (o: FetchConnection) => fetchOriginKey(o) === item;
+      const origins =
+        op === "+"
+          ? fetch.origins.some(has)
+            ? fetch.origins
+            : [...fetch.origins, parseFetchOriginKey(item)]
+          : fetch.origins.filter((o) => !has(o));
+      caps.fetch = { ...fetch, origins };
+      return;
+    }
     default:
       return;
   }
@@ -324,6 +386,12 @@ function applyScalar(caps: Capabilities, d: Delta): void {
     case "data.bytesPerDay":
       caps.data = { ...ensureData(caps), bytesPerDay: d.to as number | undefined };
       return;
+    case "fetch.shim":
+      caps.fetch = { ...ensureFetch(caps), shim: Boolean(d.to) };
+      return;
+    case "fetch.requestsPerDay":
+      caps.fetch = { ...ensureFetch(caps), requestsPerDay: d.to as number | undefined };
+      return;
     default:
       return;
   }
@@ -333,9 +401,13 @@ function ensureData(caps: Capabilities) {
   return caps.data ?? { user: false, collections: [], sharedRead: [], sharedWrite: [] };
 }
 
+function ensureFetch(caps: Capabilities) {
+  return caps.fetch ?? { shim: false, origins: [] };
+}
+
 // ── Conflict detection (optimistic concurrency, §5) ──────────────────────────
 
-const AREAS = ["llm", "data", "mcp", "externalOrigins", "visibility"] as const;
+const AREAS = ["llm", "data", "mcp", "externalOrigins", "fetch", "visibility"] as const;
 type Area = (typeof AREAS)[number];
 
 function deltaArea(path: string): Area {
@@ -343,6 +415,7 @@ function deltaArea(path: string): Area {
   if (path.startsWith("llm")) return "llm";
   if (path.startsWith("data")) return "data";
   if (path.startsWith("mcp")) return "mcp";
+  if (path.startsWith("fetch")) return "fetch";
   return "externalOrigins";
 }
 

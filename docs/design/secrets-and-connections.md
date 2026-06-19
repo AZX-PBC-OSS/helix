@@ -34,8 +34,8 @@ export const InjectionRecipeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('query'), param: z.string() }),
 ]);
 export const SecretScopeSchema = z.enum(['app', 'global']);
-// The manifest side (refines fetch-proxy §5 — `connection` names a secret by name):
-//   capabilities.fetch.origins: [{ origin, mode: 'proxy', connection: 'stripe-live' }]
+// The manifest side (fetch-proxy §4/§5 — `connection` names a secret by name):
+//   capabilities.fetch.origins: [{ origin: 'https://api.stripe.com', connection: 'stripe-live' }]
 ```
 
 ## 3. Storage & crypto

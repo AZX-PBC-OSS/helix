@@ -39,6 +39,31 @@ describe("AppManifestSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("parses the fetch capability with defaults and keyless/bound origins", () => {
+    const parsed = AppManifestSchema.parse({
+      app: "stars",
+      visibility: { mode: "private" },
+      capabilities: {
+        fetch: {
+          origins: [
+            { origin: "https://api.github.com" },
+            { origin: "https://api.stripe.com", connection: "stripe-live" },
+          ],
+        },
+      },
+    });
+    expect(parsed.capabilities.fetch?.shim).toBe(false); // defaulted
+    expect(parsed.capabilities.fetch?.origins).toHaveLength(2);
+    expect(parsed.capabilities.fetch?.origins[1]?.connection).toBe("stripe-live");
+    // externalOrigins (direct) is untouched and independent of fetch (proxy).
+    expect(parsed.capabilities.externalOrigins).toEqual([]);
+  });
+
+  it("rejects a non-URL proxied origin", () => {
+    const result = CapabilitiesParse({ fetch: { origins: [{ origin: "nope" }] } });
+    expect(result.success).toBe(false);
+  });
+
   it("requires a groupId for group visibility", () => {
     expect(VisibilitySchema.safeParse({ mode: "group" }).success).toBe(false);
     expect(VisibilitySchema.safeParse({ mode: "group", groupId: "eng-team" }).success).toBe(true);

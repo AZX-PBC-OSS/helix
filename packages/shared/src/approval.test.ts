@@ -123,6 +123,84 @@ describe("classifyChange — mcp / origins / data", () => {
   });
 });
 
+describe("classifyChange — fetch proxy", () => {
+  it("gates a keyless proxied origin as med", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.github.com" }] },
+    });
+    expect(paths(r.elevatedDeltas)).toEqual(["fetch.origins[+https://api.github.com]"]);
+    expect(r.risk).toBe("med");
+  });
+
+  it("gates a secret-bound proxied origin as high", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.stripe.com", connection: "stripe" }] },
+    });
+    expect(paths(r.elevatedDeltas)).toEqual([
+      "fetch.origins[+https://api.stripe.com→secret:stripe]",
+    ]);
+    expect(r.risk).toBe("high");
+  });
+
+  it("treats the shim toggle as baseline ergonomics", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: true, origins: [] },
+    });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toContain("fetch.shim");
+  });
+
+  it("gates a fetch request budget above baseline only", () => {
+    const under = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [], requestsPerDay: 10_000 },
+    });
+    expect(under.elevatedDeltas).toHaveLength(0);
+    const over = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [], requestsPerDay: 10_001 },
+    });
+    expect(paths(over.elevatedDeltas)).toEqual(["fetch.requestsPerDay"]);
+  });
+
+  it("removing a proxied origin is baseline, and round-trips through applyDeltas", () => {
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.github.com", connection: "gh" }] },
+    };
+    const r = classifyChange(eff, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [] },
+    });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["fetch.origins[-https://api.github.com→secret:gh]"]);
+    const applied = applyDeltas(eff, r.baselineDeltas);
+    expect(applied.fetch?.origins).toEqual([]);
+  });
+
+  it("applyDeltas adds a secret-bound origin from the elevated bundle", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.stripe.com", connection: "stripe" }] },
+    });
+    const applied = applyDeltas(EMPTY, r.elevatedDeltas);
+    expect(applied.fetch?.origins).toEqual([
+      { origin: "https://api.stripe.com", connection: "stripe" },
+    ]);
+  });
+});
+
 describe("classifyChange — reductions are always baseline", () => {
   it("removing grants never elevates", () => {
     const eff: Capabilities = {

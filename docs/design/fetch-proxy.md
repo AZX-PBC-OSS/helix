@@ -82,23 +82,24 @@ This is the whole adoption answer in one sentence: **the developer integrates by
 
 ## 4. Direct vs. proxied: one knob, two settings
 
-Today `capabilities.externalOrigins` is `z.array(z.url())` and means exactly one thing — widen this app's `connect-src`/`img-src` so the browser may call the origin **directly** (the registry projection carries it to the edge's CSP builder). The proxy doesn't add a parallel list; it adds a **mode** to each entry:
+`capabilities.externalOrigins` (`z.array(z.url())`) already means one thing — widen this app's `connect-src`/`img-src` so the browser may call the origin **directly** (the registry projection carries it to the edge's CSP builder). That is the *direct* setting and it is left untouched. The proxy adds the *other* setting as a sibling capability, `capabilities.fetch`, rather than mutating the existing list — additive, so the github-stars direct-grant loop, the CSP builder, the Violations one-click grant, and the existing classifier rule all keep working unchanged:
 
 ```ts
-// packages/shared/src/manifest.ts — externalOrigins grows from string[] to typed entries
-export const ExternalOriginSchema = z.object({
-  origin: z.url(),                        // scheme + host + port, e.g. https://api.github.com
-  mode: z.enum(['direct', 'proxy']).default('direct'),
-  /** proxy mode only: name of a portal-stored secret connection to inject server-side (§5). */
-  connection: z.string().min(1).optional(),
+// packages/shared/src/manifest.ts
+export const FetchConnectionSchema = z.object({
+  origin: z.url(),                          // scheme + host + port, e.g. https://api.github.com
+  connection: z.string().min(1).optional(), // secret name to inject server-side (§5); absent ⇒ keyless
 });
-// back-compat: a bare string parses as { origin, mode: 'direct' } so existing manifests are untouched.
+export const FetchCapabilitySchema = z.object({
+  shim: z.boolean().default(false),         // transparent fetch shim (§3.2)
+  origins: z.array(FetchConnectionSchema).default([]), // proxied origins (the egress allowlist)
+  requestsPerDay: z.int().positive().optional(),       // per-app abuse budget (§7)
+});
 ```
 
-- `mode: 'direct'` is exactly today's behavior — the origin widens CSP, the browser calls it itself, the proxy refuses it (you didn't ask to be proxied). Nothing about the github-stars loop changes.
-- `mode: 'proxy'` does the opposite: the origin is **not** added to `connect-src` (the only same-origin call is to `/_api/fetch/…`, already covered by `'self'`), and the proxy *will* serve it. A `connection` may be attached for server-side secret injection (§5).
+So an origin is **direct** if it appears in `externalOrigins` (browser calls it, CSP-widened) and **proxied** if it appears in `fetch.origins` (routed through `/_api/fetch`, same-origin, served by egress). One knob, two settings, expressed as which list the origin lives in — the portal UI presents it as a single per-origin direct/proxy toggle that moves the entry between the two fields.
 
-The registry projection (`apps/edge/src/registry/projection.ts`) parses this into two derived sets — `cspOrigins` (the `direct` ones, fed to the CSP builder exactly as today) and `proxyOrigins` (the `proxy` ones, the egress allowlist) — fail-closed to empty on malformed JSON, exactly like `llm`/`data` parse today. The approval classifier (`@helix/shared` `classifyChange`, approvals §3) already treats origin grants as needing approval; a `proxy`-mode grant with a `connection` is strictly *more* sensitive than a `direct` grant (it spends a secret) and sits at or above the same elevated threshold — no new spine, one new dimension on the existing classifier.
+The registry projection (`apps/edge/src/registry/projection.ts`) keeps feeding `externalOrigins` to the CSP builder exactly as today, and additionally derives `proxyConnections` (`origin → connection?`) from `fetch.origins` as the egress allowlist — fail-closed to empty on malformed JSON, like `llm`/`data`. The approval classifier (`@helix/shared` `classifyChange`, approvals §3) treats a proxied origin as elevated (`fetch.origins[+origin]`, risk `med`), and a *secret-bound* one as strictly more sensitive (`fetch.origins[+origin→secret:name]`, risk `high`, because it spends a credential) — new classifier cases, same spine.
 
 ## 5. Secret-backed connections (the proxy's unique value)
 
@@ -113,8 +114,7 @@ capabilities:
     shim: true                     # §3.2 — opt-in transparent rewrite
     origins:
       - origin: https://api.github.com
-        mode: proxy
-        connection: github-pat     # portal-stored secret, injected server-side
+        connection: github-pat     # portal-stored secret, injected server-side (omit ⇒ keyless)
 ```
 
 The app calls `fetch('/_api/fetch/https://api.github.com/...')` with **no `Authorization` header**. The edge, on a `proxy` entry that names a `connection`, looks up how that connection injects (e.g. `Authorization: Bearer <secret>` or a header template) and applies it on the outbound side, after the app's request has left the browser. The app never sees the secret; the bundle is clean; rotating the key is a portal action with no redeploy.
@@ -159,7 +159,7 @@ The call is handled by two services with a signed boundary between them (the pol
 | App exfiltrates a secret | App never receives it; injected server-side on the outbound hop (§5); `helix_edge` can't read secrets at all. |
 | App SSRFs our network / IMDS | Allowlist-only egress + blocked private ranges + IMDS IP refused + no redirect-follow + DNS-rebind pinning (§6). |
 | App smuggles the session cookie / internal identity header outbound | Header safelist strips them; app can't override the injected `Authorization` (§6). |
-| App calls an origin it wasn't granted | Not in `proxyOrigins`, `403 forbidden`, before egress (§6). |
+| App calls an origin it wasn't granted | Not in `proxyConnections`, `403 forbidden`, before egress (§6). |
 | Anonymous flood on a `public` app | Per-IP limiter across all `/_api/*` (§7) + per-app request budget. |
 | App tampers the audit trail | `gateway_calls` is INSERT-only for `helix_edge`; the proxy can append, never edit (§7). |
 | Shim removed/bypassed to reach an origin | Gains nothing — non-granted direct call still dies on `connect-src 'self'`; shim is ergonomics, not a boundary (§3.2). |
@@ -169,7 +169,7 @@ The call is handled by two services with a signed boundary between them (the pol
 
 Milestone **M4.5** (project plan), after the approval spine and CSP loop it builds on (both done — project plan §2/§6.2). The `azx-egress` service is stood up as its own deployable unit first; the rungs then ride on it, each independently shippable:
 
-1. **Stand up `azx-egress` + keyless proxy + path-prefix contract + allowlist + SSRF hardening.** The service, the `EgressProvider`/attested-instruction seam, and `mode: 'proxy'` origins with no secrets. Audited and metered the day it ships. This alone replaces the "had to grant a CORS-broken origin direct" failures. The adversarial egress suite lands *with* it.
+1. **Stand up `azx-egress` + keyless proxy + path-prefix contract + allowlist + SSRF hardening.** The service, the `EgressProvider`/attested-instruction seam, and `fetch.origins` with no secrets. Audited and metered the day it ships. This alone replaces the "had to grant a CORS-broken origin direct" failures. The adversarial egress suite lands *with* it.
 2. **The deploy-lint / Violations "route through proxy" offer.** The adoption surface (§3.3) — turns the existing one-click origin grant into a direct-or-proxy choice. Pure portal work on top of rung 1.
 3. **Secret-backed connections (header-bearer).** The `SecretStore` (`packages/secret-store` — dev envelope now, Key Vault for prod) + `connection` injection in egress (§5). The unique-value rung. (Designed in full in `docs/design/secrets-and-connections.md`.)
 4. **The transparent shim.** Opt-in serve-time injection (§3.2). Last because it's the most serve-path-invasive and the least security-load-bearing — the platform is fully usable without it; it's the adoption polish.

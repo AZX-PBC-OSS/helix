@@ -11,3 +11,6 @@ export * from "./auth.js";
 export * from "./llm.js";
 export * from "./usage.js";
 export * from "./data.js";
+export * from "./secrets.js";
+export * from "./instruction.js";
+export * from "./fetch.js";
