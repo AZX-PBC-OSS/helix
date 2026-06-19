@@ -251,6 +251,40 @@ importers:
         specifier: 'catalog:'
         version: 6.0.3
 
+  apps/egress:
+    dependencies:
+      '@helix/secret-store':
+        specifier: workspace:*
+        version: link:../../packages/secret-store
+      '@helix/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      fastify:
+        specifier: 'catalog:'
+        version: 5.8.5
+      jose:
+        specifier: 'catalog:'
+        version: 6.2.3
+      pg:
+        specifier: 'catalog:'
+        version: 8.21.0
+      undici:
+        specifier: 'catalog:'
+        version: 7.27.2
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
+      '@types/pg':
+        specifier: 'catalog:'
+        version: 8.20.0
+      tsx:
+        specifier: 'catalog:'
+        version: 4.22.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
   apps/portal:
     dependencies:
       '@azure/storage-blob':

@@ -19,12 +19,13 @@
 
   // Host browser access. Ports are not yet pinned by any app (M0); these are
   // the planned defaults — adjust as apps come online.
-  "forwardPorts": [5173, 3001, 3002, 8080, 10000],
+  "forwardPorts": [5173, 3001, 3002, 8080, 8081, 10000],
   "portsAttributes": {
     "5173": { "label": "portal-web (Vite)" },
     "3001": { "label": "azx-portal API" },
     "3002": { "label": "dev-idp (OIDC)" },
     "8080": { "label": "azx-edge" },
+    "8081": { "label": "azx-egress" },
     "10000": { "label": "Azurite Blob" }
   },
 

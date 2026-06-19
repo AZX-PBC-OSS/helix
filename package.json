@@ -9,6 +9,7 @@
   "packageManager": "pnpm@11.5.3",
   "scripts": {
     "dev:edge": "pnpm --filter @helix/edge dev",
+    "dev:egress": "pnpm --filter @helix/egress dev",
     "dev:portal": "pnpm --filter @helix/portal dev",
     "dev:idp": "pnpm --filter @helix/dev-idp dev",
     "dev:web": "pnpm --filter @helix/portal-web dev",

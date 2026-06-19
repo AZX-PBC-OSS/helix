@@ -45,6 +45,18 @@ if [ ! -f "$CERT_DIR/localtest-me.pem" ] && command -v mkcert >/dev/null; then
          "*.localtest.me" localtest.me
 fi
 
+# ── Dev secret-store KEK ──
+# The portal seals connection secrets under this key; egress opens them
+# (DEV_SECRETS_KEK_FILE, docker-compose). Generated ONCE here — not at process
+# boot — so the portal and egress can never race to create it. Gitignored (lives
+# in the certs dir). Prod uses Key Vault instead and leaves this unset.
+mkdir -p "$CERT_DIR"
+if [ ! -f "$CERT_DIR/secrets-kek.dev" ]; then
+  echo "── Generating dev secret-store KEK ──"
+  openssl rand -hex 32 > "$CERT_DIR/secrets-kek.dev"
+  chmod 600 "$CERT_DIR/secrets-kek.dev"
+fi
+
 # ── Workspace install (guarded) ──
 # The monorepo isn't scaffolded yet (M0). Only install once a workspace exists.
 if [ -f /workspace/package.json ] || [ -f /workspace/pnpm-workspace.yaml ]; then
