@@ -102,7 +102,7 @@ The registry projection (`apps/edge/src/registry/projection.ts`) parses this int
 
 ## 5. Secret-backed connections (the proxy's unique value)
 
-A `direct` grant can never carry a secret — the key would sit in the browser. The proxy's reason to exist beyond audit is **server-side credential injection**, which is named as v1.x in architecture §12 and lands here.
+A `direct` grant can never carry a secret — the key would sit in the browser. The proxy's reason to exist beyond audit is **server-side credential injection**, which is named as v1.x in architecture §12 and lands here. The credential store, the CRUD surface, and the app↔secret binding are designed in `docs/design/secrets-and-connections.md` — this section is the consumer's-eye view; that doc owns the `connection` it references (including how the plaintext reaches the outbound call without the policy edge ever holding it).
 
 The owner stores a secret in the portal (Key Vault-backed, control-plane only — the edge's `helix_edge` role has no secret-read by design, §3 of the architecture) and names it as a **connection**:
 
