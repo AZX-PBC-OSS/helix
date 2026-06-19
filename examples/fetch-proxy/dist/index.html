@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>Fetch proxy · AZX</title>
+    <script type="module" crossorigin src="./assets/index-60ADMUsU.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BXsXHtlj.css">
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>↪ Fetch proxy</h1>
+        <p id="whoami" class="whoami">…</p>
+      </header>
+
+      <p class="lede">
+        The counterpoint to <strong>github-stars</strong>: instead of calling the GitHub API
+        directly (and tripping CSP), this app routes it through the platform's
+        <strong>fetch-proxy</strong> — audited, metered, and (when a connection secret is bound)
+        with the credential injected <em>server-side</em>. The app bundle never holds a token.
+      </p>
+
+      <div class="actions">
+        <button id="run-btn" type="button">Run probes</button>
+      </div>
+
+      <section class="probes">
+        <article class="probe" id="probe-proxy-rate">
+          <h2>1 · Explicit proxy <code>/rate_limit</code></h2>
+          <p class="desc">
+            <code>fetch('/_api/fetch/https://api.github.com/rate_limit')</code> — same-origin, so no
+            CSP exception. Keyless shows <code>limit 60</code>; with a bound secret it jumps to
+            <code>5000</code>.
+          </p>
+          <div class="out">…</div>
+        </article>
+
+        <article class="probe" id="probe-proxy-user">
+          <h2>2 · Explicit proxy <code>/user</code> (injection proof)</h2>
+          <p class="desc">
+            <code>/_api/fetch/https://api.github.com/user</code> — an auth-only endpoint. The app
+            sends <strong>no</strong> Authorization header; <code>401</code> until a
+            <code>github</code> connection secret is bound, then it returns your account.
+          </p>
+          <div class="out">…</div>
+        </article>
+
+        <article class="probe" id="probe-shim-fetch">
+          <h2>3 · Shim · native <code>fetch()</code></h2>
+          <p class="desc">
+            <code>fetch('https://api.github.com/rate_limit')</code> — an <em>absolute</em> URL, no
+            proxy path. CSP-blocked unless the <strong>transparent shim</strong> is on, which
+            rewrites it to the proxy with no code change.
+          </p>
+          <div class="out">…</div>
+        </article>
+
+        <article class="probe" id="probe-shim-xhr">
+          <h2>4 · Shim · <code>XMLHttpRequest</code> (axios)</h2>
+          <p class="desc">
+            A raw <code>XMLHttpRequest</code> to the absolute URL — the transport axios uses by
+            default. The shim patches <code>XHR.open</code> too, so this rides the same rewrite.
+          </p>
+          <div class="out">…</div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

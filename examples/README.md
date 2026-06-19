@@ -4,8 +4,9 @@ Reference apps you can deploy to the platform with the `azx` CLI. They're the
 canonical answer to "what does a hosted AZX app look like?" — **static frontends
 only**. All dynamic capability (LLM calls, app data, integrations) flows through
 the edge gateway (`/_api/*`). The LLM proxy landed in M4; `chatbot` exercises it,
-`waitlist` exercises the app-data gateway, and `github-stars` exercises the CSP
-origin-grant approval loop.
+`waitlist` exercises the app-data gateway, `github-stars` exercises the CSP
+origin-grant approval loop, and `fetch-proxy` exercises the M4.5 fetch-proxy +
+secret-backed connections + transparent shim.
 
 | App                              | What it shows                                                                                         |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -14,6 +15,7 @@ origin-grant approval loop.
 | [`chatbot`](./chatbot)           | Streams Claude through the gateway (`/_api/llm/chat`) — no key in the app, manifest-granted, metered. |
 | [`waitlist`](./waitlist)         | A **public** contact harvester: write-only collections + owner-seeded shared read (`/_api/data/*`).   |
 | [`github-stars`](./github-stars) | Fetches a public API **directly** — CSP-blocked until an admin approves the origin (the approval loop). |
+| [`fetch-proxy`](./fetch-proxy)   | Reaches the GitHub API **through the fetch-proxy** — keyless, then secret-injected, then via the shim. |
 
 Each app is a **standalone project** built with [Vite](https://vite.dev) — they
 are deliberately *not* part of the pnpm workspace, since they model the

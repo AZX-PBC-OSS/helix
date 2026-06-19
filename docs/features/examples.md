@@ -11,6 +11,8 @@ only**; every dynamic capability flows through the edge gateway at `/_api/*`. Fu
 | `notes` | A realistic self-contained SPA (localStorage, multiple asset types). | — |
 | `chatbot` | Streams Claude through the gateway — no key in the app, manifest-granted, metered. | `/_api/llm/chat` |
 | `waitlist` | A **public** contact harvester: write-only collections + owner-seeded shared read. | `/_api/data/*` |
+| `github-stars` | Calls a public API **directly** — CSP-blocked until an admin grants the origin (approval loop). | — (CSP) |
+| `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the shim. | `/_api/fetch/*` |
 
 ## How they fit the platform
 
