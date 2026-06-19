@@ -35,6 +35,13 @@ export interface UsageStore {
    * don't count.
    */
   dataWritesToday(appId: string): Promise<number>;
+  /**
+   * Count of admitted fetch-proxy calls today (fetch-proxy design §7) — the
+   * per-app `requestsPerDay` budget window. "Admitted" means everything we
+   * recorded except the budget rejections themselves (`quota_blocked`), so a
+   * flood of failing calls still counts against the cap.
+   */
+  fetchRequestsToday(appId: string): Promise<number>;
   /** Append one call to the ledger. */
   record(call: GatewayCallRecord): Promise<void>;
   close(): Promise<void>;
@@ -73,6 +80,18 @@ export class PgUsageStore implements UsageStore {
        WHERE "appId" = $1 AND capability = 'data' AND outcome = 'ok'
          AND model = ANY($2) AND "createdAt" >= date_trunc('day', now())`,
       [appId, DATA_WRITE_VERBS],
+    );
+    const row = result.rows[0] as { n: string | number } | undefined;
+    return row ? Number(row.n) : 0;
+  }
+
+  async fetchRequestsToday(appId: string): Promise<number> {
+    const result = await this.#pool.query(
+      `SELECT COUNT(*)::int AS n
+       FROM gateway_calls
+       WHERE "appId" = $1 AND capability = 'fetch' AND outcome <> 'quota_blocked'
+         AND "createdAt" >= date_trunc('day', now())`,
+      [appId],
     );
     const row = result.rows[0] as { n: string | number } | undefined;
     return row ? Number(row.n) : 0;

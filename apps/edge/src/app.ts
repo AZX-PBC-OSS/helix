@@ -25,6 +25,8 @@ import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
+import { makeFetchHandler } from "./gateway/fetch.js";
+import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
 import { CSP_REPORT_PATH } from "./serving/csp.js";
 import type { LlmProvider } from "./gateway/provider.js";
@@ -56,6 +58,10 @@ export interface EdgeDeps {
   usage?: UsageStore | null;
   /** App-data store (M4/M5); null = the data capability 503s. */
   appData?: AppDataStore | null;
+  /** Egress client for the fetch-proxy (M4.5); null = the capability 503s. */
+  egress?: EgressProvider | null;
+  /** HKDF-derived instruction signing key; null = the fetch capability 503s. */
+  instructionKey?: Buffer | null;
   /** CSP-violation report sink (§6.2); null = accept-and-drop. */
   cspReports?: CspReportStore | null;
   /** Shared-password login throttle; tests inject a low-threshold one. */
@@ -182,6 +188,21 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           anonLimiter: anonRateLimiter,
           store: deps.appData ?? null,
           usage: deps.usage ?? null,
+        })
+      : null;
+  // The fetch-proxy needs a caller (session, or anon on public apps); egress +
+  // instruction key + usage may be null, in which case the handler 503s — same
+  // fail-closed shape as the LLM vendor key.
+  const handleFetch =
+    appApiRuntime && resolveCaller
+      ? makeFetchHandler({
+          config,
+          registry: deps.registry,
+          resolveCaller,
+          anonLimiter: anonRateLimiter,
+          egress: deps.egress ?? null,
+          usage: deps.usage ?? null,
+          instructionKey: deps.instructionKey ?? null,
         })
       : null;
   // The CSP report sink is unauthenticated (browsers send no credentials with
@@ -379,6 +400,29 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         }
         sendNotFound(reply);
       },
+    });
+  }
+
+  // M4.5 gateway: the fetch-proxy (fetch-proxy design §7). App hosts only.
+  // Encapsulated so a passthrough body parser keeps `req.raw` streamable for
+  // egress (the proxy re-streams arbitrary bodies; never buffer them) without
+  // disturbing the JSON parsing the llm/data routes rely on.
+  if (handleFetch) {
+    void app.register((fetchScope, _opts, doneRegister) => {
+      fetchScope.removeAllContentTypeParsers();
+      fetchScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+      fetchScope.route({
+        method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        url: "/_api/fetch/*",
+        handler: async (req, reply) => {
+          if (req.hostClass.kind === "app") {
+            await handleFetch(req, reply, req.hostClass.slug);
+            return;
+          }
+          sendNotFound(reply);
+        },
+      });
+      doneRegister();
     });
   }
 

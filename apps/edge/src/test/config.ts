@@ -42,6 +42,9 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     llm: { endpoint: "https://api.anthropic.com", anthropicVersion: "2023-06-01" },
     // Off by default in unit tests; suites that exercise it pass a low `max`.
     anonRateLimit: { max: 0, windowMs: 60_000 },
+    // Fetch-proxy off by default; suites that exercise it set egressUrl +
+    // instructionSecret (and pass an egress provider into buildApp).
+    fetch: { egressUrl: null, instructionSecret: null, timeoutMs: 30_000 },
     ...overrides,
   };
 }

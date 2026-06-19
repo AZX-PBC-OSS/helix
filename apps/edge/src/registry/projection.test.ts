@@ -57,6 +57,7 @@ describe("RegistryProjection", () => {
       llm: null,
       data: null,
       externalOrigins: [],
+      fetch: { connections: new Map(), requestsPerDay: null, shim: false },
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();

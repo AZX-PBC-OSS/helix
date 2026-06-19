@@ -7,6 +7,8 @@ import { OpenIdConnectClient } from "./auth/oidc.js";
 import { PgSessionStore, startSessionSweeper } from "./auth/sessions.js";
 import { EnvSecretProvider } from "./gateway/secrets-provider.js";
 import { AnthropicProvider, type LlmProvider } from "./gateway/provider.js";
+import { HttpEgressProvider, type EgressProvider } from "./gateway/egressProvider.js";
+import { deriveInstructionKey } from "./gateway/instruction.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
 import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
@@ -118,6 +120,17 @@ const llmProvider: LlmProvider | null = secrets.has("anthropic")
 // can be swept on an interval; passed into the app for both gateway handlers.
 const anonRateLimiter = new IpRateLimiter(config.anonRateLimit);
 
+// Fetch-proxy (M4.5): the edge is the policy plane and forwards authorized
+// calls to azx-egress over the EgressProvider seam. The capability is enabled
+// only when both the egress URL and the shared instruction secret are present
+// (otherwise /_api/fetch 503s — fail-closed, like the LLM vendor key).
+const egress: EgressProvider | null = config.fetch.egressUrl
+  ? new HttpEgressProvider(config.fetch.egressUrl, { timeoutMs: config.fetch.timeoutMs })
+  : null;
+const instructionKey = config.fetch.instructionSecret
+  ? deriveInstructionKey(config.fetch.instructionSecret)
+  : null;
+
 const app = buildApp({
   config,
   registry,
@@ -127,6 +140,8 @@ const app = buildApp({
   llmProvider,
   usage,
   appData,
+  egress,
+  instructionKey,
   cspReports,
   anonRateLimiter,
   https,
@@ -158,6 +173,7 @@ app.addHook("onClose", async () => {
   await sessions?.close();
   await usage?.close();
   await appData?.close();
+  await egress?.close();
   await cspReports.close();
   await llmProvider?.close();
   await blob.close();

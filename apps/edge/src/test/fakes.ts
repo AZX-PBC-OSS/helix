@@ -27,6 +27,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     llm: null,
     data: null,
     externalOrigins: [],
+    fetch: { connections: new Map(), requestsPerDay: null, shim: false },
     ...overrides,
   };
 }
@@ -140,6 +141,15 @@ export class FakeUsageStore implements UsageStore {
         r.outcome === "ok" &&
         ["user.put", "collection.append", "shared.put"].includes(r.model),
     ).length;
+  }
+
+  /** Override in a test to force the requestsPerDay budget; defaults to the live count. */
+  fetchToday?: number;
+
+  async fetchRequestsToday(): Promise<number> {
+    if (this.fetchToday !== undefined) return this.fetchToday;
+    return this.records.filter((r) => r.capability === "fetch" && r.outcome !== "quota_blocked")
+      .length;
   }
 
   async record(call: GatewayCallRecord): Promise<void> {

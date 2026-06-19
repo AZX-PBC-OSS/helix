@@ -26,6 +26,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
     reconcileIntervalMs: 60_000,
     llm: { endpoint: "https://api.anthropic.com", anthropicVersion: "2023-06-01" },
     anonRateLimit: { max: 0, windowMs: 60_000 },
+    fetch: { egressUrl: null, instructionSecret: null, timeoutMs: 30_000 },
     ...overrides,
   };
 }

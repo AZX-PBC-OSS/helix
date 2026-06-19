@@ -103,6 +103,20 @@ export interface EdgeConfig {
    * budgets). `max: 0` disables the limiter.
    */
   anonRateLimit: { max: number; windowMs: number };
+  /**
+   * Fetch-proxy wiring (M4.5). The edge is the policy plane: it authorizes a
+   * `/_api/fetch` call and hands a signed attested instruction to `azx-egress`.
+   * The capability is enabled only when BOTH `egressUrl` and `instructionSecret`
+   * are present — otherwise `/_api/fetch` 503s (fail-closed, like the LLM key).
+   */
+  fetch: {
+    /** Internal URL of the egress service; null disables the capability. */
+    egressUrl: string | null;
+    /** Shared with azx-egress; HKDF-derived into the instruction signing key. */
+    instructionSecret: Buffer | null;
+    /** Edge-side timeout for the egress round-trip. */
+    timeoutMs: number;
+  };
 }
 
 const ConnectionStringSchema = z.object({
@@ -272,7 +286,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
       max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),
       windowMs: Number(env.EDGE_ANON_RATE_WINDOW_MS ?? 60_000),
     },
+    fetch: {
+      egressUrl: env.EDGE_EGRESS_URL || null,
+      instructionSecret: loadInstructionSecret(env),
+      timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
+    },
   };
+}
+
+/** Parse the shared instruction secret; refuse a too-short one (would weaken the key). */
+function loadInstructionSecret(env: NodeJS.ProcessEnv): Buffer | null {
+  const raw = env.HELIX_INSTRUCTION_SECRET;
+  if (!raw) return null;
+  const buf = Buffer.from(raw);
+  if (buf.byteLength < 32) {
+    throw new Error("HELIX_INSTRUCTION_SECRET must be at least 32 bytes");
+  }
+  return buf;
 }
 
 /**

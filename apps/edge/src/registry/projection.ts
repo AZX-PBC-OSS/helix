@@ -10,11 +10,26 @@
 import {
   CapabilitiesSchema,
   DataCapabilitySchema,
+  FetchCapabilitySchema,
   LlmCapabilitySchema,
   type DataCapability,
   type LlmCapability,
   type VisibilityMode,
 } from "@helix/shared";
+
+/** The edge's per-app view of the fetch-proxy grant (fetch-proxy design §7). */
+export interface FetchProxyGrant {
+  /**
+   * Canonical proxied origin → connection (secret) name, or null for a keyless
+   * proxied origin. The egress allowlist: a target origin not present here is
+   * 403'd before anything leaves the edge.
+   */
+  connections: Map<string, string | null>;
+  /** Per-app daily proxied-request budget; null ⇒ unbounded. */
+  requestsPerDay: number | null;
+  /** Whether to inject the transparent fetch shim at serve time (§3.2). */
+  shim: boolean;
+}
 
 export interface RegistryEntry {
   appId: string;
@@ -49,10 +64,17 @@ export interface RegistryEntry {
   data: DataCapability | null;
   /**
    * Approved external origins (manifest `capabilities.externalOrigins`, §6.2)
-   * the app's CSP `connect-src`/`img-src` are widened to. Empty unless the
-   * approvals loop granted one. Parsed fail-closed to `[]`.
+   * the app's CSP `connect-src`/`img-src` are widened to — these are **direct**
+   * browser calls. Empty unless the approvals loop granted one. Fail-closed.
    */
   externalOrigins: string[];
+  /**
+   * The fetch-proxy grant (manifest `capabilities.fetch`): the **proxied**
+   * origins the edge will route through `azx-egress`, with their secret
+   * connections, plus the per-app budget and shim flag. Always present (empty
+   * allowlist when the app has no fetch capability). Parsed fail-closed.
+   */
+  fetch: FetchProxyGrant;
 }
 
 /** Extract `capabilities.llm` from the raw JSON column, fail-closed to null. */
@@ -77,6 +99,30 @@ function parseDataCapability(capabilities: unknown): DataCapability | null {
 function parseExternalOrigins(capabilities: unknown): string[] {
   const parsed = CapabilitiesSchema.safeParse(capabilities ?? {});
   return parsed.success ? parsed.data.externalOrigins : [];
+}
+
+/** Extract `capabilities.fetch` into the edge's proxy grant, fail-closed to empty. */
+function parseFetchGrant(capabilities: unknown): FetchProxyGrant {
+  const empty: FetchProxyGrant = { connections: new Map(), requestsPerDay: null, shim: false };
+  if (typeof capabilities !== "object" || capabilities === null) return empty;
+  const raw = (capabilities as Record<string, unknown>).fetch;
+  if (raw === undefined) return empty;
+  const parsed = FetchCapabilitySchema.safeParse(raw);
+  if (!parsed.success) return empty;
+  const connections = new Map<string, string | null>();
+  for (const o of parsed.data.origins) {
+    try {
+      // Canonicalize the origin so request-time `new URL(target).origin` matches.
+      connections.set(new URL(o.origin).origin, o.connection ?? null);
+    } catch {
+      // A malformed origin (shouldn't pass zod's url()) is simply skipped.
+    }
+  }
+  return {
+    connections,
+    requestsPerDay: parsed.data.requestsPerDay ?? null,
+    shim: parsed.data.shim,
+  };
 }
 
 export interface RegistryReader {
@@ -174,6 +220,7 @@ export class RegistryProjection implements RegistryReader {
           llm: parseLlmCapability(row.capabilities),
           data: parseDataCapability(row.capabilities),
           externalOrigins: parseExternalOrigins(row.capabilities),
+          fetch: parseFetchGrant(row.capabilities),
         });
       }
       this.#map = next;
