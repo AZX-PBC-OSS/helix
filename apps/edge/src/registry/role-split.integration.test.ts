@@ -76,8 +76,76 @@ describe("helix_edge least-privilege grants", () => {
         /permission denied/i,
       );
 
+      // Connection secrets (secrets design §4): read ONLY by helix_egress. The
+      // policy edge has no grant — that absence is the secret-custody boundary.
+      await expect(pool.query("SELECT count(*) FROM app_secrets")).rejects.toThrow(
+        /permission denied/i,
+      );
+
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
+    } finally {
+      await pool.end();
+    }
+  });
+});
+
+/** The egress role's URL, derived from the owner test URL by swapping creds. */
+function egressUrl(): string {
+  const u = new URL(TEST_DATABASE_URL);
+  u.username = "helix_egress";
+  u.password = "helix_egress";
+  return u.toString();
+}
+
+async function egressRoleAvailable(): Promise<boolean> {
+  const pool = new Pool({ connectionString: egressUrl(), max: 1 });
+  try {
+    await pool.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await pool.end();
+  }
+}
+
+describe("helix_egress least-privilege grants", () => {
+  it("resolves secrets but cannot read the registry, sessions, or the ledger", async () => {
+    if (!(await egressRoleAvailable())) return; // not provisioned on this cluster
+
+    const pool = new Pool({ connectionString: egressUrl(), max: 1 });
+    try {
+      // The mechanism plane's job: read connection secrets + their grants.
+      await expect(pool.query("SELECT count(*) FROM app_secrets")).resolves.toBeDefined();
+      await expect(pool.query("SELECT count(*) FROM app_secret_grants")).resolves.toBeDefined();
+      // …and stamp last-used (the only column it may write).
+      await expect(
+        pool.query(
+          `UPDATE app_secrets SET "lastUsedAt" = now()
+           WHERE id = '00000000-0000-0000-0000-000000000000'`,
+        ),
+      ).resolves.toBeDefined();
+
+      // It must NOT be able to alter the credential material…
+      await expect(
+        pool.query(
+          `UPDATE app_secrets SET material = 'x'
+           WHERE id = '00000000-0000-0000-0000-000000000000'`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
+
+      // …nor touch anything the policy plane owns: registry, sessions, ledger.
+      await expect(pool.query("SELECT count(*) FROM apps")).rejects.toThrow(/permission denied/i);
+      await expect(pool.query("SELECT count(*) FROM sessions")).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query("SELECT count(*) FROM gateway_calls")).rejects.toThrow(
+        /permission denied/i,
+      );
+
+      // Not the owner — no DDL.
+      await expect(pool.query("DROP TABLE app_secrets")).rejects.toThrow(/must be owner/i);
     } finally {
       await pool.end();
     }

@@ -87,16 +87,19 @@ export async function resolveAndValidate(
   hostname: string,
   allowPrivate: boolean,
 ): Promise<ValidatedTarget> {
-  const literal = isIP(hostname);
+  // URL.hostname keeps IPv6 brackets ("[::1]"); strip them for isIP/lookup.
+  const host =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const literal = isIP(host);
   if (literal) {
-    if (!allowPrivate && isBlockedAddress(hostname)) {
-      throw new SsrfBlockedError(`${hostname} is a blocked address`);
+    if (!allowPrivate && isBlockedAddress(host)) {
+      throw new SsrfBlockedError(`${host} is a blocked address`);
     }
-    return { address: hostname, family: literal === 6 ? 6 : 4 };
+    return { address: host, family: literal === 6 ? 6 : 4 };
   }
 
-  const addrs = await dnsLookup(hostname, { all: true });
-  if (addrs.length === 0) throw new SsrfBlockedError(`${hostname} did not resolve`);
+  const addrs = await dnsLookup(host, { all: true });
+  if (addrs.length === 0) throw new SsrfBlockedError(`${host} did not resolve`);
   if (!allowPrivate) {
     for (const a of addrs) {
       if (isBlockedAddress(a.address)) {
