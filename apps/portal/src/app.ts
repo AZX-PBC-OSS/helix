@@ -3,12 +3,15 @@ import multipart from "@fastify/multipart";
 import { HealthStatusSchema } from "@helix/shared";
 import type { PrismaClient } from "./db/client.js";
 import type { BlobStore } from "./blob/store.js";
+import type { SecretStore } from "@helix/secret-store";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { blobPlugin } from "./plugins/blob.js";
+import { secretStorePlugin } from "./plugins/secretStore.js";
 import { errorsPlugin } from "./plugins/errors.js";
 import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
 import { MAX_TOTAL_BYTES } from "./deploy/limits.js";
 import { appRoutes } from "./routes/apps.js";
+import { secretRoutes } from "./routes/secrets.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { cspRoutes } from "./routes/csp.js";
 import { versionRoutes } from "./routes/versions.js";
@@ -31,6 +34,8 @@ export interface BuildAppOptions {
   blobStore?: BlobStore;
   /** Inject the auth verifier chain / public config (tests). */
   auth?: AuthPluginOptions;
+  /** Inject the secret-store custody (tests). Defaults build from the env. */
+  secretStore?: SecretStore | null;
   /**
    * Built-SPA directory; null forces the stopgap dashboard (tests),
    * undefined auto-detects ($PORTAL_WEB_DIST or apps/portal-web/dist).
@@ -46,6 +51,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(errorsPlugin);
   app.register(prismaPlugin, { client: opts.prisma });
   app.register(blobPlugin, { store: opts.blobStore });
+  app.register(secretStorePlugin, { store: opts.secretStore });
   app.register(authPlugin, opts.auth ?? {});
   // One bundle file per upload; cap the (compressed) upload size.
   app.register(multipart, { limits: { files: 1, fileSize: MAX_TOTAL_BYTES } });
@@ -59,6 +65,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   });
 
   app.register(appRoutes);
+  app.register(secretRoutes);
   app.register(approvalRoutes);
   app.register(cspRoutes);
   app.register(versionRoutes);

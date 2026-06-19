@@ -29,7 +29,9 @@ export interface TestApp {
  * The injected PrismaClient is owned here (the prisma plugin won't disconnect
  * it), so `close()` disposes it.
  */
-export function buildTestApp(opts: Pick<BuildAppOptions, "auth" | "spaDist"> = {}): TestApp {
+export function buildTestApp(
+  opts: Pick<BuildAppOptions, "auth" | "spaDist" | "secretStore"> = {},
+): TestApp {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   const blob = new InMemoryBlobStore();
   // spaDist: null pins tests to the stopgap dashboard regardless of whether

@@ -1,3 +1,4 @@
+import type { SecretStore } from "@helix/secret-store";
 import type { PrismaClient } from "../db/client.js";
 import type { BlobStore } from "../blob/store.js";
 import type { Actor } from "../plugins/auth.js";
@@ -11,6 +12,8 @@ declare module "fastify" {
   interface FastifyInstance {
     prisma: PrismaClient;
     blobStore: BlobStore;
+    /** Connection-secret custody (seal/destroy only); null when unconfigured. */
+    secretStore: SecretStore | null;
   }
 
   interface FastifyRequest {

@@ -17,6 +17,7 @@
     "@azure/storage-blob": "catalog:",
     "@fastify/multipart": "catalog:",
     "@fastify/static": "catalog:",
+    "@helix/secret-store": "workspace:*",
     "@helix/shared": "workspace:*",
     "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",
