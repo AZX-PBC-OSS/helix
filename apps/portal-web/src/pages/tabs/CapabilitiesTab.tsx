@@ -13,15 +13,17 @@ import {
   Switch,
   TagsInput,
   Text,
+  TextInput,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { App, Capabilities } from "@helix/shared";
+import type { App, Capabilities, FetchConnection } from "@helix/shared";
 import { useSetManifest } from "../../api/mutations";
 import { manifestQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
 import { fmtCount } from "../../lib/format";
+import { SecretsCard } from "./SecretsCard";
 
 /**
  * The §6.3 capability manifest editor, backed by the real
@@ -86,6 +88,10 @@ interface Draft {
   sharedWrite: string[];
   mcp: string[];
   externalOrigins: string[];
+  /** Fetch-proxy: proxied origins (each with an optional secret connection). */
+  fetchOrigins: FetchConnection[];
+  fetchShim: boolean;
+  fetchRequestsPerDay: number | undefined;
 }
 
 function toDraft(c: Capabilities): Draft {
@@ -98,6 +104,9 @@ function toDraft(c: Capabilities): Draft {
     sharedWrite: c.data?.sharedWrite ?? [],
     mcp: c.mcp,
     externalOrigins: c.externalOrigins,
+    fetchOrigins: c.fetch?.origins ?? [],
+    fetchShim: c.fetch?.shim ?? false,
+    fetchRequestsPerDay: c.fetch?.requestsPerDay,
   };
 }
 
@@ -128,6 +137,20 @@ function fromDraft(d: Draft): Capabilities {
           },
         }
       : {}),
+    ...(() => {
+      const origins = d.fetchOrigins.filter((o) => o.origin.trim() !== "");
+      return origins.length || d.fetchShim || d.fetchRequestsPerDay !== undefined
+        ? {
+            fetch: {
+              shim: d.fetchShim,
+              origins,
+              ...(d.fetchRequestsPerDay !== undefined
+                ? { requestsPerDay: d.fetchRequestsPerDay }
+                : {}),
+            },
+          }
+        : {};
+    })(),
     mcp: d.mcp,
     externalOrigins: d.externalOrigins,
   };
@@ -154,6 +177,21 @@ function renderYaml(app: App, d: Draft): string {
   }
   lines.push(`  mcp: [${d.mcp.join(", ")}]`);
   lines.push(`  external_origins: [${d.externalOrigins.join(", ")}]`);
+  const proxied = d.fetchOrigins.filter((o) => o.origin.trim() !== "");
+  if (proxied.length || d.fetchShim || d.fetchRequestsPerDay !== undefined) {
+    lines.push(`  fetch:`);
+    if (d.fetchShim) lines.push(`    shim: true`);
+    if (d.fetchRequestsPerDay !== undefined)
+      lines.push(`    requests_per_day: ${d.fetchRequestsPerDay.toLocaleString()}`);
+    if (proxied.length) {
+      lines.push(`    origins:`);
+      for (const o of proxied) {
+        lines.push(
+          `      - origin: ${o.origin}${o.connection ? `  (secret: ${o.connection})` : ""}`,
+        );
+      }
+    }
+  }
   return lines.join("\n");
 }
 
@@ -196,6 +234,16 @@ export function CapabilitiesTab({ app }: { app: App }) {
   }
 
   const patch = (next: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...next } : d));
+  const patchFetchOrigin = (i: number, next: Partial<FetchConnection>) =>
+    setDraft((d) =>
+      d
+        ? { ...d, fetchOrigins: d.fetchOrigins.map((o, j) => (j === i ? { ...o, ...next } : o)) }
+        : d,
+    );
+  const addFetchOrigin = () =>
+    setDraft((d) => (d ? { ...d, fetchOrigins: [...d.fetchOrigins, { origin: "" }] } : d));
+  const removeFetchOrigin = (i: number) =>
+    setDraft((d) => (d ? { ...d, fetchOrigins: d.fetchOrigins.filter((_, j) => j !== i) } : d));
 
   return (
     <Stack gap={18}>
@@ -327,6 +375,96 @@ export function CapabilitiesTab({ app }: { app: App }) {
                 classNames={{ input: "az-mono" }}
               />
             </CapBlock>
+
+            <CapBlock
+              icon="globe"
+              title="Fetch proxy"
+              desc="Governed outbound HTTP through azx-egress — audited, metered, SSRF-controlled. Each origin is reached via /_api/fetch; attach a connection secret and it's injected server-side (the app never sees it)."
+            >
+              <Stack gap={10}>
+                {draft.fetchOrigins.map((o, i) => (
+                  <Group key={i} gap={8} align="flex-end" wrap="nowrap">
+                    <TextInput
+                      label={i === 0 ? "Proxied origin" : undefined}
+                      placeholder="https://api.example.com"
+                      value={o.origin}
+                      onChange={(e) => patchFetchOrigin(i, { origin: e.currentTarget.value })}
+                      style={{ flex: 2 }}
+                      size="xs"
+                      classNames={{ input: "az-mono" }}
+                    />
+                    <TextInput
+                      label={i === 0 ? "Secret (optional)" : undefined}
+                      placeholder="connection name"
+                      value={o.connection ?? ""}
+                      onChange={(e) =>
+                        patchFetchOrigin(i, { connection: e.currentTarget.value || undefined })
+                      }
+                      style={{ flex: 1 }}
+                      size="xs"
+                      classNames={{ input: "az-mono" }}
+                    />
+                    <Button
+                      variant="subtle"
+                      color="red"
+                      size="compact-xs"
+                      onClick={() => removeFetchOrigin(i)}
+                      aria-label="remove origin"
+                    >
+                      <Icon name="x" size={12} />
+                    </Button>
+                  </Group>
+                ))}
+                <Group>
+                  <Button
+                    variant="default"
+                    size="xs"
+                    leftSection={<Icon name="plus" size={12} />}
+                    onClick={addFetchOrigin}
+                  >
+                    Add proxied origin
+                  </Button>
+                </Group>
+                {draft.fetchOrigins.some((o) => o.connection) && (
+                  <ToneBadge tone="violet" icon="shield">
+                    secret-bound origins need admin approval
+                  </ToneBadge>
+                )}
+                <Switch
+                  checked={draft.fetchShim}
+                  onChange={(e) => patch({ fetchShim: e.currentTarget.checked })}
+                  label="Transparent fetch shim"
+                  description="Rewrite the app's fetch() calls to proxied origins automatically (opt-in)."
+                />
+                <div>
+                  <Switch
+                    checked={draft.fetchRequestsPerDay !== undefined}
+                    onChange={(e) =>
+                      patch({ fetchRequestsPerDay: e.currentTarget.checked ? 10_000 : undefined })
+                    }
+                    label="Daily request cap"
+                    description="Off = no per-day budget (every call is still metered)."
+                  />
+                  {draft.fetchRequestsPerDay !== undefined && (
+                    <NumberInput
+                      mt={10}
+                      value={draft.fetchRequestsPerDay}
+                      onChange={(v) =>
+                        patch({ fetchRequestsPerDay: typeof v === "number" ? v : Number(v) || 0 })
+                      }
+                      min={1}
+                      step={1_000}
+                      thousandSeparator=","
+                      w={180}
+                      size="xs"
+                      classNames={{ input: "az-mono" }}
+                    />
+                  )}
+                </div>
+              </Stack>
+            </CapBlock>
+
+            <SecretsCard app={app} />
           </Stack>
         </Grid.Col>
 

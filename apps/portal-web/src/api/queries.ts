@@ -11,10 +11,19 @@ import {
   PasswordCredentialResponseSchema,
   PlatformUsageSchema,
   PortalMeResponseSchema,
+  SecretMetadataSchema,
   UsageSummarySchema,
   VersionSchema,
 } from "@helix/shared";
 import { fetchJson } from "./client";
+
+/** An app's connection secrets — metadata only (the value is never returned). */
+export const appSecretsQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["apps", slug, "secrets"],
+    queryFn: () =>
+      fetchJson(z.array(SecretMetadataSchema), `/api/v1/apps/${encodeURIComponent(slug)}/secrets`),
+  });
 
 /** Server state, keyed for targeted invalidation after mutations. */
 

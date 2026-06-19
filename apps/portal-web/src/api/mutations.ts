@@ -4,14 +4,17 @@ import {
   ApprovalRequestSchema,
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
+  SecretMetadataSchema,
   UploadVersionResponseSchema,
   VisibilityUpdateResultSchema,
   type ApprovalRequest,
   type Capabilities,
   type CreateAppRequest,
   type App,
+  type InjectionRecipe,
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
+  type SecretMetadata,
   type UploadVersionResponse,
   type Visibility,
   type VisibilityUpdateResult,
@@ -254,5 +257,73 @@ export function useUploadVersion() {
     onSuccess: (_res, { slug }) => {
       void queryClient.invalidateQueries({ queryKey: ["apps", slug, "versions"] });
     },
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Connection secrets (secrets design §5). App-scoped CRUD; write-only — the
+ * value travels only in create/rotate bodies and is never returned. Binding a
+ * secret to a proxied origin is a manifest edit (useSetManifest), gated by the
+ * approval write-gate; these manage the credential itself.
+ * ------------------------------------------------------------------------- */
+
+function invalidateSecrets(queryClient: ReturnType<typeof useQueryClient>, slug: string) {
+  void queryClient.invalidateQueries({ queryKey: ["apps", slug, "secrets"] });
+}
+
+/** Create an app-scoped connection secret. */
+export function useCreateSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      name,
+      value,
+      injection,
+    }: {
+      slug: string;
+      name: string;
+      value: string;
+      injection?: InjectionRecipe;
+    }): Promise<SecretMetadata> =>
+      fetchJson(SecretMetadataSchema, `/api/v1/apps/${encodeURIComponent(slug)}/secrets`, {
+        method: "POST",
+        body: { name, value, ...(injection ? { injection } : {}) },
+      }),
+    onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
+  });
+}
+
+/** Rotate an app-scoped secret's value. */
+export function useRotateSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      name,
+      value,
+    }: {
+      slug: string;
+      name: string;
+      value: string;
+    }): Promise<SecretMetadata> =>
+      fetchJson(
+        SecretMetadataSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}/rotate`,
+        { method: "POST", body: { value } },
+      ),
+    onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
+  });
+}
+
+/** Delete an app-scoped secret. */
+export function useDeleteSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, name }: { slug: string; name: string }) =>
+      requestVoid(`/api/v1/apps/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
   });
 }
