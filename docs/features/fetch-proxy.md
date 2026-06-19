@@ -84,11 +84,20 @@ const r = await fetch("/_api/fetch/https://api.github.com/users/octocat");
 const user = await r.json(); // proxied, audited; no CSP exception needed
 ```
 
+## Transparent shim (zero-edit adoption)
+
+For apps that set `capabilities.fetch.shim`, the edge serves a per-app script at
+`/_helix/fetch-shim.js` (proxied origins baked in) and injects a `<script>` for
+it into the app's HTML (`apps/edge/src/serving/shim.ts`). It monkeypatches
+**both `window.fetch` and `XMLHttpRequest.prototype.open`**, so an unmodified
+`fetch('https://api.github.com/…')` — or an `axios.get(...)` (XHR adapter) — is
+transparently rewritten to `/_api/fetch/…` with no code change. It's ergonomics,
+not a boundary: it only adds reach the manifest already granted, so removing it
+just falls back to a CSP-blocked direct call. Toggle it in the portal's
+**Capabilities → Fetch proxy** card.
+
 ## Planned / not yet built
 
-- **Transparent fetch shim** (design §3.2): the `capabilities.fetch.shim` flag is
-  plumbed end to end; the serve-time `<script>` injection that auto-rewrites the
-  app's `fetch()` calls is not built yet.
 - **Egress byte metering** — `gateway_calls` records the call + outcome; request/
   response byte counts are not yet tallied.
 - **Stronger egress isolation** (per-tenant egress, microVM) lands only when

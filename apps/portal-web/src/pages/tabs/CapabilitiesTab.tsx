@@ -433,8 +433,8 @@ export function CapabilitiesTab({ app }: { app: App }) {
                 <Switch
                   checked={draft.fetchShim}
                   onChange={(e) => patch({ fetchShim: e.currentTarget.checked })}
-                  label="Transparent fetch shim"
-                  description="Rewrite the app's fetch() calls to proxied origins automatically (opt-in)."
+                  label="Transparent shim"
+                  description="Auto-rewrite the app's fetch() and XMLHttpRequest calls (so axios works too) to the proxied origins above — no app code change. Opt-in."
                 />
                 <div>
                   <Switch

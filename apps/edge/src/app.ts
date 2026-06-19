@@ -29,6 +29,7 @@ import { makeFetchHandler } from "./gateway/fetch.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
 import { CSP_REPORT_PATH } from "./serving/csp.js";
+import { SHIM_PATH, buildShimScript } from "./serving/shim.js";
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
@@ -87,6 +88,8 @@ function isReservedAppPath(rawUrl: string): boolean {
       pathname.startsWith("/_auth/") ||
       pathname === "/_api" ||
       pathname.startsWith("/_api/") ||
+      pathname === "/_helix" ||
+      pathname.startsWith("/_helix/") ||
       pathname === "/_csp-report"
     ) {
       return true;
@@ -437,6 +440,31 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         return;
       }
       sendNotFound(reply);
+    },
+  });
+
+  // M4.5: the transparent fetch shim (fetch-proxy §3.2). App hosts only; served
+  // per-app with this app's proxied origins baked in. Injected into HTML for
+  // opt-in apps (assets.ts) and also fetchable directly by the injected tag.
+  app.route({
+    method: ["GET", "HEAD"],
+    url: SHIM_PATH,
+    handler: async (req, reply) => {
+      if (req.hostClass.kind !== "app") {
+        sendNotFound(reply);
+        return;
+      }
+      const entry = deps.registry.getApp(req.hostClass.slug);
+      if (!entry || entry.archived) {
+        sendNotFound(reply);
+        return;
+      }
+      reply
+        .status(200)
+        .header("content-type", "text/javascript; charset=utf-8")
+        .header("cache-control", "private, max-age=300")
+        .header("x-content-type-options", "nosniff")
+        .send(buildShimScript([...entry.fetch.connections.keys()]));
     },
   });
 

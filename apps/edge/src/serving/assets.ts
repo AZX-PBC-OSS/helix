@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { EdgeConfig } from "../config.js";
 import type { BlobReader, BlobGetResult } from "../blob/client.js";
@@ -6,6 +7,7 @@ import type { SessionGate } from "../auth/gate.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../errors.js";
 import { normalizeRequestPath } from "./paths.js";
 import { buildAppCsp } from "./csp.js";
+import { injectShimTag } from "./shim.js";
 
 /**
  * The app-host request path (architecture §4.3): resolve slug → live version
@@ -91,7 +93,18 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // Per-app CSP: baseline widened with this app's approved external origins.
     const csp = buildAppCsp(entry.externalOrigins);
 
-    let result = await getUnderPrefix(blob, entry.blobPrefix, relPath, { method, ifNoneMatch });
+    // Shim injection (fetch-proxy §3.2): for opt-in apps, we rewrite the HTML
+    // document, so force the full body for the doc we'll inject into (a 304
+    // would skip injection) and serve it without an etag below. Only the GET of
+    // an HTML-ish path is affected; other assets keep their conditional path.
+    const wantsShim = entry.fetch.shim && method === "GET";
+    const likelyHtml = relPath === "index.html" || (req.headers.accept ?? "").includes("text/html");
+    const effectiveInm = wantsShim && likelyHtml ? undefined : ifNoneMatch;
+
+    let result = await getUnderPrefix(blob, entry.blobPrefix, relPath, {
+      method,
+      ifNoneMatch: effectiveInm,
+    });
 
     // SPA fallback: an HTML-navigation miss serves the app shell so deep
     // links into client-side routes work. Asset misses stay hard 404s.
@@ -100,7 +113,10 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
       relPath !== "index.html" &&
       (req.headers.accept ?? "").includes("text/html")
     ) {
-      result = await getUnderPrefix(blob, entry.blobPrefix, "index.html", { method, ifNoneMatch });
+      result = await getUnderPrefix(blob, entry.blobPrefix, "index.html", {
+        method,
+        ifNoneMatch: effectiveInm,
+      });
     }
 
     if (result.kind === "not-found") {
@@ -120,6 +136,23 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
       reply.status(304).header("cache-control", "no-cache").header("content-security-policy", csp);
       if (result.etag) reply.header("etag", result.etag);
       reply.send();
+      return;
+    }
+
+    // Shim injection: buffer this one HTML doc, inject the shim `<script>`, and
+    // send it as a string. No etag/last-modified — the injected bytes differ
+    // from the Blob's, so a conditional 304 must never short-circuit injection.
+    // Bounded to opt-in HTML (small); every other asset keeps streaming.
+    if (wantsShim && isHtml) {
+      const injected = injectShimTag(await streamToString(result.body));
+      reply
+        .status(200)
+        .header("content-type", result.contentType ?? "text/html; charset=utf-8")
+        .header("cache-control", "no-cache")
+        .header("x-content-type-options", "nosniff")
+        .header("content-security-policy", csp)
+        .header("content-length", Buffer.byteLength(injected));
+      await reply.send(injected);
       return;
     }
 
@@ -163,4 +196,13 @@ async function getUnderPrefix(
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+/** Drain a Blob body to a string — only for the opt-in shim HTML rewrite. */
+async function streamToString(stream: Readable): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
