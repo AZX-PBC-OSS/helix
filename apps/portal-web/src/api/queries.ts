@@ -25,6 +25,12 @@ export const appSecretsQuery = (slug: string) =>
       fetchJson(z.array(SecretMetadataSchema), `/api/v1/apps/${encodeURIComponent(slug)}/secrets`),
   });
 
+/** Global connection secrets (admin) — metadata + the apps each is granted to. */
+export const globalSecretsQuery = queryOptions({
+  queryKey: ["secrets"],
+  queryFn: () => fetchJson(z.array(SecretMetadataSchema), "/api/v1/secrets"),
+});
+
 /** Server state, keyed for targeted invalidation after mutations. */
 
 export const appsQuery = queryOptions({

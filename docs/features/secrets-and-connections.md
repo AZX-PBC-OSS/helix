@@ -72,10 +72,11 @@ name and save (a secret-bound origin opens an admin-approval request). Once
 approved, the app's `fetch('/_api/fetch/<origin>/…')` carries the injected
 credential — and the value was never in the bundle.
 
+**Global** secrets are managed by admins on the portal's **Secrets** page
+(`/admin/secrets`): create, rotate, delete, and grant/revoke to apps by slug.
+
 ## Planned / not yet built
 
-- **Global admin Secrets page** in the portal SPA (the API exists; the screen is
-  a follow-up).
 - **Key Vault `SecretStore`** (prod custody) — seam present, wired in M5.
 - **Grant via the approval queue** (separation-of-duty between granting and
   approving admins) — design §10.

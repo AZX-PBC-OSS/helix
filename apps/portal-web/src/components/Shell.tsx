@@ -38,6 +38,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/admin/audit", label: "Audit Log", icon: "list" },
   { to: "/admin/platform", label: "Platform", icon: "activity" },
   { to: "/admin/registry", label: "All Apps", icon: "layers" },
+  { to: "/admin/secrets", label: "Secrets", icon: "key" },
   { to: "/admin/violations", label: "Violations", icon: "shield" },
 ];
 

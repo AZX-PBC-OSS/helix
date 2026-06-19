@@ -10,6 +10,7 @@ import { ApprovalsPage } from "./pages/admin/ApprovalsPage";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { PlatformPage } from "./pages/admin/PlatformPage";
 import { RegistryPage } from "./pages/admin/RegistryPage";
+import { SecretsPage } from "./pages/admin/SecretsPage";
 import { ViolationsPage } from "./pages/admin/ViolationsPage";
 
 function Portal() {
@@ -24,6 +25,7 @@ function Portal() {
         <Route path="/admin/audit" element={<AuditPage />} />
         <Route path="/admin/platform" element={<PlatformPage />} />
         <Route path="/admin/registry" element={<RegistryPage />} />
+        <Route path="/admin/secrets" element={<SecretsPage />} />
         <Route path="/admin/violations" element={<ViolationsPage />} />
         <Route path="*" element={<AppsListPage />} />
       </Routes>

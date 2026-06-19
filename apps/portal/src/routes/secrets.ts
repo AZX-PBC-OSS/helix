@@ -271,15 +271,21 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.delete<{ Params: { id: string; appId: string } }>(
-    "/api/v1/secrets/:id/grants/:appId",
+  // By slug, symmetric with the grant route (which takes `appSlug`) and with the
+  // `boundApps` slugs the metadata exposes.
+  app.delete<{ Params: { id: string; appSlug: string } }>(
+    "/api/v1/secrets/:id/grants/:appSlug",
     { preHandler: authenticate },
     async (req, reply) => {
       const actor = requireAdmin(req);
+      const targetApp = await findApp(req.params.appSlug);
       await app.prisma.appSecretGrant.deleteMany({
-        where: { secretId: req.params.id, appId: req.params.appId },
+        where: { secretId: req.params.id, appId: targetApp.id },
       });
-      await audit(req.params.appId, actor.sub, "secret.revoked", { secretId: req.params.id });
+      await audit(targetApp.id, actor.sub, "secret.revoked", {
+        secretId: req.params.id,
+        app: req.params.appSlug,
+      });
       reply.status(204);
     },
   );

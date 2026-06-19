@@ -327,3 +327,77 @@ export function useDeleteSecret() {
     onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
   });
 }
+
+/* ---------------------------------------------------------------------------
+ * Global connection secrets (admin). Shared across apps via grants; write-only
+ * like the app-scoped ones. The server enforces requireAdmin on every route.
+ * ------------------------------------------------------------------------- */
+
+function invalidateGlobalSecrets(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ["secrets"] });
+}
+
+export function useCreateGlobalSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      name,
+      value,
+      injection,
+    }: {
+      name: string;
+      value: string;
+      injection?: InjectionRecipe;
+    }): Promise<SecretMetadata> =>
+      fetchJson(SecretMetadataSchema, "/api/v1/secrets", {
+        method: "POST",
+        body: { name, value, ...(injection ? { injection } : {}) },
+      }),
+    onSuccess: () => invalidateGlobalSecrets(queryClient),
+  });
+}
+
+export function useRotateGlobalSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, value }: { id: string; value: string }): Promise<SecretMetadata> =>
+      fetchJson(SecretMetadataSchema, `/api/v1/secrets/${encodeURIComponent(id)}/rotate`, {
+        method: "POST",
+        body: { value },
+      }),
+    onSuccess: () => invalidateGlobalSecrets(queryClient),
+  });
+}
+
+export function useDeleteGlobalSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      requestVoid(`/api/v1/secrets/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: () => invalidateGlobalSecrets(queryClient),
+  });
+}
+
+export function useGrantSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, appSlug }: { id: string; appSlug: string }) =>
+      requestVoid(`/api/v1/secrets/${encodeURIComponent(id)}/grants`, {
+        method: "POST",
+        body: { appSlug },
+      }),
+    onSuccess: () => invalidateGlobalSecrets(queryClient),
+  });
+}
+
+export function useRevokeSecret() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, appSlug }: { id: string; appSlug: string }) =>
+      requestVoid(
+        `/api/v1/secrets/${encodeURIComponent(id)}/grants/${encodeURIComponent(appSlug)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => invalidateGlobalSecrets(queryClient),
+  });
+}
