@@ -10,10 +10,10 @@
 generator client {
   // Prisma 7's Rust-engine-free client. ESM output, generated into the package
   // so imports use explicit .js specifiers under nodenext.
-  provider        = "prisma-client"
-  output          = "../src/db/generated"
-  moduleFormat    = "esm"
-  runtime         = "nodejs"
+  provider            = "prisma-client"
+  output              = "../src/db/generated"
+  moduleFormat        = "esm"
+  runtime             = "nodejs"
   importFileExtension = "js"
 }
 
@@ -40,8 +40,8 @@ enum VisibilityMode {
 /// `currentVersionId` is the live pointer — null before the first promote;
 /// "deploy" flips it, "rollback" flips it back (architecture §4.3).
 model App {
-  id                String         @id @default(uuid()) @db.Uuid
-  slug              String         @unique
+  id                String            @id @default(uuid()) @db.Uuid
+  slug              String            @unique
   displayName       String
   /// Creator's `actor.sub`, set at `app.create`. Nullable: rows predating the
   /// approvals work (docs/design/approvals.md §4) have no recorded owner. Drives
@@ -62,20 +62,24 @@ model App {
   passwordSetAt     DateTime?
   // The live version pointer. One-to-one with Version; SetNull so deleting a
   // version (only via app cascade in practice) can't dangle the pointer.
-  currentVersionId  String?        @unique @db.Uuid
-  currentVersion    Version?       @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
-  versions          Version[]      @relation("AppVersions")
+  currentVersionId  String?           @unique @db.Uuid
+  currentVersion    Version?          @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions          Version[]         @relation("AppVersions")
   sessions          Session[]
   approvalRequests  ApprovalRequest[]
+  /// Secrets owned by this app (`scope = 'app'`); global secrets have no owner.
+  secrets           AppSecret[]
+  /// Grants of `global` secrets to this app (the consuming side).
+  grantedSecrets    AppSecretGrant[]
   /// Per-app capability manifest (architecture §6.3) — what the gateway grants
   /// and enforces. JSON matches @helix/shared `CapabilitiesSchema`; the edge
   /// reads it through the registry projection. Defaults to the baseline (no
   /// capabilities). Manifest versioning/approvals are a v1 control-plane feature.
-  capabilities      Json           @default("{}")
+  capabilities      Json              @default("{}")
   /// Archived apps return 410 + Clear-Site-Data at the edge (architecture §7).
   archivedAt        DateTime?
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 
   @@map("apps")
 }
@@ -147,9 +151,9 @@ model AuditEvent {
 /// only ever sees the resulting effective-state change via the registry trigger,
 /// never this table (it has no grant on it).
 model ApprovalRequest {
-  id           String    @id @default(uuid()) @db.Uuid
-  appId        String    @db.Uuid
-  app          App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+  id    String @id @default(uuid()) @db.Uuid
+  appId String @db.Uuid
+  app   App    @relation(fields: [appId], references: [id], onDelete: Cascade)
 
   /// pending | approved | denied | withdrawn | needs_changes (@helix/shared APPROVAL_STATUSES).
   status       String
@@ -166,11 +170,11 @@ model ApprovalRequest {
   /// Required on deny / needs_changes.
   decisionNote String?
 
-  createdAt    DateTime  @default(now())
-  decidedAt    DateTime?
+  createdAt DateTime  @default(now())
+  decidedAt DateTime?
 
   @@index([status, createdAt]) // the admin queue
-  @@index([appId])             // the app-detail "pending" banner
+  @@index([appId]) // the app-detail "pending" banner
   @@map("approval_requests")
 }
 
@@ -271,4 +275,52 @@ model CspReport {
 
   @@index([appId, createdAt])
   @@map("csp_reports")
+}
+
+/// Connection secrets (docs/design/secrets-and-connections.md). Third-party
+/// credentials the platform holds so an app never does. **Control-plane data**:
+/// the portal writes them (CRUD + rotation), the separate `azx-egress` service
+/// (role `helix_egress`) reads `material` to inject server-side, and the policy
+/// edge (`helix_edge`) has NO grant here at all — that absence is the boundary.
+///
+/// `material` is the only credential-bearing column: dev holds AES-256-GCM
+/// ciphertext, prod a Key Vault reference — never plaintext, never re-displayed
+/// (write-only / rotate-only, §3). `scope` is `app` (owning `appId` set) or
+/// `global` (`appId` null, usable only via `AppSecretGrant`). Global-name
+/// uniqueness is enforced at the portal route (a partial unique index is not
+/// expressible here); `@@unique([appId, name])` covers the app-scoped case.
+model AppSecret {
+  id         String           @id @default(uuid()) @db.Uuid
+  scope      String
+  appId      String?          @db.Uuid
+  app        App?             @relation(fields: [appId], references: [id], onDelete: Cascade)
+  name       String
+  material   String
+  /// @helix/shared InjectionRecipe — how the resolved secret is applied outbound.
+  injection  Json
+  createdBy  String
+  createdAt  DateTime         @default(now())
+  rotatedAt  DateTime?
+  /// Stamped by the egress service on each successful injection (stale report, §6).
+  lastUsedAt DateTime?
+  grants     AppSecretGrant[]
+
+  @@unique([appId, name])
+  @@map("app_secrets")
+}
+
+/// Grant of a `global` secret to a specific app (secrets design §2/§7). Both
+/// sides must be true for an app to spend a global secret: this grant row AND a
+/// manifest connection binding. Admin-only and approval-gated to create.
+model AppSecretGrant {
+  secretId  String    @db.Uuid
+  secret    AppSecret @relation(fields: [secretId], references: [id], onDelete: Cascade)
+  appId     String    @db.Uuid
+  app       App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+  grantedBy String
+  createdAt DateTime  @default(now())
+
+  @@id([secretId, appId])
+  @@index([appId])
+  @@map("app_secret_grants")
 }

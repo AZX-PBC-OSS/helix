@@ -13,12 +13,16 @@
 
 CREATE ROLE helix_portal LOGIN PASSWORD 'helix_portal' NOINHERIT;
 CREATE ROLE helix_edge   LOGIN PASSWORD 'helix_edge'   NOINHERIT;
+-- The mechanism plane (azx-egress): resolves & injects connection secrets. It is
+-- the only runtime role with SELECT on app_secrets.material; like helix_edge it
+-- gets NO blanket grant (fail-closed) — every table is explicit in a migration.
+CREATE ROLE helix_egress LOGIN PASSWORD 'helix_egress' NOINHERIT;
 
--- Both runtime roles connect to the same database and need the schema on their
+-- All runtime roles connect to the same database and need the schema on their
 -- search_path. The test database is created later (vitest global setup) as the
 -- owner; grant there happens in the migration GRANTs that track the schema.
-GRANT CONNECT ON DATABASE helix TO helix_portal, helix_edge;
-GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge;
+GRANT CONNECT ON DATABASE helix TO helix_portal, helix_edge, helix_egress;
+GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress;
 
 -- helix_portal: full DML runtime (control plane — collection drain, usage
 -- reads, registry writes). Table grants are reissued by migrations as tables
