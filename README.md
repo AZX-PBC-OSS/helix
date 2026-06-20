@@ -1,32 +1,38 @@
 # Helix — AZX App Platform
 
-Secure hosting for vibe-coded AI apps. See [`docs/features/`](./docs/features/) for per-feature
-docs (the _what & how, today_), [`platform-architecture.md`](./platform-architecture.md) (the
-_what & why_), and [`platform-project-plan.md`](./platform-project-plan.md) (the _with what & in
-what order_). The whole design rests on one stance — **every hosted app is untrusted code** —
+Secure hosting for vibe-coded AI apps. **New here? Start with [`TOUR.md`](./TOUR.md)** — the
+high-level map. Then: [`docs/features/`](./docs/features/) for per-feature docs (the _what &
+how, today_), [`docs/platform-architecture.md`](./docs/platform-architecture.md) (the _what &
+why_), and [`docs/platform-project-plan.md`](./docs/platform-project-plan.md) (the _with what &
+in what order_). The whole design rests on one stance — **every hosted app is untrusted code** —
 and contains the blast radius per app instead of trying to verify it.
 
-> **Status: M4 (local) — Gateway.** Registry + deploys (portal API + `azx` CLI), edge serving
-> on `*.localtest.me`, and the §4.2 / Appendix A auth flow against a **local OIDC issuer**
-> (central callback on `auth.<base>`, one-time handoff token, `__Host-session` cookies,
-> server-side sessions, group visibility, silent refresh, `/_api/me`; portal/CLI bearer JWTs),
-> **plus the `/_api/*` gateway running locally**: the LLM proxy (`/_api/llm/chat`) and app-data
-> (`/_api/data/*` — user / collection / shared) with a metering ledger and an edge/portal
-> Postgres role split. A real Entra registration (M3 tail) and the Azure deploy (M5) are next.
+> **Status: M4.5 (local) — Egress & Connections.** Registry + deploys (portal API + `azx` CLI),
+> edge serving on `*.localtest.me`, the §4.2 / Appendix A auth flow against a **local OIDC
+> issuer** (central callback, one-time handoff token, `__Host-session` cookies, server-side
+> sessions, group visibility, silent refresh, password/public modes, `/_api/me`; portal/CLI
+> bearer JWTs), the `/_api/*` **gateway** (LLM proxy `/_api/llm/chat`, app-data `/_api/data/*` —
+> user / collection / shared — with a metering ledger and the Postgres role split), an enforced
+> capability **approval** workflow, **plus the `azx-egress` mechanism plane**: the fetch-proxy
+> (`/_api/fetch/<url>` + an opt-in transparent fetch/XHR shim) and secret-backed connections,
+> built as a third container from day one. A real Entra registration (M3 tail) and the Azure
+> deploy (M5) are next.
 
 ## Layout
 
 ```
 apps/
-  edge/        # azx-edge — data plane (Fastify). Hard rule: dependency-minimal.
+  edge/        # azx-edge — data/policy plane (Fastify). Hard rule: dependency-minimal.
   portal/      # azx-portal — control plane (Fastify + Prisma). Owns the schema.
   portal-web/  # the portal SPA (Vite + React 19 + Mantine + TanStack Query)
+  egress/      # azx-egress — mechanism plane: outbound HTTP + secret injection + SSRF
   dev-idp/     # local OIDC issuer (oidc-provider). Dev only, never deployed.
 packages/
-  shared/      # @helix/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage
-  cli/         # azx — the deploy CLI (azx login / deploy / promote / …)
-examples/      # reference apps to `azx deploy` (hello-world, notes, chatbot, waitlist); built dist/ committed
-docs/          # platform-architecture, project-plan, features/ (per-feature), design/ (app-data)
+  shared/        # @helix/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage, instruction
+  secret-store/  # @helix/secret-store — seal/open/destroy seam (dev envelope / prod Key Vault)
+  cli/           # azx — the deploy CLI (azx login / deploy / promote / …)
+examples/      # reference apps to `azx deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy); built dist/ committed
+docs/          # TOUR is at repo root; here: platform-architecture, project-plan, phase-1-user-stories, features/, design/
 .devcontainer/ # VS Code dev container; also runs Postgres 18 + Azurite
 ```
 
@@ -37,10 +43,11 @@ later milestones.
 
 Open the repo in the **dev container** (VS Code: _Reopen in Container_). It provides Node 24,
 pnpm, and the `db` (Postgres) + `azurite` (Blob) services, with `DATABASE_URL`,
-`AZURE_STORAGE_CONNECTION_STRING`, and the M3 auth env (`EDGE_OIDC_*`, `EDGE_AUTH_SECRET`,
-`PORTAL_OIDC_*`, `EDGE_TLS_*`) already set. `pnpm install` runs on create, and post-create
-generates a mkcert wildcard cert for `*.localtest.me` into `.devcontainer/certs/`
-(gitignored).
+`AZURE_STORAGE_CONNECTION_STRING`, the M3 auth env (`EDGE_OIDC_*`, `EDGE_AUTH_SECRET`,
+`PORTAL_OIDC_*`, `EDGE_TLS_*`), and the egress env (`HELIX_INSTRUCTION_SECRET` for the
+edge↔egress attested instruction) already set. `pnpm install` runs on create, and post-create
+generates a mkcert wildcard cert for `*.localtest.me` into `.devcontainer/certs/` (gitignored),
+the dev secret-store KEK, and the `helix_egress` DB role.
 
 ### The platform is HTTPS-only
 
@@ -53,13 +60,15 @@ the self-signed cert** the first time you open an app — accept it (or import
 `.devcontainer/certs/caroot/rootCA.pem` into your OS/browser trust store to silence it). Node
 processes inside the container already trust the CA via `NODE_EXTRA_CA_CERTS`.
 
-## Local dev: the three processes
+## Local dev: the processes
 
 ```bash
 pnpm dev:idp      # :3002 — local OIDC issuer (apps/dev-idp). Fixture users below.
 pnpm dev:portal   # :3001 — registry + deploy API
 pnpm dev:edge     # :8080 — HTTPS. Apps at https://<slug>.localtest.me:8080,
                   #         login on https://auth.localtest.me:8080
+pnpm dev:egress   # :8081 — mechanism plane (fetch-proxy + secret injection).
+                  #         Only needed when exercising /_api/fetch or connections.
 ```
 
 `*.localtest.me` resolves to `127.0.0.1`, so app subdomains and the auth host work with no
@@ -112,6 +121,7 @@ config, [`apps/dev-idp/README.md`](./apps/dev-idp/README.md) for the IdP, and
 | `pnpm dev:idp`              | Local OIDC issuer (`:3002`)                      |
 | `pnpm dev:portal`           | azx-portal (`:3001`, registry + deploy API)      |
 | `pnpm dev:edge`             | azx-edge (`:8080`, HTTPS)                        |
+| `pnpm dev:egress`           | azx-egress (`:8081`, fetch-proxy + secrets)      |
 | `pnpm dev:web`              | portal SPA (`:5173`, proxies `/api` to :3001)    |
 | `./check-and-lint.sh`       | Poor-man's CI: typecheck + lint + format + tests |
 
