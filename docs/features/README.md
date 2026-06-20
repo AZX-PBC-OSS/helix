@@ -53,6 +53,6 @@ migrations; egress is the only component holding plaintext secrets or a route to
 - **M4.5** — the `azx-egress` mechanism plane: fetch-proxy + secret-backed connections. _Shipped locally — this milestone._
 - **M5** — Azure deploy + pilot. _Ahead._
 
-Each doc has a **Planned / not yet built** section calling out what is mocked, deferred, or
-config-only. Where the portal SPA shows future surfaces, they are marked `PREVIEW · M4` and
-never silently faked.
+Each doc has a **Planned / not yet built** section calling out what is deferred or config-only.
+The portal SPA's screens are all real and wired to `/api/v1/*`; the one not-yet-built sub-feature
+(per-app RBAC roles) carries a `PreviewBadge` (`milestone="v1"`) and is never silently faked.

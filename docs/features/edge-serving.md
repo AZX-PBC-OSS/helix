@@ -73,7 +73,36 @@ XML can execute script). The split:
   tailwind, Google Fonts). `img-src https: data: blob:` stays open — an acknowledged exfil-via-
   navigation trade-off (§4.4).
 
-An app's declared `externalOrigins` (from its manifest) extend `connect-src`.
+An app's approved `externalOrigins` (from its manifest, gated through the approvals
+write-gate) extend both `connect-src` and `img-src`. Origins are reduced to bare CSP sources
+(`new URL().origin` — scheme+host+port, path stripped) and invalid entries are dropped
+fail-closed. A same-origin `report-uri /_csp-report` funnels violations to the edge sink.
+
+### Transparent fetch shim (serve-time HTML injection)
+
+The fetch-proxy contract is a path prefix: app code calls `fetch('/_api/fetch/https://…')`,
+a same-origin call the CSP permits, which the edge authorizes and forwards to azx-egress (see
+[fetch-proxy.md](./fetch-proxy.md)). The shim is the **zero-edit adoption path** on top of that
+contract — for apps that opt in via `capabilities.fetch.shim`, the edge serves a tiny per-app
+script that monkeypatches `window.fetch` **and** `XMLHttpRequest.prototype.open` (both, because
+axios defaults to XHR) so a call to a granted proxied origin is transparently rewritten to the
+same-origin `/_api/fetch/…` path. No app code changes.
+
+- `apps/edge/src/serving/shim.ts` — `buildShimScript(origins)` bakes this app's proxied origins
+  into the script (only granted origins are rewritten; a non-granted rewrite would 403 anyway);
+  `injectShimTag(html)` inserts `<script src="/_helix/fetch-shim.js">` right after the first
+  `<head>` so it runs before any app script captures `fetch`. A plain (non-async/defer) external
+  script blocks parsing until it executes — exactly the ordering the patch needs.
+- The script is served at the reserved path **`/_helix/fetch-shim.js`** (`apps/edge/src/app.ts`;
+  `/_helix/*` is reserved by `isReservedAppPath` alongside `/_auth/*` and `/_api/*`).
+- **Injection forces a full body and drops the etag.** For an opt-in app's HTML, `assets.ts`
+  suppresses the `If-None-Match` (a `304` would skip injection), buffers the one HTML doc, injects
+  the tag, and sends it with no `etag`/`last-modified` — the injected bytes differ from Blob's, so
+  a conditional `304` must never short-circuit injection. Every other asset keeps streaming.
+
+It is **ergonomics, not a boundary**: delete or bypass it and you gain nothing — a direct call
+to a non-granted origin still dies on `connect-src 'self'`. It fails safe. Out of scope (it is an
+HTTP request/response proxy): WebSocket, EventSource/SSE, `<img>`/`<form>`/font loads.
 
 ### 404 / 410 semantics
 
@@ -101,5 +130,9 @@ the portal migration `20260616000001_edge_role_grants` (see
   `Secure` and app crypto APIs need a secure context).
 - **Azure Blob** in production; dev uses Azurite. The signing/stream path is provider-shaped
   already.
-- A `public` visibility short-circuit exists in serving; `password` visibility still fails closed
-  (see [authentication.md](./authentication.md)).
+- A real Entra app registration (M3 tail, config-only) and the Azure deploy (M5).
+
+Visibility at serving is fully wired: `public` apps short-circuit the gate (served to everyone,
+no session), `password` apps route through the gate to their own same-origin `/_auth/login`
+challenge, and every other mode stays behind the OIDC session gate (see
+[authentication.md](./authentication.md)).

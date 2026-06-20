@@ -7,14 +7,11 @@ A secret is stored sealed, referenced by name from a proxied origin
 `azx-egress` on the outbound hop — so an API key reaches the third party without
 ever reaching the browser, the edge, or the registry projection.
 
-**Handler.** Portal CRUD: `apps/portal/src/routes/secrets.ts`. Custody seam:
-`packages/secret-store` (`@helix/secret-store`). Resolution: `apps/egress`.
-
 | Route | Who | What |
 | --- | --- | --- |
 | `GET/POST/DELETE /api/v1/apps/:slug/secrets[/:name]`, `…/:name/rotate` | app owner | app-scoped CRUD |
 | `GET/POST/DELETE /api/v1/secrets[/:id]`, `…/:id/rotate` | admin | global secret CRUD |
-| `POST/DELETE /api/v1/secrets/:id/grants[/:appId]` | admin | grant a global secret to an app |
+| `POST/DELETE /api/v1/secrets/:id/grants[/:appSlug]` | admin | grant a global secret to an app (by slug) |
 
 ## How it works
 
@@ -24,6 +21,19 @@ ever reaching the browser, the edge, or the registry projection.
 - **global** — admin-only, shared across apps via explicit per-app **grants**
   (`app_secret_grants`). "Global" never means "ambiently available": an app must
   both hold a grant *and* reference the secret in its manifest.
+
+A secret is the unit, and **one secret can back many connections** (it is not a
+bundle-per-app): it's the only model where "rotate the Stripe key once, all six
+apps follow" holds.
+
+### Injection recipes
+
+A secret carries an `InjectionRecipe` chosen at create time, applied by egress on
+the outbound hop (`packages/shared/src/secrets.ts`):
+
+- `header-bearer` — `Authorization: Bearer <value>` (the default).
+- `header` — an arbitrary header from a `{}` template (e.g. `X-Api-Key: {}`).
+- `query` — a query-string parameter (e.g. `?api_key=<value>`).
 
 ### Write-only / rotate-only
 
@@ -41,10 +51,21 @@ environment (architecture §8):
   column under a locally-generated KEK (`.devcontainer/post-create.sh`, never an
   env var that tempts cross-environment reuse).
 - **prod:** `KeyVaultSecretStore` — the value lives in Key Vault; `material` is
-  only a reference; read via managed identity (no app-held key). Wired in M5.
+  only a reference; read via managed identity (no app-held key). Seam present, but
+  it throws "not wired — M5" today; the dev envelope is the working path.
 
 Encryption-at-rest only buys anything when the key and the ciphertext have
 *different* exposure profiles — so the key never sits next to the ciphertext.
+The original plan was an env-var KEK; it was **reversed**, because
+generate-at-boot-and-store-in-DB puts the key in the same backup as the
+ciphertext — decorative against the #1 real at-rest threat (backup/snapshot
+exfil). Hence **vault-as-store** in prod (the DB row holds a reference, never an
+app-held key) and the column is `material` (a reference or ciphertext), not
+`ciphertext`. Helix is "a custodian of N tenants' third-party credentials" — a
+breach reads "we disclosed our customers' Stripe keys" ×N; the consequence
+asymmetry, not the probability, settles the design. (`passwordEnc` is
+deliberately *not* migrated here — it's a different shape: hash-to-edge plus
+owner re-display.)
 
 ### The role split (the real boundary)
 
@@ -74,6 +95,13 @@ credential — and the value was never in the bundle.
 
 **Global** secrets are managed by admins on the portal's **Secrets** page
 (`/admin/secrets`): create, rotate, delete, and grant/revoke to apps by slug.
+
+## Key files
+
+- `apps/portal/src/routes/secrets.ts` — the CRUD + grant routes (seal-on-write).
+- `packages/secret-store/src/index.ts` — the `SecretStore` seam (`seal`/`open`/`destroy`), dev + prod impls.
+- `apps/egress/src/secrets.ts` — `PgSecretResolver`, the only reader (`helix_egress` role).
+- `apps/portal/prisma/migrations/…_secrets_and_egress_grants/` — `app_secrets`/`app_secret_grants` + the role grants.
 
 ## Planned / not yet built
 

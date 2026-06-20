@@ -52,9 +52,20 @@ headless; the error tells you to run `azx login`.
 Tests: `deviceFlow.integration.test.ts`, `tokenStore.test.ts`, `session.test.ts`, driven against
 an ephemeral dev-idp (see [dev-idp.md](./dev-idp.md)).
 
+## Design notes (why)
+
+- **Per-app, not a monolithic dashboard tool** — `azx` reads the app's own `azx.json` from the
+  cwd, like `git`/`vercel`, so the deploy command is the same from any app directory.
+- **Static token vs interactive login, in that precedence** — `AZX_TOKEN` keeps CI and scripts
+  zero-prompt and lets the portal's dev-token stub keep working; everyone else uses the device flow.
+  Either way the portal verifies the bearer statelessly over JWKS.
+- **Token cache bound by portal origin + issuer** — a cached token can't be replayed against a
+  different portal, and the v1→v2 migration re-keys older issuer-only caches without a re-login.
+- **Headless-safe on 401** — nothing auto-launches a browser; the error tells you to `azx login`,
+  so agents and CI fail loudly instead of hanging on an interactive prompt.
+
 ## Planned / not yet built
 
-- **Not published yet** (M1 scope) — run the dev entrypoint with `tsx`:
-  `node --import tsx <repo>/packages/cli/src/bin.ts <cmd>` from the app directory, or alias it.
-  `npm i -g @helix/cli` is a later milestone.
+- **Not published yet** — run via `tsx`: `node --import tsx <repo>/packages/cli/src/bin.ts <cmd>`
+  from the app directory, or alias it. `npm i -g @helix/cli` is a later milestone.
 - Production login points `azx login` at Entra instead of the local issuer (config-only).

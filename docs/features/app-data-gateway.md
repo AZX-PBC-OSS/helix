@@ -13,7 +13,8 @@ writer can be different principals, so read and write are independent grants):
   a `sharedWrite` grant never implies `sharedRead`.
 
 Edge handler: `apps/edge/src/gateway/data-handler.ts` (`makeDataHandlers`). Store:
-`apps/edge/src/gateway/data.ts` (`PgAppDataStore`). Route table: `apps/edge/src/app.ts:262`.
+`apps/edge/src/gateway/data.ts` (`PgAppDataStore`). Route table: `apps/edge/src/app.ts`
+(the `/_api/data/*` block).
 
 ## How it works
 
@@ -104,6 +105,50 @@ Migrations: `20260616000001_edge_role_grants`, `20260616231036_app_data`,
 `20260616231730_app_collection_items` (under `apps/portal/prisma/migrations/`). Asserted by
 `apps/edge/src/registry/role-split.integration.test.ts`. A compromised edge cannot enumerate,
 update, or delete collection rows **regardless of what the app declares**.
+
+## Design notes (why)
+
+**The writer and the reader are different principals.** The motivating case (app-data design §1)
+is the CEO's *public* contact-harvester: an anonymous visitor submits their email, and only the
+owner may ever read the list back — "dump the contact list" is the headline breach. The visitor
+(writer) and the owner (reader) are distinct identities. Confidentiality therefore **cannot live
+in the app's code**: the frontend runs in the attacker's own browser, so any check it makes is the
+attacker's to remove. Only the gateway — keyed off the *caller* identity it derived (the session
+or anon resolution), never a frontend-supplied parameter — can enforce the asymmetry. A symmetric
+KV (read and write as one grant) can't be configured safe; the asymmetry has to be in the
+primitive. Hence three named scopes, not one, and the hard rule: **a write grant never implies a
+read grant.**
+
+**Write-only collections are a structural absence of a read verb.** §3.2's containment is not a
+permission flag that could be flipped — it is the *non-existence* of the code that would read.
+`AppDataStore` has no `listCollection`/`getCollection`/`deleteCollection` method, the route table
+has no GET/DELETE on `/_api/data/collections/*`, and `helix_edge` has `INSERT`-only on the table.
+Three independent layers, each of which alone would suffice, all say the same thing: from the app
+side a collection is append-only. Junk-row spam becomes purely a rate-limit problem (`writesPerDay`
++ the anon per-IP cap), never an enumeration one — there is no verb to enumerate *with*. The owner
+reads exclusively through the privileged portal path.
+
+**The role split is the boundary that survives a process compromise.** It is two layers:
+
+- **Coarse table/column GRANTs** (survive an edge RCE). The grant set *is* the boundary —
+  deliberately **one role per service, not a per-operation `SET ROLE`**. `SET ROLE` is the
+  intuitive design and it's wrong: it doesn't survive a process the attacker now controls. The
+  only thing that survives compromise is a grant that *isn't there* — so `helix_edge` simply has
+  no `SELECT` on `app_collection_items` and no grant at all on `app_secrets`.
+- **RLS via `SET LOCAL` GUCs** (survives a SQL bug). Even with full DML on `app_data`, the edge
+  sees only the partition the transaction-scoped GUCs admit; a forgotten GUC fails closed to zero
+  rows, and the policy is `FORCE` so even the table owner is subject to it. Collections need no
+  RLS — there is no read to scope.
+
+**Fail-closed by construction.** Postgres defaults a new table to owner-only, and the migrations
+deliberately do **not** set permissive `ALTER DEFAULT PRIVILEGES` for `helix_edge`. A new table
+therefore grants the edge *nothing* until a migration explicitly says so — a forgotten grant
+breaks loudly in staging rather than silently over-sharing. The target prod posture (app-data
+design §2) is a **fourth** principal, `helix_migrate`, that *owns* the objects and is the only role
+the migration step connects as: a table owner can `ALTER`/`DROP`/`GRANT`-self **and bypasses RLS**,
+so neither runtime role (`helix_edge`, `helix_portal`) may own tables. (Today both still connect as
+the `helix` owner; the per-role grants above are applied, the dedicated `helix_migrate`/runtime-role
+separation is the documented target.)
 
 ## Try it
 

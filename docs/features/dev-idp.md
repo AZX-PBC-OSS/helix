@@ -32,20 +32,33 @@ never deployed.** Full notes: [`apps/dev-idp/README.md`](../../apps/dev-idp/READ
 - `azx-portal-web` (public) — code + PKCE for the browser SPA; `clientBasedCORS` opens the token
   endpoint to it.
 
-### Entra parity
+### Entra parity (group claims in the token)
 
-ID tokens embed `groups` / `email` / `name` directly (not via a userinfo round-trip), matching
-how Entra delivers group claims; access tokens are JWTs with `aud: urn:helix:portal` (resource-
-indicator semantics) so the portal can verify them statelessly over JWKS. The
-non-interactive approval (`?user=alice@azx.dev` on the interaction page) makes integration tests
-deterministic.
+The provider sets `conformIdTokenClaims: false`, so `groups` / `email` / `name` land **in the ID
+token itself** (not behind a userinfo round-trip), matching how Entra delivers group claims — the
+edge reads them straight off the token and never calls userinfo (`provider.ts`). Access tokens are
+**JWTs** (`accessTokenFormat: "jwt"` via the resource-indicator feature) with `aud:` the portal
+audience, so the portal verifies them statelessly over JWKS; `extraTokenClaims` copies
+`email`/`name`/`groups` onto the access token for actor attribution. Consent is always auto-granted,
+so the only interaction that ever renders is the login picker (`interactions.ts`).
 
-### Testing exports (`src/testing.ts`)
+### Testing exports
 
-`startDevIdp()` spins up an ephemeral instance on a random port; `runDeviceFlow()` /
-`runAuthCodeFlow()` drive the flows; `TestHttpSession` is a cookie-jar + redirect follower;
-`approveDeviceFlow()` clicks through the device page. These back the edge and CLI integration
-tests.
+`startDevIdp()` (from `src/start.ts`, re-exported via `src/index.ts`) spins up an ephemeral
+instance on a random port; `src/testing.ts` adds `runDeviceFlow()` / `runAuthCodeFlow()` to drive
+the flows, `TestHttpSession` (a cookie-jar + redirect follower), `approveDeviceFlow()` to click
+through the device page, and `decodeJwtPayload()`. These back the edge and CLI integration tests.
+
+## Design notes (why)
+
+- **One issuer, two read paths, same URL** — running in the workspace container (not as a compose
+  service) means `http://localhost:3002` resolves identically from the host browser and from
+  in-container back-channels, so no split-horizon DNS or per-environment issuer config.
+- **Faithful to Entra where it matters** — group-claims-in-token and JWT access tokens are the two
+  behaviors the rest of the platform depends on, so the dev IdP reproduces them exactly; the prod
+  swap is then config-only.
+- **CORS only for the SPA** — `clientBasedCORS` keys off `azx-portal-web` alone; the redirect-URI
+  allowlist + PKCE stay the real boundary for that public browser client.
 
 ## Planned / not yet built
 

@@ -17,7 +17,16 @@ GET    /api/v1/apps/:slug            get (open)
 POST   /api/v1/apps/:slug/archive    freeze → edge serves 410 + Clear-Site-Data (idempotent)
 POST   /api/v1/apps/:slug/unarchive  restore (idempotent)
 GET/PUT /api/v1/apps/:slug/manifest  capability grants (see capabilities-and-manifests.md)
+POST   /api/v1/apps/:slug/visibility set gate mode (→public is elevated → approval; →password refused)
+POST   /api/v1/apps/:slug/access/origin       grant a CSP/proxy origin (routes through the write-gate)
+POST/GET /api/v1/apps/:slug/access/password   mint/rotate/read the shared passphrase
 ```
+
+Capability/visibility/origin mutations route through one write-gate (`applyCapabilityChange`):
+a reduction in privilege commits immediately; an above-baseline delta (bigger budgets, non-curated
+models, any MCP/external origin, visibility→public) opens an `ApprovalRequest` instead of applying
+(see [docs/design/approvals.md](../design/approvals.md)). Enabling `password` is refused here — it
+needs a minted credential, so it has its own `/access/password` routes.
 
 Slugs are DNS labels (`[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`); visibility defaults to `private`.
 Every mutation writes an `audit_events` row (`app.create`, `app.archive`, `version.promote`, …).
@@ -58,7 +67,9 @@ LISTEN/NOTIFY projection (see [edge-serving.md](./edge-serving.md)).
 
 The portal reads the edge-written `gateway_calls` ledger for per-app and platform rollups
 (`packages/shared/src/usage.ts`: `UsageSummary`, `GatewayCall`, `PlatformUsage`). The portal SPA
-renders these (still partly mock — see [portal-web.md](./portal-web.md)).
+renders these for real (see [portal-web.md](./portal-web.md)). The ledger carries tokens, request
+counts, outcome, capability, model, user, app and timestamp — **not** cost or latency; dashboards
+show tokens rather than fabricating a dollar column.
 
 ## Schema (Prisma — `apps/portal/prisma/schema.prisma`)
 
@@ -71,9 +82,32 @@ renders these (still partly mock — see [portal-web.md](./portal-web.md)).
 - **`gateway_calls`**, **`app_data`**, **`app_collection_items`** — gateway tables (see the
   gateway docs). Migrations live under `apps/portal/prisma/migrations/`.
 
+## Design notes (why)
+
+- **Immutable versions, a pointer flip for the cutover.** A version is write-once: its bytes live
+  at a content-addressed Blob prefix and never change. Going live is not a re-upload but a single
+  transactional move of `app.currentVersionId` (`deploy/pointer.ts`). That makes promote and
+  rollback the *same* cheap, atomic, instantly-reversible operation, and it is why HTML is served
+  `no-cache` — the pointer flip must be visible on the next request.
+- **Preview-then-promote.** A deploy lands as `preview` and serves nowhere until an explicit
+  promote. The upload (untrusted zip handling, CSP lint) and the cutover (a privileged pointer
+  move) are deliberately separate steps, so a bad build is inspected before it can take traffic.
+- **The edge reads a projection, not the registry.** The portal owns every write; the edge holds
+  an in-memory cache refreshed over LISTEN/NOTIFY (see [edge-serving.md](./edge-serving.md)). The
+  data path therefore does not depend on the portal being up — the control plane can be down for a
+  deploy and apps keep serving the last-projected pointers.
+- **Decompression-bomb defense counts real bytes.** `validate.ts` never trusts a zip's declared
+  sizes; it streams and counts decompressed output against the `limits.ts` caps, so a 200:1 ratio
+  or a header-lied size is caught mid-stream, not after a disk fills.
+
 ## Planned / not yet built
 
-- **Approval workflows** for above-baseline capability grants (architecture §6.3) — the portal
-  SPA shows a `PREVIEW · M4` approvals queue; the API/policy is not built.
-- **Per-app RBAC** — today any authenticated portal principal may mutate (v0).
+- **Per-app RBAC** — `App.ownerId` is recorded at create, but per-app owner/editor/viewer roles
+  are not yet enforced; today any authenticated portal principal may mutate (the portal SPA marks
+  the roles surface with a `PreviewBadge`).
 - **Manifest versioning** history beyond the current full-replace PUT.
+
+> Approval workflows for above-baseline capability/CSP/visibility changes are **built**, not
+> planned — `/api/v1/approvals` with approve/deny/needs_changes/withdraw, the typed-diff
+> classifier in `@helix/shared`, and apply-on-approve. See
+> [docs/design/approvals.md](../design/approvals.md).
