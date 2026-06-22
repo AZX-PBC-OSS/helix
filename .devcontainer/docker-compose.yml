@@ -3,6 +3,10 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+    # Run tini as PID 1 so re-parented orphans get reaped. Without this, PID 1 is
+    # the `sleep infinity` below — which never wait()s, so every orphaned helper
+    # (git/esbuild/etc. spawned by tooling) piles up as a permanent zombie.
+    init: true
     env_file:
       - path: .env.local
         required: false
