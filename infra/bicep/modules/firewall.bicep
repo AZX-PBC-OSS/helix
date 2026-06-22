@@ -1,0 +1,187 @@
+// firewall.bicep — Azure Firewall, its policy, and the default routes.
+//
+// This is where the egress-zone property is *enforced*:
+//   - snet-egress (10.0.4.0/23) is allowed outbound to the internet.
+//   - snet-apps   (10.0.2.0/23) is NOT — Azure Firewall is deny-by-default, so
+//     the absence of an allow rule for it means edge/portal cannot egress.
+//   - Both subnets are allowed to reach the small set of FQDNs that Azure
+//     Container Apps itself needs to pull system images and report health;
+//     without these the managed environment cannot run. Review this list
+//     against the current ACA networking docs before each deploy.
+//
+// The two default routes (0.0.0.0/0 → firewall private IP) are added here
+// because they depend on the firewall's allocated private IP — see routing.bicep
+// for why the route tables themselves are created earlier and empty.
+
+@description('Azure region.')
+param location string
+
+@description('Resource name prefix.')
+param namePrefix string
+
+@description('Resource id of AzureFirewallSubnet.')
+param firewallSubnetId string
+
+@description('Address prefix of snet-apps (rule source matching).')
+param appsSubnetPrefix string
+
+@description('Address prefix of snet-egress (rule source matching).')
+param egressSubnetPrefix string
+
+@description('Name of the apps route table (default route is added to it).')
+param appsRouteTableName string
+
+@description('Name of the egress route table (default route is added to it).')
+param egressRouteTableName string
+
+@description('FQDNs the ACA managed environments need outbound to function (MCR, control plane, monitoring). Both subnets are allowed to reach these. Review against current ACA networking docs before deploying.')
+param acaPlatformFqdns array = [
+  'mcr.microsoft.com'
+  '*.data.mcr.microsoft.com'
+  '*.cdn.mscr.io'
+  '*.azurecr.io'
+  #disable-next-line no-hardcoded-env-urls
+  '*.blob.core.windows.net'
+  '*.monitoring.azure.com'
+  #disable-next-line no-hardcoded-env-urls
+  'login.microsoftonline.com'
+  'packages.microsoft.com'
+]
+
+resource firewallPip 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
+  name: '${namePrefix}-fw-pip'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
+resource firewallPolicy 'Microsoft.Network/firewallPolicies@2024-05-01' = {
+  name: '${namePrefix}-fw-policy'
+  location: location
+  properties: {
+    sku: {
+      tier: 'Standard'
+    }
+    threatIntelMode: 'Alert'
+  }
+}
+
+resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2024-05-01' = {
+  parent: firewallPolicy
+  name: 'helix-egress-rules'
+  properties: {
+    priority: 200
+    ruleCollections: [
+      {
+        // The egress zone: snet-egress reaches the whole internet over HTTP(S).
+        // This is azx-egress doing its job (governed outbound for the fetch-proxy).
+        ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
+        name: 'egress-internet'
+        priority: 100
+        action: {
+          type: 'Allow'
+        }
+        rules: [
+          {
+            ruleType: 'ApplicationRule'
+            name: 'egress-to-any-https'
+            sourceAddresses: [egressSubnetPrefix]
+            targetFqdns: ['*']
+            protocols: [
+              { protocolType: 'Https', port: 443 }
+              { protocolType: 'Http', port: 80 }
+            ]
+          }
+        ]
+      }
+      {
+        // Platform plumbing both ACA environments require. Deliberately narrow:
+        // it does NOT give the apps subnet general internet access.
+        ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
+        name: 'aca-platform'
+        priority: 200
+        action: {
+          type: 'Allow'
+        }
+        rules: [
+          {
+            ruleType: 'ApplicationRule'
+            name: 'aca-required-fqdns'
+            sourceAddresses: [appsSubnetPrefix, egressSubnetPrefix]
+            targetFqdns: acaPlatformFqdns
+            protocols: [
+              { protocolType: 'Https', port: 443 }
+              { protocolType: 'Http', port: 80 }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+resource firewall 'Microsoft.Network/azureFirewalls@2024-05-01' = {
+  name: '${namePrefix}-fw'
+  location: location
+  properties: {
+    sku: {
+      name: 'AZFW_VNet'
+      tier: 'Standard'
+    }
+    firewallPolicy: {
+      id: firewallPolicy.id
+    }
+    ipConfigurations: [
+      {
+        name: 'fw-ipconfig'
+        properties: {
+          subnet: {
+            id: firewallSubnetId
+          }
+          publicIPAddress: {
+            id: firewallPip.id
+          }
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    ruleCollectionGroup
+  ]
+}
+
+// Default routes: force all internet-bound traffic from both app subnets through
+// the firewall. The apps subnet is denied there; the egress subnet is allowed.
+resource appsRouteTable 'Microsoft.Network/routeTables@2024-05-01' existing = {
+  name: appsRouteTableName
+}
+resource egressRouteTable 'Microsoft.Network/routeTables@2024-05-01' existing = {
+  name: egressRouteTableName
+}
+
+resource appsDefaultRoute 'Microsoft.Network/routeTables/routes@2024-05-01' = {
+  parent: appsRouteTable
+  name: 'default-to-firewall'
+  properties: {
+    addressPrefix: '0.0.0.0/0'
+    nextHopType: 'VirtualAppliance'
+    nextHopIpAddress: firewall.properties.ipConfigurations[0].properties.privateIPAddress
+  }
+}
+
+resource egressDefaultRoute 'Microsoft.Network/routeTables/routes@2024-05-01' = {
+  parent: egressRouteTable
+  name: 'default-to-firewall'
+  properties: {
+    addressPrefix: '0.0.0.0/0'
+    nextHopType: 'VirtualAppliance'
+    nextHopIpAddress: firewall.properties.ipConfigurations[0].properties.privateIPAddress
+  }
+}
+
+output firewallPrivateIp string = firewall.properties.ipConfigurations[0].properties.privateIPAddress
+output firewallName string = firewall.name

@@ -1,0 +1,75 @@
+// dns.bicep — the public DNS zone for the apps domain.
+//
+// All hosted apps live at <app>.azx-labs.com, the central OIDC callback at
+// auth.azx-labs.com, and the (internal) control plane is fronted at
+// portal.azx-labs.com. The wildcard + auth + portal records point at the apps
+// environment's public static IP (the edge takes external ingress there).
+//
+// TLS: the wildcard cert (*.azx-labs.com) and the ACA custom-domain bindings are
+// handled separately — issuance/renewal is the portal's ACME DNS-01 job
+// (deferred, M5 tail). `domainVerificationId`, when supplied, writes the asuid
+// TXT record ACA needs to verify ownership before a custom-domain binding.
+//
+// NOTE: delegate azx-labs.com to this zone's name servers at the registrar
+// (output `nameServers`) before the records resolve publicly.
+
+@description('Apps domain, e.g. azx-labs.com.')
+param appsDomain string
+
+@description('Public static IP of the apps Container Apps environment (edge ingress).')
+param edgeStaticIp string
+
+@description('ACA custom-domain verification id (asuid TXT). Empty = skip.')
+param domainVerificationId string = ''
+
+resource zone 'Microsoft.Network/dnsZones@2018-05-01' = {
+  name: appsDomain
+  location: 'global'
+}
+
+resource wildcardRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = {
+  parent: zone
+  name: '*'
+  properties: {
+    TTL: 3600
+    ARecords: [
+      { ipv4Address: edgeStaticIp }
+    ]
+  }
+}
+
+resource authRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = {
+  parent: zone
+  name: 'auth'
+  properties: {
+    TTL: 3600
+    ARecords: [
+      { ipv4Address: edgeStaticIp }
+    ]
+  }
+}
+
+resource portalRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = {
+  parent: zone
+  name: 'portal'
+  properties: {
+    TTL: 3600
+    ARecords: [
+      { ipv4Address: edgeStaticIp }
+    ]
+  }
+}
+
+resource verificationRecord 'Microsoft.Network/dnsZones/TXT@2018-05-01' = if (!empty(domainVerificationId)) {
+  parent: zone
+  name: 'asuid'
+  properties: {
+    TTL: 3600
+    TXTRecords: [
+      { value: [domainVerificationId] }
+    ]
+  }
+}
+
+output zoneName string = zone.name
+output nameServers array = zone.properties.nameServers
