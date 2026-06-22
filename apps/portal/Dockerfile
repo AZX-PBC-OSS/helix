@@ -20,11 +20,9 @@ WORKDIR /app
 FROM base AS build
 COPY . .
 # Install the portal AND the SPA dependency closures. The portal postinstall runs
-# `prisma generate`, whose prisma.config.ts resolves env("DATABASE_URL") and errors
-# if it's unset — so supply a throwaway value scoped to this step. generate never
-# connects; the real URL is injected at runtime from Key Vault.
-RUN DATABASE_URL='postgresql://build:build@localhost:5432/build' \
-    pnpm install --frozen-lockfile --filter @helix/portal... --filter @helix/portal-web...
+# `prisma generate` (offline codegen, no DB) — prisma.config.ts reads DATABASE_URL
+# lazily via process.env, so no build-time database URL is needed.
+RUN pnpm install --frozen-lockfile --filter @helix/portal... --filter @helix/portal-web...
 # Build the SPA — the portal statically serves apps/portal-web/dist when present.
 RUN pnpm --filter @helix/portal-web build
 
