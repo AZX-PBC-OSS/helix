@@ -202,6 +202,13 @@ model GatewayCall {
   /// now so dollar math is correct the day it flips on.
   cacheReadInputTokens     Int @default(0)
   cacheCreationInputTokens Int @default(0)
+  /// Frozen as-charged cost of this call in **micro-USD** (1e-6 USD), priced by
+  /// the edge at write time via `@helix/shared` (`costUsd`). Integer for exact
+  /// SUMs. This is the source of truth for both the per-app USD spend gate (a
+  /// daily + rolling-hour window in apps/edge/src/gateway/usage.ts) and every
+  /// dollar figure the portal displays — token columns stay so cost is always
+  /// re-derivable if rates are corrected. 0 for non-LLM and quota-blocked rows.
+  costMicroUsd BigInt   @default(0)
   /// `ok` | `error` | `refusal` | `quota_blocked`.
   outcome      String
   /// Upstream round-trip latency in ms (0 when not measured).
