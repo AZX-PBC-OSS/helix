@@ -22,7 +22,18 @@ export interface GatewayCallRecord {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  /** Cache-aware input accounting; defaults to 0 (caching not enabled yet). */
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   outcome: GatewayOutcome;
+  /** Upstream round-trip latency in ms; defaults to 0 when not measured. */
+  durationMs?: number;
+  /** Upstream/egress HTTP status (fetch); null/omitted for streamed llm. */
+  statusCode?: number | null;
+  /** LLM stop reason; null/omitted for non-LLM. */
+  stopReason?: string | null;
+  /** Short upstream error string; null/omitted on success. */
+  errorDetail?: string | null;
 }
 
 export interface UsageStore {
@@ -100,10 +111,13 @@ export class PgUsageStore implements UsageStore {
   async record(call: GatewayCallRecord): Promise<void> {
     await this.#pool.query(
       // Prisma's @default(uuid()) is client-side, so the raw INSERT supplies
-      // the id itself (gen_random_uuid() — built into Postgres).
+      // the id itself (gen_random_uuid() — built into Postgres). Optional
+      // metering columns fall back to their column defaults / NULL.
       `INSERT INTO gateway_calls
-         (id, "appId", "userOid", capability, model, "inputTokens", "outputTokens", outcome)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7)`,
+         (id, "appId", "userOid", capability, model, "inputTokens", "outputTokens",
+          "cacheReadInputTokens", "cacheCreationInputTokens", outcome,
+          "durationMs", "statusCode", "stopReason", "errorDetail")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         call.appId,
         call.userOid,
@@ -111,7 +125,13 @@ export class PgUsageStore implements UsageStore {
         call.model,
         call.inputTokens,
         call.outputTokens,
+        call.cacheReadInputTokens ?? 0,
+        call.cacheCreationInputTokens ?? 0,
         call.outcome,
+        call.durationMs ?? 0,
+        call.statusCode ?? null,
+        call.stopReason ?? null,
+        call.errorDetail ?? null,
       ],
     );
   }

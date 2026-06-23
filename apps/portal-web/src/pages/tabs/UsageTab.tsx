@@ -1,12 +1,12 @@
 import { Button, Card, Center, Grid, Group, Loader, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { App } from "@helix/shared";
+import { priceForModel, type App } from "@helix/shared";
 import { manifestQuery, usageQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Bars, Meter } from "../../components/charts";
 import { Eyebrow, Hint, Stat, ToneBadge } from "../../components/primitives";
 import { Icon } from "../../components/Icon";
-import { fmtCount } from "../../lib/format";
+import { fmtCount, fmtUsd } from "../../lib/format";
 
 /** Outcome → badge tone, over the real gateway vocabulary. */
 const OUTCOME_TONE = {
@@ -64,7 +64,7 @@ export function UsageTab({ app }: { app: App }) {
 
   return (
     <Stack gap={18} className="az-stagger">
-      <SimpleGrid cols={{ base: 2, md: 4 }} spacing={18}>
+      <SimpleGrid cols={{ base: 2, md: 5 }} spacing={18}>
         <Card>
           <Stat
             icon="bolt"
@@ -87,7 +87,20 @@ export function UsageTab({ app }: { app: App }) {
           />
         </Card>
         <Card>
-          <Stat icon="db" label="Storage" value="—" sub="app + user scope (v1)" />
+          <Stat
+            icon="db"
+            label="Spend · today"
+            value={fmtUsd(u.costUsd)}
+            sub="estimated, current rates"
+          />
+        </Card>
+        <Card>
+          <Stat
+            icon="bolt"
+            label="Latency · p95"
+            value={u.latencyP95Ms == null ? "—" : `${Math.round(u.latencyP95Ms)}ms`}
+            sub="upstream round-trip"
+          />
         </Card>
         <Card>
           <Stat
@@ -138,6 +151,7 @@ export function UsageTab({ app }: { app: App }) {
             </Group>
             {u.byModel.map((m) => {
               const p = totalTokens ? Math.round((m.tokens / totalTokens) * 100) : 0;
+              const unpriced = priceForModel(m.model) === undefined;
               return (
                 <Group key={m.model} gap={14} py={8} wrap="nowrap">
                   <Text className="az-mono" fz={12.5} c="dark.1" w={200} style={{ flexShrink: 0 }}>
@@ -149,6 +163,16 @@ export function UsageTab({ app }: { app: App }) {
                   <Text className="az-mono az-tnum" fz={12.5} c="dark.2" w={90} ta="right">
                     {fmtCount(m.tokens)} tok
                   </Text>
+                  <Text
+                    className="az-mono az-tnum"
+                    fz={12.5}
+                    c={unpriced ? "dark.3" : "dark.1"}
+                    w={70}
+                    ta="right"
+                    title={unpriced ? "no rate configured for this model" : undefined}
+                  >
+                    {unpriced ? "unpriced" : fmtUsd(m.costUsd)}
+                  </Text>
                 </Group>
               );
             })}
@@ -159,7 +183,8 @@ export function UsageTab({ app }: { app: App }) {
       <Group gap={6} c="dark.3">
         <Icon name="shield" size={12} />
         <Text size="xs" c="dark.3">
-          Metered per gateway call; tokens, not cost — pricing isn't modelled yet.
+          Metered per gateway call. Spend is estimated at current model rates; the daily cap is
+          still token-denominated.
         </Text>
       </Group>
     </Stack>

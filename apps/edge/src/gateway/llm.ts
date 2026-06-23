@@ -150,9 +150,19 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     const abort = new AbortController();
     req.raw.on("close", () => abort.abort());
 
+    const startedAt = performance.now();
     let recorded = false;
-    const finalUsage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
-    const recordOnce = async (outcome: GatewayOutcome): Promise<void> => {
+    let finalStopReason = "end_turn";
+    const finalUsage: LlmUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    };
+    const recordOnce = async (
+      outcome: GatewayOutcome,
+      extra: { errorDetail?: string } = {},
+    ): Promise<void> => {
       if (recorded) return;
       recorded = true;
       await usage
@@ -163,7 +173,13 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
           model: chat.model,
           inputTokens: finalUsage.inputTokens,
           outputTokens: finalUsage.outputTokens,
+          cacheReadInputTokens: finalUsage.cacheReadInputTokens,
+          cacheCreationInputTokens: finalUsage.cacheCreationInputTokens,
           outcome,
+          durationMs: Math.round(performance.now() - startedAt),
+          // LLM streams over a 200; the stop reason is the useful signal here.
+          stopReason: finalStopReason,
+          errorDetail: extra.errorDetail ?? null,
         })
         .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
     };
@@ -172,7 +188,6 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
 
     if (chat.stream) {
       let started = false;
-      let stopReason = "end_turn";
       try {
         for await (const ev of events) {
           if (ev.type === "delta") {
@@ -182,17 +197,16 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
             }
             writeSseEvent(reply, "delta", { text: ev.text });
           } else {
-            finalUsage.inputTokens = ev.usage.inputTokens;
-            finalUsage.outputTokens = ev.usage.outputTokens;
-            stopReason = ev.stopReason;
+            Object.assign(finalUsage, ev.usage);
+            finalStopReason = ev.stopReason;
           }
         }
         if (!started) startSse(reply);
-        writeSseEvent(reply, "done", { stopReason, usage: finalUsage });
+        writeSseEvent(reply, "done", { stopReason: finalStopReason, usage: finalUsage });
         reply.raw.end();
-        await recordOnce("ok");
+        await recordOnce(outcomeFor(finalStopReason));
       } catch (err) {
-        await recordOnce("error");
+        await recordOnce("error", { errorDetail: errorDetailOf(err) });
         const { code, message } = describeError(err);
         if (!started) startSse(reply);
         writeSseEvent(reply, "error", { code, message });
@@ -203,32 +217,41 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
 
     // Non-streaming: accumulate into a single JSON body.
     let content = "";
-    let stopReason = "end_turn";
     try {
       for await (const ev of events) {
         if (ev.type === "delta") content += ev.text;
         else {
-          finalUsage.inputTokens = ev.usage.inputTokens;
-          finalUsage.outputTokens = ev.usage.outputTokens;
-          stopReason = ev.stopReason;
+          Object.assign(finalUsage, ev.usage);
+          finalStopReason = ev.stopReason;
         }
       }
-      await recordOnce("ok");
+      await recordOnce(outcomeFor(finalStopReason));
       await reply.header("cache-control", "no-store").send(
         LlmChatResponseSchema.parse({
           model: chat.model,
           content,
-          stopReason,
+          stopReason: finalStopReason,
           usage: finalUsage,
         }),
       );
     } catch (err) {
-      await recordOnce("error");
+      await recordOnce("error", { errorDetail: errorDetailOf(err) });
       const { code, message } = describeError(err);
       // 502 for upstream failures; the code stays within the shared set.
       sendApiError(reply, 502, code, message);
     }
   };
+}
+
+/** A clean completion whose stop reason is a refusal meters as `refusal`, not `ok`. */
+function outcomeFor(stopReason: string): GatewayOutcome {
+  return stopReason === "refusal" ? "refusal" : "ok";
+}
+
+/** Truncated upstream error string for the audit ledger (internal-only, not app-facing). */
+function errorDetailOf(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg;
 }
 
 /** Map a provider/abort failure to a stable code + safe message. */

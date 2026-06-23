@@ -95,6 +95,8 @@ export class AnthropicProvider implements LlmProvider {
 
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadInputTokens = 0;
+    let cacheCreationInputTokens = 0;
     let stopReason = "end_turn";
 
     for await (const { data } of parseSse(res.body)) {
@@ -106,8 +108,12 @@ export class AnthropicProvider implements LlmProvider {
       }
       switch (event.type) {
         case "message_start":
+          // `input_tokens` is the uncached remainder; cache classes are
+          // separate (0 today — we send no cache_control yet).
           inputTokens = event.message?.usage?.input_tokens ?? 0;
           outputTokens = event.message?.usage?.output_tokens ?? 0;
+          cacheReadInputTokens = event.message?.usage?.cache_read_input_tokens ?? 0;
+          cacheCreationInputTokens = event.message?.usage?.cache_creation_input_tokens ?? 0;
           break;
         case "content_block_delta":
           if (event.delta?.type === "text_delta" && event.delta.text) {
@@ -123,12 +129,20 @@ export class AnthropicProvider implements LlmProvider {
             `anthropic stream error: ${event.error?.message ?? "unknown"}`,
           );
         case "message_stop":
-          yield { type: "done", stopReason, usage: { inputTokens, outputTokens } };
+          yield {
+            type: "done",
+            stopReason,
+            usage: { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens },
+          };
           return;
       }
     }
     // Stream ended without an explicit message_stop — emit what we have.
-    yield { type: "done", stopReason, usage: { inputTokens, outputTokens } };
+    yield {
+      type: "done",
+      stopReason,
+      usage: { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens },
+    };
   }
 
   async close(): Promise<void> {
@@ -139,7 +153,14 @@ export class AnthropicProvider implements LlmProvider {
 /** The Anthropic SSE event shapes we read (others are ignored). */
 interface AnthropicEvent {
   type: string;
-  message?: { usage?: { input_tokens?: number; output_tokens?: number } };
+  message?: {
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
   delta?: { type?: string; text?: string; stop_reason?: string };
   usage?: { output_tokens?: number };
   error?: { message?: string };

@@ -7,6 +7,17 @@ export function fmtCount(n: number): string {
   return String(n);
 }
 
+/**
+ * USD spend → "$0.00" / "$12.40" / "$1.3k". Small spends keep cents so a few
+ * calls don't read as "$0"; large totals abbreviate. `<$0.01` for tiny non-zero.
+ */
+export function fmtUsd(n: number): string {
+  if (n === 0) return "$0.00";
+  if (n < 0.01) return "<$0.01";
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}k`;
+  return `$${n.toFixed(2)}`;
+}
+
 /** ISO timestamp → "2h ago" / "3d ago" / "just now". */
 export function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();

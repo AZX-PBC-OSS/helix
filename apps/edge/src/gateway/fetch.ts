@@ -177,7 +177,11 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     const abort = new AbortController();
     req.raw.on("close", () => abort.abort());
 
-    const record = (outcome: GatewayOutcome): Promise<void> =>
+    const startedAt = performance.now();
+    const record = (
+      outcome: GatewayOutcome,
+      extra: { statusCode?: number; errorDetail?: string } = {},
+    ): Promise<void> =>
       usage
         .record({
           appId: entry.appId,
@@ -187,6 +191,9 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
           inputTokens: 0,
           outputTokens: 0,
           outcome,
+          durationMs: Math.round(performance.now() - startedAt),
+          statusCode: extra.statusCode ?? null,
+          errorDetail: extra.errorDetail ?? null,
         })
         .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
 
@@ -200,7 +207,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         signal: abort.signal,
       });
 
-      await record(toOutcome(res.outcome));
+      await record(toOutcome(res.outcome), { statusCode: res.status });
 
       reply.status(res.status).header("cache-control", "no-store");
       for (const [k, v] of Object.entries(res.headers)) {
@@ -208,7 +215,10 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       }
       return reply.send(res.body);
     } catch (err) {
-      await record("error");
+      const detail = err instanceof Error ? err.message : String(err);
+      await record("error", {
+        errorDetail: detail.length > 300 ? `${detail.slice(0, 300)}…` : detail,
+      });
       if (err instanceof EgressProviderError) {
         sendFetchError(reply, 502, "upstream_error", "egress request failed");
         return;

@@ -18,10 +18,18 @@ export const LlmMessageSchema = z.object({
 });
 export type LlmMessage = z.infer<typeof LlmMessageSchema>;
 
-/** Token accounting returned with every completion — the basis for metering. */
+/**
+ * Token accounting returned with every completion — the basis for metering.
+ * `inputTokens` is the *uncached* input remainder; cache read/write tokens are
+ * reported separately (Anthropic prices them differently). Cache counts stay 0
+ * until prompt caching is enabled, but the seam carries them so accounting is
+ * correct the day it is.
+ */
 export const LlmUsageSchema = z.object({
   inputTokens: z.int().nonnegative(),
   outputTokens: z.int().nonnegative(),
+  cacheReadInputTokens: z.int().nonnegative().default(0),
+  cacheCreationInputTokens: z.int().nonnegative().default(0),
 });
 export type LlmUsage = z.infer<typeof LlmUsageSchema>;
 

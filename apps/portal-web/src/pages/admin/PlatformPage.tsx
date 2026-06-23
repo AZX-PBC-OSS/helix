@@ -4,7 +4,7 @@ import { appsQuery, platformUsageQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Bars, Donut, Meter } from "../../components/charts";
 import { Eyebrow, Hint, PageHead, Stat, ToneBadge } from "../../components/primitives";
-import { fmtCount } from "../../lib/format";
+import { fmtCount, fmtUsd } from "../../lib/format";
 
 /** Distinct colors for the capability-mix donut, cycled by index. */
 const CAP_COLORS = [
@@ -50,7 +50,7 @@ export function PlatformPage() {
     <PageHead
       eyebrow="Control plane"
       title="Platform"
-      sub="Usage across every hosted app. The gateway is the single choke point, so these numbers are exact — not sampled telemetry. Tokens, not cost (pricing isn't modelled yet)."
+      sub="Usage across every hosted app. The gateway is the single choke point, so these numbers are exact — not sampled telemetry. Spend is estimated at current model rates."
     />
   );
 
@@ -81,7 +81,7 @@ export function PlatformPage() {
     <div className="az-stagger">
       {head}
 
-      <SimpleGrid cols={{ base: 2, md: 4 }} spacing={18} mb={18}>
+      <SimpleGrid cols={{ base: 2, md: 5 }} spacing={18} mb={18}>
         <Card>
           <Stat icon="grid" label="Apps" value={total} sub={`${live} live`} />
         </Card>
@@ -90,6 +90,14 @@ export function PlatformPage() {
         </Card>
         <Card>
           <Stat icon="cpu" label="Tokens MTD" value={fmtCount(p?.totals.tokensMTD ?? 0)} />
+        </Card>
+        <Card>
+          <Stat
+            icon="db"
+            label="Spend MTD"
+            value={fmtUsd(p?.totals.costMTD ?? 0)}
+            sub="estimated"
+          />
         </Card>
         <Card>
           <Stat icon="user" label="Active users" value={p?.totals.activeUsers ?? 0} />
@@ -107,7 +115,7 @@ export function PlatformPage() {
       ) : !p ? null : (
         <>
           <Grid gap={18} mb={18}>
-            <Grid.Col span={{ base: 12, md: 6 }}>
+            <Grid.Col span={{ base: 12, md: 4 }}>
               <Card>
                 <Group justify="space-between" mb={14}>
                   <Eyebrow>LLM tokens · 14 days</Eyebrow>
@@ -116,7 +124,16 @@ export function PlatformPage() {
                 <Bars data={p.tokens14d} h={150} color="var(--az-info)" />
               </Card>
             </Grid.Col>
-            <Grid.Col span={{ base: 12, md: 6 }}>
+            <Grid.Col span={{ base: 12, md: 4 }}>
+              <Card>
+                <Group justify="space-between" mb={14}>
+                  <Eyebrow>Spend · 14 days</Eyebrow>
+                  <DeltaBadge delta={wowDelta(p.cost14d)} />
+                </Group>
+                <Bars data={p.cost14d} h={150} color="var(--az-acc)" />
+              </Card>
+            </Grid.Col>
+            <Grid.Col span={{ base: 12, md: 4 }}>
               <Card>
                 <Group justify="space-between" mb={14}>
                   <Eyebrow>Gateway requests · 14 days</Eyebrow>
@@ -130,7 +147,7 @@ export function PlatformPage() {
           <Grid gap={18}>
             <Grid.Col span={{ base: 12, md: 7 }}>
               <Card>
-                <Eyebrow mb={16}>Tokens by app · month to date</Eyebrow>
+                <Eyebrow mb={16}>Spend by app · month to date</Eyebrow>
                 {p.byApp.length === 0 && (
                   <Text c="dark.2" fz={13} py={8}>
                     No gateway traffic yet this month.
@@ -144,8 +161,11 @@ export function PlatformPage() {
                     <div style={{ flex: 1 }}>
                       <Meter pct={(a.tokens / maxAppTokens) * 100} />
                     </div>
-                    <Text className="az-mono az-tnum" fz={13} w={80} ta="right">
+                    <Text className="az-mono az-tnum" fz={13} c="dark.2" w={70} ta="right">
                       {fmtCount(a.tokens)}
+                    </Text>
+                    <Text className="az-mono az-tnum" fz={13} w={70} ta="right">
+                      {fmtUsd(a.costUsd)}
                     </Text>
                   </Group>
                 ))}
@@ -177,6 +197,9 @@ export function PlatformPage() {
                       />
                       <Text fz={12.5} c="dark.1" style={{ flex: 1 }}>
                         {c.capability}
+                      </Text>
+                      <Text className="az-mono" fz={12.5} c="dark.2">
+                        {fmtUsd(c.costUsd)}
                       </Text>
                       <Text className="az-mono" fz={12.5} fw={600}>
                         {mixTotal ? Math.round((c.tokens / mixTotal) * 100) : 0}%

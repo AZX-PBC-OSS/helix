@@ -83,7 +83,16 @@ describe("AnthropicProvider (mocked upstream)", () => {
     expect(events).toEqual([
       { type: "delta", text: "Hello" },
       { type: "delta", text: " world" },
-      { type: "done", stopReason: "end_turn", usage: { inputTokens: 11, outputTokens: 4 } },
+      {
+        type: "done",
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 11,
+          outputTokens: 4,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+      },
     ]);
   });
 

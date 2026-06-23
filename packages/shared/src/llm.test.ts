@@ -56,7 +56,12 @@ describe("LlmChatResponseSchema / stream done", () => {
       model: "claude-opus-4-8",
       content: "hello",
       stopReason: "end_turn",
-      usage: { inputTokens: 12, outputTokens: 3 },
+      usage: {
+        inputTokens: 12,
+        outputTokens: 3,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
     };
     expect(LlmChatResponseSchema.parse(body)).toEqual(body);
     expect(

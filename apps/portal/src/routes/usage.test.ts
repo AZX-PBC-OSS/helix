@@ -83,7 +83,14 @@ describe("GET /api/v1/apps/:slug/usage", () => {
     expect(body.outputTokens).toBe(2500);
     expect(body.errorRate).toBeCloseTo(1 / 3, 5);
     expect(body.byOutcome).toEqual({ ok: 2, quota_blocked: 1 });
-    expect(body.byModel).toEqual([{ model: "claude-opus-4-8", tokens: 4000, requests: 3 }]);
+    expect(body.byModel).toMatchObject([{ model: "claude-opus-4-8", tokens: 4000, requests: 3 }]);
+    // 1500 in + 2500 out @ opus-4-8 ($5/$25 per MTok) = $0.07.
+    expect(body.byModel[0].costUsd).toBeCloseTo(0.07, 9);
+    expect(body.costUsd).toBeCloseTo(0.07, 9);
+    expect(body.cacheReadInputTokens).toBe(0);
+    expect(body.cacheCreationInputTokens).toBe(0);
+    // No timed calls seeded → p95 is null.
+    expect(body.latencyP95Ms).toBeNull();
   });
 });
 
@@ -110,6 +117,13 @@ describe("GET /api/v1/gateway/audit", () => {
     // Newest-first: the second-inserted row comes back first.
     const times = body.rows.map((r: { createdAt: string }) => r.createdAt);
     expect(times[0] >= times[1]).toBe(true);
+    // Per-row cost is priced per model, and the telemetry fields are present.
+    const opus = body.rows.find((r: { model: string }) => r.model === "claude-opus-4-8");
+    const haiku = body.rows.find((r: { model: string }) => r.model === "claude-haiku-4-5");
+    expect(opus.costUsd).toBeCloseTo((10 * 5 + 20 * 25) / 1_000_000, 9);
+    expect(haiku.costUsd).toBeCloseTo((30 * 1 + 40 * 5) / 1_000_000, 9);
+    expect(opus).toMatchObject({ durationMs: 0, statusCode: null, stopReason: null });
+    expect(opus.cacheReadInputTokens).toBe(0);
   });
 
   it("filters by outcome", async () => {
@@ -147,5 +161,10 @@ describe("GET /api/v1/gateway/usage (platform)", () => {
     const mine = body.byApp.find((a: { slug: string | null }) => a.slug === slug);
     expect(mine).toMatchObject({ slug, tokens: 200, requests: 1 });
     expect(body.totals.tokensMTD).toBeGreaterThanOrEqual(200);
+    // Dollars are surfaced platform-wide. opus-4-8: 100 in + 100 out = $0.003.
+    const myCost = (100 * 5 + 100 * 25) / 1_000_000;
+    expect(body.cost14d).toHaveLength(14);
+    expect(mine.costUsd).toBeCloseTo(myCost, 9);
+    expect(body.totals.costMTD).toBeGreaterThanOrEqual(myCost - 1e-9);
   });
 });

@@ -85,4 +85,70 @@ describe("PgUsageStore", () => {
     );
     expect(rows).toHaveLength(1);
   });
+
+  it("round-trips the metering columns (latency, cache, status, stop reason, error)", async () => {
+    const meteredAppId = randomUUID();
+    try {
+      await store.record({
+        appId: meteredAppId,
+        userOid: "oid-alice",
+        capability: "llm",
+        model: "claude-opus-4-8",
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 20,
+        cacheCreationInputTokens: 10,
+        outcome: "ok",
+        durationMs: 1234,
+        statusCode: null,
+        stopReason: "end_turn",
+        errorDetail: null,
+      });
+      const { rows } = await pool.query(
+        `SELECT "cacheReadInputTokens", "cacheCreationInputTokens", "durationMs",
+                "statusCode", "stopReason", "errorDetail"
+         FROM gateway_calls WHERE "appId" = $1`,
+        [meteredAppId],
+      );
+      expect(rows[0]).toEqual({
+        cacheReadInputTokens: 20,
+        cacheCreationInputTokens: 10,
+        durationMs: 1234,
+        statusCode: null,
+        stopReason: "end_turn",
+        errorDetail: null,
+      });
+    } finally {
+      await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [meteredAppId]);
+    }
+  });
+
+  it("defaults the optional metering columns when a caller omits them", async () => {
+    const defaultsAppId = randomUUID();
+    try {
+      // A minimal record (e.g. the data/quota paths) — new columns fall back.
+      await store.record({
+        appId: defaultsAppId,
+        userOid: "oid-bob",
+        capability: "data",
+        model: "user.put",
+        inputTokens: 0,
+        outputTokens: 0,
+        outcome: "ok",
+      });
+      const { rows } = await pool.query(
+        `SELECT "cacheReadInputTokens", "durationMs", "statusCode", "stopReason"
+         FROM gateway_calls WHERE "appId" = $1`,
+        [defaultsAppId],
+      );
+      expect(rows[0]).toEqual({
+        cacheReadInputTokens: 0,
+        durationMs: 0,
+        statusCode: null,
+        stopReason: null,
+      });
+    } finally {
+      await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [defaultsAppId]);
+    }
+  });
 });

@@ -18,9 +18,9 @@ import { gatewayAuditQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon } from "../../components/Icon";
 import { Hint, PageHead, Stat, ToneBadge, type Tone } from "../../components/primitives";
-import { fmtCount, timeAgo } from "../../lib/format";
+import { fmtCount, fmtUsd, timeAgo } from "../../lib/format";
 
-/** The M4 gateway audit log: (app, user, capability, model, tokens, outcome). */
+/** The M4 gateway audit log: (app, user, capability, model, tokens, cost, latency, outcome). */
 
 const OUT_META: Record<GatewayOutcome, [Tone, string]> = {
   ok: ["live", "ok"],
@@ -79,6 +79,7 @@ export function AuditPage() {
       .includes(q.toLowerCase());
   });
   const totalTokens = rows.reduce((s, r) => s + r.inputTokens + r.outputTokens, 0);
+  const totalCost = rows.reduce((s, r) => s + r.costUsd, 0);
   const blocked = rows.filter((r) => r.outcome === "error" || r.outcome === "quota_blocked").length;
 
   return (
@@ -107,12 +108,15 @@ export function AuditPage() {
         />
       </Group>
 
-      <SimpleGrid cols={{ base: 3 }} spacing={18} mb={18}>
+      <SimpleGrid cols={{ base: 2, md: 4 }} spacing={18} mb={18}>
         <Card p="14px 18px">
           <Stat label="Events shown" value={rows.length} icon="list" />
         </Card>
         <Card p="14px 18px">
           <Stat label="Tokens" value={fmtCount(totalTokens)} icon="cpu" />
+        </Card>
+        <Card p="14px 18px">
+          <Stat label="Spend" value={fmtUsd(totalCost)} icon="db" />
         </Card>
         <Card p="14px 18px">
           <Stat
@@ -150,6 +154,9 @@ export function AuditPage() {
                 <Table.Th>Capability</Table.Th>
                 <Table.Th>Model / target</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Tokens</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Cost</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Latency</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Status</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Outcome</Table.Th>
               </Table.Tr>
             </Table.Thead>
@@ -171,17 +178,28 @@ export function AuditPage() {
                     <Table.Td className="az-tnum" style={{ textAlign: "right" }} c="dark.1">
                       {tokens ? tokens.toLocaleString() : "—"}
                     </Table.Td>
+                    <Table.Td className="az-tnum" style={{ textAlign: "right" }} c="dark.1">
+                      {r.costUsd ? fmtUsd(r.costUsd) : "—"}
+                    </Table.Td>
+                    <Table.Td className="az-tnum" style={{ textAlign: "right" }} c="dark.2">
+                      {r.durationMs ? `${r.durationMs}ms` : "—"}
+                    </Table.Td>
+                    <Table.Td className="az-tnum" style={{ textAlign: "right" }} c="dark.2">
+                      {r.statusCode ?? "—"}
+                    </Table.Td>
                     <Table.Td style={{ textAlign: "right" }}>
-                      <ToneBadge tone={tone} style={{ padding: "2px 7px", fontSize: 10 }}>
-                        {label}
-                      </ToneBadge>
+                      <span title={r.errorDetail ?? r.stopReason ?? undefined}>
+                        <ToneBadge tone={tone} style={{ padding: "2px 7px", fontSize: 10 }}>
+                          {label}
+                        </ToneBadge>
+                      </span>
                     </Table.Td>
                   </Table.Tr>
                 );
               })}
               {rows.length === 0 && (
                 <Table.Tr>
-                  <Table.Td colSpan={7}>
+                  <Table.Td colSpan={10}>
                     <Text ta="center" c="dark.2" py={24} ff="text" fz={13}>
                       No gateway calls match these filters.
                     </Text>

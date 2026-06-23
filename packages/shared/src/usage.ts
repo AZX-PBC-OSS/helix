@@ -6,9 +6,11 @@ import { z } from "zod";
  * **reads** it for display, so these are response shapes for the portal's
  * usage/audit/platform endpoints — never a write boundary.
  *
- * Tokens, not dollars: `gateway_calls` records input/output token counts, not
- * cost. Cost is a product/pricing decision that isn't modelled yet, so nothing
- * here carries a `cost` field.
+ * Dollars alongside tokens: `gateway_calls` records token counts; the portal
+ * recomputes `costUsd` at read time from the code-resident rate table
+ * (./pricing.ts). Tokens stay — the daily budget is still token-denominated —
+ * and cost sits beside them. Cache-aware: cache read/write tokens are carried
+ * and priced separately (read ~0.1x, write 1.25x).
  */
 
 /**
@@ -32,6 +34,13 @@ export const UsageSummarySchema = z.object({
   requests: z.int().nonnegative(),
   inputTokens: z.int().nonnegative(),
   outputTokens: z.int().nonnegative(),
+  /** Cache-aware input token totals (0 until prompt caching is enabled). */
+  cacheReadInputTokens: z.int().nonnegative(),
+  cacheCreationInputTokens: z.int().nonnegative(),
+  /** Estimated spend in USD over the window at current rates (./pricing.ts). */
+  costUsd: z.number().nonnegative(),
+  /** 95th-percentile upstream latency (ms) over the window; null when no timed calls. */
+  latencyP95Ms: z.number().nonnegative().nullable(),
   /** Fraction of calls in the window whose outcome was not `ok` (0..1). */
   errorRate: z.number().min(0).max(1),
   /** Count of calls keyed by outcome (`ok` / `error` / `refusal` / `quota_blocked`). */
@@ -41,6 +50,8 @@ export const UsageSummarySchema = z.object({
       model: z.string(),
       tokens: z.int().nonnegative(),
       requests: z.int().nonnegative(),
+      /** Estimated spend in USD for this model over the window. */
+      costUsd: z.number().nonnegative(),
     }),
   ),
   /** Hourly buckets across the window, oldest-first, for the spark charts. */
@@ -69,6 +80,18 @@ export const GatewayCallSchema = z.object({
   model: z.string(),
   inputTokens: z.int().nonnegative(),
   outputTokens: z.int().nonnegative(),
+  cacheReadInputTokens: z.int().nonnegative(),
+  cacheCreationInputTokens: z.int().nonnegative(),
+  /** Estimated spend in USD for this single call at current rates. */
+  costUsd: z.number().nonnegative(),
+  /** Upstream round-trip latency in ms (0 when not measured). */
+  durationMs: z.int().nonnegative(),
+  /** Upstream/egress HTTP status — set for `fetch`; null for streamed `llm`. */
+  statusCode: z.int().nullable(),
+  /** LLM stop reason; null for non-LLM calls. */
+  stopReason: z.string().nullable(),
+  /** Short upstream error string; null on success. */
+  errorDetail: z.string().nullable(),
   outcome: GatewayOutcomeSchema,
   createdAt: z.iso.datetime(),
 });
@@ -91,25 +114,33 @@ export const PlatformUsageSchema = z.object({
   tokens14d: z.array(z.int().nonnegative()),
   /** Daily request totals, oldest-first (default 14 days). */
   requests14d: z.array(z.int().nonnegative()),
+  /** Daily spend in USD, oldest-first — parallel to `tokens14d`. */
+  cost14d: z.array(z.number().nonnegative()),
   /** Per-app rollup over the same window, busiest-first. */
   byApp: z.array(
     z.object({
       slug: z.string().nullable(),
       tokens: z.int().nonnegative(),
       requests: z.int().nonnegative(),
+      /** Estimated month-to-date spend in USD for this app. */
+      costUsd: z.number().nonnegative(),
     }),
   ),
   totals: z.object({
     tokensMTD: z.int().nonnegative(),
     requestsMTD: z.int().nonnegative(),
+    /** Estimated month-to-date spend in USD across all apps. */
+    costMTD: z.number().nonnegative(),
     /** Distinct `userOid`s seen month-to-date. */
     activeUsers: z.int().nonnegative(),
   }),
-  /** Token share by capability — derived from real rows (essentially all `llm` in M4). */
+  /** Token + cost share by capability — derived from real rows (essentially all `llm` in M4). */
   capabilityMix: z.array(
     z.object({
       capability: z.string(),
       tokens: z.int().nonnegative(),
+      /** Estimated month-to-date spend in USD for this capability. */
+      costUsd: z.number().nonnegative(),
     }),
   ),
 });

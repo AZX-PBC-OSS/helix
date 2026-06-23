@@ -99,7 +99,12 @@ export class FakeLlmProvider implements LlmProvider {
   /** Requests seen, for assertions (model, messages, etc.). */
   readonly calls: LlmChatRequest[] = [];
   deltas: string[] = ["Hello", " world"];
-  usage: LlmUsage = { inputTokens: 5, outputTokens: 2 };
+  usage: LlmUsage = {
+    inputTokens: 5,
+    outputTokens: 2,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  };
   stopReason = "end_turn";
   /** When set, stream() throws before yielding anything. */
   error: Error | null = null;

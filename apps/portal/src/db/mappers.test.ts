@@ -155,44 +155,86 @@ describe("row mappers validate against the shared schema", () => {
 
   // Read-side gateway_calls mappers (M4 metering). Aggregates arrive off raw
   // SQL as number | bigint | string; assert they normalize and validate.
-  it("assembles a per-app UsageSummary, summing outcomes and computing the error rate", () => {
+  // opus-4-8 rates ($5 in / $25 out per MTok): 1000 in + 2000 out = $0.055.
+  const EXPECTED_COST = (1000 * 5 + 2000 * 25) / 1_000_000;
+
+  it("assembles a per-app UsageSummary, summing outcomes, cost, and the error rate", () => {
     const summary = toUsageSummary({
       appId: APP_ID,
       windowDays: 1,
       outcomes: [
-        { outcome: "ok", requests: 8, inputTokens: 1000n, outputTokens: "2000" },
-        { outcome: "error", requests: 1, inputTokens: 0, outputTokens: 0 },
-        { outcome: "quota_blocked", requests: 1, inputTokens: 0, outputTokens: 0 },
+        {
+          outcome: "ok",
+          requests: 8,
+          inputTokens: 1000n,
+          outputTokens: "2000",
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        {
+          outcome: "error",
+          requests: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        {
+          outcome: "quota_blocked",
+          requests: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
       ],
-      models: [{ model: "claude-opus-4-8", requests: 9, tokens: 3000n }],
+      models: [
+        {
+          model: "claude-opus-4-8",
+          requests: 9,
+          tokens: 3000n,
+          inputTokens: 1000n,
+          outputTokens: 2000n,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+      ],
       series: [{ bucket: NOW, tokens: 3000, requests: 10 }],
+      latencyP95: 1500,
     });
-    expect(summary).toEqual({
+    expect(summary).toMatchObject({
       appId: APP_ID,
       windowDays: 1,
       requests: 10,
       inputTokens: 1000,
       outputTokens: 2000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      latencyP95Ms: 1500,
       errorRate: 0.2,
       byOutcome: { ok: 8, error: 1, quota_blocked: 1 },
-      byModel: [{ model: "claude-opus-4-8", tokens: 3000, requests: 9 }],
       series: [{ bucket: NOW.toISOString(), tokens: 3000, requests: 10 }],
     });
+    expect(summary.costUsd).toBeCloseTo(EXPECTED_COST, 9);
+    expect(summary.byModel[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
   });
 
-  it("reports a zero error rate for an empty window", () => {
+  it("reports a zero error rate and null p95 for an empty window", () => {
     const summary = toUsageSummary({
       appId: APP_ID,
       windowDays: 7,
       outcomes: [],
       models: [],
       series: [],
+      latencyP95: null,
     });
     expect(summary.requests).toBe(0);
     expect(summary.errorRate).toBe(0);
+    expect(summary.costUsd).toBe(0);
+    expect(summary.latencyP95Ms).toBeNull();
   });
 
-  it("maps a joined gateway_calls row to a wire GatewayCall", () => {
+  it("maps a joined gateway_calls row to a wire GatewayCall with cost + telemetry", () => {
     const call = toGatewayCall({
       id: "33333333-3333-4333-8333-333333333333",
       appId: APP_ID,
@@ -202,21 +244,31 @@ describe("row mappers validate against the shared schema", () => {
       model: "claude-opus-4-8",
       inputTokens: "1200",
       outputTokens: 800n,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
       outcome: "ok",
+      durationMs: 1500,
+      statusCode: null,
+      stopReason: "end_turn",
+      errorDetail: null,
       createdAt: NOW,
     });
-    expect(call).toEqual({
+    expect(call).toMatchObject({
       id: "33333333-3333-4333-8333-333333333333",
       appId: APP_ID,
       slug: "cost-explorer",
-      userOid: "user-oid-1",
-      capability: "llm",
       model: "claude-opus-4-8",
       inputTokens: 1200,
       outputTokens: 800,
+      durationMs: 1500,
+      statusCode: null,
+      stopReason: "end_turn",
+      errorDetail: null,
       outcome: "ok",
       createdAt: NOW.toISOString(),
     });
+    // 1200 in + 800 out @ opus-4-8 = $0.026.
+    expect(call.costUsd).toBeCloseTo((1200 * 5 + 800 * 25) / 1_000_000, 9);
   });
 
   it("tolerates a null slug (the ledger outlives deleted apps)", () => {
@@ -229,29 +281,84 @@ describe("row mappers validate against the shared schema", () => {
       model: "claude-opus-4-8",
       inputTokens: 0,
       outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
       outcome: "refusal",
+      durationMs: 0,
+      statusCode: null,
+      stopReason: "refusal",
+      errorDetail: null,
       createdAt: NOW,
     });
     expect(call.slug).toBeNull();
   });
 
-  it("assembles the platform-wide PlatformUsage rollup", () => {
+  it("assembles the platform-wide PlatformUsage rollup, collapsing model rows", () => {
+    const DAY2 = new Date(NOW.getTime() - 86_400_000);
     const platform = toPlatformUsage({
       daily: [
-        { tokens: 100n, requests: 2 },
-        { tokens: 0, requests: 0 },
+        {
+          bucket: DAY2,
+          model: "claude-opus-4-8",
+          inputTokens: 1000n,
+          outputTokens: 2000n,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          requests: 2,
+        },
+        {
+          bucket: NOW,
+          model: null,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          requests: 0,
+        },
       ],
-      byApp: [{ slug: "cost-explorer", tokens: "100", requests: 2 }],
-      totals: { tokens: 100n, requests: 2, activeUsers: 1 },
-      capabilityMix: [{ capability: "llm", tokens: 100n }],
+      byApp: [
+        {
+          appId: APP_ID,
+          slug: "cost-explorer",
+          model: "claude-opus-4-8",
+          inputTokens: 1000n,
+          outputTokens: 2000n,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          requests: 2,
+        },
+      ],
+      totals: { tokens: 3000n, requests: 2, activeUsers: 1 },
+      totalsByModel: [
+        {
+          model: "claude-opus-4-8",
+          inputTokens: 1000n,
+          outputTokens: 2000n,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+      ],
+      capabilityMix: [
+        {
+          capability: "llm",
+          model: "claude-opus-4-8",
+          inputTokens: 1000n,
+          outputTokens: 2000n,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+      ],
     });
-    expect(platform).toEqual({
-      tokens14d: [100, 0],
-      requests14d: [2, 0],
-      byApp: [{ slug: "cost-explorer", tokens: 100, requests: 2 }],
-      totals: { tokensMTD: 100, requestsMTD: 2, activeUsers: 1 },
-      capabilityMix: [{ capability: "llm", tokens: 100 }],
-    });
+    expect(platform.tokens14d).toEqual([3000, 0]);
+    expect(platform.requests14d).toEqual([2, 0]);
+    expect(platform.cost14d[0]).toBeCloseTo(EXPECTED_COST, 9);
+    expect(platform.cost14d[1]).toBe(0);
+    expect(platform.byApp).toMatchObject([{ slug: "cost-explorer", tokens: 3000, requests: 2 }]);
+    expect(platform.byApp[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
+    expect(platform.totals).toMatchObject({ tokensMTD: 3000, requestsMTD: 2, activeUsers: 1 });
+    expect(platform.totals.costMTD).toBeCloseTo(EXPECTED_COST, 9);
+    expect(platform.capabilityMix).toMatchObject([{ capability: "llm", tokens: 3000 }]);
+    expect(platform.capabilityMix[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
   });
 
   it("maps a versions row to a wire Version", () => {

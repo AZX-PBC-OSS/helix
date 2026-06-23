@@ -111,17 +111,21 @@ describe("happy paths", () => {
 
     expect(edge.provider.calls).toHaveLength(1);
     expect(edge.provider.calls[0]?.model).toBe(MODEL);
-    expect(edge.usage.records).toEqual([
-      {
-        appId: APP_ID,
-        userOid: "oid-alice",
-        capability: "llm",
-        model: MODEL,
-        inputTokens: 5,
-        outputTokens: 2,
-        outcome: "ok",
-      },
-    ]);
+    expect(edge.usage.records).toHaveLength(1);
+    expect(edge.usage.records[0]).toMatchObject({
+      appId: APP_ID,
+      userOid: "oid-alice",
+      capability: "llm",
+      model: MODEL,
+      inputTokens: 5,
+      outputTokens: 2,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      outcome: "ok",
+      stopReason: "end_turn",
+      errorDetail: null,
+    });
+    expect(edge.usage.records[0]?.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("returns a single JSON body when stream:false", async () => {
@@ -135,7 +139,12 @@ describe("happy paths", () => {
       model: MODEL,
       content: "Hello world",
       stopReason: "end_turn",
-      usage: { inputTokens: 5, outputTokens: 2 },
+      usage: {
+        inputTokens: 5,
+        outputTokens: 2,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
     });
     expect(edge.usage.records[0]?.outcome).toBe("ok");
   });
@@ -215,7 +224,12 @@ describe("quota: block-new, finish-in-flight", () => {
   it("admits an under-budget request and runs it to completion even if it crosses", async () => {
     const edge = buildLlmEdge();
     edge.usage.usedToday = 999; // under the 1000 budget — admitted
-    edge.provider.usage = { inputTokens: 60, outputTokens: 60 }; // pushes well over
+    edge.provider.usage = {
+      inputTokens: 60,
+      outputTokens: 60,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    }; // pushes well over
     const token = await seedSession(edge.sessions);
     const res = await chat(edge, token, { ...ASK, stream: true });
 
