@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Capabilities } from "./manifest.js";
 import {
-  BASELINE_TOKENS,
+  BASELINE_DOLLARS_PER_DAY,
   BASELINE_WRITES_PER_DAY,
   applyDeltas,
   captureSnapshot,
@@ -30,30 +30,30 @@ describe("classifyChange — LLM", () => {
     expect(r.risk).toBe("med");
   });
 
-  it("gates a token budget above baseline but not at/under it", () => {
+  it("gates a spend budget above baseline but not at/under it", () => {
     const under = classifyChange(EMPTY, {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: BASELINE_TOKENS },
+      llm: { models: [], dollarsPerDay: BASELINE_DOLLARS_PER_DAY },
     });
     expect(under.elevatedDeltas).toHaveLength(0);
 
     const over = classifyChange(EMPTY, {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: BASELINE_TOKENS + 1 },
+      llm: { models: [], dollarsPerDay: BASELINE_DOLLARS_PER_DAY + 1 },
     });
-    expect(paths(over.elevatedDeltas)).toEqual(["llm.tokensPerDay"]);
+    expect(paths(over.elevatedDeltas)).toEqual(["llm.dollarsPerDay"]);
   });
 
-  it("treats removing a token cap (→ unlimited) as elevated", () => {
+  it("treats removing a spend cap (→ unlimited) as elevated", () => {
     const eff: Capabilities = {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: 500 },
+      llm: { models: [], dollarsPerDay: 500 },
     };
     const r = classifyChange(eff, { mcp: [], externalOrigins: [], llm: { models: [] } });
-    expect(paths(r.elevatedDeltas)).toEqual(["llm.tokensPerDay"]);
+    expect(paths(r.elevatedDeltas)).toEqual(["llm.dollarsPerDay"]);
   });
 
   it("treats adding a cap (unlimited → capped) as baseline privilege reduction", () => {
@@ -61,22 +61,22 @@ describe("classifyChange — LLM", () => {
     const r = classifyChange(eff, {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: 10 },
+      llm: { models: [], dollarsPerDay: 10 },
     });
     expect(r.elevatedDeltas).toHaveLength(0);
-    expect(paths(r.baselineDeltas)).toContain("llm.tokensPerDay");
+    expect(paths(r.baselineDeltas)).toContain("llm.dollarsPerDay");
   });
 
   it("lowering a budget that stays above baseline is still baseline (reduction)", () => {
     const eff: Capabilities = {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: BASELINE_TOKENS * 5 },
+      llm: { models: [], dollarsPerDay: BASELINE_DOLLARS_PER_DAY * 5 },
     };
     const r = classifyChange(eff, {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: BASELINE_TOKENS * 2 },
+      llm: { models: [], dollarsPerDay: BASELINE_DOLLARS_PER_DAY * 2 },
     });
     expect(r.elevatedDeltas).toHaveLength(0);
   });
@@ -274,11 +274,11 @@ describe("applyDeltas", () => {
     const eff: Capabilities = {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: 500 },
+      llm: { models: [], dollarsPerDay: 500 },
     };
     const r = classifyChange(eff, { mcp: [], externalOrigins: [], llm: { models: [] } });
     const applied = applyDeltas(eff, r.elevatedDeltas);
-    expect(applied.llm?.tokensPerDay).toBeUndefined();
+    expect(applied.llm?.dollarsPerDay).toBeUndefined();
   });
 });
 
@@ -287,12 +287,12 @@ describe("snapshot + conflict (optimistic concurrency)", () => {
     const eff: Capabilities = {
       mcp: [],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: 500 },
+      llm: { models: [], dollarsPerDay: 500 },
     };
     const r = classifyChange(eff, {
       mcp: ["pagerduty"],
       externalOrigins: [],
-      llm: { models: [], tokensPerDay: 500 },
+      llm: { models: [], dollarsPerDay: 500 },
     });
     const areas = touchedAreas(r.elevatedDeltas);
     expect(areas).toEqual(["mcp"]);

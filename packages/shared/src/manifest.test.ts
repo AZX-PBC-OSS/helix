@@ -8,7 +8,7 @@ describe("AppManifestSchema", () => {
       app: "cost-explorer",
       visibility: { mode: "private" },
       capabilities: {
-        llm: { models: ["gpt-5", "claude-fable-5"], tokensPerDay: 2_000_000 },
+        llm: { models: ["gpt-5", "claude-fable-5"], dollarsPerDay: 20 },
         data: { user: true, collections: ["contacts"] },
         mcp: ["azure-billing"],
       },
@@ -17,7 +17,7 @@ describe("AppManifestSchema", () => {
     expect(parsed.app).toBe("cost-explorer");
     // externalOrigins defaulted even though it was omitted.
     expect(parsed.capabilities.externalOrigins).toEqual([]);
-    expect(parsed.capabilities.llm?.tokensPerDay).toBe(2_000_000);
+    expect(parsed.capabilities.llm?.dollarsPerDay).toBe(20);
     // data sub-arrays default even when only some keys are given.
     expect(parsed.capabilities.data?.user).toBe(true);
     expect(parsed.capabilities.data?.collections).toEqual(["contacts"]);

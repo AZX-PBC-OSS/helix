@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AppSchema } from "./app.js";
 import { CapabilitiesSchema, type Capabilities, type FetchConnection } from "./manifest.js";
 import { AppManifestSchema } from "./manifest.js";
+import { MODEL_PRICING } from "./pricing.js";
 import { type VisibilityMode } from "./visibility.js";
 
 /**
@@ -92,21 +93,22 @@ export type ApprovalDecisionRequest = z.infer<typeof ApprovalDecisionRequestSche
 // These are control-plane numbers, deliberately co-located with the classifier
 // so portal-gating and SPA-preview never drift (§3).
 
-/** LLM daily token budget at/under which a grant is baseline. */
-export const BASELINE_TOKENS = 1_000_000;
+/** LLM daily spend cap (USD) at/under which a grant is baseline. Tunable. */
+export const BASELINE_DOLLARS_PER_DAY = 50;
 /** App-data daily write/byte budgets at/under which a grant is baseline. */
 export const BASELINE_WRITES_PER_DAY = 10_000;
 export const BASELINE_BYTES_PER_DAY = 50_000_000;
 /** Fetch-proxy daily request budget at/under which a grant is baseline. */
 export const BASELINE_FETCH_REQUESTS_PER_DAY = 10_000;
 
-/** Models any app may request without approval. Anything else is elevated. */
-export const CURATED_LLM_MODELS: readonly string[] = [
-  "claude-fable-5",
-  "claude-opus-4-8",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5",
-];
+/**
+ * Models any app may request without approval. Anything else is elevated. The
+ * curated set is exactly the priced catalog (`MODEL_PRICING`): a model the
+ * platform has set a price for is one we're willing to serve, and conversely an
+ * unpriced model can never be baseline — so the two can't drift, and the edge's
+ * cost gate is never handed an unpriceable model on a baseline grant.
+ */
+export const CURATED_LLM_MODELS: readonly string[] = Object.keys(MODEL_PRICING);
 
 /** Low-risk MCP servers any app may request. Empty ⇒ every MCP grant elevates. */
 export const CURATED_MCP_ALLOWLIST: readonly string[] = [];
@@ -195,15 +197,15 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     push({ path: `llm.models[-${m}]`, from: m }, false, "low");
   }
 
-  // ── LLM token budget ──
-  const effTokens = eff.llm?.tokensPerDay;
-  const reqTokens = req.llm?.tokensPerDay;
-  if (effTokens !== reqTokens) {
-    const reqPriv = budgetPrivilege(req.llm !== undefined, reqTokens);
-    const increase = reqPriv > budgetPrivilege(eff.llm !== undefined, effTokens);
+  // ── LLM spend budget (USD/day) ──
+  const effDollars = eff.llm?.dollarsPerDay;
+  const reqDollars = req.llm?.dollarsPerDay;
+  if (effDollars !== reqDollars) {
+    const reqPriv = budgetPrivilege(req.llm !== undefined, reqDollars);
+    const increase = reqPriv > budgetPrivilege(eff.llm !== undefined, effDollars);
     push(
-      { path: "llm.tokensPerDay", from: effTokens, to: reqTokens },
-      increase && reqPriv > BASELINE_TOKENS,
+      { path: "llm.dollarsPerDay", from: effDollars, to: reqDollars },
+      increase && reqPriv > BASELINE_DOLLARS_PER_DAY,
       "med",
     );
   }
@@ -374,8 +376,8 @@ function applyArray(caps: Capabilities, field: string, op: "+" | "-", item: stri
 
 function applyScalar(caps: Capabilities, d: Delta): void {
   switch (d.path) {
-    case "llm.tokensPerDay":
-      caps.llm = { ...(caps.llm ?? { models: [] }), tokensPerDay: d.to as number | undefined };
+    case "llm.dollarsPerDay":
+      caps.llm = { ...(caps.llm ?? { models: [] }), dollarsPerDay: d.to as number | undefined };
       return;
     case "data.user":
       caps.data = { ...ensureData(caps), user: Boolean(d.to) };

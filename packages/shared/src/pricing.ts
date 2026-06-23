@@ -24,7 +24,13 @@ export interface ModelPrice {
 
 /**
  * Current catalog rates (USD / 1M tokens). Update here on a pricing change and
- * redeploy the portal. Keys are the exact model ids apps request.
+ * redeploy. Keys are the exact model ids apps request.
+ *
+ * This table is also the **authoritative curated-model catalog**: `approval.ts`
+ * derives `CURATED_LLM_MODELS` from these keys, so "priced" and "curated" are
+ * one set and can't drift. Adding a model to the platform = adding it here with
+ * a price; an unpriced model is, by construction, neither curated nor callable
+ * (the edge refuses it — see `apps/edge/src/gateway/llm.ts`).
  */
 export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-fable-5": { inputPerMTok: 10, outputPerMTok: 50 },

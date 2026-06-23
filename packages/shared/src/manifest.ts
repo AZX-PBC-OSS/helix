@@ -12,14 +12,20 @@ import { VisibilitySchema } from "./visibility.js";
  *   app: cost-explorer
  *   visibility: private
  *   capabilities:
- *     llm: { models: [gpt-5, claude-fable-5], tokens_per_day: 2_000_000 }
+ *     llm: { models: [claude-haiku-4-5, claude-fable-5], dollars_per_day: 5.00 }
  *     data: { user: true, collections: [contacts] }
  *     mcp: [azure-billing]
  *     external_origins: []
  */
 export const LlmCapabilitySchema = z.object({
   models: z.array(z.string()).default([]),
-  tokensPerDay: z.int().positive().optional(),
+  /**
+   * Per-app daily LLM spend cap in USD; unset ⇒ unbounded. Denominated in
+   * dollars (not tokens) so the cap means the same thing across models — the
+   * edge prices each call via `@helix/shared` pricing and enforces a daily +
+   * rolling-hour burst window off the frozen `costMicroUsd` ledger column.
+   */
+  dollarsPerDay: z.number().positive().optional(),
 });
 export type LlmCapability = z.infer<typeof LlmCapabilitySchema>;
 
