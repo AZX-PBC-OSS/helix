@@ -51,7 +51,7 @@ const VISIBILITY_ROWS: Array<{
   },
 ];
 
-export function SettingsTab({ app }: { app: App }) {
+export function AccessTab({ app }: { app: App }) {
   const { authenticated, login, loginAvailable } = useAuth();
   const archive = useArchiveApp();
   const setVisibility = useSetVisibility();

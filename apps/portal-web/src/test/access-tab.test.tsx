@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { App, Visibility, VisibilityUpdateResult } from "@helix/shared";
 import { renderWithProviders } from "./render";
-import { SettingsTab } from "../pages/tabs/SettingsTab";
+import { AccessTab } from "../pages/tabs/AccessTab";
 import { AuthProvider } from "../auth/AuthProvider";
 import { setToken, clearToken } from "../auth/tokenStore";
 
@@ -41,7 +41,7 @@ function stubFetch(result: VisibilityUpdateResult): ReturnType<typeof vi.fn> {
 function render(app: App) {
   return renderWithProviders(
     <AuthProvider>
-      <SettingsTab app={app} />
+      <AccessTab app={app} />
     </AuthProvider>,
   );
 }
@@ -59,7 +59,7 @@ afterEach(() => {
   clearToken();
 });
 
-describe("SettingsTab visibility switcher", () => {
+describe("AccessTab visibility switcher", () => {
   it("hides switch actions and prompts sign-in when logged out", () => {
     stubFetch({ app: makeApp({ mode: "private" }), applied: [], pending: null });
     render(makeApp({ mode: "private" }));

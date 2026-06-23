@@ -11,7 +11,7 @@ import { OverviewTab } from "./tabs/OverviewTab";
 import { VersionsTab } from "./tabs/VersionsTab";
 import { CapabilitiesTab } from "./tabs/CapabilitiesTab";
 import { UsageTab } from "./tabs/UsageTab";
-import { SettingsTab } from "./tabs/SettingsTab";
+import { AccessTab } from "./tabs/AccessTab";
 
 export function AppDetailPage() {
   const { slug = "" } = useParams();
@@ -150,8 +150,8 @@ export function AppDetailPage() {
           <Tabs.Tab value="usage" leftSection={<Icon name="gauge" size={15} />}>
             Usage
           </Tabs.Tab>
-          <Tabs.Tab value="settings" leftSection={<Icon name="settings" size={15} />}>
-            Settings
+          <Tabs.Tab value="access" leftSection={<Icon name="lock" size={15} />}>
+            Access
           </Tabs.Tab>
         </Tabs.List>
 
@@ -167,8 +167,8 @@ export function AppDetailPage() {
         <Tabs.Panel value="usage">
           <UsageTab app={a} />
         </Tabs.Panel>
-        <Tabs.Panel value="settings">
-          <SettingsTab app={a} />
+        <Tabs.Panel value="access">
+          <AccessTab app={a} />
         </Tabs.Panel>
       </Tabs>
     </div>
