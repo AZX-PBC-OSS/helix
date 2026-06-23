@@ -1,8 +1,11 @@
 import type { FastifyReply } from "fastify";
+import { AUTH_PAGE_CSP, renderAuthPage } from "./serving/authChrome.js";
 
 /**
  * Terminal responses for the app-serving path. Plain bodies, no app headers,
- * `no-store` — error responses must never stick in a cache.
+ * `no-store` — error responses must never stick in a cache. The handful a human
+ * actually lands on (archived app, sign-in dead ends) get the shared "Outrun"
+ * chrome; machine-facing 404/405/503 stay plain text.
  */
 
 export function sendNotFound(reply: FastifyReply): void {
@@ -23,9 +26,15 @@ export function sendGone(reply: FastifyReply): void {
     .status(410)
     .header("cache-control", "no-store")
     .header("clear-site-data", '"cache", "storage"')
+    .header("content-security-policy", AUTH_PAGE_CSP)
     .type("text/html; charset=utf-8")
     .send(
-      "<!doctype html><html><body><h1>410</h1><p>This app has been archived.</p></body></html>\n",
+      renderAuthPage({
+        title: "App archived",
+        heading: "This app has been archived",
+        sub: "It’s no longer available. Contact the app owner if you think this is a mistake.",
+        footHtml: '<p class="foot">410 · Archived · AZX</p>',
+      }),
     );
 }
 
@@ -53,10 +62,15 @@ export function sendAuthFlowError(reply: FastifyReply, status: 400 | 403, messag
   reply
     .status(status)
     .header("cache-control", "no-store")
+    .header("content-security-policy", AUTH_PAGE_CSP)
     .type("text/html; charset=utf-8")
     .send(
-      `<!doctype html><html><body><h1>Sign-in problem</h1><p>${message}</p>` +
-        `<p>Close this tab and open the app again to restart sign-in.</p></body></html>\n`,
+      renderAuthPage({
+        title: "Sign-in problem",
+        heading: "Sign-in problem",
+        sub: message,
+        bodyHtml: '<p class="note">Close this tab and open the app again to restart sign-in.</p>',
+      }),
     );
 }
 

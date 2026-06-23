@@ -9,6 +9,7 @@ import { hashSessionToken, newSessionId, newSessionToken, type SessionStore } fr
 import { isSameOriginFormPost, validateReturnPath } from "../validate.js";
 import { newPasswordPrincipal, verifyPassword } from "../password.js";
 import type { LoginThrottle } from "../loginThrottle.js";
+import { AUTH_PAGE_CSP, escapeHtml, renderAuthPage } from "../../serving/authChrome.js";
 
 /**
  * The shared-password challenge (`password` visibility, docs/features/
@@ -45,24 +46,8 @@ function resolvePasswordApp(
   return entry;
 }
 
-/** The login page's own strict CSP — platform HTML, so nothing app-supplied runs. */
-const LOGIN_CSP = [
-  "default-src 'none'",
-  "style-src 'unsafe-inline'",
-  "form-action 'self'",
-  "base-uri 'none'",
-  "frame-ancestors 'none'",
-].join("; ");
-
-/** Escape the five HTML-significant characters for safe attribute/text interpolation. */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+/** The login page's own strict CSP — the shared chrome plus a same-origin form. */
+const LOGIN_CSP = `${AUTH_PAGE_CSP}; form-action 'self'`;
 
 /** The OIDC start URL for this app — a password app also admits any SSO user. */
 function ssoStartUrl(rt: PasswordLoginRuntime, slug: string, rd: string): string {
@@ -79,41 +64,7 @@ function renderLoginPage(opts: {
   slug: string;
 }): string {
   const errorBlock = opts.error ? `<p class="err" role="alert">${escapeHtml(opts.error)}</p>` : "";
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Password required</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
-         font: 15px/1.5 system-ui, sans-serif; background: #0f1115; color: #e8eaed; }
-  .card { width: min(92vw, 360px); padding: 32px 28px; border-radius: 14px;
-          background: #1a1d24; box-shadow: 0 12px 40px rgba(0,0,0,.4); }
-  h1 { margin: 0 0 6px; font-size: 18px; }
-  p.sub { margin: 0 0 20px; color: #9aa0aa; font-size: 13.5px; }
-  label { display: block; margin: 0 0 6px; font-size: 13px; color: #c4c8d0; }
-  input { width: 100%; box-sizing: border-box; padding: 11px 12px; border-radius: 9px;
-          border: 1px solid #333845; background: #11141a; color: #e8eaed; font-size: 15px; }
-  button { width: 100%; margin-top: 16px; padding: 11px; border: 0; border-radius: 9px;
-           background: #4c7dff; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
-  p.err { margin: 0 0 16px; padding: 10px 12px; border-radius: 9px;
-          background: rgba(255,90,90,.12); color: #ff8d8d; font-size: 13px; }
-  .alt { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid #2a2e37;
-         text-align: center; font-size: 13px; }
-  .alt a { color: #8aa6ff; text-decoration: none; }
-  .alt a:hover { text-decoration: underline; }
-  p.foot { margin: 16px 0 0; font-size: 11.5px; color: #6b7280; text-align: center; }
-  .vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-</style>
-</head>
-<body>
-  <main class="card">
-    <h1>This app is password protected</h1>
-    <p class="sub">Enter the shared password you were given to continue.</p>
-    ${errorBlock}
+  const body = `${errorBlock}
     <form method="POST" action="/_auth/login">
       <input type="hidden" name="rd" value="${escapeHtml(opts.rd)}">
       <!-- A stable per-app "username" so browsers/password managers can save and
@@ -125,14 +76,15 @@ function renderLoginPage(opts: {
       <label for="pw">Password</label>
       <input id="pw" name="password" type="password" autocomplete="current-password"
              autofocus required>
-      <button type="submit">Continue</button>
+      <button type="submit">Continue<svg class="chevg" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
     </form>
-    <p class="alt"><a href="${escapeHtml(opts.ssoUrl)}">Sign in with your account instead</a></p>
-    <p class="foot">Protected by AZX</p>
-  </main>
-</body>
-</html>
-`;
+    <p class="alt"><a href="${escapeHtml(opts.ssoUrl)}">Sign in with your account instead</a></p>`;
+  return renderAuthPage({
+    title: "Password required",
+    heading: "This app is password protected",
+    sub: "Enter the shared password you were given to continue.",
+    bodyHtml: body,
+  });
 }
 
 function sendLoginPage(
