@@ -6,14 +6,14 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 
 ## What it provisions
 
-| Layer | Resources |
-| --- | --- |
-| Network | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones |
-| Data | Postgres Flexible Server (private), Storage (blob, private), ACR (Premium, private) |
-| Secrets | `kv-platform` (infra config) + `kv-connections` (app connection secrets) — both private |
-| Identity | 3 user-assigned managed identities + the least-privilege RBAC matrix |
-| Compute | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps |
-| DNS | public zone for the apps domain (`*`, `auth`, `portal`) |
+| Layer    | Resources                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------- |
+| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones |
+| Data     | Postgres Flexible Server (private), Storage (blob, private), ACR (Premium, private)         |
+| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) — both private     |
+| Identity | 3 user-assigned managed identities + the least-privilege RBAC matrix                        |
+| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps               |
+| DNS      | public zone for the apps domain (`*`, `auth`, `portal`)                                     |
 
 ### The security shape, in one diagram
 
