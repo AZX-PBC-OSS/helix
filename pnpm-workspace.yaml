@@ -2,6 +2,15 @@ packages:
   - "apps/*"
   - "packages/*"
 
+# Don't auto-run `pnpm install` before every `pnpm <script>` invocation.
+# pnpm's deps-status check (runDepsStatusCheck) reinstalls when it thinks
+# node_modules is stale. The five `pnpm dev:*` VS Code tasks launch in parallel,
+# so each would fire its own install at once — and the portal postinstall
+# (`prisma generate`) would race several copies of itself into one output dir,
+# leaving a partial client and failing the others. Deps are installed once by
+# .devcontainer/post-create.sh; run `pnpm install` explicitly after dep changes.
+verifyDepsBeforeRun: false
+
 # esbuild (via tsx + vitest) links a native binary in its install script.
 # prisma fetches its CLI engine artifacts on install.
 allowBuilds:
