@@ -115,7 +115,7 @@ describe("manifest (capabilities) GET/PUT", () => {
     await createApp({
       slug,
       displayName: "LLM App",
-      capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 } },
+      capabilities: { llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 } },
     });
 
     const got = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
@@ -124,7 +124,7 @@ describe("manifest (capabilities) GET/PUT", () => {
       app: slug,
       visibility: { mode: "private" },
       capabilities: {
-        llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 },
+        llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 },
         mcp: [],
         externalOrigins: [],
       },
@@ -153,13 +153,13 @@ describe("manifest (capabilities) GET/PUT", () => {
       method: "PUT",
       url: `/api/v1/apps/${slug}/manifest`,
       headers: authHeader(),
-      payload: { capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 50 } } },
+      payload: { capabilities: { llm: { models: ["claude-opus-4-8"], dollarsPerDay: 25 } } },
     });
     expect(put.statusCode).toBe(200);
     // Curated model + sub-baseline budget → all baseline, nothing pending.
     expect(put.json().manifest.capabilities.llm).toEqual({
       models: ["claude-opus-4-8"],
-      tokensPerDay: 50,
+      dollarsPerDay: 25,
     });
     expect(put.json().pending).toBeNull();
 

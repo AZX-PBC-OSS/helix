@@ -115,7 +115,7 @@ describe("row mappers validate against the shared schema", () => {
       passwordEnc: null,
       passwordSetAt: null,
       ownerId: null,
-      capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 } },
+      capabilities: { llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 } },
       archivedAt: null,
       createdAt: NOW,
       updatedAt: NOW,
@@ -125,7 +125,7 @@ describe("row mappers validate against the shared schema", () => {
       app: "cost-explorer",
       visibility: { mode: "group", groupId: "eng-team" },
       capabilities: {
-        llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 },
+        llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 },
         mcp: [],
         externalOrigins: [],
       },
@@ -155,8 +155,10 @@ describe("row mappers validate against the shared schema", () => {
 
   // Read-side gateway_calls mappers (M4 metering). Aggregates arrive off raw
   // SQL as number | bigint | string; assert they normalize and validate.
-  // opus-4-8 rates ($5 in / $25 out per MTok): 1000 in + 2000 out = $0.055.
-  const EXPECTED_COST = (1000 * 5 + 2000 * 25) / 1_000_000;
+  // Dollars now come from the frozen costMicroUsd column, not re-priced tokens.
+  // 1000 in + 2000 out @ opus-4-8 froze as 55_000 micro-USD = $0.055.
+  const COST_MICRO = 55_000;
+  const EXPECTED_COST = COST_MICRO / 1_000_000;
 
   it("assembles a per-app UsageSummary, summing outcomes, cost, and the error rate", () => {
     const summary = toUsageSummary({
@@ -193,10 +195,7 @@ describe("row mappers validate against the shared schema", () => {
           model: "claude-opus-4-8",
           requests: 9,
           tokens: 3000n,
-          inputTokens: 1000n,
-          outputTokens: 2000n,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
+          costMicroUsd: COST_MICRO,
         },
       ],
       series: [
@@ -207,6 +206,7 @@ describe("row mappers validate against the shared schema", () => {
           outputTokens: 2000n,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
+          costMicroUsd: COST_MICRO,
           requests: 10,
         },
       ],
@@ -217,6 +217,7 @@ describe("row mappers validate against the shared schema", () => {
           outputTokens: 2000n,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
+          costMicroUsd: COST_MICRO,
         },
       ],
       latencyP95: 1500,
@@ -270,6 +271,7 @@ describe("row mappers validate against the shared schema", () => {
       outputTokens: 800n,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
+      costMicroUsd: 26_000n,
       outcome: "ok",
       durationMs: 1500,
       statusCode: null,
@@ -291,8 +293,8 @@ describe("row mappers validate against the shared schema", () => {
       outcome: "ok",
       createdAt: NOW.toISOString(),
     });
-    // 1200 in + 800 out @ opus-4-8 = $0.026.
-    expect(call.costUsd).toBeCloseTo((1200 * 5 + 800 * 25) / 1_000_000, 9);
+    // Frozen at write time: 1200 in + 800 out @ opus-4-8 = 26_000 micro-USD = $0.026.
+    expect(call.costUsd).toBeCloseTo(0.026, 9);
   });
 
   it("tolerates a null slug (the ledger outlives deleted apps)", () => {
@@ -307,6 +309,7 @@ describe("row mappers validate against the shared schema", () => {
       outputTokens: 0,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
+      costMicroUsd: 0,
       outcome: "refusal",
       durationMs: 0,
       statusCode: null,
@@ -329,6 +332,7 @@ describe("row mappers validate against the shared schema", () => {
           outputTokens: 2000n,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
+          costMicroUsd: COST_MICRO,
           requests: 2,
         },
         {
@@ -338,6 +342,7 @@ describe("row mappers validate against the shared schema", () => {
           outputTokens: 0,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
+          costMicroUsd: 0,
           requests: 0,
         },
       ],
@@ -350,6 +355,7 @@ describe("row mappers validate against the shared schema", () => {
           outputTokens: 2000n,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
+          costMicroUsd: COST_MICRO,
           requests: 2,
         },
       ],
@@ -361,6 +367,7 @@ describe("row mappers validate against the shared schema", () => {
           outputTokens: 2000n,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
+          costMicroUsd: COST_MICRO,
         },
       ],
       capabilityMix: [
@@ -371,6 +378,7 @@ describe("row mappers validate against the shared schema", () => {
           outputTokens: 2000n,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
+          costMicroUsd: COST_MICRO,
         },
       ],
     });

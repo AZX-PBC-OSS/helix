@@ -8,7 +8,6 @@ import {
   PlatformUsageSchema,
   UsageSummarySchema,
   VersionSchema,
-  costUsd,
   type AppManifest,
   type App,
   type ApprovalRequest,
@@ -158,11 +157,21 @@ export function blobPrefixFor(appId: string, number: number): string {
  * come off raw SQL (`$queryRaw`), where SUM/COUNT land as number | bigint |
  * string depending on the cast and driver — `num()` normalizes them, and every
  * mapper validates through the shared schema so DB/contract drift fails loudly.
+ *
+ * Dollars come straight from the **frozen `costMicroUsd` ledger column** (priced
+ * by the edge at write time), summed in SQL and divided here — so every figure
+ * shown matches exactly what the edge's spend gate enforced. No read-time
+ * re-pricing; a later rate change does not restate historical spend.
  * ------------------------------------------------------------------------- */
 
 /** Coerce a SQL numeric (number | bigint | string) to a JS number. */
 function num(v: number | bigint | string | null | undefined): number {
   return v == null ? 0 : Number(v);
+}
+
+/** Frozen micro-USD (1e-6 USD) → USD. */
+function microToUsd(v: SqlNum): number {
+  return num(v) / 1_000_000;
 }
 
 /** Coerce a SQL timestamp (Date | string) to an ISO-8601 string. */
@@ -184,10 +193,7 @@ export interface UsageModelRow {
   model: string;
   requests: SqlNum;
   tokens: SqlNum;
-  inputTokens: SqlNum;
-  outputTokens: SqlNum;
-  cacheReadInputTokens: SqlNum;
-  cacheCreationInputTokens: SqlNum;
+  costMicroUsd: SqlNum;
 }
 /** Assemble a per-app {@link UsageSummary} from the aggregate queries. */
 export function toUsageSummary(input: {
@@ -223,13 +229,7 @@ export function toUsageSummary(input: {
     model: m.model,
     tokens: num(m.tokens),
     requests: num(m.requests),
-    costUsd: costUsd({
-      model: m.model,
-      inputTokens: num(m.inputTokens),
-      outputTokens: num(m.outputTokens),
-      cacheReadInputTokens: num(m.cacheReadInputTokens),
-      cacheCreationInputTokens: num(m.cacheCreationInputTokens),
-    }),
+    costUsd: microToUsd(m.costMicroUsd),
   }));
   return UsageSummarySchema.parse({
     appId: input.appId,
@@ -263,6 +263,7 @@ export interface GatewayCallRow {
   outputTokens: SqlNum;
   cacheReadInputTokens: SqlNum;
   cacheCreationInputTokens: SqlNum;
+  costMicroUsd: SqlNum;
   outcome: string;
   durationMs: SqlNum;
   statusCode: number | null;
@@ -288,13 +289,7 @@ export function toGatewayCall(row: GatewayCallRow): GatewayCall {
     outputTokens,
     cacheReadInputTokens,
     cacheCreationInputTokens,
-    costUsd: costUsd({
-      model: row.model,
-      inputTokens,
-      outputTokens,
-      cacheReadInputTokens,
-      cacheCreationInputTokens,
-    }),
+    costUsd: microToUsd(row.costMicroUsd),
     durationMs: num(row.durationMs),
     statusCode: row.statusCode,
     stopReason: row.stopReason,
@@ -305,8 +300,10 @@ export function toGatewayCall(row: GatewayCallRow): GatewayCall {
 }
 
 /**
- * Class-bearing aggregate row. Dollars vary by model, so the platform rollups
- * group by model and we sum {@link costUsd} per row in the reducers below.
+ * Aggregate row carrying both token sums (for display) and the frozen
+ * `costMicroUsd` sum (for dollars). Still grouped by model so token displays and
+ * per-model breakdowns stay intact, but cost no longer depends on the model —
+ * it's read straight from the column.
  */
 export interface ModelTokenRow {
   model: string | null;
@@ -314,16 +311,11 @@ export interface ModelTokenRow {
   outputTokens: SqlNum;
   cacheReadInputTokens: SqlNum;
   cacheCreationInputTokens: SqlNum;
+  costMicroUsd: SqlNum;
 }
 
 function rowCost(r: ModelTokenRow): number {
-  return costUsd({
-    model: r.model ?? "",
-    inputTokens: num(r.inputTokens),
-    outputTokens: num(r.outputTokens),
-    cacheReadInputTokens: num(r.cacheReadInputTokens),
-    cacheCreationInputTokens: num(r.cacheCreationInputTokens),
-  });
+  return microToUsd(r.costMicroUsd);
 }
 
 /** Display "tokens" stays input+output (cache classes are 0 today, priced separately). */

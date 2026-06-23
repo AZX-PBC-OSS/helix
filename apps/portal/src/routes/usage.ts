@@ -111,10 +111,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         SELECT model,
                COUNT(*)::int                                       AS requests,
                COALESCE(SUM("inputTokens" + "outputTokens"), 0)::bigint AS tokens,
-               COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
-               COALESCE(SUM("outputTokens"), 0)::bigint            AS "outputTokens",
-               COALESCE(SUM("cacheReadInputTokens"), 0)::bigint     AS "cacheReadInputTokens",
-               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint AS "cacheCreationInputTokens"
+               COALESCE(SUM("costMicroUsd"), 0)::bigint            AS "costMicroUsd"
         FROM gateway_calls
         WHERE "appId" = ${id}::uuid AND "createdAt" >= ${since}
         GROUP BY model
@@ -133,6 +130,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
                COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
                COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
+               COALESCE(SUM(gc."costMicroUsd"), 0)::bigint                  AS "costMicroUsd",
                COUNT(gc.id)::int                                            AS requests
         FROM ${seriesGrid(plan)} AS d
         LEFT JOIN gateway_calls gc
@@ -147,7 +145,8 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
                COALESCE(SUM("outputTokens"), 0)::bigint            AS "outputTokens",
                COALESCE(SUM("cacheReadInputTokens"), 0)::bigint     AS "cacheReadInputTokens",
-               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint AS "cacheCreationInputTokens"
+               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint AS "cacheCreationInputTokens",
+               COALESCE(SUM("costMicroUsd"), 0)::bigint            AS "costMicroUsd"
         FROM gateway_calls
         WHERE "appId" = ${id}::uuid AND "createdAt" >= date_trunc('day', now())
         GROUP BY model`);
@@ -220,6 +219,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         outputTokens: r.outputTokens,
         cacheReadInputTokens: r.cacheReadInputTokens,
         cacheCreationInputTokens: r.cacheCreationInputTokens,
+        costMicroUsd: r.costMicroUsd,
         outcome: r.outcome,
         durationMs: r.durationMs,
         statusCode: r.statusCode,
@@ -253,6 +253,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
                COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
                COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
+               COALESCE(SUM(gc."costMicroUsd"), 0)::bigint                  AS "costMicroUsd",
                COUNT(gc.id)::int                                            AS requests
         FROM ${seriesGrid(plan)} AS d
         LEFT JOIN gateway_calls gc ON date_trunc(${plan.grain}::text, gc."createdAt") = d
@@ -267,6 +268,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
                COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
                COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
+               COALESCE(SUM(gc."costMicroUsd"), 0)::bigint                  AS "costMicroUsd",
                COUNT(*)::int                                                AS requests
         FROM gateway_calls gc
         LEFT JOIN apps a ON a.id = gc."appId"
@@ -289,7 +291,8 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM("inputTokens"), 0)::bigint                AS "inputTokens",
                COALESCE(SUM("outputTokens"), 0)::bigint               AS "outputTokens",
                COALESCE(SUM("cacheReadInputTokens"), 0)::bigint       AS "cacheReadInputTokens",
-               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint   AS "cacheCreationInputTokens"
+               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint   AS "cacheCreationInputTokens",
+               COALESCE(SUM("costMicroUsd"), 0)::bigint               AS "costMicroUsd"
         FROM gateway_calls
         WHERE "createdAt" >= date_trunc('month', now())
         GROUP BY model`;
@@ -300,7 +303,8 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM("inputTokens"), 0)::bigint                AS "inputTokens",
                COALESCE(SUM("outputTokens"), 0)::bigint               AS "outputTokens",
                COALESCE(SUM("cacheReadInputTokens"), 0)::bigint       AS "cacheReadInputTokens",
-               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint   AS "cacheCreationInputTokens"
+               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint   AS "cacheCreationInputTokens",
+               COALESCE(SUM("costMicroUsd"), 0)::bigint               AS "costMicroUsd"
         FROM gateway_calls
         WHERE "createdAt" >= ${since}
         GROUP BY capability, model`);

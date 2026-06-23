@@ -20,6 +20,8 @@ async function seedApp(
     model?: string;
     inputTokens?: number;
     outputTokens?: number;
+    /** Frozen as-charged cost in micro-USD — what the edge would have written. */
+    costMicroUsd?: number;
     outcome?: string;
   }>,
 ): Promise<{ id: string; slug: string }> {
@@ -40,6 +42,7 @@ async function seedApp(
         model: c.model ?? "claude-opus-4-8",
         inputTokens: c.inputTokens ?? 0,
         outputTokens: c.outputTokens ?? 0,
+        costMicroUsd: BigInt(c.costMicroUsd ?? 0),
         outcome: c.outcome ?? "ok",
       },
     });
@@ -65,9 +68,9 @@ describe("GET /api/v1/apps/:slug/usage", () => {
 
   it("aggregates a range into a usage summary with a dense series", async () => {
     const { id, slug } = await seedApp([
-      { inputTokens: 1000, outputTokens: 2000, outcome: "ok" },
-      { inputTokens: 500, outputTokens: 500, outcome: "ok" },
-      { inputTokens: 0, outputTokens: 0, outcome: "quota_blocked" },
+      { inputTokens: 1000, outputTokens: 2000, costMicroUsd: 55_000, outcome: "ok" },
+      { inputTokens: 500, outputTokens: 500, costMicroUsd: 15_000, outcome: "ok" },
+      { inputTokens: 0, outputTokens: 0, costMicroUsd: 0, outcome: "quota_blocked" },
     ]);
     const res = await t.app.inject({
       method: "GET",
@@ -84,7 +87,7 @@ describe("GET /api/v1/apps/:slug/usage", () => {
     expect(body.errorRate).toBeCloseTo(1 / 3, 5);
     expect(body.byOutcome).toEqual({ ok: 2, quota_blocked: 1 });
     expect(body.byModel).toMatchObject([{ model: "claude-opus-4-8", tokens: 4000, requests: 3 }]);
-    // 1500 in + 2500 out @ opus-4-8 ($5/$25 per MTok) = $0.07.
+    // Frozen cost: 55_000 + 15_000 micro-USD = $0.07.
     expect(body.byModel[0].costUsd).toBeCloseTo(0.07, 9);
     expect(body.costUsd).toBeCloseTo(0.07, 9);
     // 24h → 24 dense hourly buckets; the seeded calls land in the latest one.
@@ -107,8 +110,8 @@ describe("GET /api/v1/gateway/audit", () => {
 
   it("returns this app's calls newest-first with the slug joined", async () => {
     const { slug } = await seedApp([
-      { model: "claude-opus-4-8", inputTokens: 10, outputTokens: 20 },
-      { model: "claude-haiku-4-5", inputTokens: 30, outputTokens: 40 },
+      { model: "claude-opus-4-8", inputTokens: 10, outputTokens: 20, costMicroUsd: 550 },
+      { model: "claude-haiku-4-5", inputTokens: 30, outputTokens: 40, costMicroUsd: 230 },
     ]);
     const res = await t.app.inject({
       method: "GET",
@@ -125,8 +128,9 @@ describe("GET /api/v1/gateway/audit", () => {
     // Per-row cost is priced per model, and the telemetry fields are present.
     const opus = body.rows.find((r: { model: string }) => r.model === "claude-opus-4-8");
     const haiku = body.rows.find((r: { model: string }) => r.model === "claude-haiku-4-5");
-    expect(opus.costUsd).toBeCloseTo((10 * 5 + 20 * 25) / 1_000_000, 9);
-    expect(haiku.costUsd).toBeCloseTo((30 * 1 + 40 * 5) / 1_000_000, 9);
+    // Frozen per-row cost from the ledger column (micro-USD → USD).
+    expect(opus.costUsd).toBeCloseTo(0.00055, 9);
+    expect(haiku.costUsd).toBeCloseTo(0.00023, 9);
     expect(opus).toMatchObject({ durationMs: 0, statusCode: null, stopReason: null });
     expect(opus.cacheReadInputTokens).toBe(0);
   });
@@ -152,7 +156,9 @@ describe("GET /api/v1/gateway/usage (platform)", () => {
   });
 
   it("includes a seeded app in the platform rollup", async () => {
-    const { slug } = await seedApp([{ inputTokens: 100, outputTokens: 100, outcome: "ok" }]);
+    const { slug } = await seedApp([
+      { inputTokens: 100, outputTokens: 100, costMicroUsd: 3000, outcome: "ok" },
+    ]);
     const res = await t.app.inject({
       method: "GET",
       url: "/api/v1/gateway/usage",
@@ -167,8 +173,8 @@ describe("GET /api/v1/gateway/usage (platform)", () => {
     const mine = body.byApp.find((a: { slug: string | null }) => a.slug === slug);
     expect(mine).toMatchObject({ slug, tokens: 200, requests: 1 });
     expect(body.totals.tokensMTD).toBeGreaterThanOrEqual(200);
-    // Dollars are surfaced platform-wide. opus-4-8: 100 in + 100 out = $0.003.
-    const myCost = (100 * 5 + 100 * 25) / 1_000_000;
+    // Dollars are surfaced platform-wide, frozen at write time = $0.003.
+    const myCost = 0.003;
     expect(mine.costUsd).toBeCloseTo(myCost, 9);
     expect(body.totals.costMTD).toBeGreaterThanOrEqual(myCost - 1e-9);
   });
