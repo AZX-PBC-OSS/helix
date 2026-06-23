@@ -66,7 +66,7 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
           {pending && (
             <Hint
               icon="layers"
-              tone="violet"
+              tone="slate"
               action={
                 <Button variant="default" size="xs" onClick={() => openDeploy(app.slug)}>
                   Review preview

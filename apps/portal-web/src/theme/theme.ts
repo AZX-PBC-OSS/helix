@@ -1,23 +1,39 @@
 import { createTheme, type CSSVariablesResolver, type MantineColorsTuple } from "@mantine/core";
 
 /**
- * The AZX control-plane look: dark, engineered, instrument-grade. Tokens come
- * from the approved design reference — lime accent on near-black surfaces,
- * Space Grotesk display / Hanken Grotesk UI / JetBrains Mono data.
+ * The AZX control-plane look: dark, engineered, instrument-grade — now in the
+ * "Outrun" key. A cyan↔magenta neon duotone on the same near-black surfaces,
+ * bridged by the logo's slate. Texture (grid, glow) stays in chrome; data
+ * surfaces stay crisp. Space Grotesk display / Hanken Grotesk UI / JetBrains
+ * Mono data.
  */
 
-/** Lime accent scale centered on #cdfa50 (index 4 = the brand accent). */
+/** Cyan accent scale centered on #2de2e6 (index 4 = the brand accent / primary). */
 const accent: MantineColorsTuple = [
-  "#f8ffe1",
-  "#f0ffc0",
-  "#e5ff94",
-  "#dcfd72",
-  "#cdfa50", // ← brand
-  "#b9e644",
-  "#9cc434",
-  "#7fa226",
-  "#64801a",
-  "#4b6110",
+  "#e0fcfd",
+  "#c0f8fa",
+  "#93f1f4",
+  "#5ee9ed",
+  "#2de2e6", // ← brand (primary)
+  "#22cace",
+  "#1aa9ad",
+  "#15888b",
+  "#116a6d",
+  "#0c4d4f",
+];
+
+/** Magenta scale centered on #ff2bd6 (index 4) — the hot secondary of the duotone. */
+const magenta: MantineColorsTuple = [
+  "#ffe3f8",
+  "#ffc0f1",
+  "#ff93e6",
+  "#ff5cdc",
+  "#ff2bd6", // ← brand (secondary)
+  "#e622bf",
+  "#c21aa0",
+  "#9c1581",
+  "#7a1065",
+  "#570b49",
 ];
 
 /**
@@ -48,12 +64,14 @@ export const SEMANTIC = {
   bad: "#ff6a55",
   info: "#7cb0ff",
   violet: "#b692ff",
-  accent: "#cdfa50",
-  accentInk: "#0b1000",
+  accent: "#2de2e6", // cyan — primary
+  accentInk: "#04201f", // dark teal ink for text on the cyan accent
+  magenta: "#ff2bd6", // hot secondary
+  slate: "#8f99ac", // the logo chevron — neutral bridge between the two
 } as const;
 
 export const theme = createTheme({
-  colors: { accent, dark },
+  colors: { accent, magenta, dark },
   primaryColor: "accent",
   primaryShade: 4,
   autoContrast: true,
@@ -127,7 +145,11 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
     "--az-line-3": "rgba(255,255,255,.18)",
     "--az-acc": SEMANTIC.accent,
     "--az-acc-ink": SEMANTIC.accentInk,
-    "--az-acc-dim": "rgba(205,250,80,.14)",
+    "--az-acc-dim": "rgba(45,226,230,.14)",
+    "--az-mag": SEMANTIC.magenta,
+    "--az-mag-dim": "rgba(255,43,214,.14)",
+    "--az-slate": SEMANTIC.slate,
+    "--az-slate-dim": "rgba(143,153,172,.16)",
     "--az-live": SEMANTIC.live,
     "--az-live-dim": "rgba(126,231,135,.13)",
     "--az-warn": SEMANTIC.warn,

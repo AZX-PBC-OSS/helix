@@ -103,7 +103,7 @@ export function AppDetailPage() {
             <Group gap={8} mt={12} wrap="wrap">
               <VisibilityBadge visibility={a.visibility} />
               <ToneBadge icon="layers">live {live ? `v${live.number}` : "—"}</ToneBadge>
-              {pending && <ToneBadge tone="violet">preview v{pending.number}</ToneBadge>}
+              {pending && <ToneBadge tone="slate">preview v{pending.number}</ToneBadge>}
             </Group>
           </Box>
         </Group>

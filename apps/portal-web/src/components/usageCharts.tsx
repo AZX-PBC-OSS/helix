@@ -15,7 +15,7 @@ export type UsageMetric = "cost" | "tokens" | "requests";
 const METRIC_META: Record<UsageMetric, { label: string; color: string }> = {
   cost: { label: "Spend", color: "var(--az-acc)" },
   tokens: { label: "Tokens", color: "var(--az-info)" },
-  requests: { label: "Requests", color: "var(--az-violet)" },
+  requests: { label: "Requests", color: "var(--az-mag)" },
 };
 
 /** Hourly ranges get clock-time ticks; daily ranges get calendar-day ticks. */

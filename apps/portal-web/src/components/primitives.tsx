@@ -7,7 +7,8 @@ import { Icon, type IconName } from "./Icon";
 
 export function Eyebrow({ children, mb }: { children: ReactNode; mb?: number }) {
   return (
-    <Box className="az-eyebrow" mb={mb}>
+    <Box className="az-eyebrow" mb={mb} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <Icon name="chevR" size={11} style={{ color: "var(--az-acc)", flexShrink: 0 }} />
       {children}
     </Box>
   );
@@ -17,7 +18,7 @@ export type StatusKind = "live" | "preview" | "archived" | "empty";
 
 const STATUS_META: Record<StatusKind, { color: string; label: string; pulse: boolean }> = {
   live: { color: "var(--az-live)", label: "Live", pulse: true },
-  preview: { color: "var(--az-violet)", label: "Preview", pulse: false },
+  preview: { color: "var(--az-slate)", label: "Preview", pulse: false },
   archived: { color: "var(--az-bad)", label: "Archived", pulse: false },
   empty: { color: "var(--mantine-color-dark-3)", label: "Not deployed", pulse: false },
 };
@@ -55,7 +56,16 @@ export function StatusLine({ kind }: { kind: StatusKind }) {
   );
 }
 
-export type Tone = "neutral" | "live" | "warn" | "bad" | "info" | "violet" | "acc";
+export type Tone =
+  | "neutral"
+  | "live"
+  | "warn"
+  | "bad"
+  | "info"
+  | "violet"
+  | "acc"
+  | "mag"
+  | "slate";
 
 const TONE_STYLE: Record<Tone, { color: string; bg: string; border: string }> = {
   neutral: {
@@ -69,6 +79,8 @@ const TONE_STYLE: Record<Tone, { color: string; bg: string; border: string }> = 
   info: { color: "var(--az-info)", bg: "var(--az-info-dim)", border: "transparent" },
   violet: { color: "var(--az-violet)", bg: "var(--az-violet-dim)", border: "transparent" },
   acc: { color: "var(--az-acc)", bg: "var(--az-acc-dim)", border: "transparent" },
+  mag: { color: "var(--az-mag)", bg: "var(--az-mag-dim)", border: "transparent" },
+  slate: { color: "var(--az-slate)", bg: "var(--az-slate-dim)", border: "transparent" },
 };
 
 export function ToneBadge({

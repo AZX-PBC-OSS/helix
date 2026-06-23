@@ -9,7 +9,7 @@ import { ConfirmDialog } from "../../modals/ConfirmDialog";
 
 const STATUS_TONE: Record<Version["status"], Tone> = {
   live: "live",
-  preview: "violet",
+  preview: "slate",
   archived: "neutral",
 };
 

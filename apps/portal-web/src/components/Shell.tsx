@@ -17,6 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { healthQuery } from "../api/queries";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon, type IconName } from "./Icon";
+import { Logo } from "./Logo";
 import { Eyebrow, ToneBadge } from "./primitives";
 
 /** App chrome: sidebar nav (Workspace / Admin), header with live health. */
@@ -44,30 +45,14 @@ const ADMIN_NAV: NavItem[] = [
 
 function Brand() {
   return (
-    <Group gap={10} px={6}>
-      <Box
-        w={30}
-        h={30}
-        style={{
-          borderRadius: 8,
-          background: "var(--az-acc)",
-          display: "grid",
-          placeItems: "center",
-          boxShadow: "0 0 22px -6px var(--az-acc)",
-        }}
-      >
-        <Text ff="heading" fw={700} fz={15} c="var(--az-acc-ink)" lts="-.04em">
-          az
-        </Text>
-      </Box>
-      <Box lh={1}>
-        <Text ff="heading" fw={700} fz={16} lts="-.02em">
-          AZX
-        </Text>
-        <Text className="az-mono" fz={9} c="dark.2" lts=".16em" mt={2}>
-          CONTROL PLANE
-        </Text>
-      </Box>
+    <Group gap={11} px={4} wrap="nowrap" align="center">
+      <Logo height={20} />
+      <Box w={1} h={20} style={{ background: "var(--az-line-2)" }} />
+      <Text className="az-mono" fz={9} c="dark.2" lts=".18em" style={{ lineHeight: 1.35 }}>
+        CONTROL
+        <br />
+        PLANE
+      </Text>
     </Group>
   );
 }
@@ -134,9 +119,11 @@ function UserChip() {
         <Button
           variant="default"
           leftSection={<Icon name="user" size={14} />}
+          rightSection={<Icon name="chevR" size={13} style={{ color: "var(--az-slate)" }} />}
           onClick={login}
           disabled={!loginAvailable}
           fullWidth
+          styles={{ label: { flex: 1, textAlign: "left" } }}
         >
           Sign in
         </Button>
