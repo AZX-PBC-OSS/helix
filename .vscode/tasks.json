@@ -29,7 +29,7 @@
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
-        "group": "dev",
+        "group": "portal",
         "panel": "dedicated",
         "reveal": "always"
       }
@@ -68,7 +68,7 @@
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
-        "group": "dev",
+        "group": "portal",
         "panel": "dedicated",
         "reveal": "always"
       }
