@@ -16,24 +16,33 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { App, Capabilities, FetchConnection } from "@helix/shared";
+import {
+  BASELINE_DOLLARS_PER_DAY,
+  type App,
+  type Capabilities,
+  type FetchConnection,
+} from "@helix/shared";
 import { useSetManifest } from "../../api/mutations";
 import { manifestQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
-import { DollarToTokensTable } from "../../components/DollarToTokensTable";
+import { ModelAllowlist } from "../../components/ModelAllowlist";
 import { fmtUsd } from "../../lib/format";
 import { SecretsCard } from "./SecretsCard";
 
 /**
  * The §6.3 capability manifest editor, backed by the real
  * `GET`/`PUT /api/v1/apps/:slug/manifest` API. Edits the grants the M4 gateway
- * enforces; saving applies them directly (per-app approval is a v1 control-plane
- * feature — the "needs approval" copy below is informational only).
+ * enforces. Baseline edits apply immediately on save; above-baseline grants
+ * (arbitrary MCP servers, external origins, off-catalogue models, LLM budgets
+ * over ${BASELINE_DOLLARS_PER_DAY}/day) open an admin-approval request — the
+ * classifier (`@helix/shared` `classifyChange`) draws that line, and the
+ * `pending` banner below reports when a save lands one.
  */
 
-const DEFAULT_MODEL = "claude-opus-4-8";
+/** Default daily LLM spend cap when an app first enables a model. */
+const DEFAULT_CAP = 10;
 
 function CapBlock({
   icon,
@@ -245,6 +254,13 @@ export function CapabilitiesTab({ app }: { app: App }) {
   const removeFetchOrigin = (i: number) =>
     setDraft((d) => (d ? { ...d, fetchOrigins: d.fetchOrigins.filter((_, j) => j !== i) } : d));
 
+  // A spend cap is mandatory once any model is enabled (no app ships unbounded
+  // by accident); a budget over baseline opens an approval request on save.
+  const capRequired = draft.models.length > 0;
+  const capMissing = capRequired && draft.dollarsPerDay === undefined;
+  const overBaseline =
+    draft.dollarsPerDay !== undefined && draft.dollarsPerDay > BASELINE_DOLLARS_PER_DAY;
+
   return (
     <Stack gap={18}>
       <Group>
@@ -262,52 +278,53 @@ export function CapabilitiesTab({ app }: { app: App }) {
               title="LLM inference"
               desc="Proxied through the gateway — the platform holds vendor keys; your app never sees them."
             >
-              <TagsInput
-                label="Models"
-                description="Allowlist matched against each /_api/llm/chat request."
-                placeholder={`add model — e.g. ${DEFAULT_MODEL}`}
-                value={draft.models}
-                onChange={(models) => patch({ models })}
-                classNames={{ input: "az-mono" }}
+              <ModelAllowlist
+                models={draft.models}
+                dollarsPerDay={draft.dollarsPerDay}
+                onCapChange={(dollarsPerDay) => patch({ dollarsPerDay })}
+                onModelsChange={(models) =>
+                  patch({
+                    models,
+                    // A spend cap is required once any model is enabled; default
+                    // it the moment the first model is picked, clear it when the
+                    // last one is removed (so `fromDraft` drops the llm block).
+                    dollarsPerDay:
+                      models.length > 0 ? (draft.dollarsPerDay ?? DEFAULT_CAP) : undefined,
+                  })
+                }
               />
-              <Box mt={14}>
-                <Switch
-                  checked={draft.dollarsPerDay !== undefined}
-                  onChange={(e) =>
-                    patch({ dollarsPerDay: e.currentTarget.checked ? 5 : undefined })
-                  }
-                  label="Daily spend cap (USD)"
-                  description="A dollar cap means the same across models. Off = no per-day budget (gateway still meters every call). Enforced as a daily total plus a rolling-hour burst sub-cap."
-                />
-                {draft.dollarsPerDay !== undefined && (
-                  <Stack gap={10} mt={10}>
-                    <Group gap={12} align="center">
-                      <NumberInput
-                        value={draft.dollarsPerDay}
-                        onChange={(v) =>
-                          patch({ dollarsPerDay: typeof v === "number" ? v : Number(v) || 0 })
-                        }
-                        min={0.01}
-                        step={1}
-                        decimalScale={2}
-                        prefix="$"
-                        w={180}
-                        classNames={{ input: "az-mono" }}
-                      />
-                      <Text className="az-mono" c="dark.2" fz={12.5}>
-                        = {fmtUsd(draft.dollarsPerDay)} / day
-                      </Text>
-                      <ToneBadge tone="violet" icon="shield">
-                        large budgets need admin approval (v1)
-                      </ToneBadge>
-                    </Group>
-                    <DollarToTokensTable
-                      models={draft.models}
-                      dollarsPerDay={draft.dollarsPerDay}
-                    />
-                  </Stack>
-                )}
-              </Box>
+              {capRequired && (
+                <Box mt={14}>
+                  {capMissing ? (
+                    <Hint
+                      icon="alert"
+                      tone="warn"
+                      action={
+                        <Button
+                          size="xs"
+                          variant="default"
+                          onClick={() => patch({ dollarsPerDay: DEFAULT_CAP })}
+                        >
+                          Set ${DEFAULT_CAP}/day
+                        </Button>
+                      }
+                    >
+                      A daily spend cap is required. Set one above before saving.
+                    </Hint>
+                  ) : overBaseline ? (
+                    <Hint icon="shield" tone="warn">
+                      {fmtUsd(draft.dollarsPerDay ?? 0)}/day is above the $
+                      {BASELINE_DOLLARS_PER_DAY}
+                      /day baseline — saving opens an admin-approval request.
+                    </Hint>
+                  ) : (
+                    <Text size="xs" c="dark.2" lh={1.45}>
+                      Enforced as a daily total plus a rolling-hour burst sub-cap. Budgets over $
+                      {BASELINE_DOLLARS_PER_DAY}/day need admin approval.
+                    </Text>
+                  )}
+                </Box>
+              )}
             </CapBlock>
 
             <CapBlock
@@ -510,14 +527,14 @@ export function CapabilitiesTab({ app }: { app: App }) {
               <Button
                 fullWidth
                 mt={14}
-                disabled={!dirty}
+                disabled={!dirty || capMissing}
                 loading={setManifest.isPending}
                 leftSection={<Icon name="check" size={14} />}
                 onClick={() =>
                   setManifest.mutate({ slug: app.slug, capabilities: fromDraft(draft) })
                 }
               >
-                {dirty ? "Save manifest" : "Saved"}
+                {capMissing ? "Set a spend cap to save" : dirty ? "Save manifest" : "Saved"}
               </Button>
             )}
             {setManifest.isError && (
