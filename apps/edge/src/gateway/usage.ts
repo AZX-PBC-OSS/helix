@@ -25,6 +25,8 @@ export interface GatewayCallRecord {
   /** Cache-aware input accounting; defaults to 0 (caching not enabled yet). */
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
+  /** Frozen as-charged cost in micro-USD (1e-6 USD); defaults to 0. */
+  costMicroUsd?: number;
   outcome: GatewayOutcome;
   /** Upstream round-trip latency in ms; defaults to 0 when not measured. */
   durationMs?: number;
@@ -36,9 +38,21 @@ export interface GatewayCallRecord {
   errorDetail?: string | null;
 }
 
+/** The two LLM spend windows the gate checks, in micro-USD (1e-6 USD). */
+export interface LlmSpend {
+  /** Spend since local-midnight — the daily cost cap. */
+  todayMicro: number;
+  /** Spend in the trailing rolling hour — the burst/availability cap. */
+  hourMicro: number;
+}
+
 export interface UsageStore {
-  /** Total input+output tokens charged to this app since UTC midnight. */
-  tokensUsedToday(appId: string): Promise<number>;
+  /**
+   * Frozen LLM spend (micro-USD) for this app in the day + rolling-hour windows,
+   * summed from the `costMicroUsd` ledger column. Backs the per-app USD budget
+   * gate (`llm.ts`).
+   */
+  llmSpendMicroUsd(appId: string): Promise<LlmSpend>;
   /**
    * Count of successful app-data **write** calls today (app-data design §7) —
    * the per-app `writesPerDay` budget window. Writes are the put/append verbs
@@ -68,20 +82,25 @@ export class PgUsageStore implements UsageStore {
     this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 10 });
   }
 
-  async tokensUsedToday(appId: string): Promise<number> {
-    // Day boundary is server-local-midnight via date_trunc on now(); the
-    // budget is "tokens per calendar day" (architecture §6.3). Indexed by
-    // (appId, createdAt).
+  async llmSpendMicroUsd(appId: string): Promise<LlmSpend> {
+    // One index scan over (appId, createdAt), two FILTERed sums. The outer
+    // filter is day-start minus an hour so the rolling-hour window stays
+    // correct across the midnight boundary (its rows can predate today). Day
+    // boundary is server-local-midnight via date_trunc on now() (architecture
+    // §6.3). costMicroUsd is non-null (DEFAULT 0).
     const result = await this.#pool.query(
-      `SELECT COALESCE(SUM("inputTokens" + "outputTokens"), 0)::bigint AS total
+      `SELECT
+         COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= date_trunc('day', now())), 0)::bigint AS today,
+         COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= now() - interval '1 hour'), 0)::bigint AS hour
        FROM gateway_calls
-       WHERE "appId" = $1 AND "createdAt" >= date_trunc('day', now())`,
+       WHERE "appId" = $1 AND capability = 'llm'
+         AND "createdAt" >= date_trunc('day', now()) - interval '1 hour'`,
       [appId],
     );
     // SUM(::bigint) comes back as a string from pg; Number is safe well below
-    // 2^53 for any realistic daily token total.
-    const row = result.rows[0] as { total: string | number } | undefined;
-    return row ? Number(row.total) : 0;
+    // 2^53 for any realistic daily micro-USD total (1e6 = $1).
+    const row = result.rows[0] as { today: string | number; hour: string | number } | undefined;
+    return { todayMicro: row ? Number(row.today) : 0, hourMicro: row ? Number(row.hour) : 0 };
   }
 
   async dataWritesToday(appId: string): Promise<number> {
@@ -115,9 +134,9 @@ export class PgUsageStore implements UsageStore {
       // metering columns fall back to their column defaults / NULL.
       `INSERT INTO gateway_calls
          (id, "appId", "userOid", capability, model, "inputTokens", "outputTokens",
-          "cacheReadInputTokens", "cacheCreationInputTokens", outcome,
+          "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd", outcome,
           "durationMs", "statusCode", "stopReason", "errorDetail")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         call.appId,
         call.userOid,
@@ -127,6 +146,7 @@ export class PgUsageStore implements UsageStore {
         call.outputTokens,
         call.cacheReadInputTokens ?? 0,
         call.cacheCreationInputTokens ?? 0,
+        call.costMicroUsd ?? 0,
         call.outcome,
         call.durationMs ?? 0,
         call.statusCode ?? null,

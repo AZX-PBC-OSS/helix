@@ -5,7 +5,7 @@ import { PgUsageStore } from "./usage.js";
 import { TEST_DATABASE_URL } from "../test/seed.js";
 
 /**
- * Real-Postgres coverage for the gateway ledger: the daily-budget SUM and the
+ * Real-Postgres coverage for the gateway ledger: the windowed spend SUM and the
  * per-call INSERT run against the actual `gateway_calls` table (quoted
  * camelCase columns — a typo only surfaces at runtime). Scoped to a fresh
  * appId per run so it's parallel-safe; rows are cleaned up after.
@@ -30,8 +30,8 @@ afterAll(async () => {
 });
 
 describe("PgUsageStore", () => {
-  it("starts at zero and sums today's input+output tokens for the app", async () => {
-    expect(await store.tokensUsedToday(appId)).toBe(0);
+  it("starts at zero and sums today's frozen cost for the app (day + rolling hour)", async () => {
+    expect(await store.llmSpendMicroUsd(appId)).toEqual({ todayMicro: 0, hourMicro: 0 });
 
     await store.record({
       appId,
@@ -40,6 +40,7 @@ describe("PgUsageStore", () => {
       model: "claude-opus-4-8",
       inputTokens: 100,
       outputTokens: 50,
+      costMicroUsd: 150_000,
       outcome: "ok",
     });
     await store.record({
@@ -49,10 +50,15 @@ describe("PgUsageStore", () => {
       model: "claude-opus-4-8",
       inputTokens: 10,
       outputTokens: 5,
+      costMicroUsd: 15_000,
       outcome: "ok",
     });
 
-    expect(await store.tokensUsedToday(appId)).toBe(165);
+    // Both rows are within the trailing hour (just inserted), so both windows match.
+    expect(await store.llmSpendMicroUsd(appId)).toEqual({
+      todayMicro: 165_000,
+      hourMicro: 165_000,
+    });
   });
 
   it("scopes the budget to one app", async () => {
@@ -63,13 +69,17 @@ describe("PgUsageStore", () => {
       model: "claude-opus-4-8",
       inputTokens: 999,
       outputTokens: 999,
+      costMicroUsd: 9_999_999,
       outcome: "ok",
     });
     // The first app's total is unaffected by the other app's usage.
-    expect(await store.tokensUsedToday(appId)).toBe(165);
+    expect(await store.llmSpendMicroUsd(appId)).toEqual({
+      todayMicro: 165_000,
+      hourMicro: 165_000,
+    });
   });
 
-  it("records a blocked call with zero tokens (still audited)", async () => {
+  it("records a blocked call with zero cost (still audited)", async () => {
     await store.record({
       appId,
       userOid: "oid-alice",
@@ -77,6 +87,7 @@ describe("PgUsageStore", () => {
       model: "claude-opus-4-8",
       inputTokens: 0,
       outputTokens: 0,
+      costMicroUsd: 0,
       outcome: "quota_blocked",
     });
     const { rows } = await pool.query(
@@ -98,6 +109,7 @@ describe("PgUsageStore", () => {
         outputTokens: 50,
         cacheReadInputTokens: 20,
         cacheCreationInputTokens: 10,
+        costMicroUsd: 87_654,
         outcome: "ok",
         durationMs: 1234,
         statusCode: null,
@@ -105,14 +117,15 @@ describe("PgUsageStore", () => {
         errorDetail: null,
       });
       const { rows } = await pool.query(
-        `SELECT "cacheReadInputTokens", "cacheCreationInputTokens", "durationMs",
-                "statusCode", "stopReason", "errorDetail"
+        `SELECT "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd"::int AS "costMicroUsd",
+                "durationMs", "statusCode", "stopReason", "errorDetail"
          FROM gateway_calls WHERE "appId" = $1`,
         [meteredAppId],
       );
       expect(rows[0]).toEqual({
         cacheReadInputTokens: 20,
         cacheCreationInputTokens: 10,
+        costMicroUsd: 87_654,
         durationMs: 1234,
         statusCode: null,
         stopReason: "end_turn",
@@ -137,12 +150,14 @@ describe("PgUsageStore", () => {
         outcome: "ok",
       });
       const { rows } = await pool.query(
-        `SELECT "cacheReadInputTokens", "durationMs", "statusCode", "stopReason"
+        `SELECT "cacheReadInputTokens", "costMicroUsd"::int AS "costMicroUsd",
+                "durationMs", "statusCode", "stopReason"
          FROM gateway_calls WHERE "appId" = $1`,
         [defaultsAppId],
       );
       expect(rows[0]).toEqual({
         cacheReadInputTokens: 0,
+        costMicroUsd: 0,
         durationMs: 0,
         statusCode: null,
         stopReason: null,

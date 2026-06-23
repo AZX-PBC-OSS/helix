@@ -3,7 +3,7 @@ import type { LlmChatRequest, LlmUsage } from "@helix/shared";
 import type { BlobGetOptions, BlobGetResult, BlobReader } from "../blob/client.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 import type { LlmProvider, LlmStreamEvent } from "../gateway/provider.js";
-import type { GatewayCallRecord, UsageStore } from "../gateway/usage.js";
+import type { GatewayCallRecord, LlmSpend, UsageStore } from "../gateway/usage.js";
 import type { AppDataStore, CollectionMeta, UserKeyMeta } from "../gateway/data.js";
 import type { Session, SessionStore } from "../auth/sessions.js";
 import type {
@@ -126,13 +126,23 @@ export class FakeLlmProvider implements LlmProvider {
   async close(): Promise<void> {}
 }
 
-/** In-memory gateway ledger for tests; `usedToday` drives quota decisions. */
+/** In-memory gateway ledger for tests; spend overrides drive quota decisions. */
 export class FakeUsageStore implements UsageStore {
   readonly records: GatewayCallRecord[] = [];
-  usedToday = 0;
 
-  async tokensUsedToday(): Promise<number> {
-    return this.usedToday;
+  /** Override to force the daily LLM spend gate (micro-USD); else summed live. */
+  spendTodayMicro?: number;
+  /** Override to force the rolling-hour burst gate (micro-USD); else summed live. */
+  spendHourMicro?: number;
+
+  async llmSpendMicroUsd(): Promise<LlmSpend> {
+    const summed = this.records
+      .filter((r) => r.capability === "llm")
+      .reduce((n, r) => n + (r.costMicroUsd ?? 0), 0);
+    return {
+      todayMicro: this.spendTodayMicro ?? summed,
+      hourMicro: this.spendHourMicro ?? summed,
+    };
   }
 
   /** Override in a test to force the writesPerDay budget; defaults to the live count. */

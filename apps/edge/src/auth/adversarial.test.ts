@@ -429,7 +429,7 @@ describe("the two-router discipline for auth routes", () => {
  * are fakes; the containment properties are real.
  */
 describe("attack: the /_api/llm/chat gateway", () => {
-  const GRANT = { models: ["claude-opus-4-8"], tokensPerDay: 1000 };
+  const GRANT = { models: ["claude-opus-4-8"], dollarsPerDay: 1 };
   const ASK = { model: "claude-opus-4-8", messages: [{ role: "user", content: "hi" }] };
 
   interface GatewayEdge {
@@ -517,7 +517,7 @@ describe("attack: the /_api/llm/chat gateway", () => {
 
   it("blocks a budget-exhausted app and audits the block", async () => {
     const edge = buildGatewayEdge();
-    edge.usage.usedToday = 1000;
+    edge.usage.spendTodayMicro = 1_000_000;
     const token = await seed(edge.sessions, APP_A);
     const res = await call(edge, token, { host: "appa.localtest.me" });
     expect(res.statusCode).toBe(429);

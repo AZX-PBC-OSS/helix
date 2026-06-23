@@ -169,7 +169,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
 
   /**
    * Per-app daily write budget (app-data design §7), block-new like the LLM
-   * `tokensPerDay`: if the app is already at/over `writesPerDay`, refuse the
+   * `dollarsPerDay`: if the app is already at/over `writesPerDay`, refuse the
    * write with 429 and record a `quota_blocked` row. Returns false when blocked
    * (the caller has already responded). Item-size caps are enforced separately;
    * `bytesPerDay` and per-IP rate limiting are deferred knobs (need a stored

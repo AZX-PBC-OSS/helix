@@ -73,7 +73,7 @@ describe("RegistryProjection", () => {
           {
             ...ROW,
             slug: "granted",
-            capabilities: { llm: { models: ["claude-opus-4-8"], tokensPerDay: 1000 } },
+            capabilities: { llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 } },
           },
           { ...ROW, slug: "no-llm", capabilities: { data: { user: true } } },
           { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
@@ -84,7 +84,7 @@ describe("RegistryProjection", () => {
     await projection.load();
     expect(projection.getApp("granted")?.llm).toEqual({
       models: ["claude-opus-4-8"],
-      tokensPerDay: 1000,
+      dollarsPerDay: 10,
     });
     expect(projection.getApp("no-llm")?.llm).toBeNull();
     expect(projection.getApp("bad-json")?.llm).toBeNull();

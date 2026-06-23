@@ -13,7 +13,7 @@ import type { RegistryEntry } from "../registry/projection.js";
  * Caveat (identical to loginThrottle): this is per-process in-memory state, and
  * the edge is stateless and horizontally scaled — the effective limit is
  * N×instances. That is adequate for v0's demo threat model alongside the per-app
- * `writesPerDay`/`tokensPerDay` budgets; a shared (DB/Redis-backed) counter is a
+ * `writesPerDay`/`dollarsPerDay` budgets; a shared (DB/Redis-backed) counter is a
  * future hardening. Client IP is Fastify's `req.ip`; the edge runs with the
  * default `trustProxy: false` (prod sits behind Azure ingress with the client IP
  * arriving directly), the same posture loginThrottle relies on.

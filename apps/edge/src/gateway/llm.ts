@@ -2,6 +2,8 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   LlmChatRequestSchema,
   LlmChatResponseSchema,
+  costUsd,
+  priceForModel,
   type ApiErrorCode,
   type LlmChatRequest,
   type LlmUsage,
@@ -20,13 +22,29 @@ import type { GatewayOutcome, UsageStore } from "./usage.js";
  * project plan §4 M4). The choke point that makes per-app blast-radius real:
  * it authenticates the user (session gate), proves the request came from the
  * app's own origin (CSRF — §4.2), enforces the per-app model allowlist and
- * daily token budget from the manifest (§6.3), proxies to the vendor through
+ * daily spend budget from the manifest (§6.3), proxies to the vendor through
  * the `LlmProvider` seam (the app never sees the key), and meters every call.
  *
  * Quota is **block-new, finish-in-flight**: the budget is checked once at
  * admission; an admitted request always runs to completion, even if it pushes
  * the app over budget — the next request is the one that gets blocked.
+ *
+ * The budget is denominated in **USD**, not tokens, so the cap means the same
+ * thing across models (a token cap is a 10× range of dollars between haiku and
+ * fable-5). Two windows are checked off the frozen `costMicroUsd` ledger column:
+ * a calendar-day cap (the cost control — bounds the daily bill) and a rolling
+ * 1-hour burst cap at a fraction of it (an availability control — a single
+ * actor can't drain the whole day in one spike and lock the app out for 24h).
  */
+
+/**
+ * Rolling-hour burst cap = `dollarsPerDay × BURST_BUDGET_FRACTION`. With the
+ * divisor at 6, draining the daily budget takes at least 6 hours. This is an
+ * availability knob (it does not change the worst-case daily spend); retune
+ * freely. The 1-hour window length itself lives in the SQL (usage.ts).
+ */
+const BURST_WINDOW_DIVISOR = 6;
+const BURST_BUDGET_FRACTION = 1 / BURST_WINDOW_DIVISOR;
 
 export interface LlmGatewayRuntime {
   config: EdgeConfig;
@@ -122,14 +140,30 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
       sendApiError(reply, 403, "model_not_allowed", `model "${chat.model}" is not allowed`);
       return;
     }
+    // Fail-safe: a model with no price can't be cost-gated, so refuse it rather
+    // than serve it for free. The curated catalog == the priced catalog
+    // (@helix/shared), so this only bites a model that slipped past curation.
+    if (priceForModel(chat.model) === undefined) {
+      sendApiError(
+        reply,
+        403,
+        "model_not_allowed",
+        `model "${chat.model}" has no price configured`,
+      );
+      return;
+    }
 
-    // Quota (block-new): if the app is already at/over its daily budget, refuse
-    // before sending anything upstream. An in-flight request is never cut.
+    // Quota (block-new): if the app is already at/over its daily *or* rolling-
+    // hour USD budget, refuse before sending anything upstream. An in-flight
+    // request is never cut. Both windows read the frozen costMicroUsd column.
     const usage = rt.usage;
-    const budget = entry.llm.tokensPerDay;
-    if (budget !== undefined) {
-      const usedToday = await usage.tokensUsedToday(entry.appId);
-      if (usedToday >= budget) {
+    const cap = entry.llm.dollarsPerDay;
+    if (cap !== undefined) {
+      const capMicro = cap * 1_000_000;
+      const { todayMicro, hourMicro } = await usage.llmSpendMicroUsd(entry.appId);
+      const overDay = todayMicro >= capMicro;
+      const overBurst = hourMicro >= capMicro * BURST_BUDGET_FRACTION;
+      if (overDay || overBurst) {
         await usage
           .record({
             appId: entry.appId,
@@ -138,10 +172,16 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
             model: chat.model,
             inputTokens: 0,
             outputTokens: 0,
+            costMicroUsd: 0,
             outcome: "quota_blocked",
           })
           .catch(() => {});
-        sendApiError(reply, 429, "quota_exceeded", "daily token budget exhausted");
+        // Day cap is the harder stop ("done for the day"); prefer its message.
+        if (overDay) {
+          sendApiError(reply, 429, "quota_exceeded", "daily spend budget exhausted");
+        } else {
+          sendApiError(reply, 429, "rate_limited", "burst spend budget exhausted — retry shortly");
+        }
         return;
       }
     }
@@ -165,6 +205,10 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     ): Promise<void> => {
       if (recorded) return;
       recorded = true;
+      // Freeze the as-charged cost at write time (micro-USD) from the final
+      // token counts + the requested model's current rate. This is what both
+      // the spend gate and the portal dollar figures read back.
+      const costMicroUsd = Math.round(costUsd({ model: chat.model, ...finalUsage }) * 1_000_000);
       await usage
         .record({
           appId: entry.appId,
@@ -175,6 +219,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
           outputTokens: finalUsage.outputTokens,
           cacheReadInputTokens: finalUsage.cacheReadInputTokens,
           cacheCreationInputTokens: finalUsage.cacheCreationInputTokens,
+          costMicroUsd,
           outcome,
           durationMs: Math.round(performance.now() - startedAt),
           // LLM streams over a 200; the stop reason is the useful signal here.
