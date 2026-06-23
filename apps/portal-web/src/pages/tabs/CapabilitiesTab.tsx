@@ -22,7 +22,8 @@ import { manifestQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
-import { fmtCount } from "../../lib/format";
+import { DollarToTokensTable } from "../../components/DollarToTokensTable";
+import { fmtUsd } from "../../lib/format";
 import { SecretsCard } from "./SecretsCard";
 
 /**
@@ -77,7 +78,7 @@ function CapBlock({
 /** Normalized, comparable view of a Capabilities grant for the editor state. */
 interface Draft {
   models: string[];
-  tokensPerDay: number | undefined;
+  dollarsPerDay: number | undefined;
   /** §3.1 per-user private store. */
   dataUser: boolean;
   /** §3.2 append-only collections (write-from-app, owner reads via portal). */
@@ -97,7 +98,7 @@ interface Draft {
 function toDraft(c: Capabilities): Draft {
   return {
     models: c.llm?.models ?? [],
-    tokensPerDay: c.llm?.tokensPerDay,
+    dollarsPerDay: c.llm?.dollarsPerDay,
     dataUser: c.data?.user ?? false,
     collections: c.data?.collections ?? [],
     sharedRead: c.data?.sharedRead ?? [],
@@ -119,11 +120,11 @@ function hasDataGrant(d: Draft): boolean {
 /** Build the wire Capabilities from the editor draft, omitting empty blocks. */
 function fromDraft(d: Draft): Capabilities {
   return {
-    ...(d.models.length || d.tokensPerDay !== undefined
+    ...(d.models.length || d.dollarsPerDay !== undefined
       ? {
           llm: {
             models: d.models,
-            ...(d.tokensPerDay !== undefined ? { tokensPerDay: d.tokensPerDay } : {}),
+            ...(d.dollarsPerDay !== undefined ? { dollarsPerDay: d.dollarsPerDay } : {}),
           },
         }
       : {}),
@@ -162,11 +163,10 @@ function renderYaml(app: App, d: Draft): string {
     `visibility: ${app.visibility.mode}${app.visibility.mode === "group" ? `:${app.visibility.groupId}` : ""}`,
     `capabilities:`,
   ];
-  if (d.models.length || d.tokensPerDay !== undefined) {
+  if (d.models.length || d.dollarsPerDay !== undefined) {
     lines.push(`  llm:`);
     lines.push(`    models: [${d.models.join(", ")}]`);
-    if (d.tokensPerDay !== undefined)
-      lines.push(`    tokens_per_day: ${d.tokensPerDay.toLocaleString()}`);
+    if (d.dollarsPerDay !== undefined) lines.push(`    dollars_per_day: ${d.dollarsPerDay}`);
   }
   if (hasDataGrant(d)) {
     lines.push(`  data:`);
@@ -272,33 +272,40 @@ export function CapabilitiesTab({ app }: { app: App }) {
               />
               <Box mt={14}>
                 <Switch
-                  checked={draft.tokensPerDay !== undefined}
+                  checked={draft.dollarsPerDay !== undefined}
                   onChange={(e) =>
-                    patch({ tokensPerDay: e.currentTarget.checked ? 1_000_000 : undefined })
+                    patch({ dollarsPerDay: e.currentTarget.checked ? 5 : undefined })
                   }
-                  label="Daily token cap"
-                  description="Off = no per-day budget (gateway still meters every call)."
+                  label="Daily spend cap (USD)"
+                  description="A dollar cap means the same across models. Off = no per-day budget (gateway still meters every call). Enforced as a daily total plus a rolling-hour burst sub-cap."
                 />
-                {draft.tokensPerDay !== undefined && (
-                  <Group gap={12} mt={10} align="center">
-                    <NumberInput
-                      value={draft.tokensPerDay}
-                      onChange={(v) =>
-                        patch({ tokensPerDay: typeof v === "number" ? v : Number(v) || 0 })
-                      }
-                      min={1}
-                      step={100_000}
-                      thousandSeparator=","
-                      w={180}
-                      classNames={{ input: "az-mono" }}
+                {draft.dollarsPerDay !== undefined && (
+                  <Stack gap={10} mt={10}>
+                    <Group gap={12} align="center">
+                      <NumberInput
+                        value={draft.dollarsPerDay}
+                        onChange={(v) =>
+                          patch({ dollarsPerDay: typeof v === "number" ? v : Number(v) || 0 })
+                        }
+                        min={0.01}
+                        step={1}
+                        decimalScale={2}
+                        prefix="$"
+                        w={180}
+                        classNames={{ input: "az-mono" }}
+                      />
+                      <Text className="az-mono" c="dark.2" fz={12.5}>
+                        = {fmtUsd(draft.dollarsPerDay)} / day
+                      </Text>
+                      <ToneBadge tone="violet" icon="shield">
+                        large budgets need admin approval (v1)
+                      </ToneBadge>
+                    </Group>
+                    <DollarToTokensTable
+                      models={draft.models}
+                      dollarsPerDay={draft.dollarsPerDay}
                     />
-                    <Text className="az-mono" c="dark.2" fz={12.5}>
-                      = {fmtCount(draft.tokensPerDay)} / day
-                    </Text>
-                    <ToneBadge tone="violet" icon="shield">
-                      large budgets need admin approval (v1)
-                    </ToneBadge>
-                  </Group>
+                  </Stack>
                 )}
               </Box>
             </CapBlock>

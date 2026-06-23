@@ -68,9 +68,10 @@ export function UsageTab({ app }: { app: App }) {
   const errPct = Math.round(u.errorRate * 1000) / 10;
   const grain = range === "24h" ? "hour" : "day";
 
-  // Daily-cap gauge is today-scoped (the budget the edge enforces is per day).
-  const budget = manifest.data?.capabilities.llm?.tokensPerDay;
-  const capPct = budget ? Math.round((u.today.tokens / budget) * 100) : null;
+  // Daily-cap gauge is today-scoped (the budget the edge enforces is per day),
+  // denominated in USD off the frozen per-call cost — same number the gate uses.
+  const budget = manifest.data?.capabilities.llm?.dollarsPerDay;
+  const capPct = budget ? Math.round((u.today.costUsd / budget) * 100) : null;
 
   return (
     <Stack gap={18} className="az-stagger">
@@ -116,13 +117,13 @@ export function UsageTab({ app }: { app: App }) {
       {budget && (
         <Card>
           <Group justify="space-between" mb={10}>
-            <Eyebrow>Daily token budget · today</Eyebrow>
+            <Eyebrow>Daily spend budget · today</Eyebrow>
             <Text
               className="az-mono az-tnum"
               fz={12.5}
               c={capPct! > 78 ? "var(--az-warn)" : "dark.1"}
             >
-              {fmtCount(u.today.tokens)} / {fmtCount(budget)} ({capPct}%)
+              {fmtUsd(u.today.costUsd)} / {fmtUsd(budget)} ({capPct}%)
             </Text>
           </Group>
           <Meter pct={capPct ?? 0} />

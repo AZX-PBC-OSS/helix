@@ -1,5 +1,16 @@
 import { useState } from "react";
-import { Button, Card, Center, Grid, Group, Loader, SimpleGrid, Stack, Text } from "@mantine/core";
+import {
+  Box,
+  Button,
+  Card,
+  Center,
+  Grid,
+  Group,
+  Loader,
+  SimpleGrid,
+  Stack,
+  Text,
+} from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { PLATFORM_RANGES, type PlatformRange, type UsageSeriesPoint } from "@helix/shared";
 import { appsQuery, platformUsageQuery } from "../../api/queries";
@@ -13,6 +24,16 @@ import {
 } from "../../components/usageCharts";
 import { Eyebrow, Hint, PageHead, Stat, ToneBadge } from "../../components/primitives";
 import { fmtCount, fmtUsd } from "../../lib/format";
+
+/**
+ * Month-to-date platform spend ceiling (USD), for the display-only budget alert.
+ * Configured per-deploy; the platform rollup is exact (gateway is the choke
+ * point), so this is a watch line, not an enforced kill-switch. `0`/unset ⇒ no
+ * ceiling shown.
+ */
+const PLATFORM_MONTHLY_USD_CAP = Number(
+  (import.meta.env.VITE_PLATFORM_MONTHLY_USD_CAP as string | undefined) ?? 1000,
+);
 
 /** Distinct colors for the capability-mix donut, cycled by index. */
 const CAP_COLORS = [
@@ -92,6 +113,13 @@ export function PlatformPage() {
   const mixTotal = p?.capabilityMix.reduce((s, c) => s + c.tokens, 0) ?? 0;
   const metricSeries = p?.series.map((pt) => metricValue(pt, metric)) ?? [];
 
+  // Display-only spend-ceiling watch: MTD spend vs the configured platform cap.
+  const costMTD = p?.totals.costMTD ?? 0;
+  const capActive = PLATFORM_MONTHLY_USD_CAP > 0;
+  const capPct = capActive ? Math.round((costMTD / PLATFORM_MONTHLY_USD_CAP) * 100) : 0;
+  const capOver = capActive && costMTD >= PLATFORM_MONTHLY_USD_CAP;
+  const capNear = capActive && !capOver && capPct >= 80;
+
   return (
     <div className="az-stagger">
       {head}
@@ -110,14 +138,25 @@ export function PlatformPage() {
           <Stat
             icon="db"
             label="Spend MTD"
-            value={fmtUsd(p?.totals.costMTD ?? 0)}
-            sub="estimated"
+            value={fmtUsd(costMTD)}
+            sub={capActive ? `${capPct}% of ${fmtUsd(PLATFORM_MONTHLY_USD_CAP)} cap` : "estimated"}
+            tone={capOver ? "var(--az-bad)" : capNear ? "var(--az-warn)" : undefined}
           />
         </Card>
         <Card>
           <Stat icon="user" label="Active users" value={p?.totals.activeUsers ?? 0} />
         </Card>
       </SimpleGrid>
+
+      {(capOver || capNear) && (
+        <Box mb={18}>
+          <Hint icon="alert" tone={capOver ? "bad" : "warn"}>
+            {capOver
+              ? `Platform spend this month (${fmtUsd(costMTD)}) has reached the ${fmtUsd(PLATFORM_MONTHLY_USD_CAP)} ceiling. Per-app daily caps still apply — this is a platform-wide watch line, not an enforced cut-off.`
+              : `Platform spend this month (${fmtUsd(costMTD)}) is at ${capPct}% of the ${fmtUsd(PLATFORM_MONTHLY_USD_CAP)} ceiling.`}
+          </Hint>
+        </Box>
+      )}
 
       {platform.isPending ? (
         <Center py={60}>
