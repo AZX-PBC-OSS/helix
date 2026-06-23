@@ -14,6 +14,8 @@ import {
   SecretMetadataSchema,
   UsageSummarySchema,
   VersionSchema,
+  type PlatformRange,
+  type UsageRange,
 } from "@helix/shared";
 import { fetchJson } from "./client";
 
@@ -92,16 +94,16 @@ export const passwordCredentialQuery = (slug: string) =>
   });
 
 /**
- * Per-app gateway usage over a rolling day window. Bearer-gated server-side, so
- * callers should gate this on `authenticated` via the query's `enabled` option.
+ * Per-app gateway usage over a selectable rolling range. Bearer-gated
+ * server-side, so callers should gate this on `authenticated` via `enabled`.
  */
-export const usageQuery = (slug: string, windowDays = 1) =>
+export const usageQuery = (slug: string, range: UsageRange = "24h") =>
   queryOptions({
-    queryKey: ["apps", slug, "usage", windowDays],
+    queryKey: ["apps", slug, "usage", range],
     queryFn: () =>
       fetchJson(
         UsageSummarySchema,
-        `/api/v1/apps/${encodeURIComponent(slug)}/usage?window=${windowDays}`,
+        `/api/v1/apps/${encodeURIComponent(slug)}/usage?range=${range}`,
       ),
   });
 
@@ -128,10 +130,11 @@ export const cspViolationsQuery = queryOptions({
 });
 
 /** Platform-wide gateway rollup (admin Platform + workspace /usage). Bearer-gated. */
-export const platformUsageQuery = queryOptions({
-  queryKey: ["gateway", "usage"],
-  queryFn: () => fetchJson(PlatformUsageSchema, "/api/v1/gateway/usage"),
-});
+export const platformUsageQuery = (range: PlatformRange = "30d") =>
+  queryOptions({
+    queryKey: ["gateway", "usage", range],
+    queryFn: () => fetchJson(PlatformUsageSchema, `/api/v1/gateway/usage?range=${range}`),
+  });
 
 export const meQuery = queryOptions({
   queryKey: ["me"],

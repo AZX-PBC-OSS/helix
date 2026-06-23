@@ -161,7 +161,7 @@ describe("row mappers validate against the shared schema", () => {
   it("assembles a per-app UsageSummary, summing outcomes, cost, and the error rate", () => {
     const summary = toUsageSummary({
       appId: APP_ID,
-      windowDays: 1,
+      range: "24h",
       outcomes: [
         {
           outcome: "ok",
@@ -199,12 +199,31 @@ describe("row mappers validate against the shared schema", () => {
           cacheCreationInputTokens: 0,
         },
       ],
-      series: [{ bucket: NOW, tokens: 3000, requests: 10 }],
+      series: [
+        {
+          bucket: NOW,
+          model: "claude-opus-4-8",
+          inputTokens: 1000n,
+          outputTokens: 2000n,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          requests: 10,
+        },
+      ],
+      today: [
+        {
+          model: "claude-opus-4-8",
+          inputTokens: 1000n,
+          outputTokens: 2000n,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+      ],
       latencyP95: 1500,
     });
     expect(summary).toMatchObject({
       appId: APP_ID,
-      windowDays: 1,
+      range: "24h",
       requests: 10,
       inputTokens: 1000,
       outputTokens: 2000,
@@ -214,24 +233,29 @@ describe("row mappers validate against the shared schema", () => {
       errorRate: 0.2,
       byOutcome: { ok: 8, error: 1, quota_blocked: 1 },
       series: [{ bucket: NOW.toISOString(), tokens: 3000, requests: 10 }],
+      today: { tokens: 3000 },
     });
     expect(summary.costUsd).toBeCloseTo(EXPECTED_COST, 9);
     expect(summary.byModel[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
+    expect(summary.series[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
+    expect(summary.today.costUsd).toBeCloseTo(EXPECTED_COST, 9);
   });
 
   it("reports a zero error rate and null p95 for an empty window", () => {
     const summary = toUsageSummary({
       appId: APP_ID,
-      windowDays: 7,
+      range: "7d",
       outcomes: [],
       models: [],
       series: [],
+      today: [],
       latencyP95: null,
     });
     expect(summary.requests).toBe(0);
     expect(summary.errorRate).toBe(0);
     expect(summary.costUsd).toBe(0);
     expect(summary.latencyP95Ms).toBeNull();
+    expect(summary.today).toEqual({ tokens: 0, costUsd: 0 });
   });
 
   it("maps a joined gateway_calls row to a wire GatewayCall with cost + telemetry", () => {
@@ -296,7 +320,8 @@ describe("row mappers validate against the shared schema", () => {
   it("assembles the platform-wide PlatformUsage rollup, collapsing model rows", () => {
     const DAY2 = new Date(NOW.getTime() - 86_400_000);
     const platform = toPlatformUsage({
-      daily: [
+      range: "30d",
+      series: [
         {
           bucket: DAY2,
           model: "claude-opus-4-8",
@@ -349,10 +374,11 @@ describe("row mappers validate against the shared schema", () => {
         },
       ],
     });
-    expect(platform.tokens14d).toEqual([3000, 0]);
-    expect(platform.requests14d).toEqual([2, 0]);
-    expect(platform.cost14d[0]).toBeCloseTo(EXPECTED_COST, 9);
-    expect(platform.cost14d[1]).toBe(0);
+    expect(platform.range).toBe("30d");
+    expect(platform.series.map((s) => s.tokens)).toEqual([3000, 0]);
+    expect(platform.series.map((s) => s.requests)).toEqual([2, 0]);
+    expect(platform.series[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
+    expect(platform.series[1]?.costUsd).toBe(0);
     expect(platform.byApp).toMatchObject([{ slug: "cost-explorer", tokens: 3000, requests: 2 }]);
     expect(platform.byApp[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
     expect(platform.totals).toMatchObject({ tokensMTD: 3000, requestsMTD: 2, activeUsers: 1 });

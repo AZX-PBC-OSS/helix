@@ -1,4 +1,5 @@
 import "@mantine/core/styles.css";
+import "@mantine/charts/styles.css";
 import "@mantine/dropzone/styles.css";
 import "@fontsource-variable/space-grotesk/index.css";
 import "@fontsource-variable/hanken-grotesk/index.css";

@@ -15,7 +15,10 @@ import {
   type Capabilities,
   type CspViolation,
   type GatewayCall,
+  type PlatformRange,
   type PlatformUsage,
+  type UsageRange,
+  type UsageSeriesPoint,
   type UsageSummary,
   type Version,
   type Visibility,
@@ -186,20 +189,17 @@ export interface UsageModelRow {
   cacheReadInputTokens: SqlNum;
   cacheCreationInputTokens: SqlNum;
 }
-export interface UsageSeriesRow {
-  bucket: Date | string;
-  tokens: SqlNum;
-  requests: SqlNum;
-}
-
 /** Assemble a per-app {@link UsageSummary} from the aggregate queries. */
 export function toUsageSummary(input: {
   appId: string;
-  windowDays: number;
+  range: UsageRange;
   outcomes: UsageOutcomeRow[];
   models: UsageModelRow[];
-  series: UsageSeriesRow[];
-  /** 95th-percentile durationMs over the window; null when no timed calls. */
+  /** (bucket, model) rows over the range — dense via generate_series. */
+  series: SeriesModelRow[];
+  /** Today-since-midnight (bucket, model) rows for the daily-cap gauge. */
+  today: ModelTokenRow[];
+  /** 95th-percentile durationMs over the range; null when no timed calls. */
   latencyP95: SqlNum;
 }): UsageSummary {
   let requests = 0;
@@ -233,7 +233,7 @@ export function toUsageSummary(input: {
   }));
   return UsageSummarySchema.parse({
     appId: input.appId,
-    windowDays: input.windowDays,
+    range: input.range,
     requests,
     inputTokens,
     outputTokens,
@@ -244,11 +244,11 @@ export function toUsageSummary(input: {
     errorRate: requests === 0 ? 0 : (requests - okRequests) / requests,
     byOutcome,
     byModel,
-    series: input.series.map((s) => ({
-      bucket: iso(s.bucket),
-      tokens: num(s.tokens),
-      requests: num(s.requests),
-    })),
+    series: collapseSeries(input.series),
+    today: {
+      tokens: input.today.reduce((s, r) => s + rowTokens(r), 0),
+      costUsd: input.today.reduce((s, r) => s + rowCost(r), 0),
+    },
   });
 }
 
@@ -308,7 +308,7 @@ export function toGatewayCall(row: GatewayCallRow): GatewayCall {
  * Class-bearing aggregate row. Dollars vary by model, so the platform rollups
  * group by model and we sum {@link costUsd} per row in the reducers below.
  */
-interface ModelTokenRow {
+export interface ModelTokenRow {
   model: string | null;
   inputTokens: SqlNum;
   outputTokens: SqlNum;
@@ -331,7 +331,8 @@ function rowTokens(r: ModelTokenRow): number {
   return num(r.inputTokens) + num(r.outputTokens);
 }
 
-export interface PlatformSeriesRow extends ModelTokenRow {
+/** A dense (bucket, model) aggregate row from a generate_series trend query. */
+export interface SeriesModelRow extends ModelTokenRow {
   bucket: Date | string;
   requests: SqlNum;
 }
@@ -345,31 +346,41 @@ export interface PlatformCapabilityRow extends ModelTokenRow {
 }
 export type PlatformTotalsModelRow = ModelTokenRow;
 
-/** Assemble the platform-wide {@link PlatformUsage} rollup from model-grouped rows. */
-export function toPlatformUsage(input: {
-  daily: PlatformSeriesRow[];
-  byApp: PlatformAppRow[];
-  totals: { tokens: SqlNum; requests: SqlNum; activeUsers: SqlNum };
-  totalsByModel: PlatformTotalsModelRow[];
-  capabilityMix: PlatformCapabilityRow[];
-}): PlatformUsage {
-  // Daily series: collapse (day, model) rows back to one bucket per day,
-  // preserving the oldest-first order the generate_series query emits.
-  const dayOrder: string[] = [];
-  const byDay = new Map<string, { tokens: number; requests: number; cost: number }>();
-  for (const r of input.daily) {
+/**
+ * Collapse (bucket, model) rows back to one priced {@link UsageSeriesPoint} per
+ * bucket, preserving the oldest-first order the generate_series query emits.
+ * Shared by the per-app and platform trends.
+ */
+function collapseSeries(rows: SeriesModelRow[]): UsageSeriesPoint[] {
+  const order: string[] = [];
+  const byBucket = new Map<string, { tokens: number; requests: number; cost: number }>();
+  for (const r of rows) {
     const key = iso(r.bucket);
-    let acc = byDay.get(key);
+    let acc = byBucket.get(key);
     if (!acc) {
       acc = { tokens: 0, requests: 0, cost: 0 };
-      byDay.set(key, acc);
-      dayOrder.push(key);
+      byBucket.set(key, acc);
+      order.push(key);
     }
     acc.tokens += rowTokens(r);
     acc.requests += num(r.requests);
     acc.cost += rowCost(r);
   }
+  return order.map((k) => {
+    const a = byBucket.get(k)!;
+    return { bucket: k, tokens: a.tokens, requests: a.requests, costUsd: a.cost };
+  });
+}
 
+/** Assemble the platform-wide {@link PlatformUsage} rollup from model-grouped rows. */
+export function toPlatformUsage(input: {
+  range: PlatformRange;
+  series: SeriesModelRow[];
+  byApp: PlatformAppRow[];
+  totals: { tokens: SqlNum; requests: SqlNum; activeUsers: SqlNum };
+  totalsByModel: PlatformTotalsModelRow[];
+  capabilityMix: PlatformCapabilityRow[];
+}): PlatformUsage {
   // Per-app rollup: collapse (appId, model) rows by appId, then sort busiest-first.
   const byAppId = new Map<
     string,
@@ -405,9 +416,8 @@ export function toPlatformUsage(input: {
     .sort((a, b) => b.tokens - a.tokens);
 
   return PlatformUsageSchema.parse({
-    tokens14d: dayOrder.map((k) => byDay.get(k)?.tokens ?? 0),
-    requests14d: dayOrder.map((k) => byDay.get(k)?.requests ?? 0),
-    cost14d: dayOrder.map((k) => byDay.get(k)?.cost ?? 0),
+    range: input.range,
+    series: collapseSeries(input.series),
     byApp,
     totals: {
       tokensMTD: num(input.totals.tokens),

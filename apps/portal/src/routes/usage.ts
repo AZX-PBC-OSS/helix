@@ -1,19 +1,26 @@
 import type { FastifyInstance } from "fastify";
-import { GatewayAuditPageSchema } from "@helix/shared";
+import {
+  GatewayAuditPageSchema,
+  PLATFORM_RANGES,
+  USAGE_RANGES,
+  type PlatformRange,
+  type UsageRange,
+} from "@helix/shared";
 import { authenticate } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
+import { Prisma } from "../db/client.js";
 import {
   toGatewayCall,
   toPlatformUsage,
   toUsageSummary,
   type GatewayCallRow,
+  type ModelTokenRow,
   type PlatformAppRow,
   type PlatformCapabilityRow,
-  type PlatformSeriesRow,
   type PlatformTotalsModelRow,
+  type SeriesModelRow,
   type UsageModelRow,
   type UsageOutcomeRow,
-  type UsageSeriesRow,
 } from "../db/mappers.js";
 
 /**
@@ -23,47 +30,84 @@ import {
  * audit data is "who called what, on whose behalf" (per-app RBAC is a v1
  * feature; for now any authenticated portal principal may read).
  *
- * Day boundaries use `date_trunc('day', now())` to match the edge's per-app
- * quota window (apps/edge/src/gateway/usage.ts), so "today" lines up.
+ * Trends use a selectable rolling `range`: a `generate_series` grid (hourly for
+ * `24h`, daily otherwise) left-joined to the ledger so buckets are dense and
+ * zero-filled, grouped by model so each bucket can be priced (rates differ per
+ * model). The per-app daily-cap gauge stays calendar-day scoped (`today`).
  */
 
-/** Clamp a `?window=`/`?days=` query value to a sane positive integer. */
-function clampWindow(raw: unknown, fallback: number, max: number): number {
+/** Clamp a `?limit=` query value to a sane positive integer. */
+function clampLimit(raw: unknown, fallback: number, max: number): number {
   const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
   if (!Number.isFinite(n) || n < 1) return fallback;
   return Math.min(Math.trunc(n), max);
 }
 
+interface RangePlan {
+  grain: "hour" | "day";
+  stepDays: number;
+  stepHours: number;
+  offsetDays: number;
+  offsetHours: number;
+}
+
+/** Per-app ranges: 24 hourly buckets, or 7/30 daily. */
+const PER_APP_PLANS: Record<UsageRange, RangePlan> = {
+  "24h": { grain: "hour", stepDays: 0, stepHours: 1, offsetDays: 0, offsetHours: 23 },
+  "7d": { grain: "day", stepDays: 1, stepHours: 0, offsetDays: 6, offsetHours: 0 },
+  "30d": { grain: "day", stepDays: 1, stepHours: 0, offsetDays: 29, offsetHours: 0 },
+};
+
+/** Platform ranges: daily buckets over 7/30/90 days. */
+const PLATFORM_PLANS: Record<PlatformRange, RangePlan> = {
+  "7d": { grain: "day", stepDays: 1, stepHours: 0, offsetDays: 6, offsetHours: 0 },
+  "30d": { grain: "day", stepDays: 1, stepHours: 0, offsetDays: 29, offsetHours: 0 },
+  "90d": { grain: "day", stepDays: 1, stepHours: 0, offsetDays: 89, offsetHours: 0 },
+};
+
+/** Start of the oldest bucket — both the series floor and the totals window. */
+function windowStart(p: RangePlan): Prisma.Sql {
+  return Prisma.sql`date_trunc(${p.grain}::text, now()) - make_interval(days => ${p.offsetDays}, hours => ${p.offsetHours})`;
+}
+
+/** The dense bucket grid (oldest-first), all in the DB session timezone. */
+function seriesGrid(p: RangePlan): Prisma.Sql {
+  return Prisma.sql`generate_series(${windowStart(p)}, date_trunc(${p.grain}::text, now()), make_interval(days => ${p.stepDays}, hours => ${p.stepHours}))`;
+}
+
+function pickRange<T extends string>(raw: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof raw === "string" && (allowed as readonly string[]).includes(raw)
+    ? (raw as T)
+    : fallback;
+}
+
 export async function usageRoutes(app: FastifyInstance): Promise<void> {
-  // Per-app usage summary over a rolling day window. Bearer-gated read.
-  app.get<{ Params: { slug: string }; Querystring: { window?: string } }>(
+  // Per-app usage summary over a selectable rolling range. Bearer-gated read.
+  app.get<{ Params: { slug: string }; Querystring: { range?: string } }>(
     "/api/v1/apps/:slug/usage",
     { preHandler: authenticate },
     async (req) => {
-      const windowDays = clampWindow(req.query.window, 1, 90);
+      const range = pickRange(req.query.range, USAGE_RANGES, "24h");
+      const plan = PER_APP_PLANS[range];
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      // Window start: midnight `windowDays - 1` days ago, so window=1 is "today
-      // since midnight" — the same boundary the edge enforces the budget on.
-      const offset = windowDays - 1;
+      const id = row.id;
+      const since = windowStart(plan);
 
-      const outcomes = await app.prisma.$queryRaw<UsageOutcomeRow[]>`
+      const outcomes = await app.prisma.$queryRaw<UsageOutcomeRow[]>(Prisma.sql`
         SELECT outcome,
-               COUNT(*)::int                              AS requests,
-               COALESCE(SUM("inputTokens"), 0)::bigint    AS "inputTokens",
-               COALESCE(SUM("outputTokens"), 0)::bigint   AS "outputTokens",
+               COUNT(*)::int                                       AS requests,
+               COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
+               COALESCE(SUM("outputTokens"), 0)::bigint            AS "outputTokens",
                COALESCE(SUM("cacheReadInputTokens"), 0)::bigint     AS "cacheReadInputTokens",
                COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint AS "cacheCreationInputTokens"
         FROM gateway_calls
-        WHERE "appId" = ${row.id}::uuid
-          AND "createdAt" >= date_trunc('day', now()) - make_interval(days => ${offset})
-        GROUP BY outcome`;
+        WHERE "appId" = ${id}::uuid AND "createdAt" >= ${since}
+        GROUP BY outcome`);
 
-      // Per-model split carries the token classes so dollars can be priced per
-      // model (rates differ per model; cache read/write differ within a model).
-      const models = await app.prisma.$queryRaw<UsageModelRow[]>`
+      const models = await app.prisma.$queryRaw<UsageModelRow[]>(Prisma.sql`
         SELECT model,
                COUNT(*)::int                                       AS requests,
                COALESCE(SUM("inputTokens" + "outputTokens"), 0)::bigint AS tokens,
@@ -72,35 +116,49 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM("cacheReadInputTokens"), 0)::bigint     AS "cacheReadInputTokens",
                COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint AS "cacheCreationInputTokens"
         FROM gateway_calls
-        WHERE "appId" = ${row.id}::uuid
-          AND "createdAt" >= date_trunc('day', now()) - make_interval(days => ${offset})
+        WHERE "appId" = ${id}::uuid AND "createdAt" >= ${since}
         GROUP BY model
-        ORDER BY tokens DESC`;
+        ORDER BY tokens DESC`);
 
-      // p95 upstream latency over the window (only timed calls — durationMs > 0).
-      const latency = await app.prisma.$queryRaw<Array<{ p95: number | null }>>`
+      // p95 upstream latency over the range (only timed calls — durationMs > 0).
+      const latency = await app.prisma.$queryRaw<Array<{ p95: number | null }>>(Prisma.sql`
         SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY "durationMs")::float AS p95
         FROM gateway_calls
-        WHERE "appId" = ${row.id}::uuid
-          AND "durationMs" > 0
-          AND "createdAt" >= date_trunc('day', now()) - make_interval(days => ${offset})`;
+        WHERE "appId" = ${id}::uuid AND "durationMs" > 0 AND "createdAt" >= ${since}`);
 
-      const series = await app.prisma.$queryRaw<UsageSeriesRow[]>`
-        SELECT date_trunc('hour', "createdAt")                     AS bucket,
-               COALESCE(SUM("inputTokens" + "outputTokens"), 0)::bigint AS tokens,
-               COUNT(*)::int                                       AS requests
+      const series = await app.prisma.$queryRaw<SeriesModelRow[]>(Prisma.sql`
+        SELECT d                                                            AS bucket,
+               gc.model                                                     AS model,
+               COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
+               COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
+               COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
+               COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
+               COUNT(gc.id)::int                                            AS requests
+        FROM ${seriesGrid(plan)} AS d
+        LEFT JOIN gateway_calls gc
+          ON date_trunc(${plan.grain}::text, gc."createdAt") = d
+         AND gc."appId" = ${id}::uuid
+        GROUP BY d, gc.model
+        ORDER BY d ASC`);
+
+      // Today-since-midnight, by model — backs the daily-cap gauge (calendar-day).
+      const today = await app.prisma.$queryRaw<ModelTokenRow[]>(Prisma.sql`
+        SELECT model,
+               COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
+               COALESCE(SUM("outputTokens"), 0)::bigint            AS "outputTokens",
+               COALESCE(SUM("cacheReadInputTokens"), 0)::bigint     AS "cacheReadInputTokens",
+               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint AS "cacheCreationInputTokens"
         FROM gateway_calls
-        WHERE "appId" = ${row.id}::uuid
-          AND "createdAt" >= date_trunc('day', now()) - make_interval(days => ${offset})
-        GROUP BY bucket
-        ORDER BY bucket ASC`;
+        WHERE "appId" = ${id}::uuid AND "createdAt" >= date_trunc('day', now())
+        GROUP BY model`);
 
       return toUsageSummary({
-        appId: row.id,
-        windowDays,
+        appId: id,
+        range,
         outcomes,
         models,
         series,
+        today,
         latencyP95: latency[0]?.p95 ?? null,
       });
     },
@@ -111,7 +169,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
   app.get<{
     Querystring: { app?: string; outcome?: string; limit?: string; before?: string };
   }>("/api/v1/gateway/audit", { preHandler: authenticate }, async (req) => {
-    const limit = clampWindow(req.query.limit, 50, 200);
+    const limit = clampLimit(req.query.limit, 50, 200);
 
     // Resolve an optional slug filter to its appId (the ledger keys on appId).
     let appId: string | undefined;
@@ -178,18 +236,17 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // Platform-wide rollup: 14-day trend + month-to-date totals/breakdowns.
+  // Platform-wide rollup: a range-controlled trend + breakdowns, plus MTD KPIs.
   // Bearer-gated. Backs the admin Platform page and the workspace /usage page.
-  app.get<{ Querystring: { days?: string } }>(
+  app.get<{ Querystring: { range?: string } }>(
     "/api/v1/gateway/usage",
     { preHandler: authenticate },
     async (req) => {
-      const days = clampWindow(req.query.days, 14, 90);
+      const range = pickRange(req.query.range, PLATFORM_RANGES, "30d");
+      const plan = PLATFORM_PLANS[range];
+      const since = windowStart(plan);
 
-      // Dense daily series (zero-filled) via generate_series so the chart always
-      // has exactly `days` buckets oldest-first. Grouped by model too, so the
-      // mapper can price each day; it collapses the (day, model) rows per day.
-      const daily = await app.prisma.$queryRaw<PlatformSeriesRow[]>`
+      const series = await app.prisma.$queryRaw<SeriesModelRow[]>(Prisma.sql`
         SELECT d                                                            AS bucket,
                gc.model                                                     AS model,
                COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
@@ -197,16 +254,12 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
                COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
                COUNT(gc.id)::int                                            AS requests
-        FROM generate_series(
-               date_trunc('day', now()) - make_interval(days => ${days - 1}),
-               date_trunc('day', now()),
-               interval '1 day'
-             ) AS d
-        LEFT JOIN gateway_calls gc ON date_trunc('day', gc."createdAt") = d
+        FROM ${seriesGrid(plan)} AS d
+        LEFT JOIN gateway_calls gc ON date_trunc(${plan.grain}::text, gc."createdAt") = d
         GROUP BY d, gc.model
-        ORDER BY d ASC`;
+        ORDER BY d ASC`);
 
-      const byApp = await app.prisma.$queryRaw<PlatformAppRow[]>`
+      const byApp = await app.prisma.$queryRaw<PlatformAppRow[]>(Prisma.sql`
         SELECT gc."appId"                                                   AS "appId",
                a.slug                                                       AS slug,
                gc.model                                                     AS model,
@@ -217,9 +270,10 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COUNT(*)::int                                                AS requests
         FROM gateway_calls gc
         LEFT JOIN apps a ON a.id = gc."appId"
-        WHERE gc."createdAt" >= date_trunc('month', now())
-        GROUP BY gc."appId", a.slug, gc.model`;
+        WHERE gc."createdAt" >= ${since}
+        GROUP BY gc."appId", a.slug, gc.model`);
 
+      // MTD headline KPIs — independent of the selected range.
       const totalsRows = await app.prisma.$queryRaw<
         Array<{ tokens: bigint | number; requests: number; activeUsers: number }>
       >`
@@ -230,7 +284,6 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         WHERE "createdAt" >= date_trunc('month', now())`;
       const totals = totalsRows[0] ?? { tokens: 0, requests: 0, activeUsers: 0 };
 
-      // MTD tokens grouped by model — the basis for month-to-date spend.
       const totalsByModel = await app.prisma.$queryRaw<PlatformTotalsModelRow[]>`
         SELECT model,
                COALESCE(SUM("inputTokens"), 0)::bigint                AS "inputTokens",
@@ -241,7 +294,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         WHERE "createdAt" >= date_trunc('month', now())
         GROUP BY model`;
 
-      const capabilityMix = await app.prisma.$queryRaw<PlatformCapabilityRow[]>`
+      const capabilityMix = await app.prisma.$queryRaw<PlatformCapabilityRow[]>(Prisma.sql`
         SELECT capability,
                model,
                COALESCE(SUM("inputTokens"), 0)::bigint                AS "inputTokens",
@@ -249,10 +302,10 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM("cacheReadInputTokens"), 0)::bigint       AS "cacheReadInputTokens",
                COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint   AS "cacheCreationInputTokens"
         FROM gateway_calls
-        WHERE "createdAt" >= date_trunc('month', now())
-        GROUP BY capability, model`;
+        WHERE "createdAt" >= ${since}
+        GROUP BY capability, model`);
 
-      return toPlatformUsage({ daily, byApp, totals, totalsByModel, capabilityMix });
+      return toPlatformUsage({ range, series, byApp, totals, totalsByModel, capabilityMix });
     },
   );
 }

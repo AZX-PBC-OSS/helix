@@ -1,10 +1,18 @@
-import { Button, Card, Center, Grid, Group, Loader, SimpleGrid, Text } from "@mantine/core";
+import { useState } from "react";
+import { Button, Card, Center, Group, Loader, SimpleGrid, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
+import { PLATFORM_RANGES, type PlatformRange } from "@helix/shared";
 import { platformUsageQuery } from "../api/queries";
 import { useAuth } from "../auth/AuthProvider";
-import { Bars, Meter } from "../components/charts";
+import { Meter } from "../components/charts";
+import {
+  MetricToggle,
+  RangeControl,
+  UsageTrendChart,
+  type UsageMetric,
+} from "../components/usageCharts";
 import { Eyebrow, Hint, PageHead, Stat } from "../components/primitives";
-import { fmtCount } from "../lib/format";
+import { fmtCount, fmtUsd } from "../lib/format";
 
 /**
  * Workspace usage. There's no per-owner ownership model yet (v1 RBAC), so this
@@ -13,13 +21,15 @@ import { fmtCount } from "../lib/format";
  */
 export function UsagePage() {
   const { authenticated, login, loginAvailable } = useAuth();
-  const usage = useQuery({ ...platformUsageQuery, enabled: authenticated });
+  const [range, setRange] = useState<PlatformRange>("30d");
+  const [metric, setMetric] = useState<UsageMetric>("cost");
+  const usage = useQuery({ ...platformUsageQuery(range), enabled: authenticated });
 
   const head = (
     <PageHead
       eyebrow="Workspace"
       title="Usage"
-      sub="Aggregate gateway activity — requests and LLM tokens. Per-owner scoping lands with RBAC (v1); today this is the platform-wide rollup."
+      sub="Aggregate gateway activity — spend, tokens, and requests. Per-owner scoping lands with RBAC (v1); today this is the platform-wide rollup."
     />
   );
 
@@ -74,36 +84,32 @@ export function UsagePage() {
           <Stat icon="bolt" label="Requests MTD" value={fmtCount(p.totals.requestsMTD)} />
         </Card>
         <Card>
-          <Stat icon="cpu" label="LLM tokens MTD" value={fmtCount(p.totals.tokensMTD)} />
+          <Stat icon="cpu" label="Tokens MTD" value={fmtCount(p.totals.tokensMTD)} />
         </Card>
         <Card>
-          <Stat icon="db" label="Storage" value="—" sub="app + user scope (v1)" />
+          <Stat icon="db" label="Spend MTD" value={fmtUsd(p.totals.costMTD)} sub="estimated" />
         </Card>
         <Card>
           <Stat icon="user" label="Active users" value={p.totals.activeUsers} />
         </Card>
       </SimpleGrid>
 
-      <Grid gap={18} mb={18}>
-        <Grid.Col span={{ base: 12, md: 6 }}>
-          <Card>
-            <Eyebrow mb={14}>Requests · 14 days</Eyebrow>
-            <Bars data={p.requests14d} h={130} />
-          </Card>
-        </Grid.Col>
-        <Grid.Col span={{ base: 12, md: 6 }}>
-          <Card>
-            <Eyebrow mb={14}>LLM tokens · 14 days</Eyebrow>
-            <Bars data={p.tokens14d} h={130} color="var(--az-info)" />
-          </Card>
-        </Grid.Col>
-      </Grid>
+      <Card mb={18}>
+        <Group justify="space-between" mb={14}>
+          <Eyebrow>Usage trend</Eyebrow>
+          <Group gap={10}>
+            <MetricToggle value={metric} onChange={setMetric} />
+            <RangeControl value={range} onChange={setRange} options={PLATFORM_RANGES} />
+          </Group>
+        </Group>
+        <UsageTrendChart series={p.series} metric={metric} grain="day" h={240} />
+      </Card>
 
       <Card>
-        <Eyebrow mb={14}>By app · tokens month-to-date</Eyebrow>
+        <Eyebrow mb={14}>By app · spend over last {range}</Eyebrow>
         {p.byApp.length === 0 && (
           <Text c="dark.2" fz={13} py={8}>
-            No gateway traffic yet this month.
+            No gateway traffic in this window.
           </Text>
         )}
         {p.byApp.map((a) => (
@@ -114,8 +120,11 @@ export function UsagePage() {
             <div style={{ flex: 1 }}>
               <Meter pct={(a.tokens / maxAppTokens) * 100} tone="var(--az-info)" />
             </div>
-            <Text className="az-mono az-tnum" fz={12.5} w={80} ta="right" c="dark.1">
+            <Text className="az-mono az-tnum" fz={12.5} w={70} ta="right" c="dark.2">
               {fmtCount(a.tokens)}
+            </Text>
+            <Text className="az-mono az-tnum" fz={12.5} w={70} ta="right" c="dark.1">
+              {fmtUsd(a.costUsd)}
             </Text>
           </Group>
         ))}

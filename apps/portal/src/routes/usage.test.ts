@@ -63,7 +63,7 @@ describe("GET /api/v1/apps/:slug/usage", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("aggregates today's calls into a usage summary", async () => {
+  it("aggregates a range into a usage summary with a dense series", async () => {
     const { id, slug } = await seedApp([
       { inputTokens: 1000, outputTokens: 2000, outcome: "ok" },
       { inputTokens: 500, outputTokens: 500, outcome: "ok" },
@@ -71,13 +71,13 @@ describe("GET /api/v1/apps/:slug/usage", () => {
     ]);
     const res = await t.app.inject({
       method: "GET",
-      url: `/api/v1/apps/${slug}/usage?window=1`,
+      url: `/api/v1/apps/${slug}/usage?range=24h`,
       headers: authHeader(),
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.appId).toBe(id);
-    expect(body.windowDays).toBe(1);
+    expect(body.range).toBe("24h");
     expect(body.requests).toBe(3);
     expect(body.inputTokens).toBe(1500);
     expect(body.outputTokens).toBe(2500);
@@ -87,8 +87,13 @@ describe("GET /api/v1/apps/:slug/usage", () => {
     // 1500 in + 2500 out @ opus-4-8 ($5/$25 per MTok) = $0.07.
     expect(body.byModel[0].costUsd).toBeCloseTo(0.07, 9);
     expect(body.costUsd).toBeCloseTo(0.07, 9);
-    expect(body.cacheReadInputTokens).toBe(0);
-    expect(body.cacheCreationInputTokens).toBe(0);
+    // 24h → 24 dense hourly buckets; the seeded calls land in the latest one.
+    expect(body.series).toHaveLength(24);
+    const seriesCost = body.series.reduce((s: number, p: { costUsd: number }) => s + p.costUsd, 0);
+    expect(seriesCost).toBeCloseTo(0.07, 9);
+    // Today-since-midnight gauge reflects the same seeded calls.
+    expect(body.today.tokens).toBe(4000);
+    expect(body.today.costUsd).toBeCloseTo(0.07, 9);
     // No timed calls seeded → p95 is null.
     expect(body.latencyP95Ms).toBeNull();
   });
@@ -155,15 +160,15 @@ describe("GET /api/v1/gateway/usage (platform)", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.tokens14d).toHaveLength(14);
-    expect(body.requests14d).toHaveLength(14);
+    // Default platform range is 30d → 30 dense daily buckets.
+    expect(body.range).toBe("30d");
+    expect(body.series).toHaveLength(30);
     // Robust to other tests' data: just assert our app's own rollup entry.
     const mine = body.byApp.find((a: { slug: string | null }) => a.slug === slug);
     expect(mine).toMatchObject({ slug, tokens: 200, requests: 1 });
     expect(body.totals.tokensMTD).toBeGreaterThanOrEqual(200);
     // Dollars are surfaced platform-wide. opus-4-8: 100 in + 100 out = $0.003.
     const myCost = (100 * 5 + 100 * 25) / 1_000_000;
-    expect(body.cost14d).toHaveLength(14);
     expect(mine.costUsd).toBeCloseTo(myCost, 9);
     expect(body.totals.costMTD).toBeGreaterThanOrEqual(myCost - 1e-9);
   });

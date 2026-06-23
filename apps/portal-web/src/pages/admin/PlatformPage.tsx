@@ -1,8 +1,16 @@
+import { useState } from "react";
 import { Button, Card, Center, Grid, Group, Loader, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
+import { PLATFORM_RANGES, type PlatformRange, type UsageSeriesPoint } from "@helix/shared";
 import { appsQuery, platformUsageQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
-import { Bars, Donut, Meter } from "../../components/charts";
+import { Donut, Meter } from "../../components/charts";
+import {
+  MetricToggle,
+  RangeControl,
+  UsageTrendChart,
+  type UsageMetric,
+} from "../../components/usageCharts";
 import { Eyebrow, Hint, PageHead, Stat, ToneBadge } from "../../components/primitives";
 import { fmtCount, fmtUsd } from "../../lib/format";
 
@@ -14,6 +22,10 @@ const CAP_COLORS = [
   "var(--az-warn)",
   "var(--az-bad)",
 ];
+
+function metricValue(p: UsageSeriesPoint, metric: UsageMetric): number {
+  return metric === "cost" ? p.costUsd : metric === "tokens" ? p.tokens : p.requests;
+}
 
 /** Week-over-week % change from a daily series, or null if no prior baseline. */
 function wowDelta(series: number[]): number | null {
@@ -40,8 +52,10 @@ function DeltaBadge({ delta }: { delta: number | null }) {
 /** Platform-wide gateway rollup over real `gateway_calls` data (architecture §8). */
 export function PlatformPage() {
   const { authenticated, login, loginAvailable } = useAuth();
+  const [range, setRange] = useState<PlatformRange>("30d");
+  const [metric, setMetric] = useState<UsageMetric>("cost");
   const apps = useQuery(appsQuery);
-  const platform = useQuery({ ...platformUsageQuery, enabled: authenticated });
+  const platform = useQuery({ ...platformUsageQuery(range), enabled: authenticated });
 
   const total = apps.data?.length ?? 0;
   const live = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
@@ -76,6 +90,7 @@ export function PlatformPage() {
   const p = platform.data;
   const maxAppTokens = Math.max(...(p?.byApp.map((a) => a.tokens) ?? [0]), 1);
   const mixTotal = p?.capabilityMix.reduce((s, c) => s + c.tokens, 0) ?? 0;
+  const metricSeries = p?.series.map((pt) => metricValue(pt, metric)) ?? [];
 
   return (
     <div className="az-stagger">
@@ -114,43 +129,27 @@ export function PlatformPage() {
         </Hint>
       ) : !p ? null : (
         <>
-          <Grid gap={18} mb={18}>
-            <Grid.Col span={{ base: 12, md: 4 }}>
-              <Card>
-                <Group justify="space-between" mb={14}>
-                  <Eyebrow>LLM tokens · 14 days</Eyebrow>
-                  <DeltaBadge delta={wowDelta(p.tokens14d)} />
-                </Group>
-                <Bars data={p.tokens14d} h={150} color="var(--az-info)" />
-              </Card>
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, md: 4 }}>
-              <Card>
-                <Group justify="space-between" mb={14}>
-                  <Eyebrow>Spend · 14 days</Eyebrow>
-                  <DeltaBadge delta={wowDelta(p.cost14d)} />
-                </Group>
-                <Bars data={p.cost14d} h={150} color="var(--az-acc)" />
-              </Card>
-            </Grid.Col>
-            <Grid.Col span={{ base: 12, md: 4 }}>
-              <Card>
-                <Group justify="space-between" mb={14}>
-                  <Eyebrow>Gateway requests · 14 days</Eyebrow>
-                  <DeltaBadge delta={wowDelta(p.requests14d)} />
-                </Group>
-                <Bars data={p.requests14d} h={150} />
-              </Card>
-            </Grid.Col>
-          </Grid>
+          <Card mb={18}>
+            <Group justify="space-between" mb={14}>
+              <Group gap={12}>
+                <Eyebrow>Usage trend</Eyebrow>
+                <DeltaBadge delta={wowDelta(metricSeries)} />
+              </Group>
+              <Group gap={10}>
+                <MetricToggle value={metric} onChange={setMetric} />
+                <RangeControl value={range} onChange={setRange} options={PLATFORM_RANGES} />
+              </Group>
+            </Group>
+            <UsageTrendChart series={p.series} metric={metric} grain="day" h={240} />
+          </Card>
 
           <Grid gap={18}>
             <Grid.Col span={{ base: 12, md: 7 }}>
               <Card>
-                <Eyebrow mb={16}>Spend by app · month to date</Eyebrow>
+                <Eyebrow mb={16}>Spend by app · last {range}</Eyebrow>
                 {p.byApp.length === 0 && (
                   <Text c="dark.2" fz={13} py={8}>
-                    No gateway traffic yet this month.
+                    No gateway traffic in this window.
                   </Text>
                 )}
                 {p.byApp.map((a) => (
@@ -173,14 +172,14 @@ export function PlatformPage() {
             </Grid.Col>
             <Grid.Col span={{ base: 12, md: 5 }}>
               <Card>
-                <Eyebrow mb={16}>Capability mix · MTD</Eyebrow>
+                <Eyebrow mb={16}>Capability mix · last {range}</Eyebrow>
                 <Group justify="center" py={8} pb={18}>
                   <Donut
                     segments={p.capabilityMix.map(
                       (c, i) =>
                         [c.capability, c.tokens, CAP_COLORS[i % CAP_COLORS.length]!] as const,
                     )}
-                    centerTop={fmtCount(p.totals.tokensMTD)}
+                    centerTop={fmtCount(mixTotal)}
                     centerBottom="TOKENS"
                   />
                 </Group>

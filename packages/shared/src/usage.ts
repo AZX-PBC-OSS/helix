@@ -23,14 +23,42 @@ export const GatewayOutcomeSchema = z.enum(GATEWAY_OUTCOMES);
 export type GatewayOutcome = z.infer<typeof GatewayOutcomeSchema>;
 
 /**
- * Per-app usage summary over a rolling day window — backs the app-detail Usage
- * tab. Aggregated from `gateway_calls`; the day window matches the edge's
- * `date_trunc('day', now())` boundary so "today" lines up with the live quota.
+ * Selectable trend windows. Per-app charts allow short, fine-grained ranges
+ * (`24h` is hourly-bucketed); the platform rollup spans longer ranges. Both
+ * resolve to a rolling `now − range` window with dense, zero-filled buckets.
+ */
+export const USAGE_RANGES = ["24h", "7d", "30d"] as const;
+export const UsageRangeSchema = z.enum(USAGE_RANGES);
+export type UsageRange = z.infer<typeof UsageRangeSchema>;
+
+export const PLATFORM_RANGES = ["7d", "30d", "90d"] as const;
+export const PlatformRangeSchema = z.enum(PLATFORM_RANGES);
+export type PlatformRange = z.infer<typeof PlatformRangeSchema>;
+
+/**
+ * One dense time bucket on a trend series — the shared shape both the per-app
+ * and platform endpoints emit, so one chart component renders either. `bucket`
+ * is the bucket-start ISO timestamp; the grain (hour vs day) is implied by the
+ * range. Carries all three metrics so the UI can toggle without a refetch.
+ */
+export const UsageSeriesPointSchema = z.object({
+  bucket: z.iso.datetime(),
+  costUsd: z.number().nonnegative(),
+  tokens: z.int().nonnegative(),
+  requests: z.int().nonnegative(),
+});
+export type UsageSeriesPoint = z.infer<typeof UsageSeriesPointSchema>;
+
+/**
+ * Per-app usage summary over a selectable rolling range — backs the app-detail
+ * Usage tab. Aggregated from `gateway_calls`. Totals/series reflect the chosen
+ * `range`; the separate `today` block stays calendar-day scoped so the daily-cap
+ * gauge lines up with the edge's `date_trunc('day', now())` budget window.
  */
 export const UsageSummarySchema = z.object({
   appId: z.uuid(),
-  /** Window size in days (1 = today, 7 = last week, …). */
-  windowDays: z.int().positive(),
+  /** The rolling range these figures cover. */
+  range: UsageRangeSchema,
   requests: z.int().nonnegative(),
   inputTokens: z.int().nonnegative(),
   outputTokens: z.int().nonnegative(),
@@ -54,14 +82,16 @@ export const UsageSummarySchema = z.object({
       costUsd: z.number().nonnegative(),
     }),
   ),
-  /** Hourly buckets across the window, oldest-first, for the spark charts. */
-  series: z.array(
-    z.object({
-      bucket: z.iso.datetime(),
-      tokens: z.int().nonnegative(),
-      requests: z.int().nonnegative(),
-    }),
-  ),
+  /** Dense, zero-filled buckets across the range, oldest-first, for the trend chart. */
+  series: z.array(UsageSeriesPointSchema),
+  /**
+   * Today-since-midnight totals, independent of `range` — backs the daily-cap
+   * gauge (the budget the edge enforces is per calendar day).
+   */
+  today: z.object({
+    tokens: z.int().nonnegative(),
+    costUsd: z.number().nonnegative(),
+  }),
 });
 export type UsageSummary = z.infer<typeof UsageSummarySchema>;
 
@@ -107,25 +137,26 @@ export type GatewayAuditPage = z.infer<typeof GatewayAuditPageSchema>;
 
 /**
  * Platform-wide rollup over `gateway_calls` — backs the admin Platform page and
- * the workspace `/usage` page. Tokens, not cost.
+ * the workspace `/usage` page. The `totals` are month-to-date headline KPIs; the
+ * `series` and the `byApp`/`capabilityMix` breakdowns reflect the selected
+ * `range`, so the trend is explorable while the MTD numbers stay fixed.
  */
 export const PlatformUsageSchema = z.object({
-  /** Daily token totals, oldest-first (default 14 days). */
-  tokens14d: z.array(z.int().nonnegative()),
-  /** Daily request totals, oldest-first (default 14 days). */
-  requests14d: z.array(z.int().nonnegative()),
-  /** Daily spend in USD, oldest-first — parallel to `tokens14d`. */
-  cost14d: z.array(z.number().nonnegative()),
-  /** Per-app rollup over the same window, busiest-first. */
+  /** The rolling range the series + breakdowns cover. */
+  range: PlatformRangeSchema,
+  /** Dense, zero-filled daily buckets across the range, oldest-first. */
+  series: z.array(UsageSeriesPointSchema),
+  /** Per-app rollup over the range, busiest-first. */
   byApp: z.array(
     z.object({
       slug: z.string().nullable(),
       tokens: z.int().nonnegative(),
       requests: z.int().nonnegative(),
-      /** Estimated month-to-date spend in USD for this app. */
+      /** Estimated spend in USD for this app over the range. */
       costUsd: z.number().nonnegative(),
     }),
   ),
+  /** Month-to-date headline KPIs (independent of `range`). */
   totals: z.object({
     tokensMTD: z.int().nonnegative(),
     requestsMTD: z.int().nonnegative(),
@@ -134,12 +165,12 @@ export const PlatformUsageSchema = z.object({
     /** Distinct `userOid`s seen month-to-date. */
     activeUsers: z.int().nonnegative(),
   }),
-  /** Token + cost share by capability — derived from real rows (essentially all `llm` in M4). */
+  /** Token + cost share by capability over the range (essentially all `llm` in M4). */
   capabilityMix: z.array(
     z.object({
       capability: z.string(),
       tokens: z.int().nonnegative(),
-      /** Estimated month-to-date spend in USD for this capability. */
+      /** Estimated spend in USD for this capability over the range. */
       costUsd: z.number().nonnegative(),
     }),
   ),
