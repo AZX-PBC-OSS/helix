@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   LlmChatRequestSchema,
@@ -229,7 +230,14 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
         .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
     };
 
-    const events = rt.provider.stream(chat, { signal: abort.signal });
+    // Attribution for a routing provider's attested instruction (egress path);
+    // the direct provider ignores it. requestId correlates the egress call.
+    const events = rt.provider.stream(chat, {
+      signal: abort.signal,
+      appId: entry.appId,
+      userOid,
+      requestId: randomUUID(),
+    });
 
     if (chat.stream) {
       let started = false;

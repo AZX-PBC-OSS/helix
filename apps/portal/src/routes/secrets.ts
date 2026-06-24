@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import {
   InjectionRecipeSchema,
@@ -13,9 +14,12 @@ import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
 
 /**
- * Connection-secret CRUD (secrets design §5). Two families:
+ * Connection-secret CRUD (secrets design §5). Three families:
  *  - app-scoped (`/api/v1/apps/:slug/secrets`) — the app owner manages its own.
  *  - global (`/api/v1/secrets`) — admin-only; shared across apps via grants.
+ *  - platform (`/api/v1/secrets`, `scope:"platform"`) — admin-only platform vendor
+ *    credentials (the LLM key). No grants and no manifest binding: resolvable by
+ *    egress only on the `llm` capability path, never via an app's fetch binding.
  *
  * **Write-only / rotate-only**: the value crosses the API boundary only on
  * create/rotate, is sealed by the {@link SecretStore}, and is never returned —
@@ -23,6 +27,14 @@ import { isUniqueViolation } from "../db/errors.js";
  * Binding a secret to an app is a *manifest* change and rides the approval
  * write-gate (PUT /manifest); these routes manage the credential itself.
  */
+
+/** The two admin-managed (appId-less) scopes; `app` secrets use the owner routes. */
+const ADMIN_SCOPES = ["global", "platform"] as const;
+
+/** Admin create body: the shared create shape plus the target scope (default global). */
+const AdminSecretCreateSchema = SecretCreateRequestSchema.extend({
+  scope: z.enum(ADMIN_SCOPES).default("global"),
+});
 
 interface SecretRow {
   id: string;
@@ -161,14 +173,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ── Global secrets (admin) ────────────────────────────────────────────────
+  // ── Global + platform secrets (admin) ─────────────────────────────────────
 
   app.get("/api/v1/secrets", { preHandler: authenticate }, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.appSecret.findMany({
-      where: { scope: "global" },
+      where: { scope: { in: [...ADMIN_SCOPES] } },
       include: { grants: { include: { app: true } } },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ scope: "asc" }, { createdAt: "asc" }],
     });
     return rows.map((r) =>
       toMetadata(
@@ -180,17 +192,19 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/api/v1/secrets", { preHandler: authenticate }, async (req, reply) => {
     const actor = requireAdmin(req);
-    const body = SecretCreateRequestSchema.parse(req.body);
-    // Global-name uniqueness is enforced here (a partial unique index on
-    // scope='global' is not expressible in the Prisma schema).
+    const body = AdminSecretCreateSchema.parse(req.body);
+    // Name uniqueness within the scope is enforced here (a partial unique index
+    // on the appId-less scopes is not expressible in the Prisma schema).
     const existing = await app.prisma.appSecret.findFirst({
-      where: { scope: "global", name: body.name },
+      where: { scope: body.scope, name: body.name },
     });
-    if (existing) throw new AppError("conflict", `global secret "${body.name}" already exists`);
+    if (existing) {
+      throw new AppError("conflict", `${body.scope} secret "${body.name}" already exists`);
+    }
     const material = await store().seal(body.value);
     const row = await app.prisma.appSecret.create({
       data: {
-        scope: "global",
+        scope: body.scope,
         appId: null,
         name: body.name,
         material,
@@ -198,7 +212,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         createdBy: actor.sub,
       },
     });
-    await audit(null, actor.sub, "secret.created", { scope: "global", name: body.name });
+    await audit(null, actor.sub, "secret.created", { scope: body.scope, name: body.name });
     reply.status(201);
     return toMetadata(row);
   });
@@ -210,9 +224,9 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       const actor = requireAdmin(req);
       const { value } = SecretRotateRequestSchema.parse(req.body);
       const row = await app.prisma.appSecret.findFirst({
-        where: { id: req.params.id, scope: "global" },
+        where: { id: req.params.id, scope: { in: [...ADMIN_SCOPES] } },
       });
-      if (!row) throw new AppError("not_found", "global secret not found");
+      if (!row) throw new AppError("not_found", "secret not found");
       const material = await store().seal(value);
       const updated = await app.prisma.appSecret.update({
         where: { id: row.id },
@@ -221,7 +235,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       await store()
         .destroy(row.material)
         .catch(() => {});
-      await audit(null, actor.sub, "secret.rotated", { scope: "global", name: row.name });
+      await audit(null, actor.sub, "secret.rotated", { scope: row.scope, name: row.name });
       return toMetadata(updated);
     },
   );
@@ -232,14 +246,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const actor = requireAdmin(req);
       const row = await app.prisma.appSecret.findFirst({
-        where: { id: req.params.id, scope: "global" },
+        where: { id: req.params.id, scope: { in: [...ADMIN_SCOPES] } },
       });
-      if (!row) throw new AppError("not_found", "global secret not found");
+      if (!row) throw new AppError("not_found", "secret not found");
       await app.prisma.appSecret.delete({ where: { id: row.id } }); // cascades grants
       await store()
         .destroy(row.material)
         .catch(() => {});
-      await audit(null, actor.sub, "secret.deleted", { scope: "global", name: row.name });
+      await audit(null, actor.sub, "secret.deleted", { scope: row.scope, name: row.name });
       reply.status(204);
     },
   );

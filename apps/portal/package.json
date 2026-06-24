@@ -11,7 +11,8 @@
     "db:generate": "rm -rf src/db/generated && prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
-    "db:reset": "prisma migrate reset --force"
+    "db:reset": "prisma migrate reset --force",
+    "seed:llm": "tsx scripts/seed-platform-secret.ts"
   },
   "dependencies": {
     "@azure/storage-blob": "catalog:",

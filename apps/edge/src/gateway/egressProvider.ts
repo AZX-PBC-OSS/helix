@@ -17,8 +17,14 @@ export interface EgressRequest {
   method: string;
   /** Safelisted request headers to forward upstream. */
   headers: Record<string, string>;
-  /** Request body for non-GET/HEAD methods; null otherwise. */
-  body: Readable | null;
+  /**
+   * Request body for non-GET/HEAD methods; null otherwise. A `Readable` streams
+   * (the fetch-proxy forwards the app's `req.raw`); a `string`/`Buffer` is sent
+   * whole with a content-length (the LLM path sends a built JSON body — do NOT
+   * wrap it in `Readable.from(string)`, which yields chars in object mode and
+   * undici serializes as an empty body).
+   */
+  body: Readable | Buffer | string | null;
   signal: AbortSignal;
 }
 

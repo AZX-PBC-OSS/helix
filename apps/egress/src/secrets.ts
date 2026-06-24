@@ -1,5 +1,9 @@
 import { Pool } from "pg";
-import { type InjectionRecipe, InjectionRecipeSchema } from "@helix/shared";
+import {
+  type InjectionRecipe,
+  InjectionRecipeSchema,
+  type InstructionCapability,
+} from "@helix/shared";
 import type { SecretStore } from "@helix/secret-store";
 
 /**
@@ -8,9 +12,15 @@ import type { SecretStore } from "@helix/secret-store";
  * `helix_egress` role — the ONLY role with SELECT on `app_secrets.material`. The
  * policy edge cannot do this; that asymmetry is the boundary.
  *
- * Resolution order encodes the scope rule: an app-scoped secret owned by the
- * app, else a `global` secret the app holds a grant for. The grant re-check here
- * is belt-and-suspenders on top of the approval gate that authorized the binding.
+ * Resolution order encodes the scope rule, gated by the instruction capability:
+ *  - `fetch`: an app-scoped secret owned by the app, else a `global` secret the
+ *    app holds a grant for. The grant re-check here is belt-and-suspenders on top
+ *    of the approval gate that authorized the binding. A `fetch` instruction can
+ *    NEVER reach a `platform` secret — that's the control that stops an app from
+ *    injecting the platform vendor key via a manifest fetch binding.
+ *  - `llm`: a `platform`-scoped secret resolved by name (the LLM vendor key). The
+ *    edge sets this connection from config, not from the app's manifest, and only
+ *    after it has authorized the call (model allowlist + budget).
  */
 export interface ResolvedConnection {
   value: string;
@@ -18,7 +28,11 @@ export interface ResolvedConnection {
 }
 
 export interface SecretResolver {
-  resolve(appId: string, connection: string): Promise<ResolvedConnection | null>;
+  resolve(
+    appId: string,
+    connection: string,
+    capability: InstructionCapability,
+  ): Promise<ResolvedConnection | null>;
   close(): Promise<void>;
 }
 
@@ -31,25 +45,40 @@ export class PgSecretResolver implements SecretResolver {
     this.#store = store;
   }
 
-  async resolve(appId: string, connection: string): Promise<ResolvedConnection | null> {
-    // App-scoped first, then a granted global. Two narrow queries rather than an
-    // OR so the index on (appId, name) is used and the intent is explicit.
+  async resolve(
+    appId: string,
+    connection: string,
+    capability: InstructionCapability,
+  ): Promise<ResolvedConnection | null> {
     const row =
-      (
-        await this.#pool.query<{ id: string; material: string; injection: unknown }>(
-          `SELECT id, material, injection FROM app_secrets
-             WHERE scope = 'app' AND "appId" = $1 AND name = $2 LIMIT 1`,
-          [appId, connection],
-        )
-      ).rows[0] ??
-      (
-        await this.#pool.query<{ id: string; material: string; injection: unknown }>(
-          `SELECT s.id, s.material, s.injection FROM app_secrets s
-             JOIN app_secret_grants g ON g."secretId" = s.id AND g."appId" = $1
-            WHERE s.scope = 'global' AND s.name = $2 LIMIT 1`,
-          [appId, connection],
-        )
-      ).rows[0];
+      capability === "llm"
+        ? // `llm`: a platform vendor secret, by name only (no app/grant scoping).
+          // A platform secret is reachable from nowhere else — fetch never sees it.
+          (
+            await this.#pool.query<{ id: string; material: string; injection: unknown }>(
+              `SELECT id, material, injection FROM app_secrets
+                 WHERE scope = 'platform' AND name = $1 LIMIT 1`,
+              [connection],
+            )
+          ).rows[0]
+        : // `fetch`: app-scoped first, then a granted global. Two narrow queries
+          // rather than an OR so the index on (appId, name) is used and the
+          // intent is explicit.
+          ((
+            await this.#pool.query<{ id: string; material: string; injection: unknown }>(
+              `SELECT id, material, injection FROM app_secrets
+                 WHERE scope = 'app' AND "appId" = $1 AND name = $2 LIMIT 1`,
+              [appId, connection],
+            )
+          ).rows[0] ??
+          (
+            await this.#pool.query<{ id: string; material: string; injection: unknown }>(
+              `SELECT s.id, s.material, s.injection FROM app_secrets s
+                 JOIN app_secret_grants g ON g."secretId" = s.id AND g."appId" = $1
+                WHERE s.scope = 'global' AND s.name = $2 LIMIT 1`,
+              [appId, connection],
+            )
+          ).rows[0]);
 
     if (!row) return null;
 

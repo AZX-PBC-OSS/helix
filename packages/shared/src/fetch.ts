@@ -31,10 +31,15 @@ export const OUTCOME_HEADER = "x-helix-egress-outcome";
  * notably `cookie` and `authorization` (the app must not smuggle the session
  * cookie outbound nor override the injected credential) and hop-by-hop headers
  * (§6). Lowercase for case-insensitive comparison.
+ *
+ * `anthropic-version` is here for the `llm` capability: the edge sets it as a
+ * constant on the vendor call it routes through egress. It is a benign API
+ * version string — allowing an app to send it on a `fetch` call is meaningless.
  */
 export const REQUEST_HEADER_SAFELIST: readonly string[] = [
   "accept",
   "accept-language",
+  "anthropic-version",
   "content-type",
   "if-modified-since",
   "if-none-match",

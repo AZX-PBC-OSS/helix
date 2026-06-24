@@ -12,7 +12,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { INJECTION_KINDS, type InjectionRecipe } from "@helix/shared";
+import { INJECTION_KINDS, type InjectionRecipe, type SecretMetadata } from "@helix/shared";
 import { globalSecretsQuery } from "../../api/queries";
 import {
   useCreateGlobalSecret,
@@ -26,9 +26,13 @@ import { Icon } from "../../components/Icon";
 import { Eyebrow, Hint, PageHead, ToneBadge } from "../../components/primitives";
 
 /**
- * Global connection secrets (secrets design §5) — the admin-only half. Shared
- * across apps via grants; the app-scoped half lives on each app's Capabilities
- * tab. Write-only: a value is set/rotated, never shown again.
+ * Admin-managed connection secrets (secrets design §5). Two scopes here:
+ *  - **platform** — platform vendor credentials (the LLM key). Resolved by egress
+ *    only on the `llm` capability path; not grantable, not bindable from a
+ *    manifest, so there is no grant UI.
+ *  - **global** — shared across apps via grants.
+ * The app-scoped half lives on each app's Capabilities tab. All write-only: a
+ * value is set/rotated, never shown again.
  */
 
 function buildInjection(kind: string, headerName: string, queryParam: string): InjectionRecipe {
@@ -52,30 +56,47 @@ export function SecretsPage() {
   const grant = useGrantSecret();
   const revoke = useRevokeSecret();
 
+  const [scope, setScope] = useState<"global" | "platform">("global");
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [kind, setKind] = useState("header-bearer");
   const [headerName, setHeaderName] = useState("");
   const [queryParam, setQueryParam] = useState("");
-  const [rotating, setRotating] = useState<{ id: string; value: string } | null>(null);
-  const [granting, setGranting] = useState<{ id: string; slug: string } | null>(null);
 
   const nameValid = /^[a-z0-9][a-z0-9-]*$/.test(name);
   const err = create.error ?? rotate.error ?? del.error ?? grant.error ?? revoke.error;
+
+  // Switching to a platform secret pre-fills the vendor-key recipe (the LLM key
+  // is injected as `x-api-key`); switching back resets to the common case.
+  const onScopeChange = (next: "global" | "platform") => {
+    setScope(next);
+    if (next === "platform") {
+      setKind("header");
+      setHeaderName("x-api-key");
+    } else {
+      setKind("header-bearer");
+      setHeaderName("");
+    }
+  };
+
+  const platform = (secrets.data ?? []).filter((s) => s.scope === "platform");
+  const global = (secrets.data ?? []).filter((s) => s.scope === "global");
+
+  const cardMutations = { rotate, del, grant, revoke };
 
   return (
     <div className="az-stagger">
       <PageHead
         eyebrow="Admin"
         title="Secrets"
-        sub="Global connection secrets, shared to apps via grants. Write-only — values are never shown again."
+        sub="Platform vendor keys (e.g. the LLM key) and global connection secrets. Write-only — values are never shown again."
       />
 
       {!authenticated && (
         <Card py={48} style={{ textAlign: "center" }}>
           <Stack align="center" gap={10}>
             <Text c="dark.2" size="sm">
-              Sign in as a platform admin to manage global secrets.
+              Sign in as a platform admin to manage secrets.
             </Text>
             <Button
               onClick={login}
@@ -104,12 +125,23 @@ export function SecretsPage() {
         <Stack gap={18}>
           {/* Create */}
           <Card>
-            <Eyebrow mb={10}>Create a global secret</Eyebrow>
+            <Eyebrow mb={10}>Create a secret</Eyebrow>
             <Stack gap={10}>
               <Group gap={8} grow>
+                <Select
+                  label="Scope"
+                  data={[
+                    { value: "global", label: "Global (shared via grants)" },
+                    { value: "platform", label: "Platform (vendor key, e.g. LLM)" },
+                  ]}
+                  value={scope}
+                  onChange={(v) => onScopeChange((v as "global" | "platform") ?? "global")}
+                  size="xs"
+                  allowDeselect={false}
+                />
                 <TextInput
                   label="Name"
-                  placeholder="e.g. stripe-live"
+                  placeholder={scope === "platform" ? "e.g. anthropic" : "e.g. stripe-live"}
                   value={name}
                   onChange={(e) => setName(e.currentTarget.value)}
                   error={name.length > 0 && !nameValid ? "lowercase, digits, hyphens" : undefined}
@@ -125,6 +157,14 @@ export function SecretsPage() {
                   allowDeselect={false}
                 />
               </Group>
+              {scope === "platform" && (
+                <Hint icon="key" tone="neutral">
+                  The edge resolves this by name via{" "}
+                  <span className="az-mono">EDGE_LLM_ANTHROPIC_CONNECTION</span> (default{" "}
+                  <span className="az-mono">anthropic</span>) and routes the LLM call through egress
+                  — the edge never holds the key.
+                </Hint>
+              )}
               {kind === "header" && (
                 <TextInput
                   label="Header name"
@@ -158,14 +198,18 @@ export function SecretsPage() {
                   loading={create.isPending}
                   onClick={() =>
                     create.mutate(
-                      { name, value, injection: buildInjection(kind, headerName, queryParam) },
+                      {
+                        name,
+                        value,
+                        injection: buildInjection(kind, headerName, queryParam),
+                        scope,
+                      },
                       {
                         onSuccess: () => {
                           setName("");
                           setValue("");
-                          setHeaderName("");
                           setQueryParam("");
-                          setKind("header-bearer");
+                          onScopeChange(scope);
                         },
                       },
                     )
@@ -177,137 +221,27 @@ export function SecretsPage() {
             </Stack>
           </Card>
 
-          {secrets.data.length === 0 && (
+          {/* Platform vendor secrets — not grantable, resolved on the llm path. */}
+          <Eyebrow>Platform vendor keys</Eyebrow>
+          {platform.length === 0 && (
+            <Text size="sm" c="dark.2">
+              No platform secrets yet — create one (e.g. <span className="az-mono">anthropic</span>)
+              to back the LLM gateway.
+            </Text>
+          )}
+          {platform.map((s) => (
+            <SecretCard key={s.id} secret={s} allowGrant={false} {...cardMutations} />
+          ))}
+
+          {/* Global secrets — shared to apps via grants. */}
+          <Eyebrow>Global secrets</Eyebrow>
+          {global.length === 0 && (
             <Text size="sm" c="dark.2">
               No global secrets yet.
             </Text>
           )}
-
-          {secrets.data.map((s) => (
-            <Card key={s.id}>
-              <Group justify="space-between" wrap="nowrap" align="flex-start">
-                <div style={{ minWidth: 0 }}>
-                  <Group gap={8}>
-                    <Text className="az-mono" fz={14} fw={600}>
-                      {s.name}
-                    </Text>
-                    <ToneBadge tone="neutral" icon="key">
-                      {describeInjection(s.injection)}
-                    </ToneBadge>
-                  </Group>
-                  <Text size="xs" c="dark.2" mt={3}>
-                    {s.lastUsedAt
-                      ? `last used ${new Date(s.lastUsedAt).toLocaleString()}`
-                      : "never used"}{" "}
-                    · created by {s.createdBy}
-                  </Text>
-                  <Group gap={6} mt={8}>
-                    {s.boundApps.length === 0 && (
-                      <Text size="xs" c="dark.2">
-                        not granted to any app
-                      </Text>
-                    )}
-                    {s.boundApps.map((slug) => (
-                      <ToneBadge key={slug} tone="violet" icon="layers">
-                        {slug}
-                        <Button
-                          variant="transparent"
-                          size="compact-xs"
-                          c="red"
-                          px={4}
-                          loading={revoke.isPending}
-                          onClick={() => revoke.mutate({ id: s.id, appSlug: slug })}
-                          aria-label={`revoke ${slug}`}
-                        >
-                          ×
-                        </Button>
-                      </ToneBadge>
-                    ))}
-                  </Group>
-                </div>
-                <Group gap={6} wrap="nowrap">
-                  <Button
-                    variant="default"
-                    size="compact-xs"
-                    onClick={() =>
-                      setGranting((g) => (g?.id === s.id ? null : { id: s.id, slug: "" }))
-                    }
-                  >
-                    Grant
-                  </Button>
-                  <Button
-                    variant="default"
-                    size="compact-xs"
-                    onClick={() =>
-                      setRotating((r) => (r?.id === s.id ? null : { id: s.id, value: "" }))
-                    }
-                  >
-                    Rotate
-                  </Button>
-                  <Button
-                    variant="subtle"
-                    color="red"
-                    size="compact-xs"
-                    loading={del.isPending}
-                    onClick={() => del.mutate({ id: s.id })}
-                  >
-                    Delete
-                  </Button>
-                </Group>
-              </Group>
-
-              {granting?.id === s.id && (
-                <Group gap={8} mt={12} align="flex-end" wrap="nowrap">
-                  <TextInput
-                    label="Grant to app (slug)"
-                    placeholder="acme-dashboard"
-                    value={granting.slug}
-                    onChange={(e) => setGranting({ id: s.id, slug: e.currentTarget.value })}
-                    style={{ flex: 1 }}
-                    size="xs"
-                    classNames={{ input: "az-mono" }}
-                  />
-                  <Button
-                    size="xs"
-                    disabled={!granting.slug}
-                    loading={grant.isPending}
-                    onClick={() =>
-                      grant.mutate(
-                        { id: s.id, appSlug: granting.slug },
-                        { onSuccess: () => setGranting(null) },
-                      )
-                    }
-                  >
-                    Grant
-                  </Button>
-                </Group>
-              )}
-
-              {rotating?.id === s.id && (
-                <Group gap={8} mt={12} align="flex-end" wrap="nowrap">
-                  <PasswordInput
-                    label="New value"
-                    value={rotating.value}
-                    onChange={(e) => setRotating({ id: s.id, value: e.currentTarget.value })}
-                    style={{ flex: 1 }}
-                    size="xs"
-                  />
-                  <Button
-                    size="xs"
-                    disabled={!rotating.value}
-                    loading={rotate.isPending}
-                    onClick={() =>
-                      rotate.mutate(
-                        { id: s.id, value: rotating.value },
-                        { onSuccess: () => setRotating(null) },
-                      )
-                    }
-                  >
-                    Save
-                  </Button>
-                </Group>
-              )}
-            </Card>
+          {global.map((s) => (
+            <SecretCard key={s.id} secret={s} allowGrant {...cardMutations} />
           ))}
 
           {err && (
@@ -318,5 +252,143 @@ export function SecretsPage() {
         </Stack>
       )}
     </div>
+  );
+}
+
+type CardMutations = {
+  rotate: ReturnType<typeof useRotateGlobalSecret>;
+  del: ReturnType<typeof useDeleteGlobalSecret>;
+  grant: ReturnType<typeof useGrantSecret>;
+  revoke: ReturnType<typeof useRevokeSecret>;
+};
+
+function SecretCard({
+  secret: s,
+  allowGrant,
+  rotate,
+  del,
+  grant,
+  revoke,
+}: { secret: SecretMetadata; allowGrant: boolean } & CardMutations) {
+  const [rotating, setRotating] = useState<string | null>(null);
+  const [granting, setGranting] = useState<string | null>(null);
+
+  return (
+    <Card>
+      <Group justify="space-between" wrap="nowrap" align="flex-start">
+        <div style={{ minWidth: 0 }}>
+          <Group gap={8}>
+            <Text className="az-mono" fz={14} fw={600}>
+              {s.name}
+            </Text>
+            <ToneBadge tone="neutral" icon="key">
+              {describeInjection(s.injection)}
+            </ToneBadge>
+          </Group>
+          <Text size="xs" c="dark.2" mt={3}>
+            {s.lastUsedAt ? `last used ${new Date(s.lastUsedAt).toLocaleString()}` : "never used"} ·
+            created by {s.createdBy}
+          </Text>
+          {allowGrant && (
+            <Group gap={6} mt={8}>
+              {s.boundApps.length === 0 && (
+                <Text size="xs" c="dark.2">
+                  not granted to any app
+                </Text>
+              )}
+              {s.boundApps.map((slug) => (
+                <ToneBadge key={slug} tone="violet" icon="layers">
+                  {slug}
+                  <Button
+                    variant="transparent"
+                    size="compact-xs"
+                    c="red"
+                    px={4}
+                    loading={revoke.isPending}
+                    onClick={() => revoke.mutate({ id: s.id, appSlug: slug })}
+                    aria-label={`revoke ${slug}`}
+                  >
+                    ×
+                  </Button>
+                </ToneBadge>
+              ))}
+            </Group>
+          )}
+        </div>
+        <Group gap={6} wrap="nowrap">
+          {allowGrant && (
+            <Button
+              variant="default"
+              size="compact-xs"
+              onClick={() => setGranting((g) => (g === null ? "" : null))}
+            >
+              Grant
+            </Button>
+          )}
+          <Button
+            variant="default"
+            size="compact-xs"
+            onClick={() => setRotating((r) => (r === null ? "" : null))}
+          >
+            Rotate
+          </Button>
+          <Button
+            variant="subtle"
+            color="red"
+            size="compact-xs"
+            loading={del.isPending}
+            onClick={() => del.mutate({ id: s.id })}
+          >
+            Delete
+          </Button>
+        </Group>
+      </Group>
+
+      {allowGrant && granting !== null && (
+        <Group gap={8} mt={12} align="flex-end" wrap="nowrap">
+          <TextInput
+            label="Grant to app (slug)"
+            placeholder="acme-dashboard"
+            value={granting}
+            onChange={(e) => setGranting(e.currentTarget.value)}
+            style={{ flex: 1 }}
+            size="xs"
+            classNames={{ input: "az-mono" }}
+          />
+          <Button
+            size="xs"
+            disabled={!granting}
+            loading={grant.isPending}
+            onClick={() =>
+              grant.mutate({ id: s.id, appSlug: granting }, { onSuccess: () => setGranting(null) })
+            }
+          >
+            Grant
+          </Button>
+        </Group>
+      )}
+
+      {rotating !== null && (
+        <Group gap={8} mt={12} align="flex-end" wrap="nowrap">
+          <PasswordInput
+            label="New value"
+            value={rotating}
+            onChange={(e) => setRotating(e.currentTarget.value)}
+            style={{ flex: 1 }}
+            size="xs"
+          />
+          <Button
+            size="xs"
+            disabled={!rotating}
+            loading={rotate.isPending}
+            onClick={() =>
+              rotate.mutate({ id: s.id, value: rotating }, { onSuccess: () => setRotating(null) })
+            }
+          >
+            Save
+          </Button>
+        </Group>
+      )}
+    </Card>
   );
 }

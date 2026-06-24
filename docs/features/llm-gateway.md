@@ -46,16 +46,27 @@ privilege *increase* — see [capabilities-and-manifests.md](./capabilities-and-
 ### Provider seam + streaming
 
 `apps/edge/src/gateway/provider.ts` defines a vendor-agnostic `LlmProvider`:
-`stream(req, {signal}) → AsyncIterable<LlmStreamEvent>`, where events are `{type: "delta",
-text}` then a final `{type: "done", stopReason, usage}`. It is a deliberate **seam, not a
-cloned vendor API namespace** — the app speaks the platform's own `packages/shared/src/llm.ts`
-wire contract, and the gateway translates. That indirection is what keeps the key out of reach:
-there is no edge surface that echoes the upstream request, so the app **never sees the vendor
-key** and can't smuggle raw vendor parameters past the manifest allowlist. The M4 implementation
-is **Anthropic**, streamed over undici (no SDK — the edge stays dependency-minimal, project plan
-§1), always requesting `stream: true` upstream and parsing SSE; the vendor key comes from a
-`SecretProvider` (`apps/edge/src/gateway/secrets-provider.ts`), never from edge config the app
-could reach.
+`stream(req, {signal, appId, userOid, requestId}) → AsyncIterable<LlmStreamEvent>`, where events
+are `{type: "delta", text}` then a final `{type: "done", stopReason, usage}`. It is a deliberate
+**seam, not a cloned vendor API namespace** — the app speaks the platform's own
+`packages/shared/src/llm.ts` wire contract, and the gateway translates. That indirection is what
+keeps the key out of reach: there is no edge surface that echoes the upstream request, so the app
+**never sees the vendor key** and can't smuggle raw vendor parameters past the manifest allowlist.
+The implementation is **Anthropic**, streamed over undici (no SDK — the edge stays
+dependency-minimal, project plan §1), always requesting `stream: true` upstream and parsing SSE.
+
+**Where the vendor key lives.** The default provider, `EgressLlmProvider`
+(`apps/edge/src/gateway/egressLlmProvider.ts`), does **not** hold the key: the key is a
+`platform`-scoped secret (named by `EDGE_LLM_ANTHROPIC_CONNECTION`, default `anthropic`) managed
+in the portal Secrets admin page and resolved by `azx-egress`. The edge keeps all the policy
+above; it only mints an attested `llm` instruction and forwards the call over the `EgressProvider`
+seam — egress injects `x-api-key` and streams the SSE back, which the edge parses for usage and
+metering (shared `mapAnthropicStream`). This is the same policy/mechanism split as the fetch-proxy,
+and it removes the one spot where the edge held plaintext (secrets design §1). Rotating the key in
+the portal takes effect on the next call with no edge restart. A legacy direct `AnthropicProvider`
+(key from `EDGE_LLM_ANTHROPIC_KEY` via `apps/edge/src/gateway/secrets-provider.ts`) remains as a
+**deprecated dev fallback** for running the edge without egress; it is not used when egress is
+configured.
 
 The handler relays this two ways:
 

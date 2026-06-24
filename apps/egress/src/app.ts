@@ -24,7 +24,13 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
 
   // The proxy re-streams arbitrary request bodies; never buffer/parse them.
-  // A catch-all passthrough parser leaves `req.raw` readable for undici.
+  // `removeAllContentTypeParsers` is essential: Fastify's BUILT-IN
+  // `application/json`/`text/plain` parsers would otherwise consume `req.raw`
+  // before the handler forwards it (the catch-all `*` only covers types without
+  // a parser). The LLM call is always `application/json`, so without this the
+  // body reaches the upstream empty. After removing them, the passthrough leaves
+  // `req.raw` readable for undici for every content type.
+  app.removeAllContentTypeParsers();
   app.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
 
   app.route({

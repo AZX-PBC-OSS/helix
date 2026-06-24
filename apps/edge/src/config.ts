@@ -93,6 +93,13 @@ export interface EdgeConfig {
     endpoint: string;
     /** `anthropic-version` header value. */
     anthropicVersion: string;
+    /**
+     * Name of the `platform`-scoped secret holding the vendor key, resolved by
+     * egress on the `llm` path. When set (with egress + instruction key), the LLM
+     * call routes through egress and the edge never holds the key. The key value
+     * lives in the secret store, never in edge config.
+     */
+    connection: string;
   };
   /**
    * Per-IP rate limit for the anonymous tier on `public` apps (app-data design
@@ -281,6 +288,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     llm: {
       endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
       anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
+      connection: env.EDGE_LLM_ANTHROPIC_CONNECTION ?? "anthropic",
     },
     anonRateLimit: {
       max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),

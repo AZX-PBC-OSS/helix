@@ -7,6 +7,7 @@ import { OpenIdConnectClient } from "./auth/oidc.js";
 import { PgSessionStore, startSessionSweeper } from "./auth/sessions.js";
 import { EnvSecretProvider } from "./gateway/secrets-provider.js";
 import { AnthropicProvider, type LlmProvider } from "./gateway/provider.js";
+import { EgressLlmProvider } from "./gateway/egressLlmProvider.js";
 import { HttpEgressProvider, type EgressProvider } from "./gateway/egressProvider.js";
 import { deriveInstructionKey } from "./gateway/instruction.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
@@ -107,29 +108,49 @@ const appData: AppDataStore | null = config.auth ? new PgAppDataStore(config.dat
 // CSP report sink (§6.2) — append-only, no auth needed; always on (the edge
 // always has a DB connection for the registry).
 const cspReports = new PgCspReportStore(config.databaseUrl);
-const secrets = new EnvSecretProvider();
-const llmProvider: LlmProvider | null = secrets.has("anthropic")
-  ? new AnthropicProvider({
-      endpoint: config.llm.endpoint,
-      anthropicVersion: config.llm.anthropicVersion,
-      apiKey: secrets.vendorKey("anthropic"),
-    })
-  : null;
-
 // Anonymous-tier per-IP gateway limiter (app-data design §7). Owned here so it
 // can be swept on an interval; passed into the app for both gateway handlers.
 const anonRateLimiter = new IpRateLimiter(config.anonRateLimit);
 
-// Fetch-proxy (M4.5): the edge is the policy plane and forwards authorized
+// Fetch-proxy + LLM (M4.5): the edge is the policy plane and forwards authorized
 // calls to azx-egress over the EgressProvider seam. The capability is enabled
 // only when both the egress URL and the shared instruction secret are present
-// (otherwise /_api/fetch 503s — fail-closed, like the LLM vendor key).
+// (otherwise /_api/fetch and the egress LLM path 503 — fail-closed).
 const egress: EgressProvider | null = config.fetch.egressUrl
   ? new HttpEgressProvider(config.fetch.egressUrl, { timeoutMs: config.fetch.timeoutMs })
   : null;
 const instructionKey = config.fetch.instructionSecret
   ? deriveInstructionKey(config.fetch.instructionSecret)
   : null;
+
+// LLM provider selection (secrets design §1):
+//  1. egress configured → route the vendor call through egress; the key is a
+//     `platform` secret egress injects, so the edge never holds it.
+//  2. legacy dev fallback → a vendor key in the edge env (EDGE_LLM_ANTHROPIC_KEY)
+//     calling Anthropic directly. Deprecated; keeps `pnpm dev:edge` working
+//     without egress and backs the provider's unit tests.
+//  3. neither → null; the capability 503s (fail-closed, like auth).
+const secrets = new EnvSecretProvider();
+let llmProvider: LlmProvider | null;
+if (egress && instructionKey) {
+  llmProvider = new EgressLlmProvider(
+    {
+      endpoint: config.llm.endpoint,
+      anthropicVersion: config.llm.anthropicVersion,
+      connection: config.llm.connection,
+    },
+    egress,
+    instructionKey,
+  );
+} else if (secrets.has("anthropic")) {
+  llmProvider = new AnthropicProvider({
+    endpoint: config.llm.endpoint,
+    anthropicVersion: config.llm.anthropicVersion,
+    apiKey: secrets.vendorKey("anthropic"),
+  });
+} else {
+  llmProvider = null;
+}
 
 const app = buildApp({
   config,

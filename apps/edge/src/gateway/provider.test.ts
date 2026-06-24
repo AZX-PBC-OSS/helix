@@ -64,7 +64,7 @@ describe("AnthropicProvider (mocked upstream)", () => {
           maxTokens: 256,
           stream: true,
         },
-        { signal: new AbortController().signal },
+        { signal: new AbortController().signal, appId: "app-1", userOid: "u-1", requestId: "r-1" },
       ),
     );
 
@@ -120,7 +120,12 @@ describe("AnthropicProvider (mocked upstream)", () => {
             maxTokens: 16,
             stream: true,
           },
-          { signal: new AbortController().signal },
+          {
+            signal: new AbortController().signal,
+            appId: "app-1",
+            userOid: "u-1",
+            requestId: "r-1",
+          },
         ),
       ),
     ).rejects.toBeInstanceOf(LlmProviderError);
@@ -144,7 +149,12 @@ describe("AnthropicProvider (real vendor)", () => {
             maxTokens: 16,
             stream: true,
           },
-          { signal: new AbortController().signal },
+          {
+            signal: new AbortController().signal,
+            appId: "app-1",
+            userOid: "u-1",
+            requestId: "r-1",
+          },
         ),
       );
       const text = events

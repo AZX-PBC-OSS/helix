@@ -77,10 +77,15 @@ describe("helix_edge least-privilege grants", () => {
       );
 
       // Connection secrets (secrets design §4): read ONLY by helix_egress. The
-      // policy edge has no grant — that absence is the secret-custody boundary.
+      // policy edge has no grant — that absence is the secret-custody boundary,
+      // and it is table-wide, so it covers `platform`-scoped rows (the LLM vendor
+      // key) too: an edge RCE cannot read the vendor key any more than an app key.
       await expect(pool.query("SELECT count(*) FROM app_secrets")).rejects.toThrow(
         /permission denied/i,
       );
+      await expect(
+        pool.query("SELECT material FROM app_secrets WHERE scope = 'platform'"),
+      ).rejects.toThrow(/permission denied/i);
 
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);

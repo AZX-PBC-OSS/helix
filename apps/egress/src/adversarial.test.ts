@@ -34,6 +34,7 @@ beforeAll(async () => {
       JSON.stringify({
         authorization: req.headers["authorization"] ?? null,
         cookie: req.headers["cookie"] ?? null,
+        xApiKey: req.headers["x-api-key"] ?? null,
       }),
     );
   });
@@ -42,9 +43,20 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
 
+// Mirrors PgSecretResolver's capability gate: `platform` secrets resolve only on
+// the `llm` path, `app`/`global` only on `fetch`.
 const resolver: SecretResolver = {
-  resolve: async (_a, c): Promise<ResolvedConnection | null> =>
-    c === "gh" ? { value: "injected-secret", injection: { kind: "header-bearer" } } : null,
+  resolve: async (_a, c, capability): Promise<ResolvedConnection | null> => {
+    if (capability === "llm") {
+      return c === "anthropic"
+        ? {
+            value: "platform-vendor-key",
+            injection: { kind: "header", name: "x-api-key", template: "{}" },
+          }
+        : null;
+    }
+    return c === "gh" ? { value: "injected-secret", injection: { kind: "header-bearer" } } : null;
+  },
   close: async () => {},
 };
 
@@ -56,11 +68,15 @@ function makeApp(allowPrivate: boolean) {
   return buildApp({ config, resolver, instructionKey: key });
 }
 
-async function mint(o: string, connection?: string): Promise<string> {
+async function mint(
+  o: string,
+  connection?: string,
+  capability: "fetch" | "llm" = "fetch",
+): Promise<string> {
   return new SignJWT({
     appId: "app-1",
     userOid: "u",
-    capability: "fetch",
+    capability,
     origin: o,
     requestId: "r",
     ...(connection ? { connection } : {}),
@@ -131,6 +147,40 @@ describe("egress header smuggling", () => {
       },
     });
     expect(res.json().authorization).toBe("Bearer injected-secret");
+    await app.close();
+  });
+});
+
+describe("egress platform-secret capability gate", () => {
+  it("injects the platform vendor key for an llm instruction", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin, "anthropic", "llm"),
+        [TARGET_HEADER]: `${origin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.json().xApiKey).toBe("platform-vendor-key");
+    await app.close();
+  });
+
+  it("refuses to inject the platform key on the fetch path (404 connection)", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        // A fetch instruction naming the platform connection resolves to nothing.
+        [INSTRUCTION_HEADER]: await mint(origin, "anthropic", "fetch"),
+        [TARGET_HEADER]: `${origin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("forbidden");
     await app.close();
   });
 });

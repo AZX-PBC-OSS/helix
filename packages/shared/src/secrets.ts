@@ -39,9 +39,12 @@ export const INJECTION_KINDS = ["header-bearer", "header", "query"] as const;
 /**
  * Secret scope (§2). `app` secrets are usable only by their owning app; `global`
  * secrets are usable by many apps, but only via an explicit per-app grant
- * (`app_secret_grants`) — "global" never means "ambiently available".
+ * (`app_secret_grants`) — "global" never means "ambiently available". `platform`
+ * secrets are platform vendor credentials (the LLM key) with `appId = null`: not
+ * grantable to apps and not bindable from a manifest, resolvable by egress only
+ * for the edge's `llm` capability — never via an app's fetch binding (§4).
  */
-export const SECRET_SCOPES = ["app", "global"] as const;
+export const SECRET_SCOPES = ["app", "global", "platform"] as const;
 export const SecretScopeSchema = z.enum(SECRET_SCOPES);
 export type SecretScope = z.infer<typeof SecretScopeSchema>;
 

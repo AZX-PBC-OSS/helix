@@ -17,8 +17,13 @@ import { z } from "zod";
  * signer/verifier; this schema is the application payload.
  */
 
-/** Capabilities that flow through egress. Grows as the mechanism plane does. */
-export const INSTRUCTION_CAPABILITIES = ["fetch"] as const;
+/**
+ * Capabilities that flow through egress. Grows as the mechanism plane does.
+ * `llm` routes the LLM vendor call: the edge keeps all the policy (model
+ * allowlist, USD budget, metering) but the vendor key is a `platform`-scoped
+ * secret egress injects, so the edge never holds it (secrets design §1).
+ */
+export const INSTRUCTION_CAPABILITIES = ["fetch", "llm"] as const;
 export const InstructionCapabilitySchema = z.enum(INSTRUCTION_CAPABILITIES);
 export type InstructionCapability = z.infer<typeof InstructionCapabilitySchema>;
 

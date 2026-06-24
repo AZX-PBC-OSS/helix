@@ -23,16 +23,22 @@ let upstream: Server;
 let origin: string;
 beforeAll(async () => {
   upstream = createServer((req, res) => {
-    res.setHeader("content-type", "application/json");
-    res.end(
-      JSON.stringify({
-        method: req.method,
-        path: req.url,
-        authorization: req.headers["authorization"] ?? null,
-        host: req.headers["host"] ?? null,
-        cookie: req.headers["cookie"] ?? null,
-      }),
-    );
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          method: req.method,
+          path: req.url,
+          authorization: req.headers["authorization"] ?? null,
+          host: req.headers["host"] ?? null,
+          cookie: req.headers["cookie"] ?? null,
+          // Echo the received body so tests can assert it transited intact.
+          received: Buffer.concat(chunks).toString("utf8"),
+        }),
+      );
+    });
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
@@ -108,6 +114,30 @@ describe("egress /proxy", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().authorization).toBe("Bearer ghp_secret");
+    await app.close();
+  });
+
+  it("forwards a JSON POST body intact (not consumed by a content-type parser)", async () => {
+    // Regression: Fastify's built-in application/json parser must not drain
+    // req.raw before the handler re-streams it (the LLM path is always JSON).
+    const app = makeApp(true);
+    const token = await mint({ origin });
+    const payload = JSON.stringify({ model: "claude-opus-4-8", messages: [{ role: "user" }] });
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        [TARGET_HEADER]: `${origin}/v1/messages`,
+        [METHOD_HEADER]: "POST",
+        "content-type": "application/json",
+      },
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.method).toBe("POST");
+    expect(body.received).toBe(payload); // body transited byte-for-byte
     await app.close();
   });
 

@@ -17,9 +17,89 @@ export type LlmStreamEvent =
   | { type: "delta"; text: string }
   | { type: "done"; stopReason: string; usage: LlmUsage };
 
+/**
+ * Per-call context the handler hands every provider. `signal` aborts the
+ * upstream when the client goes away; `appId`/`userOid`/`requestId` are the
+ * attribution a routing provider (`EgressLlmProvider`) needs to mint an attested
+ * instruction. The direct {@link AnthropicProvider} ignores the attribution.
+ */
+export interface LlmStreamOpts {
+  signal: AbortSignal;
+  appId: string;
+  userOid: string;
+  requestId: string;
+}
+
 export interface LlmProvider {
-  stream(req: LlmChatRequest, opts: { signal: AbortSignal }): AsyncIterable<LlmStreamEvent>;
+  stream(req: LlmChatRequest, opts: LlmStreamOpts): AsyncIterable<LlmStreamEvent>;
   close(): Promise<void>;
+}
+
+/** The Anthropic Messages request body (always streamed). Shared by both providers. */
+export function anthropicRequestBody(req: LlmChatRequest): string {
+  return JSON.stringify({
+    model: req.model,
+    max_tokens: req.maxTokens,
+    messages: req.messages,
+    ...(req.system ? { system: req.system } : {}),
+    stream: true,
+  });
+}
+
+/**
+ * Map an Anthropic SSE response body to the neutral `delta`/`done` event stream.
+ * Shared by the direct provider and the egress-routed one — the parsing is the
+ * same whether the bytes came straight from the vendor or relayed through egress.
+ */
+export async function* mapAnthropicStream(body: Readable): AsyncIterable<LlmStreamEvent> {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadInputTokens = 0;
+  let cacheCreationInputTokens = 0;
+  let stopReason = "end_turn";
+
+  for await (const { data } of parseSse(body)) {
+    let event: AnthropicEvent;
+    try {
+      event = JSON.parse(data) as AnthropicEvent;
+    } catch {
+      continue; // ignore non-JSON keepalives/comments
+    }
+    switch (event.type) {
+      case "message_start":
+        // `input_tokens` is the uncached remainder; cache classes are separate
+        // (0 today — we send no cache_control yet).
+        inputTokens = event.message?.usage?.input_tokens ?? 0;
+        outputTokens = event.message?.usage?.output_tokens ?? 0;
+        cacheReadInputTokens = event.message?.usage?.cache_read_input_tokens ?? 0;
+        cacheCreationInputTokens = event.message?.usage?.cache_creation_input_tokens ?? 0;
+        break;
+      case "content_block_delta":
+        if (event.delta?.type === "text_delta" && event.delta.text) {
+          yield { type: "delta", text: event.delta.text };
+        }
+        break;
+      case "message_delta":
+        if (event.usage?.output_tokens != null) outputTokens = event.usage.output_tokens;
+        if (event.delta?.stop_reason) stopReason = event.delta.stop_reason;
+        break;
+      case "error":
+        throw new LlmProviderError(`anthropic stream error: ${event.error?.message ?? "unknown"}`);
+      case "message_stop":
+        yield {
+          type: "done",
+          stopReason,
+          usage: { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens },
+        };
+        return;
+    }
+  }
+  // Stream ended without an explicit message_stop — emit what we have.
+  yield {
+    type: "done",
+    stopReason,
+    usage: { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens },
+  };
 }
 
 /** A provider call that failed upstream — the handler maps it to an error response. */
@@ -62,15 +142,7 @@ export class AnthropicProvider implements LlmProvider {
     this.#ownsDispatcher = config.dispatcher === undefined;
   }
 
-  async *stream(req: LlmChatRequest, opts: { signal: AbortSignal }): AsyncIterable<LlmStreamEvent> {
-    const body = JSON.stringify({
-      model: req.model,
-      max_tokens: req.maxTokens,
-      messages: req.messages,
-      ...(req.system ? { system: req.system } : {}),
-      stream: true,
-    });
-
+  async *stream(req: LlmChatRequest, opts: LlmStreamOpts): AsyncIterable<LlmStreamEvent> {
     const res = await this.#dispatcher.request({
       origin: new URL(this.#config.endpoint).origin,
       method: "POST",
@@ -82,7 +154,7 @@ export class AnthropicProvider implements LlmProvider {
         "content-type": "application/json",
         accept: "text/event-stream",
       },
-      body,
+      body: anthropicRequestBody(req),
     });
 
     if (res.statusCode !== 200) {
@@ -93,56 +165,7 @@ export class AnthropicProvider implements LlmProvider {
       );
     }
 
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadInputTokens = 0;
-    let cacheCreationInputTokens = 0;
-    let stopReason = "end_turn";
-
-    for await (const { data } of parseSse(res.body)) {
-      let event: AnthropicEvent;
-      try {
-        event = JSON.parse(data) as AnthropicEvent;
-      } catch {
-        continue; // ignore non-JSON keepalives/comments
-      }
-      switch (event.type) {
-        case "message_start":
-          // `input_tokens` is the uncached remainder; cache classes are
-          // separate (0 today — we send no cache_control yet).
-          inputTokens = event.message?.usage?.input_tokens ?? 0;
-          outputTokens = event.message?.usage?.output_tokens ?? 0;
-          cacheReadInputTokens = event.message?.usage?.cache_read_input_tokens ?? 0;
-          cacheCreationInputTokens = event.message?.usage?.cache_creation_input_tokens ?? 0;
-          break;
-        case "content_block_delta":
-          if (event.delta?.type === "text_delta" && event.delta.text) {
-            yield { type: "delta", text: event.delta.text };
-          }
-          break;
-        case "message_delta":
-          if (event.usage?.output_tokens != null) outputTokens = event.usage.output_tokens;
-          if (event.delta?.stop_reason) stopReason = event.delta.stop_reason;
-          break;
-        case "error":
-          throw new LlmProviderError(
-            `anthropic stream error: ${event.error?.message ?? "unknown"}`,
-          );
-        case "message_stop":
-          yield {
-            type: "done",
-            stopReason,
-            usage: { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens },
-          };
-          return;
-      }
-    }
-    // Stream ended without an explicit message_stop — emit what we have.
-    yield {
-      type: "done",
-      stopReason,
-      usage: { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens },
-    };
+    yield* mapAnthropicStream(res.body);
   }
 
   async close(): Promise<void> {

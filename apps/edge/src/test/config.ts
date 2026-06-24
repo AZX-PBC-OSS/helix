@@ -39,7 +39,11 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     publicPort: 8080,
     tls: null,
     reconcileIntervalMs: 60_000,
-    llm: { endpoint: "https://api.anthropic.com", anthropicVersion: "2023-06-01" },
+    llm: {
+      endpoint: "https://api.anthropic.com",
+      anthropicVersion: "2023-06-01",
+      connection: "anthropic",
+    },
     // Off by default in unit tests; suites that exercise it pass a low `max`.
     anonRateLimit: { max: 0, windowMs: 60_000 },
     // Fetch-proxy off by default; suites that exercise it set egressUrl +

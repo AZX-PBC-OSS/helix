@@ -49,7 +49,7 @@ describe("SecretsPage", () => {
   it("prompts sign-in when logged out", () => {
     stubSecrets([]);
     render();
-    expect(screen.getByText(/Sign in as a platform admin to manage global secrets/)).toBeDefined();
+    expect(screen.getByText(/Sign in as a platform admin to manage secrets/)).toBeDefined();
   });
 
   it("lists global secrets (with bound apps) when authenticated", async () => {
@@ -63,5 +63,23 @@ describe("SecretsPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Create secret" })).toBeDefined(),
     );
+  });
+
+  it("shows a platform vendor secret without a grant control", async () => {
+    const platform: SecretMetadata = {
+      ...SECRET,
+      id: "sec-2",
+      name: "anthropic",
+      scope: "platform",
+      injection: { kind: "header", name: "x-api-key", template: "{}" },
+      boundApps: [],
+    };
+    stubSecrets([platform]);
+    setToken("test-token");
+    render();
+    expect(await screen.findByText("anthropic")).toBeDefined();
+    expect(screen.getByText("Platform vendor keys")).toBeDefined();
+    // Platform secrets are not grantable — no Grant button is rendered.
+    expect(screen.queryByRole("button", { name: "Grant" })).toBeNull();
   });
 });

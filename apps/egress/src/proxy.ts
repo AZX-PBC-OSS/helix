@@ -109,7 +109,11 @@ export function makeProxyHandler(deps: ProxyDeps) {
       if (!deps.resolver) {
         return fail(reply, 502, "upstream_error", "secret store not configured");
       }
-      const resolved = await deps.resolver.resolve(instruction.appId, instruction.connection);
+      const resolved = await deps.resolver.resolve(
+        instruction.appId,
+        instruction.connection,
+        instruction.capability,
+      );
       if (!resolved) {
         return fail(reply, 403, "forbidden", "connection not found or not granted");
       }

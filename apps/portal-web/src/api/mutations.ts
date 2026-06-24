@@ -344,14 +344,17 @@ export function useCreateGlobalSecret() {
       name,
       value,
       injection,
+      scope,
     }: {
       name: string;
       value: string;
       injection?: InjectionRecipe;
+      /** "global" (default) or "platform" (vendor key, e.g. the LLM key). */
+      scope?: "global" | "platform";
     }): Promise<SecretMetadata> =>
       fetchJson(SecretMetadataSchema, "/api/v1/secrets", {
         method: "POST",
-        body: { name, value, ...(injection ? { injection } : {}) },
+        body: { name, value, ...(injection ? { injection } : {}), ...(scope ? { scope } : {}) },
       }),
     onSuccess: () => invalidateGlobalSecrets(queryClient),
   });

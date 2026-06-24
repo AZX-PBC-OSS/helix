@@ -118,6 +118,51 @@ describe("global secrets + grants", () => {
   });
 });
 
+describe("platform secrets (vendor keys, e.g. the LLM key)", () => {
+  it("creates a platform secret, lists + rotates it, but never grants it", async () => {
+    const slug = await createApp();
+    const name = uniqueSlug("p");
+    const create = await post("/api/v1/secrets", {
+      name,
+      value: "sk-ant-topsecret",
+      scope: "platform",
+      injection: { kind: "header", name: "x-api-key" },
+    });
+    expect(create.statusCode).toBe(201);
+    const meta = create.json();
+    expect(meta).toMatchObject({ scope: "platform", name });
+    expect(JSON.stringify(meta)).not.toContain("sk-ant-topsecret"); // write-only
+
+    // It shows up in the admin list (alongside global secrets).
+    const list = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/secrets",
+      headers: authHeader(),
+    });
+    expect(list.json().find((s: { id: string }) => s.id === meta.id)).toBeDefined();
+
+    // Rotation works.
+    const rotate = await post(`/api/v1/secrets/${meta.id}/rotate`, { value: "sk-ant-rotated" });
+    expect(rotate.statusCode).toBe(200);
+    expect(rotate.json().rotatedAt).not.toBeNull();
+
+    // A platform secret is NOT grantable — the grant route is global-only, so the
+    // platform id isn't found there. This is the control that keeps the vendor key
+    // off the app fetch path; egress resolves it only for the `llm` capability.
+    const grant = await post(`/api/v1/secrets/${meta.id}/grants`, { appSlug: slug });
+    expect(grant.statusCode).toBe(404);
+  });
+
+  it("rejects a duplicate platform name", async () => {
+    const name = uniqueSlug("p");
+    const body = { name, value: "a", scope: "platform" };
+    expect((await post("/api/v1/secrets", body)).statusCode).toBe(201);
+    expect(
+      (await post("/api/v1/secrets", { name, value: "b", scope: "platform" })).statusCode,
+    ).toBe(409);
+  });
+});
+
 async function post(url: string, payload: Record<string, unknown>) {
   return t.app.inject({ method: "POST", url, headers: authHeader(), payload });
 }
