@@ -88,6 +88,13 @@ export const CspViolationSchema = z.object({
   blockedUri: z.string(),
   count: z.number().int(),
   lastSeen: z.string(),
+  /**
+   * The blocked origin is already permitted by the app's *current* manifest, so
+   * this historical report is no longer actionable. Derived at read time
+   * (directive-aware — only `connect-src`/`img-src` are widened by an
+   * `externalOrigins` grant); the row itself is never deleted.
+   */
+  resolved: z.boolean(),
 });
 export type CspViolation = z.infer<typeof CspViolationSchema>;
 

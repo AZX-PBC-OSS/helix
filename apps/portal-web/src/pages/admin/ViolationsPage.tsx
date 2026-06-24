@@ -1,5 +1,16 @@
 import { useState } from "react";
-import { Box, Button, Card, Center, Code, Group, Loader, Stack, Text } from "@mantine/core";
+import {
+  Box,
+  Button,
+  Card,
+  Center,
+  Code,
+  Group,
+  Loader,
+  SegmentedControl,
+  Stack,
+  Text,
+} from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import type { CspViolation } from "@helix/shared";
 import { cspViolationsQuery } from "../../api/queries";
@@ -27,9 +38,15 @@ export function ViolationsPage() {
   const violations = useQuery({ ...cspViolationsQuery, enabled: authenticated });
   const grant = useGrantOrigin();
   const [filed, setFiled] = useState<Record<string, boolean>>({});
+  const [view, setView] = useState<"active" | "resolved">("active");
 
   const rows = violations.data?.violations ?? [];
-  const unhandled = rows.filter((v) => grantableOrigin(v.blockedUri) && !filed[keyOf(v)]).length;
+  // A "resolved" violation is one whose origin the app's current manifest already
+  // permits (derived server-side) — kept for history but out of the actionable queue.
+  const active = rows.filter((v) => !v.resolved);
+  const resolved = rows.filter((v) => v.resolved);
+  const visible = view === "active" ? active : resolved;
+  const unhandled = active.filter((v) => grantableOrigin(v.blockedUri) && !filed[keyOf(v)]).length;
 
   return (
     <div className="az-stagger">
@@ -88,17 +105,38 @@ export function ViolationsPage() {
         </Card>
       )}
 
+      {authenticated && !violations.isPending && !violations.isError && rows.length > 0 && (
+        <Group justify="flex-end" mb={4}>
+          <SegmentedControl
+            size="xs"
+            value={view}
+            onChange={(v) => setView(v as "active" | "resolved")}
+            data={[
+              { label: `Active (${active.length})`, value: "active" },
+              { label: `Resolved (${resolved.length})`, value: "resolved" },
+            ]}
+          />
+        </Group>
+      )}
+
       <Stack gap={18}>
-        {rows.map((v) => {
+        {rows.length > 0 && visible.length === 0 && (
+          <Text c="dark.2" size="sm" ta="center" py={32}>
+            {view === "active"
+              ? "No active violations — every blocked origin is already permitted by its manifest."
+              : "No resolved violations yet."}
+          </Text>
+        )}
+        {visible.map((v) => {
           const origin = grantableOrigin(v.blockedUri);
           const handled = filed[keyOf(v)];
           const busy = grant.isPending && grant.variables?.origin === origin;
           return (
-            <Card key={keyOf(v)}>
+            <Card key={keyOf(v)} style={v.resolved ? { opacity: 0.65 } : undefined}>
               <Group justify="space-between" gap={20} wrap="nowrap" align="center">
                 <Box>
                   <Group gap={10} mb={9} wrap="wrap">
-                    <ToneBadge tone="warn" icon="alert">
+                    <ToneBadge tone={v.resolved ? "neutral" : "warn"} icon="alert">
                       {v.directive}
                     </ToneBadge>
                     <Group gap={6}>
@@ -112,14 +150,20 @@ export function ViolationsPage() {
                     </Text>
                   </Group>
                   <Text fz={14} fw={500} mb={6}>
-                    {origin
-                      ? `App tried to reach ${origin} but the CSP blocked it.`
-                      : `Blocked ${v.directive} request — not an origin that can be granted.`}
+                    {v.resolved
+                      ? `App reached ${origin ?? v.blockedUri} — now permitted by the manifest.`
+                      : origin
+                        ? `App tried to reach ${origin} but the CSP blocked it.`
+                        : `Blocked ${v.directive} request — not an origin that can be granted.`}
                   </Text>
                   <Code style={{ fontSize: 12 }}>blocked → {v.blockedUri}</Code>
                 </Box>
                 <Box style={{ flexShrink: 0 }}>
-                  {handled ? (
+                  {v.resolved ? (
+                    <ToneBadge tone="live" icon="check">
+                      Now permitted
+                    </ToneBadge>
+                  ) : handled ? (
                     <ToneBadge tone="violet" icon="check">
                       Request filed
                     </ToneBadge>

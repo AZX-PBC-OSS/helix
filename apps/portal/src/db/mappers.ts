@@ -115,10 +115,39 @@ export function toApprovalRequest(
 export interface CspViolationRow {
   appId: string;
   slug: string | null;
+  /** The joined app's `capabilities` JSON; null when the LEFT JOIN finds no app row. */
+  capabilities: unknown;
   directive: string;
   blockedUri: string;
   count: SqlNum;
   lastSeen: Date | string;
+}
+
+/**
+ * Is this historical violation already permitted by the app's *current* manifest?
+ * An `externalOrigins` grant only widens `connect-src`/`img-src` (edge
+ * `buildAppCsp`, apps/edge/src/serving/csp.ts) — a `script-src`/`style-src`
+ * violation is never resolved by an origin grant, so the match is directive-aware.
+ * Origins are reduced to scheme+host+port (the same `new URL().origin` reduction
+ * the edge and the Violations UI use); a non-URL `blockedUri` (`inline`, `eval`,
+ * …) is never resolved.
+ */
+function isResolved(capabilities: unknown, directive: string, blockedUri: string): boolean {
+  if (directive !== "connect-src" && directive !== "img-src") return false;
+  let blocked: string;
+  try {
+    blocked = new URL(blockedUri).origin;
+  } catch {
+    return false;
+  }
+  const { externalOrigins } = CapabilitiesSchema.parse(capabilities ?? {});
+  return externalOrigins.some((o) => {
+    try {
+      return new URL(o).origin === blocked;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Map an aggregated `csp_reports` row to the wire {@link CspViolation}. */
@@ -130,6 +159,7 @@ export function toCspViolation(row: CspViolationRow): CspViolation {
     blockedUri: row.blockedUri,
     count: num(row.count),
     lastSeen: iso(row.lastSeen),
+    resolved: isResolved(row.capabilities, row.directive, row.blockedUri),
   });
 }
 

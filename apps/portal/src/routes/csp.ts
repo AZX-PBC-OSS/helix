@@ -13,11 +13,12 @@ export async function cspRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/v1/csp/violations", { preHandler: authenticate }, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.$queryRaw<CspViolationRow[]>`
-      SELECT r."appId", a.slug AS slug, r.directive, r."blockedUri",
+      SELECT r."appId", a.slug AS slug, a.capabilities AS capabilities,
+             r.directive, r."blockedUri",
              COUNT(*)::int AS count, MAX(r."createdAt") AS "lastSeen"
       FROM csp_reports r
       LEFT JOIN apps a ON a.id = r."appId"
-      GROUP BY r."appId", a.slug, r.directive, r."blockedUri"
+      GROUP BY r."appId", a.slug, a.capabilities, r.directive, r."blockedUri"
       ORDER BY MAX(r."createdAt") DESC
       LIMIT 200`;
     return CspViolationsPageSchema.parse({ violations: rows.map(toCspViolation) });

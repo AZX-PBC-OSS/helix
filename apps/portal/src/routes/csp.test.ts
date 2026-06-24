@@ -63,7 +63,60 @@ describe("GET /api/v1/csp/violations", () => {
       directive: "connect-src",
       blockedUri: "https://api.foo.com/x",
       count: 2,
+      resolved: false, // origin not in the app's manifest
     });
+  });
+
+  it("marks a violation resolved only when the current manifest permits that directive", async () => {
+    const slug = uniqueSlug();
+    const created = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: owner,
+      payload: { slug, displayName: "r" },
+    });
+    const appId = created.json().id as string;
+
+    // The app's manifest now grants this origin (an externalOrigins entry).
+    await t.prisma.app.update({
+      where: { id: appId },
+      data: { capabilities: { externalOrigins: ["https://granted.example"] } },
+    });
+
+    // connect-src to the granted origin → resolved (the grant widens connect-src).
+    // script-src to the SAME origin → not resolved (externalOrigins doesn't widen it).
+    // connect-src to an un-granted origin → not resolved.
+    await t.prisma.cspReport.create({
+      data: { appId, directive: "connect-src", blockedUri: "https://granted.example/api" },
+    });
+    await t.prisma.cspReport.create({
+      data: { appId, directive: "script-src", blockedUri: "https://granted.example/lib.js" },
+    });
+    await t.prisma.cspReport.create({
+      data: { appId, directive: "connect-src", blockedUri: "https://other.example/x" },
+    });
+
+    const res = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/csp/violations",
+      headers: admin,
+    });
+    expect(res.statusCode).toBe(200);
+    const mine = (
+      res.json().violations as Array<{
+        appSlug: string;
+        directive: string;
+        blockedUri: string;
+        resolved: boolean;
+      }>
+    ).filter((v) => v.appSlug === slug);
+
+    const find = (directive: string, blockedUri: string) =>
+      mine.find((v) => v.directive === directive && v.blockedUri === blockedUri);
+
+    expect(find("connect-src", "https://granted.example/api")?.resolved).toBe(true);
+    expect(find("script-src", "https://granted.example/lib.js")?.resolved).toBe(false);
+    expect(find("connect-src", "https://other.example/x")?.resolved).toBe(false);
   });
 });
 
