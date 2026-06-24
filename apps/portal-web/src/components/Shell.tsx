@@ -176,10 +176,7 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
 
   return (
     <AppShell navbar={{ width: 248, breakpoint: "xs" }} header={{ height: 62 }} padding={0}>
-      <AppShell.Navbar
-        p="14px"
-        style={{ background: "var(--mantine-color-dark-7)", borderColor: "var(--az-line)" }}
-      >
+      <AppShell.Navbar className="az-glass" p="14px" style={{ borderColor: "var(--az-line-2)" }}>
         <Box px={6} pb={18} pt={4}>
           <Brand />
         </Box>
@@ -212,14 +209,7 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
         </Box>
       </AppShell.Navbar>
 
-      <AppShell.Header
-        px={28}
-        style={{
-          background: "rgba(8,9,11,.7)",
-          backdropFilter: "blur(8px)",
-          borderColor: "var(--az-line)",
-        }}
-      >
+      <AppShell.Header className="az-glass" px={28} style={{ borderColor: "var(--az-line-2)" }}>
         <Group h="100%" justify="space-between">
           <Text size="sm" c="dark.2">
             Secure hosting for vibe-coded apps —{" "}
@@ -252,7 +242,7 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
 
       <AppShell.Main style={{ position: "relative", zIndex: 1 }}>
         <ScrollArea h="calc(100vh - 62px)" type="auto">
-          <Box p="30px 28px 60px" maw={1180} mx="auto">
+          <Box className="az-screen" p="30px 30px 52px" maw={1160} mx="auto" my={24}>
             {children}
           </Box>
         </ScrollArea>

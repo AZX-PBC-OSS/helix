@@ -1,11 +1,14 @@
 import { createTheme, type CSSVariablesResolver, type MantineColorsTuple } from "@mantine/core";
 
 /**
- * The AZX control-plane look: dark, engineered, instrument-grade — now in the
- * "Outrun" key. A cyan↔magenta neon duotone on the same near-black surfaces,
- * bridged by the logo's slate. Texture (grid, glow) stays in chrome; data
- * surfaces stay crisp. Space Grotesk display / Hanken Grotesk UI / JetBrains
- * Mono data.
+ * The AZX control-plane look — "Sunset" key. A fixed vaporwave scene (banded sun
+ * + grid + reflection, see SunsetScene) sits behind the whole app; every surface
+ * is a frosted, scanlined sheet of glass over it. Warm orange leads (CTAs), with
+ * the cyan↔magenta duotone living in the sunset gradient, grid, and accents.
+ * Space Grotesk display / Hanken Grotesk UI / JetBrains Mono data.
+ *
+ * This is a single, self-contained restyle layered on the prior "Outrun" tokens
+ * — revertible as one commit if the warmth proves divisive.
  */
 
 /** Cyan accent scale centered on #2de2e6 (index 4 = the brand accent / primary). */
@@ -36,6 +39,20 @@ const magenta: MantineColorsTuple = [
   "#570b49",
 ];
 
+/** Sunset orange scale centered on #ff8a3d (index 4) — the warm lead (primary/CTA). */
+const orange: MantineColorsTuple = [
+  "#fff4e6",
+  "#ffe3c4",
+  "#ffcb96",
+  "#ffae63",
+  "#ff8a3d", // ← brand (primary / CTA)
+  "#f5701f",
+  "#d65a14",
+  "#ad470f",
+  "#84360b",
+  "#5c2507",
+];
+
 /**
  * Mantine's dark scale mapped onto the reference surfaces: 8 = page (#08090b),
  * 7 = cards (#0d0f12), 6/5/4 = raised surfaces, 3–0 = ink from faint to full.
@@ -64,15 +81,25 @@ export const SEMANTIC = {
   bad: "#ff6a55",
   info: "#7cb0ff",
   violet: "#b692ff",
-  accent: "#2de2e6", // cyan — primary
+  accent: "#2de2e6", // cyan — accent (chevrons, links, info)
   accentInk: "#04201f", // dark teal ink for text on the cyan accent
   magenta: "#ff2bd6", // hot secondary
-  slate: "#8f99ac", // the logo chevron — neutral bridge between the two
+  orange: "#ff8a3d", // sunset orange — primary / CTA
+  orangeInk: "#2a1200", // dark ink for text on the orange CTA
+  gold: "#ffd166", // sun core
+  slate: "#8f99ac", // the logo chevron — neutral bridge
 } as const;
 
+/** The signature cyan→magenta→orange sunset, reused by heroes, rules, and the grid. */
+const SUNSET = "linear-gradient(100deg, #2de2e6 0%, #ff2bd6 52%, #ff8a3d 100%)";
+
+/** One sheet of frosted, scanlined glass — every surface floats on the sunset. */
+const SCANLINES =
+  "repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0,0,0,.10) 2px 3px)";
+
 export const theme = createTheme({
-  colors: { accent, magenta, dark },
-  primaryColor: "accent",
+  colors: { accent, magenta, orange, dark },
+  primaryColor: "orange",
   primaryShade: 4,
   autoContrast: true,
   luminanceThreshold: 0.4,
@@ -86,18 +113,26 @@ export const theme = createTheme({
   radius: { xs: "4px", sm: "6px", md: "9px", lg: "14px", xl: "20px" },
   cursorType: "pointer",
   components: {
+    // Inner panels are plain frosted slabs (no scanlines — those live on the
+    // screen glass only, so cards don't moiré against it).
     Card: {
       defaultProps: { withBorder: true, padding: "lg", radius: "lg" },
       styles: {
         root: {
-          backgroundColor: "var(--mantine-color-dark-7)",
+          backgroundColor: "var(--az-frost-solid)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
           borderColor: "var(--az-line)",
         },
       },
     },
     Paper: {
       styles: {
-        root: { backgroundColor: "var(--mantine-color-dark-7)" },
+        root: {
+          backgroundColor: "var(--az-frost-solid)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+        },
       },
     },
     Badge: {
@@ -140,14 +175,22 @@ export const cssVariablesResolver: CSSVariablesResolver = () => ({
   dark: {
     "--mantine-color-body": dark[8],
     "--mantine-color-text": dark[0],
-    "--az-line": "rgba(255,255,255,.07)",
-    "--az-line-2": "rgba(255,255,255,.12)",
-    "--az-line-3": "rgba(255,255,255,.18)",
+    "--az-line": "rgba(255,255,255,.09)",
+    "--az-line-2": "rgba(255,255,255,.15)",
+    "--az-line-3": "rgba(255,255,255,.20)",
     "--az-acc": SEMANTIC.accent,
     "--az-acc-ink": SEMANTIC.accentInk,
     "--az-acc-dim": "rgba(45,226,230,.14)",
     "--az-mag": SEMANTIC.magenta,
     "--az-mag-dim": "rgba(255,43,214,.14)",
+    "--az-orange": SEMANTIC.orange,
+    "--az-orange-ink": SEMANTIC.orangeInk,
+    "--az-orange-dim": "rgba(255,138,61,.14)",
+    "--az-gold": SEMANTIC.gold,
+    "--az-sunset": SUNSET,
+    "--az-scanlines": SCANLINES,
+    "--az-frost": "rgba(11,13,17,.62)",
+    "--az-frost-solid": "rgba(13,15,19,.80)",
     "--az-slate": SEMANTIC.slate,
     "--az-slate-dim": "rgba(143,153,172,.16)",
     "--az-live": SEMANTIC.live,

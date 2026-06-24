@@ -1,9 +1,10 @@
-/* AZX control-plane chrome: blueprint backdrop, eyebrow labels, scrollbars.
-   Design tokens live in theme.ts (Mantine vars + --az-* semantics). */
+/* AZX control-plane chrome: the fixed "Sunset" scene, frosted-glass surfaces,
+   eyebrow labels, scrollbars. Design tokens live in theme.ts (Mantine vars +
+   --az-* semantics). */
 
 ::selection {
-  background: var(--az-acc);
-  color: var(--az-acc-ink);
+  background: var(--az-orange);
+  color: var(--az-orange-ink);
 }
 
 *::-webkit-scrollbar {
@@ -24,36 +25,124 @@
   background: transparent;
 }
 
-/* Atmospheric backdrop: faint blueprint grid + accent glow, top-right. */
-.az-backdrop {
+/* ---- The fixed "Sunset" scene (rendered by <SunsetScene/>) ---- */
+.az-scene {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
+  background: linear-gradient(#05060a 0%, #0a0810 34%, #120a14 45%, #08090b 46%, #08090b 100%);
 }
-.az-backdrop::before {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  background-image:
-    linear-gradient(var(--az-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--az-line) 1px, transparent 1px);
-  background-size: 46px 46px;
-  mask-image: radial-gradient(120% 90% at 78% -8%, #000 0%, transparent 62%);
-  opacity: 0.5;
-}
-/* Duotone wash: cyan high-right, magenta low-left — the only place the
-   neon bleeds onto the page itself. Restrained; data sits above it. */
-.az-backdrop::after {
-  content: "";
+.az-grid {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(42vw 42vw at 86% -8%, var(--az-acc-dim) 0%, transparent 60%),
-    radial-gradient(38vw 38vw at 6% 110%, var(--az-mag-dim) 0%, transparent 60%);
-  filter: blur(20px);
-  opacity: 0.8;
+  width: 100%;
+  height: 100%;
+}
+.az-sun {
+  position: absolute;
+  left: 50%;
+  top: calc(46vh - 150px);
+  transform: translateX(-50%);
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: linear-gradient(
+    #fff3c8 2%,
+    var(--az-gold) 22%,
+    var(--az-orange) 52%,
+    var(--az-mag) 90%
+  );
+  /* Banded sun: the lower half is sliced by horizontal cuts. These are mask
+     transparencies (the sky shows through), not black bars, and they're clipped
+     to the circle — so the silhouette stays round. Top layer keeps the upper
+     half solid; second layer cuts thin gaps; the two are unioned by default. */
+  -webkit-mask-image:
+    linear-gradient(to bottom, #000 52%, transparent 52%),
+    repeating-linear-gradient(to bottom, #000 0 9px, transparent 9px 13px);
+  mask-image:
+    linear-gradient(to bottom, #000 52%, transparent 52%),
+    repeating-linear-gradient(to bottom, #000 0 9px, transparent 9px 13px);
+}
+.az-sun-glow {
+  position: absolute;
+  left: 50%;
+  top: calc(46vh - 180px);
+  transform: translateX(-50%);
+  width: 600px;
+  height: 420px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 150, 70, 0.5),
+    rgba(255, 43, 214, 0.26) 44%,
+    transparent 72%
+  );
+  filter: blur(16px);
+  animation: az-breathe 8s ease-in-out infinite;
+}
+@keyframes az-breathe {
+  0%,
+  100% {
+    opacity: 0.82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* The sun's watery reflection below the horizon: rippled and fading downward
+   (the fade is masked in local space, then flipped to dissolve away from the
+   horizon). Ripples ∩ fade via mask-composite. */
+.az-reflection {
+  position: absolute;
+  left: 50%;
+  top: 46vh;
+  transform: translateX(-50%) scaleY(-1.3);
+  transform-origin: top center;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  opacity: 0.3;
+  filter: blur(2px);
+  background: linear-gradient(
+    #fff3c8 2%,
+    var(--az-gold) 22%,
+    var(--az-orange) 52%,
+    var(--az-mag) 90%
+  );
+  -webkit-mask-image:
+    repeating-linear-gradient(to bottom, #000 0 2px, transparent 2px 7px),
+    linear-gradient(to bottom, #000, transparent 70%);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    repeating-linear-gradient(to bottom, #000 0 2px, transparent 2px 7px),
+    linear-gradient(to bottom, #000, transparent 70%);
+  mask-composite: intersect;
+}
+
+/* ---- Frosted, scanlined glass — the surfaces the app rides on ---- */
+.az-glass {
+  background: var(--az-scanlines), var(--az-frost);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+.az-screen {
+  position: relative;
+  z-index: 1;
+  background: var(--az-scanlines), var(--az-frost);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  backdrop-filter: blur(18px) saturate(1.2);
+  border: 1px solid var(--az-line-2);
+  border-radius: 22px;
+  box-shadow:
+    0 30px 80px -24px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .az-sun-glow {
+    animation: none;
+  }
 }
 
 /* Section eyebrow: mono, uppercase, letterspaced. */
