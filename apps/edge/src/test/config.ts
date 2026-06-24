@@ -8,7 +8,7 @@ export function testAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig 
   return {
     issuerUrl: "https://idp.example",
     clientId: "helix-edge",
-    clientSecret: "test-secret",
+    credential: { kind: "secret", clientSecret: "test-secret" },
     groupsClaim: "groups",
     scopes: "openid profile email groups",
     allowInsecureIdp: false,

@@ -1,5 +1,7 @@
+import { X509Certificate } from "node:crypto";
 import * as oidc from "openid-client";
-import type { AuthConfig } from "../config.js";
+import { importPKCS8 } from "jose";
+import type { AuthClientCredential, AuthConfig } from "../config.js";
 
 /**
  * The edge's view of the IdP, behind a narrow interface (the fake in
@@ -59,6 +61,52 @@ export function codeChallengeFor(verifier: string): Promise<string> {
   return oidc.calculatePKCECodeChallenge(verifier);
 }
 
+/** Map a certificate key type to its JWS signing alg (Entra uploads are RSA or EC). */
+function jwsAlgForKeyType(keyType: string | undefined): string {
+  switch (keyType) {
+    case "ec":
+      return "ES256";
+    case "ed25519":
+      return "EdDSA";
+    default:
+      return "RS256";
+  }
+}
+
+/**
+ * Entra's `x5t`: the base64url-encoded SHA-1 thumbprint of the certificate,
+ * placed in the client-assertion header so Entra can match the public key it
+ * holds. `X509Certificate.fingerprint` is that SHA-1 digest in colon-hex.
+ */
+export function certThumbprintX5t(certificatePem: string): string {
+  const cert = new X509Certificate(certificatePem);
+  return Buffer.from(cert.fingerprint.replace(/:/g, ""), "hex").toString("base64url");
+}
+
+/**
+ * Translate a configured client credential into openid-client's discovery
+ * arguments. A shared secret is passed positionally (client_secret_post); a
+ * certificate becomes private_key_jwt — the private key signs the assertion and
+ * the cert's `x5t` thumbprint rides the header so Entra resolves the key.
+ */
+export async function buildClientAuth(
+  credential: AuthClientCredential,
+): Promise<{ secret?: string; clientAuth?: oidc.ClientAuth }> {
+  if (credential.kind === "secret") {
+    return { secret: credential.clientSecret };
+  }
+  const cert = new X509Certificate(credential.certificatePem);
+  const alg = jwsAlgForKeyType(cert.publicKey.asymmetricKeyType);
+  const key = await importPKCS8(credential.privateKeyPem, alg);
+  const x5t = certThumbprintX5t(credential.certificatePem);
+  const options: oidc.ModifyAssertionOptions = {
+    [oidc.modifyAssertion]: (header) => {
+      header.x5t = x5t;
+    },
+  };
+  return { clientAuth: oidc.PrivateKeyJwt({ key }, options) };
+}
+
 const SILENT_LOGIN_ERRORS = new Set(["login_required", "interaction_required", "consent_required"]);
 
 export interface OidcLogger {
@@ -74,6 +122,8 @@ export class OpenIdConnectClient implements OidcClient {
   #config: oidc.Configuration | null = null;
   #retry: NodeJS.Timeout | null = null;
   #stopped = false;
+  /** Cached discovery client-auth args (key import is done once, not per retry). */
+  #clientAuth: { secret?: string; clientAuth?: oidc.ClientAuth } | null = null;
 
   constructor(auth: AuthConfig, redirectUri: string, log: OidcLogger) {
     this.#auth = auth;
@@ -93,11 +143,12 @@ export class OpenIdConnectClient implements OidcClient {
 
   async #discoverOnce(): Promise<void> {
     try {
+      this.#clientAuth ??= await buildClientAuth(this.#auth.credential);
       this.#config = await oidc.discovery(
         new URL(this.#auth.issuerUrl),
         this.#auth.clientId,
-        this.#auth.clientSecret,
-        undefined,
+        this.#clientAuth.secret,
+        this.#clientAuth.clientAuth,
         this.#auth.allowInsecureIdp ? { execute: [oidc.allowInsecureRequests] } : undefined,
       );
       this.#log.info(`OIDC discovery complete for ${this.#auth.issuerUrl}`);

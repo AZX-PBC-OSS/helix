@@ -41,8 +41,35 @@ mirror the three dev-idp clients in `apps/dev-idp/src/fixtures.ts`.
 | Supported account types | Single tenant |
 | Platform | **Web** |
 | Redirect URI | `https://auth.azx-labs.com/callback` (no port in prod) |
-| Credentials | Create a **client secret** → store in Key Vault, never in source |
+| Credentials | A **client secret** *or* a **certificate** (see below) → store in Key Vault, never in source |
 | Token (ID) optional claims | Add `email`; ensure `name` + `preferred_username` are emitted |
+
+**Client credential — secret or certificate.** The edge is the one confidential
+client, so it authenticates itself at the token endpoint. Two supported forms:
+
+- **Client secret** (simplest): _Certificates & secrets → New client secret_.
+  Set `EDGE_OIDC_CLIENT_SECRET`.
+- **Certificate / `private_key_jwt`** (use this if a tenant policy blocks client
+  secrets — the "Client secrets are blocked by a tenant-wide policy" error):
+  generate a keypair + self-signed cert, upload the **public cert** under
+  _Certificates & secrets → Certificates → Upload certificate_, and give the
+  edge the **private key + cert** via `EDGE_OIDC_CLIENT_PRIVATE_KEY` +
+  `EDGE_OIDC_CLIENT_CERTIFICATE`. The edge signs the client assertion and sets
+  the cert's `x5t` thumbprint so Entra matches the uploaded key
+  (`apps/edge/src/auth/oidc.ts`, `buildClientAuth`). Set **exactly one** of the
+  two forms — both together is a config error.
+
+  Generate a throwaway cert with:
+
+  ```bash
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+    -keyout edge-key.pem -out edge-cert.pem -days 365 -nodes \
+    -subj "/CN=helix-edge"
+  # Upload edge-cert.pem to Entra; feed both PEMs to the edge (see Part B).
+  ```
+
+  RSA keys work too (`-newkey rsa:2048`); the edge picks RS256/ES256 from the
+  cert's key type automatically.
 
 - PKCE is used by the edge automatically even though this client is
   confidential (`apps/edge/src/auth/oidc.ts`). Entra accepts it.
@@ -130,7 +157,9 @@ Set these in the M5 ACA app configuration / Key Vault. **The dev
 | --- | --- |
 | `EDGE_OIDC_ISSUER` | `https://login.microsoftonline.com/{tenantId}/v2.0` |
 | `EDGE_OIDC_CLIENT_ID` | helix-edge client id (GUID) |
-| `EDGE_OIDC_CLIENT_SECRET` | from Key Vault |
+| `EDGE_OIDC_CLIENT_SECRET` | from Key Vault — **or** use the certificate pair below (set exactly one form) |
+| `EDGE_OIDC_CLIENT_PRIVATE_KEY` | (cert auth) PKCS#8 private-key PEM, or base64-encoded PEM |
+| `EDGE_OIDC_CLIENT_CERTIFICATE` | (cert auth) the matching X.509 cert PEM, or base64-encoded PEM |
 | `EDGE_OIDC_GROUPS_CLAIM` | **`roles`** (point the edge at the App Roles claim) |
 | `EDGE_OIDC_SCOPES` | `openid profile email` (drop `groups`; roles ride the token automatically) |
 | `EDGE_AUTH_SECRET` | fresh base64 ≥32 bytes (internal HKDF key, **not** an Entra secret) |

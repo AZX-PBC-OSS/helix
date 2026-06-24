@@ -115,7 +115,7 @@ beforeAll(async () => {
   const auth = testAuthConfig({
     issuerUrl: idp.issuer,
     clientId: "helix-edge",
-    clientSecret: "edge-dev-secret",
+    credential: { kind: "secret", clientSecret: "edge-dev-secret" },
     allowInsecureIdp: true,
   });
   sessions = new PgSessionStore(TEST_DATABASE_URL, { max: 4 });

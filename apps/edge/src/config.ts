@@ -24,6 +24,16 @@ export interface AzureBlobConfig {
 export type BlobConfig = AzureBlobConfig;
 
 /**
+ * How the edge authenticates *itself* to the IdP's token endpoint (the
+ * confidential code exchange). Entra offers two forms: a shared `secret`, or —
+ * when a tenant policy blocks symmetric secrets — a `certificate`
+ * (private_key_jwt). The portal/SPA/CLI are public clients and never need this.
+ */
+export type AuthClientCredential =
+  | { kind: "secret"; clientSecret: string }
+  | { kind: "certificate"; privateKeyPem: string; certificatePem: string };
+
+/**
  * OIDC + session configuration for app-user auth (architecture §4.2,
  * Appendix A). Provider-generic on purpose: locally the issuer is
  * apps/dev-idp; the Entra swap is env-only.
@@ -31,7 +41,8 @@ export type BlobConfig = AzureBlobConfig;
 export interface AuthConfig {
   issuerUrl: string;
   clientId: string;
-  clientSecret: string;
+  /** Client authentication toward the IdP: shared secret or certificate. */
+  credential: AuthClientCredential;
   /** ID-token claim carrying group ids (Entra and dev-idp: `groups`). */
   groupsClaim: string;
   scopes: string;
@@ -169,34 +180,95 @@ export function parseConnectionString(connectionString: string): {
 const AuthEnvSchema = z.object({
   issuerUrl: z.url(),
   clientId: z.string().min(1),
-  clientSecret: z.string().min(1),
   secret: z.base64().min(1),
 });
+
+const present = (v: string | undefined): v is string => v !== undefined && v !== "";
+
+/**
+ * Accept a PEM credential as raw PEM (`-----BEGIN…`) or, since env files dislike
+ * multiline values, as base64-encoded PEM. Either way we hand PEM to the OIDC
+ * client; a value that is neither is a config error.
+ */
+function decodePem(value: string, name: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("-----BEGIN")) return trimmed;
+  const decoded = Buffer.from(trimmed, "base64").toString("utf8");
+  if (!decoded.includes("-----BEGIN")) {
+    throw new Error(`${name} must be PEM or base64-encoded PEM`);
+  }
+  return decoded;
+}
+
+/**
+ * Pick the IdP client credential from the env: a shared secret, or a
+ * certificate pair (private_key_jwt — for tenants whose policy blocks symmetric
+ * secrets). Exactly one form must be supplied.
+ */
+function loadClientCredential(env: NodeJS.ProcessEnv): AuthClientCredential {
+  const clientSecret = present(env.EDGE_OIDC_CLIENT_SECRET)
+    ? env.EDGE_OIDC_CLIENT_SECRET
+    : undefined;
+  const privateKey = present(env.EDGE_OIDC_CLIENT_PRIVATE_KEY)
+    ? env.EDGE_OIDC_CLIENT_PRIVATE_KEY
+    : undefined;
+  const certificate = present(env.EDGE_OIDC_CLIENT_CERTIFICATE)
+    ? env.EDGE_OIDC_CLIENT_CERTIFICATE
+    : undefined;
+
+  const hasSecret = clientSecret !== undefined;
+  const hasCert = privateKey !== undefined || certificate !== undefined;
+  if (hasSecret && hasCert) {
+    throw new Error(
+      "Set either EDGE_OIDC_CLIENT_SECRET or the certificate pair " +
+        "(EDGE_OIDC_CLIENT_PRIVATE_KEY + EDGE_OIDC_CLIENT_CERTIFICATE), not both",
+    );
+  }
+  if (hasSecret) return { kind: "secret", clientSecret };
+  if (hasCert) {
+    if (privateKey === undefined || certificate === undefined) {
+      throw new Error(
+        "Certificate auth needs both EDGE_OIDC_CLIENT_PRIVATE_KEY and EDGE_OIDC_CLIENT_CERTIFICATE",
+      );
+    }
+    return {
+      kind: "certificate",
+      privateKeyPem: decodePem(privateKey, "EDGE_OIDC_CLIENT_PRIVATE_KEY"),
+      certificatePem: decodePem(certificate, "EDGE_OIDC_CLIENT_CERTIFICATE"),
+    };
+  }
+  throw new Error(
+    "Auth config needs a client credential: set EDGE_OIDC_CLIENT_SECRET, or " +
+      "EDGE_OIDC_CLIENT_PRIVATE_KEY + EDGE_OIDC_CLIENT_CERTIFICATE (certificate auth)",
+  );
+}
 
 /**
  * Parse the auth block. All-or-nothing: no auth env at all returns null (the
  * edge boots fail-closed and app hosts serve nothing without the dev bypass);
- * a partial block is a config error worth failing loudly on.
+ * a partial block is a config error worth failing loudly on. The IdP client
+ * credential is a shared secret or a certificate — see {@link loadClientCredential}.
  */
 function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
-  const present = [
-    env.EDGE_OIDC_ISSUER,
-    env.EDGE_OIDC_CLIENT_ID,
-    env.EDGE_OIDC_CLIENT_SECRET,
-    env.EDGE_AUTH_SECRET,
-  ].filter((v) => v !== undefined && v !== "");
-  if (present.length === 0) return null;
-  if (present.length < 4) {
+  const base = [env.EDGE_OIDC_ISSUER, env.EDGE_OIDC_CLIENT_ID, env.EDGE_AUTH_SECRET].filter(
+    present,
+  );
+  const anyCredential =
+    present(env.EDGE_OIDC_CLIENT_SECRET) ||
+    present(env.EDGE_OIDC_CLIENT_PRIVATE_KEY) ||
+    present(env.EDGE_OIDC_CLIENT_CERTIFICATE);
+  if (base.length === 0 && !anyCredential) return null;
+  if (base.length < 3) {
     throw new Error(
-      "Partial auth config: EDGE_OIDC_ISSUER, EDGE_OIDC_CLIENT_ID, " +
-        "EDGE_OIDC_CLIENT_SECRET and EDGE_AUTH_SECRET must all be set together",
+      "Partial auth config: EDGE_OIDC_ISSUER, EDGE_OIDC_CLIENT_ID and " +
+        "EDGE_AUTH_SECRET must all be set together",
     );
   }
 
+  const credential = loadClientCredential(env);
   const parsed = AuthEnvSchema.parse({
     issuerUrl: env.EDGE_OIDC_ISSUER,
     clientId: env.EDGE_OIDC_CLIENT_ID,
-    clientSecret: env.EDGE_OIDC_CLIENT_SECRET,
     secret: env.EDGE_AUTH_SECRET,
   });
   const secret = Buffer.from(parsed.secret, "base64");
@@ -211,7 +283,7 @@ function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
   return {
     issuerUrl: parsed.issuerUrl.replace(/\/+$/, ""),
     clientId: parsed.clientId,
-    clientSecret: parsed.clientSecret,
+    credential,
     groupsClaim: env.EDGE_OIDC_GROUPS_CLAIM ?? "groups",
     scopes: env.EDGE_OIDC_SCOPES ?? "openid profile email groups",
     allowInsecureIdp,

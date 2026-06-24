@@ -146,6 +146,80 @@ describe("auth config", () => {
       loadConfig({ ...ENV, ...AUTH_ENV, EDGE_AUTH_SECRET: Buffer.alloc(16).toString("base64") }),
     ).toThrow(/32 bytes/);
   });
+
+  it("parses a full auth block as a secret credential", () => {
+    const auth = loadConfig({ ...ENV, ...AUTH_ENV }).auth;
+    expect(auth?.credential).toEqual({ kind: "secret", clientSecret: "s3cret" });
+  });
+
+  // Certificate auth (private_key_jwt) for tenants that block client secrets.
+  const PEM_KEY = "-----BEGIN PRIVATE KEY-----\nMIG\n-----END PRIVATE KEY-----";
+  const PEM_CERT = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
+  const CERT_BASE = {
+    EDGE_OIDC_ISSUER: "https://idp.example.com",
+    EDGE_OIDC_CLIENT_ID: "helix-edge",
+    EDGE_AUTH_SECRET: SECRET,
+  };
+
+  it("parses a certificate credential (raw PEM)", () => {
+    const auth = loadConfig({
+      ...ENV,
+      ...CERT_BASE,
+      EDGE_OIDC_CLIENT_PRIVATE_KEY: PEM_KEY,
+      EDGE_OIDC_CLIENT_CERTIFICATE: PEM_CERT,
+    }).auth;
+    expect(auth?.credential).toEqual({
+      kind: "certificate",
+      privateKeyPem: PEM_KEY,
+      certificatePem: PEM_CERT,
+    });
+  });
+
+  it("accepts base64-encoded PEM for certificate credentials", () => {
+    const auth = loadConfig({
+      ...ENV,
+      ...CERT_BASE,
+      EDGE_OIDC_CLIENT_PRIVATE_KEY: Buffer.from(PEM_KEY).toString("base64"),
+      EDGE_OIDC_CLIENT_CERTIFICATE: Buffer.from(PEM_CERT).toString("base64"),
+    }).auth;
+    expect(auth?.credential).toEqual({
+      kind: "certificate",
+      privateKeyPem: PEM_KEY,
+      certificatePem: PEM_CERT,
+    });
+  });
+
+  it("rejects a non-PEM, non-base64 certificate value", () => {
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        ...CERT_BASE,
+        EDGE_OIDC_CLIENT_PRIVATE_KEY: "not-a-pem",
+        EDGE_OIDC_CLIENT_CERTIFICATE: PEM_CERT,
+      }),
+    ).toThrow(/PEM or base64-encoded PEM/);
+  });
+
+  it("rejects a certificate credential missing its private key", () => {
+    expect(() =>
+      loadConfig({ ...ENV, ...CERT_BASE, EDGE_OIDC_CLIENT_CERTIFICATE: PEM_CERT }),
+    ).toThrow(/needs both/);
+  });
+
+  it("rejects both a secret and a certificate", () => {
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        ...AUTH_ENV,
+        EDGE_OIDC_CLIENT_PRIVATE_KEY: PEM_KEY,
+        EDGE_OIDC_CLIENT_CERTIFICATE: PEM_CERT,
+      }),
+    ).toThrow(/not both/);
+  });
+
+  it("rejects a base block with no credential at all", () => {
+    expect(() => loadConfig({ ...ENV, ...CERT_BASE })).toThrow(/needs a client credential/);
+  });
 });
 
 describe("publicOrigin", () => {
