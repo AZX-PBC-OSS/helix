@@ -44,7 +44,7 @@ Every Azure dependency must work in three modes: **local dev**, **integration te
 | Blob Storage | **Azurite** (official emulator, same SDK) | Blob Storage | Same Azure SDK both ways; thin `BlobStore` wrapper for testability |
 | Postgres | Docker container | Azure Database for PostgreSQL | Same engine; no abstraction needed |
 | Key Vault | `SecretStore` interface → env/file impl | Key Vault impl | No emulator exists; interface + dual implementation |
-| Entra ID | Local OIDC issuer (`oidc-provider` npm) | Real Entra app registration in a dev tenant | OIDC is a standard; the edge speaks generic OIDC (which we want anyway for IdP-agnostic customers) |
+| Entra ID | Local OIDC issuer (`oidc-provider` npm) | Real Entra app registration (single-tenant; authz via **App Roles** → the `roles` claim) — see the [Entra runbook](runbooks/entra-app-registration.md) | OIDC is a standard; the edge speaks generic OIDC (which we want anyway for IdP-agnostic customers) |
 | LLM APIs | `LlmProvider` interface → fake/echo provider | Azure OpenAI / Anthropic impls | Interface + dual implementation; fake provider streams canned tokens for testing quota/stream handling |
 
 Config selects implementations per environment. CI runs against local/emulated; a separate integration suite runs against a real Azure dev resource group.
@@ -90,7 +90,7 @@ The §4.2 / Appendix A flow: central callback on the auth host, OIDC against loc
 The `azx-egress` service (`apps/egress`, DB role `helix_egress`) as its own deployable unit from day one — **not** built in-edge and extracted later (architecture §3). The edge stays the policy plane (identity, authz, quota, audit) and hands a signed attested instruction to egress, which resolves connection secrets, injects credentials server-side, enforces SSRF controls, and makes the outbound call. Ships with: `/_api/fetch/<url>` on the edge; the **opt-in transparent fetch/XHR shim** injected at serve time (`capabilities.fetch.shim` → `/_helix/fetch-shim.js`, so unedited `fetch()`/`axios` calls route through the proxy); the `SecretStore` seam (`packages/secret-store` — dev envelope / prod Key Vault); secret CRUD + the manifest `connection` binding through the approval write-gate; the app-scoped Secrets card and the global-admin Secrets page; the `helix_edge`-can't-read-`material` role-split assertion; and the adversarial SSRF suite (DNS-rebind, redirect-to-IMDS, header smuggling). _Deferred to M5:_ the prod Key Vault impl (dev envelope works today). Designs: `docs/design/fetch-proxy.md`, `docs/design/secrets-and-connections.md`.
 
 ### M5 — Azure + pilot ⬜ Next
-Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-permitted network zone**; edge/portal with no outbound internet route), Postgres flexible server, Blob, Key Vault, Entra app registration, wildcard DNS + cert on `azx-labs.com`. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway. **v0 done.**
+Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-permitted network zone**; edge/portal with no outbound internet route), Postgres flexible server, Blob, Key Vault, Entra app registration ([runbook](runbooks/entra-app-registration.md) — three registrations, single `platform-admin` app role), wildcard DNS + cert on `azx-labs.com`. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway. **v0 done.**
 
 ## 5. v1 backlog (rough order, re-plan after v0)
 

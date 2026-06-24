@@ -303,7 +303,7 @@ Status as of June 2026 — most of this is built **locally**; M5 (Azure) is the 
 - **v0 (done, local):** proxy + OIDC (incl. central-callback handoff, `__Host-` cookies, baseline CSP — the isolation model ships day one, not retrofitted), upload deploys, blob serving, app registry, LLM proxy with quotas. Runs against the local OIDC issuer; a real Entra registration and the Azure pilot are the M5 tail.
 - **v1 (mostly done, local):** `azx deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). _Remaining:_ the agent deploy **skill bundle** (`packages/deploy-skill`), and admin per-user **session revocation**.
 - **M4.5 (done, local):** the `azx-egress` mechanism plane + the fetch-proxy (incl. the transparent shim) and secret-backed connections built on it (§3, §6.1). Egress ships as its own container from day one (the policy/mechanism split is physical, not deferred).
-- **M5 (next):** Azure IaC, the three planes on Container Apps, real Entra, prod Key Vault, wildcard cert on `azx-labs.com`, one real pilot app end to end.
+- **M5 (next):** Azure IaC, the three planes on Container Apps, real Entra (single-tenant; authz via App Roles — see the [Entra runbook](runbooks/entra-app-registration.md)), prod Key Vault, wildcard cert on `azx-labs.com`, one real pilot app end to end.
 - **v1.x:** MCP passthrough (REST-wrapped), richer usage dashboards (latency/error dimensions), audit shipping to an immutable sink.
 - **v2 candidates:** Git-connect + sandboxed build service, per-app serverless functions, multi-org tenancy, app builder.
 

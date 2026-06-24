@@ -9,7 +9,8 @@ There are **two** auth paths, deliberately separate:
    via a bearer JWT verified statelessly over the issuer's JWKS.
 
 Both run against the local OIDC issuer in dev (see [dev-idp.md](./dev-idp.md)); production
-points at Entra (config-only, the M3 tail).
+points at Entra (config-only, the M3 tail) — see the
+[Entra registration runbook](../runbooks/entra-app-registration.md).
 
 ---
 
@@ -157,5 +158,11 @@ level as the old shared token, now attributed in the audit log. Per-app RBAC is 
 ## Planned / not yet built
 
 - **Real Entra registration** — the remaining M3 tail; the flow is designed to be config-only
-  (issuer/client swap), already exercised end-to-end against the local issuer.
+  (issuer/client swap), already exercised end-to-end against the local issuer. The step-by-step
+  setup is the [Entra registration runbook](../runbooks/entra-app-registration.md). Two decisions
+  baked in there: authorization rides **Entra App Roles** (the `roles` claim carries
+  human-readable values like `platform-admin` — no GUIDs, no Graph, no group-overage), and the
+  portal audience moves from the dev `urn:helix:portal` to `api://<guid>` (an env change only).
+  Per-app **group visibility** (`visibility: group`) is deferred until a pilot app needs it;
+  pilot apps use `private`/`password`.
 - **Per-app RBAC / ownership** on the portal side (v1).

@@ -156,6 +156,15 @@ export function requireAdmin(req: FastifyRequest): Actor {
     );
   }
   if (!actorIsAdmin(actor)) {
+    // Diagnostic: after the Entra swap the #1 confusing failure is an
+    // authenticated user who simply isn't assigned the `platform-admin` app
+    // role, so their token carries no matching `roles`/`groups` value. The
+    // code already fails closed — this warn just makes "I can't see the admin
+    // page" greppable (who, and what value we required) instead of silent.
+    req.log.warn(
+      { actor: actor.sub, via: actor.via, expected: process.env.PORTAL_ADMIN_GROUP_ID },
+      "admin denied: authenticated principal lacks the configured admin role claim",
+    );
     throw new AppError("forbidden", "this action requires the platform-admin role");
   }
   return actor;
