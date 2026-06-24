@@ -14,7 +14,7 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { healthQuery } from "../api/queries";
+import { appsQuery } from "../api/queries";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon, type IconName } from "./Icon";
 import { Logo } from "./Logo";
@@ -37,7 +37,7 @@ const WORKSPACE_NAV: NavItem[] = [
 const ADMIN_NAV: NavItem[] = [
   { to: "/admin/approvals", label: "Approvals", icon: "check" },
   { to: "/admin/audit", label: "Audit Log", icon: "list" },
-  { to: "/admin/platform", label: "Platform", icon: "activity" },
+  { to: "/admin/platform", label: "Activity", icon: "activity" },
   { to: "/admin/registry", label: "All Apps", icon: "layers" },
   { to: "/admin/secrets", label: "Secrets", icon: "key" },
   { to: "/admin/violations", label: "Violations", icon: "shield" },
@@ -49,9 +49,9 @@ function Brand() {
       <Logo height={20} />
       <Box w={1} h={20} style={{ background: "var(--az-line-2)" }} />
       <Text className="az-mono" fz={9} c="dark.2" lts=".18em" style={{ lineHeight: 1.35 }}>
-        CONTROL
+        HELIX
         <br />
-        PLANE
+        PLATFORM
       </Text>
     </Group>
   );
@@ -171,11 +171,11 @@ function UserChip() {
 }
 
 export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: () => void }) {
-  const health = useQuery(healthQuery);
-  const healthy = health.isSuccess;
+  const apps = useQuery(appsQuery);
+  const liveCount = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
 
   return (
-    <AppShell navbar={{ width: 248, breakpoint: "xs" }} header={{ height: 62 }} padding={0}>
+    <AppShell navbar={{ width: 248, breakpoint: "xs" }} padding={0}>
       <AppShell.Navbar className="az-glass" p="14px" style={{ borderColor: "var(--az-line-2)" }}>
         <Box px={6} pb={18} pt={4}>
           <Brand />
@@ -205,43 +205,21 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
 
         <Box style={{ flex: 1 }} />
         <Box pt={14} style={{ borderTop: "1px solid var(--az-line)" }}>
+          <Box px={8} pb={12}>
+            <ToneBadge tone={apps.isError ? "bad" : "live"} icon="dot">
+              {apps.isPending
+                ? "Checking…"
+                : apps.isError
+                  ? "Portal unreachable"
+                  : `${liveCount} ${liveCount === 1 ? "app" : "apps"} live`}
+            </ToneBadge>
+          </Box>
           <UserChip />
         </Box>
       </AppShell.Navbar>
 
-      <AppShell.Header className="az-glass" px={28} style={{ borderColor: "var(--az-line-2)" }}>
-        <Group h="100%" justify="space-between">
-          <Text size="sm" c="dark.2">
-            Secure hosting for vibe-coded apps —{" "}
-            <Text component="span" className="az-mono" c="dark.1" fz={12.5}>
-              *.azx-labs.com
-            </Text>
-          </Text>
-          <Group gap={14}>
-            <ToneBadge tone={healthy ? "live" : "bad"} icon="dot">
-              {healthy
-                ? "All systems normal"
-                : health.isLoading
-                  ? "Checking…"
-                  : "Portal unreachable"}
-            </ToneBadge>
-            <Box w={1} h={22} bg="var(--az-line-2)" />
-            <Tooltip label="pnpm --filter @helix/cli azx -- --help">
-              <Button
-                variant="subtle"
-                color="gray"
-                size="compact-sm"
-                leftSection={<Icon name="terminal" size={14} />}
-              >
-                CLI
-              </Button>
-            </Tooltip>
-          </Group>
-        </Group>
-      </AppShell.Header>
-
       <AppShell.Main style={{ position: "relative", zIndex: 1 }}>
-        <ScrollArea h="calc(100vh - 62px)" type="auto">
+        <ScrollArea h="100vh" type="auto">
           <Box className="az-screen" p="30px 30px 52px" maw={1160} mx="auto" my={24}>
             {children}
           </Box>

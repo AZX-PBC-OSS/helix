@@ -83,9 +83,9 @@ export function PlatformPage() {
 
   const head = (
     <PageHead
-      eyebrow="Control plane"
-      title="Platform"
-      sub="Usage across every hosted app. The gateway is the single choke point, so these numbers are exact — not sampled telemetry. Spend is estimated at current model rates."
+      eyebrow="Admin"
+      title="Activity"
+      sub="Spend, tokens, and requests across every app. Spend is estimated at current model rates."
     />
   );
 

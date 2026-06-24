@@ -69,8 +69,7 @@ export function DeployModal({
     >
       <Stack gap="md">
         <Hint icon="layers" tone="info">
-          Every deploy lands as an immutable <b>preview</b> version — live traffic is untouched
-          until you promote it.
+          Deploys land as a <b>preview</b> version — promote it to go live.
         </Hint>
 
         <Select
@@ -119,10 +118,6 @@ export function DeployModal({
                   )}
                 </CopyButton>
               </Group>
-              <Text size="xs" c="dark.2">
-                Agents deploy the same way — their versions also land on preview, so a human always
-                promotes (project plan §5.1 guardrail).
-              </Text>
             </Stack>
           </Tabs.Panel>
 

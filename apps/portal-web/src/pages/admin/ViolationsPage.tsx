@@ -34,9 +34,9 @@ export function ViolationsPage() {
   return (
     <div className="az-stagger">
       <PageHead
-        eyebrow="Control plane"
+        eyebrow="Admin"
         title="CSP Violations"
-        sub="The edge reports every blocked request; we turn them into plain-English, one-click origin-grant requests — silent breakage becomes a guided approval flow."
+        sub="CSP-blocked requests from the edge — grant an origin in one click."
         actions={
           <ToneBadge tone="bad" icon="shield">
             {unhandled} unhandled

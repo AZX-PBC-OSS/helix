@@ -20,9 +20,9 @@ export function RegistryPage() {
   return (
     <div className="az-stagger">
       <PageHead
-        eyebrow="Control plane"
+        eyebrow="Admin"
         title="All Apps"
-        sub="The org-wide app registry — source of truth in Postgres. Lifecycle actions take effect at the edge immediately."
+        sub="Every registered app. Lifecycle actions take effect at the edge immediately."
         actions={
           <TextInput
             placeholder="Search registry…"

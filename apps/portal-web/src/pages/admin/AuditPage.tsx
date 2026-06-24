@@ -46,9 +46,9 @@ export function AuditPage() {
 
   const head = (
     <PageHead
-      eyebrow="Control plane"
+      eyebrow="Admin"
       title="Gateway Audit Log"
-      sub="Every gateway call recorded as (app, user, capability, model, tokens, outcome) — the platform's single source of truth for who did what."
+      sub="Every gateway call: app, user, capability, model, tokens, outcome."
     />
   );
 

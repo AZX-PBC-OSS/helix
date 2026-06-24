@@ -73,9 +73,9 @@ export function ApprovalsPage() {
   return (
     <div className="az-stagger">
       <PageHead
-        eyebrow="Control plane · elevated"
+        eyebrow="Admin"
         title="Approvals"
-        sub="Grants above the baseline — going public, any MCP server, new external origins, high LLM budgets — pause here for a human decision."
+        sub="Capability requests above the baseline, held for human approval."
         actions={
           <ToneBadge tone="violet" icon="shield">
             {requests.length} pending

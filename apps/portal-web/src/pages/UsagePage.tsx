@@ -16,7 +16,7 @@ import { fmtCount, fmtUsd } from "../lib/format";
 
 /**
  * Workspace usage. There's no per-owner ownership model yet (v1 RBAC), so this
- * shows the same platform-wide rollup as the admin Platform page — labelled
+ * shows the same platform-wide rollup as the admin Activity page — labelled
  * honestly rather than faking per-owner scoping.
  */
 export function UsagePage() {
@@ -26,11 +26,7 @@ export function UsagePage() {
   const usage = useQuery({ ...platformUsageQuery(range), enabled: authenticated });
 
   const head = (
-    <PageHead
-      eyebrow="Workspace"
-      title="Usage"
-      sub="Aggregate gateway activity — spend, tokens, and requests. Per-owner scoping lands with RBAC (v1); today this is the platform-wide rollup."
-    />
+    <PageHead eyebrow="Workspace" title="Usage" sub="Gateway spend, tokens, and requests." />
   );
 
   if (!authenticated) {

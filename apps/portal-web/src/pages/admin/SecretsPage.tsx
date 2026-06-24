@@ -66,9 +66,9 @@ export function SecretsPage() {
   return (
     <div className="az-stagger">
       <PageHead
-        eyebrow="Control plane · admin"
+        eyebrow="Admin"
         title="Secrets"
-        sub="Global connection secrets the platform holds so apps never do — shared across apps via grants and injected server-side by the egress plane. Write-only; values are never shown again."
+        sub="Global connection secrets, shared to apps via grants. Write-only — values are never shown again."
       />
 
       {!authenticated && (

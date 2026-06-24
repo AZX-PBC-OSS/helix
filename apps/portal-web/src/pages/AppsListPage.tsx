@@ -150,7 +150,7 @@ export function AppsListPage() {
       <PageHead
         eyebrow={`Workspace · ${appHost("<slug>")}`}
         title="My Apps"
-        sub="Static frontends hosted behind SSO. Every deploy is an immutable version; promote and rollback just flip the registry pointer."
+        sub="Static apps you've deployed."
         actions={
           <Button leftSection={<Icon name="upload" size={15} />} onClick={() => openDeploy()}>
             Deploy app
