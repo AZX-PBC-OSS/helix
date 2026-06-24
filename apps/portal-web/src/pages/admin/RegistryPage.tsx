@@ -22,7 +22,7 @@ export function RegistryPage() {
       <PageHead
         eyebrow="Admin"
         title="All Apps"
-        sub="Every registered app. Lifecycle actions take effect at the edge immediately."
+        sub="All registered apps."
         actions={
           <TextInput
             placeholder="Search registry…"

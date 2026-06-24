@@ -85,7 +85,7 @@ export function PlatformPage() {
     <PageHead
       eyebrow="Admin"
       title="Activity"
-      sub="Spend, tokens, and requests across every app. Spend is estimated at current model rates."
+      sub="Spend, tokens, and requests across apps. Spend is estimated at current model rates."
     />
   );
 

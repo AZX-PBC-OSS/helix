@@ -75,7 +75,7 @@ export function ApprovalsPage() {
       <PageHead
         eyebrow="Admin"
         title="Approvals"
-        sub="Capability requests above the baseline, held for human approval."
+        sub="Capability change requests."
         actions={
           <ToneBadge tone="violet" icon="shield">
             {requests.length} pending

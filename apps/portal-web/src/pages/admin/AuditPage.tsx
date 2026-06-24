@@ -48,7 +48,7 @@ export function AuditPage() {
     <PageHead
       eyebrow="Admin"
       title="Gateway Audit Log"
-      sub="Every gateway call: app, user, capability, model, tokens, outcome."
+      sub="Gateway calls: app, user, capability, model, tokens, outcome."
     />
   );
 

@@ -36,7 +36,7 @@ export function ViolationsPage() {
       <PageHead
         eyebrow="Admin"
         title="CSP Violations"
-        sub="CSP-blocked requests from the edge — grant an origin in one click."
+        sub="App requests blocked by Content Security Policy."
         actions={
           <ToneBadge tone="bad" icon="shield">
             {unhandled} unhandled
