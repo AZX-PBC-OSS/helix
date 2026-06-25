@@ -3,12 +3,19 @@
 How to point Helix at a real **Microsoft Entra ID** tenant for the M5 Azure
 deploy, replacing the local dev OIDC issuer (`apps/dev-idp`).
 
-**Why this is config-only.** Both `apps/edge` (app-user SSO) and `apps/portal`
-(bearer-JWT API auth) speak generic OIDC, read issuer/client/audience from
-environment variables, and use OIDC discovery — no endpoints are hardcoded. The
-portal verifier already reads Entra's `roles` claim
-(`apps/portal/src/auth/verifier.ts`). So production auth is: create the
-registrations below, then set the env vars. No code changes.
+**Why this is almost config-only.** Both `apps/edge` (app-user SSO) and
+`apps/portal` (bearer-JWT API auth) speak generic OIDC, read
+issuer/client/audience from environment variables, and use OIDC discovery — no
+endpoints are hardcoded. The portal verifier already reads Entra's `roles` claim
+(`apps/portal/src/auth/verifier.ts`). So production auth is mostly: create the
+registrations below, then set the env vars. Two small code additions were needed
+where the dev IdP had been doing Entra's job for us, and both already landed:
+
+- **Certificate (`private_key_jwt`) client auth** for the edge, for tenants that
+  block client secrets (`apps/edge/src/auth/oidc.ts`, `buildClientAuth`).
+- **Requesting the portal API scope** from the SPA + CLI so the access token is
+  audienced to the portal, not Microsoft Graph (`packages/shared` →
+  `portalApiScope`). See [the audience gotcha](#the-token-audience-gotcha-read-this).
 
 ## Decisions baked into this runbook
 
@@ -90,7 +97,6 @@ audience) — the simplest topology.
 | Platform | **Single-page application (SPA)** |
 | Redirect URI | `https://portal.azx-labs.com/auth/callback` |
 | Expose an API → Application ID URI | `api://<helix-portal-client-id>` |
-| Expose an API → Scope | add e.g. `access` (admin consent or user consent) |
 
 - Registering the redirect under the **SPA platform** makes Entra serve CORS on
   the token endpoint automatically (this replaces the dev-idp `clientBasedCORS`
@@ -98,6 +104,36 @@ audience) — the simplest topology.
 - **Audience note:** Entra does **not** allow the dev value `urn:helix:portal`
   as an Application ID URI — it must be `api://<guid>` (or a verified custom
   domain). This is an env change only: `PORTAL_OIDC_AUDIENCE`.
+
+**Expose an API → Add a scope.** This is the delegated permission the SPA and
+CLI request so their tokens target the portal. Fill the form:
+
+| Field | Value |
+| --- | --- |
+| Scope name | **`access`** → full scope is `api://<helix-portal-client-id>/access` |
+| Who can consent? | **Admins and users** (pilot: lets users self-consent, nobody waits on an admin) |
+| Admin consent display name | `Access the Helix portal API` |
+| Admin consent description | `Allows the signed-in user to access the Helix portal API on their behalf.` |
+| User consent display name | `Access the Helix portal` |
+| User consent description | `Allows the app to access the Helix portal API on your behalf.` |
+| State | **Enabled** |
+
+#### The token-audience gotcha (read this)
+
+The portal validates that every access token's `aud` equals `PORTAL_OIDC_AUDIENCE`
+(`api://<helix-portal-client-id>`). **Entra sets a token's `aud` from the
+resource scope the client requests.** A client that asks for only
+`openid profile email` gets a token audienced to Microsoft Graph — which the
+portal rejects. So the SPA and CLI must request `api://…/access`.
+
+The dev IdP hid this: it used OIDC *resource indicators* to force every token's
+audience to `urn:helix:portal` regardless of the requested scope. Entra does not.
+
+**This is handled in code** — `portalApiScope(audience)` (`packages/shared`)
+appends `/access` whenever the portal advertises an `api://` audience, and is a
+no-op for the dev IdP's `urn:` audience. So you don't request it by hand; you
+just have to know it's why the scope above must exist and why Reg 3 needs the API
+permission below.
 
 **Define the admin role** (App roles → Create app role):
 
@@ -124,10 +160,18 @@ so the portal sees `platform-admin` for assigned users.
 | Supported account types | Single tenant |
 | Redirect URI | none |
 | Authentication → Allow public client flows | **Yes** (enables device-code grant) |
-| API permissions | Delegated permission to `helix-portal`'s `access` scope |
+| API permissions | Delegated permission to `helix-portal`'s `access` scope (see below) |
 
-Grant **admin consent** for the API permission once. The CLI's access token then
-carries `aud = api://<helix-portal-client-id>` and the user's `roles`.
+**Add the API permission** (this is the Reg 3 half of the audience gotcha above):
+_API permissions → Add a permission → **My APIs** → `helix-portal` → Delegated
+permissions → check **`access`** → Add._ Then **Grant admin consent** once. The
+CLI's access token then carries `aud = api://<helix-portal-client-id>` and the
+user's `roles`.
+
+> **The SPA (Reg 2) does NOT need this pre-added.** It obtains the same `access`
+> scope by *dynamic consent* at login (the user consents in the browser the first
+> time). Only the CLI's device-code flow needs the permission configured ahead of
+> time.
 
 > Optional simplification: Reg 2 and Reg 3 can be merged into one registration
 > with both an SPA redirect and public-client-flows enabled. Kept separate here
@@ -183,6 +227,52 @@ Confirm the base-domain/port config produces the portless callback
 The portal advertises issuer + client ids to the CLI and SPA via
 `GET /api/v1/auth/config`, so `packages/cli` and `apps/portal-web` need **no**
 build-time config — they discover everything at runtime.
+
+---
+
+## Local testing against real Entra
+
+You can point a local edge/portal at the real tenant before the Azure deploy —
+the best dress rehearsal. Keep `apps/dev-idp` as the default; this is opt-in.
+
+**Add the local redirect URIs to the registrations** (alongside the prod ones —
+Entra allows many per app):
+
+| Registration | Platform | Local redirect URI(s) |
+| --- | --- | --- |
+| `helix-edge` | Web | `https://auth.localtest.me:8080/callback` |
+| `helix-portal` | SPA | `http://localhost:5173/auth/callback` and `http://localhost:3001/auth/callback` |
+| `azx-cli` | — | none (device code) |
+
+- `auth.localtest.me` is **not** `localhost` to Entra, so it must be **https**
+  (the dev mkcert wildcard cert already covers it). `http://localhost:*` is
+  special-cased by Entra, so the portal SPA URIs need no TLS.
+
+**Edge → Entra via the certificate**, without touching committed config: drop an
+`apps/edge/.env.local` (gitignored via `.env.*`; loaded by `apps/edge/src/server.ts`,
+where it **overrides** the devcontainer env). The cert lives in the gitignored
+`.devcontainer/certs/`. Example:
+
+```sh
+# apps/edge/.env.local — repoints azx-edge at Entra; delete to fall back to dev-idp.
+EDGE_OIDC_ISSUER=https://login.microsoftonline.com/<TENANT_ID>/v2.0
+EDGE_OIDC_CLIENT_ID=<HELIX_EDGE_CLIENT_ID>
+EDGE_OIDC_CLIENT_SECRET=          # empty: disables the dev secret so it doesn't collide with the cert
+EDGE_OIDC_ALLOW_INSECURE=         # empty: Entra is https
+EDGE_OIDC_CLIENT_PRIVATE_KEY=<base64 of .devcontainer/certs/entra-edge-key.pem>
+EDGE_OIDC_CLIENT_CERTIFICATE=<base64 of .devcontainer/certs/entra-edge-cert.pem>
+EDGE_OIDC_GROUPS_CLAIM=roles
+EDGE_OIDC_SCOPES=openid profile email
+```
+
+Then **restart the `dev:edge` VS Code task** (`tsx watch` reloads on file save but
+**not** on env change, so a task restart is required after editing `.env.local`).
+
+**Portal + SPA → Entra:** point the portal's `PORTAL_OIDC_ISSUER` /
+`PORTAL_OIDC_AUDIENCE` / `AZX_CLI_CLIENT_ID` / `AZX_WEB_CLIENT_ID` /
+`PORTAL_ADMIN_GROUP_ID` at the Entra values (Part B). The SPA and CLI need **no**
+local config of their own — they read everything from the portal's
+`GET /api/v1/auth/config` at runtime.
 
 ---
 

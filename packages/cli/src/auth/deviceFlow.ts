@@ -1,4 +1,5 @@
 import * as oidc from "openid-client";
+import { portalApiScope } from "@helix/shared";
 import type { StoredTokens } from "./tokenStore.js";
 
 /**
@@ -9,6 +10,16 @@ import type { StoredTokens } from "./tokenStore.js";
  */
 
 export const DEVICE_SCOPES = "openid profile email offline_access";
+
+/**
+ * Scopes to request: the base OIDC set plus, against Entra, the portal API
+ * scope so the access token is audienced to the portal (the dev IdP forces that
+ * audience itself, so {@link portalApiScope} returns null there).
+ */
+function deviceScopes(audience: string | undefined): string {
+  const apiScope = portalApiScope(audience);
+  return apiScope ? `${DEVICE_SCOPES} ${apiScope}` : DEVICE_SCOPES;
+}
 
 async function discover(issuer: string, clientId: string): Promise<oidc.Configuration> {
   const url = new URL(issuer);
@@ -35,10 +46,14 @@ function toStoredTokens(tokens: oidc.TokenEndpointResponse, clientId: string): S
 export async function runDeviceLogin(opts: {
   issuer: string;
   clientId: string;
+  /** Portal API audience from /auth/config; drives the requested API scope. */
+  audience?: string;
   log: (msg: string) => void;
 }): Promise<StoredTokens> {
   const config = await discover(opts.issuer, opts.clientId);
-  const handle = await oidc.initiateDeviceAuthorization(config, { scope: DEVICE_SCOPES });
+  const handle = await oidc.initiateDeviceAuthorization(config, {
+    scope: deviceScopes(opts.audience),
+  });
 
   opts.log("To sign in, open this URL in a browser:");
   opts.log(`  ${handle.verification_uri_complete ?? handle.verification_uri}`);

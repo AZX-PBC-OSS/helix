@@ -1,11 +1,12 @@
 import * as oidc from "openid-client";
-import type { AuthConfigResponse } from "@helix/shared";
+import { portalApiScope, type AuthConfigResponse } from "@helix/shared";
 
 /**
  * Browser-side OIDC code+PKCE against the issuer the portal advertises at
  * /api/v1/auth/config (locally the dev IdP, later Entra — config-only swap).
- * The access token comes back as a portal-audience JWT because the IdP's
- * resource indicators default to the portal audience.
+ * The access token must be audienced to the portal API: against the dev IdP
+ * that comes free (resource indicators); against Entra we request the API
+ * scope ({@link portalApiScope}) so the token's `aud` is the portal, not Graph.
  */
 
 const FLOW_KEY = "azx.portal.oidcFlow";
@@ -42,9 +43,11 @@ export async function beginLogin(config: AuthConfigResponse, returnTo: string): 
   const state = oidc.randomState();
   const flow: PendingFlow = { verifier, state, returnTo };
   sessionStorage.setItem(FLOW_KEY, JSON.stringify(flow));
+  const apiScope = portalApiScope(config.audience);
+  const scope = ["openid", "profile", "email", apiScope].filter(Boolean).join(" ");
   const url = oidc.buildAuthorizationUrl(discovered, {
     redirect_uri: redirectUri(),
-    scope: "openid profile email",
+    scope,
     code_challenge: challenge,
     code_challenge_method: "S256",
     state,

@@ -120,7 +120,12 @@ export async function rollbackCommand(
  */
 export async function loginCommand(client: PortalClient, config: ResolvedConfig): Promise<void> {
   const { issuer, cliClientId, audience } = await client.getAuthConfig();
-  const tokens = await runDeviceLogin({ issuer, clientId: cliClientId, log: console.log });
+  const tokens = await runDeviceLogin({
+    issuer,
+    clientId: cliClientId,
+    audience,
+    log: console.log,
+  });
   // Bound to THIS portal's origin: a different portal (e.g. one planted via
   // a repo's azx.json) never receives this credential, even if it advertises
   // the same issuer.

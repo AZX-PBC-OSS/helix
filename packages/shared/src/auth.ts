@@ -44,3 +44,19 @@ export const AuthConfigResponseSchema = z.object({
   audience: z.string().min(1).optional(),
 });
 export type AuthConfigResponse = z.infer<typeof AuthConfigResponseSchema>;
+
+/**
+ * The delegated API scope a client (SPA/CLI) must request so its access token is
+ * audienced to the portal API. Entra derives a token's `aud` from the requested
+ * resource scope — asking for only `openid profile email` yields a token
+ * audienced to Microsoft Graph, which the portal rejects. The portal's App ID
+ * URI (`api://<client-id>`) exposes an `access` scope; request it.
+ *
+ * Returns null for the local dev IdP (audience `urn:helix:portal`), which forces
+ * the audience via resource indicators and exposes no such scope — so the
+ * clients keep requesting plain OIDC scopes there, unchanged.
+ */
+export function portalApiScope(audience: string | undefined): string | null {
+  if (!audience || !audience.startsWith("api://")) return null;
+  return `${audience.replace(/\/+$/, "")}/access`;
+}
