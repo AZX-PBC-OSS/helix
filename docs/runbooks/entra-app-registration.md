@@ -164,9 +164,21 @@ so the portal sees `platform-admin` for assigned users.
 
 **Add the API permission** (this is the Reg 3 half of the audience gotcha above):
 _API permissions → Add a permission → **My APIs** → `helix-portal` → Delegated
-permissions → check **`access`** → Add._ Then **Grant admin consent** once. The
-CLI's access token then carries `aud = api://<helix-portal-client-id>` and the
-user's `roles`.
+permissions → check **`access`** → Add._ The CLI's access token then carries
+`aud = api://<helix-portal-client-id>` and the user's `roles`.
+
+**Admin consent is optional**, because the `access` scope is set to "Admins and
+users" can consent. The "Grant admin consent for \<tenant\>" button is greyed out
+unless you hold a directory admin role (Global / Application / Cloud Application
+Admin) — that's expected, not a blocker. Without it, the user simply gets a
+one-time browser consent prompt during `azx login` (device flow) and approves
+"Access the Helix portal." Granting admin consent only pre-approves it tenant-wide
+so nobody is ever prompted. A permission status of "Not granted for \<tenant\>"
+is fine.
+
+> **Exception:** if the tenant has disabled user consent org-wide, first login
+> fails with `AADSTS65001` / an "approval required" screen — then an admin must
+> grant consent. Otherwise user consent just works.
 
 > **The SPA (Reg 2) does NOT need this pre-added.** It obtains the same `access`
 > scope by *dynamic consent* at login (the user consents in the browser the first
@@ -179,8 +191,10 @@ user's `roles`.
 
 ### Admin consent
 
-Grant tenant admin consent once for the API scope so users aren't individually
-prompted. Conditional access / MFA are pure Entra policy and need no code
+Tenant admin consent for the API scope is **optional** (the scope is
+user-consentable) — granting it once just spares users the individual consent
+prompt. Requires a directory admin role; skip it if you don't have one (see Reg 3).
+Conditional access / MFA are pure Entra policy and need no code
 (`docs/platform-architecture.md` Appendix A, step 4).
 
 ---
