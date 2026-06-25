@@ -72,7 +72,7 @@ Prereqs: `az` CLI logged in, a target subscription, and a resource group.
 ### 1. Validate / preview
 
 ```bash
-cd infra/bicep
+cd infra/azure
 az bicep build --file main.bicep                 # compile check
 az deployment group what-if \
   -g <rg> -f main.bicep -p main.bicepparam        # preview
@@ -89,10 +89,16 @@ export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24)
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
 export HELIX_INSTRUCTION_SECRET=$(openssl rand -base64 48)
-export HELIX_EDGE_OIDC_CLIENT_SECRET=<from Entra app registration>
-export HELIX_EDGE_OIDC_CLIENT_ID=<from Entra>
-export HELIX_PORTAL_OIDC_AUDIENCE=<from Entra>
-export HELIX_PORTAL_ADMIN_GROUP_ID=<Entra group object id>
+# Edge auth is a CERTIFICATE (private_key_jwt) — the tenant blocks client secrets.
+# Upload the public cert to the edge app registration; feed both PEMs here (base64
+# avoids multiline env headaches). See docs/runbooks/entra-app-registration.md.
+export HELIX_EDGE_OIDC_PRIVATE_KEY=$(base64 -w0 edge-key.pem)
+export HELIX_EDGE_OIDC_CERTIFICATE=$(base64 -w0 edge-cert.pem)
+export HELIX_EDGE_OIDC_CLIENT_ID=<helix-edge client id (GUID)>
+export HELIX_PORTAL_OIDC_AUDIENCE=<helix-portal client id (BARE GUID — v2 token aud)>
+export HELIX_PORTAL_ADMIN_GROUP_ID=platform-admin   # the App Role value, not a group id
+export HELIX_AZX_CLI_CLIENT_ID=<azx-cli client id (GUID)>
+export HELIX_AZX_WEB_CLIENT_ID=<helix-portal client id (GUID)>
 
 az deployment group create -g <rg> -f main.bicep -p main.bicepparam
 ```
@@ -146,8 +152,10 @@ az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
 
 ## Operator steps NOT done by this template
 
-- **Entra app registration** — the OIDC flow is config-only; fill the client id /
-  audience / admin group / client secret params from a real registration.
+- **Entra app registrations** — create the three registrations (or use the
+  `infra/entra` Bicep) and fill the client id / audience / admin-role / edge
+  certificate params. Full walkthrough + gotchas (v2 tokens, cert auth, App
+  Roles): `docs/runbooks/entra-app-registration.md`.
 - **Wildcard ACME cert issuance/renewal** — portal scheduled job (deferred).
 - **Postgres runtime roles + migrations** — step 4 above (data-plane, not IaC).
 - **Front Door / bastion** for operator access to the internal portal.

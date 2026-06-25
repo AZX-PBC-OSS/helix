@@ -71,23 +71,30 @@ param portalSecret string
 @secure()
 @description('HELIX_INSTRUCTION_SECRET — shared edge<->egress attestation key.')
 param instructionSecret string
+// The tenant blocks symmetric client secrets, so the edge authenticates to Entra
+// with a certificate (private_key_jwt). Both halves travel as PEM (or base64
+// PEM); the public cert is also uploaded to the edge app registration.
 @secure()
-@description('EDGE_OIDC_CLIENT_SECRET — Entra app client secret for the edge.')
-param edgeOidcClientSecret string
+@description('EDGE_OIDC_CLIENT_PRIVATE_KEY — edge cert private key (PEM or base64 PEM).')
+param edgeOidcPrivateKey string
+@secure()
+@description('EDGE_OIDC_CLIENT_CERTIFICATE — edge cert (PEM or base64 PEM).')
+param edgeOidcCertificate string
 
-// Entra / OIDC configuration (the real app registration is an operator step).
+// Entra / OIDC configuration (the real app registration is an operator step —
+// or the infra/entra Bicep). See docs/runbooks/entra-app-registration.md.
 @description('Entra tenant id (for the OIDC issuer URL).')
 param entraTenantId string = tenant().tenantId
 @description('Edge OIDC client id (Entra app registration).')
 param edgeOidcClientId string
-@description('Portal OIDC audience (Entra API app id URI / client id).')
+@description('Portal OIDC audience — the bare helix-portal client-id GUID. v2 access tokens carry the client id as aud, not the api:// URI.')
 param portalOidcAudience string
-@description('Portal admin Entra group object id (approvals gate).')
+@description('Portal admin gate — the App Role value (e.g. "platform-admin") assigned in Entra. A group object id also works if gating on groups.')
 param portalAdminGroupId string
-@description('Public CLI client id for OIDC discovery.')
-param azxCliClientId string = 'azx-cli'
-@description('Public web SPA client id for OIDC discovery.')
-param azxWebClientId string = 'azx-portal-web'
+@description('Public CLI client id (Entra azx-cli registration) advertised for OIDC discovery.')
+param azxCliClientId string
+@description('Public web SPA client id (Entra helix-portal registration) advertised for OIDC discovery.')
+param azxWebClientId string
 
 @description('LLM upstream endpoint for the edge gateway.')
 param llmEndpoint string = 'https://api.anthropic.com'
@@ -241,7 +248,8 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     edgeAuthSecret: edgeAuthSecret
     portalSecret: portalSecret
     instructionSecret: instructionSecret
-    edgeOidcClientSecret: edgeOidcClientSecret
+    edgeOidcPrivateKey: edgeOidcPrivateKey
+    edgeOidcCertificate: edgeOidcCertificate
   }
   dependsOn: [
     keyvault
@@ -331,7 +339,8 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     secrets: [
       { name: 'edge-database-url', keyVaultUrl: '${platformVaultUri}secrets/edge-database-url' }
       { name: 'storage-connection-string', keyVaultUrl: '${platformVaultUri}secrets/storage-connection-string' }
-      { name: 'edge-oidc-client-secret', keyVaultUrl: '${platformVaultUri}secrets/edge-oidc-client-secret' }
+      { name: 'edge-oidc-private-key', keyVaultUrl: '${platformVaultUri}secrets/edge-oidc-private-key' }
+      { name: 'edge-oidc-certificate', keyVaultUrl: '${platformVaultUri}secrets/edge-oidc-certificate' }
       { name: 'edge-auth-secret', keyVaultUrl: '${platformVaultUri}secrets/edge-auth-secret' }
       { name: 'helix-instruction-secret', keyVaultUrl: '${platformVaultUri}secrets/helix-instruction-secret' }
     ]
@@ -343,12 +352,16 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'BLOB_CONTAINER', value: blobContainerName }
       { name: 'EDGE_OIDC_ISSUER', value: oidcIssuer }
       { name: 'EDGE_OIDC_CLIENT_ID', value: edgeOidcClientId }
-      { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'groups' }
+      // App Roles (the `roles` claim), not security groups — see the runbook.
+      { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'roles' }
+      { name: 'EDGE_OIDC_SCOPES', value: 'openid profile email' }
       { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
       { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
       { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
       { name: 'AZURE_STORAGE_CONNECTION_STRING', secretRef: 'storage-connection-string' }
-      { name: 'EDGE_OIDC_CLIENT_SECRET', secretRef: 'edge-oidc-client-secret' }
+      // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
+      { name: 'EDGE_OIDC_CLIENT_PRIVATE_KEY', secretRef: 'edge-oidc-private-key' }
+      { name: 'EDGE_OIDC_CLIENT_CERTIFICATE', secretRef: 'edge-oidc-certificate' }
       { name: 'EDGE_AUTH_SECRET', secretRef: 'edge-auth-secret' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
     ]

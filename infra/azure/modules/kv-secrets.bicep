@@ -32,8 +32,11 @@ param portalSecret string
 @description('HELIX_INSTRUCTION_SECRET.')
 param instructionSecret string
 @secure()
-@description('EDGE_OIDC_CLIENT_SECRET.')
-param edgeOidcClientSecret string
+@description('EDGE_OIDC_CLIENT_PRIVATE_KEY (edge cert private key, PEM or base64 PEM).')
+param edgeOidcPrivateKey string
+@secure()
+@description('EDGE_OIDC_CLIENT_CERTIFICATE (edge cert, PEM or base64 PEM).')
+param edgeOidcCertificate string
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: vaultName
@@ -47,7 +50,8 @@ var secrets = {
   'edge-auth-secret': edgeAuthSecret
   'portal-secret': portalSecret
   'helix-instruction-secret': instructionSecret
-  'edge-oidc-client-secret': edgeOidcClientSecret
+  'edge-oidc-private-key': edgeOidcPrivateKey
+  'edge-oidc-certificate': edgeOidcCertificate
 }
 
 resource secretResources 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [

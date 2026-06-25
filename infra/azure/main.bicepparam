@@ -11,10 +11,14 @@ param connectionsVaultName = 'helix-prod-kvc'
 param postgresServerName = 'helix-prod-pg'
 param appsDomain = 'azx-labs.com'
 
-// Entra / OIDC. Fill in once the app registration exists (operator step).
+// Entra / OIDC. Fill in once the app registrations exist (operator step, or the
+// infra/entra Bicep). portalOidcAudience is the bare helix-portal client-id GUID
+// (v2 tokens); portalAdminGroupId is the App Role value (e.g. "platform-admin").
 param edgeOidcClientId = readEnvironmentVariable('HELIX_EDGE_OIDC_CLIENT_ID', '')
 param portalOidcAudience = readEnvironmentVariable('HELIX_PORTAL_OIDC_AUDIENCE', '')
 param portalAdminGroupId = readEnvironmentVariable('HELIX_PORTAL_ADMIN_GROUP_ID', '')
+param azxCliClientId = readEnvironmentVariable('HELIX_AZX_CLI_CLIENT_ID', '')
+param azxWebClientId = readEnvironmentVariable('HELIX_AZX_WEB_CLIENT_ID', '')
 
 // Phase gate. Leave false for the first apply (infra + empty ACR), flip to true
 // after the three images are pushed.
@@ -29,4 +33,6 @@ param egressDbPassword = readEnvironmentVariable('HELIX_EGRESS_DB_PASSWORD', '')
 param edgeAuthSecret = readEnvironmentVariable('HELIX_EDGE_AUTH_SECRET', '')
 param portalSecret = readEnvironmentVariable('HELIX_PORTAL_SECRET', '')
 param instructionSecret = readEnvironmentVariable('HELIX_INSTRUCTION_SECRET', '')
-param edgeOidcClientSecret = readEnvironmentVariable('HELIX_EDGE_OIDC_CLIENT_SECRET', '')
+// Edge cert (private_key_jwt) — the tenant blocks client secrets. PEM or base64 PEM.
+param edgeOidcPrivateKey = readEnvironmentVariable('HELIX_EDGE_OIDC_PRIVATE_KEY', '')
+param edgeOidcCertificate = readEnvironmentVariable('HELIX_EDGE_OIDC_CERTIFICATE', '')
