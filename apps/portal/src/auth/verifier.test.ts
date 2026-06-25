@@ -77,8 +77,8 @@ describe("createOidcVerifier", () => {
   });
 
   it("reads the groups claim, falling back to roles", async () => {
-    const groups = await verifier.verify(await mint({ claims: { groups: ["platform-admins"] } }));
-    expect(groups?.groups).toEqual(["platform-admins"]);
+    const groups = await verifier.verify(await mint({ claims: { groups: ["platform-admin"] } }));
+    expect(groups?.groups).toEqual(["platform-admin"]);
     const roles = await verifier.verify(await mint({ claims: { roles: ["admins"] } }));
     expect(roles?.groups).toEqual(["admins"]);
     const none = await verifier.verify(await mint());

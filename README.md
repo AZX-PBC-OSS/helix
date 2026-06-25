@@ -74,11 +74,11 @@ pnpm dev:egress   # :8081 — mechanism plane (fetch-proxy + secret injection).
 `*.localtest.me` resolves to `127.0.0.1`, so app subdomains and the auth host work with no
 `/etc/hosts` edits. Fixture identities at the IdP (pick one on the login page):
 
-| User              | Groups                        |
-| ----------------- | ----------------------------- |
-| `alice@azx.dev`   | `eng-team`, `platform-admins` |
-| `bob@azx.dev`     | `eng-team`                    |
-| `mallory@azx.dev` | _none_ (for group-denial)     |
+| User              | Groups                       |
+| ----------------- | ---------------------------- |
+| `alice@azx.dev`   | `eng-team`, `platform-admin` |
+| `bob@azx.dev`     | `eng-team`                   |
+| `mallory@azx.dev` | _none_ (for group-denial)    |
 
 The dev container sets `EDGE_DEV_ALLOW_UNAUTHENTICATED=true`, which skips the **session gate**
 (handy while iterating on an app) but not TLS — apps still serve over HTTPS. To exercise the

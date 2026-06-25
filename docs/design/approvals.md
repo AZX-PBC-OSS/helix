@@ -115,7 +115,7 @@ Concretely:
 - **dev-idp** (`apps/dev-idp`): **already done.** Alice's fixture already carries `GROUP_PLATFORM_ADMINS` (`fixtures.ts`), and `extraTokenClaims` already emits `groups` into the JWT access token the portal verifies (`provider.ts`). No dev-idp change is needed — the claim is already on the wire; the portal just isn't reading it yet.
 - **Separation of duty:** `decidedBy.sub ≠ requestedBy` enforced by default, with a `PORTAL_ALLOW_SELF_APPROVE` dev flag (refused in production, same posture as `PORTAL_DEV_TOKEN`) so a solo operator can drive the whole loop.
 
-> **Prod note (no local blocker):** locally there is nothing to wire — dev-idp already ships the `platform-admins` claim. The only prod dependency is that the **Entra app registration surface a group or app-role claim** in its access token — config on the registration, deferred to the Entra tail (M3/M5), and it blocks *nothing* in local development of #2.
+> **Prod note (no local blocker):** locally there is nothing to wire — dev-idp already ships the `platform-admin` claim. The only prod dependency is that the **Entra app registration surface a group or app-role claim** in its access token — config on the registration, deferred to the Entra tail (M3/M5), and it blocks *nothing* in local development of #2.
 
 `App` also has **no owner field** today (ownership is implicit in the audit trail). The admin queue's "owner" column and "who may request" both need it: add `App.ownerId` (= creator's `actor.sub`, set at `app.create`). Cheap, and several v1 surfaces want it anyway.
 
@@ -169,7 +169,7 @@ Going public is just a request: `{ deltas: [{ path: "visibility", from: "group",
 | `apps/portal` schema | `ApprovalRequest` table; `App.ownerId`; `Actor.groups` | #2 |
 | `apps/portal` routes | write-gate on `PUT /manifest` + visibility; `GET/POST /api/v1/approvals*`; `requireAdmin` | #2 |
 | `apps/portal-web` | turn **Approvals** mock real; "pending" banner on app detail | #2 |
-| `apps/dev-idp` | _nothing_ — already emits `platform-admins` in the access token | — |
+| `apps/dev-idp` | _nothing_ — already emits `platform-admin` in the access token | — |
 | **`apps/edge`** | `report-to` sink; read `externalOrigins` → per-app CSP | **#4 only** |
 | `apps/portal` + web | store CSP reports; turn **Violations** mock real → origin-grant requests | #4 |
 | `apps/edge` | anonymous-tier per-IP limits (orthogonal to approvals) | #6 |

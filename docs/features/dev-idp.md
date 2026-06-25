@@ -20,7 +20,7 @@ never deployed.** Full notes: [`apps/dev-idp/README.md`](../../apps/dev-idp/READ
 
 | User | Groups | For |
 | --- | --- | --- |
-| `alice@azx.dev` | `eng-team`, `platform-admins` | admin / happy path |
+| `alice@azx.dev` | `eng-team`, `platform-admin` | admin / happy path |
 | `bob@azx.dev` | `eng-team` | regular user |
 | `mallory@azx.dev` | _(none)_ | group-denial tests |
 

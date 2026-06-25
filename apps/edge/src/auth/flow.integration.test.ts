@@ -181,7 +181,7 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
       privateApp.appId,
     );
     expect(session?.user.displayName).toBe("Alice Anders");
-    expect(session?.user.groups).toEqual(["eng-team", "platform-admins"]);
+    expect(session?.user.groups).toEqual(["eng-team", "platform-admin"]);
     expect(
       await sessions.lookup(hashSessionToken(sessionCookie as string), groupApp.appId),
     ).toBeNull();
@@ -318,7 +318,7 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     expect(fresh).not.toBe(sessionCookie);
 
     const session = await sessions.lookup(hashSessionToken(fresh as string), privateApp.appId);
-    expect(session?.user.groups).toEqual(["eng-team", "platform-admins"]);
+    expect(session?.user.groups).toEqual(["eng-team", "platform-admin"]);
     expect(session?.refreshDueAt.getTime()).toBeGreaterThan(Date.now());
   });
 

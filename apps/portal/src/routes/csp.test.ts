@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TokenVerifier } from "../plugins/auth.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
-const ADMIN_GROUP = "platform-admins";
+const ADMIN_GROUP = "platform-admin";
 const verifiers: TokenVerifier[] = [
   {
     verify: async (t) => {

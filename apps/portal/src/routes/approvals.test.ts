@@ -5,7 +5,7 @@ import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 // Two actors: an app owner (no admin group) and a platform admin.
 const OWNER = "owner@azx.io";
 const ADMIN = "admin@azx.io";
-const ADMIN_GROUP = "platform-admins";
+const ADMIN_GROUP = "platform-admin";
 
 const verifiers: TokenVerifier[] = [
   {

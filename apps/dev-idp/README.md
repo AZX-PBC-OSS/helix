@@ -21,11 +21,11 @@ back-channel calls (edge, portal, CLI, tests).
 
 ## Fixtures
 
-| User              | Groups                        |
-| ----------------- | ----------------------------- |
-| `alice@azx.dev`   | `eng-team`, `platform-admins` |
-| `bob@azx.dev`     | `eng-team`                    |
-| `mallory@azx.dev` | _none_ (group-denial tests)   |
+| User              | Groups                       |
+| ----------------- | ---------------------------- |
+| `alice@azx.dev`   | `eng-team`, `platform-admin` |
+| `bob@azx.dev`     | `eng-team`                   |
+| `mallory@azx.dev` | _none_ (group-denial tests)  |
 
 Clients: `azx-cli` (public; device-code + refresh) and `helix-edge`
 (confidential; code + PKCE + nonce; secret `edge-dev-secret`, override via

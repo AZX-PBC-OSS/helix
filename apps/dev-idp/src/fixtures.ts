@@ -15,7 +15,7 @@ export interface FixtureUser {
 
 /** Group ids referenced by app visibility rules in dev. */
 export const GROUP_ENG_TEAM = "eng-team";
-export const GROUP_PLATFORM_ADMINS = "platform-admins";
+export const GROUP_PLATFORM_ADMINS = "platform-admin";
 
 export const FIXTURE_USERS: FixtureUser[] = [
   {
