@@ -15,7 +15,6 @@ import { useQuery } from "@tanstack/react-query";
 import type { CspViolation } from "@helix/shared";
 import { cspViolationsQuery } from "../../api/queries";
 import { useGrantOrigin } from "../../api/mutations";
-import { useAuth } from "../../auth/AuthProvider";
 import { Icon } from "../../components/Icon";
 import { Hint, PageHead, ToneBadge } from "../../components/primitives";
 import { timeAgo } from "../../lib/format";
@@ -34,8 +33,7 @@ const keyOf = (v: CspViolation) => `${v.appSlug ?? v.appId}:${v.blockedUri}`;
 
 /** CSP violation reports become one-click origin-grant requests (§6.2). */
 export function ViolationsPage() {
-  const { authenticated, login, loginAvailable } = useAuth();
-  const violations = useQuery({ ...cspViolationsQuery, enabled: authenticated });
+  const violations = useQuery(cspViolationsQuery);
   const grant = useGrantOrigin();
   const [filed, setFiled] = useState<Record<string, boolean>>({});
   const [view, setView] = useState<"active" | "resolved">("active");
@@ -61,37 +59,19 @@ export function ViolationsPage() {
         }
       />
 
-      {!authenticated && (
-        <Card py={48} style={{ textAlign: "center" }}>
-          <Stack align="center" gap={10}>
-            <Text c="dark.2" size="sm">
-              Sign in as a platform admin to review CSP violations.
-            </Text>
-            <Button
-              onClick={login}
-              disabled={!loginAvailable}
-              leftSection={<Icon name="user" size={14} />}
-            >
-              Sign in
-            </Button>
-          </Stack>
-        </Card>
-      )}
-
-      {authenticated && violations.isPending && (
+      {violations.isPending && (
         <Center py={60}>
           <Loader size="sm" />
         </Center>
       )}
 
-      {authenticated && violations.isError && (
+      {violations.isError && (
         <Hint icon="alert" tone="bad">
-          Couldn't load violations: {violations.error.message}. This screen requires the
-          platform-admin role.
+          Couldn't load violations: {violations.error.message}
         </Hint>
       )}
 
-      {authenticated && !violations.isPending && !violations.isError && rows.length === 0 && (
+      {!violations.isPending && !violations.isError && rows.length === 0 && (
         <Card py={56} style={{ textAlign: "center" }}>
           <Stack align="center" gap={6}>
             <Icon name="check" size={26} style={{ color: "var(--az-live)" }} />
@@ -105,7 +85,7 @@ export function ViolationsPage() {
         </Card>
       )}
 
-      {authenticated && !violations.isPending && !violations.isError && rows.length > 0 && (
+      {!violations.isPending && !violations.isError && rows.length > 0 && (
         <Group justify="flex-end" mb={4}>
           <SegmentedControl
             size="xs"

@@ -118,7 +118,11 @@ describe("manifest (capabilities) GET/PUT", () => {
       capabilities: { llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 } },
     });
 
-    const got = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
+    const got = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: authHeader(),
+    });
     expect(got.statusCode).toBe(200);
     expect(got.json()).toEqual({
       app: slug,
@@ -134,7 +138,11 @@ describe("manifest (capabilities) GET/PUT", () => {
   it("defaults to the baseline grant set when capabilities are omitted", async () => {
     const slug = uniqueSlug();
     await createApp({ slug, displayName: "Bare" });
-    const got = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
+    const got = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: authHeader(),
+    });
     expect(got.json().capabilities).toEqual({ mcp: [], externalOrigins: [] });
   });
 
@@ -218,16 +226,41 @@ describe("GET /api/v1/apps and /:slug", () => {
     const slug = uniqueSlug();
     await createApp({ slug, displayName: "Grouped", visibility: { mode: "group", groupId: "g1" } });
 
-    const got = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}` });
+    const got = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+    });
     expect(got.statusCode).toBe(200);
     expect(got.json().visibility).toEqual({ mode: "group", groupId: "g1" });
 
-    const list = await t.app.inject({ method: "GET", url: "/api/v1/apps" });
+    const list = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/apps",
+      headers: authHeader(),
+    });
     expect(list.statusCode).toBe(200);
     expect(list.json().some((a: { slug: string }) => a.slug === slug)).toBe(true);
 
-    const missing = await t.app.inject({ method: "GET", url: `/api/v1/apps/${uniqueSlug()}` });
+    const missing = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${uniqueSlug()}`,
+      headers: authHeader(),
+    });
     expect(missing.statusCode).toBe(404);
     expect(missing.json().error.code).toBe("not_found");
+  });
+
+  it("requires sign-in to read the registry (401)", async () => {
+    const list = await t.app.inject({ method: "GET", url: "/api/v1/apps" });
+    expect(list.statusCode).toBe(401);
+    expect(list.json().error.code).toBe("unauthorized");
+
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Hidden" });
+    const detail = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}` });
+    expect(detail.statusCode).toBe(401);
+    const manifest = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
+    expect(manifest.statusCode).toBe(401);
   });
 });

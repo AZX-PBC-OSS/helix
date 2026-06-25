@@ -1,20 +1,8 @@
 import { useState } from "react";
-import {
-  Box,
-  Button,
-  Card,
-  Center,
-  Grid,
-  Group,
-  Loader,
-  SimpleGrid,
-  Stack,
-  Text,
-} from "@mantine/core";
+import { Box, Card, Center, Grid, Group, Loader, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { PLATFORM_RANGES, type PlatformRange, type UsageSeriesPoint } from "@helix/shared";
 import { appsQuery, platformUsageQuery } from "../../api/queries";
-import { useAuth } from "../../auth/AuthProvider";
 import { Donut, Meter } from "../../components/charts";
 import {
   MetricToggle,
@@ -72,11 +60,10 @@ function DeltaBadge({ delta }: { delta: number | null }) {
 
 /** Platform-wide gateway rollup over real `gateway_calls` data (architecture §8). */
 export function PlatformPage() {
-  const { authenticated, login, loginAvailable } = useAuth();
   const [range, setRange] = useState<PlatformRange>("30d");
   const [metric, setMetric] = useState<UsageMetric>("cost");
   const apps = useQuery(appsQuery);
-  const platform = useQuery({ ...platformUsageQuery(range), enabled: authenticated });
+  const platform = useQuery(platformUsageQuery(range));
 
   const total = apps.data?.length ?? 0;
   const live = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
@@ -88,25 +75,6 @@ export function PlatformPage() {
       sub="Spend, tokens, and requests across apps. Spend is estimated at current model rates."
     />
   );
-
-  if (!authenticated) {
-    return (
-      <div className="az-stagger">
-        {head}
-        <Hint
-          icon="user"
-          tone="neutral"
-          action={
-            <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
-              Sign in
-            </Button>
-          }
-        >
-          Platform-wide usage requires a signed-in actor.
-        </Hint>
-      </div>
-    );
-  }
 
   const p = platform.data;
   const maxAppTokens = Math.max(...(p?.byApp.map((a) => a.tokens) ?? [0]), 1);

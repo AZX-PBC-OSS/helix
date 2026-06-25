@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { AuthConfigResponseSchema, PortalMeResponseSchema } from "@helix/shared";
-import { authenticate, requireActor } from "../plugins/auth.js";
+import { actorIsAdmin, authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 
 /** Auth-adjacent API surface: IdP discovery for the CLI, and actor echo. */
@@ -23,6 +23,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       via: actor.via,
       ...(actor.name ? { name: actor.name } : {}),
       ...(actor.email ? { email: actor.email } : {}),
+      isAdmin: actorIsAdmin(actor),
     });
   });
 }

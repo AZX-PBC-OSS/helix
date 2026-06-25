@@ -171,6 +171,7 @@ function UserChip() {
 }
 
 export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: () => void }) {
+  const { isAdmin } = useAuth();
   const apps = useQuery(appsQuery);
   const liveCount = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
 
@@ -191,17 +192,21 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
           ))}
         </Stack>
 
-        <Group justify="space-between" px={8} pt={18} pb={8}>
-          <Eyebrow>Admin</Eyebrow>
-          <ToneBadge tone="violet" style={{ padding: "2px 6px", fontSize: 9.5 }}>
-            ELEVATED
-          </ToneBadge>
-        </Group>
-        <Stack gap={2}>
-          {ADMIN_NAV.map((item) => (
-            <SidebarLink key={item.to} item={item} />
-          ))}
-        </Stack>
+        {isAdmin && (
+          <>
+            <Group justify="space-between" px={8} pt={18} pb={8}>
+              <Eyebrow>Admin</Eyebrow>
+              <ToneBadge tone="violet" style={{ padding: "2px 6px", fontSize: 9.5 }}>
+                ELEVATED
+              </ToneBadge>
+            </Group>
+            <Stack gap={2}>
+              {ADMIN_NAV.map((item) => (
+                <SidebarLink key={item.to} item={item} />
+              ))}
+            </Stack>
+          </>
+        )}
 
         <Box style={{ flex: 1 }} />
         <Box pt={14} style={{ borderTop: "1px solid var(--az-line)" }}>

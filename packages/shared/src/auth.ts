@@ -28,6 +28,12 @@ export const PortalMeResponseSchema = z.object({
   via: z.string(),
   name: z.string().optional(),
   email: z.string().optional(),
+  /**
+   * Whether the actor holds the `platform-admin` role. Computed server-side from
+   * the actor's group/role claim — the raw ids never cross to the browser. Drives
+   * admin nav + route gating in the SPA (and `azx whoami`).
+   */
+  isAdmin: z.boolean(),
 });
 export type PortalMeResponse = z.infer<typeof PortalMeResponseSchema>;
 

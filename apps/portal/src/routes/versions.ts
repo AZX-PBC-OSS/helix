@@ -47,18 +47,22 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // List an app's versions, newest first. Read — open.
-  app.get<{ Params: { slug: string } }>("/api/v1/apps/:slug/versions", async (req) => {
-    const appRow = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-    if (!appRow) {
-      throw new AppError("not_found", `app "${req.params.slug}" not found`);
-    }
-    const rows = await app.prisma.version.findMany({
-      where: { appId: appRow.id },
-      orderBy: { number: "desc" },
-    });
-    return rows.map(toVersion);
-  });
+  // List an app's versions, newest first. Read — sign-in required.
+  app.get<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/versions",
+    { preHandler: authenticate },
+    async (req) => {
+      const appRow = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!appRow) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      const rows = await app.prisma.version.findMany({
+        where: { appId: appRow.id },
+        orderBy: { number: "desc" },
+      });
+      return rows.map(toVersion);
+    },
+  );
 
   // Promote a preview version to live (flip the pointer). Mutating.
   app.post<{ Params: { slug: string; number: string } }>(

@@ -44,8 +44,8 @@ afterAll(async () => {
   await edge.close();
 });
 
-async function mintAccessToken(): Promise<string> {
-  return new SignJWT({ sub: "oid-1", email: "alice@azx.dev", name: "Alice Anders" })
+async function mintAccessToken(claims: Record<string, unknown> = {}): Promise<string> {
+  return new SignJWT({ sub: "oid-1", email: "alice@azx.dev", name: "Alice Anders", ...claims })
     .setProtectedHeader({ alg: "RS256" })
     .setIssuer(ISSUER)
     .setAudience(AUDIENCE)
@@ -89,13 +89,29 @@ describe("GET /api/v1/me", () => {
       via: "oidc",
       name: "Alice Anders",
       email: "alice@azx.dev",
+      // No admin group configured here → not an admin.
+      isAdmin: false,
     });
   });
 
   it("echoes the dev-token actor through the same chain", async () => {
     const res = await edge.app.inject({ url: "/api/v1/me", headers: authHeader("test-token") });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ sub: "dev@azx.io", via: "dev-token" });
+    expect(res.json()).toEqual({ sub: "dev@azx.io", via: "dev-token", isAdmin: false });
+  });
+
+  it("reports isAdmin:true when the actor carries the configured admin role", async () => {
+    const prev = process.env.PORTAL_ADMIN_GROUP_ID;
+    process.env.PORTAL_ADMIN_GROUP_ID = "platform-admin";
+    try {
+      const token = await mintAccessToken({ roles: ["platform-admin"] });
+      const res = await edge.app.inject({ url: "/api/v1/me", headers: authHeader(token) });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().isAdmin).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.PORTAL_ADMIN_GROUP_ID;
+      else process.env.PORTAL_ADMIN_GROUP_ID = prev;
+    }
   });
 
   it("401s without or with a bad token", async () => {

@@ -63,7 +63,11 @@ describe("POST /api/v1/apps/:slug/access/password (enable)", () => {
     expect(body.url).toContain(`${slug}.`);
     expect(typeof body.setAt).toBe("string");
 
-    const app = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}` });
+    const app = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+    });
     expect(app.json().visibility).toEqual({ mode: "password" });
   });
 
@@ -149,7 +153,11 @@ describe("DELETE .../password (disable)", () => {
     const res = await disable(slug);
     expect(res.statusCode).toBe(204);
 
-    const app = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}` });
+    const app = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+    });
     expect(app.json().visibility).toEqual({ mode: "private" });
     expect((await getCredential(slug)).statusCode).toBe(404);
   });
@@ -160,13 +168,24 @@ describe("DELETE .../password (disable)", () => {
   });
 });
 
-describe("the credential never leaks through open reads", () => {
+describe("the credential never leaks through registry reads", () => {
   it("is absent from GET /apps/:slug and the manifest", async () => {
     const slug = await createApp();
     const secret = (await enable(slug)).json().password;
-    const app = (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}` })).body;
-    const manifest = (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` }))
-      .body;
+    const app = (
+      await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}`,
+        headers: authHeader(),
+      })
+    ).body;
+    const manifest = (
+      await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      })
+    ).body;
     // The cleartext credential and the storage columns never appear; note
     // "password" itself legitimately shows up as the visibility mode value.
     for (const needle of [secret, "passwordEnc", "passwordHash", "passwordSalt"]) {

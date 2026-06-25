@@ -1,21 +1,35 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PortalMeResponse } from "@helix/shared";
+import { PortalApiError } from "../api/client";
 import { authConfigQuery, meQuery } from "../api/queries";
 import { beginLogin } from "./oidc";
 import { clearToken, getToken, setToken } from "./tokenStore";
 
 /**
- * Auth state for the SPA. Reads are open on the portal API, so the whole UI
- * renders logged out; a token only gates mutations. `me` comes from
- * /api/v1/me once a token is present.
+ * Auth state for the SPA. The portal API now requires sign-in for every read,
+ * so the whole UI sits behind a sign-in gate (`RequireAuth`); admin areas sit
+ * behind an additional `platform-admin` check (`RequireAdmin`). `me` comes from
+ * /api/v1/me once a token is present and carries the server-computed `isAdmin`.
  */
 
 export interface AuthState {
-  /** Bearer token present (mutations will be attempted). */
+  /** Bearer token present (the app renders below the sign-in gate). */
   authenticated: boolean;
   /** The verified actor, once /api/v1/me responds. */
   me: PortalMeResponse | undefined;
+  /** Server-computed: the actor holds the `platform-admin` role. */
+  isAdmin: boolean;
+  /** A token is present but /api/v1/me hasn't resolved yet (guards show a loader). */
+  meLoading: boolean;
   /** Whether the portal has an IdP configured (login possible at all). */
   loginAvailable: boolean;
   login: () => void;
@@ -53,16 +67,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.removeQueries({ queryKey: ["me"] });
   }, [queryClient]);
 
+  // A stale or invalid token surfaces as a 401 on /api/v1/me. Treat it as
+  // logged-out (so the UI falls back to the sign-in gate rather than rendering a
+  // broken shell whose every request 401s) and purge it from storage so a reload
+  // starts clean.
+  const tokenRejected = me.error instanceof PortalApiError && me.error.status === 401;
+  useEffect(() => {
+    if (tokenRejected) clearToken();
+  }, [tokenRejected]);
+
+  const authenticated = hasToken && !tokenRejected;
+
   const value = useMemo<AuthState>(
     () => ({
-      authenticated: hasToken,
+      authenticated,
       me: me.data,
+      isAdmin: me.data?.isAdmin ?? false,
+      meLoading: authenticated && me.isLoading,
       loginAvailable: authConfig.isSuccess && Boolean(authConfig.data.webClientId),
       login,
       adoptToken,
       logout,
     }),
-    [hasToken, me.data, authConfig.isSuccess, authConfig.data, login, adoptToken, logout],
+    [
+      authenticated,
+      me.data,
+      me.isLoading,
+      authConfig.isSuccess,
+      authConfig.data,
+      login,
+      adoptToken,
+      logout,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

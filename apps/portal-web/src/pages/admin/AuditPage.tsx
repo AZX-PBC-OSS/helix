@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   Box,
-  Button,
   Card,
   Center,
   Group,
@@ -15,7 +14,6 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { GatewayOutcome } from "@helix/shared";
 import { gatewayAuditQuery } from "../../api/queries";
-import { useAuth } from "../../auth/AuthProvider";
 import { Icon } from "../../components/Icon";
 import { Hint, PageHead, Stat, ToneBadge, type Tone } from "../../components/primitives";
 import { fmtCount, fmtUsd, timeAgo } from "../../lib/format";
@@ -32,17 +30,15 @@ const OUT_META: Record<GatewayOutcome, [Tone, string]> = {
 const AUDIT_LIMIT = 200;
 
 export function AuditPage() {
-  const { authenticated, login, loginAvailable } = useAuth();
   const [q, setQ] = useState("");
   const [out, setOut] = useState("all");
 
-  const audit = useQuery({
-    ...gatewayAuditQuery({
+  const audit = useQuery(
+    gatewayAuditQuery({
       ...(out !== "all" ? { outcome: out } : {}),
       limit: AUDIT_LIMIT,
     }),
-    enabled: authenticated,
-  });
+  );
 
   const head = (
     <PageHead
@@ -51,25 +47,6 @@ export function AuditPage() {
       sub="Gateway calls: app, user, capability, model, tokens, outcome."
     />
   );
-
-  if (!authenticated) {
-    return (
-      <div className="az-stagger">
-        {head}
-        <Hint
-          icon="user"
-          tone="neutral"
-          action={
-            <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
-              Sign in
-            </Button>
-          }
-        >
-          The audit log requires a signed-in actor.
-        </Hint>
-      </div>
-    );
-  }
 
   const all = audit.data?.rows ?? [];
   const rows = all.filter((r) => {

@@ -46,11 +46,8 @@ afterEach(() => {
 });
 
 describe("SecretsPage", () => {
-  it("prompts sign-in when logged out", () => {
-    stubSecrets([]);
-    render();
-    expect(screen.getByText(/Sign in as a platform admin to manage secrets/)).toBeDefined();
-  });
+  // Sign-in / platform-admin gating now lives in the route guards (RequireAuth /
+  // RequireAdmin), tested in guards.test.tsx — the page itself just renders data.
 
   it("lists global secrets (with bound apps) when authenticated", async () => {
     stubSecrets([SECRET]);

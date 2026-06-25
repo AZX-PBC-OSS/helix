@@ -63,20 +63,24 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(toApp(row));
   });
 
-  // List all apps. Read — open.
-  app.get("/api/v1/apps", async () => {
+  // List all apps. Read — sign-in required (any authenticated principal).
+  app.get("/api/v1/apps", { preHandler: authenticate }, async () => {
     const rows = await app.prisma.app.findMany({ orderBy: { createdAt: "asc" } });
     return rows.map(toApp);
   });
 
-  // Get one app by slug. Read — open.
-  app.get<{ Params: { slug: string } }>("/api/v1/apps/:slug", async (req) => {
-    const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-    if (!row) {
-      throw new AppError("not_found", `app "${req.params.slug}" not found`);
-    }
-    return toApp(row);
-  });
+  // Get one app by slug. Read — sign-in required.
+  app.get<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug",
+    { preHandler: authenticate },
+    async (req) => {
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      return toApp(row);
+    },
+  );
 
   // Archive an app: the edge serves 410 + Clear-Site-Data for it (architecture
   // §7). Mutating — requires the dev token. Idempotent.
@@ -127,14 +131,19 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // Get an app's manifest (slug + visibility + capability grants, §6.3). Read — open.
-  app.get<{ Params: { slug: string } }>("/api/v1/apps/:slug/manifest", async (req) => {
-    const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-    if (!row) {
-      throw new AppError("not_found", `app "${req.params.slug}" not found`);
-    }
-    return toManifest(row);
-  });
+  // Get an app's manifest (slug + visibility + capability grants, §6.3). Read —
+  // sign-in required.
+  app.get<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug/manifest",
+    { preHandler: authenticate },
+    async (req) => {
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      return toManifest(row);
+    },
+  );
 
   // Replace an app's capability grants (architecture §6.3). Mutating — bearer
   // token. Routed through the approvals write-gate (docs/design/approvals.md §3):

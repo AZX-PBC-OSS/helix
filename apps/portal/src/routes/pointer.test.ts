@@ -42,7 +42,11 @@ async function upload(slug: string) {
 }
 
 async function listVersions(slug: string): Promise<Version[]> {
-  const res = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/versions` });
+  const res = await t.app.inject({
+    method: "GET",
+    url: `/api/v1/apps/${slug}/versions`,
+    headers: authHeader(),
+  });
   return res.json();
 }
 

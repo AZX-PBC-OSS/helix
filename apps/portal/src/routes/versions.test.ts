@@ -94,7 +94,11 @@ describe("POST /api/v1/apps/:slug/versions", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe("bundle_invalid");
 
-    const list = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/versions` });
+    const list = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/versions`,
+      headers: authHeader(),
+    });
     expect(list.json()).toEqual([]);
   });
 
@@ -148,8 +152,19 @@ describe("GET /api/v1/apps/:slug/versions", () => {
     await upload(slug, await simpleBundle());
     await upload(slug, await simpleBundle());
 
-    const res = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/versions` });
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/versions`,
+      headers: authHeader(),
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json().map((v: { number: number }) => v.number)).toEqual([2, 1]);
+  });
+
+  it("requires sign-in to list versions (401)", async () => {
+    const slug = uniqueSlug();
+    await createApp(slug);
+    const res = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/versions` });
+    expect(res.statusCode).toBe(401);
   });
 });

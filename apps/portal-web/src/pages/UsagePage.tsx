@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { Button, Card, Center, Group, Loader, SimpleGrid, Text } from "@mantine/core";
+import { Card, Center, Group, Loader, SimpleGrid, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { PLATFORM_RANGES, type PlatformRange } from "@helix/shared";
 import { platformUsageQuery } from "../api/queries";
-import { useAuth } from "../auth/AuthProvider";
 import { Meter } from "../components/charts";
 import {
   MetricToggle,
@@ -20,33 +19,14 @@ import { fmtCount, fmtUsd } from "../lib/format";
  * honestly rather than faking per-owner scoping.
  */
 export function UsagePage() {
-  const { authenticated, login, loginAvailable } = useAuth();
   const [range, setRange] = useState<PlatformRange>("30d");
   const [metric, setMetric] = useState<UsageMetric>("cost");
-  const usage = useQuery({ ...platformUsageQuery(range), enabled: authenticated });
+  const usage = useQuery(platformUsageQuery(range));
 
   const head = (
     <PageHead eyebrow="Workspace" title="Usage" sub="Gateway spend, tokens, and requests." />
   );
 
-  if (!authenticated) {
-    return (
-      <div className="az-stagger">
-        {head}
-        <Hint
-          icon="user"
-          tone="neutral"
-          action={
-            <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
-              Sign in
-            </Button>
-          }
-        >
-          Sign in to view gateway usage.
-        </Hint>
-      </div>
-    );
-  }
   if (usage.isPending) {
     return (
       <div className="az-stagger">

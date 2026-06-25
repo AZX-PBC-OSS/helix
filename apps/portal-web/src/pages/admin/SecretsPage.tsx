@@ -21,7 +21,6 @@ import {
   useRevokeSecret,
   useRotateGlobalSecret,
 } from "../../api/mutations";
-import { useAuth } from "../../auth/AuthProvider";
 import { Icon } from "../../components/Icon";
 import { Eyebrow, Hint, PageHead, ToneBadge } from "../../components/primitives";
 
@@ -48,8 +47,7 @@ function describeInjection(r: InjectionRecipe): string {
 }
 
 export function SecretsPage() {
-  const { authenticated, login, loginAvailable } = useAuth();
-  const secrets = useQuery({ ...globalSecretsQuery, enabled: authenticated });
+  const secrets = useQuery(globalSecretsQuery);
   const create = useCreateGlobalSecret();
   const rotate = useRotateGlobalSecret();
   const del = useDeleteGlobalSecret();
@@ -92,36 +90,19 @@ export function SecretsPage() {
         sub="Platform vendor keys (e.g. the LLM key) and global connection secrets. Write-only — values are never shown again."
       />
 
-      {!authenticated && (
-        <Card py={48} style={{ textAlign: "center" }}>
-          <Stack align="center" gap={10}>
-            <Text c="dark.2" size="sm">
-              Sign in as a platform admin to manage secrets.
-            </Text>
-            <Button
-              onClick={login}
-              disabled={!loginAvailable}
-              leftSection={<Icon name="user" size={14} />}
-            >
-              Sign in
-            </Button>
-          </Stack>
-        </Card>
-      )}
-
-      {authenticated && secrets.isPending && (
+      {secrets.isPending && (
         <Center py={60}>
           <Loader size="sm" />
         </Center>
       )}
 
-      {authenticated && secrets.isError && (
+      {secrets.isError && (
         <Hint icon="alert" tone="bad">
-          Couldn't load secrets: {secrets.error.message}. This requires the platform-admin role.
+          Couldn't load secrets: {secrets.error.message}
         </Hint>
       )}
 
-      {authenticated && secrets.data && (
+      {secrets.data && (
         <Stack gap={18}>
           {/* Create */}
           <Card>

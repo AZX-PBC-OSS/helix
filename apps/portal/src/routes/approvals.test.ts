@@ -108,7 +108,11 @@ describe("approve", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("approved");
 
-    const manifest = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
+    const manifest = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+    });
     expect(manifest.json().capabilities.mcp).toEqual(["pagerduty"]);
   });
 
@@ -190,7 +194,11 @@ describe("approve", () => {
     expect(res.json().status).toBe("needs_changes");
 
     // The stale request did not clobber the concurrent value.
-    const manifest = await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest` });
+    const manifest = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+    });
     expect(manifest.json().capabilities.mcp).toEqual(["other"]);
   });
 });
@@ -253,7 +261,8 @@ describe("go-public via the visibility write-gate", () => {
     expect(requestId).toBeTruthy();
     // Not public yet.
     expect(
-      (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}` })).json().visibility.mode,
+      (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}`, headers: owner })).json()
+        .visibility.mode,
     ).toBe("private");
 
     await t.app.inject({
@@ -262,7 +271,8 @@ describe("go-public via the visibility write-gate", () => {
       headers: admin,
     });
     expect(
-      (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}` })).json().visibility.mode,
+      (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}`, headers: owner })).json()
+        .visibility.mode,
     ).toBe("public");
   });
 

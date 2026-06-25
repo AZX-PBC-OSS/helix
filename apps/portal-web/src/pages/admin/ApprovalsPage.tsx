@@ -15,7 +15,6 @@ import { useQuery } from "@tanstack/react-query";
 import type { ApprovalRequest, Delta } from "@helix/shared";
 import { approvalsQuery } from "../../api/queries";
 import { useApproveRequest, useDenyRequest, useRequestChanges } from "../../api/mutations";
-import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Hint, PageHead, ToneBadge, type Tone } from "../../components/primitives";
 import { timeAgo } from "../../lib/format";
@@ -48,8 +47,7 @@ function diffText(deltas: Delta[]): string {
 }
 
 export function ApprovalsPage() {
-  const { authenticated, login, loginAvailable } = useAuth();
-  const queue = useQuery({ ...approvalsQuery({ status: "pending" }), enabled: authenticated });
+  const queue = useQuery(approvalsQuery({ status: "pending" }));
   const approve = useApproveRequest();
   const deny = useDenyRequest();
   const requestChanges = useRequestChanges();
@@ -83,37 +81,19 @@ export function ApprovalsPage() {
         }
       />
 
-      {!authenticated && (
-        <Card py={48} style={{ textAlign: "center" }}>
-          <Stack align="center" gap={10}>
-            <Text c="dark.2" size="sm">
-              Sign in as a platform admin to review approval requests.
-            </Text>
-            <Button
-              onClick={login}
-              disabled={!loginAvailable}
-              leftSection={<Icon name="user" size={14} />}
-            >
-              Sign in
-            </Button>
-          </Stack>
-        </Card>
-      )}
-
-      {authenticated && queue.isPending && (
+      {queue.isPending && (
         <Center py={60}>
           <Loader size="sm" />
         </Center>
       )}
 
-      {authenticated && queue.isError && (
+      {queue.isError && (
         <Hint icon="alert" tone="bad">
-          Couldn't load the queue: {queue.error.message}. The global queue requires the
-          platform-admin role.
+          Couldn't load the queue: {queue.error.message}
         </Hint>
       )}
 
-      {authenticated && !queue.isPending && !queue.isError && requests.length === 0 && (
+      {!queue.isPending && !queue.isError && requests.length === 0 && (
         <Card py={56} style={{ textAlign: "center" }}>
           <Stack align="center" gap={6}>
             <Icon name="check" size={26} style={{ color: "var(--az-live)" }} />
