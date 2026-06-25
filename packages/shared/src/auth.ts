@@ -49,14 +49,21 @@ export type AuthConfigResponse = z.infer<typeof AuthConfigResponseSchema>;
  * The delegated API scope a client (SPA/CLI) must request so its access token is
  * audienced to the portal API. Entra derives a token's `aud` from the requested
  * resource scope — asking for only `openid profile email` yields a token
- * audienced to Microsoft Graph, which the portal rejects. The portal's App ID
- * URI (`api://<client-id>`) exposes an `access` scope; request it.
+ * audienced to Microsoft Graph, which the portal rejects. So request the App ID
+ * URI scope `api://<client-id>/access`.
+ *
+ * Note the scope is always the `api://…` App ID URI form, but the resulting v2
+ * access token carries `aud` = the bare client-id GUID — so `PORTAL_OIDC_AUDIENCE`
+ * (what the portal verifies) is that GUID, while the scope we request here is
+ * `api://<that GUID>/access`. We accept either form of `audience` and normalize:
+ * a bare GUID gets the `api://` prefix; an already-`api://` value is used as-is.
  *
  * Returns null for the local dev IdP (audience `urn:helix:portal`), which forces
  * the audience via resource indicators and exposes no such scope — so the
  * clients keep requesting plain OIDC scopes there, unchanged.
  */
 export function portalApiScope(audience: string | undefined): string | null {
-  if (!audience || !audience.startsWith("api://")) return null;
-  return `${audience.replace(/\/+$/, "")}/access`;
+  if (!audience || audience.startsWith("urn:")) return null;
+  const appIdUri = audience.startsWith("api://") ? audience : `api://${audience}`;
+  return `${appIdUri.replace(/\/+$/, "")}/access`;
 }

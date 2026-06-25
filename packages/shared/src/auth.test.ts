@@ -8,6 +8,12 @@ describe("portalApiScope", () => {
     );
   });
 
+  it("prefixes api:// for a bare client-id GUID audience (Entra v2 token aud)", () => {
+    expect(portalApiScope("e7dcb199-77d8-499f-8c18-07b8b2cc9fb8")).toBe(
+      "api://e7dcb199-77d8-499f-8c18-07b8b2cc9fb8/access",
+    );
+  });
+
   it("tolerates a trailing slash on the audience", () => {
     expect(portalApiScope("api://abc/")).toBe("api://abc/access");
   });

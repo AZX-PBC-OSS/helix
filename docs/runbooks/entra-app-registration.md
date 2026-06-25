@@ -101,9 +101,11 @@ audience) — the simplest topology.
 - Registering the redirect under the **SPA platform** makes Entra serve CORS on
   the token endpoint automatically (this replaces the dev-idp `clientBasedCORS`
   hack) and enforces PKCE.
-- **Audience note:** Entra does **not** allow the dev value `urn:helix:portal`
-  as an Application ID URI — it must be `api://<guid>` (or a verified custom
-  domain). This is an env change only: `PORTAL_OIDC_AUDIENCE`.
+- **Audience note:** the Application ID URI must be `api://<guid>` (Entra rejects
+  the dev value `urn:helix:portal`; a verified custom domain also works). That
+  URI is what the *scope* is built from — but `PORTAL_OIDC_AUDIENCE` (what the
+  portal verifies) is the **bare GUID** once you use v2 tokens; see the gotcha
+  below.
 
 **Expose an API → Add a scope.** This is the delegated permission the SPA and
 CLI request so their tokens target the portal. Fill the form:
@@ -118,22 +120,36 @@ CLI request so their tokens target the portal. Fill the form:
 | User consent description | `Allows the app to access the Helix portal API on your behalf.` |
 | State | **Enabled** |
 
-#### The token-audience gotcha (read this)
+#### The token-audience gotcha (read this — two traps)
 
 The portal validates that every access token's `aud` equals `PORTAL_OIDC_AUDIENCE`
-(`api://<helix-portal-client-id>`). **Entra sets a token's `aud` from the
-resource scope the client requests.** A client that asks for only
-`openid profile email` gets a token audienced to Microsoft Graph — which the
-portal rejects. So the SPA and CLI must request `api://…/access`.
+and `iss` equals the configured issuer. Two Entra defaults each break that; both
+are one-time fixes and both bit us during the first login.
 
-The dev IdP hid this: it used OIDC *resource indicators* to force every token's
-audience to `urn:helix:portal` regardless of the requested scope. Entra does not.
+**Trap 1 — request the API scope.** Entra sets a token's `aud` from the resource
+scope the client requests. A client asking for only `openid profile email` gets a
+token audienced to Microsoft Graph, which the portal rejects — so the SPA and CLI
+must request `api://<client-id>/access`. (The dev IdP hid this by forcing the
+audience via resource indicators regardless of scope; Entra does not.) **Handled
+in code:** `portalApiScope(audience)` (`packages/shared`) requests that scope
+whenever the portal advertises a non-`urn:` (i.e. Entra) audience; it's a no-op
+for the dev IdP's `urn:` audience.
 
-**This is handled in code** — `portalApiScope(audience)` (`packages/shared`)
-appends `/access` whenever the portal advertises an `api://` audience, and is a
-no-op for the dev IdP's `urn:` audience. So you don't request it by hand; you
-just have to know it's why the scope above must exist and why Reg 3 needs the API
-permission below.
+**Trap 2 — use v2 tokens, and set the audience to the bare GUID.** Exposing a
+custom API makes Entra issue **v1-format access tokens by default**
+(`iss = https://sts.windows.net/<tenant>/`), which the portal — pinned to the v2
+issuer — rejects with a 401 (login still works, because that uses the *ID* token,
+which is already v2). Fix it on the helix-portal **Manifest**: set
+`"requestedAccessTokenVersion": 2` (older manifest format:
+`"accessTokenAcceptedVersion": 2`). **There is no UI toggle — it's manifest-only**,
+or via CLI: `az ad app update --id <helix-portal-client-id> --set api.requestedAccessTokenVersion=2`.
+
+> **Consequence that bites next:** a **v2** access token's `aud` is the **bare
+> client-id GUID**, not the `api://` App ID URI (v1 was the opposite). So
+> `PORTAL_OIDC_AUDIENCE` must be the **GUID** (`<helix-portal-client-id>`), not
+> `api://…`. The *scope* you request stays `api://…/access`; only the resulting
+> token's `aud` is the GUID. (`portalApiScope` normalizes either form, so a bare
+> GUID audience still yields the `api://…/access` scope.)
 
 **Define the admin role** (App roles → Create app role):
 
@@ -165,7 +181,8 @@ so the portal sees `platform-admin` for assigned users.
 **Add the API permission** (this is the Reg 3 half of the audience gotcha above):
 _API permissions → Add a permission → **My APIs** → `helix-portal` → Delegated
 permissions → check **`access`** → Add._ The CLI's access token then carries
-`aud = api://<helix-portal-client-id>` and the user's `roles`.
+`aud = <helix-portal-client-id>` (the bare GUID, with v2 tokens) and the user's
+`roles`.
 
 **Admin consent is optional**, because the `access` scope is set to "Admins and
 users" can consent. The "Grant admin consent for \<tenant\>" button is greyed out
@@ -232,7 +249,7 @@ Confirm the base-domain/port config produces the portless callback
 | Var | Value |
 | --- | --- |
 | `PORTAL_OIDC_ISSUER` | `https://login.microsoftonline.com/{tenantId}/v2.0` |
-| `PORTAL_OIDC_AUDIENCE` | `api://<helix-portal-client-id>` (replaces `urn:helix:portal`) |
+| `PORTAL_OIDC_AUDIENCE` | the **bare** `<helix-portal-client-id>` GUID (v2 token `aud`; replaces `urn:helix:portal`) |
 | `AZX_CLI_CLIENT_ID` | azx-cli client id (GUID) |
 | `AZX_WEB_CLIENT_ID` | helix-portal client id (GUID) |
 | `PORTAL_ADMIN_GROUP_ID` | **`platform-admin`** (the app-role value) |
