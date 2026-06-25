@@ -17,9 +17,12 @@ import { PgCspReportStore } from "./serving/cspReport.js";
 
 /**
  * Dev convenience: load `apps/edge/.env.local` (gitignored) into process.env
- * before config, so the vendor key need not be exported by hand. Real env wins
- * — a value already set is never overwritten. Hand-rolled (no `dotenv`): the
- * edge is dependency-minimal (project plan §6).
+ * before config. As a developer-local override file (the `.env.local`
+ * convention), its values WIN over the inherited environment — so you can
+ * repoint the edge at a different IdP (e.g. real Entra, via certificate auth)
+ * without editing the committed devcontainer env. Absent in prod/CI (it's
+ * gitignored), where this is a no-op. Hand-rolled (no `dotenv`): the edge is
+ * dependency-minimal (project plan §6).
  */
 function loadDotEnvLocal(): void {
   let text: string;
@@ -34,7 +37,6 @@ function loadDotEnvLocal(): void {
     const eq = trimmed.indexOf("=");
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
-    if (key in process.env) continue;
     let value = trimmed.slice(eq + 1).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
