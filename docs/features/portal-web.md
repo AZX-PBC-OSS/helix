@@ -59,8 +59,10 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 
 Code + **PKCE** against the dev IdP's third public client `azx-portal-web` (`oidc.ts` over
 `openid-client`; `CallbackPage` handles `/auth/callback`). The token is held **per-tab** in
-sessionStorage (`tokenStore.ts`), surfaced through `AuthProvider`. Reads work logged-out;
-mutations gate on the token. The IdP's `clientBasedCORS` is scoped to **this client only**, so the
+sessionStorage (`tokenStore.ts`), surfaced through `AuthProvider`. Sign-in is now required for
+every page: a full-page `RequireAuth` gate wraps the SPA and `RequireAdmin` gates `/admin/*` on the
+`isAdmin` flag from `/me` (a 401 on `/me` purges the stale token and falls back to logged-out). The
+IdP's `clientBasedCORS` is scoped to **this client only**, so the
 token endpoint opens to the SPA without opening it to the world.
 
 ### Serving + dev

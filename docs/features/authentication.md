@@ -136,9 +136,10 @@ Anything touching this path changes its tests **in lockstep**:
 
 ## Portal / CLI auth (the control plane)
 
-**What it is.** Portal mutating routes (`/api/v1/...`) require a bearer token run through a
-**verifier chain** in `apps/portal/src/auth/verifier.ts`; the first verifier that accepts wins.
-Reads are open. Built from env in `apps/portal/src/plugins/auth.ts` (the `authenticate`
+**What it is.** Portal `/api/v1/...` routes — reads and mutations alike — require a bearer
+token run through a **verifier chain** in `apps/portal/src/auth/verifier.ts`; the first verifier
+that accepts wins. Only `/health` and the auth-config bootstrap endpoint stay public (so the SPA
+can sign in). Built from env in `apps/portal/src/plugins/auth.ts` (the `authenticate`
 preHandler).
 
 1. **OIDC verifier** — an IdP-minted JWT verified statelessly over the issuer's JWKS (`jose`).

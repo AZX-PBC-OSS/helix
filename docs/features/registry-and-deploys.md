@@ -2,8 +2,9 @@
 
 **What it is.** The control plane (`apps/portal` — azx-portal) owns the registry and the deploy
 pipeline under `/api/v1`. It is the only writer of the Postgres schema (Prisma 7 + pg driver
-adapter); the edge reads a cached projection. Reads are open; mutations take a bearer token
-(see [authentication.md](./authentication.md)). Deploys land as **`preview`** versions —
+adapter); the edge reads a cached projection. All `/api/v1` routes — reads and mutations
+alike — require a bearer token (only `/health` and the auth-config bootstrap stay public);
+see [authentication.md](./authentication.md). Deploys land as **`preview`** versions —
 promotion to live is a separate, explicit step (architecture §5.1).
 
 ## How it works
