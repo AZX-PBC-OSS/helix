@@ -17,7 +17,7 @@ Consequence: the headline claim *"an edge RCE reaches no secret"* is too strong.
 
 1. **Now (cheap):** add a `jti` one-time-use burn (bounded seen-set / table at egress) and `aud: "azx-egress"`, asserted in `jwtVerify`. Closes replay and token-passthrough (ISSUE-04).
 2. **Before multi-tenant:** **already done for `fetch`** (`secrets.ts:48-92` scopes by `appId` + grants); extend the same per-action check to the `llm`/platform path and **bind `method`+`path`** into the instruction (not just `origin`, `proxy.ts:101`). Caveat: this only constrains a *well-behaved* edge — the forgeable-`appId` root cause is step 3.
-3. **Post-M5 (open):** move from the shared symmetric secret to **asymmetric** (edge signs with a private key, egress verifies with a public key) or **per-app-derived** instruction keys, so an edge compromise cannot forge cross-app instructions.
+3. **Post-M5 (open):** move from the shared symmetric secret to **asymmetric** signing — **Ed25519** (edge holds the private key; egress holds only the public verification key). Model the instruction on **IETF Transaction Tokens** (`draft-ietf-oauth-transaction-tokens`): a short-lived signed JWT with a required **scope** representing the specific purpose/intent of the call (here: capability + origin + connection + method + path), an `aud` naming the egress trust domain, and a short `exp`. (Per-app-derived symmetric keys were evaluated and **rejected** — see the Challenge-outcome note: both planes hold the master, so it delivers no isolation.) Scope: the *leak-surface* win below, not edge-compromise containment.
 
 ## Consequences
 
@@ -30,6 +30,7 @@ Consequence: the headline claim *"an edge RCE reaches no secret"* is too strong.
 - Shared symmetric HMAC across services is an explicit anti-pattern — *"any compromised service can forge tokens for the entire system"* (Ping Identity; WorkOS RS256-vs-HS256). `Brave ✗` on the current design.
 - Egress matches the **credential-broker** pattern (SANS `draft-hartman-credential-broker-4-agents`; Anthropic vault-proxy; Cloudflare Outbound Workers). Best practice: broker **authorizes each action**, **validates `aud` / forbids token passthrough**, issues **short-lived one-time** capabilities.
 - The literature names this exact residual: a compromised deputy *can use but not read* the credential → mitigate with per-action scope at the broker, not just signature verification.
+- **IETF Transaction Tokens** (`draft-ietf-oauth-transaction-tokens`) is the standard to model the instruction on: a service mints a short-lived signed token capturing the downstream transaction's intent, with a required `scope` ("MUST represent the specific purpose or intent of the transaction"), `aud`, and short `exp` — exactly the shape of our attested instruction. Adopt its vocabulary (scope = intent) for step 3.
 
 ## Open question (needs sign-off)
 
