@@ -38,3 +38,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0022](0022-self-hosted-edge-not-front-door.md) | Self-hosted edge/auth, not a cloud-vendor edge | Accepted |
 | [0023](0023-one-org-app-id-partitioning.md) | One org now, app-id partitioning everywhere | Accepted |
 | [0024](0024-portal-cli-bearer-jwt-jwks.md) | Portal/CLI authentication: bearer JWT over JWKS | Accepted |
+| [0025](0025-registry-projection-hardening.md) | Registry projection hardening (observability, jitter, cold-start) | Proposed |
