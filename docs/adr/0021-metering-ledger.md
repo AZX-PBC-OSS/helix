@@ -23,3 +23,13 @@ One **append-only** `gateway_calls` row per call: `(appId, userOid, capability, 
 - The ledger is a metering + budget primitive, deliberately narrow (no latency/error-detail/size) — not an observability sink.
 
 > Note: `docs/features/llm-gateway.md` still says "tokens, not dollars … no cost column" — **stale**; the `costMicroUsd` column exists. Reconcile that doc.
+
+## Challenge outcome (2026-06-26)
+
+The Phase-1 P0 admin story demands a **tamper-evident** audit log; this ledger is not one, and "append-only by grant" is weaker than the Decision implies (filed as **#17**, Important).
+
+- **"Append-only" binds only the edge.** `helix_edge` is INSERT-only, but **`helix_portal` has `UPDATE`/`DELETE`** on `gateway_calls` (`migration.sql:30-31`), so the control-plane role / schema owner / a portal RCE can rewrite or delete history. (The `schema.prisma:187` comment claiming the portal "never writes" these rows contradicts that grant.)
+- **Hash-chaining alone is not the fix.** It's the right primitive (RFC 9162 CT, QLDB), but against a *privileged writer* an in-DB chain is forgeable — the writer recomputes every downstream hash. **External anchoring** of the chain head to a write-only sink outside the writer's control (the §8 immutable sink, `platform-architecture.md:285`) is the **load-bearing** part. Tamper-evident ≠ tamper-proof.
+- **GDPR:** two defensible paths, not one — crypto-shredding (per-subject key, hashes over ciphertext) for content/PII rows; a documented legal-obligation/legitimate-interest retention basis (Art. 17(3)) for the metering tuple.
+
+**Sequenced fix:** (1) pre-M5, one line — revoke `helix_portal` `UPDATE`/`DELETE` on `gateway_calls` (makes append-only true for every writer role, aligns the grant with the `schema.prisma:187` comment); (2) fast-follow before any external audit — hash chain + Merkle + external anchoring; (3) GDPR per above. Severity Important (the single-trusted-operator pilot bounds insider risk today).
