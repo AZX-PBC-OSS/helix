@@ -122,6 +122,17 @@ export interface EdgeConfig {
    */
   anonRateLimit: { max: number; windowMs: number };
   /**
+   * Builder endpoint wiring (the "Lovable at home" prototype, Track A). An
+   * OpenAI-compatible `POST /v1/chat/completions` on the platform host lets a
+   * web app builder (bolt.diy) drive the platform's LLM seam as if it were
+   * OpenAI — provider-agnostic by construction, keyless for the builder. Gated
+   * on a shared bearer key; `apiKey: null` disables the routes (they 404).
+   */
+  builder: {
+    /** Shared dev bearer key from EDGE_BUILDER_API_KEY; null disables the routes. */
+    apiKey: string | null;
+  };
+  /**
    * Fetch-proxy wiring (M4.5). The edge is the policy plane: it authorizes a
    * `/_api/fetch` call and hands a signed attested instruction to `azx-egress`.
    * The capability is enabled only when BOTH `egressUrl` and `instructionSecret`
@@ -365,6 +376,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     anonRateLimit: {
       max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),
       windowMs: Number(env.EDGE_ANON_RATE_WINDOW_MS ?? 60_000),
+    },
+    builder: {
+      apiKey: env.EDGE_BUILDER_API_KEY || null,
     },
     fetch: {
       egressUrl: env.EDGE_EGRESS_URL || null,

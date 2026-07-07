@@ -11,12 +11,16 @@ export default defineConfig([
   globalIgnores([
     "**/dist/**",
     "**/node_modules/**",
+    "**/.pnpm-store/**",
     "**/coverage/**",
     "**/*.tsbuildinfo",
     "apps/portal/src/db/generated/**",
     // Example apps are standalone projects, not part of the platform source
     // tree — they have their own build and aren't subject to platform lint.
     "examples/**",
+    // The "Lovable at home" prototype overlay + its gitignored bolt.diy clone —
+    // a standalone external project, not platform source (see builder/README.md).
+    "builder/**",
   ]),
   {
     files: ["**/*.{js,mjs,ts,tsx}"],

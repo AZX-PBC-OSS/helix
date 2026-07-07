@@ -15,6 +15,7 @@ import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import { isSameOrigin } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
+import { abortOnClientDisconnect } from "./clientAbort.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
 import type { GatewayOutcome, UsageStore } from "./usage.js";
 
@@ -187,9 +188,9 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
       }
     }
 
-    // Admitted. Abort the upstream if the client goes away.
-    const abort = new AbortController();
-    req.raw.on("close", () => abort.abort());
+    // Admitted. Abort the upstream if the client goes away before we finish
+    // (guarded on the response socket — see abortOnClientDisconnect).
+    const abort = abortOnClientDisconnect(reply);
 
     const startedAt = performance.now();
     let recorded = false;

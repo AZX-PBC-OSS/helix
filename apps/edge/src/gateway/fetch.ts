@@ -13,6 +13,7 @@ import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import { isSameOrigin } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
+import { abortOnClientDisconnect } from "./clientAbort.js";
 import { EgressProviderError, type EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
 import type { GatewayOutcome, UsageStore } from "./usage.js";
@@ -174,8 +175,12 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       rt.instructionKey,
     );
 
-    const abort = new AbortController();
-    req.raw.on("close", () => abort.abort());
+    // Abort the egress round-trip if the client goes away before we finish
+    // (guarded on the response socket — see abortOnClientDisconnect). Guarding
+    // on req.raw would be doubly wrong here: this handler streams req.raw AS the
+    // upstream request body, so its `close` fires the moment egress finishes
+    // reading the body — while the response is still streaming back.
+    const abort = abortOnClientDisconnect(reply);
 
     const startedAt = performance.now();
     const record = (

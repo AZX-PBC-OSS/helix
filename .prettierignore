@@ -1,4 +1,5 @@
 node_modules
+.pnpm-store
 dist
 coverage
 pnpm-lock.yaml
@@ -12,3 +13,6 @@ docs
 
 # Example apps are standalone projects with their own build, not platform source.
 examples
+
+# "Lovable at home" prototype overlay + gitignored bolt.diy clone (builder/README.md).
+builder

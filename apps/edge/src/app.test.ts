@@ -30,6 +30,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
       connection: "anthropic",
     },
     anonRateLimit: { max: 0, windowMs: 60_000 },
+    builder: { apiKey: null },
     fetch: { egressUrl: null, instructionSecret: null, timeoutMs: 30_000 },
     ...overrides,
   };

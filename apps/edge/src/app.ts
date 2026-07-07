@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { HealthStatusSchema } from "@helix/shared";
+import { CURATED_LLM_MODELS, HealthStatusSchema } from "@helix/shared";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
 import type { RegistryReader } from "./registry/projection.js";
@@ -24,6 +24,7 @@ import { LoginThrottle } from "./auth/loginThrottle.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
+import { makeBuilderChatHandler, makeBuilderModelsHandler } from "./gateway/builder-llm.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
@@ -208,6 +209,21 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           instructionKey: deps.instructionKey ?? null,
         })
       : null;
+  // The builder endpoint (the "Lovable at home" prototype, Track A): an
+  // OpenAI-compatible LLM surface on the platform host so a web app builder
+  // (bolt.diy) can drive the same LlmProvider seam as if it were OpenAI. Built
+  // only when a bearer key is configured; the routes 404 otherwise. It reuses
+  // deps.llmProvider (may be null → 503) — deliberately NOT the app-facing
+  // /_api/llm/chat gateway and its per-app policy.
+  const builderRuntime = {
+    provider: deps.llmProvider ?? null,
+    apiKey: config.builder.apiKey,
+    models: CURATED_LLM_MODELS,
+  };
+  const handleBuilderChat = config.builder.apiKey ? makeBuilderChatHandler(builderRuntime) : null;
+  const handleBuilderModels = config.builder.apiKey
+    ? makeBuilderModelsHandler(builderRuntime)
+    : null;
   // The CSP report sink is unauthenticated (browsers send no credentials with
   // report beacons) and always available — it only ever appends.
   const handleCspReport = makeCspReportHandler({
@@ -302,6 +318,36 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       },
     });
   }
+
+  // Builder endpoint (the "Lovable at home" prototype): OpenAI-compatible LLM
+  // surface on the PLATFORM host only. GET /v1/models on an app host is just an
+  // asset path (serveAsset — mirroring /start); POST has no app-host semantics.
+  app.route({
+    method: "POST",
+    url: "/v1/chat/completions",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "platform" && handleBuilderChat) {
+        await handleBuilderChat(req, reply);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+  app.route({
+    method: ["GET", "HEAD"],
+    url: "/v1/models",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "platform" && handleBuilderModels) {
+        await handleBuilderModels(req, reply);
+        return;
+      }
+      if (req.hostClass.kind === "app") {
+        await serveAsset(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
 
   // Shared-password challenge (`password` visibility), on app hosts only. GET
   // serves the login page; POST verifies and mints the session. Non-password
