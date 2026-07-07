@@ -212,11 +212,17 @@ export function makeBuilderChatHandler(rt: BuilderLlmRuntime) {
         reply.raw.write("data: [DONE]\n\n");
         reply.raw.end();
       } catch (err) {
-        if (!started) startSse(reply);
-        // No standard SSE error frame in OpenAI's protocol; clients read an
-        // error object off the stream, then the close.
-        writeChunk(reply, openAiError(describeError(err), "server_error"));
-        reply.raw.end();
+        const { status, message, code } = upstreamError(err, req.log);
+        if (!started) {
+          // Nothing sent yet — a real HTTP status + message is far more useful to
+          // the client than a 200 stream carrying an error object.
+          sendOpenAiError(reply, status, openAiError(message, "invalid_request_error", code));
+        } else {
+          // Mid-stream: no standard SSE error frame in OpenAI's protocol; emit an
+          // error object then close.
+          writeChunk(reply, openAiError(message, "server_error", code));
+          reply.raw.end();
+        }
       }
       return;
     }
@@ -239,7 +245,8 @@ export function makeBuilderChatHandler(rt: BuilderLlmRuntime) {
         }
       }
     } catch (err) {
-      sendOpenAiError(reply, 502, openAiError(describeError(err), "server_error"));
+      const { status, message, code } = upstreamError(err, req.log);
+      sendOpenAiError(reply, status, openAiError(message, "invalid_request_error", code));
       return;
     }
 
@@ -292,7 +299,46 @@ export function makeBuilderModelsHandler(rt: BuilderLlmRuntime) {
   };
 }
 
-/** Map a provider failure to a short, safe message for the client. */
-function describeError(err: unknown): string {
-  return err instanceof LlmProviderError ? "upstream LLM request failed" : "LLM request failed";
+/**
+ * Log a provider failure and map it to a client status + message. The builder
+ * endpoint is a developer tool (not the untrusted-app path), so — unlike the
+ * app-facing gateway, which hides vendor detail — we surface the upstream status
+ * and message: a bolt "prompt is too long" / "max_tokens" 400 is exactly what
+ * the developer needs to see. The full error is also logged for the edge shell.
+ */
+function upstreamError(
+  err: unknown,
+  log: FastifyRequest["log"],
+): { status: number; message: string; code: string } {
+  if (err instanceof LlmProviderError) {
+    log.warn(
+      { err: err.message, upstreamStatus: err.upstreamStatus },
+      "builder llm upstream failed",
+    );
+    // A 4xx from the vendor (bad request, rate limit) is the caller's to see and
+    // act on; pass it through. 5xx/unknown collapse to 502 (a gateway failure).
+    const passthrough =
+      err.upstreamStatus !== undefined && err.upstreamStatus >= 400 && err.upstreamStatus < 500;
+    return {
+      status: passthrough ? err.upstreamStatus : 502,
+      message: extractUpstreamMessage(err.message),
+      code: err.upstreamStatus === 429 ? "rate_limit_exceeded" : "upstream_error",
+    };
+  }
+  log.warn({ err: err instanceof Error ? err.message : String(err) }, "builder llm failed");
+  return { status: 500, message: "LLM request failed", code: "internal_error" };
+}
+
+/** Pull the vendor's error text out of the wrapped provider message, if present. */
+function extractUpstreamMessage(wrapped: string): string {
+  const brace = wrapped.indexOf("{");
+  if (brace !== -1) {
+    try {
+      const parsed = JSON.parse(wrapped.slice(brace)) as { error?: { message?: string } };
+      if (parsed.error?.message) return parsed.error.message;
+    } catch {
+      /* fall through to the raw wrapped message */
+    }
+  }
+  return wrapped;
 }

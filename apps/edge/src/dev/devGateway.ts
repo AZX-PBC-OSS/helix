@@ -231,11 +231,36 @@ export function makeDevLlmHandler(rt: DevGatewayRuntime) {
       await recordOnce(stopReason === "refusal" ? "refusal" : "ok");
     } catch (err) {
       await recordOnce("error");
+      // Dev surface — surface the vendor detail (e.g. "prompt is too long") and
+      // log it for the edge shell, like the builder endpoint.
+      const detail =
+        err instanceof LlmProviderError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      req.log.warn({ err: detail }, "dev gateway llm upstream failed");
       const message =
-        err instanceof LlmProviderError ? "upstream LLM request failed" : "LLM request failed";
+        err instanceof LlmProviderError
+          ? extractUpstreamMessage(err.message)
+          : "LLM request failed";
       if (!started) startSse(reply, cors);
       writeSseEvent(reply, "error", { code: "internal", message });
       reply.raw.end();
     }
   };
+}
+
+/** Pull the vendor error text out of the wrapped provider message, if present. */
+function extractUpstreamMessage(wrapped: string): string {
+  const brace = wrapped.indexOf("{");
+  if (brace !== -1) {
+    try {
+      const parsed = JSON.parse(wrapped.slice(brace)) as { error?: { message?: string } };
+      if (parsed.error?.message) return parsed.error.message;
+    } catch {
+      /* fall through */
+    }
+  }
+  return wrapped;
 }

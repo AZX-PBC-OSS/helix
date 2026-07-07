@@ -94,7 +94,16 @@ export function createHelixClient(config?: HelixConfig): HelixClient {
           signal: opts?.signal,
         });
         if (!res.ok || !res.body) {
-          throw new Error(`helix llm chat failed: HTTP ${res.status}`);
+          // Surface the gateway's error message (e.g. "prompt is too long") when
+          // present, not just the status.
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = (await res.json()) as { error?: { message?: string } };
+            if (body.error?.message) detail = body.error.message;
+          } catch {
+            /* no/!json body — keep the status */
+          }
+          throw new Error(`helix llm chat failed: ${detail}`);
         }
         return await readSse(res.body, opts?.onDelta);
       },
