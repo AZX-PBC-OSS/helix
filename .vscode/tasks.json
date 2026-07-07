@@ -3,7 +3,7 @@
   "tasks": [
     {
       "label": "dev: all",
-      "dependsOn": ["dev:idp", "dev:portal", "dev:edge", "dev:egress", "dev:web"],
+      "dependsOn": ["dev:idp", "dev:portal", "dev:edge", "dev:egress", "dev:web", "dev:builder"],
       "dependsOrder": "parallel",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
@@ -69,6 +69,19 @@
       "problemMatcher": [],
       "presentation": {
         "group": "portal",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:builder",
+      "detail": "bolt.diy prototype (:5180, run builder/setup.sh first)",
+      "type": "shell",
+      "command": "pnpm dev:builder",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "builder",
         "panel": "dedicated",
         "reveal": "always"
       }

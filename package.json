@@ -13,6 +13,7 @@
     "dev:portal": "pnpm --filter @helix/portal dev",
     "dev:idp": "pnpm --filter @helix/dev-idp dev",
     "dev:web": "pnpm --filter @helix/portal-web dev",
+    "dev:builder": "builder/run.sh",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
