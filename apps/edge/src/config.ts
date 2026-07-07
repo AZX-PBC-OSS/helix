@@ -133,6 +133,20 @@ export interface EdgeConfig {
     apiKey: string | null;
   };
   /**
+   * THROWAWAY (dev-mode.md §3/§5): the prototype dev-gateway. A cross-origin
+   * CORS surface on `dev-api.<base>` so a WebContainer/Lovable preview can reach
+   * the LLM capability with a bearer dev-token. The real dev tier replaces this
+   * with per-app minted tokens, the `env` partition, and the `helix_dev` role;
+   * this is a single shared token + a static origin allowlist. Disabled when the
+   * token is unset. Delete with apps/edge/src/dev/ when the real tier lands.
+   */
+  devGateway: {
+    /** Shared bearer dev-token (EDGE_DEV_GATEWAY_TOKEN); null disables the surface. */
+    token: string | null;
+    /** Exact origins CORS reflects (EDGE_DEV_GATEWAY_ORIGINS, comma-separated). */
+    origins: string[];
+  };
+  /**
    * Fetch-proxy wiring (M4.5). The edge is the policy plane: it authorizes a
    * `/_api/fetch` call and hands a signed attested instruction to `azx-egress`.
    * The capability is enabled only when BOTH `egressUrl` and `instructionSecret`
@@ -379,6 +393,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     },
     builder: {
       apiKey: env.EDGE_BUILDER_API_KEY || null,
+    },
+    devGateway: {
+      token: env.EDGE_DEV_GATEWAY_TOKEN || null,
+      origins: (env.EDGE_DEV_GATEWAY_ORIGINS ?? "")
+        .split(",")
+        .map((o) => o.trim())
+        .filter((o) => o !== ""),
     },
     fetch: {
       egressUrl: env.EDGE_EGRESS_URL || null,

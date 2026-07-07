@@ -48,6 +48,8 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     anonRateLimit: { max: 0, windowMs: 60_000 },
     // Builder endpoint off by default; its suite sets a key.
     builder: { apiKey: null },
+    // Throwaway dev-gateway off by default; its suite sets a token + origins.
+    devGateway: { token: null, origins: [] },
     // Fetch-proxy off by default; suites that exercise it set egressUrl +
     // instructionSecret (and pass an egress provider into buildApp).
     fetch: { egressUrl: null, instructionSecret: null, timeoutMs: 30_000 },

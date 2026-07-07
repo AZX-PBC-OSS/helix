@@ -31,6 +31,7 @@ function testConfig(): EdgeConfig {
     },
     anonRateLimit: { max: 0, windowMs: 60_000 },
     builder: { apiKey: null },
+    devGateway: { token: null, origins: [] },
     fetch: { egressUrl: null, instructionSecret: null, timeoutMs: 30_000 },
   };
 }

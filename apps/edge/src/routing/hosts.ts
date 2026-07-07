@@ -7,7 +7,11 @@ import { SLUG_PATTERN } from "@helix/shared";
  * never mounted on app hosts. `auth.<base>` is the central OIDC callback host
  * (architecture §4.2, Appendix A) — its routes answer nowhere else.
  */
-export type HostClass = { kind: "app"; slug: string } | { kind: "auth" } | { kind: "platform" };
+export type HostClass =
+  | { kind: "app"; slug: string }
+  | { kind: "auth" }
+  | { kind: "dev" }
+  | { kind: "platform" };
 
 /**
  * Subdomain labels that can never be apps — reserved for platform services
@@ -33,6 +37,13 @@ export function classifyHost(hostHeader: string | undefined, baseDomain: string)
   const label = host.slice(0, -suffix.length);
   if (label === "auth") {
     return { kind: "auth" };
+  }
+  // THROWAWAY (dev-mode.md §3/§5): the prototype dev-gateway surface. The real
+  // dev tier lands on a dedicated host (dev-api.azx-labs.com) with the env
+  // partition + helix_dev role; this classifies the same host so the seam is
+  // in place. Delete with apps/edge/src/dev/ when that ships.
+  if (label === "dev-api") {
+    return { kind: "dev" };
   }
   // Exactly one label (no dots), shaped like a valid app slug, not reserved.
   if (label.includes(".") || !SLUG_PATTERN.test(label) || RESERVED_SUBDOMAINS.has(label)) {

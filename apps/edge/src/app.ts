@@ -25,6 +25,7 @@ import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
 import { makeBuilderChatHandler, makeBuilderModelsHandler } from "./gateway/builder-llm.js";
+import { makeDevLlmHandler, makeDevPreflightHandler } from "./dev/devGateway.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
@@ -224,6 +225,18 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   const handleBuilderModels = config.builder.apiKey
     ? makeBuilderModelsHandler(builderRuntime)
     : null;
+  // THROWAWAY dev-gateway (dev-mode.md §5, apps/edge/src/dev/): a CORS + bearer
+  // LLM surface on the dev host so a cross-origin WebContainer/Lovable preview
+  // reaches real inference. Off unless a dev token is configured.
+  const devRuntime = {
+    registry: deps.registry,
+    provider: deps.llmProvider ?? null,
+    usage: deps.usage ?? null,
+    token: config.devGateway.token,
+    origins: config.devGateway.origins,
+  };
+  const handleDevLlm = config.devGateway.token ? makeDevLlmHandler(devRuntime) : null;
+  const handleDevPreflight = config.devGateway.token ? makeDevPreflightHandler(devRuntime) : null;
   // The CSP report sink is unauthenticated (browsers send no credentials with
   // report beacons) and always available — it only ever appends.
   const handleCspReport = makeCspReportHandler({
@@ -413,14 +426,27 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     },
   });
 
-  // M4 gateway: the LLM capability (architecture §6.1). App hosts only.
+  // M4 gateway: the LLM capability (architecture §6.1). App hosts only. The dev
+  // host (dev-api.<base>) shares the same neutral path/contract — a THROWAWAY
+  // cross-origin surface (apps/edge/src/dev/, dev-mode.md §5) with CORS + a
+  // bearer dev-token, so a WebContainer/Lovable preview reaches real inference.
   app.route({
-    method: "POST",
+    method: ["POST", "OPTIONS"],
     url: "/_api/llm/chat",
     handler: async (req, reply) => {
-      if (req.hostClass.kind === "app" && handleLlmChat) {
+      if (req.hostClass.kind === "app" && req.method === "POST" && handleLlmChat) {
         await handleLlmChat(req, reply, req.hostClass.slug);
         return;
+      }
+      if (req.hostClass.kind === "dev") {
+        if (req.method === "OPTIONS" && handleDevPreflight) {
+          await handleDevPreflight(req, reply);
+          return;
+        }
+        if (req.method === "POST" && handleDevLlm) {
+          await handleDevLlm(req, reply);
+          return;
+        }
       }
       sendNotFound(reply);
     },
