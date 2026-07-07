@@ -21,4 +21,18 @@ echo "→ installing deps (standalone)"
 cd "$clone"
 pnpm install --ignore-workspace
 
+# Apply the Helix overlay patches to the upstream clone (our fork's diff, kept
+# out of the gitignored clone so they're version-controlled here).
+for p in "$here"/patches/*.patch; do
+  [ -e "$p" ] || continue
+  name="$(basename "$p")"
+  if git -C "$clone" apply --reverse --check "$p" 2>/dev/null; then
+    echo "→ patch already applied: $name"
+  elif git -C "$clone" apply "$p" 2>/dev/null; then
+    echo "→ applied patch: $name"
+  else
+    echo "⚠ could not apply patch (upstream drift?): $name" >&2
+  fi
+done
+
 echo "✓ setup complete — run: builder/run.sh"

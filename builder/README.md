@@ -9,10 +9,18 @@ platform without standing up a separate repo yet.
 
 | Path | Committed? | What |
 | --- | --- | --- |
-| `setup.sh` | ✅ | Clone upstream bolt.diy + install (standalone) |
+| `setup.sh` | ✅ | Clone upstream bolt.diy + install + apply `patches/` |
 | `run.sh` | ✅ | Launch it with the CA trust + port fixes it needs |
 | `bolt.env.example` | ✅ | Template for the clone's `.env.local` |
+| `patches/` | ✅ | Overlay diffs applied to the clone (our fork's diff) |
 | `bolt.diy/` | ❌ (gitignored) | The upstream clone — never committed |
+
+**Overlay patches** (`patches/*.patch`, applied by `setup.sh`):
+- `openai-like-helix-limits.patch` — bolt's OpenAILike provider hardcodes
+  `maxTokenAllowed: 8000` for every custom model (so the picker shows "8K
+  tokens" and output caps at ~8K, truncating long generations). This reads the
+  real `context_window` / `max_output_tokens` our `/v1/models` advertises, so
+  the picker shows the true window (1M for opus) and output isn't truncated.
 
 When we later decide to fork/open-source bolt.diy properly, this overlay is the
 diff that becomes the fork.

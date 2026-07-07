@@ -40,3 +40,6 @@ coverage/
 .vitest/
 playwright-report/
 test-results/
+
+# Stray pasted screenshots
+Screenshot*.png

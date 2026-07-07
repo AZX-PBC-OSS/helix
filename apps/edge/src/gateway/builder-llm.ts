@@ -2,7 +2,9 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   OpenAiChatRequestSchema,
+  MODEL_LIMITS,
   finishReasonFromStopReason,
+  maxOutputTokensFor,
   openAiError,
   openAiMessagesToNeutral,
   type LlmChatRequest,
@@ -60,10 +62,18 @@ function bearerAllowed(header: string | undefined, key: string): boolean {
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
-/** Clamp to the neutral schema's ceiling; default matches OpenAI's small default. */
-function resolveMaxTokens(req: { max_completion_tokens?: number; max_tokens?: number }): number {
-  const requested = req.max_completion_tokens ?? req.max_tokens ?? 1024;
-  return Math.min(requested, 128_000);
+/**
+ * Resolve the output cap for a request, clamped to the model's real max output.
+ * Default to the model's max when the client omits it (OpenAI clients often do)
+ * — a low default silently truncates code generation. Clamping per-model here
+ * turns an over-large request into a valid one instead of a vendor 400.
+ */
+function resolveMaxTokens(
+  req: { max_completion_tokens?: number; max_tokens?: number },
+  model: string,
+): number {
+  const cap = maxOutputTokensFor(model);
+  return Math.min(req.max_completion_tokens ?? req.max_tokens ?? cap, cap);
 }
 
 function chatCompletionId(): string {
@@ -160,7 +170,7 @@ export function makeBuilderChatHandler(rt: BuilderLlmRuntime) {
     const chat: LlmChatRequest = {
       model: body.model,
       messages,
-      maxTokens: resolveMaxTokens(body),
+      maxTokens: resolveMaxTokens(body, body.model),
       stream: body.stream,
       ...(system ? { system } : {}),
     };
@@ -294,7 +304,17 @@ export function makeBuilderModelsHandler(rt: BuilderLlmRuntime) {
     const created = nowUnix();
     await reply.header("cache-control", "no-store").send({
       object: "list",
-      data: rt.models.map((id) => ({ id, object: "model", created, owned_by: "helix" })),
+      // Advertise real per-model limits so a client shows the true context
+      // window / output cap instead of its own hardcoded default. `context_window`
+      // and `max_output_tokens` are non-standard OpenAI fields a client can read.
+      data: rt.models.map((id) => ({
+        id,
+        object: "model",
+        created,
+        owned_by: "helix",
+        context_window: MODEL_LIMITS[id]?.contextWindow ?? null,
+        max_output_tokens: MODEL_LIMITS[id]?.maxOutputTokens ?? null,
+      })),
     });
   };
 }

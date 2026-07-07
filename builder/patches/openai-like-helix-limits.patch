@@ -1,0 +1,27 @@
+diff --git a/app/lib/modules/llm/providers/openai-like.ts b/app/lib/modules/llm/providers/openai-like.ts
+index 85dc42d..1847b1d 100644
+--- a/app/lib/modules/llm/providers/openai-like.ts
++++ b/app/lib/modules/llm/providers/openai-like.ts
+@@ -5,7 +5,9 @@ import type { LanguageModelV1 } from 'ai';
+ import { logger } from '~/utils/logger';
+ 
+ interface OpenAIModelsResponse {
+-  data: Array<{ id: string }>;
++  // Helix builder gateway adds context_window / max_output_tokens (non-standard)
++  // so the picker shows the real window instead of the hardcoded 8k default.
++  data: Array<{ id: string; context_window?: number; max_output_tokens?: number }>;
+ }
+ 
+ export default class OpenAILikeProvider extends BaseProvider {
+@@ -55,7 +57,10 @@ export default class OpenAILikeProvider extends BaseProvider {
+         name: model.id,
+         label: model.id,
+         provider: this.name,
+-        maxTokenAllowed: 8000,
++        // Helix gateway advertises the real limits; fall back to 8k only if a
++        // generic OpenAI-Like endpoint omits them.
++        maxTokenAllowed: model.context_window ?? 8000,
++        ...(model.max_output_tokens ? { maxCompletionTokens: model.max_output_tokens } : {}),
+       }));
+     } catch (error) {
+       logger.info(`${this.name}: Could not fetch /models endpoint, checking fallback env`, error);

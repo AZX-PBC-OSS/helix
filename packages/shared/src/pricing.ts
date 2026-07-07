@@ -41,6 +41,35 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5 },
 };
 
+/**
+ * Per-model token limits — the context window (max input) and the max output
+ * (completion) tokens. Kept alongside {@link MODEL_PRICING} (same keys) so the
+ * catalog carries capability, not just price. Consumed by the builder's
+ * `/v1/models` so a client (bolt.diy) advertises the real window instead of its
+ * hardcoded default, and by the builder's per-model `max_tokens` clamp so an
+ * over-large request is capped here rather than 400ing at the vendor.
+ */
+export interface ModelLimits {
+  /** Max input tokens (context window). */
+  contextWindow: number;
+  /** Max output tokens per response. */
+  maxOutputTokens: number;
+}
+
+export const MODEL_LIMITS: Record<string, ModelLimits> = {
+  "claude-fable-5": { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  "claude-opus-4-8": { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  "claude-opus-4-7": { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  "claude-opus-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  "claude-sonnet-4-6": { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  "claude-haiku-4-5": { contextWindow: 200_000, maxOutputTokens: 64_000 },
+};
+
+/** The output ceiling for a model; a safe default for anything uncatalogued. */
+export function maxOutputTokensFor(model: string): number {
+  return MODEL_LIMITS[model]?.maxOutputTokens ?? 128_000;
+}
+
 /** Cache-read tokens bill at ~0.1x the base input rate. */
 export const CACHE_READ_MULTIPLIER = 0.1;
 /** Cache-write tokens bill at 1.25x the base input rate (5-minute TTL — our default). */
