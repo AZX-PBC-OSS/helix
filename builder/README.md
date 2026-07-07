@@ -58,10 +58,41 @@ Then in the browser: open **:5180**, pick provider **OpenAILike** and one of the
 - **Port**: bolt defaults to `:5173`, colliding with `pnpm dev:web`. `run.sh`
   moves it to `:5180`.
 
-## Known open question (Track C)
+## Track C — preview transport + deploy
 
-bolt's in-browser **WebContainer** preview runs client-side and can't reach the
-platform's `/_api/*` gateway without a proxy shim — so an app that calls the
-gateway may behave differently in preview vs. once deployed. Deciding between a
-WebContainer proxy shim and running preview in the dev partition
-(`develop-against-the-platform`) is Track C.
+The WebContainer preview is a *cross-origin* page, so it can't reach a deployed
+app's same-origin `/_api/*` (see `docs/design/dev-mode.md` §1). Resolution: the
+preview talks to a **dev-gateway** (the doc's §3 cross-origin surface), and app
+code stays identical via the **SDK**.
+
+### Preview transport (`@helix/app-sdk`)
+
+Apps reach capabilities through `@helix/app-sdk` (`packages/app-sdk`), which
+picks its transport from config:
+
+- **Deployed** (served by the edge): same-origin `/_api/*` under the session
+  cookie — empty config.
+- **Preview** (cross-origin): the throwaway dev-gateway on `dev-api.<base>` with
+  a bearer dev-token + the app slug, injected as `globalThis.__HELIX__`.
+
+```js
+import { createHelixClient } from "@helix/app-sdk";
+const helix = createHelixClient(); // reads globalThis.__HELIX__ in preview, same-origin when deployed
+await helix.llm.chat({ model, messages: [...] }, { onDelta: (t) => append(t) });
+```
+
+**bolt-side wiring** (in the gitignored clone — capture as an overlay patch):
+1. Teach the scaffold/system-prompt to build apps that call `@helix/app-sdk`
+   (not hand-rolled `fetch('/_api/...')`), so dev↔prod code is identical.
+2. Inject the dev config into the WebContainer preview — write a script tag /
+   config file setting `window.__HELIX__ = { base: "https://dev-api.localtest.me:8080", token: "<EDGE_DEV_GATEWAY_TOKEN>", app: "<slug>" }`. Register that
+   preview origin in `EDGE_DEV_GATEWAY_ORIGINS`.
+
+Today the dev-gateway is **LLM-only** (stateless → no prod-partition risk);
+`data`/`fetch` wait for the real `env`-partition dev tier (`dev-mode.md` §5).
+
+### Deploy to Helix (TODO)
+
+Replace bolt's Netlify deploy: WebContainer `npm run build` → bolt's Node server
+zips `dist/` → `POST` the portal deploy API with the developer's bearer token
+(the portal has no CORS, so this must be server-to-server, not a browser call).
