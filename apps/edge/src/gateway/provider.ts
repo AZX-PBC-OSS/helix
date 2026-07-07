@@ -35,13 +35,42 @@ export interface LlmProvider {
   close(): Promise<void>;
 }
 
-/** The Anthropic Messages request body (always streamed). Shared by both providers. */
+/** Ephemeral (5-minute) prompt-cache breakpoint. */
+const CACHE_CONTROL = { type: "ephemeral" } as const;
+
+/**
+ * The Anthropic Messages request body (always streamed). Shared by both providers.
+ *
+ * **Prompt caching (GA, no beta header).** We place two `cache_control`
+ * breakpoints so a repeated prefix is read at ~0.1x instead of reprocessed —
+ * the difference between "works for a few turns" and "usable on a real project"
+ * for a resend-everything client like the app builder:
+ *  - the **system** prompt (the large stable prefix — the builder's system
+ *    prompt, or a hosted app's instructions), and
+ *  - the **last message**, so a multi-turn conversation caches incrementally
+ *    (each turn's prior history reads from the cache the previous turn wrote).
+ *
+ * Caching is a prefix match: keep the stable content first (it already is —
+ * `system` then `messages`), and don't interpolate per-request volatility into
+ * the system prompt upstream. Below a model's minimum cacheable prefix
+ * (~1–4k tokens) the vendor silently skips caching — a no-op, not an error. The
+ * cache-token classes this produces are already carried through {@link LlmUsage}
+ * and priced by `costUsd` (@helix/shared), so metering stays correct.
+ */
 export function anthropicRequestBody(req: LlmChatRequest): string {
+  const lastIndex = req.messages.length - 1;
+  const messages = req.messages.map((m, i) =>
+    i === lastIndex
+      ? { role: m.role, content: [{ type: "text", text: m.content, cache_control: CACHE_CONTROL }] }
+      : { role: m.role, content: m.content },
+  );
   return JSON.stringify({
     model: req.model,
     max_tokens: req.maxTokens,
-    messages: req.messages,
-    ...(req.system ? { system: req.system } : {}),
+    messages,
+    ...(req.system
+      ? { system: [{ type: "text", text: req.system, cache_control: CACHE_CONTROL }] }
+      : {}),
     stream: true,
   });
 }

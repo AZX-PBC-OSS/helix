@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { MockAgent } from "undici";
-import { AnthropicProvider, LlmProviderError, type LlmStreamEvent } from "./provider.js";
+import {
+  AnthropicProvider,
+  LlmProviderError,
+  anthropicRequestBody,
+  type LlmStreamEvent,
+} from "./provider.js";
 
 /**
  * The Anthropic provider's request translation + SSE parsing, exercised against
@@ -10,6 +15,41 @@ import { AnthropicProvider, LlmProviderError, type LlmStreamEvent } from "./prov
  */
 
 const ENDPOINT = "https://api.anthropic.com";
+
+describe("anthropicRequestBody prompt caching", () => {
+  const req = {
+    model: "claude-opus-4-8",
+    system: "big stable system prompt",
+    messages: [
+      { role: "user" as const, content: "turn 1" },
+      { role: "assistant" as const, content: "reply 1" },
+      { role: "user" as const, content: "turn 2" },
+    ],
+    maxTokens: 256,
+    stream: true,
+  };
+
+  it("breaks the cache on the system prompt and only the last message", () => {
+    const body = JSON.parse(anthropicRequestBody(req));
+    // System is a cache-broken block.
+    expect(body.system).toEqual([
+      { type: "text", text: "big stable system prompt", cache_control: { type: "ephemeral" } },
+    ]);
+    // Earlier turns stay plain strings; only the last carries the breakpoint —
+    // so the conversation prefix caches incrementally, not a fresh write per turn.
+    expect(body.messages[0]).toEqual({ role: "user", content: "turn 1" });
+    expect(body.messages[1]).toEqual({ role: "assistant", content: "reply 1" });
+    expect(body.messages[2]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "turn 2", cache_control: { type: "ephemeral" } }],
+    });
+  });
+
+  it("omits the system block entirely when there is no system prompt", () => {
+    const body = JSON.parse(anthropicRequestBody({ ...req, system: undefined }));
+    expect(body.system).toBeUndefined();
+  });
+});
 
 /** A minimal but realistic Anthropic Messages SSE transcript. */
 const SSE = [
@@ -68,13 +108,19 @@ describe("AnthropicProvider (mocked upstream)", () => {
       ),
     );
 
-    // Request translation: neutral → Anthropic Messages.
+    // Request translation: neutral → Anthropic Messages, with prompt-cache
+    // breakpoints on the system prompt and the last message.
     expect(seenBody).toMatchObject({
       model: "claude-opus-4-8",
       max_tokens: 256,
-      system: "be terse",
       stream: true,
-      messages: [{ role: "user", content: "hi" }],
+      system: [{ type: "text", text: "be terse", cache_control: { type: "ephemeral" } }],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }],
+        },
+      ],
     });
     expect(seenApiKey).toBe("sk-ant-test");
     expect(seenVersion).toBe("2023-06-01");

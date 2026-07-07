@@ -93,7 +93,13 @@ describe("EgressLlmProvider", () => {
     const sent = JSON.parse(captured!.body as string);
     expect(sent.model).toBe("claude-opus-4-8");
     expect(sent.stream).toBe(true);
-    expect(sent.messages).toEqual([{ role: "user", content: "hi" }]);
+    // Last message carries a prompt-cache breakpoint (see anthropicRequestBody).
+    expect(sent.messages).toEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }],
+      },
+    ]);
 
     const { payload } = await jwtVerify(captured!.instruction, KEY);
     expect(payload.capability).toBe("llm");
