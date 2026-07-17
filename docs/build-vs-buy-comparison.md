@@ -136,6 +136,15 @@ Coverage of the eight criteria. ● = covers it, ◐ = partial / with caveats, �
 all ● — and most aren't even close on the row as a whole.** The product doesn't exist because
 the value is the *combination*, and the combination is opinionated to one threat model.
 
+> **Caveat on Helix's ● scores.** These mark *architectural* coverage — Helix is designed for
+> each criterion — not that every control is fully hardened today. Notably C4/C6 carry open
+> items the ADRs track: the dev secret envelope is not the prod boundary (Key Vault is M5 —
+> [ADR-0006](adr/0006-secret-custody-seam.md)); the egress response filter is a blocklist with
+> gaps and the injection path still accepts `http://` ([ADR-0005](adr/0005-ssrf-egress-controls.md),
+> issues #7/#8/#11); and a legacy ungated LLM-key fallback still exists
+> ([ADR-0008](adr/0008-llm-key-via-egress.md), issue #10). See [`TODO.md`](../TODO.md) for the
+> full list — the architecture covers these criteria; the hardening is in flight.
+
 ---
 
 ## 4. So what would "buy" actually look like?

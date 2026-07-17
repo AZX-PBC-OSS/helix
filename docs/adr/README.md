@@ -2,7 +2,7 @@
 
 This directory records the significant architecture decisions for Helix (the AZX App Platform), using a lightweight [Nygard-style](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions) format: **Context → Decision → Consequences**, with a status.
 
-0001–0013 were scaffolded from the 2026-06-25 multi-model architecture review ([`docs/reviews/2026-06-25-architecture-review.md`](../reviews/2026-06-25-architecture-review.md)); `ISSUE-xx` / `DEC-xx` references point into that review. **0014–0024 were added 2026-06-26 from a multi-model ADR-coverage audit** — they record decisions that had already shipped but lacked an ADR (their bodies are retroactive). ADR numbers do **not** imply chronological order of when the decision was first made.
+0001–0013 were scaffolded from the 2026-06-25 multi-model architecture review ([`docs/reviews/2026-06-25-architecture-review.md`](../reviews/2026-06-25-architecture-review.md)); `ISSUE-xx` / `DEC-xx` references point into that review. **0014–0024 were added 2026-06-26 from a multi-model ADR-coverage audit** — they record decisions that had already shipped but lacked an ADR (their bodies are retroactive). **0025–0026 (also 2026-06-26) are `Proposed` hardening records** spun out of the same review pass — registry-projection hardening (extends 0017) and hosted-build isolation prerequisites (gates the deferred build service in 0018). ADR numbers do **not** imply chronological order of when the decision was first made.
 
 ## Status legend
 

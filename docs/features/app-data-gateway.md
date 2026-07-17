@@ -1,5 +1,7 @@
 # App-data gateway
 
+> **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning).
+
 **What it is.** `/_api/data/*` — the gateway's second capability (architecture §6.1, app-data
 design [§3/§5](../design/app-data-storage.md)). Untrusted apps get persistent storage without a
 backend of their own, in **three named access patterns** (not a symmetric KV — reader and
@@ -148,7 +150,9 @@ design §2) is a **fourth** principal, `helix_migrate`, that *owns* the objects 
 the migration step connects as: a table owner can `ALTER`/`DROP`/`GRANT`-self **and bypasses RLS**,
 so neither runtime role (`helix_edge`, `helix_portal`) may own tables. (Today both still connect as
 the `helix` owner; the per-role grants above are applied, the dedicated `helix_migrate`/runtime-role
-separation is the documented target.)
+separation is the documented target — ADR-0002. `helix_edge` is the real, tested least-privilege
+role; the portal-as-owner connection and the edge's owner-DSN fallback are tracked to boot-fail on a
+missing role DSN before M5.)
 
 ## Try it
 

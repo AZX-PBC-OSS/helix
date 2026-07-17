@@ -1,5 +1,7 @@
 # Connection secrets
 
+> **Related ADRs:** [ADR-0006](../adr/0006-secret-custody-seam.md) (secret custody seam) · [ADR-0005](../adr/0005-ssrf-egress-controls.md) (SSRF + secret injection) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (Postgres role split + RLS) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model).
+
 **What it is.** Third-party credentials the platform holds so a hosted app never
 does (architecture §6.1, §12; design `docs/design/secrets-and-connections.md`).
 A secret is stored sealed, referenced by name from a proxied origin
@@ -49,10 +51,13 @@ environment (architecture §8):
 
 - **dev:** `DevEnvelopeSecretStore` — AES-256-GCM into the `app_secrets.material`
   column under a locally-generated KEK (`.devcontainer/post-create.sh`, never an
-  env var that tempts cross-environment reuse).
+  env var that tempts cross-environment reuse). This envelope is **hygiene, not a
+  security boundary** — the KEK and the ciphertext share one dev machine — and
+  there is **no KEK rotation path** (explicitly deferred). (ADR-0006.)
 - **prod:** `KeyVaultSecretStore` — the value lives in Key Vault; `material` is
-  only a reference; read via managed identity (no app-held key). Seam present, but
-  it throws "not wired — M5" today; the dev envelope is the working path.
+  only a reference; read via managed identity (no app-held key). This is an
+  **unwired stub today**: `open()` throws "not wired — M5" and the dev envelope
+  is the only working path until M5. (ADR-0006.)
 
 Encryption-at-rest only buys anything when the key and the ciphertext have
 *different* exposure profiles — so the key never sits next to the ciphertext.

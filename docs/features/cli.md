@@ -1,5 +1,7 @@
 # `azx` CLI
 
+> **Related ADRs:** [ADR-0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) (portal/CLI JWT) · [ADR-0018](../adr/0018-deploy-model-immutable-versions.md) (immutable versions).
+
 **What it is.** `azx` (`packages/cli`, `@azx-pbc/cli`) is a **per-app** deploy CLI — you run it
 from inside an app's directory, like `git` or `vercel`. It reads that app's `azx.json`, zips the
 build output, uploads it to the portal as a new version, and manages the live pointer. M3 added

@@ -46,7 +46,7 @@ compromise of the others.
 
 | Runtime                             | What it is                                                                                                                                          | What it can do                                                                                    | What it deliberately _cannot_ do                                                                  |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **`apps/edge`** — data/policy plane | Faces untrusted app users (eventually anonymous internet). Terminates TLS, auth, serving, and the `/_api/*` gateway _policy_ (authz, quota, audit). | Read a registry projection; append metering rows; serve assets.                                   | Read any secret. Write the registry. Reach the public internet (except _through_ egress).         |
+| **`apps/edge`** — data/policy plane | Faces untrusted app users (eventually anonymous internet). Terminates TLS, auth, serving, and the `/_api/*` gateway _policy_ (authz, quota, audit). | Read a registry projection; append metering rows; serve assets. (Holds its own operational keys — auth/instruction/OIDC secrets, a Blob access key.) | Read an **app connection secret** (no grant on `app_secrets`). Write the registry. Make an **arbitrary** outbound call (only _through_ egress). |
 | **`apps/portal`** — control plane   | The privileged side: portal UI/API, deploys, registry writes, capability approvals, secret writes.                                                  | Own the Postgres schema + all migrations; do every privileged verb.                               | Be reached from an app subdomain at all (not routable there).                                     |
 | **`apps/egress`** — mechanism plane | The only component with plaintext connection secrets _and_ a route to the internet. Makes governed outbound HTTP for the fetch-proxy.               | Resolve a secret to plaintext, inject it server-side, call a third-party API under SSRF controls. | Terminate app-user traffic. Re-authenticate users (it trusts a signed instruction from the edge). |
 | **`apps/dev-idp`** — _dev only_     | A local OIDC issuer (fixture users alice/bob/mallory) standing in for Entra ID. Never deployed.                                                     | Mint tokens for local dev/test.                                                                   | Exist in production.                                                                              |
@@ -54,10 +54,14 @@ compromise of the others.
 **Why three and not two?** Put plainly: the two things most dangerous to co-locate with
 a public-facing process are _plaintext third-party secrets_ and _an unrestricted outbound
 network_. Egress isolates exactly those two, in its own network zone. So if an SSRF or RCE
-bug lands in the edge — the process most exposed to hostile input — the attacker still
-reaches **no secret and no internet**, because the edge holds neither. A generic "gateway
-service" split would buy only an internal hop; egress earns its split because it needs a
-genuinely _different posture_.
+bug lands in the edge — the process most exposed to hostile input — the attacker reaches
+**no plaintext connection secret** (the edge has no grant on `app_secrets`) and **no
+arbitrary outbound network** (egress alone holds that). The edge is _not_ secretless — it
+holds its own operational keys and today an over-broad Blob access key ([ADR-0001](docs/adr/0001-three-runtime-split.md)
+tracks tightening that to read-only managed identity) — but those are not the third-party
+connection secrets or the open internet that egress isolates. A generic "gateway service"
+split would buy only an internal hop; egress earns its split because it needs a genuinely
+_different posture_.
 
 **Why a third container from day one** instead of extracting it later? Building egress
 in-process and splitting it out afterward would mean shipping that blast radius first and
@@ -65,20 +69,28 @@ walking it back — the boundary is the whole point, so it's drawn from the star
 and portal _may_ still ship as one binary in v0, keyed by hostname, because their split is
 a deploy-config change, not a rewrite. Egress is the exception.)
 
-**The same boundary is enforced again in Postgres.** Each runtime connects as a
+**The same boundary is enforced again in Postgres.** Each runtime is meant to connect as a
 least-privilege DB role, so even an in-process compromise hits a wall at the database:
 
-- `helix_portal` — full DML (it owns the schema).
 - `helix_edge` — explicit per-table grants only (no blanket grant): read the registry,
   append metering, INSERT-only on collections, RLS-partitioned app-data. **No grant on
-  `app_secrets` at all** — an edge RCE cannot read a single key.
+  `app_secrets` at all** — an edge RCE cannot read a single key. This is the load-bearing
+  role, exercised by `role-split.integration.test.ts`.
 - `helix_egress` — `SELECT` on secrets + `UPDATE` on one `lastUsedAt` column. Nothing else.
+- `helix_portal` — the privileged role (schema owner).
 
-The runtime split and the role split say the same thing twice, in two enforcement layers.
+Caveat ([ADR-0002](docs/adr/0002-postgres-role-split-rls.md)): the split isn't fully
+realized yet. The portal currently connects as the schema _owner_ rather than as
+`helix_portal`, and the edge silently falls back to the owner DSN if `EDGE_DATABASE_URL` is
+unset (`EDGE_DATABASE_URL ?? DATABASE_URL`) — both are tracked to be hardened (boot-fail on
+a missing role DSN) before M5. The runtime split and the role split say the same thing
+twice, in two enforcement layers.
 
 → Deeper: architecture [§3](docs/platform-architecture.md) (system overview, "why three"),
+[ADR-0001](docs/adr/0001-three-runtime-split.md) / [ADR-0012](docs/adr/0012-edge-portal-codeploy.md)
+(the runtime split) and [ADR-0002](docs/adr/0002-postgres-role-split-rls.md) (the role split),
 and the [edge-serving](docs/features/edge-serving.md) and
-[secrets-and-connections](docs/features/secrets-and-connections.md) feature docs for the role split.
+[secrets-and-connections](docs/features/secrets-and-connections.md) feature docs.
 
 ---
 

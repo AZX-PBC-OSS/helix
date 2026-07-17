@@ -99,8 +99,10 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 
 - **`azx-edge` — data/policy plane.** Stateless; terminates all untrusted app-user traffic. Host
   routing, session auth, CSP, static serving from Blob, and the `/_api/*` gateway *policy* (identity,
-  authorization, quota, audit). Runs as a least-privilege Postgres role with **no secret-read** and
-  **no arbitrary outbound** — it can only ask egress to make calls it has already authorized.
+  authorization, quota, audit). Runs as a least-privilege Postgres role with **no app-connection-secret
+  read** (no grant on `app_secrets`) and **no arbitrary outbound** — it can only ask egress to make
+  calls it has already authorized. (It is not secretless: it holds its own operational keys — auth,
+  instruction, OIDC — and today an over-broad Blob key; see [ADR-0001](adr/0001-three-runtime-split.md).)
 - **`azx-portal` — control plane.** Privileged: portal UI/API, deploys, registry writes, capability
   approvals, secret writes. Owns the Postgres schema and migrations. Not routable from app subdomains.
 - **`azx-egress` — mechanism plane.** The only component holding plaintext connection secrets or a
@@ -145,10 +147,12 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 4. **Capabilities are governed, not assumed.** A manifest declares each app's grants; privilege
    *reductions* commit immediately, *increases* gate on platform-admin approval. The edge only ever
    sees effective state. *(ADR-0016)*
-5. **Database-enforced least privilege.** Each runtime connects as a distinct Postgres role; app-data
-   is Row-Level-Security-partitioned per user; collections are INSERT-only (an app can write but never
-   read back others' entries — defeating data-harvesting); metering is append-only by grant. The
-   process split is re-enforced inside the database. *(ADR-0002, 0015, 0021)*
+5. **Database-enforced least privilege.** The edge runs as a distinct least-privilege role
+   (`helix_edge`); app-data is Row-Level-Security-partitioned per user; collections are INSERT-only (an
+   app can write but never read back others' entries — defeating data-harvesting); metering is
+   append-only by grant. The process split is re-enforced inside the database. *(ADR-0002, 0015, 0021)*
+   *(Caveat, ADR-0002: the split isn't fully realized — the portal connects as the schema owner, and the
+   edge falls back to the owner DSN if its role DSN is unset; both tracked to be hardened before M5.)*
 
 Honest residual: relaxed CSP (necessary for vibe-coded bundles) gives up XSS prevention by design, and
 granted channels (LLM prompts, approved origins, navigation) remain possible exfil paths — containment
@@ -159,7 +163,7 @@ and in [`docs/reviews/`](reviews/).
 
 ## 5. Where the decisions live
 
-The **24 Architecture Decision Records** in [`docs/adr/`](adr/) are the canonical record of *why*.
+The **26 Architecture Decision Records** in [`docs/adr/`](adr/) are the canonical record of *why*.
 Foundational set:
 
 - **Trust boundary & isolation:** 0001 three-plane split · 0019 subdomain-per-app · 0020 static-only
@@ -168,8 +172,9 @@ Foundational set:
   key via egress.
 - **Governance & data:** 0016 capability manifest + approval classifier · 0015 app-data three scopes ·
   0021 metering ledger · 0007 portal authz (v0).
-- **Platform shape:** 0017 registry projection · 0018 deploy model · 0022 self-hosted edge · 0023
-  one-org + app-id partitioning · 0012 edge/portal co-deploy · 0003 dependency-minimal edge.
+- **Platform shape:** 0017 registry projection (· 0025 projection hardening) · 0018 deploy model (· 0026
+  hosted-build isolation prerequisites) · 0022 self-hosted edge · 0023 one-org + app-id partitioning ·
+  0012 edge/portal co-deploy · 0003 dependency-minimal edge.
 - **Auth & access:** 0004 app-user auth · 0024 portal/CLI auth · 0009 relaxed CSP · 0010 anonymous
   shared-writes · 0011 in-memory rate limiting.
 

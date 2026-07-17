@@ -1,5 +1,7 @@
 # Registry & deploys
 
+> **Related ADRs:** [ADR-0018](../adr/0018-deploy-model-immutable-versions.md) (immutable versions, preview→live) · [ADR-0017](../adr/0017-registry-listen-notify-projection.md) (LISTEN/NOTIFY projection) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (approval classifier) · [ADR-0026](../adr/0026-hosted-build-isolation-prerequisites.md) (hosted-build isolation).
+
 **What it is.** The control plane (`apps/portal` — azx-portal) owns the registry and the deploy
 pipeline under `/api/v1`. It is the only writer of the Postgres schema (Prisma 7 + pg driver
 adapter); the edge reads a cached projection. All `/api/v1` routes — reads and mutations
@@ -69,8 +71,11 @@ LISTEN/NOTIFY projection (see [edge-serving.md](./edge-serving.md)).
 The portal reads the edge-written `gateway_calls` ledger for per-app and platform rollups
 (`packages/shared/src/usage.ts`: `UsageSummary`, `GatewayCall`, `PlatformUsage`). The portal SPA
 renders these for real (see [portal-web.md](./portal-web.md)). The ledger carries tokens, request
-counts, outcome, capability, model, user, app and timestamp — **not** cost or latency; dashboards
-show tokens rather than fabricating a dollar column.
+counts, outcome, capability, model, user, app and timestamp, **plus a frozen, as-charged
+`costMicroUsd`** priced at write time from a code-resident rate table (ADR-0021) — so a later rate
+change never rewrites history. The portal recomputes `costUsd` for dashboards from the same rate
+table. The ledger deliberately records **no** latency or error detail (it is a metering + budget
+primitive, not an observability sink).
 
 ## Schema (Prisma — `apps/portal/prisma/schema.prisma`)
 
@@ -104,8 +109,12 @@ show tokens rather than fabricating a dollar column.
 ## Planned / not yet built
 
 - **Per-app RBAC** — `App.ownerId` is recorded at create, but per-app owner/editor/viewer roles
-  are not yet enforced; today any authenticated portal principal may mutate (the portal SPA marks
-  the roles surface with a `PreviewBadge`).
+  are not yet enforced. v0 authz is deliberately flat (authenticated == authorized, ADR-0007): any
+  authenticated portal principal may mutate **any** app and manage **any** app's secrets — the app-
+  scoped mutating + secret routes perform **no `ownsApp` check**. That flatness is a deliberate v0
+  choice for the single-operator pilot, but the missing ownership check is a live BOLA/IDOR to close
+  before M5 (issue #9), not a benign placeholder — the roles UI surface is separately marked with a
+  `PreviewBadge` in the portal SPA.
 - **Manifest versioning** history beyond the current full-replace PUT.
 
 > Approval workflows for above-baseline capability/CSP/visibility changes are **built**, not

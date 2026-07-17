@@ -1,5 +1,7 @@
 # LLM gateway
 
+> **Related ADRs:** [ADR-0008](../adr/0008-llm-key-via-egress.md) (LLM key via egress) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway).
+
 **What it is.** `POST /_api/llm/chat` — the gateway's first capability (architecture §6.1,
 project plan §4 M4). It is the choke point that makes per-app blast radius real: an untrusted
 app calls a **same-origin** endpoint, and the edge authenticates the user, proves the request
@@ -64,9 +66,10 @@ seam — egress injects `x-api-key` and streams the SSE back, which the edge par
 metering (shared `mapAnthropicStream`). This is the same policy/mechanism split as the fetch-proxy,
 and it removes the one spot where the edge held plaintext (secrets design §1). Rotating the key in
 the portal takes effect on the next call with no edge restart. A legacy direct `AnthropicProvider`
-(key from `EDGE_LLM_ANTHROPIC_KEY` via `apps/edge/src/gateway/secrets-provider.ts`) remains as a
-**deprecated dev fallback** for running the edge without egress; it is not used when egress is
-configured.
+(key from `EDGE_LLM_ANTHROPIC_KEY` via `apps/edge/src/gateway/secrets-provider.ts`) remains as an
+**ungated, fail-open dev fallback** selected whenever egress is unconfigured — not merely inert. It
+is slated to be **removed from runtime selection and made fail-closed** (a 503 when egress is
+unconfigured), issue #10 (ADR-0008).
 
 The handler relays this two ways:
 
@@ -93,12 +96,15 @@ model, user, app, timestamp** — and nothing more. There is **no latency, no er
 no session count, and no request/response size**: the row is a metering + budget primitive, not an
 observability sink. Two consequences worth stating plainly:
 
-- **Tokens, not dollars.** There is no cost column; pricing is a later decision (below), and the
-  dashboards render tokens rather than fabricate a currency figure.
-- **Append-only by grant, not tamper-evident.** `helix_edge` has `INSERT` (and `SELECT` for the
-  budget sum) but no `UPDATE`/`DELETE` on `gateway_calls` — so an edge RCE can't rewrite history.
-  But there is no hash chain or signature: integrity rests on the DB grant set, not on
-  cryptographic immutability. A real immutable audit sink is deferred (architecture §8).
+- **Cost, as charged.** Each `gateway_calls` row carries a frozen `costMicroUsd`, computed at write
+  time from a **code-resident rate table** (`packages/shared/src/pricing.ts`) — so a later rate
+  change never rewrites history, and token counts are recorded alongside it (ADR-0021).
+- **Append-only by grant, not tamper-evident.** The append-only property is **by DB grant only, not
+  cryptographically tamper-evident**: `helix_edge` has `INSERT` (and `SELECT` for the budget sum)
+  but no `UPDATE`/`DELETE` on `gateway_calls`, so an edge RCE can't rewrite history — but
+  `helix_portal` currently **can** (revoking its `UPDATE`/`DELETE` is a pre-M5 one-liner, issue
+  #17). There is no hash chain or signature: integrity rests on the DB grant set, not on
+  cryptographic immutability. A real immutable audit sink is deferred (architecture §8, ADR-0021).
 
 Calls that never reach the provider record selectively: a `quota_blocked` admission is logged (it
 *was* a request the app made), but a **rejected CSRF / disallowed-model / unconfigured-capability**
@@ -115,8 +121,9 @@ holds an API key. See [examples.md](./examples.md).
 
 - **More providers** behind the `LlmProvider` seam (the interface is vendor-neutral; only
   Anthropic is implemented).
-- **Cost, not just tokens** — the ledger records tokens; dollar cost is a later pricing decision
-  (`packages/shared/src/usage.ts`).
+- **Cost display / pricing source** — each call already records a frozen `costMicroUsd` from a
+  code-resident rate table (ADR-0021); surfacing spend in the dashboards and maintaining the rate
+  table are the remaining work (`packages/shared/src/{usage,pricing}.ts`).
 - **MCP-as-REST** — `capabilities.mcp` exists in the manifest but has no gateway transport yet
   (see [capabilities-and-manifests.md](./capabilities-and-manifests.md) and
   `docs/platform-custom-backends-and-apis.md`).

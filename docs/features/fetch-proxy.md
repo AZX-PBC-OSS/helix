@@ -1,5 +1,7 @@
 # Fetch proxy
 
+> **Related ADRs:** [ADR-0005](../adr/0005-ssrf-egress-controls.md) (SSRF + secret injection) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model) · [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split / edge posture) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway).
+
 **What it is.** Governed outbound HTTP for hosted apps (architecture §6.1; design
 `docs/design/fetch-proxy.md`). An app calls a third-party API through a
 same-origin path — `fetch('/_api/fetch/https://api.github.com/...')` — and the
@@ -36,8 +38,12 @@ decides *whether* the call may happen and to *where*; egress actually makes it.
 5. **Attest + forward.** The edge mints a short-lived signed instruction
    `(app, user, capability, origin, connection?, request-id)` and forwards the
    request + instruction to egress over the `EgressProvider` HTTP seam. The edge
-   holds no secret and has no internet route — it can only ask egress to make a
-   call it already authorized.
+   has **no grant on `app_secrets`** (it cannot read an app's connection secret)
+   and no *arbitrary* outbound route — only egress reaches the open internet — so
+   it can only ask egress to make a call it already authorized. The edge is *not*
+   secretless, though: it holds its own operational keys (auth/instruction/OIDC)
+   and today an over-broad Blob access key (tightening that to a read-only managed
+   identity is tracked). (ADR-0001.)
 
 ### `azx-egress` (mechanism plane)
 
@@ -55,9 +61,13 @@ plaintext secrets or the public internet:
    connection to the validated IP (cert/SNI still checked against the hostname),
    defeating DNS rebinding; no redirect-following (a `302` to IMDS is returned as
    data, never chased).
-4. **Header safelist** both directions — the app's `cookie`/`authorization`
-   never go upstream (no session leak, no overriding the injected credential),
-   and `set-cookie` is stripped off the response.
+4. **Header controls** — a **request-header safelist** (the app's
+   `cookie`/`authorization` never go upstream: no session leak, no overriding the
+   injected credential) plus a **response-header blocklist** (`set-cookie` and
+   friends stripped off the response). The response blocklist has tracked gaps
+   today — it omits `authorization`/`www-authenticate` (#7), the body caps read
+   only `content-length` (#8), and the injection path still accepts cleartext
+   `http://` (#11). (ADR-0005.)
 5. **Stream** the upstream response straight back through the edge to the
    browser; never buffered.
 
@@ -118,8 +128,9 @@ Fetch proxy** card.
   (authenticates to Key Vault as itself) and **own** network zone — a forked
   process shares both and "buys you almost nothing." The split buys three things:
   credential isolation that is true-by-architecture not by-code-review;
-  **network/SSRF isolation** (the big one — the edge runs with *zero* internet
-  egress, so an SSRF bug in the edge itself reaches nothing); and dependency
+  **network/SSRF isolation** (the big one — the edge has no *arbitrary* outbound
+  route, only egress reaches the open internet, so an SSRF bug in the edge itself
+  reaches nothing; ADR-0001); and dependency
   isolation (the fat HTTP deps live on egress, the edge stays minimal §3). Honest
   limit: extraction *relocates* the all-secrets read, it doesn't eliminate it —
   egress still holds the vault grant.
@@ -129,8 +140,15 @@ Fetch proxy** card.
   attested. The instruction reuses the OIDC-handoff primitives (`jose` + HKDF off
   `HELIX_INSTRUCTION_SECRET`), domain-separated by a distinct `typ` and HKDF info
   string, carrying `(app, user, capability, origin, connection?, request-id)`
-  with a 30 s TTL. A header today; the shape is forward-compatible with an
-  mTLS/SPIFFE SVID later.
+  with a 30 s TTL. **This seam does not, today, contain an *edge* compromise:**
+  the instruction is signed with a **symmetric secret both planes hold**, so a
+  compromised edge can forge an instruction for any `appId` — there is no `jti`
+  replay-burn or `aud` check, and `method`/`path` are unbound. The edge still
+  cannot *read* `app_secrets` directly (no DB grant), but it can steer egress to
+  spend a connection. Hardening is tracked: jti/aud burn now (#3), per-action
+  authz + method/path binding before multi-tenant (#6), asymmetric (Ed25519)
+  signing post-M5 (ADR-0013). A header today; the shape is forward-compatible
+  with an mTLS/SPIFFE SVID later.
 - **The adoption spine** is three rungs that never fork the mental model: (1) the
   path-prefix wire contract `fetch('/_api/fetch/https://…')` — a mechanical
   string prefix that is codemod-able (a POST-envelope design was rejected because

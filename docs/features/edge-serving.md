@@ -1,5 +1,7 @@
 # Edge serving
 
+> **Related ADRs:** [ADR-0017](../adr/0017-registry-listen-notify-projection.md) (registry projection) · [ADR-0025](../adr/0025-registry-projection-hardening.md) (projection hardening) · [ADR-0009](../adr/0009-relaxed-csp.md) (relaxed CSP) · [ADR-0019](../adr/0019-subdomain-per-app-isolation.md) (subdomain isolation) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps) · [ADR-0003](../adr/0003-dependency-minimal-edge.md) (dependency-minimal edge) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (Postgres role split) · [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split).
+
 **What it is.** The data plane (`apps/edge` — azx-edge) terminates all untrusted app-user
 traffic: it routes a request to an app by hostname, serves that app's static assets straight
 from Blob, injects the platform CSP on every response, and answers `404`/`410` uniformly so
@@ -39,13 +41,23 @@ loaded with hand-written SQL from `apps` + `versions`, and refreshes it on Postg
 The projection is read-only by DB grant (see [authentication.md](./authentication.md) and the
 role split below) — the edge cannot write the registry.
 
+> **Staleness caveat (ADR-0025).** Fail-static is not free: on a *sustained* DB failure the
+> projection can keep serving its last-loaded copy **silently and indefinitely**, so a
+> reduce-visibility or archive change may not take effect. Staleness observability is a must-do
+> hardening — surface `lastSuccessfulLoadAt` / `consecutiveLoadFailures` and degrade `/health`
+> once the projection is too old.
+
 ### Blob asset streaming
 
 Assets are **streamed, never buffered**, directly from Blob using undici with a hand-rolled
 Azure SharedKey signature (no Azure SDK).
 
 - `apps/edge/src/blob/client.ts` — undici pool reader, signed GET/HEAD.
-- `apps/edge/src/blob/signing.ts` — the Azure SharedKey HMAC-SHA256 canonical string.
+- `apps/edge/src/blob/signing.ts` — the Azure SharedKey HMAC-SHA256 canonical string. Note this
+  means the edge today holds the **full read/write/delete** Blob account key, even though a
+  read-only managed identity is already provisioned — tightening to it is a P0 (ADR-0001, issue
+  #15). This is why the edge is **not** secretless: it has no grant on app connection secrets, but
+  it does carry its own operational keys and this over-broad Blob key.
 - `apps/edge/src/serving/assets.ts` — the asset handler: runs the session gate, composes
   `{version.blobPrefix}{relPath}`, sets cache headers, injects CSP, and does the SPA fallback.
 - `apps/edge/src/serving/paths.ts` — path-traversal defense (reject `..`, backslashes, NULs;
@@ -122,6 +134,11 @@ It cannot write the registry, run DDL, or read collections. An edge RCE is conta
 footprint. Asserted in `apps/edge/src/registry/role-split.integration.test.ts`; grants live in
 the portal migration `20260616000001_edge_role_grants` (see
 [app-data-gateway.md](./app-data-gateway.md)).
+
+> **Role caveat (ADR-0002).** `helix_edge` is real and tested, but not yet enforced end to end:
+> the edge **falls back to the owner DSN** if `EDGE_DATABASE_URL` is unset, and the portal
+> connects as the schema owner rather than a dedicated `helix_portal` role. Both are tracked to be
+> hardened (boot-fail on a missing role DSN) before M5.
 
 ## Planned / not yet built
 

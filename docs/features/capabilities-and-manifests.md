@@ -1,5 +1,7 @@
 # Capabilities & manifests
 
+> **Related ADRs:** [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (manifest & approval classifier) · [ADR-0009](../adr/0009-relaxed-csp.md) (relaxed CSP) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin gateway).
+
 **What it is.** Every app carries a **manifest** that declares the capabilities the gateway will
 enforce (architecture §6.3). It is the contract between the control plane (which grants) and the
 data plane (which enforces): the portal writes it, the registry projection carries it to the

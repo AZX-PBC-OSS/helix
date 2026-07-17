@@ -4,6 +4,8 @@
 **Companion to:** `platform-architecture.md` (the _what & why_, §6.1 names this capability) and `platform-project-plan.md` (§4, the gateway milestones)
 **Why this exists:** App data is the second `/_api/*` capability after the LLM gateway (M4). The architecture sketches it in one line — "app-scoped and user-scoped KV/document storage, Postgres JSONB, user-scoped auto-partitioned by the authenticated user" (§6.1, line 170). That sentence hides the load-bearing decision: the naive "per-app KV with symmetric read/write" model is *unsafe* for a whole class of real apps. This doc names that decision, proposes the data model and API, and grounds it in the existing edge/portal trust split.
 
+> **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes).
+
 ---
 
 ## 1. The motivating app (why per-app KV is the wrong default)
@@ -44,7 +46,7 @@ The punchline: **the principal split becomes a database-privilege split.** The e
 
 ### 2.1 Database roles — the split made concrete
 
-Today there is **no split**: both containers connect with the same role, `helix` (`postgresql://helix:helix@db:5432/helix`), which is the database owner. The edge opens several `pg.Pool`s as that role (sessions, usage, registry listener); the portal uses Prisma as the same role. A compromised edge today has owner rights — including `DROP TABLE`. Everything below is the target prod posture.
+Today there is **no split**: both containers connect with the same role, `helix` (`postgresql://helix:helix@db:5432/helix`), which is the database owner. The edge opens several `pg.Pool`s as that role (sessions, usage, registry listener); the portal uses Prisma as the same role. A compromised edge today has owner rights — including `DROP TABLE`. Everything below is the target prod posture. _(ADR-0002 update: `helix_edge` is now the real, tested least-privilege role in the running config; the two residual owner-connections — the portal still connecting as the schema owner rather than `helix_portal`, and the edge's `EDGE_DATABASE_URL ?? DATABASE_URL` owner-DSN fallback — are tracked to boot-fail on a missing role DSN before M5.)_
 
 **Three roles, split on the service/trust boundary — not on the operation:**
 
@@ -170,7 +172,7 @@ capabilities:
     user: true
 ```
 
-`sharedWrite` above a trivial size, and any `sharedRead`/`sharedWrite` on a `public`-visibility app, are candidates for the admin-approval baseline (§6.3 "grants above a baseline require approval"). The registry projection (`apps/edge/src/registry/projection.ts`) gains a `data: DataCapability | null` field, parsed fail-closed exactly like `llm` is today.
+`sharedWrite` above a trivial size, and any `sharedRead`/`sharedWrite` on a `public`-visibility app, are *candidates* for the admin-approval baseline (§6.3 "grants above a baseline require approval"). **Reality check (ADR-0010):** in shipped code this is **not** approval-gated — `classifyChange` treats enabling `sharedWrite` as baseline/low-risk, so anonymous writes to `shared` keys on a `public` app apply without admin review; approval-gating `public` + `sharedWrite` is tracked (DEC-02). The registry projection (`apps/edge/src/registry/projection.ts`) gains a `data: DataCapability | null` field, parsed fail-closed exactly like `llm` is today.
 
 ---
 
@@ -252,7 +254,7 @@ This gap is a prerequisite, not part of the data feature proper; it likely lands
 
 The append endpoint on a public app is an open write surface, so containment moves from confidentiality (handled structurally by §2–§3) to **abuse**:
 
-- **Per-app daily write budget**, enforced exactly like the LLM `tokensPerDay` block-new/finish-in-flight pattern (`llm.ts`): a `writesPerDay` / `bytesPerDay` in the `data` manifest, checked at admission, returning `429 quota_exceeded`.
+- **Per-app daily write budget**, enforced exactly like the LLM `tokensPerDay` block-new/finish-in-flight pattern (`llm.ts`): a `writesPerDay` / `bytesPerDay` in the `data` manifest, checked at admission, returning `429 quota_exceeded`. **Caveat (ADR-0010):** `writesPerDay` is a **single per-app counter** summed across `user.put` + `collection.append` + `shared.put`, so an anonymous flood through an un-elevated `sharedWrite` surface can **self-DoS the app's own authenticated** user/collection writes once the budget is hit. Separating or attributing the anonymous budget is tracked (DEC-02).
 - **Per-IP rate limiting** is **implemented** for the whole anonymous tier (not just `collection` appends — the anonymous writer/visitor has no per-user budget to charge): a fixed-window in-memory limiter (`apps/edge/src/gateway/ipRateLimiter.ts`, mirroring the password-login throttle) caps every anonymous `/_api/*` call keyed per IP+app, returning `429 rate_limited`; authenticated callers are charged against per-app budgets instead. Tunable via `EDGE_ANON_RATE_LIMIT` / `EDGE_ANON_RATE_WINDOW_MS` (`max: 0` disables). Same caveat as the login throttle: per-process state on a horizontally-scaled edge, so the effective limit is N×instances — a shared (DB/Redis) counter is future hardening. The **item-size cap** (64 KB) is also in place; **total-collection-size cap** remains a deferred knob.
 - **Friction for public collections** (CAPTCHA / proof-of-work) is a later knob; out of scope for v1 but the `meta` column (hashed IP/UA) is there to make abuse triage and retroactive cleanup possible.
 - **Every call is metered**, reusing the `gateway_calls` ledger with `capability = "data"` and a sensible `outcome` (`ok` / `quota_blocked` / `error`). The portal's usage tab and audit log (§8) already read this ledger and need no schema change for the common case — only the `capability` value widens.
@@ -269,7 +271,7 @@ The append endpoint on a public app is an open write surface, so containment mov
 | Sibling subdomain POSTs to the harvester's `/_api/data/...` on the user's session (CSRF) | `isSameOrigin` Origin check (§4.2), reused from the LLM gateway; missing/foreign Origin → 403. |
 | App tries to read *another user's* `user`-scoped notes | Partition key injected from session, not app input (§3.1); query can only ever touch the caller's rows. |
 | Spam/flooding the public append endpoint | Per-IP rate limit + per-app `writesPerDay`/`bytesPerDay` quota + size caps (§7); rows are junk, not a disclosure. |
-| App granted `sharedRead` leaks data it shouldn't have made shared | Owner-declared, auditable grant; `sharedRead`/`sharedWrite` on public apps hit the admin-approval baseline (§4, §6.3). |
+| App granted `sharedRead` leaks data it shouldn't have made shared | Owner-declared, auditable grant. *(Design intent was for `sharedRead`/`sharedWrite` on public apps to hit the admin-approval baseline (§4, §6.3); in shipped code they are **not** approval-gated — enabling `sharedWrite` is baseline/low-risk, ADR-0010 / DEC-02.)* |
 
 Residual risk to name (consistent with architecture §residual-risk): a granted capability can be misused *within its scope*. An app with `sharedWrite` can let any visitor vandalize shared state; an app with `user` scope can still mishandle its own users' data in the UI. Governance bounds blast radius; it does not make app code trustworthy.
 

@@ -1,5 +1,7 @@
 # Helix feature docs
 
+> **Related ADRs:** [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split) · [ADR-0012](../adr/0012-edge-portal-codeploy.md) (edge/portal co-deploy).
+
 Per-feature documentation for the **Helix / AZX App Platform** — what each feature is,
 how it works, the files to dive into, and what is planned but not yet built. These docs
 track the **code as it stands today**; the _why_ behind the design lives in
@@ -12,7 +14,9 @@ track the **code as it stands today**; the _why_ behind the design lives in
 > edge serving, the OIDC auth flow, the `/_api/*` LLM + app-data gateway with a Postgres role
 > split) **plus** the **`azx-egress`** mechanism plane: the fetch-proxy (`/_api/fetch/<url>`) and
 > secret-backed connections, built as their own container from day one. The edge stays the policy
-> plane; egress holds the secrets and the internet route the edge deliberately lacks. Still ahead:
+> plane; egress is the only component with app **connection** secrets and an **arbitrary** internet
+> route (the edge is not secretless — it holds its own operational keys, and today an over-broad
+> Blob key; ADR-0001). Still ahead:
 > a real Entra app registration and the Azure deploy (M5).
 
 ## The platform in one paragraph
@@ -24,7 +28,10 @@ gateway), **`apps/portal`** (the control plane: registry, deploys, capability gr
 writes), and **`apps/egress`** (the mechanism plane: outbound HTTP + secret injection, in its
 own network zone) — plus managed Postgres + Blob. The edge runs dependency-minimal with a
 read-only registry projection and a least-privilege DB role; the portal owns the schema and all
-migrations; egress is the only component holding plaintext secrets or a route to the internet.
+migrations; egress is the only component holding plaintext **connection** secrets or an
+**arbitrary** route to the internet. The edge is **not** secretless, though — it carries its own
+operational keys (auth/instruction/OIDC) and today an over-broad Blob key; what it lacks is any
+grant on app connection secrets and any arbitrary outbound route (ADR-0001).
 
 ## Features
 

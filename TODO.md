@@ -1,0 +1,126 @@
+# TODO
+
+Follow-up work extracted from the Architecture Decision Records in [`docs/adr/`](docs/adr/). Each item cites the ADR it came from and, where one exists, the filed issue number and the gating condition (when the work must land). Items are ordered so you can work roughly top-to-bottom: security-critical first, then milestone-gated, then deferred and hygiene.
+
+Legend for gating conditions:
+
+- **P0** — security-critical, do now.
+- **Pre-M5** — must land before the M5 production pilot.
+- **Pre-GA** — cheap now, painful once customer URLs / external owners commit.
+- **Before multi-tenant** — required before the platform serves more than one trusted operator.
+- **Before multi-replica** — required before the edge runs more than one replica.
+- **Deferred / v2** — explicitly out of scope for now; recorded so it isn't lost.
+
+---
+
+## P0 — security-critical
+
+- [ ] **Drop the full-RW Blob key from the edge; read via managed identity.** The edge holds the full read/write/delete Blob storage-account key, and prod injects it even though a read-only Storage Blob Data Reader role is already provisioned — an edge RCE could rewrite or delete any app's bundle (all-tenant supply-chain). Remove `AZURE_STORAGE_CONNECTION_STRING` from the edge, authenticate Blob reads via MI + bearer token (replace the SharedKey signer), keep portal write and the dev/Azurite SharedKey fallback. — ADR-0001, issue #15
+- [ ] **Fix the egress response-header safelist so injected secrets can't echo back.** The response-header blocklist omits `authorization` / `www-authenticate`, allowing an upstream to reflect the injected credential to the app. — ADR-0005 (ISSUE-01, Critical), issue #7
+- [ ] **Enforce the egress body-size cap on chunked responses.** The cap is `content-length`-only, so a chunked-transfer response bypasses it. — ADR-0005 (ISSUE-02, Critical), issue #8
+- [ ] **Remove the legacy `AnthropicProvider` fallback from runtime selection.** The direct LLM path (`EDGE_LLM_ANTHROPIC_KEY`) has no production guard and fails open. Remove it from runtime selection (keep test-only) and fail closed (503) when egress is unconfigured — preferred over a fragile `NODE_ENV` guard. — ADR-0008 (ISSUE-03, Critical), issue #10
+
+---
+
+## Egress SSRF hardening
+
+- [ ] **Close the IPv6 blocklist gaps.** Add `fe80::/10`, 6to4, NAT64, full-form loopback, and hex-mapped IPv4. — ADR-0005 (ISSUE-09), issue #2
+- [ ] **Require `https://` on any secret-backed origin.** Egress currently injects a connection secret over cleartext `http://` (no `target.protocol` guard). — ADR-0005, issue #11
+- [ ] **Make redirect handling explicit.** `maxRedirections: 0` is implicit and the `Location` header is forwarded (so the browser follows it) — make the non-follow policy explicit and stop forwarding `Location`. — ADR-0005 (ISSUE-10)
+- [ ] _(Optional, perf)_ **Share one undici `Agent` with a validate-and-pin `connect`/`lookup`.** A fresh `Agent` per request defeats connection pooling; a shared Agent that validates+pins the IP per connection recovers pooling without losing the SSRF IP-pin. Only if egress latency matters. — ADR-0005
+
+---
+
+## Postgres role split / RLS hardening
+
+- [ ] **Boot-fail when the edge role DSN is absent.** `EDGE_DATABASE_URL ?? DATABASE_URL` silently connects the edge as schema owner, defeating the split — fail startup instead of falling back. — ADR-0002
+- [ ] **Realize `helix_portal` or correct the Decision text.** The portal connects as schema owner (no `PORTAL_DATABASE_URL`), so the `helix_portal` grants are dead code. — ADR-0002
+- [ ] **Add `statement_timeout` on the edge pools.** No timeout today → pool-exhaustion DoS. — ADR-0002 (ISSUE-05) / ADR-0003, issue #12
+- [ ] **Put RLS on `gateway_calls` and `app_collection_items`.** `gateway_calls` has global SELECT + `sessions` full DML with no RLS (cross-tenant read under edge RCE, ISSUE-12); `app_collection_items` has no RLS (cross-app write pollution, ISSUE-13). — ADR-0002
+- [ ] **Make `NOBYPASSRLS` explicit on `helix_edge` in the prod role bootstrap.** — ADR-0002
+- [ ] **Add a lint / banned-import forbidding raw `app_data` queries outside `withPartition`.** — ADR-0002
+
+---
+
+## Dependency-minimal edge — filed defects
+
+- [ ] **Harden the LLM SSE parser.** No per-event byte cap and LF-only: a CRLF stream causes unbounded buffering and a trailing `\r` leaks into the payload. — ADR-0003, issue #12
+- [ ] **Count the app-data size cap in bytes, not UTF-16 code units.** — ADR-0003, issue #12
+- [ ] _(Consider)_ **Trim `openid-client` to a JWKS-only verifier.** Heaviest trusted-path dependency. — ADR-0003
+- [ ] _(Consider)_ **Add a CI dependency-allowlist** to make the dependency-minimal rule mechanical. — ADR-0003
+
+---
+
+## Auth hardening
+
+- [ ] **Raise scrypt cost.** Currently `N=2^14`, 8× below OWASP's `2^17`. — ADR-0004 (ISSUE-08)
+- [ ] **Add an admin-kill / session-revocation path.** None exists today; group-revocation is stale until refresh (≤ 60 min). — ADR-0004 (ISSUE-11)
+- [ ] **Restrict `password` visibility to explicit demo-only / no-production-data.** Today it's soft "demo convenience" with no data-class ban. — ADR-0004
+- [ ] **Fix the login-throttle TOCTOU** (check-then-increment is non-atomic; multiplies under replicas) — see the multi-replica item below. — ADR-0004 (ISSUE-15), issue #13
+
+---
+
+## Pre-M5 — before the production pilot
+
+- [ ] **Revoke `helix_portal` `UPDATE`/`DELETE` on `gateway_calls`.** One line; the portal role can currently rewrite/delete metering history, contradicting the append-only claim (`schema.prisma:187`). — ADR-0021, issue #17
+- [ ] **Fix the in-memory throttle for the shipped multi-replica infra.** Infra ships `minReplicas=1, maxReplicas=3`, so the N× throttle weakening is live. Before M5: pin `maxReplicas=1` **or** land a shared atomic counter (DB `UPDATE … RETURNING` / Redis); schedule `loginThrottle.sweep()` on an interval (ISSUE-07, currently never scheduled → unbounded map growth); configure `trustProxy` correctly (`req.ip` may collapse or be XFF-spoofable). — ADR-0011 / ADR-0004, issue #13
+- [ ] **Make `ownsApp` an M5 exit criterion (BOLA/IDOR).** Secrets and app-scoped mutating routes perform no ownership check — any authenticated principal can rotate/delete another app's secrets. `ownerId` already exists; interim gate is a ~3-line `ownsApp` preHandler (handle nullable legacy `ownerId`). Test: a second operator cannot write another's app. — ADR-0007, issue #9 (DEC-01)
+- [ ] **Registry projection: staleness observability.** Expose `lastSuccessfulLoadAt` + `consecutiveLoadFailures`, degrade `/health` past a staleness threshold, emit a load-failure metric, promote the first failure to `error`-level. Closes the "serves stale forever, silently" edge (flagged by all 5 reviewers). — ADR-0025 (must-do)
+- [ ] **Registry projection: jitter the reconcile poll.** Wrap the fixed `setInterval` in a jittered `setTimeout` chain (±20%) to avoid a synchronized DB herd across replicas. — ADR-0025
+
+---
+
+## Pre-GA — before external app owners / customer URLs commit
+
+- [ ] **Host untrusted apps on a separate registrable domain.** Apps currently share one eTLD+1 with the control plane; move untrusted apps to e.g. `*.azx-apps.<tld>` and keep portal/auth on `azx-labs.com`. Closes cookie-bomb DoS, Safe-Browsing/reputation blast radius, same-site coupling with the auth host, and storage-partitioning residuals (PSL submission only partially closes cookie vectors). Cheap now, painful after customer URLs commit — treat as a pre-GA prerequisite, not an M5 blocker. — ADR-0019, issue #16
+- [ ] **Decide the trigger for making the edge/portal split physical, and add a CI gate.** Document v0 co-deploy as a time-boxed boundary collapse; add a CI check that refuses co-deploy when `NODE_ENV=production` (or revoke co-deploy when the first non-employee owner onboards). — ADR-0012
+
+---
+
+## Egress trust model (ADR-0013, Proposed)
+
+- [ ] **Step 1 — now:** Add a `jti` one-time-use burn (bounded seen-set/table at egress) and assert `aud: "azx-egress"` in `jwtVerify`. Closes replay and token-passthrough. — ADR-0013 (ISSUE-04), issue #3
+- [ ] **Step 2 — before multi-tenant:** Extend per-action authorization to the `llm`/platform path and bind `method` + `path` into the instruction (the fetch path already scopes by `appId` + grants). — ADR-0013, issue #6
+- [ ] **Step 3 — post-M5:** Move from the shared symmetric secret to asymmetric (Ed25519) signing modeled on IETF Transaction Tokens. Larger change (key management, rotation); deferred until after prod cutover. — ADR-0013
+- [ ] **Open question — needs sign-off:** Choose the long-tail key strategy: (a) symmetric + broker-side per-app authz, or (b) asymmetric / per-app-derived keys; decide whether (b) is required before onboarding external app owners or can wait until post-M5. **Note:** the `HKDF(master, appId)` per-app-key fix is unsound (both planes hold the master) and must not be adopted as written. — ADR-0013
+- [ ] _(Orthogonal)_ **Channel-level defense: mTLS / workload identity** for the edge→egress hop. — ADR-0013, issue #5
+
+---
+
+## Threat-model & open questions to document/decide
+
+- [ ] **CSP supply-chain hardening.** Consider SRI or versioned-script pinning for the CDN allowlist; add `object-src 'none'`; decide whether the CDN list should be per-app / opt-in rather than global. Record the third-party stored-XSS exposure on public / shared-write apps in the threat model. — ADR-0009 (DEC-03)
+- [ ] **Anonymous shared-writes threat model.** Decide whether `sharedWrite` should require authentication (make `public` + `sharedWrite` an explicit, approval-gated opt-in); separate/attribute the anonymous write budget so a flood can't self-DoS the app's authenticated writes; consider a sentinel GUC value instead of `""`. Document the anonymous-write threat model. — ADR-0010 (DEC-02)
+
+---
+
+## Secret custody (ADR-0006)
+
+- [ ] **Mark KEK rotation explicitly deferred.** No KEK rotation / rekey path exists — record it as a known deferral. — ADR-0006
+- [ ] **State plainly that the dev AES-GCM envelope is not a security boundary.** — ADR-0006
+- [ ] **Spec a timeout/retry for the prod Key Vault `open()` hot path.** Currently an unwired stub with no timeout/retry (Key Vault wired in M5). — ADR-0006
+
+---
+
+## Deferred / v2
+
+- [ ] **Metering ledger tamper-evidence (fast-follow before any external audit).** Hash chain + Merkle + external anchoring to a write-only sink — append-only-by-grant is not tamper-proof; `helix_portal` can rewrite history. Plus GDPR: crypto-shredding for content/PII rows and a documented Art. 17(3) retention basis for the metering tuple. — ADR-0021, issue #17
+- [ ] **Registry projection — multi-replica / scale hardening (can land with M5).** Cold-start when the DB is down (a cold replica 503s all apps while `/health` may read green — emit `registry-load-pending` and/or bootstrap from a durable snapshot); connection budget + pooler caveat (~3 sessions/replica caps ~30 replicas; use session-pooling mode or a reserved direct LISTEN connection); scale ceiling (single global channel forces a full-table reload per commit per replica — add a `last_modified_at` cursor for delta reloads before ~10⁵ apps). — ADR-0025 (items 3–5)
+- [ ] **Hosted-build isolation prerequisites (launch gates, not v2.x follow-ups).** When hosted builds ship they must clear: (1) credential-free builder — the load-bearing control (build container holds no platform/git/registry/cloud secret; clone happens outside the build zone); (2) ephemeral by construction (one container per build, destroyed after; no warm pools); (3) network-restricted install (registry allowlist/mirror, block lifecycle-script egress; `--ignore-scripts` is defense-in-depth only); (4) build provenance as a launch gate (SLSA / in-toto / signed attestation). Open question: confirm the milestone label (v2 vs "M6") and decide whether provenance must also cover the author-CI upload path (a bundled-output/chalk-debug-class payload rides in regardless of hosted builds). — ADR-0026, closes ADR-0018's trusted-on-intake gap
+- [ ] **Custom backends / arbitrary containers.** Out of scope for v1; a later isolation tier (see `docs/platform-custom-backends-and-apis.md`). — ADR-0020
+- [ ] **Multi-org tenancy.** Deferred; adding `orgId` later is an additive migration (app-id partitioning is already in place), and `platform-admin` becomes org-scoped when it lands. — ADR-0023
+
+---
+
+## Doc hygiene
+
+- [ ] **Reconcile `docs/features/llm-gateway.md` with the metering ledger.** It still says "tokens, not dollars … no cost column"; the `costMicroUsd` column exists. — ADR-0021
+
+---
+
+## Explicitly rejected (recorded so they aren't re-proposed)
+
+- Moving the OIDC RP credential off the edge — standard BFF/confidential-client pattern; not warranted. (ADR-0001)
+- Physical DB isolation (schema/DB-per-app) — not warranted; the role split + RLS is the control. (ADR-0002)
+- Sandboxed iframe without `allow-same-origin` for app isolation — category error, breaks the same-origin `/_api/*` gateway (ADR-0014). Still the right control _only_ if the portal ever embeds an unpromoted app for preview. (ADR-0019)
+- The `HKDF(master, appId)` per-app-key step-1 fix for the egress seam — unsound; both planes hold the master. (ADR-0013)

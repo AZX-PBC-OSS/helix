@@ -1,5 +1,7 @@
 # Portal SPA (`portal-web`)
 
+> **Related ADRs:** [ADR-0007](../adr/0007-portal-authz-v0.md) (portal authz v0) · [ADR-0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) (bearer JWT over JWKS) · [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (approval classifier) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger).
+
 **What it is.** The owner-facing portal UI (`apps/portal-web`) — a Vite + **React 19** +
 **Mantine** + TanStack Query + React Router single-page app, pulled forward from v1. **Every
 screen is real and wired to the live `/api/v1/*` API** — apps, versions, capabilities, usage,
@@ -78,8 +80,10 @@ portal serve it at :3001.
 - **Never silently fake.** Surfaces that aren't fully built ship as one honest `PreviewBadge`
   rather than a screen that pretends to work — and as those surfaces became real, the badges came
   off. The lone survivor is per-app RBAC (`SettingsTab.tsx`).
-- **Dashboards show tokens, not dollars.** `gateway_calls` stores token counts and request counts,
-  not cost — so the usage views report tokens and counts. No fabricated cost column.
+- **Dashboards show tokens and cost.** `gateway_calls` stores token/request counts **and** a frozen,
+  as-charged `costMicroUsd` priced at write time from a code-resident rate table (ADR-0021); the SPA
+  recomputes `costUsd` from that same table for display — the dollar figure is derived from a real
+  per-call frozen cost, not fabricated. Token-denominated budgets stay the enforcement unit.
 - **CORS is scoped, not opened.** `clientBasedCORS` keying off the SPA client id keeps the cross-
   origin token grant pinned to the one public browser client.
 - **Mantine is a house preference** — the theme here is the project's styling reference.
@@ -87,7 +91,10 @@ portal serve it at :3001.
 ## Planned / not yet built
 
 - **Per-app RBAC** (owner / editor / viewer) — the only `PreviewBadge` left (`milestone="v1"`).
-  Today any authenticated portal actor may mutate; actions are attributed in the audit trail.
+  v0 authz is deliberately flat (authenticated == authorized, ADR-0007): any authenticated portal
+  actor may mutate **any** app and manage **any** app's secrets, with **no `ownsApp` check** on the
+  app-scoped mutating + secret routes — a live BOLA/IDOR to close before M5 (issue #9), not a benign
+  placeholder. Actions are attributed in the audit trail, but attribution is not authorization.
 - **No Playwright/E2E suite yet** — there are colocated `*.test.tsx` (apps-list, settings-tab,
   versions-tab, secrets-admin) running under a dedicated **jsdom Vitest project** (root
   `vitest.config.ts` splits the node suite from the portal-web jsdom suite, which carries the React

@@ -4,6 +4,8 @@
 **Companion to:** `platform-architecture.md` (the _what & why_; §5.1 names preview/promote, §6 the gateway), `platform-project-plan.md` (§5 v1 backlog items #2 capabilities + approvals, #4 CSP feedback loop, #6 public visibility), `app-data-storage.md` (the prior design doc this mirrors in shape), and the feature doc `docs/features/capabilities-and-manifests.md`.
 **Why this exists:** Three separate v1 backlog items — capability-manifest approvals (#2), CSP origin grants (#4), and public-visibility mode (#6) — are the *same problem* wearing three hats. If we model them separately we build three half-overlapping mini-workflows that drift. This doc names the one shape under all three, proposes the data model + policy + state machine, and grounds it in the existing edge/portal trust split. It does **not** require building all three at once — it requires designing them so they share one spine.
 
+> **Related ADRs:** [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (approval classifier) · [ADR-0009](../adr/0009-relaxed-csp.md) (relaxed CSP) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0007](../adr/0007-portal-authz-v0.md) (portal authz v0).
+
 ---
 
 ## 1. The unifying insight: the edge stays dumb; approvals gate *writes*
@@ -117,7 +119,7 @@ Concretely:
 
 > **Prod note (no local blocker):** locally there is nothing to wire — dev-idp already ships the `platform-admin` claim. The only prod dependency is that the **Entra app registration surface a group or app-role claim** in its access token — config on the registration, deferred to the Entra tail (M3/M5), and it blocks *nothing* in local development of #2.
 
-`App` also has **no owner field** today (ownership is implicit in the audit trail). The admin queue's "owner" column and "who may request" both need it: add `App.ownerId` (= creator's `actor.sub`, set at `app.create`). Cheap, and several v1 surfaces want it anyway.
+`App` needs an owner field for the admin queue's "owner" column and "who may request": add `App.ownerId` (= creator's `actor.sub`, set at `app.create`). Cheap, and several v1 surfaces want it anyway. _(Since built: `App.ownerId` now exists and is set at create — but note ADR-0007: v0 authz is still **flat** (authenticated == authorized). Any authenticated principal may mutate any app and manage any app's secrets; the app-scoped mutating + secret routes do **no `ownsApp` check**. That flatness is a deliberate v0 choice for the single-operator pilot, but the missing ownership check is a live BOLA/IDOR to close before M5, issue #9 — the `ownerId` above is already the hook for the interim owner-or-admin gate.)_
 
 ---
 

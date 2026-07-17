@@ -1,5 +1,7 @@
 # Local OIDC issuer (`dev-idp`)
 
+> **Related ADRs:** [ADR-0004](../adr/0004-auth-model.md) (edge-terminated auth) · [ADR-0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) (portal/CLI JWT).
+
 **What it is.** A local OpenID Connect issuer (`apps/dev-idp`) used in development and tests so
 the whole auth surface — the edge's app-user flow, the portal's bearer-JWT verification, the
 CLI's device flow, and the SPA's code+PKCE login — runs end-to-end without Entra. It is a thin

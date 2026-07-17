@@ -234,6 +234,11 @@ Review it as its own small front door:
   counts against the throttle; the verify is constant-time; the throttle key can't be
   bypassed by spoofable headers (it must derive the client IP the same trusted way the rest
   of the edge does).
+  > **Caveat — [ADR-0004](adr/0004-auth-model.md)/[ADR-0011](adr/0011-in-memory-rate-limiting.md).**
+  > The throttle is in-memory per-process and check-then-increment (non-atomic/TOCTOU), its
+  > `sweep()` is never scheduled (unbounded map growth), and `trustProxy` is unset — all of
+  > which weaken it under the shipped `maxReplicas>1`. scrypt cost (`N=2^14`) is below OWASP's
+  > `2^17`. Tracked as issue #13; know the true boundary rather than re-filing it.
 - **The session it mints.** On success `SessionStore.createActive` inserts an **active**
   session directly (no pending/redeem) with a fresh pseudonym (`pw_<random>`,
   `displayName: "Guest"`, **no groups**), so each visitor gets isolated `user`-scope storage.
@@ -310,14 +315,23 @@ trust is the whole design, so the attestation must be airtight:
   returns null (never throws/serves) on any verification failure.
 - **The secret never crosses this boundary.** The instruction names a *connection*; egress
   resolves it to plaintext under the `helix_egress` role. The edge has **no grant** on
-  `app_secrets` at all — so even a fully compromised edge can only ask egress for calls it
-  already authorized, against origins already on the manifest allowlist, and cannot read a
-  single key. Verify the egress secret resolver scopes by `appId` (app-scoped first, then
-  granted-global) and can't be steered to another app's secret by a forged instruction.
+  `app_secrets` at all, so it can never *read* a key directly. Verify the egress secret
+  resolver scopes by `appId` (app-scoped first, then granted-global).
+  > **Correction — [ADR-0013](adr/0013-egress-trust-model.md) (Proposed).** Do **not** treat
+  > this seam as containing an edge compromise. The instruction is signed with a **shared
+  > symmetric secret** that *both* planes hold, so a compromised edge can **forge** an
+  > instruction for any `appId` and have egress *use* any app's connection — the `appId` claim
+  > is not an isolation boundary today. There is also no `jti` replay-burn or `aud` check, and
+  > `method`/`path` are unbound. This is a known gap being hardened (jti/aud burn now — issue
+  > #3; per-action authz + method/path binding before multi-tenant — issue #6; asymmetric
+  > signing post-M5). Flag regressions against that plan; the seam is *not* airtight yet.
 - **SSRF is egress-side** (`apps/egress/src/ssrf.ts`): resolve the host, validate **every**
   returned address (block private/loopback/link-local/IMDS), pin the validated IP against
-  rebind, no redirect-follow, header safelist both ways. This is a network-layer boundary,
-  not an auth one, but it's part of the same trust hop — see the egress adversarial suite.
+  rebind, no redirect-follow, a request-header safelist and a response-header **blocklist**
+  (per [ADR-0005](adr/0005-ssrf-egress-controls.md) the blocklist has gaps — omits
+  `authorization`/`www-authenticate` (#7), body caps read only `content-length` (#8), and the
+  injection path still accepts `http://` (#11)). This is a network-layer boundary, not an auth
+  one, but it's part of the same trust hop — see the egress adversarial suite.
 
 This is service-to-service attestation, not user auth — but it earns a review pass because a
 weakness here converts an edge bug into secret disclosure or SSRF.
@@ -341,9 +355,14 @@ confirm:
   prod. The approval write-gate (elevated capability/visibility changes) depends on this —
   confirm a non-admin principal can't approve, and that `/api/v1/approvals` decisions are
   separation-of-duty enforced.
-- v0 *mutation* authorization is otherwise intentionally flat: any authenticated
-  portal-audience principal may mutate (same trust as the old shared token, now attributed).
-  Per-app RBAC is a v1 item — not a gap to flag.
+- v0 *mutation* authorization is otherwise intentionally flat ([ADR-0007](adr/0007-portal-authz-v0.md),
+  "authenticated == authorized"): any authenticated portal-audience principal may mutate any
+  app and manage any app's secrets (same trust as the old shared token, now attributed).
+  Per-app RBAC (owner/editor/viewer) is a v1 item. **Reviewer note:** the *deliberate* flatness
+  is accepted for v0, but the app-scoped **secrets** and mutating routes doing no `ownsApp`
+  check is a live BOLA/IDOR — treat it as a tracked gap (issue #9, an M5 exit criterion), not
+  "nothing to see here." A second operator being able to write another's app *is* in scope to
+  flag until that check lands.
 
 ---
 
@@ -417,7 +436,10 @@ Call these out only if you disagree with the *decision*, not as bugs:
 - **Admin per-user *session* revocation UI** — the `sessions` table is migrated but there is
   no revoke route/UI yet (project plan §5.7). (Logout and app-disable already revoke; this is
   the admin-initiated kill of a *specific* live session.)
-- **Per-app RBAC / ownership** on the portal side (v1) — mutation authz is flat today.
+- **Per-app RBAC** (owner/editor/viewer roles) on the portal side — a v1 feature, out of
+  scope here. But note ([ADR-0007](adr/0007-portal-authz-v0.md)) the flat v0 authz means
+  app-scoped **secrets** and mutating routes do no ownership check — the resulting BOLA/IDOR
+  (issue #9) *is* in scope to flag, and is an M5 exit criterion, even though full RBAC is not.
 - **Audit tamper-evidence.** `gateway_calls` is append-only *by DB grant* (the edge has
   INSERT, not UPDATE/DELETE) but is **not** cryptographically tamper-evident — no hash chain
   or signature. Audit shipping to an immutable sink is a planned hardening (project plan §5.8);

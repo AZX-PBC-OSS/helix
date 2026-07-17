@@ -1,5 +1,7 @@
 # Authentication
 
+> **Related ADRs:** [ADR-0004](../adr/0004-auth-model.md) (edge-terminated auth) · [ADR-0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) (portal/CLI JWT) · [ADR-0019](../adr/0019-subdomain-per-app-isolation.md) (subdomain isolation) · [ADR-0011](../adr/0011-in-memory-rate-limiting.md) (in-memory rate limiting) · [ADR-0007](../adr/0007-portal-authz-v0.md) (portal authz v0).
+
 There are **two** auth paths, deliberately separate:
 
 1. **App-user auth** (the edge) — how a person signing into a hosted app gets a session. This
@@ -113,6 +115,13 @@ app host** (no auth host, no handoff), so the OIDC review surface is untouched.
 Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 `apps/portal/src/routes/access-password.test.ts` + `access/password.test.ts`.
 
+> **Throttle caveat (ADR-0004 / ADR-0011, issue #13).** The login/anonymous throttle and the
+> password brute-force defense are **not** robust as shipped: the throttle is in-memory
+> **per-process** and non-atomic (a check-then-increment TOCTOU), its `sweep()` is never scheduled
+> (unbounded growth), `trustProxy` is unset (client IPs unattributed behind a proxy), and scrypt
+> cost (`N=2^14`) is below OWASP's `2^17` — all weakened further under the shipped `maxReplicas>1`
+> (each replica keeps its own counter). Hardening these is tracked before M5.
+
 ### Crypto + key material
 
 - `apps/edge/src/auth/flow.ts` — the signed `__Host-oidc-flow` cookie (HS256, 10 min).
@@ -153,8 +162,12 @@ Supporting routes: **`GET /api/v1/auth/config`** (public — issuer + client IDs
 to bootstrap) and **`GET /api/v1/me`** (echoes the authenticated actor `{sub, via, name?,
 email?}`, powering `azx whoami`). Tested in `apps/portal/src/auth/oidc.integration.test.ts`.
 
-**Authorization model (v0):** any authenticated portal-audience principal may mutate — the same
-level as the old shared token, now attributed in the audit log. Per-app RBAC is a v1 feature.
+**Authorization model (v0):** authz is **flat** — any authenticated portal-audience principal may
+mutate ("authenticated == authorized"), the same level as the old shared token, now attributed in
+the audit log. This is **not** a benign gap: the app-scoped secret and mutating routes do **no
+ownership check**, so any authenticated principal can act on any app's objects — a live **BOLA**
+(broken object-level authorization) to close before M5 (ADR-0007, issue #9). Per-app RBAC is the
+v1 fix, not merely a nice-to-have.
 
 ## Planned / not yet built
 
@@ -166,4 +179,5 @@ level as the old shared token, now attributed in the audit log. Per-app RBAC is 
   portal audience moves from the dev `urn:helix:portal` to `api://<guid>` (an env change only).
   Per-app **group visibility** (`visibility: group`) is deferred until a pilot app needs it;
   pilot apps use `private`/`password`.
-- **Per-app RBAC / ownership** on the portal side (v1).
+- **Per-app RBAC / ownership** on the portal side (v1) — the fix for the flat-authz BOLA noted
+  above (ADR-0007, issue #9), not merely a cosmetic role feature.
