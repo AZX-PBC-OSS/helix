@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
-import type { PortalMeResponse } from "@helix/shared";
+import type { PortalMeResponse } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { AuthProvider } from "../auth/AuthProvider";
 import { RequireAdmin, RequireAuth } from "../auth/guards";

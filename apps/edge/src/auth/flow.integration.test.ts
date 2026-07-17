@@ -2,7 +2,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { LightMyRequestResponse } from "fastify";
-import { startDevIdp, TestHttpSession, type RunningDevIdp } from "@helix/dev-idp";
+import { startDevIdp, TestHttpSession, type RunningDevIdp } from "@azx-pbc/dev-idp";
 import { buildApp } from "../app.js";
 import { OpenIdConnectClient } from "./oidc.js";
 import { PgSessionStore, hashSessionToken } from "./sessions.js";

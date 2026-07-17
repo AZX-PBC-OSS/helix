@@ -74,7 +74,7 @@ This is exactly the shape the mock UI already assumes — `PreviewApproval` carr
 
 This is where the schema comment "grants above a baseline … require admin approval; that policy lives in the control plane, not in this shape" (`packages/shared/src/manifest.ts`) becomes code.
 
-A **pure function in `@helix/shared`** — testable, and callable by the SPA to warn "this will need approval" *before* submit:
+A **pure function in `@azx-pbc/shared`** — testable, and callable by the SPA to warn "this will need approval" *before* submit:
 
 ```
 classifyChange(effective, requested) → {
@@ -98,7 +98,7 @@ Two invariants keep this safe *and* non-annoying:
 - **Reducing privilege is always baseline.** Removing a grant, shrinking a budget, public→private — never needs approval. Only *increases* gate.
 - **Disjoint application.** Because we chose split semantics, a single `PUT /manifest` can both commit baseline deltas *and* open a request for the elevated ones. The route response tells the owner exactly which: `{ applied: [...], pending: <requestId> }`. The SPA shows the applied part live and a "pending approval" banner for the rest.
 
-The threshold constants (`BASELINE_TOKENS`, write/byte ceilings, the default-model set, the low-risk MCP allowlist) are platform policy — they live beside the classifier in `@helix/shared` so portal-gating and SPA-preview read the identical numbers.
+The threshold constants (`BASELINE_TOKENS`, write/byte ceilings, the default-model set, the low-risk MCP allowlist) are platform policy — they live beside the classifier in `@azx-pbc/shared` so portal-gating and SPA-preview read the identical numbers.
 
 > **Bundling tradeoff (v1 choice):** one request per submission, even if it carries several elevated deltas of different kinds; the request's `risk` is the max across them; the reviewer approves/denies the bundle (or `needs_changes`). Per-delta partial approval is a deliberate future refinement, not v1 — it complicates the state machine for a rare case.
 
@@ -165,7 +165,7 @@ Going public is just a request: `{ deltas: [{ path: "visibility", from: "group",
 
 | Surface | Change | Backlog item |
 |---|---|---|
-| `@helix/shared` | `classifyChange` + policy thresholds; `ApprovalRequest`/`Delta` zod types | #2 |
+| `@azx-pbc/shared` | `classifyChange` + policy thresholds; `ApprovalRequest`/`Delta` zod types | #2 |
 | `apps/portal` schema | `ApprovalRequest` table; `App.ownerId`; `Actor.groups` | #2 |
 | `apps/portal` routes | write-gate on `PUT /manifest` + visibility; `GET/POST /api/v1/approvals*`; `requireAdmin` | #2 |
 | `apps/portal-web` | turn **Approvals** mock real; "pending" banner on app detail | #2 |

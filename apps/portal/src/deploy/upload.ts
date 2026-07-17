@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import yauzl from "yauzl";
-import type { CspWarning } from "@helix/shared";
+import type { CspWarning } from "@azx-pbc/shared";
 import type { PrismaClient, Version as VersionRow } from "../db/client.js";
 import type { BlobStore } from "../blob/store.js";
 import { isUniqueViolation } from "../db/errors.js";

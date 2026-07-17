@@ -12,7 +12,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { INJECTION_KINDS, type InjectionRecipe, type SecretMetadata } from "@helix/shared";
+import { INJECTION_KINDS, type InjectionRecipe, type SecretMetadata } from "@azx-pbc/shared";
 import { globalSecretsQuery } from "../../api/queries";
 import {
   useCreateGlobalSecret,

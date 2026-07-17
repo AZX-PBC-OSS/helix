@@ -22,7 +22,7 @@ export const LlmCapabilitySchema = z.object({
   /**
    * Per-app daily LLM spend cap in USD; unset ⇒ unbounded. Denominated in
    * dollars (not tokens) so the cap means the same thing across models — the
-   * edge prices each call via `@helix/shared` pricing and enforces a daily +
+   * edge prices each call via `@azx-pbc/shared` pricing and enforces a daily +
    * rolling-hour burst window off the frozen `costMicroUsd` ledger column.
    */
   dollarsPerDay: z.number().positive().optional(),

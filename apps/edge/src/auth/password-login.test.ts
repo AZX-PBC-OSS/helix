@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { randomBytes, scryptSync } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { VisibilityMode } from "@helix/shared";
+import type { VisibilityMode } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import {

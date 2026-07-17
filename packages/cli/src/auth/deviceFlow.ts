@@ -1,5 +1,5 @@
 import * as oidc from "openid-client";
-import { portalApiScope } from "@helix/shared";
+import { portalApiScope } from "@azx-pbc/shared";
 import type { StoredTokens } from "./tokenStore.js";
 
 /**

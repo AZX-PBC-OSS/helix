@@ -15,7 +15,7 @@ import {
 } from "@mantine/core";
 import { Dropzone } from "@mantine/dropzone";
 import { useQuery } from "@tanstack/react-query";
-import type { UploadVersionResponse } from "@helix/shared";
+import type { UploadVersionResponse } from "@azx-pbc/shared";
 import { useUploadVersion } from "../api/mutations";
 import { appsQuery } from "../api/queries";
 import { useAuth } from "../auth/AuthProvider";

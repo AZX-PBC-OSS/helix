@@ -7,7 +7,7 @@ import {
   type App,
   type AppManifest,
   type Capabilities,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { CapabilitiesTab } from "../pages/tabs/CapabilitiesTab";
 import { AuthProvider } from "../auth/AuthProvider";

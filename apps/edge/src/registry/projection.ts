@@ -15,7 +15,7 @@ import {
   type DataCapability,
   type LlmCapability,
   type VisibilityMode,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 
 /** The edge's per-app view of the fetch-proxy grant (fetch-proxy design §7). */
 export interface FetchProxyGrant {

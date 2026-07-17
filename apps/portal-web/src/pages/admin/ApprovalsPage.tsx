@@ -12,7 +12,7 @@ import {
   Textarea,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { ApprovalRequest, Delta } from "@helix/shared";
+import type { ApprovalRequest, Delta } from "@azx-pbc/shared";
 import { approvalsQuery } from "../../api/queries";
 import { useApproveRequest, useDenyRequest, useRequestChanges } from "../../api/mutations";
 import { Icon, type IconName } from "../../components/Icon";

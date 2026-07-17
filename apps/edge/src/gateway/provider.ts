@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 import { Pool, type Dispatcher } from "undici";
-import type { LlmChatRequest, LlmUsage } from "@helix/shared";
+import type { LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
 
 /**
  * The `LlmProvider` seam (architecture §6.1, project plan §4 M4). The gateway

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PORTAL_AUDIENCE, runDeviceFlow, startDevIdp, type RunningDevIdp } from "@helix/dev-idp";
+import { PORTAL_AUDIENCE, runDeviceFlow, startDevIdp, type RunningDevIdp } from "@azx-pbc/dev-idp";
 import { createOidcVerifier } from "./verifier.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 

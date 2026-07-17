@@ -12,7 +12,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { GatewayOutcome } from "@helix/shared";
+import type { GatewayOutcome } from "@azx-pbc/shared";
 import { gatewayAuditQuery } from "../../api/queries";
 import { Icon } from "../../components/Icon";
 import { Hint, PageHead, Stat, ToneBadge, type Tone } from "../../components/primitives";

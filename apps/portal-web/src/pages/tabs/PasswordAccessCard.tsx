@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button, Card, Code, CopyButton, Group, Stack, Text, TextInput } from "@mantine/core";
-import { MIN_PASSWORD_LENGTH, type App } from "@helix/shared";
+import { MIN_PASSWORD_LENGTH, type App } from "@azx-pbc/shared";
 import { useQuery } from "@tanstack/react-query";
 import { passwordCredentialQuery } from "../../api/queries";
 import { useDisablePassword, useEnablePassword, useRotatePassword } from "../../api/mutations";

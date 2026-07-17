@@ -18,7 +18,7 @@ import {
   type UploadVersionResponse,
   type Visibility,
   type VisibilityUpdateResult,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { fetchJson, requestVoid, uploadFile } from "./client";
 
 /**

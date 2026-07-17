@@ -1,5 +1,5 @@
 import fp from "fastify-plugin";
-import { createSecretStore, readDevKey, type SecretStore } from "@helix/secret-store";
+import { createSecretStore, readDevKey, type SecretStore } from "@azx-pbc/secret-store";
 
 export interface SecretStorePluginOptions {
   /** Inject a store (tests). When omitted, one is built from the environment. */

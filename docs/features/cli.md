@@ -1,6 +1,6 @@
 # `azx` CLI
 
-**What it is.** `azx` (`packages/cli`, `@helix/cli`) is a **per-app** deploy CLI — you run it
+**What it is.** `azx` (`packages/cli`, `@azx-pbc/cli`) is a **per-app** deploy CLI — you run it
 from inside an app's directory, like `git` or `vercel`. It reads that app's `azx.json`, zips the
 build output, uploads it to the portal as a new version, and manages the live pointer. M3 added
 browser sign-in via the OIDC device flow. Full reference: [`packages/cli/README.md`](../../packages/cli/README.md).
@@ -67,5 +67,5 @@ an ephemeral dev-idp (see [dev-idp.md](./dev-idp.md)).
 ## Planned / not yet built
 
 - **Not published yet** — run via `tsx`: `node --import tsx <repo>/packages/cli/src/bin.ts <cmd>`
-  from the app directory, or alias it. `npm i -g @helix/cli` is a later milestone.
+  from the app directory, or alias it. `npm i -g @azx-pbc/cli` is a later milestone.
 - Production login points `azx login` at Entra instead of the local issuer (config-only).

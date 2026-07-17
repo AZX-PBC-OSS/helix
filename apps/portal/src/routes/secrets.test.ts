@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DevEnvelopeSecretStore } from "@helix/secret-store";
+import { DevEnvelopeSecretStore } from "@azx-pbc/secret-store";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**

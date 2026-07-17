@@ -1,4 +1,4 @@
-import type { App, Version } from "@helix/shared";
+import type { App, Version } from "@azx-pbc/shared";
 import type { StatusKind } from "../components/primitives";
 
 /** Derive the card/header status from registry truth. */

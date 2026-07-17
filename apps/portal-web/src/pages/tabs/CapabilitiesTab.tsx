@@ -21,7 +21,7 @@ import {
   type App,
   type Capabilities,
   type FetchConnection,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { useSetManifest } from "../../api/mutations";
 import { manifestQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
@@ -37,7 +37,7 @@ import { SecretsCard } from "./SecretsCard";
  * enforces. Baseline edits apply immediately on save; above-baseline grants
  * (arbitrary MCP servers, external origins, off-catalogue models, LLM budgets
  * over ${BASELINE_DOLLARS_PER_DAY}/day) open an admin-approval request — the
- * classifier (`@helix/shared` `classifyChange`) draws that line, and the
+ * classifier (`@azx-pbc/shared` `classifyChange`) draws that line, and the
  * `pending` banner below reports when a save lands one.
  */
 

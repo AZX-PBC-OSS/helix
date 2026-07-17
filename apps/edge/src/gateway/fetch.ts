@@ -6,7 +6,7 @@ import {
   OUTCOME_HEADER,
   REQUEST_HEADER_SAFELIST,
   RESPONSE_HEADER_BLOCKLIST,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";

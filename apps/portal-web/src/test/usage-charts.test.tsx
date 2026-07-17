@@ -2,7 +2,7 @@ import { useState } from "react";
 import { describe, expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { UsageSeriesPoint } from "@helix/shared";
+import type { UsageSeriesPoint } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { MetricToggle, UsageTrendChart, type UsageMetric } from "../components/usageCharts";
 

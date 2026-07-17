@@ -10,7 +10,7 @@ import {
   REQUEST_HEADER_SAFELIST,
   RESPONSE_HEADER_BLOCKLIST,
   TARGET_HEADER,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { verifyInstruction } from "./instruction.js";
 import { type SecretResolver } from "./secrets.js";
 import { SsrfBlockedError, resolveAndValidate } from "./ssrf.js";

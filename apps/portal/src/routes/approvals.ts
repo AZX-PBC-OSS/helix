@@ -4,7 +4,7 @@ import {
   applyDeltas,
   snapshotConflicts,
   type Delta,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import {
   actorIsAdmin,
   authenticate,

@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { HealthStatusSchema } from "@helix/shared";
+import { HealthStatusSchema } from "@azx-pbc/shared";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
 import type { RegistryReader } from "./registry/projection.js";

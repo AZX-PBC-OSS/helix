@@ -1,7 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyError } from "fastify";
 import { ZodError } from "zod";
-import type { ApiError, ApiErrorCode } from "@helix/shared";
+import type { ApiError, ApiErrorCode } from "@azx-pbc/shared";
 
 /** Default HTTP status for each error code. AppError may override. */
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {

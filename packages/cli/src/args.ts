@@ -16,7 +16,7 @@ const options = {
 /**
  * Parse argv into flags + positionals.
  *
- * `pnpm --filter @helix/cli azx -- <cmd> …` forwards the `--` separator straight
+ * `pnpm --filter @azx-pbc/cli azx -- <cmd> …` forwards the `--` separator straight
  * into argv. Node's `parseArgs` treats a *leading* `--` as the end-of-options
  * marker and would shove every following flag into positionals — so `--promote`
  * and friends would be silently dropped. Strip one leading `--` so flags parse

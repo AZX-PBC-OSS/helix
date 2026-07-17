@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
-import type { SecretMetadata } from "@helix/shared";
+import type { SecretMetadata } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { SecretsPage } from "../pages/admin/SecretsPage";
 import { AuthProvider } from "../auth/AuthProvider";

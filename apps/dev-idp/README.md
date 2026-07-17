@@ -1,4 +1,4 @@
-# @helix/dev-idp
+# @azx-pbc/dev-idp
 
 The **local development OIDC issuer** (project plan §3, Entra row): a thin
 wrapper around [`oidc-provider`](https://github.com/panva/node-oidc-provider)
@@ -47,7 +47,7 @@ Behavior notes:
 ## In tests
 
 ```ts
-import { startDevIdp, runDeviceFlow, runAuthCodeFlow } from "@helix/dev-idp";
+import { startDevIdp, runDeviceFlow, runAuthCodeFlow } from "@azx-pbc/dev-idp";
 const idp = await startDevIdp(); // ephemeral port, parallel-safe
 ```
 

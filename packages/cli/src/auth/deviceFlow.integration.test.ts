@@ -5,7 +5,7 @@ import {
   startDevIdp,
   TestHttpSession,
   type RunningDevIdp,
-} from "@helix/dev-idp";
+} from "@azx-pbc/dev-idp";
 import { refreshGrant, runDeviceLogin } from "./deviceFlow.js";
 
 /**

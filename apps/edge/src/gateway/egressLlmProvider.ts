@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import type { LlmChatRequest } from "@helix/shared";
+import type { LlmChatRequest } from "@azx-pbc/shared";
 import {
   type LlmProvider,
   type LlmStreamEvent,

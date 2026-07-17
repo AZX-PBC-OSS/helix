@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button, Card, Group, PasswordInput, Select, Stack, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { INJECTION_KINDS, type App, type InjectionRecipe } from "@helix/shared";
+import { INJECTION_KINDS, type App, type InjectionRecipe } from "@azx-pbc/shared";
 import { appSecretsQuery } from "../../api/queries";
 import { useCreateSecret, useDeleteSecret, useRotateSecret } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";

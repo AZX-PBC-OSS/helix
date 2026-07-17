@@ -1,4 +1,4 @@
-import { FETCH_PROXY_PREFIX } from "@helix/shared";
+import { FETCH_PROXY_PREFIX } from "@azx-pbc/shared";
 
 /**
  * The transparent fetch shim (fetch-proxy design §3.2) — the zero-edit adoption

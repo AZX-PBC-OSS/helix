@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VERSION_STATUSES, VISIBILITY_MODES } from "@helix/shared";
+import { VERSION_STATUSES, VISIBILITY_MODES } from "@azx-pbc/shared";
 import { VersionStatus, VisibilityMode } from "./generated/enums.js";
 import {
   blobPrefixFor,
@@ -16,7 +16,7 @@ import {
 import type { App as AppRow, Version as VersionRow } from "./client.js";
 
 // Guard against the DB enums drifting from the shared contract enums. If
-// schema.prisma and @helix/shared disagree, this fails before any route does.
+// schema.prisma and @azx-pbc/shared disagree, this fails before any route does.
 describe("enum drift guards", () => {
   it("VersionStatus matches VERSION_STATUSES", () => {
     expect(Object.values(VersionStatus).sort()).toEqual([...VERSION_STATUSES].sort());

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { RollbackRequestSchema } from "@helix/shared";
+import { RollbackRequestSchema } from "@azx-pbc/shared";
 import { toApp, toVersion } from "../db/mappers.js";
 import { authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";

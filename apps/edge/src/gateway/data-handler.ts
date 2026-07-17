@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { ApiErrorCode } from "@helix/shared";
+import type { ApiErrorCode } from "@azx-pbc/shared";
 import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type Caller, type CallerResolver } from "../auth/gate.js";

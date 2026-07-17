@@ -1,5 +1,5 @@
 {
-  "name": "@helix/edge",
+  "name": "@azx-pbc/edge",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@helix/shared": "workspace:*",
+    "@azx-pbc/shared": "workspace:*",
     "fastify": "catalog:",
     "jose": "catalog:",
     "openid-client": "catalog:",
@@ -18,7 +18,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@helix/dev-idp": "workspace:*",
+    "@azx-pbc/dev-idp": "workspace:*",
     "@types/pg": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"

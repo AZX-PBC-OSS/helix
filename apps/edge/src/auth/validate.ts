@@ -1,4 +1,4 @@
-import { SLUG_PATTERN } from "@helix/shared";
+import { SLUG_PATTERN } from "@azx-pbc/shared";
 import { publicOrigin, type EdgeConfig } from "../config.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 

@@ -53,7 +53,7 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   (see [registry-and-deploys.md](./registry-and-deploys.md)).
 
 `src/api/queries.ts` / `mutations.ts` are TanStack Query hooks over a bearer-injecting client
-(`client.ts`), every response validated through a `@helix/shared` zod schema.
+(`client.ts`), every response validated through a `@azx-pbc/shared` zod schema.
 
 ### Browser sign-in (`src/auth/`)
 
@@ -70,7 +70,7 @@ token endpoint opens to the SPA without opening it to the world.
 The portal serves `portal-web/dist` statically when built (deep links fall back to index.html;
 `/api` + `/health` stay JSON), and falls back to the old stopgap dashboard when it isn't built
 (`apps/portal/src/routes/spa.ts` + `dashboard.ts`). In dev, `pnpm dev:web` (:5173) proxies `/api`
-+ `/health` to :3001 — **no CORS anywhere**. `pnpm --filter @helix/portal-web build` makes the
++ `/health` to :3001 — **no CORS anywhere**. `pnpm --filter @azx-pbc/portal-web build` makes the
 portal serve it at :3001.
 
 ## Design notes (why)

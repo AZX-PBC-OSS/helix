@@ -6,7 +6,7 @@ import {
   INSTRUCTION_JWT_TYP,
   INSTRUCTION_KEY_INFO,
   INSTRUCTION_TTL_SECONDS,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 
 /**
  * Verify the attested instruction the policy edge minted (secrets design §4).

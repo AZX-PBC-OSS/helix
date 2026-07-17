@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 import { Agent, request } from "undici";
-import { INSTRUCTION_HEADER, METHOD_HEADER, OUTCOME_HEADER, TARGET_HEADER } from "@helix/shared";
+import { INSTRUCTION_HEADER, METHOD_HEADER, OUTCOME_HEADER, TARGET_HEADER } from "@azx-pbc/shared";
 
 /**
  * The edge → egress seam (fetch-proxy design §7), shaped like the `LlmProvider`:

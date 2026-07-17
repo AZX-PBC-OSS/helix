@@ -9,7 +9,7 @@ import { type VisibilityMode } from "./visibility.js";
  * Approvals (design doc `docs/design/approvals.md`). The control-plane gate on
  * *writes* to the effective policy the edge already reads. The `apps` row holds
  * only effective state; "requested state" is the set of open ApprovalRequest
- * rows. This module is the policy spine, kept here in `@helix/shared` so the
+ * rows. This module is the policy spine, kept here in `@azx-pbc/shared` so the
  * portal (gating) and the SPA (pre-submit "this will need approval" warning)
  * read the identical thresholds and run the identical classifier (§3).
  */

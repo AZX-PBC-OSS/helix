@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import { Box, Button, Group, NumberInput, Table, Text, TextInput } from "@mantine/core";
-import { MODEL_PRICING, priceForModel } from "@helix/shared";
+import { MODEL_PRICING, priceForModel } from "@azx-pbc/shared";
 import { fmtCount } from "../lib/format";
 import { Icon } from "./Icon";
 import { ToneBadge } from "./primitives";

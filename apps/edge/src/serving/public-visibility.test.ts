@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
-import type { VisibilityMode } from "@helix/shared";
+import type { VisibilityMode } from "@azx-pbc/shared";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import {
   FakeBlobReader,

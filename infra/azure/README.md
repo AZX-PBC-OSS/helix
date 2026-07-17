@@ -131,7 +131,7 @@ above, then apply migrations:
 # roles: CREATE ROLE helix_edge LOGIN PASSWORD '$HELIX_EDGE_DB_PASSWORD' ...
 #        CREATE ROLE helix_egress LOGIN PASSWORD '$HELIX_EGRESS_DB_PASSWORD' ...
 DATABASE_URL="postgresql://helixadmin:***@<pgFqdn>:5432/helix?sslmode=require" \
-  pnpm --filter @helix/portal db:deploy
+  pnpm --filter @azx-pbc/portal db:deploy
 ```
 
 ### 5. Phase 2 — deploy the apps (`deployApps=true`)

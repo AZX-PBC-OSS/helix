@@ -3,8 +3,8 @@ import {
   type InjectionRecipe,
   InjectionRecipeSchema,
   type InstructionCapability,
-} from "@helix/shared";
-import type { SecretStore } from "@helix/secret-store";
+} from "@azx-pbc/shared";
+import type { SecretStore } from "@azx-pbc/secret-store";
 
 /**
  * Resolves a connection name to plaintext + injection recipe, for the one app

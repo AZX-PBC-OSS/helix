@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { createSecretStore, readDevKey, type SecretStore } from "@helix/secret-store";
+import { createSecretStore, readDevKey, type SecretStore } from "@azx-pbc/secret-store";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";

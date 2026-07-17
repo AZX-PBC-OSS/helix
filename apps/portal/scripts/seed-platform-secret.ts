@@ -1,4 +1,4 @@
-import { createSecretStore, readDevKey, type SecretStore } from "@helix/secret-store";
+import { createSecretStore, readDevKey, type SecretStore } from "@azx-pbc/secret-store";
 import { createPrismaClient } from "../src/db/client.js";
 
 /**
@@ -9,9 +9,9 @@ import { createPrismaClient } from "../src/db/client.js";
  * `--force` is passed (which rotates it to the new value).
  *
  * Usage (from repo root):
- *   EDGE_LLM_ANTHROPIC_KEY=sk-ant-... pnpm --filter @helix/portal seed:llm
- *   pnpm --filter @helix/portal seed:llm -- sk-ant-...        # value as an arg
- *   pnpm --filter @helix/portal seed:llm -- --force           # rotate existing
+ *   EDGE_LLM_ANTHROPIC_KEY=sk-ant-... pnpm --filter @azx-pbc/portal seed:llm
+ *   pnpm --filter @azx-pbc/portal seed:llm -- sk-ant-...        # value as an arg
+ *   pnpm --filter @azx-pbc/portal seed:llm -- --force           # rotate existing
  *
  * Custody mirrors the running portal: Key Vault when `AZURE_KEY_VAULT_URL` is set,
  * else the dev envelope under `DEV_SECRETS_KEK_FILE`.

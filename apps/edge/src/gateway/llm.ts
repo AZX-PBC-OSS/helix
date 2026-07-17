@@ -8,7 +8,7 @@ import {
   type ApiErrorCode,
   type LlmChatRequest,
   type LlmUsage,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
@@ -143,7 +143,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     }
     // Fail-safe: a model with no price can't be cost-gated, so refuse it rather
     // than serve it for free. The curated catalog == the priced catalog
-    // (@helix/shared), so this only bites a model that slipped past curation.
+    // (@azx-pbc/shared), so this only bites a model that slipped past curation.
     if (priceForModel(chat.model) === undefined) {
       sendApiError(
         reply,

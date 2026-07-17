@@ -1,5 +1,5 @@
 {
-  "name": "@helix/portal-web",
+  "name": "@azx-pbc/portal-web",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
     "@fontsource-variable/hanken-grotesk": "catalog:",
     "@fontsource-variable/jetbrains-mono": "catalog:",
     "@fontsource-variable/space-grotesk": "catalog:",
-    "@helix/shared": "workspace:*",
+    "@azx-pbc/shared": "workspace:*",
     "@mantine/charts": "catalog:",
     "@mantine/core": "catalog:",
     "@mantine/dropzone": "catalog:",

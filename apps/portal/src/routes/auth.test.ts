@@ -1,6 +1,6 @@
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AuthConfigResponseSchema, PortalMeResponseSchema } from "@helix/shared";
+import { AuthConfigResponseSchema, PortalMeResponseSchema } from "@azx-pbc/shared";
 import { createOidcVerifier } from "../auth/verifier.js";
 import { authHeader, buildTestApp, type TestApp } from "../test/harness.js";
 

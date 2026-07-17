@@ -11,7 +11,7 @@ import {
   TextInput,
   Textarea,
 } from "@mantine/core";
-import type { App, Visibility, VisibilityMode } from "@helix/shared";
+import type { App, Visibility, VisibilityMode } from "@azx-pbc/shared";
 import { useArchiveApp, useSetVisibility } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";

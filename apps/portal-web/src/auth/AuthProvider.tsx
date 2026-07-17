@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PortalMeResponse } from "@helix/shared";
+import type { PortalMeResponse } from "@azx-pbc/shared";
 import { PortalApiError } from "../api/client";
 import { authConfigQuery, meQuery } from "../api/queries";
 import { beginLogin } from "./oidc";

@@ -120,9 +120,9 @@ helix/
     egress/       # azx-egress — mechanism plane: outbound HTTP, secret injection, SSRF controls
     dev-idp/      # local OIDC issuer (dev/test only; never deployed)
   packages/
-    shared/       # @helix/shared — zod schemas at every boundary (manifest, registry, instruction, …)
-    secret-store/ # @helix/secret-store — seal/open/destroy seam: dev AES-GCM envelope / prod Key Vault
-    cli/          # @helix/cli — the `azx` CLI (deploy, versions, promote/rollback, login/logout/whoami)
+    shared/       # @azx-pbc/shared — zod schemas at every boundary (manifest, registry, instruction, …)
+    secret-store/ # @azx-pbc/secret-store — seal/open/destroy seam: dev AES-GCM envelope / prod Key Vault
+    cli/          # @azx-pbc/cli — the `azx` CLI (deploy, versions, promote/rollback, login/logout/whoami)
   examples/       # reference apps you can `azx deploy` (built dist/ committed)
   docs/           # architecture, project plan, per-feature docs, deep designs (see below)
   .devcontainer/  # Node 24, Postgres, Azurite, mkcert TLS, role bootstrap, dev KEK
@@ -132,7 +132,7 @@ Two conventions to know before you read code:
 
 - **The edge is dependency-minimal by rule.** Every npm package in `apps/edge` is code in
   the trusted path; adding one needs justification at review. No ORM in the edge — hand-written SQL.
-- **zod at every boundary** (`@helix/shared`); inferred types travel with the schemas.
+- **zod at every boundary** (`@azx-pbc/shared`); inferred types travel with the schemas.
   TypeScript everywhere, ESM, Node 24.
 
 → Build/run commands and conventions in detail: [`AGENTS.md`](AGENTS.md) (a.k.a. `CLAUDE.md`).

@@ -5,7 +5,7 @@ import {
   USAGE_RANGES,
   type PlatformRange,
   type UsageRange,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { authenticate } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { Prisma } from "../db/client.js";

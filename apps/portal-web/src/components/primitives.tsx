@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Badge, Box, Group, Stack, Text, Title, Tooltip } from "@mantine/core";
-import type { Visibility } from "@helix/shared";
+import type { Visibility } from "@azx-pbc/shared";
 import { Icon, type IconName } from "./Icon";
 
 /** The control-plane vocabulary widgets: eyebrows, status dots, badges, stats. */

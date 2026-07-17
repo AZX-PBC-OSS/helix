@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { App, Version, Visibility } from "@helix/shared";
+import type { App, Version, Visibility } from "@azx-pbc/shared";
 import { CliError, PortalClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { zipDirectory } from "./zip.js";

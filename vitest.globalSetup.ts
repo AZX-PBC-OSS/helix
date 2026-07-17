@@ -20,7 +20,7 @@ export default function setup(): void {
   );
 
   // Apply migrations to the test database.
-  execSync("pnpm --filter @helix/portal exec prisma migrate deploy", {
+  execSync("pnpm --filter @azx-pbc/portal exec prisma migrate deploy", {
     stdio: "inherit",
     env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
   });

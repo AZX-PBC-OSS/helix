@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Version } from "@helix/shared";
+import type { Version } from "@azx-pbc/shared";
 import {
   authHeader,
   buildTestApp,

@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { MeResponseSchema } from "@helix/shared";
+import { MeResponseSchema } from "@azx-pbc/shared";
 import type { AuthConfig, EdgeConfig } from "../../config.js";
 import type { RegistryEntry, RegistryReader } from "../../registry/projection.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../../errors.js";

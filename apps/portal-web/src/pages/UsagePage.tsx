@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Card, Center, Group, Loader, SimpleGrid, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { PLATFORM_RANGES, type PlatformRange } from "@helix/shared";
+import { PLATFORM_RANGES, type PlatformRange } from "@azx-pbc/shared";
 import { platformUsageQuery } from "../api/queries";
 import { Meter } from "../components/charts";
 import {

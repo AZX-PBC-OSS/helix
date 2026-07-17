@@ -1,6 +1,6 @@
 import path from "node:path";
 import yauzl from "yauzl";
-import type { CspWarning } from "@helix/shared";
+import type { CspWarning } from "@azx-pbc/shared";
 import { AppError } from "../plugins/errors.js";
 import { contentTypeFor, isLintable } from "./mime.js";
 import { lintForCsp } from "./csp-lint.js";

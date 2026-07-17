@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { HealthStatusSchema } from "@helix/shared";
+import { HealthStatusSchema } from "@azx-pbc/shared";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
 import { makeProxyHandler } from "./proxy.js";

@@ -222,7 +222,7 @@ importers:
 
   apps/edge:
     dependencies:
-      '@helix/shared':
+      '@azx-pbc/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       fastify:
@@ -244,7 +244,7 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
-      '@helix/dev-idp':
+      '@azx-pbc/dev-idp':
         specifier: workspace:*
         version: link:../dev-idp
       '@types/pg':
@@ -259,10 +259,10 @@ importers:
 
   apps/egress:
     dependencies:
-      '@helix/secret-store':
+      '@azx-pbc/secret-store':
         specifier: workspace:*
         version: link:../../packages/secret-store
-      '@helix/shared':
+      '@azx-pbc/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       fastify:
@@ -296,18 +296,18 @@ importers:
       '@azure/storage-blob':
         specifier: 'catalog:'
         version: 12.32.0
+      '@azx-pbc/secret-store':
+        specifier: workspace:*
+        version: link:../../packages/secret-store
+      '@azx-pbc/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@fastify/multipart':
         specifier: 'catalog:'
         version: 10.0.0
       '@fastify/static':
         specifier: 'catalog:'
         version: 9.1.3
-      '@helix/secret-store':
-        specifier: workspace:*
-        version: link:../../packages/secret-store
-      '@helix/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       '@prisma/adapter-pg':
         specifier: 'catalog:'
         version: 7.8.0
@@ -333,7 +333,7 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
-      '@helix/dev-idp':
+      '@azx-pbc/dev-idp':
         specifier: workspace:*
         version: link:../dev-idp
       '@types/archiver':
@@ -363,6 +363,9 @@ importers:
 
   apps/portal-web:
     dependencies:
+      '@azx-pbc/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@fontsource-variable/hanken-grotesk':
         specifier: 'catalog:'
         version: 5.2.8
@@ -372,9 +375,6 @@ importers:
       '@fontsource-variable/space-grotesk':
         specifier: 'catalog:'
         version: 5.2.10
-      '@helix/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       '@mantine/charts':
         specifier: 'catalog:'
         version: 9.4.0(@mantine/core@9.3.1(@mantine/hooks@9.3.1(react@19.2.7))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@mantine/hooks@9.3.1(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(recharts@3.8.1(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react-is@17.0.2)(react@19.2.7)(redux@5.0.1))
@@ -448,7 +448,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@helix/shared':
+      '@azx-pbc/shared':
         specifier: workspace:*
         version: link:../shared
       archiver:
@@ -461,7 +461,7 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
-      '@helix/dev-idp':
+      '@azx-pbc/dev-idp':
         specifier: workspace:*
         version: link:../../apps/dev-idp
       '@types/archiver':

@@ -3,7 +3,7 @@
  *
  * The `gateway_calls` ledger records token counts, not cost; cost is a pricing
  * decision that shifts independently of the data. We keep the rate table here in
- * `@helix/shared` and recompute dollars when the portal reads the ledger, so a
+ * `@azx-pbc/shared` and recompute dollars when the portal reads the ledger, so a
  * price change is a map edit + redeploy — and historical figures move to the
  * current rate (an "estimated spend at today's rates" model, not frozen billing).
  *

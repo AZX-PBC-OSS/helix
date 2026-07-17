@@ -4,7 +4,7 @@
 #   docker build -f apps/portal/Dockerfile -t <acr>/helix-portal:<tag> .
 #
 # The portal serves the React SPA from apps/portal-web/dist, so this image
-# additionally installs + builds @helix/portal-web. `prisma generate` runs via
+# additionally installs + builds @azx-pbc/portal-web. `prisma generate` runs via
 # the portal package's postinstall during install (Prisma 7, pg adapter). Runs
 # via `tsx src/server.ts`; devDependencies stay in the image.
 
@@ -22,13 +22,13 @@ COPY . .
 # Install the portal AND the SPA dependency closures. The portal postinstall runs
 # `prisma generate` (offline codegen, no DB) — prisma.config.ts reads DATABASE_URL
 # lazily via process.env, so no build-time database URL is needed.
-RUN pnpm install --frozen-lockfile --filter @helix/portal... --filter @helix/portal-web...
+RUN pnpm install --frozen-lockfile --filter @azx-pbc/portal... --filter @azx-pbc/portal-web...
 # Build the SPA — the portal statically serves apps/portal-web/dist when present.
-RUN pnpm --filter @helix/portal-web build
+RUN pnpm --filter @azx-pbc/portal-web build
 
 FROM base AS runtime
 ENV NODE_ENV=production
 COPY --from=build /app /app
 USER node
 EXPOSE 3001
-CMD ["pnpm", "--filter", "@helix/portal", "start"]
+CMD ["pnpm", "--filter", "@azx-pbc/portal", "start"]

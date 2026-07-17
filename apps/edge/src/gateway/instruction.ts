@@ -5,7 +5,7 @@ import {
   INSTRUCTION_JWT_TYP,
   INSTRUCTION_KEY_INFO,
   INSTRUCTION_TTL_SECONDS,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 
 /**
  * Mint the attested instruction the edge hands to `azx-egress` (secrets design

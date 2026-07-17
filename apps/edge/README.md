@@ -2,7 +2,7 @@
 
 The data plane (architecture §3): stateless, terminates all `*.azx-labs.com` traffic. As of **M3 (local half)** it serves deployed apps behind real authentication: host routing, a cached registry projection (Postgres LISTEN/NOTIFY), the §4.2/Appendix A OIDC login flow (central callback on `auth.<base>`, one-time handoff token, `__Host-session` cookies, server-side sessions in Postgres), `/_api/me`, group-based visibility checks, silent refresh, asset streaming from Blob with hand-rolled SharedKey signing, baseline CSP injection, and 404/410 (+ `Clear-Site-Data`) semantics.
 
-**Hard rule: dependency-minimal.** Runtime deps are exactly `fastify`, `pg`, `undici`, `zod`, `jose`, `openid-client`, `@helix/shared` — the M3 additions are the two named in project plan §1. Adding a package here requires justification at review time (project plan §6). No ORM, no Azure SDK, no cookie library — SQL is hand-written, blob reads are signed with `node:crypto`, and cookie parsing is ~30 lines (`src/auth/cookies.ts`).
+**Hard rule: dependency-minimal.** Runtime deps are exactly `fastify`, `pg`, `undici`, `zod`, `jose`, `openid-client`, `@azx-pbc/shared` — the M3 additions are the two named in project plan §1. Adding a package here requires justification at review time (project plan §6). No ORM, no Azure SDK, no cookie library — SQL is hand-written, blob reads are signed with `node:crypto`, and cookie parsing is ~30 lines (`src/auth/cookies.ts`).
 
 ## Request flow (app hosts)
 
@@ -45,7 +45,7 @@ pnpm dev:edge       # :8080 — https (mkcert) with the real login flow;
 
 # Deploy + promote an example app (see packages/cli/README.md):
 cd examples/hello-world
-pnpm --filter @helix/cli azx -- deploy --promote   # or: azx deploy --promote
+pnpm --filter @azx-pbc/cli azx -- deploy --promote   # or: azx deploy --promote
 
 # *.localtest.me resolves to 127.0.0.1 (note: https now):
 curl -ik https://hello-world.localtest.me:8080/    # 302 → auth host (or 200 with the bypass)

@@ -7,7 +7,7 @@ import {
   type Delta,
   type ManifestUpdateResult,
   type Risk,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { Prisma, type App as AppRow, type PrismaClient } from "../db/client.js";
 import { capabilitiesFromRow, toManifest } from "../db/mappers.js";
 

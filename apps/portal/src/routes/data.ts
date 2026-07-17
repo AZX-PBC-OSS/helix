@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { CollectionItemsPageSchema, type CollectionItem } from "@helix/shared";
+import { CollectionItemsPageSchema, type CollectionItem } from "@azx-pbc/shared";
 import { authenticate } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 

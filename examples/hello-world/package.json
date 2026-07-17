@@ -1,5 +1,5 @@
 {
-  "name": "@helix/example-hello-world",
+  "name": "@azx-pbc/example-hello-world",
   "version": "0.0.0",
   "private": true,
   "type": "module",

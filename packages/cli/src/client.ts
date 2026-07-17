@@ -12,7 +12,7 @@ import {
   type UploadVersionResponse,
   type Version,
   type Visibility,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import type { TokenProvider } from "./auth/session.js";
 
 /** A CLI-level error carrying the portal's error code when available. */

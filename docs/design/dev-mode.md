@@ -208,7 +208,7 @@ Two hard rules:
 
 ## 8. The SDK / transport seam (app code identical across dev and prod)
 
-The fetch shim (`apps/edge/src/serving/shim.ts`) already establishes the pattern that makes all of this ergonomic: app code calls capabilities *normally* and the platform intercepts. Dev mode generalizes it into a small **client SDK** (`@helix/app-sdk`, new) that all platform capabilities are reached through (`helix.llm.chat()`, `helix.data.get()`, …), with a **swappable transport**:
+The fetch shim (`apps/edge/src/serving/shim.ts`) already establishes the pattern that makes all of this ergonomic: app code calls capabilities *normally* and the platform intercepts. Dev mode generalizes it into a small **client SDK** (`@azx-pbc/app-sdk`, new) that all platform capabilities are reached through (`helix.llm.chat()`, `helix.data.get()`, …), with a **swappable transport**:
 
 | Environment | Transport | Base | Auth |
 |---|---|---|---|

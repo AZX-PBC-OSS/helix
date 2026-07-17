@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { ApiErrorSchema, type ApiErrorCode } from "@helix/shared";
+import { ApiErrorSchema, type ApiErrorCode } from "@azx-pbc/shared";
 import { getToken } from "../auth/tokenStore";
 
 /**

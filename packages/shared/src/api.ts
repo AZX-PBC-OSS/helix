@@ -7,7 +7,7 @@ import { VisibilitySchema } from "./visibility.js";
 /**
  * The portal's versioned REST contract (architecture §7, project plan §1).
  * These request/response shapes are the wire boundary shared between the portal
- * and the `azx` CLI (and a future SPA), so they live in @helix/shared and are
+ * and the `azx` CLI (and a future SPA), so they live in @azx-pbc/shared and are
  * validated on both ends.
  */
 

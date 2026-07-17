@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { HealthStatusSchema } from "@helix/shared";
+import { HealthStatusSchema } from "@azx-pbc/shared";
 import { buildApp } from "./app.js";
 
 let app: FastifyInstance;

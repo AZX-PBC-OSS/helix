@@ -1,4 +1,4 @@
-import type { SecretStore } from "@helix/secret-store";
+import type { SecretStore } from "@azx-pbc/secret-store";
 import type { PrismaClient } from "../db/client.js";
 import type { BlobStore } from "../blob/store.js";
 import type { Actor } from "../plugins/auth.js";

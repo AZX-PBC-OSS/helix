@@ -16,7 +16,7 @@ import {
   VersionSchema,
   type PlatformRange,
   type UsageRange,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { fetchJson } from "./client";
 
 /** An app's connection secrets — metadata only (the value is never returned). */

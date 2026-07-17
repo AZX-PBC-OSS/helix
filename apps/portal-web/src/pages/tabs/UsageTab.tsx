@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button, Card, Center, Group, Loader, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { priceForModel, USAGE_RANGES, type App, type UsageRange } from "@helix/shared";
+import { priceForModel, USAGE_RANGES, type App, type UsageRange } from "@azx-pbc/shared";
 import { manifestQuery, usageQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Meter } from "../../components/charts";

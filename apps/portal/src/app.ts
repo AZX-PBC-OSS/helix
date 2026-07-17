@@ -1,9 +1,9 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
-import { HealthStatusSchema } from "@helix/shared";
+import { HealthStatusSchema } from "@azx-pbc/shared";
 import type { PrismaClient } from "./db/client.js";
 import type { BlobStore } from "./blob/store.js";
-import type { SecretStore } from "@helix/secret-store";
+import type { SecretStore } from "@azx-pbc/secret-store";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { blobPlugin } from "./plugins/blob.js";
 import { secretStorePlugin } from "./plugins/secretStore.js";

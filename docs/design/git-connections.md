@@ -26,7 +26,7 @@ has rather than inventing a new trust model:
 
 - the **policy/mechanism split** (edge→egress, architecture §3) — the thing that
   holds the secret is never the thing that runs untrusted code;
-- the **`SecretStore` custody seam** (`@helix/secret-store`) — where the git
+- the **`SecretStore` custody seam** (`@azx-pbc/secret-store`) — where the git
   credential of record lives, unreadable by the build;
 - the **preview-then-promote deploy gate** (architecture §5.1,
   `docs/features/registry-and-deploys.md`) — the build's output rejoins the

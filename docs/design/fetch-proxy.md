@@ -99,7 +99,7 @@ export const FetchCapabilitySchema = z.object({
 
 So an origin is **direct** if it appears in `externalOrigins` (browser calls it, CSP-widened) and **proxied** if it appears in `fetch.origins` (routed through `/_api/fetch`, same-origin, served by egress). One knob, two settings, expressed as which list the origin lives in — the portal UI presents it as a single per-origin direct/proxy toggle that moves the entry between the two fields.
 
-The registry projection (`apps/edge/src/registry/projection.ts`) keeps feeding `externalOrigins` to the CSP builder exactly as today, and additionally derives `proxyConnections` (`origin → connection?`) from `fetch.origins` as the egress allowlist — fail-closed to empty on malformed JSON, like `llm`/`data`. The approval classifier (`@helix/shared` `classifyChange`, approvals §3) treats a proxied origin as elevated (`fetch.origins[+origin]`, risk `med`), and a *secret-bound* one as strictly more sensitive (`fetch.origins[+origin→secret:name]`, risk `high`, because it spends a credential) — new classifier cases, same spine.
+The registry projection (`apps/edge/src/registry/projection.ts`) keeps feeding `externalOrigins` to the CSP builder exactly as today, and additionally derives `proxyConnections` (`origin → connection?`) from `fetch.origins` as the egress allowlist — fail-closed to empty on malformed JSON, like `llm`/`data`. The approval classifier (`@azx-pbc/shared` `classifyChange`, approvals §3) treats a proxied origin as elevated (`fetch.origins[+origin]`, risk `med`), and a *secret-bound* one as strictly more sensitive (`fetch.origins[+origin→secret:name]`, risk `high`, because it spends a credential) — new classifier cases, same spine.
 
 ## 5. Secret-backed connections (the proxy's unique value)
 

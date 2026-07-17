@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Alert, Button, Group, Modal, Radio, Stack, Text, TextInput } from "@mantine/core";
-import { SLUG_PATTERN, type Visibility, type VisibilityMode } from "@helix/shared";
+import { SLUG_PATTERN, type Visibility, type VisibilityMode } from "@azx-pbc/shared";
 import { useCreateApp } from "../api/mutations";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon } from "../components/Icon";

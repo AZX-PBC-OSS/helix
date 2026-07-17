@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { screen } from "@testing-library/react";
-import type { App } from "@helix/shared";
+import type { App } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { AppsListPage } from "../pages/AppsListPage";
 import { AuthProvider } from "../auth/AuthProvider";

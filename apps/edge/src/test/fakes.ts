@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import type { LlmChatRequest, LlmUsage } from "@helix/shared";
+import type { LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
 import type { BlobGetOptions, BlobGetResult, BlobReader } from "../blob/client.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 import type { LlmProvider, LlmStreamEvent } from "../gateway/provider.js";

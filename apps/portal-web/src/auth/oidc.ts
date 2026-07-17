@@ -1,5 +1,5 @@
 import * as oidc from "openid-client";
-import { portalApiScope, type AuthConfigResponse } from "@helix/shared";
+import { portalApiScope, type AuthConfigResponse } from "@azx-pbc/shared";
 
 /**
  * Browser-side OIDC code+PKCE against the issuer the portal advertises at

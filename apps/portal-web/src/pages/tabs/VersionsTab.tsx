@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Box, Button, Group, Table, Text } from "@mantine/core";
-import type { App, Version } from "@helix/shared";
+import type { App, Version } from "@azx-pbc/shared";
 import { usePromoteVersion, useRollback } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
 import { Hint, ToneBadge, type Tone } from "../../components/primitives";

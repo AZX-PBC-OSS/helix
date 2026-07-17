@@ -5,7 +5,7 @@ import { buildApp } from "../app.js";
 import { SESSION_COOKIE } from "../auth/cookies.js";
 import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
-import type { DataCapability } from "@helix/shared";
+import type { DataCapability } from "@azx-pbc/shared";
 import {
   FakeAppDataStore,
   FakeBlobReader,

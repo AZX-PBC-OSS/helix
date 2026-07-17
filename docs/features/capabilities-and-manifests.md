@@ -73,7 +73,7 @@ holds only effective state, "requested state" is just the set of open `ApprovalR
 the whole system ships without touching the edge's security-sensitive code (except the independent
 CSP `report-to` / `externalOrigins` loop).
 
-**Baseline vs. elevated.** A pure classifier in `@helix/shared` (`classifyChange`,
+**Baseline vs. elevated.** A pure classifier in `@azx-pbc/shared` (`classifyChange`,
 `classifyVisibilityChange`) diffs the requested capabilities against effective state and splits the
 change into a typed list of **deltas**, each tagged baseline or elevated:
 

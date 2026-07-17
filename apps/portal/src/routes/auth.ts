@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { AuthConfigResponseSchema, PortalMeResponseSchema } from "@helix/shared";
+import { AuthConfigResponseSchema, PortalMeResponseSchema } from "@azx-pbc/shared";
 import { actorIsAdmin, authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 

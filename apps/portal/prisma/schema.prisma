@@ -2,10 +2,10 @@
 // The portal owns this schema and all migrations; the edge never writes and
 // hand-writes SQL against a cached projection (project plan §1, §6).
 //
-// Models map 1:1 onto the @helix/shared zod schemas (App, Version) — the DB is
+// Models map 1:1 onto the @azx-pbc/shared zod schemas (App, Version) — the DB is
 // the source of truth for shape, zod validates the API boundary, and a thin
 // mapper (src/db/mappers.ts) bridges the two. Enum values are kept identical to
-// VERSION_STATUSES / VISIBILITY_MODES in @helix/shared (a test asserts this).
+// VERSION_STATUSES / VISIBILITY_MODES in @azx-pbc/shared (a test asserts this).
 
 generator client {
   // Prisma 7's Rust-engine-free client. ESM output, generated into the package
@@ -72,7 +72,7 @@ model App {
   /// Grants of `global` secrets to this app (the consuming side).
   grantedSecrets    AppSecretGrant[]
   /// Per-app capability manifest (architecture §6.3) — what the gateway grants
-  /// and enforces. JSON matches @helix/shared `CapabilitiesSchema`; the edge
+  /// and enforces. JSON matches @azx-pbc/shared `CapabilitiesSchema`; the edge
   /// reads it through the registry projection. Defaults to the baseline (no
   /// capabilities). Manifest versioning/approvals are a v1 control-plane feature.
   capabilities      Json              @default("{}")
@@ -155,11 +155,11 @@ model ApprovalRequest {
   appId String @db.Uuid
   app   App    @relation(fields: [appId], references: [id], onDelete: Cascade)
 
-  /// pending | approved | denied | withdrawn | needs_changes (@helix/shared APPROVAL_STATUSES).
+  /// pending | approved | denied | withdrawn | needs_changes (@azx-pbc/shared APPROVAL_STATUSES).
   status       String
   /// low | med | high — max risk across the deltas; stored for queue sort.
   risk         String
-  /// The *elevated* subset of a change: typed Delta[] (@helix/shared §3).
+  /// The *elevated* subset of a change: typed Delta[] (@azx-pbc/shared §3).
   deltas       Json
   /// Effective values of the touched areas at request time (conflict detect + diff render).
   baseSnapshot Json
@@ -203,7 +203,7 @@ model GatewayCall {
   cacheReadInputTokens     Int @default(0)
   cacheCreationInputTokens Int @default(0)
   /// Frozen as-charged cost of this call in **micro-USD** (1e-6 USD), priced by
-  /// the edge at write time via `@helix/shared` (`costUsd`). Integer for exact
+  /// the edge at write time via `@azx-pbc/shared` (`costUsd`). Integer for exact
   /// SUMs. This is the source of truth for both the per-app USD spend gate (a
   /// daily + rolling-hour window in apps/edge/src/gateway/usage.ts) and every
   /// dollar figure the portal displays — token columns stay so cost is always
@@ -316,7 +316,7 @@ model AppSecret {
   app        App?             @relation(fields: [appId], references: [id], onDelete: Cascade)
   name       String
   material   String
-  /// @helix/shared InjectionRecipe — how the resolved secret is applied outbound.
+  /// @azx-pbc/shared InjectionRecipe — how the resolved secret is applied outbound.
   injection  Json
   createdBy  String
   createdAt  DateTime         @default(now())

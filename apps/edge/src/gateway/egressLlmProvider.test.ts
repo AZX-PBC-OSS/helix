@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { jwtVerify } from "jose";
-import type { LlmChatRequest } from "@helix/shared";
+import type { LlmChatRequest } from "@azx-pbc/shared";
 import { EgressLlmProvider } from "./egressLlmProvider.js";
 import { LlmProviderError, type LlmStreamEvent } from "./provider.js";
 import type { EgressProvider, EgressRequest, EgressResponse } from "./egressProvider.js";

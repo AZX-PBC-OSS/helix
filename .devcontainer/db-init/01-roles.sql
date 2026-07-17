@@ -8,7 +8,7 @@
 --
 -- Postgres runs every *.sql in /docker-entrypoint-initdb.d exactly ONCE, on an
 -- empty data dir. Applying this to an existing dev container needs a db volume
--- reset (`pnpm --filter @helix/portal db:reset` re-seeds schema, but role
+-- reset (`pnpm --filter @azx-pbc/portal db:reset` re-seeds schema, but role
 -- creation needs the volume recreated: `docker compose down -v` / rebuild).
 
 CREATE ROLE helix_portal LOGIN PASSWORD 'helix_portal' NOINHERIT;

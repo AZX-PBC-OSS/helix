@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { App, Version } from "@helix/shared";
+import type { App, Version } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { VersionsTab } from "../pages/tabs/VersionsTab";
 import { AuthProvider } from "../auth/AuthProvider";

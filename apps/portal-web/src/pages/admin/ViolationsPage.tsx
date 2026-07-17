@@ -12,7 +12,7 @@ import {
   Text,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { CspViolation } from "@helix/shared";
+import type { CspViolation } from "@azx-pbc/shared";
 import { cspViolationsQuery } from "../../api/queries";
 import { useGrantOrigin } from "../../api/mutations";
 import { Icon } from "../../components/Icon";

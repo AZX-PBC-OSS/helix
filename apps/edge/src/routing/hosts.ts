@@ -1,4 +1,4 @@
-import { SLUG_PATTERN } from "@helix/shared";
+import { SLUG_PATTERN } from "@azx-pbc/shared";
 
 /**
  * Host classification — the two-router discipline (architecture §3, decision

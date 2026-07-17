@@ -1,4 +1,4 @@
-import { AuthConfigResponseSchema, type AuthConfigResponse } from "@helix/shared";
+import { AuthConfigResponseSchema, type AuthConfigResponse } from "@azx-pbc/shared";
 import { refreshGrant } from "./deviceFlow.js";
 import { defaultTokenPath, readTokens, writeTokens, type StoredTokens } from "./tokenStore.js";
 

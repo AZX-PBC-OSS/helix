@@ -7,8 +7,8 @@ import {
   SecretRotateRequestSchema,
   type SecretMetadata,
   type SecretScope,
-} from "@helix/shared";
-import type { SecretStore } from "@helix/secret-store";
+} from "@azx-pbc/shared";
+import type { SecretStore } from "@azx-pbc/secret-store";
 import { authenticate, requireActor, requireAdmin } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";

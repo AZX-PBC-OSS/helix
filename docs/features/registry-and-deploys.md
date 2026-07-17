@@ -110,5 +110,5 @@ show tokens rather than fabricating a dollar column.
 
 > Approval workflows for above-baseline capability/CSP/visibility changes are **built**, not
 > planned — `/api/v1/approvals` with approve/deny/needs_changes/withdraw, the typed-diff
-> classifier in `@helix/shared`, and apply-on-approve. See
+> classifier in `@azx-pbc/shared`, and apply-on-approve. See
 > [docs/design/approvals.md](../design/approvals.md).

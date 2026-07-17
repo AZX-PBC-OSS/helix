@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { App, Visibility, VisibilityUpdateResult } from "@helix/shared";
+import type { App, Visibility, VisibilityUpdateResult } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { AccessTab } from "../pages/tabs/AccessTab";
 import { AuthProvider } from "../auth/AuthProvider";

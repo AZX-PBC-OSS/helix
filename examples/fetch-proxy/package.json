@@ -1,5 +1,5 @@
 {
-  "name": "@helix/example-fetch-proxy",
+  "name": "@azx-pbc/example-fetch-proxy",
   "version": "0.0.0",
   "private": true,
   "type": "module",

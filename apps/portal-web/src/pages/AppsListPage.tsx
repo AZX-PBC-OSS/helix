@@ -15,7 +15,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { App } from "@helix/shared";
+import type { App } from "@azx-pbc/shared";
 import { appsQuery, versionsQuery } from "../api/queries";
 import { Icon } from "../components/Icon";
 import { Sparkline } from "../components/charts";

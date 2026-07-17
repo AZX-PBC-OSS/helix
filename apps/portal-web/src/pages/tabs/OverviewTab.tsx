@@ -1,7 +1,7 @@
 import { Box, Button, Card, Grid, Group, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
-import type { App, Version } from "@helix/shared";
+import type { App, Version } from "@azx-pbc/shared";
 import { Bars } from "../../components/charts";
 import { Eyebrow, Hint, KV, Stat } from "../../components/primitives";
 import { approvalsQuery } from "../../api/queries";

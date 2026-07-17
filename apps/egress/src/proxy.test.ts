@@ -9,7 +9,7 @@ import {
   METHOD_HEADER,
   OUTCOME_HEADER,
   TARGET_HEADER,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { buildApp } from "./app.js";
 import type { EgressConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";

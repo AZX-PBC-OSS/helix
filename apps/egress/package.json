@@ -1,5 +1,5 @@
 {
-  "name": "@helix/egress",
+  "name": "@azx-pbc/egress",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,8 +9,8 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@helix/secret-store": "workspace:*",
-    "@helix/shared": "workspace:*",
+    "@azx-pbc/secret-store": "workspace:*",
+    "@azx-pbc/shared": "workspace:*",
     "fastify": "catalog:",
     "jose": "catalog:",
     "pg": "catalog:",

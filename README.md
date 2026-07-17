@@ -28,8 +28,8 @@ apps/
   egress/      # azx-egress — mechanism plane: outbound HTTP + secret injection + SSRF
   dev-idp/     # local OIDC issuer (oidc-provider). Dev only, never deployed.
 packages/
-  shared/        # @helix/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage, instruction
-  secret-store/  # @helix/secret-store — seal/open/destroy seam (dev envelope / prod Key Vault)
+  shared/        # @azx-pbc/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage, instruction
+  secret-store/  # @azx-pbc/secret-store — seal/open/destroy seam (dev envelope / prod Key Vault)
   cli/           # azx — the deploy CLI (azx login / deploy / promote / …)
 examples/      # reference apps to `azx deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy); built dist/ committed
 docs/          # TOUR is at repo root; here: platform-architecture, project-plan, phase-1-user-stories, features/, design/
@@ -129,7 +129,7 @@ config, [`apps/dev-idp/README.md`](./apps/dev-idp/README.md) for the IdP, and
 
 - **TypeScript everywhere, ESM, Node 24.** Strict `tsconfig.base.json`, extended per package.
 - **Versions via the pnpm catalog** in `pnpm-workspace.yaml` — bump in one place.
-- **zod at every boundary** (`@helix/shared`); inferred types travel with the schemas.
+- **zod at every boundary** (`@azx-pbc/shared`); inferred types travel with the schemas.
 - Adding a runtime dependency to `apps/edge` requires justification at review time
   (project plan §6) — it is code inside the trusted path.
 - **M3 auth code gets adversarial tests with it, not after.** The OIDC handoff is the most

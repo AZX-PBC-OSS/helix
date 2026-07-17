@@ -12,7 +12,7 @@ import {
   touchedAreas,
   type ManifestUpdateResult,
   type VisibilityUpdateResult,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import { authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";

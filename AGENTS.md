@@ -20,22 +20,22 @@ The **fetch-proxy + secret-backed connections** (M4.5) split the policy and mech
 
 ## Commands (from repo root)
 
-| Command                                  | What                                                                                                                                                                              |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm install`                           | Install all workspace deps                                                                                                                                                        |
-| `pnpm typecheck`                         | `tsc --noEmit` across every package (`pnpm -r typecheck`)                                                                                                                         |
-| `pnpm lint` / `pnpm lint:fix`            | ESLint (flat config + typescript-eslint)                                                                                                                                          |
-| `pnpm format` / `pnpm format:check`      | Prettier write / verify                                                                                                                                                           |
-| `pnpm test`                              | Vitest run across the workspace                                                                                                                                                   |
-| `pnpm test:watch`                        | Vitest watch mode                                                                                                                                                                 |
-| `pnpm dev:edge`                          | Run azx-edge (`:8080`, **https** in dev — apps at `https://<slug>.localtest.me:8080`, login on `auth.localtest.me`, platform `GET /health`)                                       |
-| `pnpm dev:egress`                        | Run azx-egress (`:8081`, mechanism plane — the fetch-proxy `POST /proxy` + secret injection; needs `helix_egress` role + the dev KEK)                                             |
-| `pnpm dev:portal`                        | Run azx-portal (`:3001`, registry + deploy API)                                                                                                                                   |
-| `pnpm dev:idp`                           | Run the local OIDC issuer (`:3002`, `apps/dev-idp` — fixture users + clients; dev only, never deployed)                                                                           |
-| `pnpm dev:web`                           | Run the portal SPA dev server (`:5173`, Vite; proxies `/api` + `/health` to :3001). `pnpm --filter @helix/portal-web build` makes the portal serve it at :3001                    |
-| `pnpm --filter @helix/portal db:migrate` | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                                                                                                |
-| `pnpm --filter @helix/cli azx -- <cmd>`  | Run the `azx` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`). Runs in `packages/cli`; for real deploys run it from an app dir instead — see `packages/cli/README.md` |
-| `./check-and-lint.sh`                    | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first)                                                                                |
+| Command                                    | What                                                                                                                                                                              |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install`                             | Install all workspace deps                                                                                                                                                        |
+| `pnpm typecheck`                           | `tsc --noEmit` across every package (`pnpm -r typecheck`)                                                                                                                         |
+| `pnpm lint` / `pnpm lint:fix`              | ESLint (flat config + typescript-eslint)                                                                                                                                          |
+| `pnpm format` / `pnpm format:check`        | Prettier write / verify                                                                                                                                                           |
+| `pnpm test`                                | Vitest run across the workspace                                                                                                                                                   |
+| `pnpm test:watch`                          | Vitest watch mode                                                                                                                                                                 |
+| `pnpm dev:edge`                            | Run azx-edge (`:8080`, **https** in dev — apps at `https://<slug>.localtest.me:8080`, login on `auth.localtest.me`, platform `GET /health`)                                       |
+| `pnpm dev:egress`                          | Run azx-egress (`:8081`, mechanism plane — the fetch-proxy `POST /proxy` + secret injection; needs `helix_egress` role + the dev KEK)                                             |
+| `pnpm dev:portal`                          | Run azx-portal (`:3001`, registry + deploy API)                                                                                                                                   |
+| `pnpm dev:idp`                             | Run the local OIDC issuer (`:3002`, `apps/dev-idp` — fixture users + clients; dev only, never deployed)                                                                           |
+| `pnpm dev:web`                             | Run the portal SPA dev server (`:5173`, Vite; proxies `/api` + `/health` to :3001). `pnpm --filter @azx-pbc/portal-web build` makes the portal serve it at :3001                  |
+| `pnpm --filter @azx-pbc/portal db:migrate` | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                                                                                                |
+| `pnpm --filter @azx-pbc/cli azx -- <cmd>`  | Run the `azx` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`). Runs in `packages/cli`; for real deploys run it from an app dir instead — see `packages/cli/README.md` |
+| `./check-and-lint.sh`                      | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first)                                                                                |
 
 The portal API lives under `/api/v1`. Mutating routes take a bearer token through the verifier chain — an IdP-minted JWT (`azx login`) or `$PORTAL_DEV_TOKEN` (CI/dev fallback); reads now require the same token (only `/health` + the auth-config bootstrap stay public). Deploys land as `preview` versions — promotion to live is a separate step (architecture §5.1).
 
@@ -46,7 +46,7 @@ pnpm test apps/edge/src/app.test.ts      # one file
 pnpm test -t "health"                      # filter by test name
 ```
 
-Per-package scripts (`dev`, `start`, `typecheck`) also run via `pnpm --filter @helix/edge <script>`.
+Per-package scripts (`dev`, `start`, `typecheck`) also run via `pnpm --filter @azx-pbc/edge <script>`.
 
 ## Environment
 
@@ -59,10 +59,10 @@ The system is **three deployable containers plus managed storage**, split along 
 - **`apps/edge` — azx-edge, the data/policy plane.** Stateless. Terminates all untrusted app-user traffic (`*.localtest.me` in dev, `*.azx-labs.com` in prod): host routing, session auth + OIDC handoff, CSP injection, asset serving from Blob, and the `/_api/*` gateway — the LLM proxy, app-data (user/collection/shared), and the **fetch-proxy policy** (authz/quota/audit, then a signed instruction to egress). Runs as the least-privilege `helix_edge` role: a read-only registry projection, INSERT-only metering/collections, RLS-partitioned app-data — **no registry-write and no secret-read** access.
 - **`apps/portal` — azx-portal, the control plane.** Privileged: portal UI/API, deploy endpoint, registry writes, capability approvals, secret writes. Not routable from app subdomains. Owns the Postgres schema and all migrations (Prisma 7, pg driver adapter); the edge only reads a cached projection.
 - **`apps/egress` — azx-egress, the mechanism plane.** The only component holding plaintext connection secrets or a route to the public internet. Internal-only (`POST /proxy`, never app-user-facing): verifies the edge's attested instruction, resolves+injects the secret under the `helix_egress` role, enforces SSRF controls, and streams the outbound call back. Its own network egress zone in prod; built as its own container from day one rather than extracted later.
-- **`packages/secret-store` — `@helix/secret-store`.** The `seal`/`open`/`destroy` custody seam shared by the portal (write) and egress (read): dev AES-GCM envelope / prod Key Vault behind one interface.
-- **`packages/shared` — `@helix/shared`.** zod schemas validated at every boundary (visibility, app, version, manifest, health), with inferred types exported alongside. Re-exported from `src/index.ts`; consumed via `workspace:*`. Note `@helix/shared` exports `./src/index.ts` directly (no build step).
+- **`packages/secret-store` — `@azx-pbc/secret-store`.** The `seal`/`open`/`destroy` custody seam shared by the portal (write) and egress (read): dev AES-GCM envelope / prod Key Vault behind one interface.
+- **`packages/shared` — `@azx-pbc/shared`.** zod schemas validated at every boundary (visibility, app, version, manifest, health), with inferred types exported alongside. Re-exported from `src/index.ts`; consumed via `workspace:*`. Note `@azx-pbc/shared` exports `./src/index.ts` directly (no build step).
 
-`packages/cli` — `@helix/cli`, the `azx` CLI — landed in M1 (zips a build dir or a prebuilt bundle and drives the deploy API), and `apps/portal-web` (the React SPA) is real and wired (see above). `packages/deploy-skill` and `infra/` appear in the target layout (project plan §2) but land in later milestones.
+`packages/cli` — `@azx-pbc/cli`, the `azx` CLI — landed in M1 (zips a build dir or a prebuilt bundle and drives the deploy API), and `apps/portal-web` (the React SPA) is real and wired (see above). `packages/deploy-skill` and `infra/` appear in the target layout (project plan §2) but land in later milestones.
 
 ### The edge is the trusted path
 
@@ -76,6 +76,6 @@ Both apps follow the same shape: `src/app.ts` exports `buildApp(): FastifyInstan
 
 - **TypeScript everywhere, ESM, Node 24.** Strict `tsconfig.base.json` (`strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `isolatedModules`), extended per package. Because of `verbatimModuleSyntax`, type-only imports must be written as `import type` / `import { type X }`. ESM import specifiers use `.js` extensions even for `.ts` sources (`nodenext`).
 - **Versions via the pnpm catalog** in `pnpm-workspace.yaml` — packages reference `catalog:` instead of pinning; bump in one place.
-- **zod at every boundary** (`@helix/shared`); inferred types travel with the schemas.
+- **zod at every boundary** (`@azx-pbc/shared`); inferred types travel with the schemas.
 - **Tests** are colocated `*.test.ts` under each package's `src/`; Vitest runs them in the `node` environment (single project for now — a jsdom project splits off when the React SPA lands).
 - **Anything touching M3 auth code gets adversarial tests with it, not after** (project plan §6). The OIDC handoff is the most security-sensitive code in the platform and gets a dedicated review pass.

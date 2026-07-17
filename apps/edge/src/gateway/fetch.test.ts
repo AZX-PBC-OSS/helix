@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
-import { INSTRUCTION_JWT_TYP } from "@helix/shared";
+import { INSTRUCTION_JWT_TYP } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import {

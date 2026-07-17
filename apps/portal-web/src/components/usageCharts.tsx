@@ -1,6 +1,6 @@
 import { SegmentedControl } from "@mantine/core";
 import { AreaChart } from "@mantine/charts";
-import type { UsageSeriesPoint } from "@helix/shared";
+import type { UsageSeriesPoint } from "@azx-pbc/shared";
 import { fmtCount, fmtUsd } from "../lib/format";
 
 /**

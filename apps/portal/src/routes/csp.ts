@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { CspViolationsPageSchema } from "@helix/shared";
+import { CspViolationsPageSchema } from "@azx-pbc/shared";
 import { authenticate, requireAdmin } from "../plugins/auth.js";
 import { toCspViolation, type CspViolationRow } from "../db/mappers.js";
 

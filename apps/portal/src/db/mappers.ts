@@ -22,7 +22,7 @@ import {
   type Version,
   type Visibility,
   type VisibilityMode,
-} from "@helix/shared";
+} from "@azx-pbc/shared";
 import type {
   App as AppRow,
   ApprovalRequest as ApprovalRequestRow,

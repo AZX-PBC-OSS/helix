@@ -75,7 +75,7 @@ Two paths, in precedence order:
 ### Once published (later milestone)
 
 ```bash
-npm i -g @helix/cli
+npm i -g @azx-pbc/cli
 cd my-app
 export AZX_TOKEN="…"
 azx deploy --promote
@@ -105,7 +105,7 @@ azx deploy --promote
 azx versions
 ```
 
-## About `pnpm --filter @helix/cli azx -- <cmd>`
+## About `pnpm --filter @azx-pbc/cli azx -- <cmd>`
 
 This form runs the CLI's dev script through pnpm. It works for flags now (the
 CLI strips the `--` that pnpm forwards — see `src/args.ts`), **but pnpm runs the
@@ -114,7 +114,7 @@ script in `packages/cli`, not your app**. So it will not find your app's
 for `--help` or with explicit `--slug` + an absolute `--dir`:
 
 ```bash
-pnpm --filter @helix/cli azx -- deploy --slug my-app \
+pnpm --filter @azx-pbc/cli azx -- deploy --slug my-app \
   --dir /abs/path/to/my-app/dist --promote
 ```
 
