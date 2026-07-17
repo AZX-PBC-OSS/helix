@@ -13,6 +13,7 @@
     "dev:portal": "pnpm --filter @helix/portal dev",
     "dev:idp": "pnpm --filter @helix/dev-idp dev",
     "dev:web": "pnpm --filter @helix/portal-web dev",
+    "dev:clean": "node scripts/free-port.mjs 8080 8081 3001 3002 5173",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node ../../scripts/free-port.mjs 3002 && tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc"
   },
