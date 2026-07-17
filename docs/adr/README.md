@@ -1,0 +1,42 @@
+# Architecture Decision Records
+
+This directory records the significant architecture decisions for Helix (the AZX App Platform), using a lightweight [Nygard-style](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions) format: **Context → Decision → Consequences**, with a status.
+
+0001–0013 were scaffolded from the 2026-06-25 multi-model architecture review ([`docs/reviews/2026-06-25-architecture-review.md`](../reviews/2026-06-25-architecture-review.md)); `ISSUE-xx` / `DEC-xx` references point into that review. **0014–0024 were added 2026-06-26 from a multi-model ADR-coverage audit** — they record decisions that had already shipped but lacked an ADR (their bodies are retroactive). ADR numbers do **not** imply chronological order of when the decision was first made.
+
+## Status legend
+
+- **Accepted** — decided and in force; the review found the decision sound.
+- **Accepted (revisit before multi-tenant / M5)** — a deliberate v0 choice that must be reconsidered before the platform serves more than one trusted operator.
+- **Proposed** — a direction chosen but not yet fully decided or implemented; needs sign-off.
+
+## Index
+
+| ADR | Title | Status |
+|---|---|---|
+| [0001](0001-three-runtime-split.md) | Three-runtime split along trust boundaries | Accepted |
+| [0002](0002-postgres-role-split-rls.md) | Postgres least-privilege role split + RLS | Accepted |
+| [0003](0003-dependency-minimal-edge.md) | Dependency-minimal edge, hand-written SQL (no ORM) | Accepted |
+| [0004](0004-auth-model.md) | Edge-terminated auth: OIDC handoff + password visibility | Accepted |
+| [0005](0005-ssrf-egress-controls.md) | Egress SSRF + secret-injection mechanism | Accepted |
+| [0006](0006-secret-custody-seam.md) | `SecretStore` custody seam (dev envelope / prod Key Vault) | Accepted |
+| [0007](0007-portal-authz-v0.md) | Portal authorization v0: authenticated == authorized | Accepted (revisit before multi-tenant) |
+| [0008](0008-llm-key-via-egress.md) | LLM vendor key resolved by egress + legacy fallback | Accepted (revisit) |
+| [0009](0009-relaxed-csp.md) | Relaxed CSP posture for hostile app code | Accepted (revisit) |
+| [0010](0010-anonymous-shared-writes.md) | Anonymous writes to `shared` keys on public apps | Accepted (revisit) |
+| [0011](0011-in-memory-rate-limiting.md) | In-memory rate-limit / throttle state (single-replica) | Accepted (revisit before multi-replica) |
+| [0012](0012-edge-portal-codeploy.md) | Edge and portal may co-deploy as one binary in v0 | Accepted |
+| [0013](0013-egress-trust-model.md) | Egress trust model: harden the attested-instruction seam | Proposed |
+| [0014](0014-same-origin-api-gateway.md) | Same-origin `/_api/*` gateway as the single choke point | Accepted |
+| [0015](0015-app-data-three-scope-model.md) | App-data: three scopes (user/collection/shared), writer ≠ reader | Accepted |
+| [0016](0016-capability-manifest-approval-classifier.md) | Capability manifest + baseline/elevated approval classifier | Accepted |
+| [0017](0017-registry-listen-notify-projection.md) | Edge registry projection over Postgres LISTEN/NOTIFY | Accepted |
+| [0018](0018-deploy-model-immutable-versions.md) | Deploy model: upload-only, immutable versions, preview→live flip | Accepted |
+| [0019](0019-subdomain-per-app-isolation.md) | Subdomain-per-app isolation with host-scoped cookies | Accepted |
+| [0020](0020-static-only-apps-v1.md) | Static-only hosted apps in v1 | Accepted |
+| [0021](0021-metering-ledger.md) | Metering ledger: `gateway_calls`, append-only, token budgets + frozen cost | Accepted |
+| [0022](0022-self-hosted-edge-not-front-door.md) | Self-hosted edge/auth, not a cloud-vendor edge | Accepted |
+| [0023](0023-one-org-app-id-partitioning.md) | One org now, app-id partitioning everywhere | Accepted |
+| [0024](0024-portal-cli-bearer-jwt-jwks.md) | Portal/CLI authentication: bearer JWT over JWKS | Accepted |
+| [0025](0025-registry-projection-hardening.md) | Registry projection hardening (observability, jitter, cold-start) | Proposed |
+| [0026](0026-hosted-build-isolation-prerequisites.md) | Hosted-build isolation prerequisites (the build-step boundary shift) | Proposed |
