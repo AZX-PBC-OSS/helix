@@ -13,7 +13,7 @@ Egress (`apps/egress/src/ssrf.ts`, `proxy.ts`) applies, per outbound call:
 
 - Resolve the hostname, **validate the resolved IP** against private/loopback/link-local/IMDS ranges, and **dial the validated IP literal** so there is no second resolution (DNS-rebind defeated).
 - Do **not** follow redirects.
-- Apply a header safelist in both directions; inject the resolved secret server-side only.
+- Filter headers in both directions — a safelist on the request path; on the response path a *blocklist* today (which should become a safelist too, per ISSUE-01/#7). Inject the resolved secret server-side only.
 - Stream the response back to the edge with size/time bounds.
 
 ## Consequences

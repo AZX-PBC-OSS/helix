@@ -9,7 +9,7 @@ Untrusted apps acquire capabilities (LLM models, token budgets, proxied fetch or
 
 ## Decision
 
-Each app carries a **capability manifest**. The portal's `classifyChange` (a pure function in `@helix/shared`) splits a requested manifest change into:
+Each app carries a **capability manifest**. The portal's `classifyChange` (a pure function in `@azx-pbc/shared`) splits a requested manifest change into:
 
 - **Baseline deltas** — committed immediately (including any privilege *reduction*).
 - **Elevated deltas** — a non-curated LLM model, a budget above threshold, a new proxied origin, a secret-bound origin, going `public`, any MCP server — bundled into a pending `ApprovalRequest` and applied **only** on platform-admin approval.

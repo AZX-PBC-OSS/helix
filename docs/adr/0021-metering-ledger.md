@@ -9,7 +9,7 @@ Every gateway call (LLM, data, fetch) must be metered, audited, and budget-enfor
 
 ## Decision
 
-One **append-only** `gateway_calls` row per call: `(appId, userOid, capability, model, inputTokens, outputTokens, outcome)` plus a **frozen, as-charged `costMicroUsd`** priced at write time from a **code-resident rate table** (`@helix/shared/pricing.ts`). `helix_edge` has **INSERT-only** (+ `SELECT` for budget sums) — no `UPDATE`/`DELETE` — so integrity rests on the DB grant set, not a hash chain.
+One **append-only** `gateway_calls` row per call: `(appId, userOid, capability, model, inputTokens, outputTokens, outcome)` plus a **frozen, as-charged `costMicroUsd`** priced at write time from a **code-resident rate table** (`@azx-pbc/shared/pricing.ts`). `helix_edge` has **INSERT-only** (+ `SELECT` for budget sums) — no `UPDATE`/`DELETE` — so integrity rests on the DB grant set, not a hash chain.
 
 - **Daily budgets are token/request-denominated** (`tokensPerDay`, `requestsPerDay`), not USD — a coarse, predictable ceiling.
 - **Quota is block-new / finish-in-flight:** an admitted request always runs to completion; the *next* request is the one blocked once the budget is crossed.
@@ -22,7 +22,7 @@ One **append-only** `gateway_calls` row per call: `(appId, userOid, capability, 
 - Token-denominated budgets stay stable across price changes; dollars are a derived view, not the enforcement unit.
 - The ledger is a metering + budget primitive, deliberately narrow (no latency/error-detail/size) — not an observability sink.
 
-> Note: `docs/features/llm-gateway.md` still says "tokens, not dollars … no cost column" — **stale**; the `costMicroUsd` column exists. Reconcile that doc.
+> Note: `docs/features/llm-gateway.md` was reconciled (2026-07) to document the frozen `costMicroUsd` column — the earlier "tokens, not dollars / no cost column" wording is gone.
 
 ## Challenge outcome (2026-06-26)
 

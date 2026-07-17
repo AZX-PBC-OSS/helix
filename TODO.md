@@ -112,12 +112,6 @@ Legend for gating conditions:
 
 ---
 
-## Doc hygiene
-
-- [ ] **Reconcile `docs/features/llm-gateway.md` with the metering ledger.** It still says "tokens, not dollars … no cost column"; the `costMicroUsd` column exists. — ADR-0021
-
----
-
 ## Explicitly rejected (recorded so they aren't re-proposed)
 
 - Moving the OIDC RP credential off the edge — standard BFF/confidential-client pattern; not warranted. (ADR-0001)

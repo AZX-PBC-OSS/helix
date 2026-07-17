@@ -9,7 +9,7 @@ Connection secrets (third-party API credentials, the LLM vendor key) must be wri
 
 ## Decision
 
-A single `seal` / `open` / `destroy` custody seam, `@helix/secret-store`, shared by portal (write) and egress (read):
+A single `seal` / `open` / `destroy` custody seam, `@azx-pbc/secret-store`, shared by portal (write) and egress (read):
 
 - **dev:** AES-GCM envelope under a post-create-generated KEK.
 - **prod:** Azure Key Vault (wired in M5).

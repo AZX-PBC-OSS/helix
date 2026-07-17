@@ -14,6 +14,6 @@ instead of a clear failure at deploy.
 
 ## Proposed handling
 
-Add a write-gate case in `classifyChange` (`@helix/shared`, approvals §3) that requires every named
+Add a write-gate case in `classifyChange` (`@azx-pbc/shared`, approvals §3) that requires every named
 connection in `fetch.origins[].connection` to resolve to an existing, grant-eligible secret for the app
 before the manifest change is accepted. Fail-classify at deploy rather than inert-403 at runtime.
