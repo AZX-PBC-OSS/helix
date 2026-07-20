@@ -65,11 +65,11 @@ above; it only mints an attested `llm` instruction and forwards the call over th
 seam — egress injects `x-api-key` and streams the SSE back, which the edge parses for usage and
 metering (shared `mapAnthropicStream`). This is the same policy/mechanism split as the fetch-proxy,
 and it removes the one spot where the edge held plaintext (secrets design §1). Rotating the key in
-the portal takes effect on the next call with no edge restart. A legacy direct `AnthropicProvider`
-(key from `EDGE_LLM_ANTHROPIC_KEY` via `apps/edge/src/gateway/secrets-provider.ts`) remains as an
-**ungated, fail-open dev fallback** selected whenever egress is unconfigured — not merely inert. It
-is slated to be **removed from runtime selection and made fail-closed** (a 503 when egress is
-unconfigured), issue #10 (ADR-0008).
+the portal takes effect on the next call with no edge restart. There is **no direct edge→Anthropic
+path**: when egress is unconfigured the capability fails **closed** — `/_api/llm/chat` returns
+`503 capability_unavailable`, the edge never holds the vendor key (issue #10, ADR-0008). The
+`AnthropicProvider` class survives as a test-only unit (constructor-injected key); it is never
+selected at runtime.
 
 The handler relays this two ways:
 

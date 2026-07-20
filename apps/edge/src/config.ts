@@ -121,9 +121,10 @@ export interface EdgeConfig {
   reconcileIntervalMs: number;
   /**
    * LLM gateway vendor settings (architecture §6.1, M4). Always present with
-   * defaults; whether the capability is *enabled* is gated separately by the
-   * presence of a vendor key (the {@link ./gateway/secrets-provider.js
-   * SecretProvider}), not by this block.
+   * defaults; whether the capability is *enabled* is gated separately by egress
+   * being configured (`EDGE_EGRESS_URL` + `HELIX_INSTRUCTION_SECRET`) — the
+   * vendor key is a `platform` secret egress resolves, never held by the edge
+   * (ADR-0008). This block only names the vendor endpoint/version/connection.
    */
   llm: {
     /** Vendor origin (no path), e.g. `https://api.anthropic.com`. */

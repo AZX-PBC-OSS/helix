@@ -44,9 +44,23 @@ azx create --display-name "Chatbot"
 azx deploy --promote
 ```
 
-The edge needs a vendor key to serve the capability — put
-`EDGE_LLM_ANTHROPIC_KEY=sk-ant-…` in the gitignored `apps/edge/.env.local`
-(or the environment) before `pnpm dev:edge`. Without it, `/_api/llm/chat`
-returns `503 capability_unavailable`.
+The LLM capability routes through `azx-egress` — the edge never holds the
+vendor key. To serve it locally:
+
+```bash
+# 1. Seal the vendor key into the secret store (once). The key is read here
+#    only to encrypt it; the edge never sees it.
+EDGE_LLM_ANTHROPIC_KEY=sk-ant-… pnpm --filter @azx-pbc/portal seed:llm
+
+# 2. Run the mechanism plane (resolves + injects the sealed key).
+pnpm dev:egress
+
+# 3. Run the edge with egress configured (EDGE_EGRESS_URL +
+#    HELIX_INSTRUCTION_SECRET are set in the devcontainer env).
+pnpm dev:edge
+```
+
+Without egress configured, `/_api/llm/chat` returns `503 capability_unavailable`
+(fail-closed — the edge has no direct-to-Anthropic path).
 
 Then open `https://chatbot.localtest.me:8080`, sign in, and chat.

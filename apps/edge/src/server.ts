@@ -5,8 +5,7 @@ import { createBlobReader } from "./blob/client.js";
 import { LiveRegistry, type RegistryLogger } from "./registry/listener.js";
 import { OpenIdConnectClient } from "./auth/oidc.js";
 import { PgSessionStore, startSessionSweeper } from "./auth/sessions.js";
-import { EnvSecretProvider } from "./gateway/secrets-provider.js";
-import { AnthropicProvider, type LlmProvider } from "./gateway/provider.js";
+import type { LlmProvider } from "./gateway/provider.js";
 import { EgressLlmProvider } from "./gateway/egressLlmProvider.js";
 import { HttpEgressProvider, type EgressProvider } from "./gateway/egressProvider.js";
 import { deriveInstructionKey } from "./gateway/instruction.js";
@@ -125,34 +124,26 @@ const instructionKey = config.fetch.instructionSecret
   ? deriveInstructionKey(config.fetch.instructionSecret)
   : null;
 
-// LLM provider selection (secrets design §1):
+// LLM provider selection (secrets design §1). Two states only — the edge never
+// holds the vendor key:
 //  1. egress configured → route the vendor call through egress; the key is a
 //     `platform` secret egress injects, so the edge never holds it.
-//  2. legacy dev fallback → a vendor key in the edge env (EDGE_LLM_ANTHROPIC_KEY)
-//     calling Anthropic directly. Deprecated; keeps `pnpm dev:edge` working
-//     without egress and backs the provider's unit tests.
-//  3. neither → null; the capability 503s (fail-closed, like auth).
-const secrets = new EnvSecretProvider();
-let llmProvider: LlmProvider | null;
-if (egress && instructionKey) {
-  llmProvider = new EgressLlmProvider(
-    {
-      endpoint: config.llm.endpoint,
-      anthropicVersion: config.llm.anthropicVersion,
-      connection: config.llm.connection,
-    },
-    egress,
-    instructionKey,
-  );
-} else if (secrets.has("anthropic")) {
-  llmProvider = new AnthropicProvider({
-    endpoint: config.llm.endpoint,
-    anthropicVersion: config.llm.anthropicVersion,
-    apiKey: secrets.vendorKey("anthropic"),
-  });
-} else {
-  llmProvider = null;
-}
+//  2. egress unconfigured → null; the capability 503s (fail-closed, like auth).
+// There is deliberately no direct edge→Anthropic path: the edge holding the key
+// would violate the containment model (ADR-0008, issue #10). Local dev runs the
+// canonical path via `pnpm dev:egress`.
+const llmProvider: LlmProvider | null =
+  egress && instructionKey
+    ? new EgressLlmProvider(
+        {
+          endpoint: config.llm.endpoint,
+          anthropicVersion: config.llm.anthropicVersion,
+          connection: config.llm.connection,
+        },
+        egress,
+        instructionKey,
+      )
+    : null;
 
 const app = buildApp({
   config,

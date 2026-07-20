@@ -118,7 +118,11 @@ export interface AnthropicProviderConfig {
   endpoint: string;
   /** `anthropic-version` header value, e.g. `2023-06-01`. */
   anthropicVersion: string;
-  /** Vendor key from the {@link ./secrets-provider.js SecretProvider}. */
+  /**
+   * Vendor key, injected at construction. This class is retained for its unit
+   * tests only — it is NOT selected at runtime (the edge never holds the vendor
+   * key; the LLM call routes through egress). See `server.ts` / ADR-0008.
+   */
   apiKey: string;
   /** Inject a dispatcher (tests use undici's MockAgent); default is an owned Pool. */
   dispatcher?: Dispatcher;
