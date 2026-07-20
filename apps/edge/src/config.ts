@@ -160,6 +160,12 @@ export interface EdgeConfig {
     instructionSecret: Buffer | null;
     /** Edge-side timeout for the egress round-trip. */
     timeoutMs: number;
+    /**
+     * Per-direction body-size cap, enforced with a byte counter on the request
+     * re-stream to egress and the response re-stream to the app (issue #8).
+     * Mirrors egress's `EGRESS_MAX_BODY_BYTES` so both hops cap independently.
+     */
+    maxBodyBytes: number;
   };
 }
 
@@ -449,6 +455,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
       egressUrl: env.EDGE_EGRESS_URL || null,
       instructionSecret: loadInstructionSecret(env),
       timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
+      maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
     },
   };
 }

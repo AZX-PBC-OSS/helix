@@ -15,3 +15,7 @@ export * from "./data.js";
 export * from "./secrets.js";
 export * from "./instruction.js";
 export * from "./fetch.js";
+// NB: `./bodyCap.js` is deliberately NOT re-exported here — it depends on
+// `node:stream`/`Buffer`, and this barrel is consumed by the browser SPA
+// (`apps/portal-web`, moduleResolution: bundler, no node types). Server code
+// imports it from the `@azx-pbc/shared/bodyCap` subpath instead.

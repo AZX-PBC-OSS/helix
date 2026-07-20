@@ -73,7 +73,12 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     anonRateLimit: { max: 0, windowMs: 60_000 },
     // Fetch-proxy off by default; suites that exercise it set egressUrl +
     // instructionSecret (and pass an egress provider into buildApp).
-    fetch: { egressUrl: null, instructionSecret: null, timeoutMs: 30_000 },
+    fetch: {
+      egressUrl: null,
+      instructionSecret: null,
+      timeoutMs: 30_000,
+      maxBodyBytes: 10 * 1024 * 1024,
+    },
     ...overrides,
   };
 }

@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
+import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
+import { request as undiciRequest } from "undici";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
@@ -34,12 +36,20 @@ const key = deriveInstructionKey(secret);
 class FakeEgress implements EgressProvider {
   calls: EgressRequest[] = [];
   outcome = "ok";
+  /** When set, the response body egress "returns" — used to exercise the cap. */
+  responseBody: Readable | null = null;
+  /** When set, the request body is fully drained so tests can measure its size. */
+  drainRequest = false;
+  drainedBytes = 0;
   async proxy(req: EgressRequest): Promise<EgressResponse> {
     this.calls.push(req);
+    if (this.drainRequest && req.body && typeof req.body !== "string") {
+      for await (const chunk of req.body as Readable) this.drainedBytes += (chunk as Buffer).length;
+    }
     return {
       status: 200,
       headers: { "content-type": "application/json" },
-      body: Readable.from([Buffer.from(JSON.stringify({ ok: true }))]),
+      body: this.responseBody ?? Readable.from([Buffer.from(JSON.stringify({ ok: true }))]),
       outcome: this.outcome,
     };
   }
@@ -57,6 +67,7 @@ function buildFetchEdge(
     connections?: Map<string, string | null>;
     requestsPerDay?: number | null;
     withEgress?: boolean;
+    maxBodyBytes?: number;
   } = {},
 ): FetchEdge {
   const egress = new FakeEgress();
@@ -68,7 +79,16 @@ function buildFetchEdge(
       ["https://api.stripe.com", "stripe"],
     ]);
   const app = buildApp({
-    config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
+    config: testEdgeConfig({
+      auth: testAuthConfig(),
+      allowUnauthenticated: false,
+      fetch: {
+        egressUrl: null,
+        instructionSecret: null,
+        timeoutMs: 30_000,
+        maxBodyBytes: opts.maxBodyBytes ?? 10 * 1024 * 1024,
+      },
+    }),
     registry: new FakeRegistry([
       registryEntry({
         appId: APP_ID,
@@ -191,6 +211,61 @@ describe("/_api/fetch", () => {
       headers: { ...HOST, origin: ORIGIN },
     });
     expect(res.statusCode).toBe(503);
+    await app.close();
+  });
+
+  // Body-size cap (issue #8): the edge caps both hops independently of egress.
+  it("refuses an over-cap request body with 413 before forwarding (fast-path)", async () => {
+    const { app, egress, usage } = buildFetchEdge({ maxBodyBytes: 64 });
+    const res = await app.inject({
+      method: "POST",
+      url: "/_api/fetch/https://api.github.com/x",
+      headers: { ...HOST, origin: ORIGIN, "content-type": "application/octet-stream" },
+      payload: Buffer.alloc(65, 0x61), // 65 > 64, with a truthful content-length
+    });
+    expect(res.statusCode).toBe(413);
+    expect(res.json().code).toBe("too_large");
+    expect(egress.calls).toHaveLength(0); // never dialed egress
+    expect(usage.records).not.toContainEqual(expect.objectContaining({ outcome: "ok" }));
+    await app.close();
+  });
+
+  it("forwards an under-cap request body intact (no false trip)", async () => {
+    const { app, egress } = buildFetchEdge({ maxBodyBytes: 64 });
+    egress.drainRequest = true;
+    const res = await app.inject({
+      method: "POST",
+      url: "/_api/fetch/https://api.github.com/x",
+      headers: { ...HOST, origin: ORIGIN, "content-type": "application/octet-stream" },
+      payload: Buffer.alloc(40, 0x61),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(egress.calls).toHaveLength(1);
+    expect(egress.drainedBytes).toBe(40); // body transited intact
+    await app.close();
+  });
+
+  it("truncates an over-cap response body streaming back to the app", async () => {
+    // Over a real socket, not inject: a mid-stream destroy is a *truncation*
+    // (200 + short body), not a clean error — inject can't model that.
+    const { app, egress } = buildFetchEdge({ maxBodyBytes: 64 });
+    // 320 bytes across chunks, no content-length ⇒ the fast-path is inert.
+    egress.responseBody = Readable.from(Array.from({ length: 8 }, () => Buffer.alloc(40, 0x61)));
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+    const res = await undiciRequest(`${base}/_api/fetch/https://api.github.com/big`, {
+      method: "GET",
+      headers: { host: "demo.localtest.me", origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(200);
+    let got = 0;
+    try {
+      for await (const chunk of res.body) got += (chunk as Buffer).length;
+    } catch {
+      // premature close — the expected shape of a truncated response
+    }
+    expect(got).toBeLessThanOrEqual(64); // counter cut it at the cap
+    expect(got).toBeLessThan(320); // the full body never reached the app
     await app.close();
   });
 });

@@ -21,6 +21,7 @@ Egress (`apps/egress/src/ssrf.ts`, `proxy.ts`) applies, per outbound call:
 - A compromised or malicious app cannot use the proxy to reach internal services or cloud metadata.
 - The credential is injected at egress and never returned to the app in a **response header** — the dynamic strip covers arbitrary recipe header names, the blocklist backstops `authorization`, and query secrets are redacted from `Location`. Response-**body** echo (an upstream reflecting the secret into the body) remains an accepted transparent-proxy residual: no header-level filter closes it.
 - The controls are a denylist/validation surface that must be kept current against IP-encoding and redirect tricks.
+- The `maxBodyBytes` cap is enforced by a **byte counter over the actual bytes** (`@azx-pbc/shared` `capBody`/`byteCapStream`), not the `content-length` header — so chunked, CL-absent, and lying-`content-length` bodies are all counted (resolves **ISSUE-02**, issue #8). It runs per-direction on both hops (egress `/proxy` and the edge `/_api/fetch` relay), so the planes cap independently. The `content-length` check is retained only as a fast-path. A request-side overflow is refused with **413 `too_large`** before/without completing the upstream call; a response-side overflow **truncates** the already-committed stream (logged out-of-band) — a documented transparent-proxy residual, since status + headers are flushed before the counter can trip.
 
 ## Review notes (2026-06-25)
 

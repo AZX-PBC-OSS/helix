@@ -1,12 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { Readable } from "node:stream";
 import { SignJWT } from "jose";
+import { request as undiciRequest } from "undici";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   INSTRUCTION_HEADER,
   INSTRUCTION_JWT_TYP,
   METHOD_HEADER,
+  OUTCOME_HEADER,
   TARGET_HEADER,
 } from "@azx-pbc/shared";
 import { buildApp } from "./app.js";
@@ -278,6 +281,142 @@ describe("egress secret echo-back (issue #7)", () => {
     // app — no header filter closes this. Pinned so the residual is explicit.
     const res = await proxy("gh");
     expect(res.json().authorization).toBe("Bearer injected-secret");
+  });
+});
+
+describe("egress body-size cap (issue #8)", () => {
+  // The cap must hold for *streamed* bodies, where the content-length fast-path
+  // is a no-op: a chunked / CL-absent response is counted and truncated, and a
+  // chunked request is cut off before it streams unbounded egress-billed
+  // bandwidth upstream. Exercised over a real socket (undici → a listening
+  // egress) so the streaming/teardown behavior is faithful, not an inject
+  // approximation.
+  const CAP = 64;
+  const bytes = (n: number): Buffer => Buffer.alloc(n, 0x61);
+
+  let received = 0; // request bytes the upstream actually saw
+  let upstream: Server;
+  let capOrigin: string;
+  let app: ReturnType<typeof buildApp>;
+  let base: string;
+
+  beforeAll(async () => {
+    upstream = createServer((req, res) => {
+      if (req.url === "/large") {
+        // 320 bytes, chunked (no content-length) — the headline bypass.
+        res.setHeader("content-type", "text/plain");
+        for (let i = 0; i < 8; i++) res.write(bytes(40));
+        res.end();
+        return;
+      }
+      if (req.url === "/small") {
+        res.end(bytes(40)); // content-length: 40, under the cap
+        return;
+      }
+      // Default: a byte sink that records how much of the request body arrived.
+      req.on("data", (c: Buffer) => {
+        received += c.length;
+      });
+      req.on("end", () => res.end("ok"));
+      req.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    capOrigin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+
+    const config = {
+      limits: { maxBodyBytes: CAP, timeoutMs: 5000 },
+      allowPrivate: true,
+    } as EgressConfig;
+    app = buildApp({ config, resolver, instructionKey: key });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  });
+  afterAll(async () => {
+    await app.close();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  });
+
+  it("truncates a chunked (CL-absent) response that exceeds the cap", async () => {
+    const res = await undiciRequest(`${base}/proxy`, {
+      method: "POST",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(capOrigin),
+        [TARGET_HEADER]: `${capOrigin}/large`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    // Status + headers were already committed, so the app sees a 200 whose body
+    // is cut short — not a 502.
+    expect(res.statusCode).toBe(200);
+    let got = 0;
+    try {
+      for await (const chunk of res.body) got += (chunk as Buffer).length;
+    } catch {
+      // Premature close is the expected shape of a mid-stream truncation.
+    }
+    expect(got).toBeLessThanOrEqual(CAP); // counter cut it at the cap
+    expect(got).toBeLessThan(320); // the full body never reached the app
+  });
+
+  it("streams an under-cap response through intact (no false trip)", async () => {
+    const res = await undiciRequest(`${base}/proxy`, {
+      method: "POST",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(capOrigin),
+        [TARGET_HEADER]: `${capOrigin}/small`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect((await res.body.text()).length).toBe(40);
+  });
+
+  it("cuts off a chunked (CL-absent) request body over the cap", async () => {
+    received = 0;
+    // 256 bytes streamed with no content-length ⇒ undici sends it chunked, so
+    // the request fast-path can't see it — only the byte counter stops it.
+    const body = Readable.from([bytes(64), bytes(64), bytes(64), bytes(64)]);
+    let status = 0;
+    let threw = false;
+    try {
+      const res = await undiciRequest(`${base}/proxy`, {
+        method: "POST",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint(capOrigin),
+          [TARGET_HEADER]: `${capOrigin}/sink`,
+          [METHOD_HEADER]: "POST",
+        },
+        body,
+      });
+      status = res.statusCode;
+      await res.body.text().catch(() => {});
+    } catch {
+      // A reset mid-upload (egress stopped reading) is an acceptable shape too.
+      threw = true;
+    }
+    expect(threw || status === 413).toBe(true);
+    // The upstream never received more than the cap — the point of the counter.
+    expect(received).toBeLessThanOrEqual(CAP);
+  });
+
+  it("refuses a truthful oversized content-length request before dialing out", async () => {
+    // A Buffer body ⇒ undici sets a real content-length ⇒ the fast-path fires
+    // with a clean 413 and the upstream is never contacted.
+    received = 0;
+    const res = await undiciRequest(`${base}/proxy`, {
+      method: "POST",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(capOrigin),
+        [TARGET_HEADER]: `${capOrigin}/sink`,
+        [METHOD_HEADER]: "POST",
+      },
+      body: bytes(CAP + 1),
+    });
+    expect(res.statusCode).toBe(413);
+    const json = (await res.body.json()) as { code: string };
+    expect(json.code).toBe("too_large");
+    expect(res.headers[OUTCOME_HEADER]).toBe("refusal");
+    expect(received).toBe(0); // never forwarded
   });
 });
 

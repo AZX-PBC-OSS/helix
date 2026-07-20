@@ -7,6 +7,7 @@ import {
   REQUEST_HEADER_SAFELIST,
   RESPONSE_HEADER_BLOCKLIST,
 } from "@azx-pbc/shared";
+import { capBody } from "@azx-pbc/shared/bodyCap";
 import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
@@ -161,6 +162,17 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       }
     }
 
+    // Request body cap, fast-path: refuse a truthful oversized content-length
+    // before minting an instruction or dialing egress. The byte counter on the
+    // re-stream below is the real, framing-independent enforcement (issue #8).
+    if (!BODYLESS.has(req.method)) {
+      const declared = Number(req.headers["content-length"]);
+      if (Number.isFinite(declared) && declared > rt.config.fetch.maxBodyBytes) {
+        sendFetchError(reply, 413, "too_large", "request body exceeds the size cap");
+        return;
+      }
+    }
+
     // Mint the attested instruction and forward to egress.
     const instruction = await mintInstruction(
       {
@@ -176,6 +188,16 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
 
     const abort = new AbortController();
     req.raw.on("close", () => abort.abort());
+
+    // Count the request bytes forwarded to egress: a chunked / CL-absent /
+    // lying-CL upload can't stream past the cap uncounted. A trip destroys
+    // req.raw and errors the forward → the catch maps it to a 413.
+    let requestCapTripped = false;
+    const requestBody = BODYLESS.has(req.method)
+      ? null
+      : capBody(req.raw, rt.config.fetch.maxBodyBytes, "request", () => {
+          requestCapTripped = true;
+        });
 
     const startedAt = performance.now();
     const record = (
@@ -203,7 +225,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         target: target.href,
         method: req.method,
         headers: safeRequestHeaders(req.headers),
-        body: BODYLESS.has(req.method) ? null : req.raw,
+        body: requestBody,
         signal: abort.signal,
       });
 
@@ -213,8 +235,26 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       for (const [k, v] of Object.entries(res.headers)) {
         if (!RESPONSE_BLOCKED.has(k) && v !== undefined) reply.header(k, v);
       }
-      return reply.send(res.body);
+      // Count the response bytes on the way to the app: egress already caps, but
+      // the edge caps independently (defense-in-depth — the two hops don't trust
+      // each other). Status + headers are committed, so a trip truncates the
+      // body rather than erroring (issue #8).
+      return reply.send(
+        capBody(res.body, rt.config.fetch.maxBodyBytes, "response", () => {
+          req.log.warn(
+            { appId: entry.appId, origin: target.origin, limit: rt.config.fetch.maxBodyBytes },
+            "fetch response body exceeded the size cap — truncated",
+          );
+        }),
+      );
     } catch (err) {
+      // A request-body cap trip surfaces here as a failed egress forward; report
+      // it as a 413 rather than a generic upstream error (nothing sent yet).
+      if (requestCapTripped) {
+        await record("refusal", { statusCode: 413 });
+        sendFetchError(reply, 413, "too_large", "request body exceeds the size cap");
+        return;
+      }
       const detail = err instanceof Error ? err.message : String(err);
       await record("error", {
         errorDetail: detail.length > 300 ? `${detail.slice(0, 300)}…` : detail,

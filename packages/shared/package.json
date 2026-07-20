@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./bodyCap": "./src/bodyCap.ts"
   },
   "scripts": {
     "typecheck": "tsc"

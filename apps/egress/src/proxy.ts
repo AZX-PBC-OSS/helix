@@ -11,6 +11,7 @@ import {
   RESPONSE_HEADER_BLOCKLIST,
   TARGET_HEADER,
 } from "@azx-pbc/shared";
+import { capBody } from "@azx-pbc/shared/bodyCap";
 import { verifyInstruction } from "./instruction.js";
 import { type SecretResolver } from "./secrets.js";
 import { SsrfBlockedError, resolveAndValidate } from "./ssrf.js";
@@ -149,6 +150,17 @@ export function makeProxyHandler(deps: ProxyDeps) {
       return fail(reply, 403, "forbidden", "target origin does not match the authorization");
     }
 
+    // Request body cap, fast-path: a truthful oversized content-length is
+    // refused before we resolve a secret or dial out. The real enforcement is
+    // the byte counter on the re-stream below — this only avoids wasted work
+    // (issue #8).
+    if (!BODYLESS.has(method)) {
+      const declared = Number(req.headers["content-length"]);
+      if (Number.isFinite(declared) && declared > deps.limits.maxBodyBytes) {
+        return fail(reply, 413, "too_large", "request body exceeds the size cap");
+      }
+    }
+
     const headers = safeRequestHeaders(req.headers);
 
     // Resolve + inject the connection secret, if this call is secret-backed.
@@ -185,14 +197,26 @@ export function makeProxyHandler(deps: ProxyDeps) {
       headersTimeout: deps.limits.timeoutMs,
       bodyTimeout: deps.limits.timeoutMs,
     });
+    // Count the request bytes on the way out: a chunked / CL-absent / lying-CL
+    // upload can't stream unbounded egress-billed bandwidth past the cap. A trip
+    // destroys req.raw and errors the undici upload → the catch maps it to 413.
+    let requestCapTripped = false;
+    const requestBody = BODYLESS.has(method)
+      ? undefined
+      : capBody(req.raw, deps.limits.maxBodyBytes, "request", () => {
+          requestCapTripped = true;
+        });
+
     try {
       const upstream = await request(connectUrlFor(target, pinned.address, pinned.family), {
         method,
         headers: { ...headers, host: target.host },
-        body: BODYLESS.has(method) ? undefined : req.raw,
+        body: requestBody,
         dispatcher,
       });
 
+      // Response cap, fast-path: a truthful oversized content-length is rejected
+      // cleanly (before any body is committed) without draining the connection.
       const len = Number(upstream.headers["content-length"]);
       if (Number.isFinite(len) && len > deps.limits.maxBodyBytes) {
         upstream.body.destroy();
@@ -220,9 +244,22 @@ export function makeProxyHandler(deps: ProxyDeps) {
       // filter closes this — it is an accepted transparent-proxy residual.
       // Close the per-request dispatcher once the body has fully streamed.
       upstream.body.on("close", () => void dispatcher.close().catch(() => {}));
-      return reply.send(upstream.body);
+      // Count the response bytes: a chunked / CL-absent / lying-CL body can't
+      // stream past the cap uncounted. Status + headers are already committed,
+      // so a trip *truncates* the body (not a 502) — accepted per issue #8; we
+      // surface it out-of-band on the log rather than to the app.
+      const cappedBody = capBody(upstream.body, deps.limits.maxBodyBytes, "response", () => {
+        req.log.warn(
+          { origin: instruction.origin, appId: instruction.appId, limit: deps.limits.maxBodyBytes },
+          "egress response body exceeded the size cap — truncated",
+        );
+      });
+      return reply.send(cappedBody);
     } catch {
       await dispatcher.close().catch(() => {});
+      if (requestCapTripped) {
+        return fail(reply, 413, "too_large", "request body exceeds the size cap");
+      }
       return fail(reply, 502, "upstream_error", "upstream request failed");
     }
   };

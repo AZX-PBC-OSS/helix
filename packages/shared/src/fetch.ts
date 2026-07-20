@@ -74,13 +74,18 @@ export const RESPONSE_HEADER_BLOCKLIST: readonly string[] = [
  * Error codes the proxy returns as JSON (the app's `fetch` resolves with the
  * status + this body) when the call is refused before/instead of an upstream
  * response. `blocked` is an SSRF refusal; `bad_target` a malformed/undecodable
- * target; `upstream_error` an egress/transport failure.
+ * target; `too_large` a request body over the size cap (413, refused before the
+ * upstream call); `upstream_error` an egress/transport failure. (A *response*
+ * over the cap cannot use this code — status + headers are already flushed by
+ * the time the byte counter trips, so the body is truncated instead; see
+ * issue #8 and `@azx-pbc/shared` `capBody`.)
  */
 export const FETCH_ERROR_CODES = [
   "forbidden",
   "rate_limited",
   "bad_target",
   "blocked",
+  "too_large",
   "upstream_error",
 ] as const;
 export const FetchErrorCodeSchema = z.enum(FETCH_ERROR_CODES);
