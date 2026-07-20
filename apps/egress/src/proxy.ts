@@ -50,23 +50,70 @@ function safeRequestHeaders(headers: IncomingHttpHeaders): Record<string, string
   return out;
 }
 
+/**
+ * What `applyInjection` wrote into the outbound request, so the response loop can
+ * strip exactly that back out (issue #7). The `header` recipe takes an arbitrary
+ * app-defined name, so a static blocklist can never enumerate every credential
+ * header — only recording what we injected covers it.
+ */
+interface Injected {
+  headerName: string | null;
+  queryParam: string | null;
+}
+
+const NOTHING_INJECTED: Injected = { headerName: null, queryParam: null };
+
 function applyInjection(
   target: URL,
   headers: Record<string, string>,
   recipe: InjectionRecipe,
   value: string,
-): void {
+): Injected {
   switch (recipe.kind) {
     case "header-bearer":
       headers["authorization"] = `Bearer ${value}`;
-      return;
-    case "header":
-      headers[recipe.name.toLowerCase()] = recipe.template.replace("{}", value);
-      return;
+      return { headerName: "authorization", queryParam: null };
+    case "header": {
+      const name = recipe.name.toLowerCase();
+      headers[name] = recipe.template.replace("{}", value);
+      return { headerName: name, queryParam: null };
+    }
     case "query":
       target.searchParams.set(recipe.param, value);
-      return;
+      return { headerName: null, queryParam: recipe.param };
   }
+}
+
+/** Header names whose values are URLs that could echo back an injected query secret. */
+const URL_VALUED_RESPONSE_HEADERS = new Set(["location", "content-location"]);
+
+/**
+ * Redact an injected `query`-recipe secret from a URL-valued response header
+ * (issue #7). An upstream that reflects the request URL in `Location` would
+ * otherwise carry `?<param>=<secret>` back to the app. Leaves other headers
+ * untouched; if the value doesn't parse as a URL carrying the param, returns it
+ * unchanged (a relative `Location` can't be resolved without the request base,
+ * so a param match there is dropped by returning "REDACTED" only on parse hits).
+ */
+function redactQueryParam(
+  name: string,
+  value: string | string[],
+  param: string,
+): string | string[] {
+  if (!URL_VALUED_RESPONSE_HEADERS.has(name)) return value;
+  const redactOne = (raw: string): string => {
+    try {
+      // Allow relative URLs by resolving against a throwaway base.
+      const url = new URL(raw, "https://redacted.invalid");
+      if (!url.searchParams.has(param)) return raw;
+      url.searchParams.set(param, "REDACTED");
+      // Preserve relative form: strip the throwaway base back off.
+      return raw.startsWith(url.origin) ? url.href : url.href.slice(url.origin.length);
+    } catch {
+      return raw;
+    }
+  };
+  return Array.isArray(value) ? value.map(redactOne) : redactOne(value);
 }
 
 /** Build the connect URL that points TCP at the validated IP, path/query intact. */
@@ -105,6 +152,7 @@ export function makeProxyHandler(deps: ProxyDeps) {
     const headers = safeRequestHeaders(req.headers);
 
     // Resolve + inject the connection secret, if this call is secret-backed.
+    let injected = NOTHING_INJECTED;
     if (instruction.connection) {
       if (!deps.resolver) {
         return fail(reply, 502, "upstream_error", "secret store not configured");
@@ -117,7 +165,7 @@ export function makeProxyHandler(deps: ProxyDeps) {
       if (!resolved) {
         return fail(reply, 403, "forbidden", "connection not found or not granted");
       }
-      applyInjection(target, headers, resolved.injection, resolved.value);
+      injected = applyInjection(target, headers, resolved.injection, resolved.value);
     }
 
     // SSRF: resolve + validate every address, then pin the connection to it.
@@ -153,12 +201,23 @@ export function makeProxyHandler(deps: ProxyDeps) {
 
       reply.header(OUTCOME_HEADER, "ok");
       reply.code(upstream.statusCode);
+      // Dynamically strip the exact header we injected so an upstream that
+      // reflects it (echo/debug endpoints, CORS reflection) can't leak the
+      // credential back to the app (issue #7). This covers arbitrary `header`
+      // recipe names that no static blocklist could enumerate.
+      const stripped = injected.headerName
+        ? new Set([...RESPONSE_BLOCKED, injected.headerName])
+        : RESPONSE_BLOCKED;
       for (const [k, v] of Object.entries(upstream.headers)) {
         // content-length is dropped: we re-stream, so Fastify frames the body.
-        if (!RESPONSE_BLOCKED.has(k) && k !== "content-length" && v !== undefined) {
-          reply.header(k, v);
-        }
+        if (stripped.has(k) || k === "content-length" || v === undefined) continue;
+        // For a `query`-recipe secret, a 3xx Location echoing the request URL
+        // would carry the secret in its query string — redact that param.
+        reply.header(k, injected.queryParam ? redactQueryParam(k, v, injected.queryParam) : v);
       }
+      // The response body is streamed verbatim: an upstream that echoes the
+      // secret (or a `?key=…` URL) into the body reaches the app. No header
+      // filter closes this — it is an accepted transparent-proxy residual.
       // Close the per-request dispatcher once the body has fully streamed.
       upstream.body.on("close", () => void dispatcher.close().catch(() => {}));
       return reply.send(upstream.body);

@@ -55,7 +55,19 @@ const resolver: SecretResolver = {
           }
         : null;
     }
-    return c === "gh" ? { value: "injected-secret", injection: { kind: "header-bearer" } } : null;
+    switch (c) {
+      case "gh":
+        return { value: "injected-secret", injection: { kind: "header-bearer" } };
+      case "gh-key":
+        return {
+          value: "key-secret-xyz",
+          injection: { kind: "header", name: "x-api-key", template: "{}" },
+        };
+      case "gh-query":
+        return { value: "query-secret-abc", injection: { kind: "query", param: "access_token" } };
+      default:
+        return null;
+    }
   },
   close: async () => {},
 };
@@ -182,6 +194,90 @@ describe("egress platform-secret capability gate", () => {
     expect(res.statusCode).toBe(403);
     expect(res.json().code).toBe("forbidden");
     await app.close();
+  });
+});
+
+describe("egress secret echo-back (issue #7)", () => {
+  // A reflecting upstream: mirrors the credentials it received back into RESPONSE
+  // headers (the echo/debug/CORS-reflection case) and echoes the request URL in
+  // Location (the query-recipe reflection vector). This is the shape the static
+  // blocklist misses — the injected header must be stripped before it reaches us.
+  let echo: Server;
+  let echoOrigin: string;
+  beforeAll(async () => {
+    echo = createServer((req, res) => {
+      const auth = req.headers["authorization"];
+      // Always set an Authorization response header: reflect the injected bearer
+      // when present, else a server-issued sentinel (exercises the static backstop).
+      res.setHeader("authorization", typeof auth === "string" ? auth : "Bearer upstream-issued");
+      const apiKey = req.headers["x-api-key"];
+      if (typeof apiKey === "string") res.setHeader("x-api-key", apiKey);
+      res.setHeader("location", `${echoOrigin}${req.url}`);
+      res.setHeader("etag", '"v1"'); // a benign header the app relies on
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ authorization: auth ?? null, url: req.url }));
+    });
+    await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+    echoOrigin = `http://127.0.0.1:${(echo.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((resolve) => echo.close(() => resolve())));
+
+  async function proxy(connection?: string) {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(echoOrigin, connection),
+        [TARGET_HEADER]: `${echoOrigin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    await app.close();
+    return res;
+  }
+
+  it("strips a reflected header-bearer credential from the response", async () => {
+    const res = await proxy("gh");
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["authorization"]).toBeUndefined();
+  });
+
+  it("strips a reflected arbitrary-name credential the static blocklist can't enumerate", async () => {
+    const res = await proxy("gh-key");
+    expect(res.statusCode).toBe(200);
+    // x-api-key is NOT in RESPONSE_HEADER_BLOCKLIST — only the dynamic strip removes it.
+    expect(res.headers["x-api-key"]).toBeUndefined();
+  });
+
+  it("redacts a query-recipe secret reflected in Location", async () => {
+    const res = await proxy("gh-query");
+    expect(res.statusCode).toBe(200);
+    const location = res.headers["location"];
+    expect(location).toBeDefined();
+    expect(location).not.toContain("query-secret-abc");
+    expect(location).toContain("access_token=REDACTED");
+  });
+
+  it("does not over-strip benign headers the app relies on", async () => {
+    const res = await proxy("gh");
+    expect(res.headers["etag"]).toBe('"v1"');
+    expect(res.headers["content-type"]).toContain("application/json");
+  });
+
+  it("strips a server-issued Authorization via the static backstop (keyless call)", async () => {
+    // Nothing injected, so the dynamic strip is inert; the shared blocklist must
+    // still drop the upstream's Authorization response header.
+    const res = await proxy();
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["authorization"]).toBeUndefined();
+  });
+
+  it("does NOT close the body-echo channel (documented transparent-proxy residual)", async () => {
+    // An upstream that echoes the secret into the response BODY still reaches the
+    // app — no header filter closes this. Pinned so the residual is explicit.
+    const res = await proxy("gh");
+    expect(res.json().authorization).toBe("Bearer injected-secret");
   });
 });
 

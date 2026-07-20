@@ -13,13 +13,13 @@ Egress (`apps/egress/src/ssrf.ts`, `proxy.ts`) applies, per outbound call:
 
 - Resolve the hostname, **validate the resolved IP** against private/loopback/link-local/IMDS ranges, and **dial the validated IP literal** so there is no second resolution (DNS-rebind defeated).
 - Do **not** follow redirects.
-- Filter headers in both directions — a safelist on the request path; on the response path a *blocklist* today (which should become a safelist too, per ISSUE-01/#7). Inject the resolved secret server-side only.
+- Filter headers in both directions — a safelist on the request path; on the response path a *blocklist* plus a **dynamic strip of the exact header egress injected** (ISSUE-01/#7 resolved — `applyInjection` reports the header name/query param it wrote and the response loop removes it, since the `header` recipe's arbitrary name defeats any static list; `authorization` is also in the blocklist as a backstop, and a secret reflected in `Location`/`Content-Location` is redacted). Inject the resolved secret server-side only.
 - Stream the response back to the edge with size/time bounds.
 
 ## Consequences
 
 - A compromised or malicious app cannot use the proxy to reach internal services or cloud metadata.
-- The credential is injected at egress and never returned to the app — provided the response-header filter is complete.
+- The credential is injected at egress and never returned to the app in a **response header** — the dynamic strip covers arbitrary recipe header names, the blocklist backstops `authorization`, and query secrets are redacted from `Location`. Response-**body** echo (an upstream reflecting the secret into the body) remains an accepted transparent-proxy residual: no header-level filter closes it.
 - The controls are a denylist/validation surface that must be kept current against IP-encoding and redirect tricks.
 
 ## Review notes (2026-06-25)

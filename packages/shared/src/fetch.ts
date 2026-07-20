@@ -48,11 +48,17 @@ export const REQUEST_HEADER_SAFELIST: readonly string[] = [
 
 /**
  * Response headers stripped before the upstream response is returned to the app
- * (§6) — credentials and transport framing never reach the browser.
+ * (§6) — credentials and transport framing never reach the browser. `authorization`
+ * is a static backstop against an upstream reflecting the injected bearer credential
+ * (issue #7); egress additionally strips whatever header it injected *dynamically*
+ * (arbitrary `header`-recipe names a fixed list can't enumerate — see
+ * `apps/egress/src/proxy.ts`). `www-authenticate` is intentionally NOT here: it is a
+ * server-issued challenge, not a reflection of the injected secret.
  */
 export const RESPONSE_HEADER_BLOCKLIST: readonly string[] = [
   "set-cookie",
   "set-cookie2",
+  "authorization",
   "transfer-encoding",
   "connection",
   "keep-alive",
