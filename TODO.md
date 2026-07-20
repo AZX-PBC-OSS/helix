@@ -15,7 +15,7 @@ Legend for gating conditions:
 
 ## Egress SSRF hardening
 
-- [ ] **Close the IPv6 blocklist gaps.** Add `fe80::/10`, 6to4, NAT64, full-form loopback, and hex-mapped IPv4. — ADR-0005 (ISSUE-09), issue #2
+- [x] **Close the IPv6 blocklist gaps.** Add `fe80::/10`, 6to4, NAT64, full-form loopback, and hex-mapped IPv4. — ADR-0005 (ISSUE-09), issue #2
 - [ ] **Require `https://` on any secret-backed origin.** Egress currently injects a connection secret over cleartext `http://` (no `target.protocol` guard). — ADR-0005, issue #11
 - [ ] **Make redirect handling explicit.** `maxRedirections: 0` is implicit and the `Location` header is forwarded (so the browser follows it) — make the non-follow policy explicit and stop forwarding `Location`. — ADR-0005 (ISSUE-10)
 - [ ] _(Optional, perf)_ **Share one undici `Agent` with a validate-and-pin `connect`/`lookup`.** A fresh `Agent` per request defeats connection pooling; a shared Agent that validates+pins the IP per connection recovers pooling without losing the SSRF IP-pin. Only if egress latency matters. — ADR-0005

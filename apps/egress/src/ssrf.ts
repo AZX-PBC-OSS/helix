@@ -51,20 +51,101 @@ const V4_BLOCKED: [string, number][] = [
   ["240.0.0.0", 4], // reserved
 ];
 
+/** True if a 32-bit IPv4 integer falls in any blocked v4 range. */
+function isBlockedV4Int(ipInt: number): boolean {
+  return V4_BLOCKED.some(([base, bits]) => inV4Cidr(ipInt, base, bits));
+}
+
+const MAX128 = (1n << 128n) - 1n;
+
+/**
+ * Expand a format-valid IPv6 literal to its 128-bit value. Precondition: the
+ * caller has already checked `isIP(ip) === 6`, so we only expand — we do not
+ * re-validate. `isIP` accepts a `%zone` suffix (only ever on non-global scopes,
+ * which the blocklist catches regardless), so strip it before parsing.
+ *
+ * A textual embedded-IPv4 tail (`::a.b.c.d`, `::ffff:a.b.c.d`) is folded into two
+ * hex groups via the existing {@link ipv4ToInt}, keeping all v4 parsing in one
+ * place. Hex forms (`::ffff:7f00:1`) need no special handling — the WHATWG URL
+ * parser normalizes dotted-mapped literals to hex anyway, so hex is the form that
+ * actually arrives.
+ */
+function ipv6ToBigInt(ip: string): bigint {
+  const bare = ip.includes("%") ? ip.slice(0, ip.indexOf("%")) : ip;
+
+  // Fold a trailing dotted-quad (the last colon-group containing a ".") into hex.
+  const lastColon = bare.lastIndexOf(":");
+  const tail = bare.slice(lastColon + 1);
+  let text = bare;
+  if (tail.includes(".")) {
+    const v4 = ipv4ToInt(tail);
+    if (v4 !== null) {
+      const hi = (v4 >>> 16).toString(16);
+      const lo = (v4 & 0xffff).toString(16);
+      text = `${bare.slice(0, lastColon + 1)}${hi}:${lo}`;
+    }
+  }
+
+  let groups: string[];
+  if (text.includes("::")) {
+    const [head, rest] = text.split("::");
+    const headParts = head ? head.split(":") : [];
+    const tailParts = rest ? rest.split(":") : [];
+    const fill = 8 - headParts.length - tailParts.length;
+    groups = [...headParts, ...Array<string>(fill).fill("0"), ...tailParts];
+  } else {
+    groups = text.split(":");
+  }
+
+  return groups.reduce((acc, g) => (acc << 16n) | BigInt(parseInt(g || "0", 16)), 0n);
+}
+
+function inV6Cidr(val: bigint, base: bigint, bits: number): boolean {
+  const mask = bits === 0 ? 0n : (~0n << BigInt(128 - bits)) & MAX128;
+  return (val & mask) === (base & mask);
+}
+
+/**
+ * IPv6 ranges (IANA IPv6 Special-Purpose Registry) that must never be reachable.
+ * Embedded-IPv4 forms (`::ffff:/96` mapped, `64:ff9b::/96` NAT64, `::/96` compat)
+ * are handled by extraction in {@link isBlockedAddress}, not here, so a *public*
+ * embedded target stays allowed while an internal one is blocked.
+ */
+const V6_BLOCKED: [string, number][] = [
+  ["::1", 128], // loopback (also caught by ::/96 extraction — kept for clarity)
+  ["::", 128], // unspecified (ditto)
+  ["fe80::", 10], // link-local — fixes the old `fe80`-prefix miss (e.g. fea0::1)
+  ["fec0::", 10], // site-local (deprecated, RFC 3879)
+  ["fc00::", 7], // unique-local (ULA)
+  ["64:ff9b:1::", 48], // NAT64 local-use (RFC 8215) — block wholesale
+  ["100::", 64], // discard-only (RFC 6666)
+  ["2001:db8::", 32], // documentation
+  ["2002::", 16], // 6to4 (deprecated, RFC 7526)
+  ["2001::", 23], // Teredo / ORCHIDv2 / benchmarking (defense-in-depth)
+  ["ff00::", 8], // multicast (parity with v4 224.0.0.0/4)
+];
+
+// Parse the blocklist bases to their numeric values once, at module load.
+const V6_BLOCKED_NUM: [bigint, number][] = V6_BLOCKED.map(([base, bits]) => [
+  ipv6ToBigInt(base),
+  bits,
+]);
+
+const V6_MAPPED = ipv6ToBigInt("::ffff:0:0"); // ::ffff:0:0/96
+const V6_NAT64 = ipv6ToBigInt("64:ff9b::"); // 64:ff9b::/96
+
 /** True if the resolved address is one we must never connect to. */
 export function isBlockedAddress(ip: string): boolean {
   const v4 = ipv4ToInt(ip);
-  if (v4 !== null) return V4_BLOCKED.some(([base, bits]) => inV4Cidr(v4, base, bits));
+  if (v4 !== null) return isBlockedV4Int(v4);
 
   if (isIP(ip) === 6) {
-    const lower = ip.toLowerCase();
-    if (lower === "::1" || lower === "::") return true; // loopback / unspecified
-    if (lower.startsWith("fe80")) return true; // link-local
-    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique-local fc00::/7
-    // IPv4-mapped (::ffff:a.b.c.d) — re-check the embedded v4.
-    const mapped = /::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
-    if (mapped) return isBlockedAddress(mapped[1]!);
-    return false;
+    const val = ipv6ToBigInt(ip);
+    // Extract the embedded IPv4 and re-check it, regardless of hex/dotted notation.
+    if (inV6Cidr(val, V6_MAPPED, 96)) return isBlockedV4Int(Number(val & 0xffffffffn)); // ::ffff:a.b.c.d
+    if (inV6Cidr(val, V6_NAT64, 96)) return isBlockedV4Int(Number(val & 0xffffffffn)); // 64:ff9b::a.b.c.d
+    if (val >> 32n === 0n) return isBlockedV4Int(Number(val)); // ::a.b.c.d compat (covers ::, ::1)
+    return V6_BLOCKED_NUM.some(([base, bits]) => inV6Cidr(val, base, bits));
   }
   // Not a recognizable IP literal — refuse rather than guess.
   return true;
