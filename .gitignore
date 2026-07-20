@@ -40,3 +40,5 @@ coverage/
 .vitest/
 playwright-report/
 test-results/
+
+.github-issues
