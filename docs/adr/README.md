@@ -40,3 +40,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0024](0024-portal-cli-bearer-jwt-jwks.md) | Portal/CLI authentication: bearer JWT over JWKS | Accepted |
 | [0025](0025-registry-projection-hardening.md) | Registry projection hardening (observability, jitter, cold-start) | Proposed |
 | [0026](0026-hosted-build-isolation-prerequisites.md) | Hosted-build isolation prerequisites (the build-step boundary shift) | Proposed |
+| [0027](0027-blob-auth-managed-identity.md) | Blob authentication: managed identity, not the storage account key | Accepted |

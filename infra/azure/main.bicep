@@ -244,7 +244,6 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     edgeDatabaseUrl: edgeDbConn
     egressDatabaseUrl: egressDbConn
     portalDatabaseUrl: portalDbConn
-    storageConnectionString: storage.outputs.connectionString
     edgeAuthSecret: edgeAuthSecret
     portalSecret: portalSecret
     instructionSecret: instructionSecret
@@ -338,7 +337,6 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     external: true
     secrets: [
       { name: 'edge-database-url', keyVaultUrl: '${platformVaultUri}secrets/edge-database-url' }
-      { name: 'storage-connection-string', keyVaultUrl: '${platformVaultUri}secrets/storage-connection-string' }
       { name: 'edge-oidc-private-key', keyVaultUrl: '${platformVaultUri}secrets/edge-oidc-private-key' }
       { name: 'edge-oidc-certificate', keyVaultUrl: '${platformVaultUri}secrets/edge-oidc-certificate' }
       { name: 'edge-auth-secret', keyVaultUrl: '${platformVaultUri}secrets/edge-auth-secret' }
@@ -350,6 +348,11 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
       { name: 'BLOB_CONTAINER', value: blobContainerName }
+      // Blob reads via managed identity (issue #15) — no account key. AZURE_CLIENT_ID
+      // selects the user-assigned identity for the AAD token fetch; IDENTITY_ENDPOINT/
+      // IDENTITY_HEADER are injected by Container Apps.
+      { name: 'AZURE_CLIENT_ID', value: identity.outputs.edgeIdentityClientId }
+      { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
       { name: 'EDGE_OIDC_ISSUER', value: oidcIssuer }
       { name: 'EDGE_OIDC_CLIENT_ID', value: edgeOidcClientId }
       // App Roles (the `roles` claim), not security groups — see the runbook.
@@ -358,7 +361,6 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
       { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
       { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
-      { name: 'AZURE_STORAGE_CONNECTION_STRING', secretRef: 'storage-connection-string' }
       // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
       { name: 'EDGE_OIDC_CLIENT_PRIVATE_KEY', secretRef: 'edge-oidc-private-key' }
       { name: 'EDGE_OIDC_CLIENT_CERTIFICATE', secretRef: 'edge-oidc-certificate' }
@@ -385,7 +387,6 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     external: false // control plane: internal ingress only, not app-routable
     secrets: [
       { name: 'portal-database-url', keyVaultUrl: '${platformVaultUri}secrets/portal-database-url' }
-      { name: 'storage-connection-string', keyVaultUrl: '${platformVaultUri}secrets/storage-connection-string' }
       { name: 'portal-secret', keyVaultUrl: '${platformVaultUri}secrets/portal-secret' }
     ]
     envVars: [
@@ -393,6 +394,10 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'PORTAL_PORT', value: '3001' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'BLOB_CONTAINER', value: blobContainerName }
+      // Blob writes via managed identity (issue #15) — no account key. AZURE_CLIENT_ID
+      // selects the user-assigned identity for DefaultAzureCredential.
+      { name: 'AZURE_CLIENT_ID', value: identity.outputs.portalIdentityClientId }
+      { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
       { name: 'PORTAL_OIDC_ISSUER', value: oidcIssuer }
       { name: 'PORTAL_OIDC_AUDIENCE', value: portalOidcAudience }
       { name: 'PORTAL_ADMIN_GROUP_ID', value: portalAdminGroupId }
@@ -401,7 +406,6 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'APP_PUBLIC_BASE', value: 'https://${appsDomain}' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
       { name: 'DATABASE_URL', secretRef: 'portal-database-url' }
-      { name: 'AZURE_STORAGE_CONNECTION_STRING', secretRef: 'storage-connection-string' }
       { name: 'PORTAL_SECRET', secretRef: 'portal-secret' }
     ]
   }

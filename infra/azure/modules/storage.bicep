@@ -4,11 +4,11 @@
 // it over a private endpoint through privatelink.blob.*. The `app-bundles`
 // container matches the BLOB_CONTAINER default the apps expect.
 //
-// Both apps authenticate to Blob with a connection string today (surfaced via
-// kv-platform → AZURE_STORAGE_CONNECTION_STRING). The account key is returned
-// as an output for main.bicep to assemble that secret; the managed-identity
-// RBAC roles (Storage Blob Data Reader/Contributor) are also granted in
-// rbac.bicep so a future switch to AAD-auth blob access needs no infra change.
+// Both apps authenticate to Blob with their **managed identity** (issue #15):
+// the edge with Storage Blob Data Reader, the portal with Data Contributor
+// (granted in rbac.bicep). The account key is never listed or handed to either
+// container — only the blob endpoint is exported, so an edge compromise can't
+// rewrite or delete any tenant's bundle.
 
 @description('Azure region.')
 param location string
@@ -71,7 +71,6 @@ module privateEndpoint 'private-endpoint.bicep' = {
 
 output storageAccountId string = storageAccount.id
 output storageAccountName string = storageAccount.name
-// Connection string for the apps. Built from the listed key; consumed by
-// main.bicep to populate the kv-platform secret.
-#disable-next-line outputs-should-not-contain-secrets
-output connectionString string = 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+// Blob endpoint for the apps' managed-identity auth (no account key). Consumed by
+// main.bicep as AZURE_STORAGE_BLOB_ENDPOINT for both edge and portal.
+output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob

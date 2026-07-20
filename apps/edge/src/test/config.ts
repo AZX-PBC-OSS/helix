@@ -1,4 +1,4 @@
-import type { AuthConfig, EdgeConfig } from "../config.js";
+import type { AuthConfig, AzureBlobConfig, EdgeConfig } from "../config.js";
 
 /** The well-known unit-test auth secret (32 bytes). Tests may derive keys
  *  from it to forge tokens — proving forgery still requires the key. */
@@ -21,18 +21,43 @@ export function testAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig 
   };
 }
 
+/** Default SharedKey (dev/Azurite) blob config for unit tests. */
+export function testBlobConfig(overrides: Partial<AzureBlobConfig> = {}): AzureBlobConfig {
+  return {
+    provider: "azure",
+    endpoint: "http://azurite:10000/devstoreaccount1",
+    container: "app-bundles",
+    auth: {
+      mode: "shared-key",
+      accountName: "devstoreaccount1",
+      accountKey: Buffer.from("dGVzdA==", "base64"),
+    },
+    ...overrides,
+  };
+}
+
+/** Managed-identity blob config for unit tests exercising the bearer path. */
+export function testManagedIdentityBlob(overrides: Partial<AzureBlobConfig> = {}): AzureBlobConfig {
+  return {
+    provider: "azure",
+    endpoint: "https://prodacct.blob.core.windows.net",
+    container: "app-bundles",
+    auth: {
+      mode: "managed-identity",
+      clientId: "00000000-0000-0000-0000-000000000000",
+      identityEndpoint: "http://169.254.169.254/msi/token",
+      identityHeader: "test-identity-header",
+    },
+    ...overrides,
+  };
+}
+
 /** Full EdgeConfig for unit tests (no real services behind it). */
 export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
   return {
     baseDomain: "localtest.me",
     databaseUrl: "postgresql://unused",
-    blob: {
-      provider: "azure",
-      accountName: "devstoreaccount1",
-      accountKey: Buffer.from("dGVzdA==", "base64"),
-      endpoint: "http://azurite:10000/devstoreaccount1",
-      container: "app-bundles",
-    },
+    blob: testBlobConfig(),
     auth: null,
     allowUnauthenticated: true,
     publicScheme: "https",

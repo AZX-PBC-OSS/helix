@@ -13,10 +13,13 @@ function testConfig(): EdgeConfig {
     databaseUrl: "postgresql://unused",
     blob: {
       provider: "azure",
-      accountName: "devstoreaccount1",
-      accountKey: Buffer.from("dGVzdA==", "base64"),
       endpoint: "http://azurite:10000/devstoreaccount1",
       container: "app-bundles",
+      auth: {
+        mode: "shared-key",
+        accountName: "devstoreaccount1",
+        accountKey: Buffer.from("dGVzdA==", "base64"),
+      },
     },
     auth: null,
     allowUnauthenticated: true,

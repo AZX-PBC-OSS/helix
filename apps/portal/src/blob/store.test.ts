@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import type { TokenCredential } from "@azure/identity";
 import { BlobServiceClient } from "@azure/storage-blob";
 import { describe, expect, it } from "vitest";
 import { AzureBlobStore } from "./store.js";
@@ -30,6 +31,26 @@ if (!CONNECTION) {
 if (skipReason) {
   console.warn(`[store.test] skipping Azurite integration tests: ${skipReason}`);
 }
+
+describe("AzureBlobStore.fromCredential", () => {
+  // The managed-identity write path (issue #15). Constructing the client is
+  // offline — a token is only requested on the first data-plane call — so we can
+  // assert wiring with a never-called fake credential and no Azurite.
+  const neverCalled: TokenCredential = {
+    getToken: () => {
+      throw new Error("credential should not be invoked at construction");
+    },
+  };
+
+  it("builds a store from an account URL + token credential without network", () => {
+    const store = AzureBlobStore.fromCredential(
+      "https://acct.blob.core.windows.net",
+      "app-bundles",
+      neverCalled,
+    );
+    expect(store).toBeInstanceOf(AzureBlobStore);
+  });
+});
 
 describe.skipIf(skipReason)("AzureBlobStore against Azurite", () => {
   const store = AzureBlobStore.fromConnectionString(CONNECTION!, CONTAINER);

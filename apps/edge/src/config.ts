@@ -5,14 +5,40 @@ import { z } from "zod";
  * §3: config selects implementations per environment). Everything the request
  * path needs is parsed and validated here so handlers never read process.env.
  */
+/**
+ * How the edge authenticates *itself* to Blob Storage. Two modes, and the
+ * credential material lives inside the discriminant so it is *structurally*
+ * impossible for the managed-identity path to carry an account key (issue #15):
+ *
+ * - `shared-key`: the hand-rolled SharedKey HMAC signer. Dev/Azurite only —
+ *   Azurite has no AAD. Refused in production by {@link loadConfig}.
+ * - `managed-identity`: an AAD bearer token fetched at runtime from the
+ *   Container Apps identity endpoint (Storage Blob Data Reader). No standing
+ *   credential on the most-exposed plane; the edge can only read.
+ */
+export type AzureBlobAuth =
+  | {
+      mode: "shared-key";
+      accountName: string;
+      /** Decoded shared key (the connection string carries it base64-encoded). */
+      accountKey: Buffer;
+    }
+  | {
+      mode: "managed-identity";
+      /** User-assigned MI client_id (AZURE_CLIENT_ID) — disambiguates the token request. */
+      clientId: string;
+      /** Container Apps-injected token endpoint (IDENTITY_ENDPOINT). */
+      identityEndpoint: string;
+      /** Container Apps-injected shared header value (IDENTITY_HEADER). */
+      identityHeader: string;
+    };
+
 export interface AzureBlobConfig {
   provider: "azure";
-  accountName: string;
-  /** Decoded shared key (the connection string carries it base64-encoded). */
-  accountKey: Buffer;
   /** Blob endpoint origin + account path, no trailing slash. */
   endpoint: string;
   container: string;
+  auth: AzureBlobAuth;
 }
 
 /**
@@ -177,6 +203,64 @@ export function parseConnectionString(connectionString: string): {
   };
 }
 
+/**
+ * Resolve the blob provider + auth from the environment (issue #15). Managed
+ * identity is preferred; the SharedKey/account-key path is a dev/Azurite
+ * fallback refused in production. See the {@link AzureBlobAuth} discriminant.
+ */
+export function loadBlobConfig(env: NodeJS.ProcessEnv): BlobConfig {
+  const container = env.BLOB_CONTAINER ?? "app-bundles";
+  const blobEndpoint = env.AZURE_STORAGE_BLOB_ENDPOINT;
+  const clientId = env.AZURE_CLIENT_ID;
+  const connectionString = env.AZURE_STORAGE_CONNECTION_STRING;
+  const isProduction = env.NODE_ENV === "production";
+
+  // Managed identity: present endpoint + client_id select it, and it wins over
+  // any connection string so a stale account-key secret can't be a fallback.
+  if (present(blobEndpoint) && present(clientId)) {
+    const identityEndpoint = env.IDENTITY_ENDPOINT;
+    const identityHeader = env.IDENTITY_HEADER;
+    if (!present(identityEndpoint) || !present(identityHeader)) {
+      throw new Error(
+        "Managed-identity blob auth needs IDENTITY_ENDPOINT and IDENTITY_HEADER " +
+          "(injected by Container Apps when the user-assigned identity is attached)",
+      );
+    }
+    return {
+      provider: "azure",
+      endpoint: blobEndpoint.replace(/\/+$/, ""),
+      container,
+      auth: { mode: "managed-identity", clientId, identityEndpoint, identityHeader },
+    };
+  }
+
+  // SharedKey (dev/Azurite): the full-RW account key must never be used in prod.
+  if (present(connectionString)) {
+    if (isProduction) {
+      throw new Error(
+        "SharedKey/account-key blob auth is refused in production; configure a " +
+          "managed identity (AZURE_STORAGE_BLOB_ENDPOINT + AZURE_CLIENT_ID)",
+      );
+    }
+    const {
+      accountName,
+      accountKey,
+      blobEndpoint: endpoint,
+    } = parseConnectionString(connectionString);
+    return {
+      provider: "azure",
+      endpoint,
+      container,
+      auth: { mode: "shared-key", accountName, accountKey },
+    };
+  }
+
+  throw new Error(
+    "Blob auth requires AZURE_STORAGE_CONNECTION_STRING (dev/Azurite) or " +
+      "AZURE_STORAGE_BLOB_ENDPOINT + AZURE_CLIENT_ID (managed identity)",
+  );
+}
+
 const AuthEnvSchema = z.object({
   issuerUrl: z.url(),
   clientId: z.string().min(1),
@@ -307,14 +391,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
       "EDGE_DATABASE_URL or DATABASE_URL is required (registry projection reads Postgres)",
     );
   }
-  // Azure is the only v0 provider, so its connection string is the only blob
-  // config input. A future BLOB_PROVIDER switch dispatches here to build a
-  // different BlobConfig member from that provider's own env.
-  const connectionString = env.AZURE_STORAGE_CONNECTION_STRING;
-  if (!connectionString) {
-    throw new Error("AZURE_STORAGE_CONNECTION_STRING is required (asset serving reads Blob)");
-  }
-  const { accountName, accountKey, blobEndpoint } = parseConnectionString(connectionString);
+  // Azure is the only v0 provider. Two auth paths (issue #15):
+  //   * managed-identity (prod): AZURE_STORAGE_BLOB_ENDPOINT + AZURE_CLIENT_ID,
+  //     with the Container Apps-injected IDENTITY_ENDPOINT/IDENTITY_HEADER. The
+  //     edge holds no standing Blob credential and can only read.
+  //   * shared-key (dev/Azurite): AZURE_STORAGE_CONNECTION_STRING. Refused in
+  //     production — the full-RW account key must never ride the exposed plane.
+  // MI wins when both are set, so a prod image carrying a stale connection-string
+  // secret can never silently fall back to the account key.
+  const blob = loadBlobConfig(env);
 
   const allowUnauthenticated = env.EDGE_DEV_ALLOW_UNAUTHENTICATED === "true";
   if (allowUnauthenticated && env.NODE_ENV === "production") {
@@ -344,13 +429,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
   return {
     baseDomain: (env.EDGE_BASE_DOMAIN ?? "localtest.me").toLowerCase(),
     databaseUrl,
-    blob: {
-      provider: "azure",
-      accountName,
-      accountKey,
-      endpoint: blobEndpoint,
-      container: env.BLOB_CONTAINER ?? "app-bundles",
-    },
+    blob,
     auth: loadAuthConfig(env),
     allowUnauthenticated,
     publicScheme: "https",

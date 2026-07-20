@@ -1,4 +1,5 @@
 import { BlobServiceClient, type ContainerClient } from "@azure/storage-blob";
+import type { TokenCredential } from "@azure/identity";
 import type { Readable } from "node:stream";
 
 export interface PutObjectOptions {
@@ -32,6 +33,21 @@ export class AzureBlobStore implements BlobStore {
 
   static fromConnectionString(connectionString: string, container: string): AzureBlobStore {
     const service = BlobServiceClient.fromConnectionString(connectionString);
+    return new AzureBlobStore(service.getContainerClient(container));
+  }
+
+  /**
+   * Managed-identity (or any {@link TokenCredential}) write path (issue #15).
+   * Prod authenticates with the portal's user-assigned identity + Storage Blob
+   * Data Contributor — no account key. `accountUrl` is the blob endpoint, e.g.
+   * `https://<account>.blob.core.windows.net`.
+   */
+  static fromCredential(
+    accountUrl: string,
+    container: string,
+    credential: TokenCredential,
+  ): AzureBlobStore {
+    const service = new BlobServiceClient(accountUrl, credential);
     return new AzureBlobStore(service.getContainerClient(container));
   }
 

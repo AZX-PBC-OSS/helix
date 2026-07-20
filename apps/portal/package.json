@@ -15,6 +15,7 @@
     "seed:llm": "tsx scripts/seed-platform-secret.ts"
   },
   "dependencies": {
+    "@azure/identity": "catalog:",
     "@azure/storage-blob": "catalog:",
     "@fastify/multipart": "catalog:",
     "@fastify/static": "catalog:",

@@ -8,6 +8,15 @@ const AZURITE_CS =
   `DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${AZURITE_KEY};` +
   "BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1";
 
+// Managed-identity blob env (the prod path): endpoint + client_id select it, and
+// the IDENTITY_* pair is what Container Apps injects when the MI is attached.
+const MI_BLOB_ENV = {
+  AZURE_STORAGE_BLOB_ENDPOINT: "https://prodacct.blob.core.windows.net",
+  AZURE_CLIENT_ID: "11111111-1111-1111-1111-111111111111",
+  IDENTITY_ENDPOINT: "http://169.254.169.254/msi/token",
+  IDENTITY_HEADER: "identity-header-value",
+};
+
 describe("parseConnectionString", () => {
   it("parses the Azurite connection string (key contains '=', BlobEndpoint wins)", () => {
     const parsed = parseConnectionString(AZURITE_CS);
@@ -86,9 +95,66 @@ describe("loadConfig", () => {
   it("requires TLS outside production (HTTPS-only platform)", () => {
     expect(() => loadConfig(noTls)).toThrow(/TLS is required/);
     // Production opts out: ingress owns the cert, the edge runs HTTP behind it.
-    const prod = loadConfig({ ...noTls, NODE_ENV: "production" });
+    // Prod also uses managed-identity blob auth (the connection string is refused).
+    const prod = loadConfig({
+      DATABASE_URL: ENV.DATABASE_URL,
+      ...MI_BLOB_ENV,
+      NODE_ENV: "production",
+    });
     expect(prod.tls).toBeNull();
     expect(prod.publicScheme).toBe("https");
+  });
+
+  it("selects managed-identity blob auth from endpoint + client_id", () => {
+    const config = loadConfig({
+      DATABASE_URL: ENV.DATABASE_URL,
+      ...MI_BLOB_ENV,
+      NODE_ENV: "production",
+    });
+    expect(config.blob.provider).toBe("azure");
+    expect(config.blob.endpoint).toBe("https://prodacct.blob.core.windows.net");
+    expect(config.blob.auth.mode).toBe("managed-identity");
+    // Regression (issue #15): the MI path carries no account key, structurally.
+    expect("accountKey" in config.blob.auth).toBe(false);
+    if (config.blob.auth.mode === "managed-identity") {
+      expect(config.blob.auth.clientId).toBe(MI_BLOB_ENV.AZURE_CLIENT_ID);
+      expect(config.blob.auth.identityEndpoint).toBe(MI_BLOB_ENV.IDENTITY_ENDPOINT);
+      expect(config.blob.auth.identityHeader).toBe(MI_BLOB_ENV.IDENTITY_HEADER);
+    }
+  });
+
+  it("uses shared-key blob auth from a connection string in dev", () => {
+    const config = loadConfig({ ...ENV });
+    expect(config.blob.auth.mode).toBe("shared-key");
+    if (config.blob.auth.mode === "shared-key") {
+      expect(config.blob.auth.accountName).toBe("devstoreaccount1");
+      expect(config.blob.auth.accountKey).toEqual(Buffer.from(AZURITE_KEY, "base64"));
+    }
+  });
+
+  it("prefers managed identity over a connection string when both are set", () => {
+    const config = loadConfig({ ...ENV, ...MI_BLOB_ENV, NODE_ENV: "production" });
+    expect(config.blob.auth.mode).toBe("managed-identity");
+  });
+
+  it("refuses the account-key (SharedKey) blob path in production", () => {
+    expect(() => loadConfig({ ...ENV, NODE_ENV: "production" })).toThrow(/refused in production/);
+  });
+
+  it("requires IDENTITY_ENDPOINT/IDENTITY_HEADER for managed-identity blob auth", () => {
+    const partial = {
+      AZURE_STORAGE_BLOB_ENDPOINT: MI_BLOB_ENV.AZURE_STORAGE_BLOB_ENDPOINT,
+      AZURE_CLIENT_ID: MI_BLOB_ENV.AZURE_CLIENT_ID,
+    };
+    expect(() => loadConfig({ ...ENV, ...partial })).toThrow(
+      /IDENTITY_ENDPOINT and IDENTITY_HEADER/,
+    );
+  });
+
+  it("throws when no blob auth is configured at all", () => {
+    expect(() => loadConfig({ DATABASE_URL: ENV.DATABASE_URL, NODE_ENV: "production" })).toThrow(
+      /AZURE_STORAGE_CONNECTION_STRING/,
+    );
   });
 
   it("requires TLS cert and key together", () => {
@@ -235,10 +301,11 @@ describe("publicOrigin", () => {
     expect(publicOrigin(dev, "auth")).toBe("https://auth.localtest.me:8080");
     expect(publicOrigin(dev, "demo")).toBe("https://demo.localtest.me:8080");
 
-    // Production: ingress terminates TLS (no edge cert), public port 443.
+    // Production: ingress terminates TLS (no edge cert), public port 443, and
+    // blob auth is managed identity (the connection string is refused in prod).
     const prod = loadConfig({
       DATABASE_URL: ENV.DATABASE_URL,
-      AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+      ...MI_BLOB_ENV,
       EDGE_BASE_DOMAIN: "azx-labs.com",
       EDGE_PUBLIC_PORT: "443",
       NODE_ENV: "production",

@@ -1,7 +1,8 @@
 import type { Readable } from "node:stream";
 import { Pool } from "undici";
 import type { AzureBlobConfig, BlobConfig } from "../config.js";
-import { signRequest } from "./signing.js";
+import { signRequest, X_MS_VERSION } from "./signing.js";
+import { ManagedIdentityTokenProvider, type TokenProvider } from "./token.js";
 
 /**
  * Read-side blob access for asset serving (architecture §4.3). Deliberately
@@ -32,11 +33,15 @@ export interface BlobReader {
   close(): Promise<void>;
 }
 
-/** Build the reader for the configured provider (Azure-only in v0). */
-export function createBlobReader(config: BlobConfig): BlobReader {
+/**
+ * Build the reader for the configured provider (Azure-only in v0). The optional
+ * `tokenProvider` is an injection seam for tests on the managed-identity path;
+ * production leaves it undefined and the reader constructs its own.
+ */
+export function createBlobReader(config: BlobConfig, tokenProvider?: TokenProvider): BlobReader {
   switch (config.provider) {
     case "azure":
-      return new UndiciBlobReader(config);
+      return new UndiciBlobReader(config, tokenProvider);
   }
 }
 
@@ -50,12 +55,25 @@ export class UndiciBlobReader implements BlobReader {
   #pool: Pool;
   /** Path prefix carried by the endpoint itself (Azurite: /devstoreaccount1). */
   #basePath: string;
+  /** Present only on the managed-identity path; null for SharedKey (dev). */
+  #token: TokenProvider | null;
 
-  constructor(config: AzureBlobConfig) {
+  constructor(config: AzureBlobConfig, tokenProvider?: TokenProvider) {
     this.#config = config;
     const endpoint = new URL(config.endpoint);
     this.#pool = new Pool(endpoint.origin);
     this.#basePath = endpoint.pathname.replace(/\/+$/, "");
+    if (config.auth.mode === "managed-identity") {
+      this.#token =
+        tokenProvider ??
+        new ManagedIdentityTokenProvider({
+          identityEndpoint: config.auth.identityEndpoint,
+          identityHeader: config.auth.identityHeader,
+          clientId: config.auth.clientId,
+        });
+    } else {
+      this.#token = null;
+    }
   }
 
   async get(key: string, opts: BlobGetOptions): Promise<BlobGetResult> {
@@ -64,13 +82,27 @@ export class UndiciBlobReader implements BlobReader {
     const path = `${this.#basePath}/${this.#config.container}/${encodedKey}`;
     const url = new URL(path, this.#config.endpoint);
 
-    const headers = signRequest({
-      method: opts.method,
-      url,
-      accountName: this.#config.accountName,
-      accountKey: this.#config.accountKey,
-      headers: opts.ifNoneMatch ? { ifNoneMatch: opts.ifNoneMatch } : undefined,
-    });
+    const auth = this.#config.auth;
+    let headers: Record<string, string>;
+    if (auth.mode === "shared-key") {
+      headers = signRequest({
+        method: opts.method,
+        url,
+        accountName: auth.accountName,
+        accountKey: auth.accountKey,
+        headers: opts.ifNoneMatch ? { ifNoneMatch: opts.ifNoneMatch } : undefined,
+      });
+    } else {
+      // Managed-identity bearer. x-ms-date is deliberately omitted: it only
+      // matters as a *signed* SharedKey header. x-ms-version is still required
+      // (OAuth needs >= 2017-11-09; we reuse the pinned SharedKey version).
+      const token = await this.#token!.getToken();
+      headers = {
+        authorization: `Bearer ${token}`,
+        "x-ms-version": X_MS_VERSION,
+        ...(opts.ifNoneMatch ? { "if-none-match": opts.ifNoneMatch } : {}),
+      };
+    }
 
     const res = await this.#pool.request({ method: opts.method, path, headers });
 
@@ -99,5 +131,6 @@ export class UndiciBlobReader implements BlobReader {
 
   async close(): Promise<void> {
     await this.#pool.close();
+    await this.#token?.close();
   }
 }

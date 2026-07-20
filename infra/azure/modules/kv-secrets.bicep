@@ -20,9 +20,6 @@ param egressDatabaseUrl string
 @description('portal (admin/owner) connection string.')
 param portalDatabaseUrl string
 @secure()
-@description('Blob storage connection string.')
-param storageConnectionString string
-@secure()
 @description('EDGE_AUTH_SECRET.')
 param edgeAuthSecret string
 @secure()
@@ -46,7 +43,6 @@ var secrets = {
   'edge-database-url': edgeDatabaseUrl
   'egress-database-url': egressDatabaseUrl
   'portal-database-url': portalDatabaseUrl
-  'storage-connection-string': storageConnectionString
   'edge-auth-secret': edgeAuthSecret
   'portal-secret': portalSecret
   'helix-instruction-secret': instructionSecret

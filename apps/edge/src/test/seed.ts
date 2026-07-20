@@ -22,10 +22,10 @@ export function testBlobConfig(): AzureBlobConfig {
   const { accountName, accountKey, blobEndpoint } = parseConnectionString(cs);
   return {
     provider: "azure",
-    accountName,
-    accountKey,
     endpoint: blobEndpoint,
     container: TEST_CONTAINER,
+    // The seeder writes to Azurite, which has no AAD — SharedKey only.
+    auth: { mode: "shared-key", accountName, accountKey },
   };
 }
 
@@ -131,8 +131,18 @@ export class TestBlobWriter {
   #basePath: string;
   #containerReady: Promise<void> | null = null;
 
+  #accountName: string;
+  #accountKey: Buffer;
+
   constructor(config: AzureBlobConfig = testBlobConfig()) {
+    if (config.auth.mode !== "shared-key") {
+      throw new Error(
+        "TestBlobWriter seeds Azurite over SharedKey; managed-identity is not supported",
+      );
+    }
     this.#config = config;
+    this.#accountName = config.auth.accountName;
+    this.#accountKey = config.auth.accountKey;
     const endpoint = new URL(config.endpoint);
     this.#pool = new UndiciPool(endpoint.origin);
     this.#basePath = endpoint.pathname.replace(/\/+$/, "");
@@ -149,8 +159,8 @@ export class TestBlobWriter {
     const signed = signRequest({
       method,
       url,
-      accountName: this.#config.accountName,
-      accountKey: this.#config.accountKey,
+      accountName: this.#accountName,
+      accountKey: this.#accountKey,
       headers: {
         contentLength: body && body.length > 0 ? String(body.length) : undefined,
         contentType: headers?.contentType,

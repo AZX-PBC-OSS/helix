@@ -35,6 +35,9 @@ catalog:
   pg: ^8.21.0
   # Blob storage (Azurite in dev, Azure Blob in prod) — portal only.
   "@azure/storage-blob": ^12.32.0
+  # Managed-identity credential for portal blob writes (prod) — portal only,
+  # never the dep-minimal edge, which fetches its own AAD token over undici.
+  "@azure/identity": ^4.5.0
   # Edge HTTP client: streams assets from Blob with hand-rolled SharedKey
   # signing — the edge stays off the Azure SDK (dep-minimal, project plan §1).
   undici: ^7.16.0

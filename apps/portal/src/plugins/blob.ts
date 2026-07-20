@@ -1,3 +1,4 @@
+import { DefaultAzureCredential } from "@azure/identity";
 import fp from "fastify-plugin";
 import { AzureBlobStore, type BlobStore } from "../blob/store.js";
 
@@ -11,36 +12,56 @@ export interface BlobPluginOptions {
 const DEFAULT_CONTAINER = "app-bundles";
 
 /**
- * Discriminated union over blob storage providers (architecture §8 — providers
- * stay behind internal seams). Azure-only in v0: a new provider is a new
- * member here plus a {@link BlobStore} implementation selected in
- * `createBlobStore`; consumers of `app.blobStore` never see the difference.
+ * Discriminated union over blob storage auth (architecture §8 — providers stay
+ * behind internal seams). Two Azure modes (issue #15): managed identity in prod
+ * (no account key), and the connection-string/account-key path for dev/Azurite,
+ * which is refused in production.
  */
-export type BlobStoreConfig = {
-  provider: "azure";
-  connectionString: string;
-  container: string;
-};
+export type BlobStoreConfig =
+  | { provider: "azure"; mode: "shared-key"; connectionString: string; container: string }
+  | { provider: "azure"; mode: "managed-identity"; accountUrl: string; container: string };
 
 /**
- * Resolve provider config from plugin options / the environment. Azure is the
- * only v0 provider, so its connection string is the only blob config input; a
- * future BLOB_PROVIDER switch dispatches here to build a different member.
+ * Resolve provider config from plugin options / the environment. Managed
+ * identity is selected when AZURE_STORAGE_BLOB_ENDPOINT is set; otherwise the
+ * connection string is used, and refused in production.
  */
 function resolveConfig(opts: BlobPluginOptions): BlobStoreConfig {
-  const connectionString = opts.connectionString ?? process.env.AZURE_STORAGE_CONNECTION_STRING;
-  if (!connectionString) {
-    throw new Error("AZURE_STORAGE_CONNECTION_STRING is not set");
-  }
   const container = opts.container ?? process.env.BLOB_CONTAINER ?? DEFAULT_CONTAINER;
-  return { provider: "azure", connectionString, container };
+  const accountUrl = process.env.AZURE_STORAGE_BLOB_ENDPOINT;
+  const connectionString = opts.connectionString ?? process.env.AZURE_STORAGE_CONNECTION_STRING;
+
+  if (accountUrl) {
+    return { provider: "azure", mode: "managed-identity", accountUrl, container };
+  }
+  if (connectionString) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "SharedKey/account-key blob auth is refused in production; set " +
+          "AZURE_STORAGE_BLOB_ENDPOINT to use the managed identity",
+      );
+    }
+    return { provider: "azure", mode: "shared-key", connectionString, container };
+  }
+  throw new Error(
+    "Blob auth requires AZURE_STORAGE_CONNECTION_STRING (dev/Azurite) or " +
+      "AZURE_STORAGE_BLOB_ENDPOINT (managed identity)",
+  );
 }
 
 /** Build the store for the configured provider (Azure-only in v0). */
 function createBlobStore(config: BlobStoreConfig): BlobStore {
-  switch (config.provider) {
-    case "azure":
+  switch (config.mode) {
+    case "shared-key":
       return AzureBlobStore.fromConnectionString(config.connectionString, config.container);
+    case "managed-identity":
+      // AZURE_CLIENT_ID selects the user-assigned identity; DefaultAzureCredential
+      // reads it automatically.
+      return AzureBlobStore.fromCredential(
+        config.accountUrl,
+        config.container,
+        new DefaultAzureCredential(),
+      );
   }
 }
 
