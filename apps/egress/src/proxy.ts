@@ -31,6 +31,8 @@ export interface ProxyDeps {
   limits: { maxBodyBytes: number; timeoutMs: number };
   /** Dev/test seam — permit private/loopback targets (false in prod & adversarial tests). */
   allowPrivate: boolean;
+  /** Dev/test seam — permit secret injection into a cleartext http target (false in prod). */
+  allowInsecureConnection: boolean;
 }
 
 const REQUEST_SAFE = new Set(REQUEST_HEADER_SAFELIST);
@@ -166,6 +168,14 @@ export function makeProxyHandler(deps: ProxyDeps) {
     // Resolve + inject the connection secret, if this call is secret-backed.
     let injected = NOTHING_INJECTED;
     if (instruction.connection) {
+      // A connection secret must never cross the wire in cleartext. Egress is the
+      // credential broker, so it enforces this independently of the edge's origin
+      // allowlist — an http origin approved as a connection binding is still
+      // refused here (issue #11, ADR-0005). The secret is not even resolved for a
+      // cleartext target. `allowInsecureConnection` is a dev/test-only seam.
+      if (target.protocol !== "https:" && !deps.allowInsecureConnection) {
+        return fail(reply, 403, "forbidden", "secret-backed calls require https");
+      }
       if (!deps.resolver) {
         return fail(reply, 502, "upstream_error", "secret store not configured");
       }

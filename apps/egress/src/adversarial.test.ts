@@ -75,10 +75,13 @@ const resolver: SecretResolver = {
   close: async () => {},
 };
 
-function makeApp(allowPrivate: boolean) {
+function makeApp(allowPrivate: boolean, allowInsecureConnection = true) {
   const config = {
     limits: { maxBodyBytes: 1024 * 1024, timeoutMs: 5000 },
     allowPrivate,
+    // Loopback echo upstreams are http, so the cleartext-injection seam is open
+    // for most tests; the issue #11 suite closes it to assert the prod guard.
+    allowInsecureConnection,
   } as EgressConfig;
   return buildApp({ config, resolver, instructionKey: key });
 }
@@ -162,6 +165,47 @@ describe("egress header smuggling", () => {
       },
     });
     expect(res.json().authorization).toBe("Bearer injected-secret");
+    await app.close();
+  });
+});
+
+describe("egress cleartext-injection guard (issue #11)", () => {
+  // Egress is the credential broker: with the dev seam closed (the prod posture),
+  // it must refuse to inject a connection secret into a cleartext http:// target,
+  // independently of whatever origin the edge authorized.
+  it("refuses a secret-backed call to an http origin", async () => {
+    const app = makeApp(true, /* allowInsecureConnection */ false);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin, "gh"),
+        [TARGET_HEADER]: `${origin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().code).toBe("forbidden");
+    // The upstream must never have seen the injected credential.
+    expect(res.headers[OUTCOME_HEADER]).toBe("refusal");
+    await app.close();
+  });
+
+  it("still allows a keyless (no-connection) call to an http origin", async () => {
+    // The guard is scoped to the injection path — cleartext proxying with no
+    // secret is unaffected.
+    const app = makeApp(true, false);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin),
+        [TARGET_HEADER]: `${origin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().authorization).toBeNull(); // nothing injected
     await app.close();
   });
 });

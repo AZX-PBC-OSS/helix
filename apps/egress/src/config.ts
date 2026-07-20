@@ -19,6 +19,14 @@ export interface EgressConfig {
   limits: { maxBodyBytes: number; timeoutMs: number };
   /** Permit private/loopback targets — dev/test only; false in prod. */
   allowPrivate: boolean;
+  /**
+   * Permit injecting a connection secret into a cleartext `http://` target —
+   * dev/test only (loopback echo upstreams); false in prod. Egress is the
+   * credential broker and must not leak a secret over the wire in cleartext
+   * (issue #11, ADR-0005), so the injection path requires `https://` unless this
+   * seam is explicitly opened.
+   */
+  allowInsecureConnection: boolean;
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {
@@ -48,5 +56,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
       timeoutMs: Number(env.EGRESS_TIMEOUT_MS ?? 30_000),
     },
     allowPrivate: env.EGRESS_ALLOW_PRIVATE === "true",
+    allowInsecureConnection: env.EGRESS_ALLOW_INSECURE_CONNECTION === "true",
   };
 }

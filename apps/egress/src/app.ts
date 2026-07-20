@@ -52,6 +52,7 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
       resolver: deps.resolver,
       limits: deps.config.limits,
       allowPrivate: deps.config.allowPrivate,
+      allowInsecureConnection: deps.config.allowInsecureConnection,
     }),
   });
 
