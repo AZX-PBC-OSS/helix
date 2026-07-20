@@ -23,6 +23,12 @@ export default defineConfig([
     extends: [js.configs.recommended, tseslint.configs.recommended],
   },
   {
+    // Plain JS/mjs (build + dev scripts) run on Node. typescript-eslint turns
+    // off `no-undef` for .ts files, but .mjs needs the node globals declared.
+    files: ["**/*.{js,mjs,cjs}"],
+    languageOptions: { globals: globals.node },
+  },
+  {
     // The SPA is browser code: hooks rules on, browser globals instead of node.
     files: ["apps/portal-web/**/*.{ts,tsx}"],
     extends: [reactHooks.configs.flat["recommended-latest"]],
