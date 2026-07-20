@@ -13,15 +13,6 @@ Legend for gating conditions:
 
 ---
 
-## P0 — security-critical
-
-- [x] **Drop the full-RW Blob key from the edge; read via managed identity.** ~~The edge holds the full read/write/delete Blob storage-account key, and prod injects it even though a read-only Storage Blob Data Reader role is already provisioned — an edge RCE could rewrite or delete any app's bundle (all-tenant supply-chain).~~ Done: edge fetches an AAD bearer token from its managed identity over undici (no SDK); portal writes via `DefaultAzureCredential` + Data Contributor; the account key is no longer listed into Key Vault or injected into either container; SharedKey is retained dev/Azurite-only behind a production guard. Deferred defense-in-depth: short-lived user-delegation SAS. — ADR-[0027](docs/adr/0027-blob-auth-managed-identity.md), issue #15
-- [x] **Fix the egress response-header handling so injected secrets can't echo back.** ~~The response-header blocklist omits `authorization` / `www-authenticate`, allowing an upstream to reflect the injected credential to the app.~~ Done: egress now **dynamically strips** the exact header it injected (`applyInjection` reports the name; the response loop removes it) — the only approach that covers arbitrary `header`-recipe names a static list can't enumerate. `authorization` added to `RESPONSE_HEADER_BLOCKLIST` as a static backstop for both hops; a `query`-recipe secret reflected in `Location`/`Content-Location` is redacted. `www-authenticate` deliberately left off (a server challenge, not a reflection). Response-**body** echo is an accepted, documented transparent-proxy residual. Adversarial tests in `apps/egress/src/adversarial.test.ts`. — ADR-0005 (ISSUE-01), issue #7
-- [x] **Enforce the egress body-size cap on chunked responses.** ~~The cap is `content-length`-only, so a chunked-transfer response bypasses it.~~ Done: a byte-counting `Transform` (`@azx-pbc/shared` `capBody`/`byteCapStream`) now enforces `maxBodyBytes` on the actual bytes — framing-independent, so chunked / CL-absent / lying-`content-length` bodies are all counted. Applied per-direction on **both** hops (egress `/proxy` request + response re-streams, and the edge `/_api/fetch` relay both ways), so the two planes cap independently. The `content-length` check is kept only as a fast-path. Request-side overflow answers **413 `too_large`** before/without completing the upstream call; response-side overflow **truncates** the already-committed stream (logged out-of-band — a documented transparent-proxy residual). Adversarial + edge tests cover chunked truncation, streamed-request cut-off, and the fast-path. — ADR-0005 (ISSUE-02), issue #8
-- [x] **Remove the legacy `AnthropicProvider` fallback from runtime selection.** ~~The direct LLM path (`EDGE_LLM_ANTHROPIC_KEY`) has no production guard and fails open. Remove it from runtime selection (keep test-only) and fail closed (503) when egress is unconfigured — preferred over a fragile `NODE_ENV` guard.~~ Done: provider selection in `server.ts` is now binary — egress + instruction key → `EgressLlmProvider`, otherwise `null` → 503. The `EnvSecretProvider` (`secrets-provider.ts`) was deleted wholesale; the edge no longer reads `EDGE_LLM_ANTHROPIC_KEY` (the seal-into-secret-store path in `apps/portal/scripts/seed-platform-secret.ts` keeps reading it to provision the `platform` secret). `AnthropicProvider` retained test-only (constructor-injected key). Local dev runs the canonical path via `pnpm dev:egress`. — ADR-0008 (ISSUE-03, Critical), issue #10
-
----
-
 ## Egress SSRF hardening
 
 - [ ] **Close the IPv6 blocklist gaps.** Add `fe80::/10`, 6to4, NAT64, full-form loopback, and hex-mapped IPv4. — ADR-0005 (ISSUE-09), issue #2
@@ -99,6 +90,12 @@ Legend for gating conditions:
 - [ ] **Mark KEK rotation explicitly deferred.** No KEK rotation / rekey path exists — record it as a known deferral. — ADR-0006
 - [ ] **State plainly that the dev AES-GCM envelope is not a security boundary.** — ADR-0006
 - [ ] **Spec a timeout/retry for the prod Key Vault `open()` hot path.** Currently an unwired stub with no timeout/retry (Key Vault wired in M5). — ADR-0006
+
+---
+
+## Other
+
+- [ ] Config point to completely disable "public" apps. It should disappear from the webapp, and the edge should refuse to serve public apps
 
 ---
 
