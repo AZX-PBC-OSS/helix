@@ -259,7 +259,10 @@ describe("egress secret echo-back (issue #7)", () => {
       res.setHeader("authorization", typeof auth === "string" ? auth : "Bearer upstream-issued");
       const apiKey = req.headers["x-api-key"];
       if (typeof apiKey === "string") res.setHeader("x-api-key", apiKey);
+      // Location echoes the request URL (redirect-follow + query-secret vector);
+      // Content-Location echoes it too (the residual query-secret reflection path).
       res.setHeader("location", `${echoOrigin}${req.url}`);
+      res.setHeader("content-location", `${echoOrigin}${req.url}`);
       res.setHeader("etag", '"v1"'); // a benign header the app relies on
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ authorization: auth ?? null, url: req.url }));
@@ -297,13 +300,21 @@ describe("egress secret echo-back (issue #7)", () => {
     expect(res.headers["x-api-key"]).toBeUndefined();
   });
 
-  it("redacts a query-recipe secret reflected in Location", async () => {
+  it("strips Location entirely so the browser can't follow the redirect (issue #10)", async () => {
     const res = await proxy("gh-query");
     expect(res.statusCode).toBe(200);
-    const location = res.headers["location"];
-    expect(location).toBeDefined();
-    expect(location).not.toContain("query-secret-abc");
-    expect(location).toContain("access_token=REDACTED");
+    // Not merely redacted — gone: a forwarded Location (even redacted) would let
+    // the browser chase the upstream redirect un-proxied. ADR-0005.
+    expect(res.headers["location"]).toBeUndefined();
+  });
+
+  it("redacts a query-recipe secret reflected in Content-Location (issue #7)", async () => {
+    const res = await proxy("gh-query");
+    expect(res.statusCode).toBe(200);
+    const contentLocation = res.headers["content-location"];
+    expect(contentLocation).toBeDefined();
+    expect(contentLocation).not.toContain("query-secret-abc");
+    expect(contentLocation).toContain("access_token=REDACTED");
   });
 
   it("does not over-strip benign headers the app relies on", async () => {

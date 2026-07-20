@@ -87,16 +87,21 @@ function applyInjection(
   }
 }
 
-/** Header names whose values are URLs that could echo back an injected query secret. */
-const URL_VALUED_RESPONSE_HEADERS = new Set(["location", "content-location"]);
+/**
+ * Header names whose values are URLs that could echo back an injected query secret.
+ * `location` is NOT here — it is stripped wholesale by the response blocklist so the
+ * browser can't follow the redirect (ADR-0005, issue #10); only `content-location`
+ * (which doesn't drive navigation) survives to be redacted.
+ */
+const URL_VALUED_RESPONSE_HEADERS = new Set(["content-location"]);
 
 /**
  * Redact an injected `query`-recipe secret from a URL-valued response header
- * (issue #7). An upstream that reflects the request URL in `Location` would
- * otherwise carry `?<param>=<secret>` back to the app. Leaves other headers
+ * (issue #7). An upstream that reflects the request URL in `Content-Location`
+ * would otherwise carry `?<param>=<secret>` back to the app. Leaves other headers
  * untouched; if the value doesn't parse as a URL carrying the param, returns it
- * unchanged (a relative `Location` can't be resolved without the request base,
- * so a param match there is dropped by returning "REDACTED" only on parse hits).
+ * unchanged (a relative URL can't be resolved without the request base, so a param
+ * match there is dropped by returning "REDACTED" only on parse hits).
  */
 function redactQueryParam(
   name: string,
@@ -200,8 +205,13 @@ export function makeProxyHandler(deps: ProxyDeps) {
     }
 
     // TCP to the validated IP; SNI/cert checked against the real hostname; Host
-    // header carries the original authority. undici does not follow redirects by
-    // default — a 302 to the IMDS IP is returned to the app as data, never chased.
+    // header carries the original authority. Redirects are NEVER followed: undici
+    // 7 follows a redirect only when a `redirect` interceptor is composed onto the
+    // dispatcher (`.compose(interceptors.redirect({ maxRedirections }))`), and we
+    // deliberately compose none — a plain Agent returns the 3xx verbatim. So a 302
+    // to the IMDS IP comes back as data, never chased; belt-and-suspenders, its
+    // `Location` is stripped by the response blocklist so the browser can't chase
+    // it either (ADR-0005, issue #10).
     const dispatcher = new Agent({
       connect: { servername: target.hostname },
       headersTimeout: deps.limits.timeoutMs,

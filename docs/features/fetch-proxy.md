@@ -59,8 +59,10 @@ plaintext secrets or the public internet:
 3. **SSRF controls** (`apps/egress/src/ssrf.ts`): resolve every address and
    refuse private / loopback / link-local / `169.254.169.254` (IMDS); pin the
    connection to the validated IP (cert/SNI still checked against the hostname),
-   defeating DNS rebinding; no redirect-following (a `302` to IMDS is returned as
-   data, never chased).
+   defeating DNS rebinding; no redirect-following (undici 7 only follows redirects
+   when a `redirect` interceptor is composed onto the dispatcher, and egress
+   composes none — a `302` to IMDS comes back as data, never chased, and its
+   `Location` is stripped so the browser can't chase it either; issue #10).
 4. **Header controls** — a **request-header safelist** (the app's
    `cookie`/`authorization` never go upstream: no session leak, no overriding the
    injected credential) plus a **response-header blocklist** (`set-cookie` and
@@ -156,8 +158,11 @@ Fetch proxy** card.
   the fetch proxy as "one knob, two settings" (`mode: direct|proxy`). Shim scope
   is **HTTP request/response only** — out of scope by design: WebSocket,
   EventSource/SSE, and `<img>`/`<form>`/font loads.
-- **SSRF gotchas.** `undici.request` does not follow redirects by default, so a
-  `302` to IMDS is returned as data, never chased. `URL.hostname` keeps IPv6
+- **SSRF gotchas.** `undici.request` (v7) follows a redirect only if a `redirect`
+  interceptor is composed onto the dispatcher; egress composes none, so a `302` to
+  IMDS is returned as data, never chased — and `Location` is stripped from the
+  response so the browser can't follow it un-proxied either (issue #10).
+  `URL.hostname` keeps IPv6
   brackets (`[::1]`) which `isIP` rejects — they're stripped before resolve. The
   whole host is refused if *any* resolved address is blocked (defeats a
   dual-A-record split), and the connection is pinned to the validated IP against

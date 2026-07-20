@@ -12,7 +12,12 @@ Egress is the only component that makes outbound calls with injected secrets. It
 Egress (`apps/egress/src/ssrf.ts`, `proxy.ts`) applies, per outbound call:
 
 - Resolve the hostname, **validate the resolved IP** against private/loopback/link-local/IMDS ranges, and **dial the validated IP literal** so there is no second resolution (DNS-rebind defeated).
-- Do **not** follow redirects.
+- Do **not** follow redirects — undici 7 follows a redirect only when a `redirect`
+  interceptor is composed onto the dispatcher, and egress composes none (a plain
+  `Agent` returns the 3xx verbatim); `Location` is additionally stripped from the
+  response by the blocklist so a forwarded redirect can't be chased by the browser
+  either (ISSUE-10 resolved, issue #10). `Content-Location` survives but has an
+  injected query secret redacted (issue #7).
 - Filter headers in both directions — a safelist on the request path; on the response path a *blocklist* plus a **dynamic strip of the exact header egress injected** (ISSUE-01/#7 resolved — `applyInjection` reports the header name/query param it wrote and the response loop removes it, since the `header` recipe's arbitrary name defeats any static list; `authorization` is also in the blocklist as a backstop, and a secret reflected in `Location`/`Content-Location` is redacted). Inject the resolved secret server-side only.
 - Stream the response back to the edge with size/time bounds.
 
@@ -29,7 +34,7 @@ IP-pinning **verified to defeat DNS-rebind** (refuted a reviewer's "socket not p
 - Response-header blocklist omits `authorization`/`www-authenticate` → injected secret echo-back (**ISSUE-01, Critical**).
 - Body-size cap is `content-length`-only → chunked-transfer bypass (**ISSUE-02, Critical**).
 - IPv6 blocklist gaps: `fe80::/10`, 6to4, NAT64, full-form loopback, hex-mapped v4 (ISSUE-09).
-- `maxRedirections: 0` is implicit; `Location` is forwarded so the browser follows it (ISSUE-10).
+- ~~`maxRedirections: 0` is implicit; `Location` is forwarded so the browser follows it (ISSUE-10).~~ **Resolved (issue #10):** the non-follow is now structural (undici 7 follows redirects only via a composed `redirect` interceptor, which egress omits) and made explicit in code, and `Location` is stripped by the response blocklist.
 
 ## Challenge outcome (2026-06-26)
 

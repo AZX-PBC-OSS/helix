@@ -54,11 +54,19 @@ export const REQUEST_HEADER_SAFELIST: readonly string[] = [
  * (arbitrary `header`-recipe names a fixed list can't enumerate — see
  * `apps/egress/src/proxy.ts`). `www-authenticate` is intentionally NOT here: it is a
  * server-issued challenge, not a reflection of the injected secret.
+ *
+ * `location` is stripped so the browser can never follow an upstream redirect back
+ * out of the proxy (egress does not chase redirects — `maxRedirections: 0` — and a
+ * forwarded `Location` would let the browser chase it un-proxied). This makes the
+ * non-follow policy end-to-end explicit (ADR-0005, issue #10). `content-location`
+ * is *not* stripped — it doesn't drive navigation — but egress redacts an injected
+ * query secret reflected in it (issue #7).
  */
 export const RESPONSE_HEADER_BLOCKLIST: readonly string[] = [
   "set-cookie",
   "set-cookie2",
   "authorization",
+  "location",
   "transfer-encoding",
   "connection",
   "keep-alive",
