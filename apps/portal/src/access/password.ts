@@ -7,6 +7,7 @@ import {
   scrypt as scryptCb,
 } from "node:crypto";
 import { promisify } from "node:util";
+import { SCRYPT_KEYLEN, SCRYPT_PARAMS } from "@azx-pbc/shared";
 import { WORDLIST } from "./wordlist.js";
 
 /**
@@ -25,11 +26,12 @@ import { WORDLIST } from "./wordlist.js";
 const scrypt = promisify(scryptCb);
 
 /**
- * scrypt output length. The edge verifier (apps/edge/src/auth/password.ts) MUST
- * derive with the same length and Node's default cost (N=16384, r=8, p=1) — both
- * sides call scrypt with only the keylen, so the cost can't drift.
+ * scrypt keylen + cost live in `@azx-pbc/shared` (the one source both planes
+ * derive from — the edge verifier is apps/edge/src/auth/password.ts). Re-exported
+ * so existing importers here are unaffected. The cost is OWASP's `N=2^17`
+ * (ADR-0004 ISSUE-08); `maxmem` MUST be passed or scrypt throws.
  */
-export const SCRYPT_KEYLEN = 32;
+export { SCRYPT_KEYLEN };
 const SALT_BYTES = 16;
 
 /** Default passphrase length; 4 × log2(~410) ≈ 35 bits, fine for a throttled gate. */
@@ -56,7 +58,7 @@ export interface PasswordHash {
 /** Derive `{ hash, salt }` for storage; a fresh salt is minted per call. */
 export async function hashPassword(plain: string): Promise<PasswordHash> {
   const salt = randomBytes(SALT_BYTES);
-  const derived = (await scrypt(plain, salt, SCRYPT_KEYLEN)) as Buffer;
+  const derived = (await scrypt(plain, salt, SCRYPT_KEYLEN, SCRYPT_PARAMS)) as Buffer;
   return { hash: derived.toString("hex"), salt: salt.toString("hex") };
 }
 

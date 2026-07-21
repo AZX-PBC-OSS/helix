@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { randomBytes, scryptSync } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { VisibilityMode } from "@azx-pbc/shared";
+import { SCRYPT_KEYLEN, SCRYPT_PARAMS, type VisibilityMode } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import {
@@ -26,11 +26,11 @@ const PREFIX = "apps/c/1/";
 const PASSWORD = "correct-horse-battery-staple";
 const ORIGIN = "https://pw.localtest.me:8080";
 
-/** scrypt(keylen 32) — matches apps/portal/src/access/password.ts and the edge verifier. */
+/** scrypt at the shared cost — matches apps/portal/src/access/password.ts and the edge verifier. */
 function hashFor(password: string): { passwordHash: string; passwordSalt: string } {
   const salt = randomBytes(16);
   return {
-    passwordHash: scryptSync(password, salt, 32).toString("hex"),
+    passwordHash: scryptSync(password, salt, SCRYPT_KEYLEN, SCRYPT_PARAMS).toString("hex"),
     passwordSalt: salt.toString("hex"),
   };
 }

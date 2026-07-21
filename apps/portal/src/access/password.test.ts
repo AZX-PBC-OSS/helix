@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { scrypt as scryptCb } from "node:crypto";
 import { promisify } from "node:util";
+import { SCRYPT_PARAMS } from "@azx-pbc/shared";
 import {
   SCRYPT_KEYLEN,
   appPublicUrl,
@@ -41,14 +42,28 @@ describe("generatePassphrase", () => {
 });
 
 describe("hashPassword", () => {
-  it("is verifiable by re-deriving scrypt with the stored salt (the edge's check)", async () => {
+  it("is verifiable by re-deriving scrypt with the stored salt at the shared cost (the edge's check)", async () => {
     const { hash, salt } = await hashPassword("correct-horse-battery-staple");
     const redo = (await scrypt(
       "correct-horse-battery-staple",
       Buffer.from(salt, "hex"),
       SCRYPT_KEYLEN,
+      SCRYPT_PARAMS,
     )) as Buffer;
     expect(redo.toString("hex")).toBe(hash);
+  });
+
+  it("hashes at OWASP's N=2^17 (not Node's 2^14 default) — ADR-0004 ISSUE-08", async () => {
+    // A hash derived at the old default cost must differ from the stored one for
+    // the same salt: proof the bump is actually in effect, not the default.
+    const { hash, salt } = await hashPassword("same");
+    const oldCost = (await scrypt("same", Buffer.from(salt, "hex"), SCRYPT_KEYLEN, {
+      N: 2 ** 14,
+      r: 8,
+      p: 1,
+    })) as Buffer;
+    expect(SCRYPT_PARAMS.N).toBe(2 ** 17);
+    expect(oldCost.toString("hex")).not.toBe(hash);
   });
 
   it("uses a fresh salt each call", async () => {

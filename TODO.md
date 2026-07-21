@@ -24,7 +24,7 @@ Legend for gating conditions:
 
 ## Auth hardening
 
-- [ ] **Raise scrypt cost.** Currently `N=2^14`, 8× below OWASP's `2^17`. — ADR-0004 (ISSUE-08)
+- [x] **Raise scrypt cost.** Currently `N=2^14`, 8× below OWASP's `2^17`. — ADR-0004 (ISSUE-08) _(done: `N=2^17` in `@azx-pbc/shared` `SCRYPT_PARAMS` — one source both planes derive from; mandatory `maxmem` (128 MiB working set > Node's 32 MiB default); edge caps concurrent derivations to bound the memory-exhaustion surface on the unauthenticated login path; flag-day reset migration nulls pre-bump credentials for re-mint)_
 - [ ] **Add an admin-kill / session-revocation path.** None exists today; group-revocation is stale until refresh (≤ 60 min). — ADR-0004 (ISSUE-11)
 - [ ] **Restrict `password` visibility to explicit demo-only / no-production-data.** Today it's soft "demo convenience" with no data-class ban. — ADR-0004
 - [ ] **Fix the login-throttle TOCTOU** (check-then-increment is non-atomic; multiplies under replicas) — see the multi-replica item below. — ADR-0004 (ISSUE-15), issue #13
