@@ -96,3 +96,50 @@ describe("helix_portal reads cross-app under RLS (the *_portal_all policy)", () 
     }
   });
 });
+
+describe("gateway_calls is append-only for helix_portal (ADR-0021 / issue #17)", () => {
+  it("lets the portal SELECT but refuses INSERT/UPDATE/DELETE (grant, not RLS)", async () => {
+    if (!(await portalRoleAvailable())) return;
+
+    // Seed a row as the owner so UPDATE/DELETE have a live target — the refusal
+    // must be the missing grant, not an empty table.
+    const owner = new Pool({ connectionString: OWNER_URL, max: 1 });
+    try {
+      await owner.query(
+        `INSERT INTO gateway_calls (id, "appId", "userOid", capability, model, outcome)
+           VALUES (gen_random_uuid(), $1, 'u', 'llm', 'm', 'ok')`,
+        [APP_A],
+      );
+    } finally {
+      await owner.end();
+    }
+
+    const portal = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      // Read is allowed — the usage/audit dashboards depend on it.
+      await expect(
+        portal.query(`SELECT 1 FROM gateway_calls WHERE "appId" = $1`, [APP_A]),
+      ).resolves.toBeDefined();
+
+      // Every write is denied at the grant layer (SQLSTATE 42501). The ledger's
+      // append-only property binds every writer role, not just the edge.
+      await expect(
+        portal.query(
+          `INSERT INTO gateway_calls (id, "appId", "userOid", capability, model, outcome)
+             VALUES (gen_random_uuid(), $1, 'u', 'llm', 'm', 'ok')`,
+          [APP_B],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+
+      await expect(
+        portal.query(`UPDATE gateway_calls SET outcome = 'tampered' WHERE "appId" = $1`, [APP_A]),
+      ).rejects.toMatchObject({ code: "42501" });
+
+      await expect(
+        portal.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [APP_A]),
+      ).rejects.toMatchObject({ code: "42501" });
+    } finally {
+      await portal.end();
+    }
+  });
+});

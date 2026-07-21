@@ -184,7 +184,9 @@ model ApprovalRequest {
 /// row per call) and SUMs today's tokens for the per-app daily budget, via
 /// hand-written SQL (apps/edge/src/gateway/usage.ts). The portal owns the schema
 /// and **reads** it for display (usage tab, audit log, platform rollups —
-/// apps/portal/src/routes/usage.ts) but never writes. No FK to `apps` (mirrors
+/// apps/portal/src/routes/usage.ts) but never writes — `helix_portal` is
+/// SELECT-only here (append-only for every writer role; ADR-0021 / issue #17,
+/// migration 20260721120000_gateway_calls_portal_readonly). No FK to `apps` (mirrors
 /// AuditEvent) — the ledger outlives any single app row, so reads left-join the
 /// slug and tolerate its absence.
 model GatewayCall {

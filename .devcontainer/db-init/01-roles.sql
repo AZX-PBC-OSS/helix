@@ -34,6 +34,13 @@ GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress;
 -- helix_portal: full DML runtime (control plane — collection drain, usage
 -- reads, registry writes). Table grants are reissued by migrations as tables
 -- appear; this default keeps existing + future tables reachable.
+--
+-- Exception: `gateway_calls` is the append-only metering/audit ledger. This
+-- blanket grant hands portal write access at init, but the REVOKE in migration
+-- 20260721120000_gateway_calls_portal_readonly reduces it to SELECT-only
+-- afterwards (migrations always run after db-init). Append-only there binds
+-- every writer role by grant, not just the edge (ADR-0021 / issue #17). If a
+-- future edge-written ledger is added, carve it out the same way.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO helix_portal;
 GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO helix_portal;
 ALTER DEFAULT PRIVILEGES FOR ROLE helix
