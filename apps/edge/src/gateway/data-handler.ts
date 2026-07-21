@@ -118,7 +118,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     // per-user budget to charge (app-data design §7). Checked before the store
     // work; rate-limited requests are *not* metered — a `gateway_calls` row per
     // throttled call would be its own write-amplification vector under a flood.
-    if (anonRateLimited(rt.anonLimiter, req, entry, caller)) {
+    if (await anonRateLimited(rt.anonLimiter, req, entry, caller)) {
       sendApiError(reply, 429, "rate_limited", "per-IP request budget exhausted");
       return null;
     }

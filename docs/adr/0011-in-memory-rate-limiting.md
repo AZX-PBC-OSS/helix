@@ -1,7 +1,7 @@
 # 0011. In-memory rate-limit / throttle state (single-replica)
 
-**Status:** Accepted (revisit before multi-replica deployment)
-**Related:** `apps/edge/src/gateway/ipRateLimiter.ts`, `apps/edge/src/auth/loginThrottle.ts`; review ISSUE-07, ISSUE-15
+**Status:** Superseded (2026-07-21) — the counters moved to a shared Postgres store; see Resolution below.
+**Related:** `apps/edge/src/gateway/ipRateLimiter.ts`, `apps/edge/src/auth/loginThrottle.ts`, `apps/edge/src/gateway/counterStore.ts`; review ISSUE-07, ISSUE-15, issue #13
 
 ## Context
 
@@ -30,3 +30,9 @@ The single-replica trade-off is acknowledged in-code; the un-scheduled sweep and
 ## Challenge outcome (2026-06-26)
 
 WEAKEN → **premise falsified** (filed **#13**). The "single-replica scope" is contradicted by the shipped infra: `infra/azure/modules/containerapp.bicep:40,43` set `minReplicas=1, maxReplicas=3` and the edge inherits it (no override in `main.bicep`), so the N× / uncoordinated throttle weakening this ADR warns about is **live in the M5 pilot**, not deferred. The unscheduled `loginThrottle.sweep()` and the check-then-increment TOCTOU above are confirmed in source. Newly noted: `trustProxy` is unset (`app.ts:112-116`), so `req.ip` behind the Container Apps Envoy may collapse to one bucket (or be XFF-spoofable if flipped on naively). **Before M5:** pin `maxReplicas=1` or land a shared atomic counter (a `gateway_calls`-style row — `helix_edge` already has INSERT); schedule the sweep; configure `trustProxy` correctly.
+
+## Resolution (2026-07-21, issue #13)
+
+Took the shared-atomic-counter branch — **not Redis**: adding a stateful service and a runtime/network dependency to the dependency-minimal trusted edge wasn't warranted for three small counters, and Postgres is already an edge dependency (the same reasoning ADR [0013](0013-egress-trust-model.md)'s resolution applies to the egress burn). Both counters now go through a `CounterStore` seam (`apps/edge/src/gateway/counterStore.ts`): `PgCounterStore` does one atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING count` per admission against a `rate_counters` table (migration `20260721215912`, `helix_edge` full CRUD), keyed `anon:`/`login:` so the two limiters share one store without colliding.
+
+This closes every item above: the limit **holds across replicas** (no more N×); the atomic upsert makes the login throttle **reserve-first**, closing the TOCTOU (ISSUE-15); one interval sweep in `server.ts` GCs both tables (fixes the never-scheduled sweep, ISSUE-07); and `EDGE_TRUST_PROXY` is now a config knob wired to Fastify `trustProxy` (default off). The in-memory maps survive only as `InMemoryCounterStore` for tests / single-process dev. **Residual:** the exact Container Apps ingress hop count for `EDGE_TRUST_PROXY` must be verified against the live deployment before per-client limits can be trusted (tracked under #13); until then `req.ip` may still collapse to the ingress address.

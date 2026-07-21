@@ -180,8 +180,12 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       return;
     }
 
+    // Reserve-first (atomic increment): count this attempt and refuse if it is
+    // over budget BEFORE the scrypt verify. This closes the old
+    // check-then-increment TOCTOU (issue #13) — concurrent guesses can't all
+    // slip past a stale read — and caps scrypt runs at `maxFailures` per window.
     const throttleKey = `${req.ip}:${entry.appId}`;
-    if (rt.throttle.isBlocked(throttleKey)) {
+    if ((await rt.throttle.reserve(throttleKey)).blocked) {
       sendLoginPage(reply, {
         rd,
         ssoUrl,
@@ -195,7 +199,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
     const ok =
       submitted !== "" && (await verifyPassword(submitted, entry.passwordHash, entry.passwordSalt));
     if (!ok) {
-      rt.throttle.recordFailure(throttleKey);
+      // The attempt is already counted by reserve(); nothing more to record.
       sendLoginPage(reply, {
         rd,
         ssoUrl,
@@ -206,7 +210,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       return;
     }
 
-    rt.throttle.clear(throttleKey);
+    await rt.throttle.clear(throttleKey);
 
     // Mint a fresh active session — pseudonymous principal, no groups, no
     // refresh window (refreshDueAt == expiresAt). The cookie value is fresh

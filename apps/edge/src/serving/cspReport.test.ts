@@ -36,6 +36,7 @@ function testConfig(): EdgeConfig {
       connection: "anthropic",
     },
     anonRateLimit: { max: 0, windowMs: 60_000 },
+    trustProxy: false,
     fetch: {
       egressUrl: null,
       instructionSecret: null,

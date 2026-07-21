@@ -110,7 +110,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     if (!caller) return;
     const userOid = caller.authenticated ? caller.oid : ANON_USER_OID;
 
-    if (anonRateLimited(rt.anonLimiter, req, entry, caller)) {
+    if (await anonRateLimited(rt.anonLimiter, req, entry, caller)) {
       sendFetchError(reply, 429, "rate_limited", "per-IP request budget exhausted");
       return;
     }

@@ -173,6 +173,17 @@ export interface EdgeConfig {
    */
   anonRateLimit: { max: number; windowMs: number };
   /**
+   * Fastify `trustProxy` — how `req.ip` is derived behind a proxy, which is the
+   * rate-limit / login-throttle key. Default `false` (the socket peer). Behind
+   * Container Apps' Envoy ingress that peer is the ingress, collapsing all
+   * clients into one bucket, so per-client limits need EDGE_TRUST_PROXY set to
+   * the ingress hop **count** (a number). `"true"`/`"false"` and a CIDR/IP-list
+   * string are also accepted. A too-trusting value makes X-Forwarded-For
+   * spoofable, so it is opt-in — verify the hop count against the live ingress
+   * before relying on per-client limits (issue #13).
+   */
+  trustProxy: boolean | number | string;
+  /**
    * Fetch-proxy wiring (M4.5). The edge is the policy plane: it authorizes a
    * `/_api/fetch` call and hands a signed attested instruction to `azx-egress`.
    * The capability is enabled only when BOTH `egressUrl` and `instructionSecret`
@@ -410,6 +421,21 @@ function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
   };
 }
 
+/**
+ * Parse EDGE_TRUST_PROXY into a Fastify `trustProxy` value. Unset/empty →
+ * `false` (trust nothing — the socket peer is the client). `"true"`/`"false"` →
+ * boolean; an integer → that many proxy hops to trust; anything else → passed
+ * through verbatim (Fastify accepts a comma-separated IP/CIDR allowlist).
+ */
+function parseTrustProxy(raw: string | undefined): boolean | number | string {
+  if (!raw) return false;
+  const v = raw.trim();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  if (/^\d+$/.test(v)) return Number(v);
+  return v;
+}
+
 /** Load and validate the edge config from the environment; throws on gaps. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
   // The edge connects as the least-privilege runtime role (app-data design
@@ -493,6 +519,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
       max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),
       windowMs: Number(env.EDGE_ANON_RATE_WINDOW_MS ?? 60_000),
     },
+    trustProxy: parseTrustProxy(env.EDGE_TRUST_PROXY),
     fetch: {
       egressUrl: env.EDGE_EGRESS_URL || null,
       instructionSecret: loadInstructionSecret(env),

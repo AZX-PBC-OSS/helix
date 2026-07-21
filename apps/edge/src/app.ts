@@ -22,6 +22,7 @@ import {
 } from "./auth/routes/passwordLogin.js";
 import { LoginThrottle } from "./auth/loginThrottle.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
+import { InMemoryCounterStore } from "./gateway/counterStore.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
@@ -112,6 +113,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   const app = Fastify({
     // Quiet during tests; structured JSON logs otherwise.
     logger: process.env.NODE_ENV !== "test",
+    // How many proxy hops to trust for `req.ip` (the rate-limit / login-throttle
+    // key). Default false = the socket peer. Behind Container Apps' Envoy ingress
+    // that peer is the ingress, so per-client limits need EDGE_TRUST_PROXY set to
+    // the real ingress hop count — verify against the live deployment before
+    // relying on it (issue #13). A too-trusting value makes X-Forwarded-For
+    // spoofable, so it is opt-in, not defaulted on.
+    trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;
 
@@ -136,8 +144,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // public-app short-circuit; asset serving keeps its own public bypass.
   const resolveCaller = gate ? makeCallerResolver(gate, config) : null;
   // One limiter backs every public app's anonymous tier (app-data design §7).
-  // server.ts owns the instance so it can sweep it; tests inject a low one.
-  const anonRateLimiter = deps.anonRateLimiter ?? new IpRateLimiter(config.anonRateLimit);
+  // server.ts injects PG-backed limiters (shared across replicas) + owns the
+  // sweep; tests inject a low one. The fallback in-memory counter here keeps
+  // single-process dev / tests working without a DB (both fallbacks share it —
+  // keys are namespaced, so no collision).
+  const fallbackCounters = new InMemoryCounterStore();
+  const anonRateLimiter =
+    deps.anonRateLimiter ?? new IpRateLimiter(config.anonRateLimit, fallbackCounters);
   const serveAsset = makeAssetHandler({ ...deps, gate });
 
   const handleStart = authRuntime ? makeStartHandler(authRuntime) : null;
@@ -158,7 +171,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         auth: authRuntime.auth,
         registry: deps.registry,
         sessions: authRuntime.sessions,
-        throttle: deps.loginThrottle ?? new LoginThrottle(),
+        throttle: deps.loginThrottle ?? new LoginThrottle(fallbackCounters),
       }
     : null;
   const handleLoginPage = passwordLoginRuntime

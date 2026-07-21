@@ -12,6 +12,8 @@ import { deriveInstructionKey } from "./gateway/instruction.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
 import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
+import { LoginThrottle } from "./auth/loginThrottle.js";
+import { PgCounterStore } from "./gateway/counterStore.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
 
 /**
@@ -118,9 +120,16 @@ const appData: AppDataStore | null = config.auth
 const cspReports = new PgCspReportStore(config.databaseUrl, {
   statementTimeoutMs: config.statementTimeoutMs,
 });
-// Anonymous-tier per-IP gateway limiter (app-data design §7). Owned here so it
-// can be swept on an interval; passed into the app for both gateway handlers.
-const anonRateLimiter = new IpRateLimiter(config.anonRateLimit);
+// Shared, PG-backed counter behind both abuse controls (issue #13): the anon
+// per-IP gateway limiter and the shared-password login throttle. One store +
+// namespaced keys means the limits hold across the horizontally-scaled fleet
+// (not N×-per-replica) and one sweep GCs both. Owned here so it can be swept and
+// closed; passed into the app.
+const counterStore = new PgCounterStore(config.databaseUrl, {
+  statementTimeoutMs: config.statementTimeoutMs,
+});
+const anonRateLimiter = new IpRateLimiter(config.anonRateLimit, counterStore);
+const loginThrottle = new LoginThrottle(counterStore);
 
 // Fetch-proxy + LLM (M4.5): the edge is the policy plane and forwards authorized
 // calls to azx-egress over the EgressProvider seam. The capability is enabled
@@ -167,6 +176,7 @@ const app = buildApp({
   instructionKey,
   cspReports,
   anonRateLimiter,
+  loginThrottle,
   https,
 });
 logRef.current = {
@@ -181,16 +191,20 @@ const sweeper = sessions
       },
     })
   : null;
-// Drop elapsed per-IP buckets once per window so the map can't grow under a
-// flood of distinct source IPs. `unref` so it never holds the process open.
-const anonSweep =
-  anonRateLimiter.enabled && config.anonRateLimit.windowMs > 0
-    ? setInterval(() => anonRateLimiter.sweep(), config.anonRateLimit.windowMs)
-    : null;
-anonSweep?.unref();
+// GC elapsed rate_counters rows so the table can't grow under a flood of
+// distinct source IPs. Covers BOTH the anon limiter and the login throttle
+// (shared store), so it runs regardless of whether the anon limiter is enabled —
+// the login throttle always is. `unref` so it never holds the process open.
+const counterSweepMs = config.anonRateLimit.windowMs > 0 ? config.anonRateLimit.windowMs : 60_000;
+const counterSweep = setInterval(() => {
+  void counterStore
+    .sweep()
+    .catch((err: unknown) => app.log.warn({ err }, "rate_counters sweep failed"));
+}, counterSweepMs);
+counterSweep.unref();
 app.addHook("onClose", async () => {
   sweeper?.stop();
-  if (anonSweep) clearInterval(anonSweep);
+  clearInterval(counterSweep);
   oidc?.stop();
   await registry.stop();
   await sessions?.close();
@@ -199,6 +213,7 @@ app.addHook("onClose", async () => {
   await egress?.close();
   await cspReports.close();
   await llmProvider?.close();
+  await counterStore.close();
   await blob.close();
 });
 

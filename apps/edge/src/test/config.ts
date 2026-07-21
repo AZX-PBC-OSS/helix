@@ -76,6 +76,9 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     },
     // Off by default in unit tests; suites that exercise it pass a low `max`.
     anonRateLimit: { max: 0, windowMs: 60_000 },
+    // Default: trust nothing (the socket peer is the client), as in prod until
+    // EDGE_TRUST_PROXY is configured for the ingress hop count.
+    trustProxy: false,
     // Fetch-proxy off by default; suites that exercise it set egressUrl +
     // instructionSecret (and pass an egress provider into buildApp).
     fetch: {

@@ -106,7 +106,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     // Per-IP cap for the anonymous tier (public apps): an anonymous caller has
     // no per-user budget, so cap by IP (app-data design §7). Not metered — a
     // ledger row per throttled call is itself a write-amplification vector.
-    if (anonRateLimited(rt.anonLimiter, req, entry, caller)) {
+    if (await anonRateLimited(rt.anonLimiter, req, entry, caller)) {
       sendApiError(reply, 429, "rate_limited", "per-IP request budget exhausted");
       return;
     }

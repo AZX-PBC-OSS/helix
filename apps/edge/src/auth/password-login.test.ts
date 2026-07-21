@@ -12,6 +12,7 @@ import {
   registryEntry,
 } from "../test/fakes.js";
 import { LoginThrottle } from "./loginThrottle.js";
+import { InMemoryCounterStore } from "../gateway/counterStore.js";
 
 /**
  * Adversarial twin for the shared-password challenge (`password` visibility,
@@ -58,7 +59,7 @@ function buildEdge(
     blob,
     sessions: new FakeSessionStore(),
     oidc: new FakeOidcClient(),
-    loginThrottle: opts.throttle ?? new LoginThrottle(),
+    loginThrottle: opts.throttle ?? new LoginThrottle(new InMemoryCounterStore()),
   });
 }
 
@@ -211,7 +212,10 @@ describe("POST /_auth/login (verification)", () => {
   });
 
   it("throttles brute force — blocks after the failure budget (429)", async () => {
-    const throttle = new LoginThrottle({ maxFailures: 3, windowMs: 60_000 });
+    const throttle = new LoginThrottle(new InMemoryCounterStore(), {
+      maxFailures: 3,
+      windowMs: 60_000,
+    });
     const app = buildEdge({ throttle });
     for (let i = 0; i < 3; i++) {
       expect((await submit(app, { password: "nope" })).statusCode).toBe(401);

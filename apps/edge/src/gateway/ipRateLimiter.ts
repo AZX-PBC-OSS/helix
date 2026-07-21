@@ -1,6 +1,7 @@
 import type { FastifyRequest } from "fastify";
 import type { Caller } from "../auth/gate.js";
 import type { RegistryEntry } from "../registry/projection.js";
+import type { CounterStore } from "./counterStore.js";
 
 /**
  * Per-IP rate limit for the anonymous tier on `public` apps (app-data design
@@ -10,13 +11,15 @@ import type { RegistryEntry } from "../registry/projection.js";
  * The sibling control is `auth/loginThrottle.ts`; this one counts *every*
  * request (not just failures).
  *
- * Caveat (identical to loginThrottle): this is per-process in-memory state, and
- * the edge is stateless and horizontally scaled — the effective limit is
- * N×instances. That is adequate for v0's demo threat model alongside the per-app
- * `writesPerDay`/`dollarsPerDay` budgets; a shared (DB/Redis-backed) counter is a
- * future hardening. Client IP is Fastify's `req.ip`; the edge runs with the
- * default `trustProxy: false` (prod sits behind Azure ingress with the client IP
- * arriving directly), the same posture loginThrottle relies on.
+ * The count lives in a shared {@link CounterStore} (Postgres in prod), so the
+ * limit holds across the horizontally-scaled edge fleet rather than degrading to
+ * N×-per-replica (issue #13). Keys are namespaced `anon:` so the anon limiter
+ * and the login throttle can share one store without colliding.
+ *
+ * Client IP is Fastify's `req.ip`; behind Container Apps' ingress that is the
+ * real client only when `EDGE_TRUST_PROXY` is configured for the ingress hop
+ * count (else it may collapse to the ingress address) — see `config.ts` and
+ * issue #13.
  */
 
 export interface IpRateLimiterOptions {
@@ -24,25 +27,17 @@ export interface IpRateLimiterOptions {
   max: number;
   /** Window length in ms; the bucket resets after it elapses. */
   windowMs: number;
-  /** Injectable clock for tests. */
-  now?: () => number;
-}
-
-interface Bucket {
-  count: number;
-  resetAt: number;
 }
 
 export class IpRateLimiter {
   readonly #max: number;
   readonly #windowMs: number;
-  readonly #now: () => number;
-  readonly #buckets = new Map<string, Bucket>();
+  readonly #store: CounterStore;
 
-  constructor(opts: IpRateLimiterOptions) {
+  constructor(opts: IpRateLimiterOptions, store: CounterStore) {
     this.#max = opts.max;
     this.#windowMs = opts.windowMs;
-    this.#now = opts.now ?? (() => Date.now());
+    this.#store = store;
   }
 
   /** A `max` of 0 (or less) means "no limit" — the knob is off. */
@@ -50,34 +45,15 @@ export class IpRateLimiter {
     return this.#max > 0;
   }
 
-  #bucket(key: string): Bucket {
-    const t = this.#now();
-    let b = this.#buckets.get(key);
-    if (!b || b.resetAt <= t) {
-      b = { count: 0, resetAt: t + this.#windowMs };
-      this.#buckets.set(key, b);
-    }
-    return b;
-  }
-
   /**
    * Count one request and report whether it is within budget. Returns true when
    * the request is allowed, false once the window's budget is exhausted. A
-   * disabled limiter (`max <= 0`) always allows.
+   * disabled limiter (`max <= 0`) always allows (no store round-trip).
    */
-  allow(key: string): boolean {
+  async allow(key: string): Promise<boolean> {
     if (!this.enabled) return true;
-    const b = this.#bucket(key);
-    b.count += 1;
-    return b.count <= this.#max;
-  }
-
-  /** Drop elapsed buckets so the map can't grow without bound under a flood. */
-  sweep(): void {
-    const t = this.#now();
-    for (const [key, b] of this.#buckets) {
-      if (b.resetAt <= t) this.#buckets.delete(key);
-    }
+    const count = await this.#store.bump(`anon:${key}`, this.#windowMs);
+    return count <= this.#max;
   }
 }
 
@@ -87,12 +63,12 @@ export class IpRateLimiter {
  * limiter is configured and enabled. Returns true when the caller has exhausted
  * its per-IP budget and the handler should respond `429 rate_limited`.
  */
-export function anonRateLimited(
+export async function anonRateLimited(
   limiter: IpRateLimiter | null,
   req: FastifyRequest,
   entry: RegistryEntry,
   caller: Caller,
-): boolean {
+): Promise<boolean> {
   if (caller.authenticated || !limiter || !limiter.enabled) return false;
-  return !limiter.allow(`${req.ip}:${entry.appId}`);
+  return !(await limiter.allow(`${req.ip}:${entry.appId}`));
 }

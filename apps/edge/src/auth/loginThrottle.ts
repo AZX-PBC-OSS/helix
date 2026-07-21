@@ -1,70 +1,56 @@
+import type { CounterStore } from "../gateway/counterStore.js";
+
 /**
  * Brute-force throttle for the shared-password login (POST /_auth/login). A
- * shared passphrase is online-guessable, so failed attempts per (IP, app) are
+ * shared passphrase is online-guessable, so attempts per (IP, app) are
  * rate-limited with a fixed window; a success clears the bucket.
  *
- * Caveat: this is per-process in-memory state, and the edge is stateless and
- * horizontally scaled — the effective limit is N×instances. Combined with
- * scrypt's per-attempt cost (password.ts) that is adequate for v0's demo
- * threat model; a shared (DB/Redis-backed) counter is a future hardening.
+ * The count lives in a shared {@link CounterStore} (Postgres in prod), so the
+ * limit — the economic defense in front of scrypt — holds across the
+ * horizontally-scaled edge fleet rather than degrading to N×-per-replica
+ * (issue #13). Keys are namespaced `login:` so this and the anon IP limiter can
+ * share one store without colliding.
+ *
+ * The API is **reserve-first**: {@link reserve} atomically increments and
+ * reports whether the attempt is over budget in one step, so the increment and
+ * the limit test can't be split by a concurrent attempt (closes the
+ * check-then-increment TOCTOU, issue #13). One consequence: *every* attempt in a
+ * window counts toward the cap (not only failures) — a success then clears it,
+ * so a legitimate user is unaffected, but repeated attempts are bounded whatever
+ * their outcome.
  */
 
 export interface LoginThrottleOptions {
-  /** Failures allowed within a window before blocking. */
+  /** Attempts allowed within a window before blocking. */
   maxFailures?: number;
   /** Window length in ms; the bucket resets after it elapses. */
   windowMs?: number;
-  /** Injectable clock for tests. */
-  now?: () => number;
-}
-
-interface Bucket {
-  count: number;
-  resetAt: number;
 }
 
 export class LoginThrottle {
   readonly #max: number;
   readonly #windowMs: number;
-  readonly #now: () => number;
-  readonly #buckets = new Map<string, Bucket>();
+  readonly #store: CounterStore;
 
-  constructor(opts: LoginThrottleOptions = {}) {
+  constructor(store: CounterStore, opts: LoginThrottleOptions = {}) {
     this.#max = opts.maxFailures ?? 10;
     this.#windowMs = opts.windowMs ?? 5 * 60 * 1000;
-    this.#now = opts.now ?? (() => Date.now());
+    this.#store = store;
   }
 
-  #bucket(key: string): Bucket {
-    const t = this.#now();
-    let b = this.#buckets.get(key);
-    if (!b || b.resetAt <= t) {
-      b = { count: 0, resetAt: t + this.#windowMs };
-      this.#buckets.set(key, b);
-    }
-    return b;
-  }
-
-  /** True when the key has exhausted its failure budget for the window. */
-  isBlocked(key: string): boolean {
-    return this.#bucket(key).count >= this.#max;
-  }
-
-  /** Count one failed attempt. */
-  recordFailure(key: string): void {
-    this.#bucket(key).count += 1;
+  /**
+   * Reserve one attempt (atomic increment) and report whether it is over budget.
+   * The caller must reserve BEFORE the expensive scrypt verify and bail on
+   * `blocked` — so a flood costs one counter write, never a scrypt run, keeping
+   * the per-window scrypt ceiling at `maxFailures`.
+   */
+  async reserve(key: string): Promise<{ blocked: boolean }> {
+    const count = await this.#store.bump(`login:${key}`, this.#windowMs);
+    return { blocked: count > this.#max };
   }
 
   /** Clear the bucket — call on a successful login. */
-  clear(key: string): void {
-    this.#buckets.delete(key);
-  }
-
-  /** Drop elapsed buckets so the map can't grow without bound. */
-  sweep(): void {
-    const t = this.#now();
-    for (const [key, b] of this.#buckets) {
-      if (b.resetAt <= t) this.#buckets.delete(key);
-    }
+  async clear(key: string): Promise<void> {
+    await this.#store.reset(`login:${key}`);
   }
 }

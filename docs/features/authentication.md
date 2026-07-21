@@ -67,7 +67,8 @@ behaviors:
   the approval queue (`docs/design/approvals.md` §6.3); the portal **Settings → Visibility** card
   is the real switcher for it (reductions apply immediately, public opens a request). At the
   gateway the anonymous tier is **per-IP rate-limited** — `apps/edge/src/gateway/ipRateLimiter.ts`,
-  a fixed-window in-memory limiter mirroring `loginThrottle.ts`, caps every anonymous `/_api/*`
+  a fixed-window limiter over the shared `CounterStore` (`counterStore.ts`) it shares with
+  `loginThrottle.ts`, caps every anonymous `/_api/*`
   call per IP+app (`429 rate_limited`; `EDGE_ANON_RATE_LIMIT`/`EDGE_ANON_RATE_WINDOW_MS`).
   Authenticated callers are never limited here — they answer to per-app budgets.
 
@@ -115,12 +116,15 @@ app host** (no auth host, no handoff), so the OIDC review surface is untouched.
 Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 `apps/portal/src/routes/access-password.test.ts` + `access/password.test.ts`.
 
-> **Throttle caveat (ADR-0004 / ADR-0011, issue #13).** The login/anonymous throttle and the
-> password brute-force defense are **not** robust as shipped: the throttle is in-memory
-> **per-process** and non-atomic (a check-then-increment TOCTOU), its `sweep()` is never scheduled
-> (unbounded growth), `trustProxy` is unset (client IPs unattributed behind a proxy), and scrypt
-> cost (`N=2^14`) is below OWASP's `2^17` — all weakened further under the shipped `maxReplicas>1`
-> (each replica keeps its own counter). Hardening these is tracked before M5.
+> **Throttle status (ADR-0004 / ADR-0011, issue #13).** The login/anonymous throttle is now
+> backed by a **shared Postgres counter** (`rate_counters`, `gateway/counterStore.ts`): the limit
+> holds across replicas (no more per-process N×), the atomic `INSERT … ON CONFLICT … RETURNING`
+> makes the login throttle **reserve-first** (closing the check-then-increment TOCTOU), and one
+> interval sweep in `server.ts` GCs it (the old never-scheduled `sweep()` is gone). Scrypt cost is
+> at OWASP's `N=2^17` (ISSUE-08). **One residual:** `trustProxy` is now a config knob
+> (`EDGE_TRUST_PROXY`, default off) but the correct Container Apps ingress hop count must still be
+> verified against the live deployment before per-client limits can be trusted — until then
+> `req.ip` may collapse to the ingress address (tracked under issue #13).
 
 ### Crypto + key material
 
