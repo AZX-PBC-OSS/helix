@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { type Pool } from "pg";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
+import { withPartition } from "../db/partition.js";
 
 /**
  * Server-side app-user sessions (architecture Appendix A.4), in the portal-
@@ -85,35 +86,42 @@ export class PgSessionStore implements SessionStore {
   }
 
   async createPending(session: Session): Promise<void> {
-    await this.#pool.query(
-      `INSERT INTO sessions (id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt")
+    // Wrapped in the RLS partition (ADR-0002): the sessions_edge_partition WITH
+    // CHECK requires the row's appId to equal app.app_id, so a pending row can
+    // only ever be minted in its own app's partition.
+    await withPartition(this.#pool, session.appId, null, (client) =>
+      client.query(
+        `INSERT INTO sessions (id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt")
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        session.id,
-        session.appId,
-        session.user.oid,
-        session.user.displayName,
-        JSON.stringify(session.user.groups),
-        session.refreshDueAt,
-        session.expiresAt,
-      ],
+        [
+          session.id,
+          session.appId,
+          session.user.oid,
+          session.user.displayName,
+          JSON.stringify(session.user.groups),
+          session.refreshDueAt,
+          session.expiresAt,
+        ],
+      ),
     );
   }
 
   async createActive(session: Session, tokenHash: string): Promise<void> {
-    await this.#pool.query(
-      `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", groups, "activatedAt", "refreshDueAt", "expiresAt")
+    await withPartition(this.#pool, session.appId, null, (client) =>
+      client.query(
+        `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", groups, "activatedAt", "refreshDueAt", "expiresAt")
        VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8)`,
-      [
-        session.id,
-        tokenHash,
-        session.appId,
-        session.user.oid,
-        session.user.displayName,
-        JSON.stringify(session.user.groups),
-        session.refreshDueAt,
-        session.expiresAt,
-      ],
+        [
+          session.id,
+          tokenHash,
+          session.appId,
+          session.user.oid,
+          session.user.displayName,
+          JSON.stringify(session.user.groups),
+          session.refreshDueAt,
+          session.expiresAt,
+        ],
+      ),
     );
   }
 
@@ -121,20 +129,28 @@ export class PgSessionStore implements SessionStore {
     // Single statement, single use: only one concurrent redeem can observe
     // "tokenHash" IS NULL. The appId predicate is deliberate redundancy with
     // the handoff JWS `aud` check — either alone defeats audience confusion.
-    const result = await this.#pool.query(
-      `UPDATE sessions
+    // Under the RLS partition, the row is also only visible/updatable within
+    // its own app (app.app_id), so a cross-app redeem can't even see the row.
+    return withPartition(this.#pool, appId, null, async (client) => {
+      const result = await client.query(
+        `UPDATE sessions
        SET "tokenHash" = $1, "activatedAt" = now()
        WHERE id = $2 AND "appId" = $3 AND "tokenHash" IS NULL AND "expiresAt" > now()`,
-      [tokenHash, id, appId],
-    );
-    return result.rowCount === 1;
+        [tokenHash, id, appId],
+      );
+      return result.rowCount === 1;
+    });
   }
 
   async lookup(tokenHash: string, appId: string): Promise<Session | null> {
+    // The gate's hot path (runs per request on gated apps). Reads through the
+    // SECURITY DEFINER `session_lookup` function (ADR-0002) rather than the raw
+    // table: one round-trip, no partition transaction, and helix_edge cannot
+    // enumerate the table directly (RLS scopes a bare SELECT to zero rows). The
+    // function applies the same (tokenHash, appId, expiresAt > now()) filter.
     const result = await this.#pool.query(
       `SELECT id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt"
-       FROM sessions
-       WHERE "tokenHash" = $1 AND "appId" = $2 AND "expiresAt" > now()`,
+       FROM session_lookup($1, $2)`,
       [tokenHash, appId],
     );
     const row = result.rows[0] as
@@ -159,21 +175,23 @@ export class PgSessionStore implements SessionStore {
   }
 
   async delete(tokenHash: string, appId: string): Promise<void> {
-    await this.#pool.query(`DELETE FROM sessions WHERE "tokenHash" = $1 AND "appId" = $2`, [
-      tokenHash,
-      appId,
-    ]);
+    // Logout is partition-scoped: the DELETE only sees this app's rows.
+    await withPartition(this.#pool, appId, null, (client) =>
+      client.query(`DELETE FROM sessions WHERE "tokenHash" = $1 AND "appId" = $2`, [
+        tokenHash,
+        appId,
+      ]),
+    );
   }
 
   async sweep(): Promise<number> {
-    // Expired rows linger a day for debuggability; pendings die fast — a
-    // handoff is 30 s, so a 10-minute-old pending row is necessarily junk.
-    const result = await this.#pool.query(
-      `DELETE FROM sessions
-       WHERE ("expiresAt" < now() - interval '1 day')
-          OR ("tokenHash" IS NULL AND "createdAt" < now() - interval '10 minutes')`,
-    );
-    return result.rowCount ?? 0;
+    // GC across all apps — deliberately global, so it runs through the
+    // SECURITY DEFINER `session_sweep` function (ADR-0002), which is owner-
+    // exempt from RLS and holds the canonical GC predicate (expired rows linger
+    // a day; never-redeemed pendings die after 10 min). Returns rows removed.
+    const result = await this.#pool.query(`SELECT session_sweep() AS n`);
+    const row = result.rows[0] as { n: string | number } | undefined;
+    return row ? Number(row.n) : 0;
   }
 
   async close(): Promise<void> {
