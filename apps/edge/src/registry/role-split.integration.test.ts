@@ -48,7 +48,9 @@ describe("helix_edge least-privilege grants", () => {
       await expect(pool.query("SELECT count(*) FROM apps")).resolves.toBeDefined();
       await expect(pool.query("SELECT count(*) FROM versions")).resolves.toBeDefined();
 
-      // The meter: SELECT + INSERT on gateway_calls.
+      // The meter: SELECT + INSERT on gateway_calls. The grant is present, so
+      // this resolves; RLS (ADR-0002 ISSUE-12) makes it count 0 with no partition
+      // GUC set — the isolation itself is asserted in usage.rls.integration.test.ts.
       await expect(pool.query("SELECT count(*) FROM gateway_calls")).resolves.toBeDefined();
 
       // Registry is read-only — no INSERT grant on apps.

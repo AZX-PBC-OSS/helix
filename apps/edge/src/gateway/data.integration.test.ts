@@ -113,6 +113,31 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
     }
   });
 
+  it("collection append is partition-scoped: an INSERT into another app is rejected (WITH CHECK)", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    // On top of the INSERT-only grant, the `app_collection_items_edge_partition`
+    // policy (ADR-0002 ISSUE-13) pins the write to the GUC's app: a row targeting
+    // a different app fails the WITH CHECK, so an appId-confusion bug can't
+    // pollute another app's collection.
+    const pool = new Pool({ connectionString: edgeUrl(), max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.app_id', $1, true)", [APP]);
+      await expect(
+        client.query(
+          `INSERT INTO app_collection_items (id, "appId", collection, item)
+             VALUES (gen_random_uuid(), $1, 'contacts', '{}'::jsonb)`,
+          [OTHER_APP],
+        ),
+      ).rejects.toThrow(/row-level security/i);
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  });
+
   it("shared keys upsert via the partial unique index", async () => {
     if (!(await edgeRoleAvailable())) return;
     const s = new PgAppDataStore(edgeUrl(), { max: 1 });

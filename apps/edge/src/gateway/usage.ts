@@ -1,6 +1,7 @@
 import { type Pool } from "pg";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
+import { withPartition } from "../db/partition.js";
 
 /**
  * The gateway call ledger (architecture §6.1/§6.3, §8) — metering + audit and
@@ -12,6 +13,14 @@ import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
  * edge's otherwise read-only posture is deliberate and narrow: INSERT a row per
  * call, and SUM today's tokens to admit or block the next one. No secrets, no
  * registry writes.
+ *
+ * Every access runs through `withPartition` so the `gateway_calls_edge_partition`
+ * RLS policy (ADR-0002) scopes it to the request's app: the per-app budget SUMs
+ * and the metering INSERT can only ever see / write this app's rows, and a path
+ * that forgot the `app.app_id` GUC matches zero rows / fails the WITH CHECK
+ * (fail-closed) rather than crossing tenants. Metering is per-app, so only
+ * `app.app_id` is set (no `app.user_oid`). The txn adds a round-trip to the
+ * metering hot path — an accepted cost for the fail-closed backstop.
  */
 
 export type GatewayOutcome = "ok" | "error" | "refusal" | "quota_blocked";
@@ -93,72 +102,80 @@ export class PgUsageStore implements UsageStore {
     // correct across the midnight boundary (its rows can predate today). Day
     // boundary is server-local-midnight via date_trunc on now() (architecture
     // §6.3). costMicroUsd is non-null (DEFAULT 0).
-    const result = await this.#pool.query(
-      `SELECT
-         COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= date_trunc('day', now())), 0)::bigint AS today,
-         COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= now() - interval '1 hour'), 0)::bigint AS hour
-       FROM gateway_calls
-       WHERE "appId" = $1 AND capability = 'llm'
-         AND "createdAt" >= date_trunc('day', now()) - interval '1 hour'`,
-      [appId],
-    );
-    // SUM(::bigint) comes back as a string from pg; Number is safe well below
-    // 2^53 for any realistic daily micro-USD total (1e6 = $1).
-    const row = result.rows[0] as { today: string | number; hour: string | number } | undefined;
-    return { todayMicro: row ? Number(row.today) : 0, hourMicro: row ? Number(row.hour) : 0 };
+    return withPartition(this.#pool, appId, null, async (client) => {
+      const result = await client.query(
+        `SELECT
+           COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= date_trunc('day', now())), 0)::bigint AS today,
+           COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= now() - interval '1 hour'), 0)::bigint AS hour
+         FROM gateway_calls
+         WHERE "appId" = $1 AND capability = 'llm'
+           AND "createdAt" >= date_trunc('day', now()) - interval '1 hour'`,
+        [appId],
+      );
+      // SUM(::bigint) comes back as a string from pg; Number is safe well below
+      // 2^53 for any realistic daily micro-USD total (1e6 = $1).
+      const row = result.rows[0] as { today: string | number; hour: string | number } | undefined;
+      return { todayMicro: row ? Number(row.today) : 0, hourMicro: row ? Number(row.hour) : 0 };
+    });
   }
 
   async dataWritesToday(appId: string): Promise<number> {
-    const result = await this.#pool.query(
-      `SELECT COUNT(*)::int AS n
-       FROM gateway_calls
-       WHERE "appId" = $1 AND capability = 'data' AND outcome = 'ok'
-         AND model = ANY($2) AND "createdAt" >= date_trunc('day', now())`,
-      [appId, DATA_WRITE_VERBS],
-    );
-    const row = result.rows[0] as { n: string | number } | undefined;
-    return row ? Number(row.n) : 0;
+    return withPartition(this.#pool, appId, null, async (client) => {
+      const result = await client.query(
+        `SELECT COUNT(*)::int AS n
+         FROM gateway_calls
+         WHERE "appId" = $1 AND capability = 'data' AND outcome = 'ok'
+           AND model = ANY($2) AND "createdAt" >= date_trunc('day', now())`,
+        [appId, DATA_WRITE_VERBS],
+      );
+      const row = result.rows[0] as { n: string | number } | undefined;
+      return row ? Number(row.n) : 0;
+    });
   }
 
   async fetchRequestsToday(appId: string): Promise<number> {
-    const result = await this.#pool.query(
-      `SELECT COUNT(*)::int AS n
-       FROM gateway_calls
-       WHERE "appId" = $1 AND capability = 'fetch' AND outcome <> 'quota_blocked'
-         AND "createdAt" >= date_trunc('day', now())`,
-      [appId],
-    );
-    const row = result.rows[0] as { n: string | number } | undefined;
-    return row ? Number(row.n) : 0;
+    return withPartition(this.#pool, appId, null, async (client) => {
+      const result = await client.query(
+        `SELECT COUNT(*)::int AS n
+         FROM gateway_calls
+         WHERE "appId" = $1 AND capability = 'fetch' AND outcome <> 'quota_blocked'
+           AND "createdAt" >= date_trunc('day', now())`,
+        [appId],
+      );
+      const row = result.rows[0] as { n: string | number } | undefined;
+      return row ? Number(row.n) : 0;
+    });
   }
 
   async record(call: GatewayCallRecord): Promise<void> {
-    await this.#pool.query(
-      // Prisma's @default(uuid()) is client-side, so the raw INSERT supplies
-      // the id itself (gen_random_uuid() — built into Postgres). Optional
-      // metering columns fall back to their column defaults / NULL.
-      `INSERT INTO gateway_calls
-         (id, "appId", "userOid", capability, model, "inputTokens", "outputTokens",
-          "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd", outcome,
-          "durationMs", "statusCode", "stopReason", "errorDetail")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [
-        call.appId,
-        call.userOid,
-        call.capability,
-        call.model,
-        call.inputTokens,
-        call.outputTokens,
-        call.cacheReadInputTokens ?? 0,
-        call.cacheCreationInputTokens ?? 0,
-        call.costMicroUsd ?? 0,
-        call.outcome,
-        call.durationMs ?? 0,
-        call.statusCode ?? null,
-        call.stopReason ?? null,
-        call.errorDetail ?? null,
-      ],
-    );
+    await withPartition(this.#pool, call.appId, null, async (client) => {
+      await client.query(
+        // Prisma's @default(uuid()) is client-side, so the raw INSERT supplies
+        // the id itself (gen_random_uuid() — built into Postgres). Optional
+        // metering columns fall back to their column defaults / NULL.
+        `INSERT INTO gateway_calls
+           (id, "appId", "userOid", capability, model, "inputTokens", "outputTokens",
+            "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd", outcome,
+            "durationMs", "statusCode", "stopReason", "errorDetail")
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [
+          call.appId,
+          call.userOid,
+          call.capability,
+          call.model,
+          call.inputTokens,
+          call.outputTokens,
+          call.cacheReadInputTokens ?? 0,
+          call.cacheCreationInputTokens ?? 0,
+          call.costMicroUsd ?? 0,
+          call.outcome,
+          call.durationMs ?? 0,
+          call.statusCode ?? null,
+          call.stopReason ?? null,
+          call.errorDetail ?? null,
+        ],
+      );
+    });
   }
 
   async close(): Promise<void> {

@@ -1,6 +1,7 @@
-import { type Pool, type PoolClient } from "pg";
+import { type Pool } from "pg";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
+import { withPartition } from "../db/partition.js";
 
 /**
  * App data storage (architecture §6.1, app-data design §3) — the gateway's
@@ -73,36 +74,8 @@ export class PgAppDataStore implements AppDataStore {
     });
   }
 
-  /**
-   * Run `fn` in a transaction with the RLS partition GUCs set from the verified
-   * session. `set_config(name, value, true)` is the parameterized, is_local
-   * form of `SET LOCAL` — transaction-scoped, pgbouncer-safe, no interpolation.
-   */
-  async #withPartition<T>(
-    appId: string,
-    userOid: string,
-    fn: (client: PoolClient) => Promise<T>,
-  ): Promise<T> {
-    const client = await this.#pool.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        "SELECT set_config('app.app_id', $1, true), set_config('app.user_oid', $2, true)",
-        [appId, userOid],
-      );
-      const result = await fn(client);
-      await client.query("COMMIT");
-      return result;
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-
   async getUserKey(appId: string, userOid: string, key: string): Promise<unknown> {
-    return this.#withPartition(appId, userOid, async (client) => {
+    return withPartition(this.#pool, appId, userOid, async (client) => {
       const r = await client.query(
         `SELECT value FROM app_data WHERE "appId" = $1 AND "userOid" = $2 AND key = $3`,
         [appId, userOid, key],
@@ -112,7 +85,7 @@ export class PgAppDataStore implements AppDataStore {
   }
 
   async putUserKey(appId: string, userOid: string, key: string, value: unknown): Promise<string> {
-    return this.#withPartition(appId, userOid, async (client) => {
+    return withPartition(this.#pool, appId, userOid, async (client) => {
       // JSON.stringify + ::jsonb so every JSON type (string, number, object,
       // array) round-trips uniformly; a bare string param would not cast.
       const r = await client.query(
@@ -128,7 +101,7 @@ export class PgAppDataStore implements AppDataStore {
   }
 
   async deleteUserKey(appId: string, userOid: string, key: string): Promise<boolean> {
-    return this.#withPartition(appId, userOid, async (client) => {
+    return withPartition(this.#pool, appId, userOid, async (client) => {
       const r = await client.query(
         `DELETE FROM app_data WHERE "appId" = $1 AND "userOid" = $2 AND key = $3`,
         [appId, userOid, key],
@@ -138,7 +111,7 @@ export class PgAppDataStore implements AppDataStore {
   }
 
   async listUserKeys(appId: string, userOid: string): Promise<UserKeyMeta[]> {
-    return this.#withPartition(appId, userOid, async (client) => {
+    return withPartition(this.#pool, appId, userOid, async (client) => {
       const r = await client.query(
         `SELECT key, "updatedAt" FROM app_data
          WHERE "appId" = $1 AND "userOid" = $2 ORDER BY key`,
@@ -155,7 +128,7 @@ export class PgAppDataStore implements AppDataStore {
     // Shared rows have userOid IS NULL; the RLS policy admits them regardless of
     // the user_oid GUC, so any empty user partition value is fine — only app_id
     // must match. Still run inside the partition transaction for consistency.
-    return this.#withPartition(appId, "", async (client) => {
+    return withPartition(this.#pool, appId, "", async (client) => {
       const r = await client.query(
         `SELECT value FROM app_data WHERE "appId" = $1 AND "userOid" IS NULL AND key = $2`,
         [appId, key],
@@ -165,7 +138,7 @@ export class PgAppDataStore implements AppDataStore {
   }
 
   async putShared(appId: string, key: string, value: unknown): Promise<string> {
-    return this.#withPartition(appId, "", async (client) => {
+    return withPartition(this.#pool, appId, "", async (client) => {
       const r = await client.query(
         `INSERT INTO app_data (id, "appId", "userOid", key, value, "updatedAt")
            VALUES (gen_random_uuid(), $1, NULL, $2, $3::jsonb, now())
@@ -185,13 +158,20 @@ export class PgAppDataStore implements AppDataStore {
     userOid: string | null,
     meta: CollectionMeta,
   ): Promise<void> {
-    // Plain INSERT — no transaction or RLS: the edge role has INSERT-only on
-    // this table, which IS the containment. There is no read to scope.
-    await this.#pool.query(
-      `INSERT INTO app_collection_items (id, "appId", collection, "userOid", item, meta)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, $5::jsonb)`,
-      [appId, collection, userOid, JSON.stringify(item), JSON.stringify(meta)],
-    );
+    // INSERT-only for the edge role — the absence of SELECT/DELETE is the §3.2
+    // write-only containment. On top of that, RLS partitions the write: the
+    // `app_collection_items_edge_partition` policy's WITH CHECK requires the row
+    // to land in the app named by the `app.app_id` GUC, so an appId-confusion
+    // bug (or a no-GUC path) can't pollute another app's collection — it fails
+    // closed. The collection is app-scoped (no per-user read), so no user_oid
+    // GUC; the row's own `userOid` column still records the submitter.
+    await withPartition(this.#pool, appId, null, async (client) => {
+      await client.query(
+        `INSERT INTO app_collection_items (id, "appId", collection, "userOid", item, meta)
+           VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, $5::jsonb)`,
+        [appId, collection, userOid, JSON.stringify(item), JSON.stringify(meta)],
+      );
+    });
   }
 
   async close(): Promise<void> {
