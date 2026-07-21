@@ -135,10 +135,12 @@ footprint. Asserted in `apps/edge/src/registry/role-split.integration.test.ts`; 
 the portal migration `20260616000001_edge_role_grants` (see
 [app-data-gateway.md](./app-data-gateway.md)).
 
-> **Role caveat (ADR-0002).** `helix_edge` is real and tested, but not yet enforced end to end:
-> the edge **falls back to the owner DSN** if `EDGE_DATABASE_URL` is unset, and the portal
-> connects as the schema owner rather than a dedicated `helix_portal` role. Both are tracked to be
-> hardened (boot-fail on a missing role DSN) before M5.
+> **Role caveat (ADR-0002).** `helix_edge` is real and tested. In **production** the edge now
+> **boot-fails** unless `EDGE_DATABASE_URL` (the least-privilege role) is set — it refuses to fall
+> back to the owner `DATABASE_URL`, which would bypass RLS and silently defeat the split. Outside
+> production the owner-DSN fallback remains, as a convenience for setups without the role split.
+> Still not enforced end to end: the portal connects as the schema owner rather than a dedicated
+> `helix_portal` role (tracked in `TODO.md`).
 
 ## Planned / not yet built
 

@@ -13,18 +13,9 @@ Legend for gating conditions:
 
 ---
 
-## Egress SSRF hardening
-
-- [x] **Close the IPv6 blocklist gaps.** Add `fe80::/10`, 6to4, NAT64, full-form loopback, and hex-mapped IPv4. — ADR-0005 (ISSUE-09), issue #2
-- [x] **Require `https://` on any secret-backed origin.** Egress now refuses to inject a connection secret into a cleartext `http://` target — a `target.protocol` guard on the injection path, independent of the edge's origin allowlist. `EGRESS_ALLOW_INSECURE_CONNECTION` is a dev/test-only seam (loopback echo upstreams); off in prod. — ADR-0005, issue #11
-- [x] **Make redirect handling explicit.** The non-follow is now structural + documented: undici 7 follows redirects only via a composed `redirect` interceptor, which egress deliberately omits (a plain `Agent` returns the 3xx verbatim). `location` is also in the shared response blocklist — so a `302` comes back as data (never chased by egress) and its `Location` is stripped (never chased by the browser). `content-location` survives but has an injected query secret redacted (issue #7). — ADR-0005 (ISSUE-10)
-- [x] _(Optional, perf)_ **Share one undici `Agent` with a validate-and-pin `connect`/`lookup`.** Done: egress now holds one long-lived `Agent` (`makeProxyHandler`, closed on app teardown) whose `buildConnector`-based connector runs `resolveAndValidate` + pins the socket to the validated IP per new connection, then dials the real origin so undici pools by origin (keep-alive recovered — a test proves 1 TCP connection across 6 requests). The IP-pin is unchanged: a pooled socket is bonded to an already-validated IP, and a blocked/unresolvable host throws `SsrfBlockedError` from the connector, propagated verbatim by undici and mapped to `403 blocked`. — ADR-0005
-
----
-
 ## Postgres role split / RLS hardening
 
-- [ ] **Boot-fail when the edge role DSN is absent.** `EDGE_DATABASE_URL ?? DATABASE_URL` silently connects the edge as schema owner, defeating the split — fail startup instead of falling back. — ADR-0002
+- [x] **Boot-fail when the edge role DSN is absent.** `EDGE_DATABASE_URL ?? DATABASE_URL` silently connects the edge as schema owner, defeating the split — fail startup instead of falling back. — ADR-0002 _(Done: in production `loadConfig` refuses the `DATABASE_URL` fallback and requires `EDGE_DATABASE_URL`; the fallback stays only outside prod. `apps/edge/src/config.ts`, tests in `config.test.ts`.)_
 - [ ] **Realize `helix_portal` or correct the Decision text.** The portal connects as schema owner (no `PORTAL_DATABASE_URL`), so the `helix_portal` grants are dead code. — ADR-0002
 - [ ] **Add `statement_timeout` on the edge pools.** No timeout today → pool-exhaustion DoS. — ADR-0002 (ISSUE-05) / ADR-0003, issue #12
 - [ ] **Put RLS on `gateway_calls` and `app_collection_items`.** `gateway_calls` has global SELECT + `sessions` full DML with no RLS (cross-tenant read under edge RCE, ISSUE-12); `app_collection_items` has no RLS (cross-app write pollution, ISSUE-13). — ADR-0002

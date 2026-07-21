@@ -41,6 +41,7 @@ describe("loadConfig", () => {
   // The platform is HTTPS-only, so dev config must carry TLS material.
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
+    EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
     EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
     EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
@@ -87,6 +88,26 @@ describe("loadConfig", () => {
     ).toThrow(/refused in production/);
   });
 
+  it("refuses the owner-DSN fallback in production (role-split, ADR-0002)", () => {
+    // Only DATABASE_URL (the schema owner) set in prod → boot-fail rather than
+    // silently connect as owner and bypass RLS.
+    const { EDGE_DATABASE_URL: _omit, ...ownerOnly } = ENV;
+    void _omit;
+    expect(() => loadConfig({ ...ownerOnly, ...MI_BLOB_ENV, NODE_ENV: "production" })).toThrow(
+      /EDGE_DATABASE_URL.*required in production/,
+    );
+    // With the least-privilege role DSN present, prod boots and uses it.
+    const config = loadConfig({ ...ENV, ...MI_BLOB_ENV, NODE_ENV: "production" });
+    expect(config.databaseUrl).toBe(ENV.EDGE_DATABASE_URL);
+  });
+
+  it("still allows the owner-DSN fallback outside production", () => {
+    const { EDGE_DATABASE_URL: _omit, ...ownerOnly } = ENV;
+    void _omit;
+    const config = loadConfig(ownerOnly);
+    expect(config.databaseUrl).toBe(ENV.DATABASE_URL);
+  });
+
   const noTls = {
     DATABASE_URL: ENV.DATABASE_URL,
     AZURE_STORAGE_CONNECTION_STRING: ENV.AZURE_STORAGE_CONNECTION_STRING,
@@ -98,6 +119,7 @@ describe("loadConfig", () => {
     // Prod also uses managed-identity blob auth (the connection string is refused).
     const prod = loadConfig({
       DATABASE_URL: ENV.DATABASE_URL,
+      EDGE_DATABASE_URL: ENV.EDGE_DATABASE_URL,
       ...MI_BLOB_ENV,
       NODE_ENV: "production",
     });
@@ -108,6 +130,7 @@ describe("loadConfig", () => {
   it("selects managed-identity blob auth from endpoint + client_id", () => {
     const config = loadConfig({
       DATABASE_URL: ENV.DATABASE_URL,
+      EDGE_DATABASE_URL: ENV.EDGE_DATABASE_URL,
       ...MI_BLOB_ENV,
       NODE_ENV: "production",
     });
@@ -152,9 +175,13 @@ describe("loadConfig", () => {
   });
 
   it("throws when no blob auth is configured at all", () => {
-    expect(() => loadConfig({ DATABASE_URL: ENV.DATABASE_URL, NODE_ENV: "production" })).toThrow(
-      /AZURE_STORAGE_CONNECTION_STRING/,
-    );
+    expect(() =>
+      loadConfig({
+        DATABASE_URL: ENV.DATABASE_URL,
+        EDGE_DATABASE_URL: ENV.EDGE_DATABASE_URL,
+        NODE_ENV: "production",
+      }),
+    ).toThrow(/AZURE_STORAGE_CONNECTION_STRING/);
   });
 
   it("requires TLS cert and key together", () => {
@@ -165,6 +192,7 @@ describe("loadConfig", () => {
 describe("auth config", () => {
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
+    EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
     EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
     EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
@@ -291,6 +319,7 @@ describe("auth config", () => {
 describe("publicOrigin", () => {
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
+    EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
     EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
     EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
@@ -305,6 +334,7 @@ describe("publicOrigin", () => {
     // blob auth is managed identity (the connection string is refused in prod).
     const prod = loadConfig({
       DATABASE_URL: ENV.DATABASE_URL,
+      EDGE_DATABASE_URL: ENV.EDGE_DATABASE_URL,
       ...MI_BLOB_ENV,
       EDGE_BASE_DOMAIN: "azx-labs.com",
       EDGE_PUBLIC_PORT: "443",
