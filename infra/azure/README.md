@@ -85,7 +85,7 @@ Set the secret env vars, then deploy. ACR comes up empty; the apps are skipped.
 ```bash
 export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24)
 export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24)
-export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24)   # role created in step 4; runtime wiring is a follow-up
+export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24)   # helix_portal runtime role (role created in step 4)
 export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24)
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
@@ -145,12 +145,11 @@ psql "$ADMIN_URL" \
 DATABASE_URL="$ADMIN_URL" pnpm --filter @azx-pbc/portal db:deploy
 ```
 
-> **Note:** `main.bicep` currently wires the portal container's `DATABASE_URL`
-> to the **admin** connection (`main.bicep:238`), not `helix_portal`, so the
-> `helix_portal` role created here is provisioned and least-privilege-ready but
-> is not yet the portal runtime's identity in prod — closing that (a
-> `portal-database-url` built from `HELIX_PORTAL_DB_PASSWORD`) is a tracked
-> follow-up. `helix_edge` / `helix_egress` are wired to their roles today.
+> **Note:** all three container runtimes connect as their least-privilege role
+> (`helix_portal` / `helix_edge` / `helix_egress`) — the portal reads
+> `PORTAL_DATABASE_URL` and, under `NODE_ENV=production`, refuses the
+> `DATABASE_URL` owner fallback (ADR-0002). The admin DSN is used only here in
+> step 4 for `db:deploy` and is never placed in a container or in kv-platform.
 
 ### 5. Phase 2 — deploy the apps (`deployApps=true`)
 

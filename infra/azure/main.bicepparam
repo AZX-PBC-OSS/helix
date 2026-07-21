@@ -28,6 +28,7 @@ param imageTag = readEnvironmentVariable('HELIX_IMAGE_TAG', 'latest')
 // Secrets — sourced from environment variables, never committed. Generate the
 // symmetric ones with `openssl rand -base64 48`.
 param postgresAdminPassword = readEnvironmentVariable('HELIX_PG_ADMIN_PASSWORD', '')
+param portalDbPassword = readEnvironmentVariable('HELIX_PORTAL_DB_PASSWORD', '')
 param edgeDbPassword = readEnvironmentVariable('HELIX_EDGE_DB_PASSWORD', '')
 param egressDbPassword = readEnvironmentVariable('HELIX_EGRESS_DB_PASSWORD', '')
 param edgeAuthSecret = readEnvironmentVariable('HELIX_EDGE_AUTH_SECRET', '')

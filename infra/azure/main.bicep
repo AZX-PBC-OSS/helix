@@ -46,13 +46,18 @@ param appsDomain string = 'azx-labs.com'
 param blobContainerName string = 'app-bundles'
 
 // Postgres credentials. The admin owns the schema + runs migrations (== the dev
-// `helix` owner). edge/egress connect as the least-privilege runtime roles,
+// `helix` owner) — used only to provision the server and, out-of-band, for the
+// operator's `db:deploy` step; it is NOT handed to any runtime container. The
+// portal/edge/egress containers connect as the least-privilege runtime roles,
 // which the post-deploy role SQL creates with these same passwords.
 @description('Postgres administrator login.')
 param postgresAdminLogin string = 'helixadmin'
 @secure()
 @description('Postgres administrator password.')
 param postgresAdminPassword string
+@secure()
+@description('Password for the helix_portal runtime role.')
+param portalDbPassword string
 @secure()
 @description('Password for the helix_edge runtime role.')
 param edgeDbPassword string
@@ -235,7 +240,11 @@ module rbac 'modules/rbac.bicep' = {
 var pgFqdn = postgres.outputs.serverFqdn
 var edgeDbConn = 'postgresql://helix_edge:${edgeDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
 var egressDbConn = 'postgresql://helix_egress:${egressDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
-var portalDbConn = 'postgresql://${postgresAdminLogin}:${postgresAdminPassword}@${pgFqdn}:5432/helix?sslmode=require'
+// The portal runtime connects as the least-privilege helix_portal role, NOT the
+// schema owner (ADR-0002): full DML but no owner/superuser RLS bypass and no
+// DDL. Migrations run as the admin out-of-band (README step 4), so the admin DSN
+// never reaches a container or kv-platform.
+var portalDbConn = 'postgresql://helix_portal:${portalDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
 
 module platformSecrets 'modules/kv-secrets.bicep' = {
   name: 'platform-secrets'
@@ -405,7 +414,10 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'AZX_WEB_CLIENT_ID', value: azxWebClientId }
       { name: 'APP_PUBLIC_BASE', value: 'https://${appsDomain}' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
-      { name: 'DATABASE_URL', secretRef: 'portal-database-url' }
+      // helix_portal DSN. The portal runtime reads PORTAL_DATABASE_URL and (in
+      // production) refuses the DATABASE_URL owner fallback (ADR-0002,
+      // resolvePortalRuntimeUrl). Migrations run as the admin out-of-band.
+      { name: 'PORTAL_DATABASE_URL', secretRef: 'portal-database-url' }
       { name: 'PORTAL_SECRET', secretRef: 'portal-secret' }
     ]
   }

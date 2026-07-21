@@ -17,7 +17,7 @@ param edgeDatabaseUrl string
 @description('helix_egress connection string.')
 param egressDatabaseUrl string
 @secure()
-@description('portal (admin/owner) connection string.')
+@description('helix_portal (least-privilege runtime role) connection string.')
 param portalDatabaseUrl string
 @secure()
 @description('EDGE_AUTH_SECRET.')
