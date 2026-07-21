@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { Pool, type Dispatcher } from "undici";
 import type { LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
@@ -198,28 +199,55 @@ function truncate(text: string, max = 200): string {
 }
 
 /**
+ * Ceiling on a single unterminated SSE record. An upstream that never emits the
+ * record separator would otherwise grow the buffer without bound (memory
+ * pressure on the edge — issue #12). Anthropic events are tiny (a text delta or
+ * a usage object), so 1 MiB is orders of magnitude of headroom; past it we treat
+ * the stream as hostile and destroy it.
+ */
+const MAX_SSE_BUFFER_BYTES = 1024 * 1024;
+
+/** Blank-line record separator in any of the SSE spec's line terminators. */
+const SSE_RECORD_SEP = /\r\n\r\n|\r\r|\n\n/;
+/** Line terminator: CRLF, bare CR, or LF (WHATWG event-stream §9.2.4). */
+const SSE_LINE_SEP = /\r\n|\r|\n/;
+
+/**
  * Minimal SSE parser over a Node Readable: yields `{ event, data }` per record
  * (records separated by a blank line, `data:` lines concatenated). Enough for
  * the Anthropic stream; not a general SSE implementation.
+ *
+ * Hardened per issue #12: framing handles CRLF / bare-CR (not just LF), chunks
+ * are decoded through a {@link StringDecoder} so a multibyte codepoint split
+ * across a chunk boundary is not corrupted, and the record buffer is byte-capped
+ * so a separator-less upstream cannot grow it without bound.
  */
 async function* parseSse(body: Readable): AsyncGenerator<{ event: string; data: string }> {
+  const decoder = new StringDecoder("utf8");
   let buf = "";
   for await (const chunk of body) {
-    buf += (chunk as Buffer).toString("utf8");
-    let sep: number;
-    while ((sep = buf.indexOf("\n\n")) !== -1) {
-      const record = buf.slice(0, sep);
-      buf = buf.slice(sep + 2);
+    buf += decoder.write(chunk as Buffer);
+    let m: RegExpExecArray | null;
+    while ((m = SSE_RECORD_SEP.exec(buf)) !== null) {
+      const record = buf.slice(0, m.index);
+      buf = buf.slice(m.index + m[0].length);
       yield parseRecord(record);
     }
+    if (Buffer.byteLength(buf, "utf8") > MAX_SSE_BUFFER_BYTES) {
+      body.destroy();
+      throw new LlmProviderError(
+        `SSE record exceeded ${MAX_SSE_BUFFER_BYTES} bytes without a separator`,
+      );
+    }
   }
+  buf += decoder.end();
   if (buf.trim() !== "") yield parseRecord(buf);
 }
 
 function parseRecord(record: string): { event: string; data: string } {
   let event = "message";
   const dataLines: string[] = [];
-  for (const line of record.split("\n")) {
+  for (const line of record.split(SSE_LINE_SEP)) {
     if (line.startsWith("event:")) event = line.slice(6).trim();
     else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
   }

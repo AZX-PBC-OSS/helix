@@ -1,6 +1,12 @@
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { MockAgent } from "undici";
-import { AnthropicProvider, LlmProviderError, type LlmStreamEvent } from "./provider.js";
+import {
+  AnthropicProvider,
+  LlmProviderError,
+  mapAnthropicStream,
+  type LlmStreamEvent,
+} from "./provider.js";
 
 /**
  * The Anthropic provider's request translation + SSE parsing, exercised against
@@ -129,6 +135,67 @@ describe("AnthropicProvider (mocked upstream)", () => {
         ),
       ),
     ).rejects.toBeInstanceOf(LlmProviderError);
+  });
+});
+
+describe("SSE parser hardening (issue #12)", () => {
+  // café + an emoji: exercises multibyte UTF-8 (2- and 4-byte codepoints).
+  const TEXT = "café😀";
+
+  /** A complete Anthropic transcript whose line terminator is `nl`. */
+  function buildSse(nl: string): string {
+    const records = [
+      [
+        "event: message_start",
+        `data: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 3, output_tokens: 0 } } })}`,
+      ],
+      [
+        "event: content_block_delta",
+        `data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: TEXT } })}`,
+      ],
+      [
+        "event: message_delta",
+        `data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } })}`,
+      ],
+      ["event: message_stop", `data: ${JSON.stringify({ type: "message_stop" })}`],
+    ];
+    return records.map((r) => r.join(nl)).join(nl + nl) + nl + nl;
+  }
+
+  const collectText = (events: LlmStreamEvent[]) =>
+    events
+      .filter((e): e is { type: "delta"; text: string } => e.type === "delta")
+      .map((e) => e.text)
+      .join("");
+
+  it("frames a CRLF-delimited stream (LF-only splitting would yield nothing)", async () => {
+    const body = Readable.from([Buffer.from(buildSse("\r\n"), "utf8")]);
+    const events = await collect(mapAnthropicStream(body));
+
+    expect(collectText(events)).toBe(TEXT); // no trailing \r leaked into the payload
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "end_turn" });
+  });
+
+  it("reassembles a multibyte codepoint split across a chunk boundary", async () => {
+    const full = Buffer.from(buildSse("\n"), "utf8");
+    // Split inside the emoji's 4-byte sequence — a per-chunk toString('utf8')
+    // would decode replacement chars on both sides.
+    const emojiAt = full.indexOf(Buffer.from("😀", "utf8"));
+    expect(emojiAt).toBeGreaterThan(0);
+    const body = Readable.from([full.subarray(0, emojiAt + 2), full.subarray(emojiAt + 2)]);
+
+    const events = await collect(mapAnthropicStream(body));
+    expect(collectText(events)).toBe(TEXT);
+  });
+
+  it("destroys a separator-less stream once it exceeds the buffer cap", async () => {
+    async function* neverSeparates() {
+      // >1 MiB of data with no blank-line record separator.
+      for (let i = 0; i < 20; i++) yield Buffer.from("x".repeat(64 * 1024), "utf8");
+    }
+    const body = Readable.from(neverSeparates());
+
+    await expect(collect(mapAnthropicStream(body))).rejects.toBeInstanceOf(LlmProviderError);
   });
 });
 

@@ -15,8 +15,8 @@ Legend for gating conditions:
 
 ## Dependency-minimal edge — filed defects
 
-- [ ] **Harden the LLM SSE parser.** No per-event byte cap and LF-only: a CRLF stream causes unbounded buffering and a trailing `\r` leaks into the payload. — ADR-0003, issue #12
-- [ ] **Count the app-data size cap in bytes, not UTF-16 code units.** — ADR-0003, issue #12
+- [x] **Harden the LLM SSE parser.** No per-event byte cap and LF-only: a CRLF stream causes unbounded buffering and a trailing `\r` leaks into the payload. — ADR-0003, issue #12 _(done: byte-capped buffer, CRLF/bare-CR framing, StringDecoder for multibyte chunk boundaries — `provider.ts`)_
+- [x] **Count the app-data size cap in bytes, not UTF-16 code units.** — ADR-0003, issue #12 _(done: `jsonByteLength` + byte-based key cap — `data-handler.ts`)_
 - [ ] _(Consider)_ **Trim `openid-client` to a JWKS-only verifier.** Heaviest trusted-path dependency. — ADR-0003
 - [ ] _(Consider)_ **Add a CI dependency-allowlist** to make the dependency-minimal rule mechanical. — ADR-0003
 

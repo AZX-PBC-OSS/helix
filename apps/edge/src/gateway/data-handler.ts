@@ -54,11 +54,20 @@ function sendApiError(
     .send({ error: { code, message } });
 }
 
+/**
+ * Serialized UTF-8 byte size of a JSON value. `String.length` counts UTF-16 code
+ * units, which undercounts multibyte UTF-8 (CJK, emoji) — a value "capped" by
+ * length could persist well over the byte cap on disk (issue #12).
+ */
+function jsonByteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
 function validKey(key: unknown): key is string {
   return (
     typeof key === "string" &&
     key.length > 0 &&
-    key.length <= MAX_KEY_LENGTH &&
+    Buffer.byteLength(key, "utf8") <= MAX_KEY_LENGTH &&
     !CONTROL_CHARS.test(key)
   );
 }
@@ -209,7 +218,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", "missing value body");
         return;
       }
-      if (JSON.stringify(value).length > MAX_VALUE_BYTES) {
+      if (jsonByteLength(value) > MAX_VALUE_BYTES) {
         sendApiError(reply, 400, "validation_failed", `value exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }
@@ -314,7 +323,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", "missing item body");
         return;
       }
-      if (JSON.stringify(item).length > MAX_VALUE_BYTES) {
+      if (jsonByteLength(item) > MAX_VALUE_BYTES) {
         sendApiError(reply, 400, "validation_failed", `item exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }
@@ -390,7 +399,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", "missing value body");
         return;
       }
-      if (JSON.stringify(value).length > MAX_VALUE_BYTES) {
+      if (jsonByteLength(value) > MAX_VALUE_BYTES) {
         sendApiError(reply, 400, "validation_failed", `value exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }

@@ -205,6 +205,18 @@ describe("authz + validation", () => {
     const res = await req(edge, "PUT", "/_api/data/user/big", { token, payload: big });
     expect(res.statusCode).toBe(400);
   });
+
+  it("400s a value under the UTF-16 length cap but over the UTF-8 byte cap (issue #12)", async () => {
+    const edge = buildDataEdge();
+    const token = await seedSession(edge.sessions, "alice");
+    // 25 000 × '中' (3 UTF-8 bytes each). Serialized: ~25 008 UTF-16 code units
+    // (under the 64 KiB cap — the old `String.length` check would admit it) but
+    // ~75 008 bytes on disk (over it). The byte-based cap must reject it.
+    const value = { s: "中".repeat(25_000) };
+    const res = await req(edge, "PUT", "/_api/data/user/cjk", { token, payload: value });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { code: "validation_failed" } });
+  });
 });
 
 describe("collection append (§3.2)", () => {
