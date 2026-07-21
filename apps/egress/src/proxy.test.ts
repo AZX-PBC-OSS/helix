@@ -206,3 +206,39 @@ describe("egress /proxy", () => {
     await app.close();
   });
 });
+
+describe("egress /proxy — connection pooling (ADR-0005 perf note)", () => {
+  // The validate-and-pin moved into a shared dispatcher's connector, so repeated
+  // calls to the same origin must reuse keep-alive sockets instead of paying a
+  // fresh TCP+TLS handshake per call (the old per-request `Agent`). Guards against
+  // a regression back to per-request dispatchers.
+  it("reuses keep-alive sockets across requests to the same origin", async () => {
+    let connections = 0;
+    const server = createServer((_req, res) => res.end("ok"));
+    server.on("connection", () => void connections++);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const localOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const app = makeApp(true);
+    const requests = 6;
+    for (let i = 0; i < requests; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/proxy",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint({ origin: localOrigin }),
+          [TARGET_HEADER]: `${localOrigin}/`,
+          [METHOD_HEADER]: "GET",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+
+    // Per-request Agents would open one TCP connection per request; a shared,
+    // pooled dispatcher opens far fewer (typically one).
+    expect(connections).toBeLessThan(requests);
+
+    await app.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});

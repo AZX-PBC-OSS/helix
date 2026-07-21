@@ -1,5 +1,5 @@
 import { type IncomingHttpHeaders } from "node:http";
-import { Agent, request } from "undici";
+import { Agent, buildConnector, request } from "undici";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   type FetchErrorCode,
@@ -124,15 +124,66 @@ function redactQueryParam(
   return Array.isArray(value) ? value.map(redactOne) : redactOne(value);
 }
 
-/** Build the connect URL that points TCP at the validated IP, path/query intact. */
-function connectUrlFor(target: URL, address: string, family: 4 | 6): string {
-  const authority = family === 6 ? `[${address}]` : address;
-  const port = target.port ? `:${target.port}` : "";
-  return `${target.protocol}//${authority}${port}${target.pathname}${target.search}`;
+/**
+ * A shared connector that resolves + validates the target host and **pins the
+ * socket to the validated IP** on every new connection, then hands off to
+ * undici's default connector — so one long-lived {@link Agent} keeps connection
+ * pooling (keep-alive across requests to the same origin) without losing the
+ * SSRF IP-pin (ADR-0005 perf note). We dial the real origin (undici pools by
+ * origin and sets SNI/Host from it); the connector only rewrites the socket
+ * target to the validated IP.
+ *
+ * Validation runs per *new* socket. A pooled/keep-alive socket is already bonded
+ * to a validated IP, so reuse can only ever reach that same address — a DNS
+ * rebind between requests cannot redirect a live connection, and the next fresh
+ * connection re-resolves and re-validates. `resolveAndValidate` throws
+ * {@link SsrfBlockedError} for a blocked or unresolvable host; undici propagates
+ * it verbatim to the `request()` rejection, where the handler maps it to a 403
+ * `blocked` (preserving the old upfront-check semantics).
+ */
+function makeValidatingConnector(
+  allowPrivate: boolean,
+  timeoutMs: number,
+): buildConnector.connector {
+  const base = buildConnector({ timeout: timeoutMs });
+  return function connect(opts, callback): void {
+    resolveAndValidate(opts.hostname, allowPrivate).then(
+      (pinned) => {
+        // Dial the validated IP literal; keep SNI + cert identity on the real
+        // hostname. undici leaves `servername` unset for the connector, so it
+        // must be pinned here exactly as the old per-request `connect.servername`
+        // did — otherwise the default connector would derive SNI from the IP.
+        base(
+          { ...opts, hostname: pinned.address, servername: opts.servername ?? opts.hostname },
+          callback,
+        );
+      },
+      (err: unknown) => callback(err instanceof Error ? err : new Error(String(err)), null),
+    );
+  };
 }
 
-export function makeProxyHandler(deps: ProxyDeps) {
-  return async function proxyHandler(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+export interface ProxyHandler {
+  handler: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+  /** The shared dispatcher — close it on app teardown to drain pooled sockets. */
+  dispatcher: Agent;
+}
+
+export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
+  // One shared dispatcher for the process lifetime: the SSRF validate-and-pin
+  // moved into the connector (see makeValidatingConnector), so pooling/keep-alive
+  // is recovered without losing the IP-pin (ADR-0005 perf note). Redirects are
+  // still NEVER followed: undici 7 chases a redirect only when a `redirect`
+  // interceptor is composed onto the dispatcher, and we compose none — a plain
+  // Agent returns the 3xx verbatim (belt-and-suspenders, `Location` is also
+  // stripped by the response blocklist so the browser can't chase it — issue #10).
+  const dispatcher = new Agent({
+    connect: makeValidatingConnector(deps.allowPrivate, deps.limits.timeoutMs),
+    headersTimeout: deps.limits.timeoutMs,
+    bodyTimeout: deps.limits.timeoutMs,
+  });
+
+  async function proxyHandler(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     const token = req.headers[INSTRUCTION_HEADER];
     const targetRaw = req.headers[TARGET_HEADER];
     const method = (req.headers[METHOD_HEADER] ?? "GET").toString().toUpperCase();
@@ -195,28 +246,11 @@ export function makeProxyHandler(deps: ProxyDeps) {
       injected = applyInjection(target, headers, resolved.injection, resolved.value);
     }
 
-    // SSRF: resolve + validate every address, then pin the connection to it.
-    let pinned;
-    try {
-      pinned = await resolveAndValidate(target.hostname, deps.allowPrivate);
-    } catch (err) {
-      if (err instanceof SsrfBlockedError) return fail(reply, 403, "blocked", err.message);
-      return fail(reply, 502, "upstream_error", "target resolution failed");
-    }
+    // SSRF: the shared dispatcher's connector resolves + validates every address
+    // and pins the socket to it (see makeValidatingConnector) — a blocked or
+    // unresolvable host throws SsrfBlockedError, surfaced on the `request()`
+    // rejection below and mapped to 403 `blocked`.
 
-    // TCP to the validated IP; SNI/cert checked against the real hostname; Host
-    // header carries the original authority. Redirects are NEVER followed: undici
-    // 7 follows a redirect only when a `redirect` interceptor is composed onto the
-    // dispatcher (`.compose(interceptors.redirect({ maxRedirections }))`), and we
-    // deliberately compose none — a plain Agent returns the 3xx verbatim. So a 302
-    // to the IMDS IP comes back as data, never chased; belt-and-suspenders, its
-    // `Location` is stripped by the response blocklist so the browser can't chase
-    // it either (ADR-0005, issue #10).
-    const dispatcher = new Agent({
-      connect: { servername: target.hostname },
-      headersTimeout: deps.limits.timeoutMs,
-      bodyTimeout: deps.limits.timeoutMs,
-    });
     // Count the request bytes on the way out: a chunked / CL-absent / lying-CL
     // upload can't stream unbounded egress-billed bandwidth past the cap. A trip
     // destroys req.raw and errors the undici upload → the catch maps it to 413.
@@ -228,9 +262,12 @@ export function makeProxyHandler(deps: ProxyDeps) {
         });
 
     try {
-      const upstream = await request(connectUrlFor(target, pinned.address, pinned.family), {
+      // Dial the real origin: undici pools by origin (keep-alive), derives the
+      // Host header and TLS SNI from it, and the connector rewrites the socket
+      // target to the validated IP.
+      const upstream = await request(target.href, {
         method,
-        headers: { ...headers, host: target.host },
+        headers,
         body: requestBody,
         dispatcher,
       });
@@ -261,9 +298,10 @@ export function makeProxyHandler(deps: ProxyDeps) {
       }
       // The response body is streamed verbatim: an upstream that echoes the
       // secret (or a `?key=…` URL) into the body reaches the app. No header
-      // filter closes this — it is an accepted transparent-proxy residual.
-      // Close the per-request dispatcher once the body has fully streamed.
-      upstream.body.on("close", () => void dispatcher.close().catch(() => {}));
+      // filter closes this — it is an accepted transparent-proxy residual. The
+      // dispatcher is shared and long-lived, so the socket returns to the pool
+      // when the body drains — never closed per-request (that would defeat the
+      // pooling this connector exists to recover).
       // Count the response bytes: a chunked / CL-absent / lying-CL body can't
       // stream past the cap uncounted. Status + headers are already committed,
       // so a trip *truncates* the body (not a 502) — accepted per issue #8; we
@@ -275,12 +313,18 @@ export function makeProxyHandler(deps: ProxyDeps) {
         );
       });
       return reply.send(cappedBody);
-    } catch {
-      await dispatcher.close().catch(() => {});
+    } catch (err) {
       if (requestCapTripped) {
         return fail(reply, 413, "too_large", "request body exceeds the size cap");
       }
+      // The connector throws SsrfBlockedError for a blocked/unresolvable host;
+      // undici propagates it verbatim, so the old upfront-check semantics hold.
+      if (err instanceof SsrfBlockedError) {
+        return fail(reply, 403, "blocked", err.message);
+      }
       return fail(reply, 502, "upstream_error", "upstream request failed");
     }
-  };
+  }
+
+  return { handler: proxyHandler, dispatcher };
 }

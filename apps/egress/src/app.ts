@@ -44,16 +44,22 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
       }),
   });
 
+  const proxy = makeProxyHandler({
+    instructionKey: deps.instructionKey,
+    resolver: deps.resolver,
+    limits: deps.config.limits,
+    allowPrivate: deps.config.allowPrivate,
+    allowInsecureConnection: deps.config.allowInsecureConnection,
+  });
+  // The proxy holds one shared, long-lived dispatcher (connection pooling +
+  // per-connection SSRF pin); drain its pooled sockets on teardown so tests and
+  // graceful shutdown don't leak keep-alive handles.
+  app.addHook("onClose", () => proxy.dispatcher.close());
+
   app.route({
     method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     url: "/proxy",
-    handler: makeProxyHandler({
-      instructionKey: deps.instructionKey,
-      resolver: deps.resolver,
-      limits: deps.config.limits,
-      allowPrivate: deps.config.allowPrivate,
-      allowInsecureConnection: deps.config.allowInsecureConnection,
-    }),
+    handler: proxy.handler,
   });
 
   return app;
