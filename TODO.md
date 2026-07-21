@@ -15,8 +15,6 @@ Legend for gating conditions:
 
 ## Dependency-minimal edge — filed defects
 
-- [x] **Harden the LLM SSE parser.** No per-event byte cap and LF-only: a CRLF stream causes unbounded buffering and a trailing `\r` leaks into the payload. — ADR-0003, issue #12 _(done: byte-capped buffer, CRLF/bare-CR framing, StringDecoder for multibyte chunk boundaries — `provider.ts`)_
-- [x] **Count the app-data size cap in bytes, not UTF-16 code units.** — ADR-0003, issue #12 _(done: `jsonByteLength` + byte-based key cap — `data-handler.ts`)_
 - [ ] _(Consider)_ **Trim `openid-client` to a JWKS-only verifier.** Heaviest trusted-path dependency. — ADR-0003
 - [ ] _(Consider)_ **Add a CI dependency-allowlist** to make the dependency-minimal rule mechanical. — ADR-0003
 
@@ -24,17 +22,13 @@ Legend for gating conditions:
 
 ## Auth hardening
 
-- [x] **Raise scrypt cost.** Currently `N=2^14`, 8× below OWASP's `2^17`. — ADR-0004 (ISSUE-08) _(done: `N=2^17` in `@azx-pbc/shared` `SCRYPT_PARAMS` — one source both planes derive from; mandatory `maxmem` (128 MiB working set > Node's 32 MiB default); edge caps concurrent derivations to bound the memory-exhaustion surface on the unauthenticated login path; flag-day reset migration nulls pre-bump credentials for re-mint)_
 - [ ] **Add an admin-kill / session-revocation path.** None exists today; group-revocation is stale until refresh (≤ 60 min). — ADR-0004 (ISSUE-11)
 - [ ] **Restrict `password` visibility to explicit demo-only / no-production-data.** Today it's soft "demo convenience" with no data-class ban. — ADR-0004
-- [x] **Fix the login-throttle TOCTOU** (check-then-increment is non-atomic; multiplies under replicas) — see the multi-replica item below. — ADR-0004 (ISSUE-15), issue #13 _(done: the throttle is now **reserve-first** over a shared atomic counter — `LoginThrottle.reserve()` does one `INSERT … ON CONFLICT DO UPDATE … RETURNING` (`gateway/counterStore.ts`), so the increment and the limit test are one statement; `passwordLogin.ts` reserves before scrypt. Concurrency asserted in `counterStore.integration.test.ts`.)_
 
 ---
 
 ## Pre-M5 — before the production pilot
 
-- [x] **Revoke `helix_portal` `UPDATE`/`DELETE` on `gateway_calls`.** One line; the portal role can currently rewrite/delete metering history, contradicting the append-only claim (`schema.prisma:187`). — ADR-0021, issue #17 _(done: migration `20260721120000_gateway_calls_portal_readonly` revokes INSERT/UPDATE/DELETE — portal is now SELECT-only, so append-only binds every writer role, not just the edge; `db-init/01-roles.sql` carve-out documented; `schema.prisma` comment now grant-backed; adversarial guard in `portal-rls.integration.test.ts` asserts portal writes reject with SQLSTATE 42501. Append-only-by-grant, **not** tamper-evidence — hash chain + external anchoring remains the deferred fast-follow below.)_
-- [x] **Fix the in-memory throttle for the shipped multi-replica infra.** Infra ships `minReplicas=1, maxReplicas=3`, so the N× throttle weakening is live. Before M5: pin `maxReplicas=1` **or** land a shared atomic counter (DB `UPDATE … RETURNING` / Redis); schedule `loginThrottle.sweep()` on an interval (ISSUE-07, currently never scheduled → unbounded map growth); configure `trustProxy` correctly (`req.ip` may collapse or be XFF-spoofable). — ADR-0011 / ADR-0004, issue #13 _(done: chose the shared-atomic-counter branch (not Redis — kept the edge dependency-minimal, Postgres is already an edge dep). Both the anon IP limiter and the login throttle now go through a Postgres-backed `CounterStore` (`rate_counters` table, migration `20260721215912`), so the limits hold across replicas; one interval sweep in `server.ts` GCs both (fixes ISSUE-07). `EDGE_TRUST_PROXY` is now a config knob (`config.ts`, wired to Fastify `trustProxy`), default off. **Still open:** verify the correct hop count against the live Container Apps ingress before relying on per-client limits — tracked as a follow-up under issue #13.)_
 - [ ] **Verify + configure `EDGE_TRUST_PROXY` for the Container Apps ingress.** The shared-counter throttle above holds across replicas, but its key is `${req.ip}:${appId}` and `EDGE_TRUST_PROXY` defaults **off** — behind the external Envoy ingress `req.ip` may be the ingress hop, collapsing all clients into one bucket per app (and a too-trusting value makes `x-forwarded-for` spoofable). Determine the correct hop count against the live deployment, set `EDGE_TRUST_PROXY`, and confirm `req.ip` resolves to the real client before relying on per-client limits. — ADR-0011, issue #13 (residual)
 - [ ] **Strip the handoff token from access logs.** Default request logging / upstream proxies capture the `/_auth/complete?token=…` query string. Single-use + 30 s TTL bounds it, but prod log retention shouldn't persist it — add a log serializer that redacts `?token=` on that route (or a documented ops note). — issue #20 (part 3, not covered by the throttle fix)
 - [ ] **Make `ownsApp` an M5 exit criterion (BOLA/IDOR).** Secrets and app-scoped mutating routes perform no ownership check — any authenticated principal can rotate/delete another app's secrets. `ownerId` already exists; interim gate is a ~3-line `ownsApp` preHandler (handle nullable legacy `ownerId`). Test: a second operator cannot write another's app. — ADR-0007, issue #9 (DEC-01)
