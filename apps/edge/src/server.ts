@@ -84,6 +84,7 @@ const logRef: { current: RegistryLogger } = {
 const registry = new LiveRegistry({
   databaseUrl: config.databaseUrl,
   reconcileIntervalMs: config.reconcileIntervalMs,
+  statementTimeoutMs: config.statementTimeoutMs,
   log: {
     info: (msg) => logRef.current.info(msg),
     warn: (obj, msg) => logRef.current.warn(obj, msg),
@@ -91,7 +92,9 @@ const registry = new LiveRegistry({
 });
 
 // Auth stack — only when the config block is present (fail-closed otherwise).
-const sessions = config.auth ? new PgSessionStore(config.databaseUrl) : null;
+const sessions = config.auth
+  ? new PgSessionStore(config.databaseUrl, { statementTimeoutMs: config.statementTimeoutMs })
+  : null;
 const oidc = config.auth
   ? new OpenIdConnectClient(config.auth, `${publicOrigin(config, "auth")}/callback`, {
       info: (msg) => logRef.current.info(msg),
@@ -102,13 +105,19 @@ const oidc = config.auth
 // LLM gateway (M4). The metering/budget ledger comes up with the auth stack
 // (the capability requires a session); the vendor provider only when a key is
 // configured (otherwise the capability 503s — fail-closed, like auth).
-const usage: UsageStore | null = config.auth ? new PgUsageStore(config.databaseUrl) : null;
+const usage: UsageStore | null = config.auth
+  ? new PgUsageStore(config.databaseUrl, { statementTimeoutMs: config.statementTimeoutMs })
+  : null;
 // App-data capability (app-data design §3): comes up with the auth stack, like
 // the meter — every data verb is gated and caller-scoped.
-const appData: AppDataStore | null = config.auth ? new PgAppDataStore(config.databaseUrl) : null;
+const appData: AppDataStore | null = config.auth
+  ? new PgAppDataStore(config.databaseUrl, { statementTimeoutMs: config.statementTimeoutMs })
+  : null;
 // CSP report sink (§6.2) — append-only, no auth needed; always on (the edge
 // always has a DB connection for the registry).
-const cspReports = new PgCspReportStore(config.databaseUrl);
+const cspReports = new PgCspReportStore(config.databaseUrl, {
+  statementTimeoutMs: config.statementTimeoutMs,
+});
 // Anonymous-tier per-IP gateway limiter (app-data design §7). Owned here so it
 // can be swept on an interval; passed into the app for both gateway handlers.
 const anonRateLimiter = new IpRateLimiter(config.anonRateLimit);

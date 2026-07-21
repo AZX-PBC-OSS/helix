@@ -26,7 +26,7 @@ App-data isolation uses Row-Level Security with `FORCE ROW LEVEL SECURITY` and `
 ## Review notes (2026-06-25)
 
 Verified **sound**: `set_config` is parameterized (no injection), RLS fails closed (missing GUC → NULL → zero rows), `app_secrets` deny confirmed by integration test. Residual hardening, not breaches:
-- No `statement_timeout` on edge pools → pool-exhaustion DoS (ISSUE-05).
+- ~~No `statement_timeout` on edge pools → pool-exhaustion DoS (ISSUE-05).~~ **Resolved (2026-07-21):** every edge pg pool is built through `createEdgePool` (`apps/edge/src/db/pool.ts`), which applies a per-query `statement_timeout` (Postgres-enforced, so it holds even under a starved event loop). Default 10 s, `EDGE_STATEMENT_TIMEOUT_MS` to tune; covers all five stores plus the registry listener's pool and LISTEN client.
 - `gateway_calls` global SELECT + `sessions` full DML, no RLS → cross-tenant read under edge RCE (ISSUE-12).
 - `app_collection_items` has no RLS → cross-app write pollution (ISSUE-13).
 - Make `NOBYPASSRLS` explicit in the role bootstrap.

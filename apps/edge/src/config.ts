@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./db/pool.js";
+
 /**
  * Edge configuration, resolved once at boot from the environment (project plan
  * §3: config selects implementations per environment). Everything the request
@@ -119,6 +121,12 @@ export interface EdgeConfig {
   tls: { certFile: string; keyFile: string } | null;
   /** Full projection reload interval — the LISTEN/NOTIFY safety net. */
   reconcileIntervalMs: number;
+  /**
+   * Per-query `statement_timeout` (ms) applied to every edge Postgres pool so a
+   * slow/stuck query can't pin a pooled connection and exhaust the pool — a DoS
+   * the exposed plane must resist (ADR-0002 ISSUE-05 / issue #12). `0` disables.
+   */
+  statementTimeoutMs: number;
   /**
    * LLM gateway vendor settings (architecture §6.1, M4). Always present with
    * defaults; whether the capability is *enabled* is gated separately by egress
@@ -454,6 +462,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     tls,
     reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
+    statementTimeoutMs: Number(
+      env.EDGE_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS,
+    ),
     llm: {
       endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
       anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",

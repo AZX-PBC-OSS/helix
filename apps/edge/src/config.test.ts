@@ -54,6 +54,7 @@ describe("loadConfig", () => {
     expect(config.blob.container).toBe("app-bundles");
     expect(config.allowUnauthenticated).toBe(false);
     expect(config.reconcileIntervalMs).toBe(60_000);
+    expect(config.statementTimeoutMs).toBe(10_000);
     expect(config.auth).toBeNull();
     expect(config.tls).toEqual({
       certFile: "/certs/localtest-me.pem",
@@ -70,11 +71,13 @@ describe("loadConfig", () => {
       BLOB_CONTAINER: "bundles",
       EDGE_DEV_ALLOW_UNAUTHENTICATED: "true",
       EDGE_RECONCILE_INTERVAL_MS: "5000",
+      EDGE_STATEMENT_TIMEOUT_MS: "3000",
     });
     expect(config.baseDomain).toBe("azx-labs.com");
     expect(config.blob.container).toBe("bundles");
     expect(config.allowUnauthenticated).toBe(true);
     expect(config.reconcileIntervalMs).toBe(5000);
+    expect(config.statementTimeoutMs).toBe(3000);
   });
 
   it("throws a clear error on missing requirements", () => {

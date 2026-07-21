@@ -1,5 +1,6 @@
-import { Pool } from "pg";
+import { type Pool } from "pg";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { sendNotFound } from "../errors.js";
 
@@ -27,8 +28,11 @@ export interface CspReportStore {
 export class PgCspReportStore implements CspReportStore {
   #pool: Pool;
 
-  constructor(databaseUrl: string, opts: { max?: number } = {}) {
-    this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 4 });
+  constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
+    this.#pool = createEdgePool(databaseUrl, {
+      max: opts.max ?? 4,
+      statementTimeoutMs: opts.statementTimeoutMs,
+    });
   }
 
   async record(report: CspReportRecord): Promise<void> {

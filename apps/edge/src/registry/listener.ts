@@ -1,4 +1,5 @@
 import pg from "pg";
+import { createEdgePool, DEFAULT_STATEMENT_TIMEOUT_MS } from "../db/pool.js";
 import { RegistryProjection, type RegistryEntry, type RegistryReader } from "./projection.js";
 
 /**
@@ -26,6 +27,7 @@ export interface RegistryLogger {
 export class LiveRegistry implements RegistryReader {
   #databaseUrl: string;
   #reconcileIntervalMs: number;
+  #statementTimeoutMs: number;
   #log: RegistryLogger;
   #pool: pg.Pool;
   #projection: RegistryProjection;
@@ -37,12 +39,21 @@ export class LiveRegistry implements RegistryReader {
   #backoffMs = BACKOFF_INITIAL_MS;
   #stopped = false;
 
-  constructor(opts: { databaseUrl: string; reconcileIntervalMs: number; log: RegistryLogger }) {
+  constructor(opts: {
+    databaseUrl: string;
+    reconcileIntervalMs: number;
+    statementTimeoutMs?: number;
+    log: RegistryLogger;
+  }) {
     this.#databaseUrl = opts.databaseUrl;
     this.#reconcileIntervalMs = opts.reconcileIntervalMs;
+    this.#statementTimeoutMs = opts.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS;
     this.#log = opts.log;
     // Read-only projection queries only — two connections is plenty.
-    this.#pool = new pg.Pool({ connectionString: opts.databaseUrl, max: 2 });
+    this.#pool = createEdgePool(opts.databaseUrl, {
+      max: 2,
+      statementTimeoutMs: this.#statementTimeoutMs,
+    });
     this.#projection = new RegistryProjection(this.#pool, {
       onLoadError: (err) =>
         this.#log.warn({ err }, "registry projection load failed; serving stale"),
@@ -85,7 +96,10 @@ export class LiveRegistry implements RegistryReader {
     if (this.#stopped) return;
     // Dedicated client, never a pool client: pool recycling silently drops
     // LISTEN registrations.
-    const client = new pg.Client({ connectionString: this.#databaseUrl });
+    const client = new pg.Client({
+      connectionString: this.#databaseUrl,
+      statement_timeout: this.#statementTimeoutMs,
+    });
     try {
       client.on("notification", () => this.#onNotify());
       client.on("error", (err) => this.#onListenerDown(err));

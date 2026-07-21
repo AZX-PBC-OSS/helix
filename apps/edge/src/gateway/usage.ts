@@ -1,4 +1,6 @@
-import { Pool } from "pg";
+import { type Pool } from "pg";
+
+import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 
 /**
  * The gateway call ledger (architecture §6.1/§6.3, §8) — metering + audit and
@@ -78,8 +80,11 @@ export const DATA_WRITE_VERBS = ["user.put", "collection.append", "shared.put"] 
 export class PgUsageStore implements UsageStore {
   #pool: Pool;
 
-  constructor(databaseUrl: string, opts: { max?: number } = {}) {
-    this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 10 });
+  constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
+    this.#pool = createEdgePool(databaseUrl, {
+      max: opts.max ?? 10,
+      statementTimeoutMs: opts.statementTimeoutMs,
+    });
   }
 
   async llmSpendMicroUsd(appId: string): Promise<LlmSpend> {

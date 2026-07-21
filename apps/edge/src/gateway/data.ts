@@ -1,4 +1,6 @@
-import { Pool, type PoolClient } from "pg";
+import { type Pool, type PoolClient } from "pg";
+
+import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 
 /**
  * App data storage (architecture §6.1, app-data design §3) — the gateway's
@@ -64,8 +66,11 @@ export interface AppDataStore {
 export class PgAppDataStore implements AppDataStore {
   #pool: Pool;
 
-  constructor(databaseUrl: string, opts: { max?: number } = {}) {
-    this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 10 });
+  constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
+    this.#pool = createEdgePool(databaseUrl, {
+      max: opts.max ?? 10,
+      statementTimeoutMs: opts.statementTimeoutMs,
+    });
   }
 
   /**

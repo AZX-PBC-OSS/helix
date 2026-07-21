@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { Pool } from "pg";
+import { type Pool } from "pg";
+
+import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 
 /**
  * Server-side app-user sessions (architecture Appendix A.4), in the portal-
@@ -75,8 +77,11 @@ function toGroups(value: unknown): string[] {
 export class PgSessionStore implements SessionStore {
   #pool: Pool;
 
-  constructor(databaseUrl: string, opts: { max?: number } = {}) {
-    this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 10 });
+  constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
+    this.#pool = createEdgePool(databaseUrl, {
+      max: opts.max ?? 10,
+      statementTimeoutMs: opts.statementTimeoutMs,
+    });
   }
 
   async createPending(session: Session): Promise<void> {
