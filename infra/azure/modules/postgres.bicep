@@ -5,10 +5,11 @@
 // FQDN resolves to its private IP through the postgres private DNS zone.
 //
 // This module provisions the SERVER and the `helix` database only. The three
-// least-privilege runtime roles (helix_portal / helix_edge / helix_egress) and
-// their GRANTs are NOT infrastructure — they come from the role SQL + Prisma
-// `db:deploy`, run post-deploy as the admin (see README). The per-role
-// connection strings are assembled in main.bicep into kv-platform secrets.
+// least-privilege runtime roles (helix_portal / helix_edge / helix_egress,
+// each NOBYPASSRLS) and their GRANTs are NOT infrastructure — they come from
+// the role SQL (`infra/azure/sql/01-roles.sql`) + Prisma `db:deploy`, run
+// post-deploy as the admin (see README step 4). The per-role connection strings
+// are assembled in main.bicep into kv-platform secrets.
 
 @description('Azure region.')
 param location string

@@ -85,6 +85,7 @@ Set the secret env vars, then deploy. ACR comes up empty; the apps are skipped.
 ```bash
 export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24)
 export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24)
+export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24)   # role created in step 4; runtime wiring is a follow-up
 export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24)
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
@@ -123,16 +124,33 @@ docker push $ACR/helix-edge:$TAG && docker push $ACR/helix-portal:$TAG && docker
 ### 4. Create the Postgres runtime roles + run migrations
 
 The server and `helix` DB exist; the least-privilege roles and grants do not yet.
-From inside the VNet, connect as the admin and run the role SQL (the prod analog
-of `.devcontainer/db-init/01-roles.sql`) with the **same passwords** you set
-above, then apply migrations:
+From inside the VNet, connect as the admin and run the committed role SQL
+(`sql/01-roles.sql` — the prod analog of `.devcontainer/db-init/01-roles.sql`,
+with `NOBYPASSRLS` explicit on all three roles) with the **same passwords** you
+set above, then apply migrations (whose per-table GRANTs are guarded by an
+`IF EXISTS role` check, so the roles must exist first):
 
 ```bash
-# roles: CREATE ROLE helix_edge LOGIN PASSWORD '$HELIX_EDGE_DB_PASSWORD' ...
-#        CREATE ROLE helix_egress LOGIN PASSWORD '$HELIX_EGRESS_DB_PASSWORD' ...
-DATABASE_URL="postgresql://helixadmin:***@<pgFqdn>:5432/helix?sslmode=require" \
-  pnpm --filter @azx-pbc/portal db:deploy
+ADMIN_URL="postgresql://helixadmin:$HELIX_PG_ADMIN_PASSWORD@<pgFqdn>:5432/helix?sslmode=require"
+
+# 1. create the three least-privilege runtime roles (NOBYPASSRLS, per-role passwords)
+psql "$ADMIN_URL" \
+  -v edge_password="$HELIX_EDGE_DB_PASSWORD" \
+  -v portal_password="$HELIX_PORTAL_DB_PASSWORD" \
+  -v egress_password="$HELIX_EGRESS_DB_PASSWORD" \
+  -v ON_ERROR_STOP=1 \
+  -f sql/01-roles.sql
+
+# 2. apply migrations as the owner (this issues the per-table edge/egress grants)
+DATABASE_URL="$ADMIN_URL" pnpm --filter @azx-pbc/portal db:deploy
 ```
+
+> **Note:** `main.bicep` currently wires the portal container's `DATABASE_URL`
+> to the **admin** connection (`main.bicep:238`), not `helix_portal`, so the
+> `helix_portal` role created here is provisioned and least-privilege-ready but
+> is not yet the portal runtime's identity in prod — closing that (a
+> `portal-database-url` built from `HELIX_PORTAL_DB_PASSWORD`) is a tracked
+> follow-up. `helix_edge` / `helix_egress` are wired to their roles today.
 
 ### 5. Phase 2 — deploy the apps (`deployApps=true`)
 

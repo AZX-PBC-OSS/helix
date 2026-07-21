@@ -11,12 +11,19 @@
 -- reset (`pnpm --filter @azx-pbc/portal db:reset` re-seeds schema, but role
 -- creation needs the volume recreated: `docker compose down -v` / rebuild).
 
-CREATE ROLE helix_portal LOGIN PASSWORD 'helix_portal' NOINHERIT;
-CREATE ROLE helix_edge   LOGIN PASSWORD 'helix_edge'   NOINHERIT;
+-- NOBYPASSRLS is the CREATE ROLE default, but we state it explicitly on every
+-- runtime role: it is the property the app_data / gateway_calls / sessions /
+-- app_collection_items RLS backstop leans on (a BYPASSRLS role would sail past
+-- every partition policy), and the control plane's cross-app reads deliberately
+-- route through the permissive `*_portal_all` policies rather than a bypass — so
+-- helix_portal must not bypass either. Explicit here so a future edit can't
+-- silently flip the attribute (ADR-0002). None of these roles is a superuser.
+CREATE ROLE helix_portal LOGIN PASSWORD 'helix_portal' NOINHERIT NOBYPASSRLS;
+CREATE ROLE helix_edge   LOGIN PASSWORD 'helix_edge'   NOINHERIT NOBYPASSRLS;
 -- The mechanism plane (azx-egress): resolves & injects connection secrets. It is
 -- the only runtime role with SELECT on app_secrets.material; like helix_edge it
 -- gets NO blanket grant (fail-closed) — every table is explicit in a migration.
-CREATE ROLE helix_egress LOGIN PASSWORD 'helix_egress' NOINHERIT;
+CREATE ROLE helix_egress LOGIN PASSWORD 'helix_egress' NOINHERIT NOBYPASSRLS;
 
 -- All runtime roles connect to the same database and need the schema on their
 -- search_path. The test database is created later (vitest global setup) as the
