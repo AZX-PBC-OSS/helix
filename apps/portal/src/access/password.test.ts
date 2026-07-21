@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scrypt as scryptCb } from "node:crypto";
+import { type BinaryLike, scrypt as scryptCb, type ScryptOptions } from "node:crypto";
 import { promisify } from "node:util";
 import { SCRYPT_PARAMS } from "@azx-pbc/shared";
 import {
@@ -12,7 +12,13 @@ import {
 } from "./password.js";
 import { WORDLIST } from "./wordlist.js";
 
-const scrypt = promisify(scryptCb);
+// Pin the options-bearing overload — see apps/portal/src/access/password.ts.
+const scrypt = promisify(scryptCb) as (
+  password: BinaryLike,
+  salt: BinaryLike,
+  keylen: number,
+  options: ScryptOptions,
+) => Promise<Buffer>;
 
 // The crypto module reads PORTAL_SECRET lazily; the harness sets it, but these
 // tests don't import the harness, so pin it here too.

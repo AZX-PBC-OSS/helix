@@ -1,10 +1,12 @@
 import {
+  type BinaryLike,
   createCipheriv,
   createDecipheriv,
   hkdfSync,
   randomBytes,
   randomInt,
   scrypt as scryptCb,
+  type ScryptOptions,
 } from "node:crypto";
 import { promisify } from "node:util";
 import { SCRYPT_KEYLEN, SCRYPT_PARAMS } from "@azx-pbc/shared";
@@ -23,7 +25,15 @@ import { WORDLIST } from "./wordlist.js";
  *    re-display. Never projected, never read by the edge.
  */
 
-const scrypt = promisify(scryptCb);
+// Explicit signature: `promisify`'s overload inference doesn't reliably pick
+// scrypt's options-bearing form here, so pin it — we always pass SCRYPT_PARAMS.
+// (Mirrors apps/edge/src/auth/password.ts.)
+const scrypt = promisify(scryptCb) as (
+  password: BinaryLike,
+  salt: BinaryLike,
+  keylen: number,
+  options: ScryptOptions,
+) => Promise<Buffer>;
 
 /**
  * scrypt keylen + cost live in `@azx-pbc/shared` (the one source both planes
