@@ -139,8 +139,8 @@ the portal migration `20260616000001_edge_role_grants` (see
 > **boot-fails** unless `EDGE_DATABASE_URL` (the least-privilege role) is set — it refuses to fall
 > back to the owner `DATABASE_URL`, which would bypass RLS and silently defeat the split. Outside
 > production the owner-DSN fallback remains, as a convenience for setups without the role split.
-> Still not enforced end to end: the portal connects as the schema owner rather than a dedicated
-> `helix_portal` role (tracked in `TODO.md`).
+> The portal now follows the same pattern: it connects as `helix_portal` via `PORTAL_DATABASE_URL`,
+> required in production with the owner-DSN fallback refused (ADR-0002).
 
 ## Planned / not yet built
 

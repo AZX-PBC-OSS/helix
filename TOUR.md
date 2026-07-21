@@ -77,14 +77,14 @@ least-privilege DB role, so even an in-process compromise hits a wall at the dat
   `app_secrets` at all** — an edge RCE cannot read a single key. This is the load-bearing
   role, exercised by `role-split.integration.test.ts`.
 - `helix_egress` — `SELECT` on secrets + `UPDATE` on one `lastUsedAt` column. Nothing else.
-- `helix_portal` — the privileged role (schema owner).
+- `helix_portal` — the privileged control-plane role: full DML, but **not** the schema owner
+  (migrations run as `helix`).
 
-Caveat ([ADR-0002](docs/adr/0002-postgres-role-split-rls.md)): the split isn't fully
-realized yet. The portal currently connects as the schema _owner_ rather than as
-`helix_portal`, and the edge silently falls back to the owner DSN if `EDGE_DATABASE_URL` is
-unset (`EDGE_DATABASE_URL ?? DATABASE_URL`) — both are tracked to be hardened (boot-fail on
-a missing role DSN) before M5. The runtime split and the role split say the same thing
-twice, in two enforcement layers.
+Both runtime roles now connect least-privilege ([ADR-0002](docs/adr/0002-postgres-role-split-rls.md)):
+the portal as `helix_portal` (`PORTAL_DATABASE_URL`), the edge as `helix_edge` (`EDGE_DATABASE_URL`).
+In production each requires its own role DSN and boot-fails rather than fall back to the owner DSN
+(which would bypass RLS and defeat the split); outside production the owner fallback stays a dev
+convenience. The runtime split and the role split say the same thing twice, in two enforcement layers.
 
 → Deeper: architecture [§3](docs/platform-architecture.md) (system overview, "why three"),
 [ADR-0001](docs/adr/0001-three-runtime-split.md) / [ADR-0012](docs/adr/0012-edge-portal-codeploy.md)

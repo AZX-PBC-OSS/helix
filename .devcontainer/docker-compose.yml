@@ -11,10 +11,14 @@ services:
       - path: .env.local
         required: false
     environment:
-      # Migrations + portal runtime connect as the object owner (== helix_migrate
-      # in dev). The edge connects as the least-privilege runtime role instead
-      # (app-data design §2.1) — created by db-init/01-roles.sql.
+      # DATABASE_URL is the object owner (== helix_migrate in dev): migrations run
+      # as it, and it's the vitest/CLI DSN. The runtime services each connect as
+      # their own least-privilege role instead (app-data design §2.1, ADR-0002) —
+      # created by db-init/01-roles.sql. The portal runs as helix_portal (full
+      # DML, but not the owner, so it can't DROP TABLE or bypass RLS as owner);
+      # the edge as helix_edge (tight per-table grants only).
       DATABASE_URL: postgresql://helix:helix@db:5432/helix
+      PORTAL_DATABASE_URL: postgresql://helix_portal:helix_portal@db:5432/helix
       EDGE_DATABASE_URL: postgresql://helix_edge:helix_edge@db:5432/helix
       # Dedicated test database (created + migrated by vitest global setup).
       TEST_DATABASE_URL: postgresql://helix:helix@db:5432/helix_test

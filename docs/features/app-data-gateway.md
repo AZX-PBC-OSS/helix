@@ -148,11 +148,11 @@ therefore grants the edge *nothing* until a migration explicitly says so — a f
 breaks loudly in staging rather than silently over-sharing. The target prod posture (app-data
 design §2) is a **fourth** principal, `helix_migrate`, that *owns* the objects and is the only role
 the migration step connects as: a table owner can `ALTER`/`DROP`/`GRANT`-self **and bypasses RLS**,
-so neither runtime role (`helix_edge`, `helix_portal`) may own tables. (Today both still connect as
-the `helix` owner; the per-role grants above are applied, the dedicated `helix_migrate`/runtime-role
-separation is the documented target — ADR-0002. `helix_edge` is the real, tested least-privilege
-role; the portal-as-owner connection and the edge's owner-DSN fallback are tracked to boot-fail on a
-missing role DSN before M5.)
+so neither runtime role (`helix_edge`, `helix_portal`) may own tables. (Both runtime roles now
+connect least-privilege — the edge as `helix_edge` (`EDGE_DATABASE_URL`), the portal as
+`helix_portal` (`PORTAL_DATABASE_URL`), required in production with the owner-DSN fallback refused.
+The remaining target is cosmetic: `helix` still doubles as owner *and* migration role — splitting a
+dedicated `helix_migrate` principal out from the owner is the documented follow-up — ADR-0002.)
 
 ## Try it
 

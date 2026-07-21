@@ -16,7 +16,7 @@ Legend for gating conditions:
 ## Postgres role split / RLS hardening
 
 - [x] **Boot-fail when the edge role DSN is absent.** `EDGE_DATABASE_URL ?? DATABASE_URL` silently connects the edge as schema owner, defeating the split — fail startup instead of falling back. — ADR-0002 _(Done: in production `loadConfig` refuses the `DATABASE_URL` fallback and requires `EDGE_DATABASE_URL`; the fallback stays only outside prod. `apps/edge/src/config.ts`, tests in `config.test.ts`.)_
-- [ ] **Realize `helix_portal` or correct the Decision text.** The portal connects as schema owner (no `PORTAL_DATABASE_URL`), so the `helix_portal` grants are dead code. — ADR-0002
+- [x] **Realize `helix_portal` or correct the Decision text.** The portal connects as schema owner (no `PORTAL_DATABASE_URL`), so the `helix_portal` grants are dead code. — ADR-0002 _(Done: the portal runtime now connects as `helix_portal` via `PORTAL_DATABASE_URL` — `resolvePortalRuntimeUrl` in `apps/portal/src/db/client.ts`, wired in the dev compose, required in prod with the owner-DSN fallback refused (mirrors the edge). Migrations stay on the `helix` owner. ADR-0002 Decision text corrected; grants are now live. Tests in `client.test.ts`.)_
 - [ ] **Add `statement_timeout` on the edge pools.** No timeout today → pool-exhaustion DoS. — ADR-0002 (ISSUE-05) / ADR-0003, issue #12
 - [ ] **Put RLS on `gateway_calls` and `app_collection_items`.** `gateway_calls` has global SELECT + `sessions` full DML with no RLS (cross-tenant read under edge RCE, ISSUE-12); `app_collection_items` has no RLS (cross-app write pollution, ISSUE-13). — ADR-0002
 - [ ] **Make `NOBYPASSRLS` explicit on `helix_edge` in the prod role bootstrap.** — ADR-0002

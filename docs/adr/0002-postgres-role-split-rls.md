@@ -11,7 +11,7 @@ The runtime split (ADR [0001](0001-three-runtime-split.md)) is a process boundar
 
 Each runtime connects as a distinct least-privilege Postgres role:
 
-- **`helix_portal`** — full DML; owns the schema and migrations (Prisma).
+- **`helix_portal`** — full DML runtime role for the control plane. It is **not** the schema owner: migrations run as the `helix` owner (Prisma), so a portal RCE holds DML but cannot `DROP TABLE` or bypass RLS as owner/superuser.
 - **`helix_edge`** — explicit per-table grants only: read the registry projection, append-only metering, INSERT-only on collection items, RLS-partitioned `app_data`. **No grant on `app_secrets` at all.**
 - **`helix_egress`** — `SELECT` on secrets + `UPDATE` on one `lastUsedAt` column.
 
@@ -35,7 +35,7 @@ Verified **sound**: `set_config` is parameterized (no injection), RLS fails clos
 
 WEAKEN — code claims verified; two **undisclosed** gaps to add (the `statement_timeout` / `sessions`-DML / `NOBYPASSRLS` items are already above):
 - An **owner-DSN fallback** — `apps/edge/src/config.ts:304` `EDGE_DATABASE_URL ?? DATABASE_URL`, where `DATABASE_URL` is the schema **owner**. If the role DSN is unset the edge connects as owner and the split is silently defeated. The running compose *does* set the role DSN, so this is a latent footgun — **boot-fail when the role DSN is absent** rather than fall back.
-- The **portal connects as the schema owner**, not `helix_portal` (no `PORTAL_DATABASE_URL` exists), so the `helix_portal` grants are effectively dead code. Realise the role or correct the Decision text. (The "split is silently defeated" thesis is otherwise an overstatement — the live config runs least-privilege and the role-split test passes.)
+- ~~The **portal connects as the schema owner**, not `helix_portal` (no `PORTAL_DATABASE_URL` exists), so the `helix_portal` grants are effectively dead code.~~ **Resolved (2026-07-21):** the portal runtime now connects as `helix_portal` via `PORTAL_DATABASE_URL` (`apps/portal/src/db/client.ts` `resolvePortalRuntimeUrl`, wired in the dev compose; required in production, owner-DSN fallback refused there — the same prod-strict shape as the edge's `EDGE_DATABASE_URL`). Migrations still run as the `helix` owner. The `helix_portal` grants are now live; the only remaining owner-bypass path in ADR-0002's model is closed. (The "split is silently defeated" thesis was otherwise an overstatement — the live config already ran least-privilege for the edge and the role-split test passed.)
 
 ### Shared-table RLS is *not* the classic foot-gun (2026-06-26)
 
