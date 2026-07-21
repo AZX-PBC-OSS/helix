@@ -462,9 +462,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     tls,
     reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
-    statementTimeoutMs: Number(
-      env.EDGE_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS,
-    ),
+    statementTimeoutMs: Number(env.EDGE_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),
     llm: {
       endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
       anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
