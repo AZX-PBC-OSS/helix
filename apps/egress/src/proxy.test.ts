@@ -1,9 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SignJWT } from "jose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  INSTRUCTION_AUDIENCE,
   INSTRUCTION_HEADER,
   INSTRUCTION_JWT_TYP,
   METHOD_HEADER,
@@ -60,7 +61,10 @@ function makeApp(allowPrivate: boolean, resolver: SecretResolver | null = fakeRe
     // its refusal path are covered in adversarial.test.ts — issue #11).
     allowInsecureConnection: true,
   } as EgressConfig;
-  return buildApp({ config, resolver, instructionKey: key });
+  // No burn store here: these functional tests each mint a fresh (unique jti)
+  // instruction, so replay protection is irrelevant; it's covered on its own in
+  // adversarial.test.ts.
+  return buildApp({ config, resolver, instructionKey: key, burnStore: null });
 }
 
 async function mint(claims: {
@@ -68,15 +72,20 @@ async function mint(claims: {
   connection?: string;
   appId?: string;
 }): Promise<string> {
+  // Unique requestId per call so a shared burn store (where wired) wouldn't
+  // reject the second mint as a replay.
+  const requestId = randomUUID();
   const jwt = new SignJWT({
     appId: claims.appId ?? "app-1",
     userOid: "user-1",
     capability: "fetch",
     origin: claims.origin,
-    requestId: "req-1",
+    requestId,
     ...(claims.connection ? { connection: claims.connection } : {}),
   })
     .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
+    .setJti(requestId)
+    .setAudience(INSTRUCTION_AUDIENCE)
     .setIssuedAt()
     .setExpirationTime("30s");
   return jwt.sign(key);

@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema } from "@azx-pbc/shared";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
+import type { InstructionBurnStore } from "./burn.js";
 import { makeProxyHandler } from "./proxy.js";
 
 /**
@@ -18,6 +19,8 @@ export interface EgressDeps {
   resolver: SecretResolver | null;
   /** HKDF-derived instruction-verify key (shared derivation with the edge). */
   instructionKey: Buffer;
+  /** One-time `jti` burn (issue #3). null ⇒ replay protection off (tests only). */
+  burnStore: InstructionBurnStore | null;
 }
 
 export function buildApp(deps: EgressDeps): FastifyInstance {
@@ -47,6 +50,7 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
   const proxy = makeProxyHandler({
     instructionKey: deps.instructionKey,
     resolver: deps.resolver,
+    burnStore: deps.burnStore,
     limits: deps.config.limits,
     allowPrivate: deps.config.allowPrivate,
     allowInsecureConnection: deps.config.allowInsecureConnection,

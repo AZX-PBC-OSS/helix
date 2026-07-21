@@ -3,6 +3,7 @@ import { jwtVerify } from "jose";
 import {
   type AttestedInstruction,
   AttestedInstructionSchema,
+  INSTRUCTION_AUDIENCE,
   INSTRUCTION_JWT_TYP,
   INSTRUCTION_KEY_INFO,
   INSTRUCTION_TTL_SECONDS,
@@ -41,11 +42,17 @@ export async function verifyInstruction(
     const { payload } = await jwtVerify(token, key, {
       algorithms: [ALG],
       typ: INSTRUCTION_JWT_TYP,
+      // Reject any token not audienced to egress — closes token passthrough
+      // (ADR-0013 Step 1). jose fails the verify if `aud` is absent or differs.
+      audience: INSTRUCTION_AUDIENCE,
       clockTolerance: clockToleranceSec,
       maxTokenAge: INSTRUCTION_TTL_SECONDS,
     });
     // jose only enforces exp/iat when present — absence must fail closed.
     if (typeof payload.exp !== "number" || typeof payload.iat !== "number") return null;
+    // `jti` is the one-time burn key; it must be present and equal the payload
+    // requestId the edge minted from (defense against a jti/requestId mismatch).
+    if (typeof payload.jti !== "string" || payload.jti !== payload.requestId) return null;
     const parsed = AttestedInstructionSchema.safeParse(payload);
     return parsed.success ? parsed.data : null;
   } catch {

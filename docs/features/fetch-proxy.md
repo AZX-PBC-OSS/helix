@@ -142,15 +142,17 @@ Fetch proxy** card.
   attested. The instruction reuses the OIDC-handoff primitives (`jose` + HKDF off
   `HELIX_INSTRUCTION_SECRET`), domain-separated by a distinct `typ` and HKDF info
   string, carrying `(app, user, capability, origin, connection?, request-id)`
-  with a 30 s TTL. **This seam does not, today, contain an *edge* compromise:**
-  the instruction is signed with a **symmetric secret both planes hold**, so a
-  compromised edge can forge an instruction for any `appId` — there is no `jti`
-  replay-burn or `aud` check, and `method`/`path` are unbound. The edge still
-  cannot *read* `app_secrets` directly (no DB grant), but it can steer egress to
-  spend a connection. Hardening is tracked: jti/aud burn now (#3), per-action
-  authz + method/path binding before multi-tenant (#6), asymmetric (Ed25519)
-  signing post-M5 (ADR-0013). A header today; the shape is forward-compatible
-  with an mTLS/SPIFFE SVID later.
+  with a 30 s TTL. It now also carries `aud: "azx-egress"` and a `jti` (= the
+  request-id), **burned one-time at egress** so a captured instruction can't be
+  replayed within its TTL (ADR-0013 Step 1, issue #3 — `apps/egress/src/burn.ts`,
+  shared `instruction_jti` table). **This seam still does not contain an *edge*
+  compromise:** the instruction is signed with a **symmetric secret both planes
+  hold**, so a compromised edge can forge an instruction for any `appId`, and
+  `method`/`path` are still unbound. The edge cannot *read* `app_secrets`
+  directly (no DB grant), but it can steer egress to spend a connection.
+  Remaining hardening is tracked: per-action authz + method/path binding before
+  multi-tenant (#6), asymmetric (Ed25519) signing post-M5 (ADR-0013). A header
+  today; the shape is forward-compatible with an mTLS/SPIFFE SVID later.
 - **The adoption spine** is three rungs that never fork the mental model: (1) the
   path-prefix wire contract `fetch('/_api/fetch/https://…')` — a mechanical
   string prefix that is codemod-able (a POST-envelope design was rejected because

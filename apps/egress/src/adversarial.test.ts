@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
@@ -6,6 +6,7 @@ import { SignJWT } from "jose";
 import { request as undiciRequest } from "undici";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  INSTRUCTION_AUDIENCE,
   INSTRUCTION_HEADER,
   INSTRUCTION_JWT_TYP,
   METHOD_HEADER,
@@ -16,6 +17,7 @@ import { buildApp } from "./app.js";
 import type { EgressConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";
 import type { ResolvedConnection, SecretResolver } from "./secrets.js";
+import { InMemoryBurnStore, type InstructionBurnStore } from "./burn.js";
 
 /**
  * The adversarial pass the fetch-proxy demands (fetch-proxy design §6): SSRF to
@@ -75,7 +77,11 @@ const resolver: SecretResolver = {
   close: async () => {},
 };
 
-function makeApp(allowPrivate: boolean, allowInsecureConnection = true) {
+function makeApp(
+  allowPrivate: boolean,
+  allowInsecureConnection = true,
+  burnStore: InstructionBurnStore | null = null,
+) {
   const config = {
     limits: { maxBodyBytes: 1024 * 1024, timeoutMs: 5000 },
     allowPrivate,
@@ -83,23 +89,26 @@ function makeApp(allowPrivate: boolean, allowInsecureConnection = true) {
     // for most tests; the issue #11 suite closes it to assert the prod guard.
     allowInsecureConnection,
   } as EgressConfig;
-  return buildApp({ config, resolver, instructionKey: key });
+  return buildApp({ config, resolver, instructionKey: key, burnStore });
 }
 
 async function mint(
   o: string,
   connection?: string,
   capability: "fetch" | "llm" = "fetch",
+  requestId: string = randomUUID(),
 ): Promise<string> {
   return new SignJWT({
     appId: "app-1",
     userOid: "u",
     capability,
     origin: o,
-    requestId: "r",
+    requestId,
     ...(connection ? { connection } : {}),
   })
     .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
+    .setJti(requestId)
+    .setAudience(INSTRUCTION_AUDIENCE)
     .setIssuedAt()
     .setExpirationTime("30s")
     .sign(key);
@@ -382,7 +391,8 @@ describe("egress body-size cap (issue #8)", () => {
       limits: { maxBodyBytes: CAP, timeoutMs: 5000 },
       allowPrivate: true,
     } as EgressConfig;
-    app = buildApp({ config, resolver, instructionKey: key });
+    // Body-size cap suite: replay protection is orthogonal, so no burn store.
+    app = buildApp({ config, resolver, instructionKey: key, burnStore: null });
     await app.listen({ port: 0, host: "127.0.0.1" });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   });
@@ -493,6 +503,98 @@ describe("egress instruction forgery", () => {
       method: "POST",
       url: "/proxy",
       headers: { [INSTRUCTION_HEADER]: wrong, [TARGET_HEADER]: `${origin}/` },
+    });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+  });
+});
+
+describe("egress instruction replay + audience (ADR-0013 Step 1, issue #3)", () => {
+  it("burns the jti: a replayed instruction is refused on the second use", async () => {
+    const app = makeApp(true, true, new InMemoryBurnStore());
+    const token = await mint(origin); // one instruction, sent twice
+    const send = () =>
+      app.inject({
+        method: "POST",
+        url: "/proxy",
+        headers: {
+          [INSTRUCTION_HEADER]: token,
+          [TARGET_HEADER]: `${origin}/`,
+          [METHOD_HEADER]: "GET",
+        },
+      });
+
+    const first = await send();
+    expect(first.statusCode).toBe(200);
+    expect(first.headers[OUTCOME_HEADER]).toBe("ok");
+
+    const second = await send();
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toMatchObject({ code: "replay" });
+    expect(second.headers[OUTCOME_HEADER]).toBe("refusal");
+    await app.close();
+  });
+
+  it("two distinct instructions both pass (only the identical jti is burned)", async () => {
+    const app = makeApp(true, true, new InMemoryBurnStore());
+    for (let i = 0; i < 2; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/proxy",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint(origin), // fresh jti each time
+          [TARGET_HEADER]: `${origin}/`,
+          [METHOD_HEADER]: "GET",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+    await app.close();
+  });
+
+  it("rejects a token with no audience (token passthrough)", async () => {
+    const app = makeApp(true);
+    const rid = randomUUID();
+    const noAud = await new SignJWT({
+      appId: "app-1",
+      userOid: "u",
+      capability: "fetch",
+      origin,
+      requestId: rid,
+    })
+      .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
+      .setJti(rid)
+      .setIssuedAt()
+      .setExpirationTime("30s")
+      .sign(key);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: { [INSTRUCTION_HEADER]: noAud, [TARGET_HEADER]: `${origin}/` },
+    });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("rejects a token whose jti does not match its requestId", async () => {
+    const app = makeApp(true);
+    const mismatched = await new SignJWT({
+      appId: "app-1",
+      userOid: "u",
+      capability: "fetch",
+      origin,
+      requestId: randomUUID(),
+    })
+      .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
+      .setJti(randomUUID()) // different from requestId
+      .setAudience(INSTRUCTION_AUDIENCE)
+      .setIssuedAt()
+      .setExpirationTime("30s")
+      .sign(key);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: { [INSTRUCTION_HEADER]: mismatched, [TARGET_HEADER]: `${origin}/` },
     });
     expect(res.statusCode).toBe(401);
     await app.close();

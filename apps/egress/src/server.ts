@@ -4,6 +4,13 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";
 import { PgSecretResolver, type SecretResolver } from "./secrets.js";
+import { PgBurnStore } from "./burn.js";
+
+/**
+ * How often to drop expired `instruction_jti` rows. Shorter than the retention
+ * so the table stays tiny; a jti that outlives its row can't verify anyway.
+ */
+const BURN_SWEEP_INTERVAL_MS = 60_000;
 
 /**
  * Dev convenience: load `apps/egress/.env.local` (gitignored) before config, so
@@ -53,8 +60,23 @@ const resolver: SecretResolver | null = store
   ? new PgSecretResolver(config.databaseUrl, store)
   : null;
 
-const app = buildApp({ config, resolver, instructionKey });
+// The replay burn always runs — it needs only the DB (helix_egress), not the
+// secret store, and protects keyless calls too (issue #3).
+const burnStore = new PgBurnStore(config.databaseUrl);
+
+const app = buildApp({ config, resolver, instructionKey, burnStore });
+
+// GC expired burn rows on an interval; unref so it never holds the process open.
+const burnSweep = setInterval(() => {
+  void burnStore
+    .sweep()
+    .catch((err: unknown) => app.log.warn({ err }, "instruction_jti sweep failed"));
+}, BURN_SWEEP_INTERVAL_MS);
+burnSweep.unref();
+
 app.addHook("onClose", async () => {
+  clearInterval(burnSweep);
+  await burnStore.close();
   await resolver?.close();
 });
 

@@ -5,7 +5,7 @@ import { request as undiciRequest } from "undici";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
-import { INSTRUCTION_JWT_TYP } from "@azx-pbc/shared";
+import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import {
@@ -129,6 +129,10 @@ describe("/_api/fetch", () => {
     expect(claims.origin).toBe("https://api.github.com");
     expect(claims.connection).toBeUndefined();
     expect(claims.userOid).toBe("anon");
+    // Instruction carries the aud + one-time jti (== requestId) egress asserts.
+    expect(claims.aud).toBe(INSTRUCTION_AUDIENCE);
+    expect(claims.jti).toBe(claims.requestId);
+    expect(typeof claims.jti).toBe("string");
     expect(usage.records).toContainEqual(
       expect.objectContaining({
         capability: "fetch",

@@ -83,10 +83,12 @@ export const RESPONSE_HEADER_BLOCKLIST: readonly string[] = [
  * status + this body) when the call is refused before/instead of an upstream
  * response. `blocked` is an SSRF refusal; `bad_target` a malformed/undecodable
  * target; `too_large` a request body over the size cap (413, refused before the
- * upstream call); `upstream_error` an egress/transport failure. (A *response*
- * over the cap cannot use this code — status + headers are already flushed by
- * the time the byte counter trips, so the body is truncated instead; see
- * issue #8 and `@azx-pbc/shared` `capBody`.)
+ * upstream call); `replay` a re-presented attested instruction whose one-time
+ * `jti` was already burned (409, refused at egress before any upstream call —
+ * ADR-0013 Step 1, issue #3); `upstream_error` an egress/transport failure. (A
+ * *response* over the cap cannot use this code — status + headers are already
+ * flushed by the time the byte counter trips, so the body is truncated instead;
+ * see issue #8 and `@azx-pbc/shared` `capBody`.)
  */
 export const FETCH_ERROR_CODES = [
   "forbidden",
@@ -94,6 +96,7 @@ export const FETCH_ERROR_CODES = [
   "bad_target",
   "blocked",
   "too_large",
+  "replay",
   "upstream_error",
 ] as const;
 export const FetchErrorCodeSchema = z.enum(FETCH_ERROR_CODES);

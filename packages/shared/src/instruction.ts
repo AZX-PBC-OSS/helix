@@ -13,8 +13,11 @@ import { z } from "zod";
  * `jose` / HKDF primitives as the OIDC handoff token (`apps/edge/src/auth`),
  * domain-separated by a distinct HKDF info string and JWT `typ`.
  *
- * The standard registered claims (`exp`, `iat`, `jti`, `aud`) are handled by the
- * signer/verifier; this schema is the application payload.
+ * Registered claims handled by the signer/verifier (not this payload schema):
+ * `exp`/`iat` (freshness), `aud` = {@link INSTRUCTION_AUDIENCE} (forbids token
+ * passthrough to any other verifier), and `jti` = the per-call `requestId` —
+ * burned one-time at egress so a captured instruction can't be replayed within
+ * its TTL (ADR-0013 Step 1, issue #3).
  */
 
 /**
@@ -48,3 +51,16 @@ export const INSTRUCTION_JWT_TYP = "helix-instruction+jwt";
 export const INSTRUCTION_KEY_INFO = "helix-instruction-v1";
 /** Short TTL: an instruction is minted per call and consumed immediately. */
 export const INSTRUCTION_TTL_SECONDS = 30;
+/**
+ * JWT `aud` — the egress trust domain. The edge stamps it on mint and egress
+ * asserts it on verify, so an instruction can only be redeemed at egress and
+ * nowhere else (no token passthrough; ADR-0013 Step 1, issue #3).
+ */
+export const INSTRUCTION_AUDIENCE = "azx-egress";
+/**
+ * How long egress remembers a burned `jti`. Must cover the whole window in which
+ * the signature still verifies: `INSTRUCTION_TTL_SECONDS` + the verifier's clock
+ * tolerance (5s) + margin. After this the token itself is stale (maxTokenAge
+ * rejects it), so forgetting the jti is safe (issue #3).
+ */
+export const INSTRUCTION_BURN_RETENTION_SECONDS = INSTRUCTION_TTL_SECONDS + 15;

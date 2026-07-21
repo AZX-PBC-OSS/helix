@@ -2,6 +2,7 @@ import { hkdfSync } from "node:crypto";
 import { SignJWT } from "jose";
 import {
   type AttestedInstruction,
+  INSTRUCTION_AUDIENCE,
   INSTRUCTION_JWT_TYP,
   INSTRUCTION_KEY_INFO,
   INSTRUCTION_TTL_SECONDS,
@@ -29,16 +30,23 @@ export function deriveInstructionKey(secret: Buffer): Buffer {
 
 /** Sign a fresh, short-lived instruction for one proxied call. */
 export async function mintInstruction(claims: AttestedInstruction, key: Buffer): Promise<string> {
-  return new SignJWT({
-    appId: claims.appId,
-    userOid: claims.userOid,
-    capability: claims.capability,
-    origin: claims.origin,
-    requestId: claims.requestId,
-    ...(claims.connection ? { connection: claims.connection } : {}),
-  })
-    .setProtectedHeader({ alg: ALG, typ: INSTRUCTION_JWT_TYP })
-    .setIssuedAt()
-    .setExpirationTime(`${INSTRUCTION_TTL_SECONDS}s`)
-    .sign(key);
+  return (
+    new SignJWT({
+      appId: claims.appId,
+      userOid: claims.userOid,
+      capability: claims.capability,
+      origin: claims.origin,
+      requestId: claims.requestId,
+      ...(claims.connection ? { connection: claims.connection } : {}),
+    })
+      .setProtectedHeader({ alg: ALG, typ: INSTRUCTION_JWT_TYP })
+      // `jti` = the per-call requestId: egress burns it one-time so a captured
+      // instruction can't be replayed inside its TTL. `aud` pins the token to the
+      // egress trust domain (no passthrough). Both asserted on the verify side.
+      .setJti(claims.requestId)
+      .setAudience(INSTRUCTION_AUDIENCE)
+      .setIssuedAt()
+      .setExpirationTime(`${INSTRUCTION_TTL_SECONDS}s`)
+      .sign(key)
+  );
 }

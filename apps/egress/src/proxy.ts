@@ -14,6 +14,7 @@ import {
 import { capBody } from "@azx-pbc/shared/bodyCap";
 import { verifyInstruction } from "./instruction.js";
 import { type SecretResolver } from "./secrets.js";
+import { type InstructionBurnStore } from "./burn.js";
 import { SsrfBlockedError, resolveAndValidate } from "./ssrf.js";
 
 /**
@@ -28,6 +29,8 @@ export interface ProxyDeps {
   instructionKey: Buffer;
   /** null ⇒ no secret store configured; secret-backed calls are refused. */
   resolver: SecretResolver | null;
+  /** null ⇒ replay protection disabled (tests only); prod always sets it. */
+  burnStore: InstructionBurnStore | null;
   limits: { maxBodyBytes: number; timeoutMs: number };
   /** Dev/test seam — permit private/loopback targets (false in prod & adversarial tests). */
   allowPrivate: boolean;
@@ -193,6 +196,14 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
 
     const instruction = await verifyInstruction(token, deps.instructionKey);
     if (!instruction) return fail(reply, 401, "forbidden", "invalid attested instruction");
+
+    // One-time use: burn the jti before doing any work, so a captured
+    // instruction re-POSTed inside its TTL is refused before the secret is
+    // resolved or the upstream is dialed (ADR-0013 Step 1, issue #3). An empty
+    // insert result means the jti was already spent — a replay.
+    if (deps.burnStore && !(await deps.burnStore.burn(instruction.requestId))) {
+      return fail(reply, 409, "replay", "attested instruction already used");
+    }
 
     let target: URL;
     try {
