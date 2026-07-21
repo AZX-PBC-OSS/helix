@@ -2,9 +2,10 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthConfig, EdgeConfig } from "../config.js";
 import { publicOrigin } from "../config.js";
 import type { RegistryEntry } from "../registry/projection.js";
+import { sendForbidden } from "../errors.js";
 import { SESSION_COOKIE, parseCookieHeader } from "./cookies.js";
 import { hashSessionToken, type Session, type SessionStore } from "./sessions.js";
-import { validateReturnPath, visibilityAllows } from "./validate.js";
+import { validateReturnPath, visibilityAllows, visibilityModeAllowed } from "./validate.js";
 
 /**
  * The per-request session gate on app hosts (architecture §4.2): every asset
@@ -57,8 +58,15 @@ export type CallerResolver = (
  * through the full gate (a `password` app yields the visitor's pseudonymous or
  * SSO session). This is the single seam the gateway keys identity off.
  */
-export function makeCallerResolver(gate: SessionGate): CallerResolver {
+export function makeCallerResolver(gate: SessionGate, config: EdgeConfig): CallerResolver {
   return async function resolveCaller(req, reply, entry): Promise<Caller | null> {
+    // Operator policy first (EDGE_ALLOW_*_APPS): a forbidden open surface never
+    // resolves a caller — the anonymous short-circuit below would otherwise
+    // hand a public app's `/_api/*` calls to an anon caller.
+    if (!visibilityModeAllowed(entry.visibilityMode, config)) {
+      sendForbidden(reply);
+      return null;
+    }
     if (entry.visibilityMode === "public") {
       return { authenticated: false };
     }

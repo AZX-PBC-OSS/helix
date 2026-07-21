@@ -4,6 +4,7 @@ import type { EdgeConfig } from "../config.js";
 import type { BlobReader, BlobGetResult } from "../blob/client.js";
 import type { RegistryReader } from "../registry/projection.js";
 import type { SessionGate } from "../auth/gate.js";
+import { visibilityModeAllowed } from "../auth/validate.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../errors.js";
 import { normalizeRequestPath } from "./paths.js";
 import { buildAppCsp } from "./csp.js";
@@ -61,6 +62,15 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // Unknown slug and known-but-nothing-live answer identically.
     if (!entry.blobPrefix) {
       sendNotFound(reply);
+      return;
+    }
+
+    // Operator policy: `public`/`password` are open surfaces this deployment
+    // may forbid (EDGE_ALLOW_*_APPS). A disallowed mode is refused outright —
+    // even an app already set that way — 403, never served. The owner migrates
+    // it down to private/group in the portal to restore service.
+    if (!visibilityModeAllowed(entry.visibilityMode, config)) {
+      sendForbidden(reply);
       return;
     }
 

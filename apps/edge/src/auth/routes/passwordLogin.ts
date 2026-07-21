@@ -43,6 +43,13 @@ function resolvePasswordApp(
     sendNotFound(reply);
     return null;
   }
+  // Operator policy (EDGE_ALLOW_PASSWORD_APPS): when password apps are forbidden
+  // the challenge is dead — 404, same no-signal shape as the mode check above.
+  // The asset path 403s in parallel; the owner migrates the app down in the portal.
+  if (!rt.config.allowPasswordApps) {
+    sendNotFound(reply);
+    return null;
+  }
   return entry;
 }
 

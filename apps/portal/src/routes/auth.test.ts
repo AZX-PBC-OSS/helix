@@ -64,6 +64,26 @@ describe("GET /api/v1/auth/config", () => {
     });
   });
 
+  it("echoes the deployment visibility policy so the SPA can hide disallowed modes", async () => {
+    const restrictive = buildTestApp({
+      auth: {
+        verifiers: [{ verify: async () => null }],
+        publicConfig: {
+          issuer: ISSUER,
+          cliClientId: "azx-cli",
+          allowPublicApps: false,
+          allowPasswordApps: true,
+        },
+      },
+    });
+    const res = await restrictive.app.inject({ url: "/api/v1/auth/config" });
+    expect(res.statusCode).toBe(200);
+    const body = AuthConfigResponseSchema.parse(res.json());
+    expect(body.allowPublicApps).toBe(false);
+    expect(body.allowPasswordApps).toBe(true);
+    await restrictive.close();
+  });
+
   it("404s when OIDC is not configured", async () => {
     const devOnly = buildTestApp({
       auth: {

@@ -23,6 +23,8 @@ function testConfig(): EdgeConfig {
     },
     auth: null,
     allowUnauthenticated: true,
+    allowPublicApps: true,
+    allowPasswordApps: true,
     publicScheme: "https",
     publicPort: 8080,
     tls: null,

@@ -168,6 +168,46 @@ describe("DELETE .../password (disable)", () => {
   });
 });
 
+describe("operator policy: PORTAL_ALLOW_PASSWORD_APPS=false", () => {
+  async function withPasswordDisallowed(fn: () => Promise<void>): Promise<void> {
+    const prev = process.env.PORTAL_ALLOW_PASSWORD_APPS;
+    process.env.PORTAL_ALLOW_PASSWORD_APPS = "false";
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.PORTAL_ALLOW_PASSWORD_APPS;
+      else process.env.PORTAL_ALLOW_PASSWORD_APPS = prev;
+    }
+  }
+
+  it("refuses enable and rotate with 403 (moves into the disallowed mode)", async () => {
+    const slug = await createApp();
+    await withPasswordDisallowed(async () => {
+      const en = await enable(slug);
+      expect(en.statusCode).toBe(403);
+      expect(en.json().error.code).toBe("forbidden");
+      const ro = await rotate(slug);
+      expect(ro.statusCode).toBe(403);
+    });
+  });
+
+  it("still allows disabling an existing password app so it can migrate to private", async () => {
+    const slug = await createApp();
+    await enable(slug); // enabled while still permitted
+    await withPasswordDisallowed(async () => {
+      // Re-enabling is refused, but the migration-away path stays open.
+      expect((await enable(slug)).statusCode).toBe(403);
+      expect((await disable(slug)).statusCode).toBe(204);
+    });
+    const app = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+    });
+    expect(app.json().visibility).toEqual({ mode: "private" });
+  });
+});
+
 describe("the credential never leaks through registry reads", () => {
   it("is absent from GET /apps/:slug and the manifest", async () => {
     const slug = await createApp();

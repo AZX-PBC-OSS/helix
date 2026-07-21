@@ -33,7 +33,7 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
 }
 
 export function PasswordAccessCard({ app }: { app: App }) {
-  const { authenticated, login, loginAvailable } = useAuth();
+  const { authenticated, login, loginAvailable, allowPasswordApps } = useAuth();
   const isPassword = app.visibility.mode === "password";
 
   const enable = useEnablePassword();
@@ -53,6 +53,12 @@ export function PasswordAccessCard({ app }: { app: App }) {
   const busy = enable.isPending || rotate.isPending || disable.isPending;
   const mutationError = enable.error ?? rotate.error ?? disable.error;
   const manualTooShort = manual.length > 0 && manual.length < MIN_PASSWORD_LENGTH;
+
+  // Operator policy: when password apps are forbidden, hide the card entirely
+  // for a non-password app (nothing to offer). An app already on password keeps
+  // the card so the owner can migrate away — but only the Disable action, not
+  // re-roll/set (which would keep it a password app the edge won't serve).
+  if (!allowPasswordApps && !isPassword) return null;
 
   if (!authenticated) {
     return (
@@ -113,9 +119,16 @@ export function PasswordAccessCard({ app }: { app: App }) {
         </>
       ) : (
         <Stack gap={14}>
-          <Text size="sm" c="dark.2" lh={1.5}>
-            Anyone with this URL and password can open the app. Re-roll if it leaks.
-          </Text>
+          {allowPasswordApps ? (
+            <Text size="sm" c="dark.2" lh={1.5}>
+              Anyone with this URL and password can open the app. Re-roll if it leaks.
+            </Text>
+          ) : (
+            <Hint icon="shield" tone="bad">
+              Password apps are disabled on this deployment — the edge is refusing to serve this
+              one. Disable password access to revert to private.
+            </Hint>
+          )}
 
           {/* App URL */}
           <div>
@@ -158,50 +171,54 @@ export function PasswordAccessCard({ app }: { app: App }) {
                 value={`URL: ${credential.url}\nPassword: ${credential.password}`}
                 label="Copy URL + password"
               />
-              <Button
-                variant="default"
-                size="xs"
-                leftSection={<Icon name="rotate" size={12} />}
-                loading={rotate.isPending}
-                onClick={() =>
-                  rotate.mutate({ slug: app.slug }, { onSuccess: () => setRevealed(true) })
-                }
-              >
-                Re-roll
-              </Button>
+              {allowPasswordApps && (
+                <Button
+                  variant="default"
+                  size="xs"
+                  leftSection={<Icon name="rotate" size={12} />}
+                  loading={rotate.isPending}
+                  onClick={() =>
+                    rotate.mutate({ slug: app.slug }, { onSuccess: () => setRevealed(true) })
+                  }
+                >
+                  Re-roll
+                </Button>
+              )}
             </Group>
           )}
 
           {/* Manual set */}
-          <Group gap={8} align="flex-end" wrap="nowrap">
-            <TextInput
-              label="Or set a password"
-              placeholder={`at least ${MIN_PASSWORD_LENGTH} characters`}
-              value={manual}
-              onChange={(e) => setManual(e.currentTarget.value)}
-              error={manualTooShort ? `Minimum ${MIN_PASSWORD_LENGTH} characters` : undefined}
-              style={{ flex: 1 }}
-              size="xs"
-            />
-            <Button
-              variant="default"
-              size="xs"
-              disabled={manual.length < MIN_PASSWORD_LENGTH || busy}
-              onClick={() =>
-                rotate.mutate(
-                  { slug: app.slug, password: manual },
-                  {
-                    onSuccess: () => {
-                      setManual("");
-                      setRevealed(true);
+          {allowPasswordApps && (
+            <Group gap={8} align="flex-end" wrap="nowrap">
+              <TextInput
+                label="Or set a password"
+                placeholder={`at least ${MIN_PASSWORD_LENGTH} characters`}
+                value={manual}
+                onChange={(e) => setManual(e.currentTarget.value)}
+                error={manualTooShort ? `Minimum ${MIN_PASSWORD_LENGTH} characters` : undefined}
+                style={{ flex: 1 }}
+                size="xs"
+              />
+              <Button
+                variant="default"
+                size="xs"
+                disabled={manual.length < MIN_PASSWORD_LENGTH || busy}
+                onClick={() =>
+                  rotate.mutate(
+                    { slug: app.slug, password: manual },
+                    {
+                      onSuccess: () => {
+                        setManual("");
+                        setRevealed(true);
+                      },
                     },
-                  },
-                )
-              }
-            >
-              Set
-            </Button>
-          </Group>
+                  )
+                }
+              >
+                Set
+              </Button>
+            </Group>
+          )}
         </Stack>
       )}
 

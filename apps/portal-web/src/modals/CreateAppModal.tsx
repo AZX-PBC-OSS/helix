@@ -28,7 +28,14 @@ const VISIBILITY_OPTIONS: Array<{
 
 export function CreateAppModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const navigate = useNavigate();
-  const { authenticated, login, loginAvailable } = useAuth();
+  const { authenticated, login, loginAvailable, allowPublicApps, allowPasswordApps } = useAuth();
+  // Drop an open-surface option entirely when the deployment forbids it (the
+  // remaining ones keep their existing at-create disabled state).
+  const options = VISIBILITY_OPTIONS.filter((o) => {
+    if (o.mode === "public" && !allowPublicApps) return false;
+    if (o.mode === "password" && !allowPasswordApps) return false;
+    return true;
+  });
   const create = useCreateApp();
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -101,7 +108,7 @@ export function CreateAppModal({ opened, onClose }: { opened: boolean; onClose: 
           onChange={(v) => setMode(v as VisibilityMode)}
         >
           <Stack gap={8} mt={8}>
-            {VISIBILITY_OPTIONS.map((o) => (
+            {options.map((o) => (
               <Radio
                 key={o.mode}
                 value={o.mode}

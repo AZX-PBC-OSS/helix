@@ -1,6 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
 import { AppError } from "./errors.js";
+import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import {
   createDevTokenVerifier,
   createOidcVerifier,
@@ -35,6 +36,9 @@ export interface PublicAuthConfig {
   /** Public client the portal SPA uses for code+PKCE in the browser. */
   webClientId?: string;
   audience?: string;
+  /** Deployment visibility policy, surfaced so the SPA can hide disallowed modes. */
+  allowPublicApps?: boolean;
+  allowPasswordApps?: boolean;
 }
 
 declare module "fastify" {
@@ -107,6 +111,8 @@ export const authPlugin = fp<AuthPluginOptions>(
               ...(process.env.PORTAL_OIDC_AUDIENCE
                 ? { audience: process.env.PORTAL_OIDC_AUDIENCE }
                 : {}),
+              allowPublicApps: publicAppsAllowed(),
+              allowPasswordApps: passwordAppsAllowed(),
             }
           : null,
     );

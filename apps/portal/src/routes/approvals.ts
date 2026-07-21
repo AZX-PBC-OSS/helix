@@ -13,6 +13,7 @@ import {
   requireAdmin,
 } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
+import { publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import { Prisma } from "../db/client.js";
 import { capabilitiesFromRow, toApprovalRequest } from "../db/mappers.js";
 
@@ -120,6 +121,11 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           data.capabilities = applyDeltas(effective, capDeltas) as unknown as Prisma.InputJsonValue;
         }
         if (visDelta && visDelta.to === "public") {
+          // Defense in depth: an approval filed before public was disabled must
+          // not commit now. Throwing rolls back the transaction (no partial apply).
+          if (!publicAppsAllowed()) {
+            throw new AppError("forbidden", "public apps are disabled on this deployment");
+          }
           data.visibilityMode = "public";
           data.visibilityGroupId = null;
         }

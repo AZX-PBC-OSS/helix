@@ -32,6 +32,9 @@ function buildEdge(opts: {
   withLlm?: boolean;
   /** Per-IP anon cap; omit to leave the limiter off (max 0). */
   anonRateLimit?: { max: number; windowMs: number };
+  /** Operator policy overrides (default: both permitted, matching the fixture). */
+  allowPublicApps?: boolean;
+  allowPasswordApps?: boolean;
 }): {
   app: FastifyInstance;
   usage: FakeUsageStore;
@@ -49,6 +52,10 @@ function buildEdge(opts: {
       auth: testAuthConfig(),
       allowUnauthenticated: false,
       ...(opts.anonRateLimit ? { anonRateLimit: opts.anonRateLimit } : {}),
+      ...(opts.allowPublicApps !== undefined ? { allowPublicApps: opts.allowPublicApps } : {}),
+      ...(opts.allowPasswordApps !== undefined
+        ? { allowPasswordApps: opts.allowPasswordApps }
+        : {}),
     }),
     registry: new FakeRegistry([
       registryEntry({
@@ -103,6 +110,78 @@ describe("public-app serving (no session)", () => {
     expect(res.headers.location).toContain("pw.localtest.me");
     expect(res.headers.location).toContain("/_auth/login");
     expect(res.headers.location).not.toContain("/start");
+  });
+});
+
+describe("operator policy: disallowed open surfaces (EDGE_ALLOW_*_APPS)", () => {
+  it("refuses to serve a public app's assets with 403 when public is disallowed", async () => {
+    const { app } = buildEdge({ visibilityMode: "public", allowPublicApps: false });
+    const res = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: { host: "pub.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("refuses a public app's /_api/* with 403 (no anonymous caller) when public is disallowed", async () => {
+    const { app, usage } = buildEdge({
+      visibilityMode: "public",
+      withLlm: true,
+      allowPublicApps: false,
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/_api/llm/chat",
+      headers: {
+        host: "pub.localtest.me",
+        origin: "https://pub.localtest.me:8080",
+        "sec-fetch-mode": "cors",
+        "content-type": "application/json",
+      },
+      payload: { model: MODEL, messages: [{ role: "user", content: "hi" }], stream: false },
+    });
+    expect(res.statusCode).toBe(403);
+    // Refused before any provider call — nothing metered.
+    expect(usage.records).toHaveLength(0);
+  });
+
+  it("refuses to serve a password app's assets with 403 when password is disallowed", async () => {
+    const { app } = buildEdge({
+      visibilityMode: "password",
+      slug: "pw",
+      allowPasswordApps: false,
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: { host: "pw.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("kills the /_auth/login challenge (404) for a disallowed password app", async () => {
+    const { app } = buildEdge({
+      visibilityMode: "password",
+      slug: "pw",
+      allowPasswordApps: false,
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/_auth/login",
+      headers: { host: "pw.localtest.me", accept: "text/html" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("leaves the other open surface alone: disallowing password does not block a public app", async () => {
+    const { app } = buildEdge({ visibilityMode: "public", allowPasswordApps: false });
+    const res = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: { host: "pub.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+    });
+    expect(res.statusCode).toBe(200);
   });
 });
 

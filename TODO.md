@@ -73,12 +73,6 @@ Legend for gating conditions:
 
 ---
 
-## Other
-
-- [ ] Config point to completely disable "public" apps. It should disappear from the webapp, and the edge should refuse to serve public apps
-
----
-
 ## Deferred / v2
 
 - [ ] **Metering ledger tamper-evidence (fast-follow before any external audit).** Hash chain + Merkle + external anchoring to a write-only sink — append-only-by-grant is not tamper-proof; `helix_portal` can rewrite history. Plus GDPR: crypto-shredding for content/PII rows and a documented Art. 17(3) retention basis for the metering tuple. — ADR-0021, issue #17

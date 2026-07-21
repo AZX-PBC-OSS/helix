@@ -103,6 +103,22 @@ export interface EdgeConfig {
    */
   allowUnauthenticated: boolean;
   /**
+   * Whether this deployment permits `public` (anonymous, no-gate) apps. When
+   * false, the edge refuses to serve a public app — assets 403, `/_api/*`
+   * refuses the anonymous caller — even one already set that way; the owner
+   * migrates it down to private/group in the portal to restore service. The
+   * flag polarity is "allow", defaulting on today; the intent is to eventually
+   * flip the default off (the parse below becomes `=== "true"`).
+   */
+  allowPublicApps: boolean;
+  /**
+   * Whether this deployment permits `password` (shared-passphrase) apps — the
+   * other open surface. When false, the edge refuses to serve a password app
+   * (assets 403, `/_api/*` and the `/_auth/login` challenge both dead). Same
+   * "allow"/default-on polarity as {@link allowPublicApps}.
+   */
+  allowPasswordApps: boolean;
+  /**
    * Scheme for externally built URLs (redirect targets, cookie origins). The
    * platform is **HTTPS-only** — always `https`. Dev terminates TLS at the
    * edge (mkcert); prod terminates at ingress and the edge speaks plain HTTP
@@ -458,6 +474,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     blob,
     auth: loadAuthConfig(env),
     allowUnauthenticated,
+    // "Allow" polarity, default on: a mode is permitted unless explicitly set
+    // to "false". To make disallowed the platform default later, flip these to
+    // `=== "true"` (see the field docs on EdgeConfig).
+    allowPublicApps: env.EDGE_ALLOW_PUBLIC_APPS !== "false",
+    allowPasswordApps: env.EDGE_ALLOW_PASSWORD_APPS !== "false",
     publicScheme: "https",
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     tls,

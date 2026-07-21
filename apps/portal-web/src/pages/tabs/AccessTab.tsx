@@ -52,7 +52,7 @@ const VISIBILITY_ROWS: Array<{
 ];
 
 export function AccessTab({ app }: { app: App }) {
-  const { authenticated, login, loginAvailable } = useAuth();
+  const { authenticated, login, loginAvailable, allowPublicApps, allowPasswordApps } = useAuth();
   const archive = useArchiveApp();
   const setVisibility = useSetVisibility();
   const [confirming, setConfirming] = useState(false);
@@ -68,6 +68,18 @@ export function AccessTab({ app }: { app: App }) {
   // Leaving `password` mode goes through the password card's Disable (it wipes
   // the minted credential); the switcher steps aside while it's active.
   const passwordActive = current === "password";
+  // Operator policy: hide an open-surface row when the deployment forbids that
+  // mode — unless the app is already in it, in which case we keep the row (so
+  // the owner can see the state) and offer the reductions that migrate it away.
+  const rows = VISIBILITY_ROWS.filter((row) => {
+    if (row.mode === "public" && !allowPublicApps && current !== "public") return false;
+    if (row.mode === "password" && !allowPasswordApps && current !== "password") return false;
+    return true;
+  });
+  // The app sits in a mode this deployment no longer permits — the edge is
+  // refusing to serve it, so nudge the owner to migrate down.
+  const currentModeDisallowed =
+    (current === "public" && !allowPublicApps) || (current === "password" && !allowPasswordApps);
 
   // The last public request opened an approval (result.pending is the id).
   const requested = setVisibility.data?.pending != null;
@@ -107,9 +119,18 @@ export function AccessTab({ app }: { app: App }) {
               mode.
             </Hint>
           )}
+          {currentModeDisallowed && (
+            <Box mb={12}>
+              <Hint icon="shield" tone="bad">
+                {current === "public" ? "Public" : "Password"} apps are disabled on this deployment,
+                so the edge is refusing to serve this one. Switch to Private or a group to restore
+                serving.
+              </Hint>
+            </Box>
+          )}
 
           <Stack gap={10} mt={authenticated && !passwordActive ? 0 : 12}>
-            {VISIBILITY_ROWS.map((row) => {
+            {rows.map((row) => {
               const on = current === row.mode;
               // An action is offered only to a signed-in actor, only on a row
               // that isn't already current, and only while not in password mode

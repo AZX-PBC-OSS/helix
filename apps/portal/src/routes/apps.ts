@@ -15,6 +15,7 @@ import {
 } from "@azx-pbc/shared";
 import { authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
+import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import { isUniqueViolation } from "../db/errors.js";
 import { capabilitiesFromRow, toApp, toManifest, visibilityToColumns } from "../db/mappers.js";
 import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
@@ -33,6 +34,14 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/v1/apps", { preHandler: authenticate }, async (req, reply) => {
     const body = CreateAppRequestSchema.parse(req.body);
     const actor = requireActor(req);
+    // Operator policy: this deployment may forbid creating an open-surface app
+    // (PORTAL_ALLOW_*_APPS). The edge enforces the same policy on serving.
+    if (body.visibility.mode === "public" && !publicAppsAllowed()) {
+      throw new AppError("forbidden", "public apps are disabled on this deployment");
+    }
+    if (body.visibility.mode === "password" && !passwordAppsAllowed()) {
+      throw new AppError("forbidden", "password apps are disabled on this deployment");
+    }
     const { visibilityMode, visibilityGroupId } = visibilityToColumns(body.visibility);
     // Fill capability defaults so the stored shape always parses on read.
     const capabilities = CapabilitiesSchema.parse(body.capabilities ?? {});
@@ -216,6 +225,13 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       }
 
       if (change.elevated) {
+        // The only elevated change is → public. When public is disabled we
+        // refuse outright rather than opening an approval that could never be
+        // safely committed. Reductions (→ private/group) fall through below, so
+        // an already-public app can always be migrated down.
+        if (!publicAppsAllowed()) {
+          throw new AppError("forbidden", "public apps are disabled on this deployment");
+        }
         const baseSnapshot = captureSnapshot(
           capabilitiesFromRow(row),
           row.visibilityMode,
@@ -277,6 +293,12 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: authenticate },
     async (req, reply) => {
       const actor = requireActor(req);
+      // Operator policy: enabling a password app is a move into an open surface;
+      // refuse when disabled. Disabling (DELETE, reverts to private) stays open
+      // so an owner can always migrate an existing password app away.
+      if (!passwordAppsAllowed()) {
+        throw new AppError("forbidden", "password apps are disabled on this deployment");
+      }
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
@@ -319,6 +341,11 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const { password: manual } = SetPasswordRequestSchema.parse(req.body ?? {});
       const actor = requireActor(req);
+      // Rotating keeps the app a password app — refuse when disabled (only the
+      // DELETE migration-away path stays open).
+      if (!passwordAppsAllowed()) {
+        throw new AppError("forbidden", "password apps are disabled on this deployment");
+      }
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);

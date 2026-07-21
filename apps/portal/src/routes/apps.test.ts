@@ -264,3 +264,61 @@ describe("GET /api/v1/apps and /:slug", () => {
     expect(manifest.statusCode).toBe(401);
   });
 });
+
+describe("operator policy: PORTAL_ALLOW_PUBLIC_APPS=false", () => {
+  const setVisibility = (slug: string, body: Record<string, unknown>) =>
+    t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/visibility`,
+      headers: authHeader(),
+      payload: body,
+    });
+
+  async function withPublicDisallowed(fn: () => Promise<void>): Promise<void> {
+    const prev = process.env.PORTAL_ALLOW_PUBLIC_APPS;
+    process.env.PORTAL_ALLOW_PUBLIC_APPS = "false";
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.PORTAL_ALLOW_PUBLIC_APPS;
+      else process.env.PORTAL_ALLOW_PUBLIC_APPS = prev;
+    }
+  }
+
+  it("refuses to create a public app (403 forbidden)", async () => {
+    await withPublicDisallowed(async () => {
+      const res = await createApp({
+        slug: uniqueSlug(),
+        displayName: "Would-be public",
+        visibility: { mode: "public" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe("forbidden");
+    });
+  });
+
+  it("refuses the elevated → public change instead of opening an approval (403)", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Private now" });
+    await withPublicDisallowed(async () => {
+      const res = await setVisibility(slug, { visibility: { mode: "public" } });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe("forbidden");
+    });
+    // No approval request was opened.
+    const reqs = await t.prisma.approvalRequest.findMany({
+      where: { app: { slug } },
+    });
+    expect(reqs).toHaveLength(0);
+  });
+
+  it("still allows reductions (→ group) so an app can move off an open surface", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Reducible" });
+    await withPublicDisallowed(async () => {
+      const res = await setVisibility(slug, { visibility: { mode: "group", groupId: "g1" } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().applied).toHaveLength(1);
+    });
+  });
+});

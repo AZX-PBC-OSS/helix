@@ -134,7 +134,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // The gateway keys identity off a Caller (authenticated session, or anon for
   // `public` apps — app-data design §6). The resolver wraps the gate with the
   // public-app short-circuit; asset serving keeps its own public bypass.
-  const resolveCaller = gate ? makeCallerResolver(gate) : null;
+  const resolveCaller = gate ? makeCallerResolver(gate, config) : null;
   // One limiter backs every public app's anonymous tier (app-data design §7).
   // server.ts owns the instance so it can sweep it; tests inject a low one.
   const anonRateLimiter = deps.anonRateLimiter ?? new IpRateLimiter(config.anonRateLimit);

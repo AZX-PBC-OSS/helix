@@ -294,4 +294,43 @@ describe("go-public via the visibility write-gate", () => {
     expect(vis.json().pending).toBeNull();
     expect(vis.json().app.visibility.mode).toBe("private");
   });
+
+  it("refuses to commit a pending → public if public is disabled before approval (403, no partial apply)", async () => {
+    const slug = uniqueSlug();
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: owner,
+      payload: { slug, displayName: "pub-later" },
+    });
+    const vis = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/visibility`,
+      headers: owner,
+      payload: { visibility: { mode: "public" } },
+    });
+    const requestId = vis.json().pending as string;
+    expect(requestId).toBeTruthy();
+
+    const prev = process.env.PORTAL_ALLOW_PUBLIC_APPS;
+    process.env.PORTAL_ALLOW_PUBLIC_APPS = "false";
+    try {
+      const res = await t.app.inject({
+        method: "POST",
+        url: `/api/v1/approvals/${requestId}/approve`,
+        headers: admin,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe("forbidden");
+    } finally {
+      if (prev === undefined) delete process.env.PORTAL_ALLOW_PUBLIC_APPS;
+      else process.env.PORTAL_ALLOW_PUBLIC_APPS = prev;
+    }
+
+    // The transaction rolled back — the app never went public.
+    expect(
+      (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}`, headers: owner })).json()
+        .visibility.mode,
+    ).toBe("private");
+  });
 });

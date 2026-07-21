@@ -32,6 +32,13 @@ export interface AuthState {
   meLoading: boolean;
   /** Whether the portal has an IdP configured (login possible at all). */
   loginAvailable: boolean;
+  /**
+   * Deployment visibility policy (from /auth/config). Drives which open-surface
+   * modes the visibility UI offers. Default true when config is absent (older
+   * portal / dev-token-only) — server-side enforcement is the real guard.
+   */
+  allowPublicApps: boolean;
+  allowPasswordApps: boolean;
   login: () => void;
   /** Called by the OIDC callback page with a fresh token. */
   adoptToken: (token: string, expiresIn?: number) => void;
@@ -85,6 +92,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAdmin: me.data?.isAdmin ?? false,
       meLoading: authenticated && me.isLoading,
       loginAvailable: authConfig.isSuccess && Boolean(authConfig.data.webClientId),
+      allowPublicApps: authConfig.data?.allowPublicApps ?? true,
+      allowPasswordApps: authConfig.data?.allowPasswordApps ?? true,
       login,
       adoptToken,
       logout,

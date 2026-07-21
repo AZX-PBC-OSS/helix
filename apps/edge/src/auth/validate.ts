@@ -102,6 +102,22 @@ export function isSameOriginFormPost(
   return isSameOrigin(originHeader, config, slug);
 }
 
+/**
+ * Whether this deployment permits an app in the given visibility mode at all.
+ * `public` and `password` are open-to-the-internet surfaces an operator can
+ * forbid per deployment (`EDGE_ALLOW_*_APPS`); `private`/`group` are SSO-gated
+ * and always permitted. This is an operator policy check, distinct from the
+ * per-session {@link visibilityAllows} authorization check below.
+ */
+export function visibilityModeAllowed(
+  mode: RegistryEntry["visibilityMode"],
+  config: EdgeConfig,
+): boolean {
+  if (mode === "public") return config.allowPublicApps;
+  if (mode === "password") return config.allowPasswordApps;
+  return true;
+}
+
 /** Does this session's group snapshot satisfy the app's visibility rule? */
 export function visibilityAllows(entry: RegistryEntry, groups: string[]): boolean {
   if (entry.visibilityMode === "private") return true;
