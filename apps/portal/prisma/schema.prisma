@@ -231,6 +231,43 @@ model GatewayCall {
   @@map("gateway_calls")
 }
 
+/// Fixed-window counters for the edge's abuse controls — the anonymous IP rate
+/// limiter and the shared-password login throttle (issue #13, ADR-0011/0004).
+/// **Edge-written data**: the edge does one atomic INSERT … ON CONFLICT upsert
+/// per admission (apps/edge/src/gateway/counterStore.ts), so the limit holds
+/// across replicas instead of degrading to N× per-process (the old in-memory
+/// Maps). `bucketKey` is namespaced by purpose + client, e.g. `anon:<ip>:<appId>`
+/// / `login:<ip>:<appId>`; `resetAt` is the window edge (a GC sweep drops elapsed
+/// rows). `helix_portal` is carved out to no-write like `gateway_calls`.
+model RateCounter {
+  /// `<purpose>:<ip>:<appId>` — purpose-namespaced so both limiters share one table.
+  bucketKey String   @id
+  count     Int
+  /// Window boundary; the counter resets once now() passes it.
+  resetAt   DateTime
+
+  @@index([resetAt])
+  @@map("rate_counters")
+}
+
+/// One-time-use burn set for the attested instruction the edge mints for egress
+/// (ADR-0013 Step 1, issue #3). **Egress-written data**: egress does one atomic
+/// INSERT … ON CONFLICT DO NOTHING per proxied call (apps/egress/src/burn.ts) —
+/// `rowCount === 0` means the `jti` was already spent, i.e. a replay, and the
+/// call is refused. Global (a `jti` is unique regardless of app); rows are
+/// short-lived (~instruction TTL + clock tolerance) and a GC sweep drops expired
+/// ones. `helix_egress` fully manages it (SELECT+INSERT+DELETE — its first write
+/// grants); `helix_portal` is carved out to read-only.
+model InstructionJti {
+  /// The instruction's `jti` (== its per-call `requestId`).
+  jti       String   @id
+  /// Retention floor ≥ maxTokenAge + clockTolerance + margin; swept after this.
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("instruction_jti")
+}
+
 /// Per-user / per-app key-value store (architecture §6.1, app-data design
 /// §3.1/§3.3). **Edge-written data**, like sessions/gateway_calls: the edge
 /// reads & writes ONLY rows whose partition key is the caller's own

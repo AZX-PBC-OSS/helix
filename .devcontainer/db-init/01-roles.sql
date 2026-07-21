@@ -40,7 +40,9 @@ GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress;
 -- 20260721120000_gateway_calls_portal_readonly reduces it to SELECT-only
 -- afterwards (migrations always run after db-init). Append-only there binds
 -- every writer role by grant, not just the edge (ADR-0021 / issue #17). If a
--- future edge-written ledger is added, carve it out the same way.
+-- future edge-written ledger is added, carve it out the same way. Done so far
+-- for the edge/egress abuse-control tables `rate_counters` + `instruction_jti`
+-- (migration 20260721215912_shared_rate_counters_and_jti_burn, issue #13/#3).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO helix_portal;
 GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO helix_portal;
 ALTER DEFAULT PRIVILEGES FOR ROLE helix

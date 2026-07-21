@@ -46,6 +46,10 @@ GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress;
 -- helix_portal: full DML runtime (control plane — collection drain, usage
 -- reads, registry writes). Table grants are reissued by migrations as tables
 -- appear; this default keeps existing + future tables reachable.
+-- NB: edge/egress-written ledgers are carved back to portal SELECT-only by their
+-- migrations (gateway_calls in 20260721120000; rate_counters + instruction_jti in
+-- 20260721215912) — append-only / write-isolation binds every writer role by
+-- grant, not just the runtime role (ADR-0021, issue #17/#13/#3).
 -- NB: `FOR ROLE helixadmin` must name the object owner that runs `db:deploy` —
 -- i.e. the `postgresAdminLogin` Bicep param (default `helixadmin`). If you
 -- overrode that param, substitute it in the two ALTER DEFAULT PRIVILEGES below.

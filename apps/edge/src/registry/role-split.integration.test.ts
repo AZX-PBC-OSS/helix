@@ -89,6 +89,22 @@ describe("helix_edge least-privilege grants", () => {
         pool.query("SELECT material FROM app_secrets WHERE scope = 'platform'"),
       ).rejects.toThrow(/permission denied/i);
 
+      // Abuse-control counters (issue #13): the edge OWNS rate_counters — full
+      // CRUD for the atomic upsert / clear / sweep.
+      await expect(pool.query("SELECT count(*) FROM rate_counters")).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          `INSERT INTO rate_counters ("bucketKey", count, "resetAt") VALUES ('rs-edge', 1, now())`,
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`DELETE FROM rate_counters WHERE "bucketKey" = 'rs-edge'`),
+      ).resolves.toBeDefined();
+      // …but the egress-owned jti burn set is off-limits (no grant at all).
+      await expect(pool.query("SELECT count(*) FROM instruction_jti")).rejects.toThrow(
+        /permission denied/i,
+      );
+
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
     } finally {
@@ -148,6 +164,24 @@ describe("helix_egress least-privilege grants", () => {
         /permission denied/i,
       );
       await expect(pool.query("SELECT count(*) FROM gateway_calls")).rejects.toThrow(
+        /permission denied/i,
+      );
+
+      // The replay burn (issue #3): egress fully manages instruction_jti —
+      // SELECT+INSERT+DELETE (its first write grants), enough for the ON CONFLICT
+      // burn and the WHERE-filtered sweep.
+      await expect(pool.query("SELECT count(*) FROM instruction_jti")).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          `INSERT INTO instruction_jti (jti, "expiresAt")
+           VALUES ('rs-egress', now() + interval '1 minute') ON CONFLICT (jti) DO NOTHING`,
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`DELETE FROM instruction_jti WHERE jti = 'rs-egress'`),
+      ).resolves.toBeDefined();
+      // …but no grant at all on the edge's abuse-control counters.
+      await expect(pool.query("SELECT count(*) FROM rate_counters")).rejects.toThrow(
         /permission denied/i,
       );
 
