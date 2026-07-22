@@ -41,4 +41,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0025](0025-registry-projection-hardening.md) | Registry projection hardening (observability, jitter, cold-start) | Proposed |
 | [0026](0026-hosted-build-isolation-prerequisites.md) | Hosted-build isolation prerequisites (the build-step boundary shift) | Proposed |
 | [0027](0027-blob-auth-managed-identity.md) | Blob authentication: managed identity, not the storage account key | Accepted |
-| [0028](0028-deployment-model-customer-deployed.md) | Deployment model: single-tenant, customer-deployed into the customer's cloud | Proposed |
+| [0028](0028-deployment-model-customer-deployed.md) | Deployment model: single-tenant, customer-deployed into the customer's cloud | Accepted |

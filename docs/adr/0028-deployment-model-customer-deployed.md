@@ -1,6 +1,6 @@
 # 0028. Deployment model: single-tenant, customer-deployed into the customer's cloud
 
-**Status:** Proposed _(needs sign-off — parameterizes architecture decision 11 and reframes ADR-0019 / issue #16)_
+**Status:** Accepted _(2026-07-22 — parameterizes architecture decision 11 and reframes ADR-0019 / issue #16; obligated edits applied)_
 **Related:** `docs/platform-architecture.md` §3 (decisions #6, #8, #11), §9; ADR [0002](0002-postgres-role-split-rls.md) (role split — per instance), [0005](0005-ssrf-egress-controls.md) / [0013](0013-egress-trust-model.md) (egress — now guards the customer cloud), [0006](0006-secret-custody-seam.md) (secret custody — customer Key Vault), [0019](0019-subdomain-per-app-isolation.md) (subdomain/domain split — now per-deployment; issue #16), [0022](0022-self-hosted-edge-not-front-door.md) (portable self-hosted edge — this ADR's parent), [0023](0023-one-org-app-id-partitioning.md) (one-org, app-id partitioning); `docs/design/dev-mode.md`; `docs/build-vs-buy-comparison.md` (C8)
 
 ## Context
@@ -13,7 +13,7 @@ This was already foreseen — ADR-0022 chose a self-hosted, portable data plane 
 
 ## Decision
 
-**The platform is delivered as single-tenant, customer-deployed software: one complete, independent instance per customer, running in the customer's own cloud tenancy, under the customer's domain and IdP.** We ship a versioned, parameterized deployable (the M5 IaC); the customer applies it. Our own `azx.helix.azxlabs.io` install is the **reference/first deployment** of that same artifact (dogfood), not a separate hosted offering. _(Open point for sign-off: confirm whether `azx.helix.azxlabs.io` is strictly the reference deployment, or a hosted offering that coexists with customer-deployed installs. This ADR assumes the former.)_
+**The platform is delivered as single-tenant, customer-deployed software: one complete, independent instance per customer, running in the customer's own cloud tenancy, under the customer's domain and IdP.** We ship a versioned, parameterized deployable (the M5 IaC); the customer applies it. Our own `azx.helix.azxlabs.io` install is the **reference/first deployment** of that same artifact (dogfood) — confirmed at sign-off (2026-07-22): it is strictly the reference deployment, **not** a hosted offering that coexists with customer-deployed installs. There is no hosted SaaS tier.
 
 Concretely, each prior decision that was implicitly single-install is **parameterized, not reversed**:
 
@@ -37,7 +37,7 @@ Concretely, each prior decision that was implicitly single-install is **paramete
 - **The ops model inverts.** We own **release engineering** (versioned artifact, migration safety, upgrade docs, a CVE patch cadence customers *pull*), not runtime operations. There is no central runtime to monitor for customer instances; observability ships as part of the artifact for the customer to wire into their own stack.
 - **We lose central visibility and push-fix.** No cross-customer metering rollups, no hotfixing a running customer instance — patches are pull, not push. Support telemetry becomes a shipped, opt-in concern.
 - **Version skew across the fleet is now a first-class cost.** Customers run different versions; docs/ADRs describe *a* deployment, and cross-version compatibility (migration ordering, manifest schema, instruction/handoff token formats) must be explicitly versioned. This is the classic self-managed-software tax (GitLab/Retool self-hosted).
-- **Edits this ADR obligates:** architecture decision 11 (add the vanity-vs-deployment-domain distinction; base domain is a deploy parameter), architecture §9 ("custom domains rejected outright" → qualified), and an ADR-0019 amendment note (the #16 split is a per-deployment topology + PSL recommendation, not a domain we own). Tracked as follow-ups, not done in this ADR.
+- **Edits this ADR obligates — done 2026-07-22:** architecture decision 11 (now "no per-app vanity domains; base domain is a per-deployment parameter") and the §11 resolved-note both qualified in `platform-architecture.md`; ADR-0019 carries a 2026-07-22 amendment reframing the #16 split as a per-deployment topology + PSL recommendation, not a domain we own.
 
 ## Considered and rejected
 
