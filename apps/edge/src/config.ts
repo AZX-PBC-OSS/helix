@@ -490,12 +490,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     throw new Error(
       "TLS is required for local dev (the platform is HTTPS-only): set " +
         "EDGE_TLS_CERT_FILE and EDGE_TLS_KEY_FILE. Re-run .devcontainer/post-create.sh " +
-        "to generate the mkcert certs for *.localtest.me.",
+        "to generate the mkcert certs for *.local.helix.azxlabs.io.",
     );
   }
 
   return {
-    baseDomain: (env.EDGE_BASE_DOMAIN ?? "localtest.me").toLowerCase(),
+    baseDomain: (env.EDGE_BASE_DOMAIN ?? "local.helix.azxlabs.io").toLowerCase(),
     databaseUrl,
     blob,
     auth: loadAuthConfig(env),

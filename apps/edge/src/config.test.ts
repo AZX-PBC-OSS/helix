@@ -43,13 +43,13 @@ describe("loadConfig", () => {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
-    EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
-    EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
   };
 
   it("applies defaults and the fail-closed auth flag", () => {
     const config = loadConfig({ ...ENV });
-    expect(config.baseDomain).toBe("localtest.me");
+    expect(config.baseDomain).toBe("local.helix.azxlabs.io");
     expect(config.blob.provider).toBe("azure");
     expect(config.blob.container).toBe("app-bundles");
     expect(config.allowUnauthenticated).toBe(false);
@@ -57,8 +57,8 @@ describe("loadConfig", () => {
     expect(config.statementTimeoutMs).toBe(10_000);
     expect(config.auth).toBeNull();
     expect(config.tls).toEqual({
-      certFile: "/certs/localtest-me.pem",
-      keyFile: "/certs/localtest-me-key.pem",
+      certFile: "/certs/local-helix.pem",
+      keyFile: "/certs/local-helix-key.pem",
     });
     expect(config.publicScheme).toBe("https");
     expect(config.publicPort).toBe(8080);
@@ -212,8 +212,8 @@ describe("auth config", () => {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
-    EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
-    EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
   };
   // 32 zero bytes, base64.
   const SECRET = Buffer.alloc(32).toString("base64");
@@ -339,14 +339,14 @@ describe("publicOrigin", () => {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
     AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
-    EDGE_TLS_CERT_FILE: "/certs/localtest-me.pem",
-    EDGE_TLS_KEY_FILE: "/certs/localtest-me-key.pem",
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
   };
 
   it("builds https host URLs from config, omitting the default 443", () => {
     const dev = loadConfig({ ...ENV, EDGE_PUBLIC_PORT: "8080" });
-    expect(publicOrigin(dev, "auth")).toBe("https://auth.localtest.me:8080");
-    expect(publicOrigin(dev, "demo")).toBe("https://demo.localtest.me:8080");
+    expect(publicOrigin(dev, "auth")).toBe("https://auth.local.helix.azxlabs.io:8080");
+    expect(publicOrigin(dev, "demo")).toBe("https://demo.local.helix.azxlabs.io:8080");
 
     // Production: ingress terminates TLS (no edge cert), public port 443, and
     // blob auth is managed identity (the connection string is refused in prod).

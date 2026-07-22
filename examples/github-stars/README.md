@@ -52,7 +52,7 @@ is the whole point of this app; it's non-blocking.
 
 ## Walk the approval loop
 
-1. Open the app at `https://github-stars.localtest.me:8080` and sign in. Click
+1. Open the app at `https://github-stars.local.helix.azxlabs.io:8080` and sign in. Click
    **Fetch stars** → it reports *blocked* (the CSP refused `api.github.com`).
 2. In the portal (`pnpm dev:web`, `:5173`), open **Violations** → the blocked
    origin is listed → click **Request this origin**.

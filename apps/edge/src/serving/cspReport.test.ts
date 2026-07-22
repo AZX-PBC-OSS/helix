@@ -9,7 +9,7 @@ const APP_ID = "11111111-1111-4111-8111-111111111111";
 
 function testConfig(): EdgeConfig {
   return {
-    baseDomain: "localtest.me",
+    baseDomain: "local.helix.azxlabs.io",
     databaseUrl: "postgresql://unused",
     blob: {
       provider: "azure",
@@ -61,13 +61,13 @@ describe("extractReport", () => {
         "csp-report": {
           "effective-directive": "connect-src",
           "blocked-uri": "https://api.foo.com/x",
-          "document-uri": "https://demo.localtest.me/",
+          "document-uri": "https://demo.local.helix.azxlabs.io/",
         },
       }),
     ).toEqual({
       directive: "connect-src",
       blockedUri: "https://api.foo.com/x",
-      documentUri: "https://demo.localtest.me/",
+      documentUri: "https://demo.local.helix.azxlabs.io/",
     });
   });
 
@@ -116,7 +116,7 @@ describe("POST /_csp-report", () => {
     const res = await edge.app.inject({
       method: "POST",
       url: "/_csp-report",
-      headers: { host: "demo.localtest.me", "content-type": "application/csp-report" },
+      headers: { host: "demo.local.helix.azxlabs.io", "content-type": "application/csp-report" },
       payload: JSON.stringify({
         "csp-report": {
           "effective-directive": "connect-src",
@@ -140,7 +140,7 @@ describe("POST /_csp-report", () => {
     const res = await edge.app.inject({
       method: "POST",
       url: "/_csp-report",
-      headers: { host: "demo.localtest.me", "content-type": "application/csp-report" },
+      headers: { host: "demo.local.helix.azxlabs.io", "content-type": "application/csp-report" },
       payload: JSON.stringify({ "csp-report": {} }),
     });
     expect(res.statusCode).toBe(204);
@@ -151,7 +151,7 @@ describe("POST /_csp-report", () => {
     const res = await edge.app.inject({
       method: "POST",
       url: "/_csp-report",
-      headers: { host: "nope.localtest.me", "content-type": "application/csp-report" },
+      headers: { host: "nope.local.helix.azxlabs.io", "content-type": "application/csp-report" },
       payload: JSON.stringify({ "csp-report": { "blocked-uri": "https://x" } }),
     });
     expect(res.statusCode).toBe(404);

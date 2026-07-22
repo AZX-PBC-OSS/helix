@@ -10,7 +10,7 @@ import {
 } from "./fixtures.js";
 import { decodeJwtPayload, runAuthCodeFlow, runDeviceFlow } from "./testing.js";
 
-const REDIRECT_URI = "https://auth.localtest.me:8080/callback";
+const REDIRECT_URI = "https://auth.local.helix.azxlabs.io:8080/callback";
 const WEB_REDIRECT_URI = "http://localhost:5173/auth/callback";
 const WEB_ORIGIN = "http://localhost:5173";
 

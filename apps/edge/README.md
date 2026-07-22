@@ -6,7 +6,7 @@ The data plane (architecture §3): stateless, terminates all `*.azx-labs.com` tr
 
 ## Request flow (app hosts)
 
-`<slug>.localtest.me` → registry projection (slug → live version + visibility) → **session gate** → `apps/<appId>/<n>/<path>` from Blob, streamed.
+`<slug>.local.helix.azxlabs.io` → registry projection (slug → live version + visibility) → **session gate** → `apps/<appId>/<n>/<path>` from Blob, streamed.
 
 The gate (architecture §4.2, Appendix A): no `__Host-session` cookie → top-level navigations 302 to `auth.<base>/start?app=<slug>&rd=<path>`; fetches/subresources get 401 (`Sec-Fetch-Mode` primary, Accept sniff fallback). The auth host runs OIDC code+PKCE+nonce against the issuer, checks the app's visibility rule (group membership for `group` mode), writes a _pending_ session row, and hands off via `GET <slug>.<base>/_auth/complete?token=<30s, single-use, audience-bound JWS>`. Redemption burns the token atomically (an `UPDATE … WHERE "tokenHash" IS NULL`), mints a fresh host-scoped cookie, and lands on the original path. Sessions are server-side (revocation is real), hard-capped (8 h default), and silently re-authenticated via `prompt=none` after the refresh interval (1 h default) — group membership is re-snapshotted there. Once the refresh is due, navigations take the silent-refresh detour and `/_api/*` fetches get `401 {code: "refresh_required"}` (the snapshot is stale — an authorization boundary, not just a hint); passive assets stay lenient until hard expiry. `POST /_auth/logout` (Origin-checked) deletes the row; `GET /_api/me` returns `{user: {id, displayName}}` and nothing more.
 
@@ -21,7 +21,7 @@ Every app response carries the §4.4 baseline CSP (not just HTML — SVG/XML doc
 | `AZURE_CLIENT_ID`                                 | (prod)                                   | User-assigned MI client id for the AAD token fetch (`IDENTITY_ENDPOINT`/`IDENTITY_HEADER` injected by Container Apps)                                                                                                                                                   |
 | `AZURE_STORAGE_CONNECTION_STRING`                 | (dev)                                    | Blob/Azurite for asset reads via SharedKey — **dev/Azurite only, refused when `NODE_ENV=production`**                                                                                                                                                                   |
 | `BLOB_CONTAINER`                                  | `app-bundles`                            | Container the portal deploys into                                                                                                                                                                                                                                       |
-| `EDGE_BASE_DOMAIN`                                | `localtest.me`                           | Apps serve on `<slug>.<this>`; auth on `auth.<this>`                                                                                                                                                                                                                    |
+| `EDGE_BASE_DOMAIN`                                | `local.helix.azxlabs.io`                           | Apps serve on `<slug>.<this>`; auth on `auth.<this>`                                                                                                                                                                                                                    |
 | `EDGE_OIDC_ISSUER`                                | unset                                    | OIDC issuer (dev: `http://localhost:3002`; later: Entra). All four auth vars set together, or none                                                                                                                                                                      |
 | `EDGE_OIDC_CLIENT_ID` / `_CLIENT_SECRET`          | unset                                    | The edge's confidential client at the issuer                                                                                                                                                                                                                            |
 | `EDGE_AUTH_SECRET`                                | unset                                    | base64, ≥32 bytes; HKDF-derived into handoff + flow-cookie keys                                                                                                                                                                                                         |
@@ -52,14 +52,14 @@ pnpm dev:edge       # :8080 — https (mkcert) with the real login flow;
 cd examples/hello-world
 pnpm --filter @azx-pbc/cli azx -- deploy --promote   # or: azx deploy --promote
 
-# *.localtest.me resolves to 127.0.0.1 (note: https now):
-curl -ik https://hello-world.localtest.me:8080/    # 302 → auth host (or 200 with the bypass)
+# *.local.helix.azxlabs.io resolves to 127.0.0.1 (note: https now):
+curl -ik https://hello-world.local.helix.azxlabs.io:8080/    # 302 → auth host (or 200 with the bypass)
 curl -ik https://localhost:8080/health             # platform health JSON
 ```
 
 To exercise the full login flow, unset the bypass for the edge process
 (`EDGE_DEV_ALLOW_UNAUTHENTICATED= pnpm dev:edge`), open
-`https://hello-world.localtest.me:8080/` in a browser, and pick a fixture user
+`https://hello-world.local.helix.azxlabs.io:8080/` in a browser, and pick a fixture user
 (`alice@azx.dev` / `bob@azx.dev` / `mallory@azx.dev`) on the dev IdP page. The
 mkcert CA lives at `.devcontainer/certs/caroot/rootCA.pem` — import it into the
 host trust store to silence browser warnings (optional).
@@ -69,7 +69,7 @@ Archive via the portal API to see the 410 path:
 ```bash
 curl -X POST -H "Authorization: Bearer $PORTAL_DEV_TOKEN" \
   http://localhost:3001/api/v1/apps/hello-world/archive
-curl -ik https://hello-world.localtest.me:8080/    # 410 + Clear-Site-Data
+curl -ik https://hello-world.local.helix.azxlabs.io:8080/    # 410 + Clear-Site-Data
 ```
 
 ## Tests

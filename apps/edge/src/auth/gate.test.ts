@@ -21,7 +21,7 @@ import {
 
 const APP_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PREFIX = "apps/a/1/";
-const HOST = { host: "demo.localtest.me" };
+const HOST = { host: "demo.local.helix.azxlabs.io" };
 const NAVIGATE = { "sec-fetch-mode": "navigate" };
 const FETCH = { "sec-fetch-mode": "cors" };
 
@@ -75,7 +75,7 @@ describe("unauthenticated requests", () => {
     const res = await edge.app.inject({ url: "/deep/link?q=1", headers: { ...HOST, ...NAVIGATE } });
     expect(res.statusCode).toBe(302);
     const location = new URL(res.headers.location as string);
-    expect(location.origin).toBe("https://auth.localtest.me:8080");
+    expect(location.origin).toBe("https://auth.local.helix.azxlabs.io:8080");
     expect(location.pathname).toBe("/start");
     expect(location.searchParams.get("app")).toBe("demo");
     expect(location.searchParams.get("rd")).toBe("/deep/link?q=1");
@@ -107,12 +107,12 @@ describe("unauthenticated requests", () => {
     );
     const unknown = await edge.app.inject({
       url: "/",
-      headers: { host: "nope.localtest.me", ...NAVIGATE },
+      headers: { host: "nope.local.helix.azxlabs.io", ...NAVIGATE },
     });
     expect(unknown.statusCode).toBe(404);
     const archived = await edge.app.inject({
       url: "/",
-      headers: { host: "old.localtest.me", ...NAVIGATE },
+      headers: { host: "old.local.helix.azxlabs.io", ...NAVIGATE },
     });
     expect(archived.statusCode).toBe(410);
   });
@@ -155,7 +155,7 @@ describe("authenticated requests", () => {
     const token = await seedSession(edge.sessions); // bound to APP_ID (demo)
     const res = await edge.app.inject({
       url: "/",
-      headers: { host: "other.localtest.me", ...NAVIGATE, ...sessionHeader(token) },
+      headers: { host: "other.local.helix.azxlabs.io", ...NAVIGATE, ...sessionHeader(token) },
     });
     expect(res.statusCode).toBe(302); // not authenticated there
   });
@@ -271,7 +271,7 @@ describe("password apps also admit SSO sessions", () => {
     const res = await passwordEdge().app.inject({ url: "/", headers: { ...HOST, ...NAVIGATE } });
     expect(res.statusCode).toBe(302);
     const loc = new URL(res.headers.location as string);
-    expect(loc.host).toBe("demo.localtest.me:8080");
+    expect(loc.host).toBe("demo.local.helix.azxlabs.io:8080");
     expect(loc.pathname).toBe("/_auth/login");
   });
 
@@ -294,7 +294,7 @@ describe("password apps also admit SSO sessions", () => {
     });
     expect(res.statusCode).toBe(302);
     const loc = new URL(res.headers.location as string);
-    expect(loc.host).toBe("auth.localtest.me:8080");
+    expect(loc.host).toBe("auth.local.helix.azxlabs.io:8080");
     expect(loc.pathname).toBe("/start");
     expect(loc.searchParams.get("silent")).toBe("1");
   });
@@ -349,11 +349,12 @@ describe("/_api/me", () => {
       (await edge.app.inject({ url: "/_api/me", headers: { ...HOST, ...FETCH } })).statusCode,
     ).toBe(401);
     expect(
-      (await edge.app.inject({ url: "/_api/me", headers: { host: "auth.localtest.me" } }))
+      (await edge.app.inject({ url: "/_api/me", headers: { host: "auth.local.helix.azxlabs.io" } }))
         .statusCode,
     ).toBe(404);
     expect(
-      (await edge.app.inject({ url: "/_api/me", headers: { host: "localtest.me" } })).statusCode,
+      (await edge.app.inject({ url: "/_api/me", headers: { host: "local.helix.azxlabs.io" } }))
+        .statusCode,
     ).toBe(404);
   });
 });
@@ -378,7 +379,7 @@ describe("POST /_auth/logout", () => {
   it("deletes the session and clears the cookie for a same-origin POST", async () => {
     const edge = buildGatedEdge();
     const token = await seedSession(edge.sessions);
-    const res = await logoutInject(edge, token, "https://demo.localtest.me:8080");
+    const res = await logoutInject(edge, token, "https://demo.local.helix.azxlabs.io:8080");
     expect(res.statusCode).toBe(204);
     expect(String(res.headers["set-cookie"])).toContain(`${SESSION_COOKIE}=;`);
     expect(await edge.sessions.lookup(hashSessionToken(token), APP_ID)).toBeNull();
@@ -387,9 +388,9 @@ describe("POST /_auth/logout", () => {
   it("refuses cross-origin and origin-less logouts (CSRF)", async () => {
     const edge = buildGatedEdge();
     const token = await seedSession(edge.sessions);
-    expect((await logoutInject(edge, token, "https://other.localtest.me:8080")).statusCode).toBe(
-      403,
-    );
+    expect(
+      (await logoutInject(edge, token, "https://other.local.helix.azxlabs.io:8080")).statusCode,
+    ).toBe(403);
     expect((await logoutInject(edge, token, "https://evil.example")).statusCode).toBe(403);
     expect((await logoutInject(edge, token)).statusCode).toBe(403);
     // The session survives all of those.
@@ -415,7 +416,7 @@ describe("the dev bypass and the unconfigured edge", () => {
     expect(res.statusCode).toBe(200);
     // Unknown slugs still 404 — the bypass is not "serve anything".
     expect(
-      (await app.inject({ url: "/", headers: { host: "nope.localtest.me" } })).statusCode,
+      (await app.inject({ url: "/", headers: { host: "nope.local.helix.azxlabs.io" } })).statusCode,
     ).toBe(404);
     await app.close();
   });

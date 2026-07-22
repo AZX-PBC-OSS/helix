@@ -63,4 +63,4 @@ pnpm dev:edge
 Without egress configured, `/_api/llm/chat` returns `503 capability_unavailable`
 (fail-closed — the edge has no direct-to-Anthropic path).
 
-Then open `https://chatbot.localtest.me:8080`, sign in, and chat.
+Then open `https://chatbot.local.helix.azxlabs.io:8080`, sign in, and chat.

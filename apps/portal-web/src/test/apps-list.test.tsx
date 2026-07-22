@@ -54,7 +54,7 @@ describe("AppsListPage", () => {
     expect(await screen.findByText("Cost Explorer")).toBeDefined();
     expect(await screen.findByText("Standup")).toBeDefined();
     // host line is derived from the slug + APP_PUBLIC_BASE default
-    expect(screen.getByText("cost-explorer.localtest.me:8080")).toBeDefined();
+    expect(screen.getByText("cost-explorer.local.helix.azxlabs.io:8080")).toBeDefined();
   });
 
   it("shows the empty state when the registry is empty", async () => {

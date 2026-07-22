@@ -28,8 +28,8 @@ import type { EgressProvider, EgressRequest, EgressResponse } from "./egressProv
 
 const APP_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PREFIX = "apps/a/1/";
-const HOST = { host: "demo.localtest.me" };
-const ORIGIN = "https://demo.localtest.me:8080";
+const HOST = { host: "demo.local.helix.azxlabs.io" };
+const ORIGIN = "https://demo.local.helix.azxlabs.io:8080";
 const secret = randomBytes(32);
 const key = deriveInstructionKey(secret);
 
@@ -184,7 +184,7 @@ describe("/_api/fetch", () => {
     const res = await app.inject({
       method: "GET",
       url: "/_api/fetch/https://api.github.com/x",
-      headers: { ...HOST, origin: "https://evil.localtest.me:8080" },
+      headers: { ...HOST, origin: "https://evil.local.helix.azxlabs.io:8080" },
     });
     expect(res.statusCode).toBe(403);
     expect(egress.calls).toHaveLength(0);
@@ -259,7 +259,7 @@ describe("/_api/fetch", () => {
     const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
     const res = await undiciRequest(`${base}/_api/fetch/https://api.github.com/big`, {
       method: "GET",
-      headers: { host: "demo.localtest.me", origin: ORIGIN },
+      headers: { host: "demo.local.helix.azxlabs.io", origin: ORIGIN },
     });
     expect(res.statusCode).toBe(200);
     let got = 0;

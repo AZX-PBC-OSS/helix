@@ -48,8 +48,8 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
         redirect_uris: opts.edgeRedirectUris ?? [
-          "https://auth.localtest.me:8080/callback",
-          "http://auth.localtest.me:8080/callback",
+          "https://auth.local.helix.azxlabs.io:8080/callback",
+          "http://auth.local.helix.azxlabs.io:8080/callback",
         ],
       },
       {

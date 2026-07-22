@@ -24,8 +24,8 @@ import {
 
 const APP_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PREFIX = "apps/a/1/";
-const HOST = { host: "demo.localtest.me" };
-const ORIGIN = "https://demo.localtest.me:8080";
+const HOST = { host: "demo.local.helix.azxlabs.io" };
+const ORIGIN = "https://demo.local.helix.azxlabs.io:8080";
 const MODEL = "claude-opus-4-8";
 
 interface LlmEdge {
@@ -181,7 +181,9 @@ describe("authorization", () => {
   it("403s a cross-origin (sibling subdomain) POST — CSRF", async () => {
     const edge = buildLlmEdge();
     const token = await seedSession(edge.sessions);
-    const res = await chat(edge, token, ASK, { origin: "https://evil.localtest.me:8080" });
+    const res = await chat(edge, token, ASK, {
+      origin: "https://evil.local.helix.azxlabs.io:8080",
+    });
     expect(res.statusCode).toBe(403);
     expect(edge.provider.calls).toHaveLength(0);
   });
@@ -204,7 +206,7 @@ describe("authorization", () => {
   it("404s off app hosts", async () => {
     const edge = buildLlmEdge();
     const token = await seedSession(edge.sessions);
-    const res = await chat(edge, token, ASK, { host: "auth.localtest.me" });
+    const res = await chat(edge, token, ASK, { host: "auth.local.helix.azxlabs.io" });
     expect(res.statusCode).toBe(404);
   });
 });

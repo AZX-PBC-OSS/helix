@@ -7,12 +7,12 @@ import type { FastifyInstance } from "fastify";
  *
  * Links target `<slug>.` prepended to `APP_PUBLIC_BASE`, which carries the
  * scheme, base domain, and port of the edge as reachable by the user
- * (architecture §4.1). Defaults to `http://localtest.me:8080`, the local dev
+ * (architecture §4.1). Defaults to `http://local.helix.azxlabs.io:8080`, the local dev
  * edge; set `https://azx-labs.com` for prod.
  */
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", async (_req, reply) => {
-    const base = new URL(process.env.APP_PUBLIC_BASE ?? "http://localtest.me:8080");
+    const base = new URL(process.env.APP_PUBLIC_BASE ?? "http://local.helix.azxlabs.io:8080");
     const apps = await app.prisma.app.findMany({
       orderBy: { createdAt: "asc" },
       include: { currentVersion: true },

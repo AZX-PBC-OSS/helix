@@ -63,6 +63,11 @@ services:
       # exercisable through the browser. Flip to "true" only to serve app
       # content without login (e.g. debugging asset serving in isolation).
       EDGE_DEV_ALLOW_UNAUTHENTICATED: "false"
+      # Apps serve on `<slug>.<EDGE_BASE_DOMAIN>`, auth on `auth.<EDGE_BASE_DOMAIN>`.
+      # `*.local.helix.azxlabs.io` is a platform-owned wildcard that resolves to
+      # 127.0.0.1 (see the DNS note in the repo docs) — a controlled replacement
+      # for the third-party `localtest.me`. The mkcert wildcard cert below matches.
+      EDGE_BASE_DOMAIN: local.helix.azxlabs.io
       # M3 edge app-user auth, against the local dev IdP (`pnpm dev:idp`).
       # Dev-only well-known values, mirrored in apps/dev-idp fixtures.
       EDGE_OIDC_ISSUER: http://localhost:3002
@@ -76,8 +81,8 @@ services:
       # (crypto.randomUUID, SubtleCrypto) need a secure context. In-container
       # Node trusts the CA via NODE_EXTRA_CA_CERTS; the host browser sees a
       # self-signed cert — accept it once (or trust certs/caroot/rootCA.pem).
-      EDGE_TLS_CERT_FILE: /workspace/.devcontainer/certs/localtest-me.pem
-      EDGE_TLS_KEY_FILE: /workspace/.devcontainer/certs/localtest-me-key.pem
+      EDGE_TLS_CERT_FILE: /workspace/.devcontainer/certs/local-helix.pem
+      EDGE_TLS_KEY_FILE: /workspace/.devcontainer/certs/local-helix-key.pem
       NODE_EXTRA_CA_CERTS: /workspace/.devcontainer/certs/caroot/rootCA.pem
       # M4.5 azx-egress mechanism plane (`pnpm dev:egress`, :8081). It connects
       # as the least-privilege helix_egress role (created by db-init/01-roles.sql)

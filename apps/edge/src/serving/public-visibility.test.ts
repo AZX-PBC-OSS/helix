@@ -81,7 +81,11 @@ describe("public-app serving (no session)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "pub.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+      headers: {
+        host: "pub.local.helix.azxlabs.io",
+        "sec-fetch-mode": "navigate",
+        accept: "text/html",
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("public");
@@ -92,7 +96,11 @@ describe("public-app serving (no session)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "priv.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+      headers: {
+        host: "priv.local.helix.azxlabs.io",
+        "sec-fetch-mode": "navigate",
+        accept: "text/html",
+      },
     });
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toContain("/start");
@@ -103,11 +111,15 @@ describe("public-app serving (no session)", () => {
     const res = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "pw.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+      headers: {
+        host: "pw.local.helix.azxlabs.io",
+        "sec-fetch-mode": "navigate",
+        accept: "text/html",
+      },
     });
     expect(res.statusCode).toBe(302);
     // Same-origin app-host challenge, not the OIDC auth host.
-    expect(res.headers.location).toContain("pw.localtest.me");
+    expect(res.headers.location).toContain("pw.local.helix.azxlabs.io");
     expect(res.headers.location).toContain("/_auth/login");
     expect(res.headers.location).not.toContain("/start");
   });
@@ -119,7 +131,11 @@ describe("operator policy: disallowed open surfaces (EDGE_ALLOW_*_APPS)", () => 
     const res = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "pub.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+      headers: {
+        host: "pub.local.helix.azxlabs.io",
+        "sec-fetch-mode": "navigate",
+        accept: "text/html",
+      },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -134,8 +150,8 @@ describe("operator policy: disallowed open surfaces (EDGE_ALLOW_*_APPS)", () => 
       method: "POST",
       url: "/_api/llm/chat",
       headers: {
-        host: "pub.localtest.me",
-        origin: "https://pub.localtest.me:8080",
+        host: "pub.local.helix.azxlabs.io",
+        origin: "https://pub.local.helix.azxlabs.io:8080",
         "sec-fetch-mode": "cors",
         "content-type": "application/json",
       },
@@ -155,7 +171,11 @@ describe("operator policy: disallowed open surfaces (EDGE_ALLOW_*_APPS)", () => 
     const res = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "pw.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+      headers: {
+        host: "pw.local.helix.azxlabs.io",
+        "sec-fetch-mode": "navigate",
+        accept: "text/html",
+      },
     });
     expect(res.statusCode).toBe(403);
   });
@@ -169,7 +189,7 @@ describe("operator policy: disallowed open surfaces (EDGE_ALLOW_*_APPS)", () => 
     const res = await app.inject({
       method: "GET",
       url: "/_auth/login",
-      headers: { host: "pw.localtest.me", accept: "text/html" },
+      headers: { host: "pw.local.helix.azxlabs.io", accept: "text/html" },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -179,7 +199,11 @@ describe("operator policy: disallowed open surfaces (EDGE_ALLOW_*_APPS)", () => 
     const res = await app.inject({
       method: "GET",
       url: "/",
-      headers: { host: "pub.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" },
+      headers: {
+        host: "pub.local.helix.azxlabs.io",
+        "sec-fetch-mode": "navigate",
+        accept: "text/html",
+      },
     });
     expect(res.statusCode).toBe(200);
   });
@@ -192,8 +216,8 @@ describe("public-app LLM gateway (anonymous caller)", () => {
       method: "POST",
       url: "/_api/llm/chat",
       headers: {
-        host: "pub.localtest.me",
-        origin: "https://pub.localtest.me:8080",
+        host: "pub.local.helix.azxlabs.io",
+        origin: "https://pub.local.helix.azxlabs.io:8080",
         "sec-fetch-mode": "cors",
         "content-type": "application/json",
       },
@@ -211,7 +235,7 @@ describe("public-app LLM gateway (anonymous caller)", () => {
       method: "POST",
       url: "/_api/llm/chat",
       headers: {
-        host: "pub.localtest.me",
+        host: "pub.local.helix.azxlabs.io",
         origin: "https://evil.example.com",
         "sec-fetch-mode": "cors",
         "content-type": "application/json",
@@ -228,8 +252,8 @@ describe("public-app anonymous-tier per-IP rate limit (app-data design §7)", ()
       method: "POST",
       url: "/_api/llm/chat",
       headers: {
-        host: "pub.localtest.me",
-        origin: "https://pub.localtest.me:8080",
+        host: "pub.local.helix.azxlabs.io",
+        origin: "https://pub.local.helix.azxlabs.io:8080",
         "sec-fetch-mode": "cors",
         "content-type": "application/json",
       },

@@ -25,7 +25,7 @@ import { InMemoryCounterStore } from "../gateway/counterStore.js";
 const APP_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const PREFIX = "apps/c/1/";
 const PASSWORD = "correct-horse-battery-staple";
-const ORIGIN = "https://pw.localtest.me:8080";
+const ORIGIN = "https://pw.local.helix.azxlabs.io:8080";
 
 /** scrypt at the shared cost — matches apps/portal/src/access/password.ts and the edge verifier. */
 function hashFor(password: string): { passwordHash: string; passwordSalt: string } {
@@ -63,7 +63,11 @@ function buildEdge(
   });
 }
 
-const navHeaders = { host: "pw.localtest.me", "sec-fetch-mode": "navigate", accept: "text/html" };
+const navHeaders = {
+  host: "pw.local.helix.azxlabs.io",
+  "sec-fetch-mode": "navigate",
+  accept: "text/html",
+};
 
 function submit(
   app: FastifyInstance,
@@ -74,7 +78,7 @@ function submit(
     method: "POST",
     url: "/_auth/login",
     headers: {
-      host: "pw.localtest.me",
+      host: "pw.local.helix.azxlabs.io",
       origin: ORIGIN,
       "content-type": "application/x-www-form-urlencoded",
       ...headers,
@@ -107,7 +111,7 @@ describe("GET /_auth/login (the challenge page)", () => {
     expect(res.body).toContain('autocomplete="username"');
     expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
     // A password app also admits SSO users — the page links to the auth host.
-    expect(res.body).toContain("auth.localtest.me");
+    expect(res.body).toContain("auth.local.helix.azxlabs.io");
     expect(res.body).toContain("/start?app=pw");
   });
 
@@ -134,7 +138,7 @@ describe("POST /_auth/login (verification)", () => {
     const me = await app.inject({
       method: "GET",
       url: "/_api/me",
-      headers: { host: "pw.localtest.me", cookie: `__Host-session=${cookie}` },
+      headers: { host: "pw.local.helix.azxlabs.io", cookie: `__Host-session=${cookie}` },
     });
     expect(me.statusCode).toBe(200);
     expect(me.json().user.id).toMatch(/^pw_/);
@@ -166,7 +170,7 @@ describe("POST /_auth/login (verification)", () => {
         method: "POST",
         url: "/_auth/login",
         headers: {
-          host: "pw.localtest.me",
+          host: "pw.local.helix.azxlabs.io",
           "sec-fetch-site": site,
           "content-type": "application/x-www-form-urlencoded",
         },
@@ -184,7 +188,10 @@ describe("POST /_auth/login (verification)", () => {
     const res = await app.inject({
       method: "POST",
       url: "/_auth/login",
-      headers: { host: "pw.localtest.me", "content-type": "application/x-www-form-urlencoded" },
+      headers: {
+        host: "pw.local.helix.azxlabs.io",
+        "content-type": "application/x-www-form-urlencoded",
+      },
       payload: new URLSearchParams({ password: PASSWORD, rd: "/" }).toString(),
     });
     expect(res.statusCode).toBe(302);
@@ -197,7 +204,7 @@ describe("POST /_auth/login (verification)", () => {
       method: "POST",
       url: "/_auth/login",
       headers: {
-        host: "pw.localtest.me",
+        host: "pw.local.helix.azxlabs.io",
         "sec-fetch-site": "same-origin",
         "content-type": "application/x-www-form-urlencoded",
       },
@@ -239,7 +246,7 @@ describe("the session gate for password apps", () => {
     const res = await buildEdge().inject({
       method: "GET",
       url: "/_api/me",
-      headers: { host: "pw.localtest.me" },
+      headers: { host: "pw.local.helix.azxlabs.io" },
     });
     expect(res.statusCode).toBe(401);
   });

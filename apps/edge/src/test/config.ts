@@ -55,7 +55,7 @@ export function testManagedIdentityBlob(overrides: Partial<AzureBlobConfig> = {}
 /** Full EdgeConfig for unit tests (no real services behind it). */
 export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
   return {
-    baseDomain: "localtest.me",
+    baseDomain: "local.helix.azxlabs.io",
     databaseUrl: "postgresql://unused",
     blob: testBlobConfig(),
     auth: null,

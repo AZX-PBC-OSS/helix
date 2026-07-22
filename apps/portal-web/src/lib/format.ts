@@ -37,7 +37,8 @@ export function timeAgo(iso: string): string {
  * Carries scheme + host + port of the edge; the slug is prepended.
  */
 const APP_PUBLIC_BASE = new URL(
-  (import.meta.env.VITE_APP_PUBLIC_BASE as string | undefined) ?? "https://localtest.me:8080",
+  (import.meta.env.VITE_APP_PUBLIC_BASE as string | undefined) ??
+    "https://local.helix.azxlabs.io:8080",
 );
 
 export function appHost(slug: string): string {

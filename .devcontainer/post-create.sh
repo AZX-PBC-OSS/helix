@@ -31,18 +31,18 @@ echo "── Installing Playwright system deps ──"
 sudo env "PATH=$PATH" npx -y playwright@latest install-deps chromium
 
 echo "── Generating local TLS certs (mkcert) ──"
-# Wildcard cert for *.localtest.me so the edge can terminate TLS in dev —
+# Wildcard cert for *.local.helix.azxlabs.io so the edge can terminate TLS in dev —
 # __Host- cookies demand Secure (project plan §3). Idempotent; gitignored.
 # NODE_EXTRA_CA_CERTS (compose) makes Node trust the CA in-container; to quiet
 # host-browser warnings, import certs/caroot/rootCA.pem into the host trust
 # store (optional — the warning is harmless for dev).
 CERT_DIR=/workspace/.devcontainer/certs
 export CAROOT="$CERT_DIR/caroot"
-if [ ! -f "$CERT_DIR/localtest-me.pem" ] && command -v mkcert >/dev/null; then
+if [ ! -f "$CERT_DIR/local-helix.pem" ] && command -v mkcert >/dev/null; then
   mkdir -p "$CAROOT"
-  mkcert -cert-file "$CERT_DIR/localtest-me.pem" \
-         -key-file "$CERT_DIR/localtest-me-key.pem" \
-         "*.localtest.me" localtest.me
+  mkcert -cert-file "$CERT_DIR/local-helix.pem" \
+         -key-file "$CERT_DIR/local-helix-key.pem" \
+         "*.local.helix.azxlabs.io" local.helix.azxlabs.io
 fi
 
 # ── Dev secret-store KEK ──

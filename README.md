@@ -8,7 +8,7 @@ in what order_). The whole design rests on one stance — **every hosted app is 
 and contains the blast radius per app instead of trying to verify it.
 
 > **Status: M4.5 (local) — Egress & Connections.** Registry + deploys (portal API + `azx` CLI),
-> edge serving on `*.localtest.me`, the §4.2 / Appendix A auth flow against a **local OIDC
+> edge serving on `*.local.helix.azxlabs.io`, the §4.2 / Appendix A auth flow against a **local OIDC
 > issuer** (central callback, one-time handoff token, `__Host-session` cookies, server-side
 > sessions, group visibility, silent refresh, password/public modes, `/_api/me`; portal/CLI
 > bearer JWTs), the `/_api/*` **gateway** (LLM proxy `/_api/llm/chat`, app-data `/_api/data/*` —
@@ -46,7 +46,7 @@ pnpm, and the `db` (Postgres) + `azurite` (Blob) services, with `DATABASE_URL`,
 `AZURE_STORAGE_CONNECTION_STRING`, the M3 auth env (`EDGE_OIDC_*`, `EDGE_AUTH_SECRET`,
 `PORTAL_OIDC_*`, `EDGE_TLS_*`), and the egress env (`HELIX_INSTRUCTION_SECRET` for the
 edge↔egress attested instruction) already set. `pnpm install` runs on create, and post-create
-generates a mkcert wildcard cert for `*.localtest.me` into `.devcontainer/certs/` (gitignored),
+generates a mkcert wildcard cert for `*.local.helix.azxlabs.io` into `.devcontainer/certs/` (gitignored),
 the dev secret-store KEK, and the `helix_egress` DB role.
 
 ### The platform is HTTPS-only
@@ -65,13 +65,13 @@ processes inside the container already trust the CA via `NODE_EXTRA_CA_CERTS`.
 ```bash
 pnpm dev:idp      # :3002 — local OIDC issuer (apps/dev-idp). Fixture users below.
 pnpm dev:portal   # :3001 — registry + deploy API
-pnpm dev:edge     # :8080 — HTTPS. Apps at https://<slug>.localtest.me:8080,
-                  #         login on https://auth.localtest.me:8080
+pnpm dev:edge     # :8080 — HTTPS. Apps at https://<slug>.local.helix.azxlabs.io:8080,
+                  #         login on https://auth.local.helix.azxlabs.io:8080
 pnpm dev:egress   # :8081 — mechanism plane (fetch-proxy + secret injection).
                   #         Only needed when exercising /_api/fetch or connections.
 ```
 
-`*.localtest.me` resolves to `127.0.0.1`, so app subdomains and the auth host work with no
+`*.local.helix.azxlabs.io` resolves to `127.0.0.1`, so app subdomains and the auth host work with no
 `/etc/hosts` edits. Fixture identities at the IdP (pick one on the login page):
 
 | User              | Groups                       |
@@ -101,7 +101,7 @@ node --import tsx ../../packages/cli/src/bin.ts create
 node --import tsx ../../packages/cli/src/bin.ts deploy --promote
 
 # 3. Open it (accept the cert warning the first time):
-open https://notes.localtest.me:8080/
+open https://notes.local.helix.azxlabs.io:8080/
 ```
 
 With the gate on (no bypass), an unauthenticated visit 302s to the login page; pick a fixture

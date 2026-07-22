@@ -28,7 +28,7 @@ import {
 
 const APP_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const AUTH_HOST = { host: "auth.localtest.me" };
+const AUTH_HOST = { host: "auth.local.helix.azxlabs.io" };
 const KEYS = deriveAuthKeys(TEST_AUTH_SECRET);
 
 interface AuthEdge {
@@ -131,7 +131,7 @@ describe("the happy path (everything the attacks try to subvert)", () => {
     const edge = buildAuthEdge();
     const { completeUrl } = await login(edge, { rd: "/deep/link?q=1" });
 
-    expect(completeUrl.host).toBe("appa.localtest.me:8080");
+    expect(completeUrl.host).toBe("appa.local.helix.azxlabs.io:8080");
     expect(completeUrl.protocol).toBe("https:");
     expect(completeUrl.pathname).toBe("/_auth/complete");
 
@@ -188,7 +188,7 @@ describe("the happy path (everything the attacks try to subvert)", () => {
     expect(res.statusCode).toBe(302);
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
     const restart = new URL(res.headers.location as string);
-    expect(restart.host).toBe("auth.localtest.me:8080");
+    expect(restart.host).toBe("auth.local.helix.azxlabs.io:8080");
     expect(restart.pathname).toBe("/start");
     expect(restart.searchParams.get("app")).toBe("appa");
     expect(restart.searchParams.get("rd")).toBe("/page");
@@ -215,7 +215,7 @@ describe("attack: audience confusion", () => {
   it("a token captured by appB is worthless there (JWS aud check)", async () => {
     const edge = buildAuthEdge();
     const { completeUrl } = await login(edge); // audience: appa
-    const res = await redeem(edge, completeUrl, { host: "appb.localtest.me:8080" });
+    const res = await redeem(edge, completeUrl, { host: "appb.local.helix.azxlabs.io:8080" });
     expect(res.statusCode).toBe(403);
     expect(res.headers["set-cookie"]).toBeUndefined();
     // And the pending session survives for the legitimate host.
@@ -235,7 +235,7 @@ describe("attack: audience confusion", () => {
     );
     const res = await edge.app.inject({
       url: `/_auth/complete?token=${crossToken}`,
-      headers: { host: "appb.localtest.me:8080" },
+      headers: { host: "appb.local.helix.azxlabs.io:8080" },
     });
     expect(res.statusCode).toBe(403);
     expect(res.headers["set-cookie"]).toBeUndefined();
@@ -368,13 +368,16 @@ describe("the two-router discipline for auth routes", () => {
   it("auth routes never answer on app or platform hosts", async () => {
     const edge = buildAuthEdge();
     // /start on an app host is an asset path, not a login endpoint.
-    const onApp = await edge.app.inject({ url: "/start", headers: { host: "appa.localtest.me" } });
+    const onApp = await edge.app.inject({
+      url: "/start",
+      headers: { host: "appa.local.helix.azxlabs.io" },
+    });
     expect(onApp.statusCode).toBe(404); // empty fake blob — but no redirect
     expect(onApp.headers.location).toBeUndefined();
 
     const onPlatform = await edge.app.inject({
       url: "/start?app=appa",
-      headers: { host: "localtest.me" },
+      headers: { host: "local.helix.azxlabs.io" },
     });
     expect(onPlatform.statusCode).toBe(404);
   });
@@ -382,9 +385,9 @@ describe("the two-router discipline for auth routes", () => {
   it("/_auth/complete never answers on the auth or platform hosts", async () => {
     const edge = buildAuthEdge();
     const { completeUrl } = await login(edge);
-    const onAuth = await redeem(edge, completeUrl, { host: "auth.localtest.me:8080" });
+    const onAuth = await redeem(edge, completeUrl, { host: "auth.local.helix.azxlabs.io:8080" });
     expect(onAuth.statusCode).toBe(404);
-    const onPlatform = await redeem(edge, completeUrl, { host: "localtest.me:8080" });
+    const onPlatform = await redeem(edge, completeUrl, { host: "local.helix.azxlabs.io:8080" });
     expect(onPlatform.statusCode).toBe(404);
   });
 
@@ -399,7 +402,7 @@ describe("the two-router discipline for auth routes", () => {
       oidc: edge.oidc,
     });
     for (const url of ["/_auth/anything", "/_auth", "/_api/me", "/_api", "/_api/llm/v1"]) {
-      const res = await app.inject({ url, headers: { host: "appa.localtest.me" } });
+      const res = await app.inject({ url, headers: { host: "appa.local.helix.azxlabs.io" } });
       expect(res.statusCode, url).toBe(404);
     }
     expect(blob.requests).toHaveLength(0);
@@ -416,7 +419,7 @@ describe("the two-router discipline for auth routes", () => {
     expect((await app.inject({ url: "/callback", headers: AUTH_HOST })).statusCode).toBe(503);
     const complete = await app.inject({
       url: "/_auth/complete?token=x",
-      headers: { host: "appa.localtest.me" },
+      headers: { host: "appa.local.helix.azxlabs.io" },
     });
     expect(complete.statusCode).toBe(404);
     await app.close();
@@ -497,8 +500,8 @@ describe("attack: the /_api/llm/chat gateway", () => {
     // appb tries to drive appa's gateway with appa's Origin spoof-attempt blocked
     // by the Origin check; here a real appa request from a sibling origin.
     const res = await call(edge, token, {
-      host: "appa.localtest.me",
-      origin: "https://appb.localtest.me:8080",
+      host: "appa.local.helix.azxlabs.io",
+      origin: "https://appb.local.helix.azxlabs.io:8080",
     });
     expect(res.statusCode).toBe(403);
     expect(edge.provider.calls).toHaveLength(0);
@@ -509,7 +512,7 @@ describe("attack: the /_api/llm/chat gateway", () => {
     const tokenA = await seed(edge.sessions, APP_A);
     // Same cookie, app B host + app B origin: the gate looks the row up scoped
     // to app B's id and finds nothing → 401, never attributed to app B.
-    const res = await call(edge, tokenA, { host: "appb.localtest.me" });
+    const res = await call(edge, tokenA, { host: "appb.local.helix.azxlabs.io" });
     expect(res.statusCode).toBe(401);
     expect(edge.provider.calls).toHaveLength(0);
     expect(edge.usage.records).toHaveLength(0);
@@ -519,7 +522,7 @@ describe("attack: the /_api/llm/chat gateway", () => {
     const edge = buildGatewayEdge();
     edge.usage.spendTodayMicro = 1_000_000;
     const token = await seed(edge.sessions, APP_A);
-    const res = await call(edge, token, { host: "appa.localtest.me" });
+    const res = await call(edge, token, { host: "appa.local.helix.azxlabs.io" });
     expect(res.statusCode).toBe(429);
     expect(edge.usage.records[0]?.outcome).toBe("quota_blocked");
   });
@@ -529,7 +532,7 @@ describe("attack: the /_api/llm/chat gateway", () => {
     // Simulate a provider failure whose message embeds a secret-shaped string.
     edge.provider.error = new Error("401 unauthorized: x-api-key sk-ant-SECRET-LEAK");
     const token = await seed(edge.sessions, APP_A);
-    const res = await call(edge, token, { host: "appa.localtest.me" });
+    const res = await call(edge, token, { host: "appa.local.helix.azxlabs.io" });
     // The app sees a generic in-band SSE error, not the upstream detail.
     expect(res.body).toContain("event: error");
     expect(res.body).not.toContain("sk-ant-SECRET-LEAK");

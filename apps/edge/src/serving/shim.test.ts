@@ -78,7 +78,7 @@ describe("/_helix/fetch-shim.js", () => {
   it("serves the per-app shim on an app host", async () => {
     const res = await app.inject({
       url: "/_helix/fetch-shim.js",
-      headers: { host: "shimmed.localtest.me" },
+      headers: { host: "shimmed.local.helix.azxlabs.io" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toContain("text/javascript");
@@ -97,7 +97,7 @@ describe("/_helix/fetch-shim.js", () => {
 
 describe("HTML injection", () => {
   it("injects the shim tag into an opted-in app's HTML, without an etag", async () => {
-    const res = await app.inject({ url: "/", headers: { host: "shimmed.localtest.me" } });
+    const res = await app.inject({ url: "/", headers: { host: "shimmed.local.helix.azxlabs.io" } });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('<script src="/_helix/fetch-shim.js"></script>');
     expect(res.headers.etag).toBeUndefined(); // injected bytes ≠ blob etag
@@ -105,7 +105,7 @@ describe("HTML injection", () => {
   });
 
   it("does not inject for an app that did not opt in (and keeps its etag)", async () => {
-    const res = await app.inject({ url: "/", headers: { host: "plain.localtest.me" } });
+    const res = await app.inject({ url: "/", headers: { host: "plain.local.helix.azxlabs.io" } });
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain("/_helix/fetch-shim.js");
     expect(res.headers.etag).toBe('"h2"');

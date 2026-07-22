@@ -26,8 +26,8 @@ import {
 
 const APP_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const PREFIX = "apps/c/1/";
-const HOST = "notes.localtest.me";
-const ORIGIN = "https://notes.localtest.me:8080";
+const HOST = "notes.local.helix.azxlabs.io";
+const ORIGIN = "https://notes.local.helix.azxlabs.io:8080";
 
 interface DataEdge {
   app: FastifyInstance;

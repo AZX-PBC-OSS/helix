@@ -9,7 +9,7 @@ const PREFIX = `apps/${APP_ID}/1/`;
 
 function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
   return {
-    baseDomain: "localtest.me",
+    baseDomain: "local.helix.azxlabs.io",
     databaseUrl: "postgresql://unused",
     blob: {
       provider: "azure",
@@ -60,7 +60,7 @@ function buildTestEdge(opts: {
   return { app, blob };
 }
 
-const HOST = { host: "demo.localtest.me" };
+const HOST = { host: "demo.local.helix.azxlabs.io" };
 
 let edge: { app: FastifyInstance; blob: FakeBlobReader };
 
@@ -235,7 +235,10 @@ describe("app hosts: asset serving", () => {
 
 describe("app hosts: registry states", () => {
   it("404s an unknown slug", async () => {
-    const res = await edge.app.inject({ url: "/", headers: { host: "nope.localtest.me" } });
+    const res = await edge.app.inject({
+      url: "/",
+      headers: { host: "nope.local.helix.azxlabs.io" },
+    });
     expect(res.statusCode).toBe(404);
   });
 
@@ -243,7 +246,7 @@ describe("app hosts: registry states", () => {
     const { app } = buildTestEdge({
       registry: new FakeRegistry([registryEntry({ appId: APP_ID, slug: "fresh" })]),
     });
-    const res = await app.inject({ url: "/", headers: { host: "fresh.localtest.me" } });
+    const res = await app.inject({ url: "/", headers: { host: "fresh.local.helix.azxlabs.io" } });
     expect(res.statusCode).toBe(404);
     await app.close();
   });
@@ -254,7 +257,7 @@ describe("app hosts: registry states", () => {
         registryEntry({ appId: APP_ID, slug: "old", archived: true, blobPrefix: PREFIX }),
       ]),
     });
-    const res = await app.inject({ url: "/", headers: { host: "old.localtest.me" } });
+    const res = await app.inject({ url: "/", headers: { host: "old.local.helix.azxlabs.io" } });
     expect(res.statusCode).toBe(410);
     expect(res.headers["clear-site-data"]).toBe('"cache", "storage"');
     expect(res.headers["cache-control"]).toBe("no-store");

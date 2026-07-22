@@ -65,7 +65,7 @@ azx deploy --promote
 
 The data capability comes up with the edge's auth stack (it is gated and
 caller-scoped); no vendor key is required. Then open
-`https://waitlist.localtest.me:8080` — no sign-in — and submit.
+`https://waitlist.local.helix.azxlabs.io:8080` — no sign-in — and submit.
 
 ### Seed the announcement (optional)
 
@@ -73,8 +73,8 @@ The shared banner is owner-seeded. From the app origin (public apps accept an
 anonymous, same-origin write to a `sharedWrite` key):
 
 ```bash
-curl -fsSk -X PUT "https://waitlist.localtest.me:8080/_api/data/shared/announcement" \
-  -H "origin: https://waitlist.localtest.me:8080" \
+curl -fsSk -X PUT "https://waitlist.local.helix.azxlabs.io:8080/_api/data/shared/announcement" \
+  -H "origin: https://waitlist.local.helix.azxlabs.io:8080" \
   -H "content-type: application/json" \
   -d '"🚀 1,200 founders already joined — early access ships in March."'
 ```

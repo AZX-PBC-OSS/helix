@@ -18,8 +18,8 @@ import { TEST_DATABASE_URL, deleteApp, seedApp, type SeededApp } from "../test/s
  * app.inject() for edge hops, fetch with a cookie jar for IdP hops.
  */
 
-const REDIRECT_URI = "https://auth.localtest.me:8080/callback";
-const AUTH_HOST = { host: "auth.localtest.me" };
+const REDIRECT_URI = "https://auth.local.helix.azxlabs.io:8080/callback";
+const AUTH_HOST = { host: "auth.local.helix.azxlabs.io" };
 
 let idp: RunningDevIdp;
 let pool: Pool;
@@ -172,7 +172,7 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     );
     expect(redeemRes?.statusCode).toBe(302);
     expect(redeemRes?.headers.location).toBe("/deep/link?q=1");
-    expect(completeUrl?.host).toBe(`${privateApp.slug}.localtest.me:8080`);
+    expect(completeUrl?.host).toBe(`${privateApp.slug}.local.helix.azxlabs.io:8080`);
     expect(sessionCookie).toBeTruthy();
 
     // The session row is real: alice's identity + group snapshot, app-scoped.
@@ -232,11 +232,11 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
   });
 
   it("serves gated assets and /_api/me with the minted session", async () => {
-    const host = { host: `${privateApp.slug}.localtest.me` };
+    const host = { host: `${privateApp.slug}.local.helix.azxlabs.io` };
     // Before login: navigation → login redirect; fetch → 401.
     const anon = await app.inject({ url: "/", headers: { ...host, "sec-fetch-mode": "navigate" } });
     expect(anon.statusCode).toBe(302);
-    expect(anon.headers.location).toContain("https://auth.localtest.me:8080/start");
+    expect(anon.headers.location).toContain("https://auth.local.helix.azxlabs.io:8080/start");
 
     const { sessionCookie } = await loginAs("alice@azx.dev", privateApp.slug);
     const cookie = `${SESSION_COOKIE}=${sessionCookie}`;
@@ -257,7 +257,7 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     // prompt=none succeed without an interaction.
     const browser = new TestHttpSession();
     const { sessionCookie } = await loginAs("alice@azx.dev", privateApp.slug, "/page", browser);
-    const host = { host: `${privateApp.slug}.localtest.me` };
+    const host = { host: `${privateApp.slug}.local.helix.azxlabs.io` };
 
     // Make the session refresh-due, then navigate: the gate detours to
     // /start?silent=1.

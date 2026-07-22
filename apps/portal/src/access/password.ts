@@ -114,6 +114,6 @@ export function decryptPassword(enc: string): string {
  * the credential so the UI can offer a one-click "copy URL + password".
  */
 export function appPublicUrl(slug: string): string {
-  const base = new URL(process.env.APP_PUBLIC_BASE ?? "http://localtest.me:8080");
+  const base = new URL(process.env.APP_PUBLIC_BASE ?? "http://local.helix.azxlabs.io:8080");
   return `${base.protocol}//${slug}.${base.host}`;
 }
