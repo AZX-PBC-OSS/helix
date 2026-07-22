@@ -49,7 +49,7 @@ Every Azure dependency must work in three modes: **local dev**, **integration te
 
 Config selects implementations per environment. CI runs against local/emulated; a separate integration suite runs against a real Azure dev resource group.
 
-**Local wildcard subdomains:** use `*.localtest.me` (resolves to 127.0.0.1) so subdomain-per-app routing and host-keyed routers work locally, with mkcert for a local wildcard cert — required because `__Host-` cookies demand `Secure`, and the whole isolation model must be exercisable in dev, not just in Azure.
+**Local wildcard subdomains:** use `*.local.helix.azxlabs.io` (resolves to 127.0.0.1) so subdomain-per-app routing and host-keyed routers work locally, with mkcert for a local wildcard cert — required because `__Host-` cookies demand `Secure`, and the whole isolation model must be exercisable in dev, not just in Azure.
 
 ## 4. v0 milestones (in order)
 
@@ -76,7 +76,7 @@ Monorepo scaffold (pnpm workspaces), dev container, lint/format/test wiring, `pa
 Postgres schema via Prisma (apps, versions, audit), portal API: create app, upload bundle (zip validation, static-files-only check, store to Blob via Azurite), version pointer + rollback. Minimal `azx` CLI: `azx deploy`. No UI yet — API + CLI only.
 
 ### M2 — Edge serving ✅ Done
-Host routing on `*.localtest.me`, registry projection (cached read from Postgres, refresh on change), asset streaming from Blob, version pointer resolution, 404/410 + `Clear-Site-Data` on archived apps. Baseline CSP header injection (the §4.4 policy, statically configured). No auth yet — a dev-only bypass flag.
+Host routing on `*.local.helix.azxlabs.io`, registry projection (cached read from Postgres, refresh on change), asset streaming from Blob, version pointer resolution, 404/410 + `Clear-Site-Data` on archived apps. Baseline CSP header injection (the §4.4 policy, statically configured). No auth yet — a dev-only bypass flag.
 
 ### M3 — Auth (the careful one) ✅ Done (local) · ⏳ Entra tail
 The §4.2 / Appendix A flow: central callback on the auth host, OIDC against local `oidc-provider`, one-time handoff token (signed, 30 s, single-use, audience-bound), `__Host-session` cookies, server-side sessions in Postgres, `/_api/me`, group-based visibility checks, silent refresh. **This milestone gets adversarial tests** (replay, audience confusion, open-redirect attempts, cookie tossing) **and a dedicated review pass before anything builds on it.** Then: real Entra app registration in the dev tenant, verify the same flow against reality.
@@ -90,7 +90,7 @@ The §4.2 / Appendix A flow: central callback on the auth host, OIDC against loc
 The `azx-egress` service (`apps/egress`, DB role `helix_egress`) as its own deployable unit from day one — **not** built in-edge and extracted later (architecture §3). The edge stays the policy plane (identity, authz, quota, audit) and hands a signed attested instruction to egress, which resolves connection secrets, injects credentials server-side, enforces SSRF controls, and makes the outbound call. Ships with: `/_api/fetch/<url>` on the edge; the **opt-in transparent fetch/XHR shim** injected at serve time (`capabilities.fetch.shim` → `/_helix/fetch-shim.js`, so unedited `fetch()`/`axios` calls route through the proxy); the `SecretStore` seam (`packages/secret-store` — dev envelope / prod Key Vault); secret CRUD + the manifest `connection` binding through the approval write-gate; the app-scoped Secrets card and the global-admin Secrets page; the `helix_edge`-can't-read-`material` role-split assertion; and the adversarial SSRF suite (DNS-rebind, redirect-to-IMDS, header smuggling). _Deferred to M5:_ the prod Key Vault impl (dev envelope works today). Designs: `docs/design/fetch-proxy.md`, `docs/design/secrets-and-connections.md`.
 
 ### M5 — Azure + pilot ⬜ Next
-Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-permitted network zone**; edge/portal with no outbound internet route), Postgres flexible server, Blob, Key Vault, Entra app registration ([runbook](runbooks/entra-app-registration.md) — three registrations, single `platform-admin` app role), wildcard DNS + cert on `azx-labs.com`. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway. **v0 done.**
+Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-permitted network zone**; edge/portal with no outbound internet route), Postgres flexible server, Blob, Key Vault, Entra app registration ([runbook](runbooks/entra-app-registration.md) — three registrations, single `platform-admin` app role), wildcard DNS + cert on `azx.helix.azxlabs.io`. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway. **v0 done.**
 
 ## 5. v1 backlog (rough order, re-plan after v0)
 

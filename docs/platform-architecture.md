@@ -1,6 +1,6 @@
 # AZX App Platform — Architecture Design Doc
 
-**Status:** Draft v2 · June 2026 (v2: dedicated `azx-labs.com` domain, Git builds deferred to v2 phase, auth appendix added). Implementation is at **M4.5 (local)** — all three planes, the gateway, secret-backed connections, and the approval workflow run locally; Azure deploy + a real Entra registration are the remaining tail (project plan §4, §5).
+**Status:** Draft v2 · June 2026 (v2: dedicated `azx.helix.azxlabs.io` domain, Git builds deferred to v2 phase, auth appendix added). Implementation is at **M4.5 (local)** — all three planes, the gateway, secret-backed connections, and the approval workflow run locally; Azure deploy + a real Entra registration are the remaining tail (project plan §4, §5).
 **Scope:** Secure hosting for vibe-coded AI apps. Self-hosted, Azure first (we are customer #0), portable to other clouds later.
 
 ---
@@ -17,7 +17,7 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
 
 **Goals (v1)**
 
-- Host static frontend apps (SPA bundles) at `<app>.azx-labs.com` — a dedicated apps domain, deliberately separate from the corporate domain (§4.1)
+- Host static frontend apps (SPA bundles) at `<app>.azx.helix.azxlabs.io` — a dedicated apps domain, deliberately separate from the corporate domain (§4.1)
 - SSO by default via Microsoft Entra ID; per-app override to public or password-protected
 - Deploy by uploading a built bundle (CLI or portal). Git-connected builds are deferred — see §5
 - Platform API + MCP gateway giving apps governed access to LLMs, storage, and integrations
@@ -35,8 +35,9 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
 ## 3. System overview
 
 ```
- app users ── HTTPS ──▶ ┌─────────────────────────────────────────────┐
- *.azx-labs.com         │ azx-edge — data/policy plane (stateless)    │
+ app users ── HTTPS ──▶ *.azx.helix.azxlabs.io
+                        ┌─────────────────────────────────────────────┐
+                        │ azx-edge — data/policy plane (stateless)    │
                         │ host routing · sessions + OIDC handoff      │
                         │ CSP injection · asset serving from Blob     │
                         │ /_api/* gateway: LLM proxy · app data ·     │
@@ -58,8 +59,9 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
                                                    third-party    Key Vault /
                                                    APIs           secret store
 
- app owners ── HTTPS ─▶ ┌─────────────────────────────────────────────┐
- portal.azx-labs.com    │ azx-portal — control plane (privileged)     │
+ app owners ── HTTPS ─▶ portal.azx.helix.azxlabs.io
+                        ┌─────────────────────────────────────────────┐
+                        │ azx-portal — control plane (privileged)     │
                         │ portal UI + API · deploy endpoint           │
                         │ registry writes · capability approvals      │
                         │ scheduled jobs: usage rollups · audit       │
@@ -71,7 +73,7 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
 
 Three deployable containers plus managed storage:
 
-- **`azx-edge` — the data/policy plane.** Terminates all `*.azx-labs.com` traffic: host routing, session auth + the OIDC handoff, CSP injection, asset serving from Blob, and the `/_api/*` gateway (LLM proxy, app data, the fetch-proxy *policy* — identity, authz, quota, audit). Runs with a read-only registry projection, **no app-connection-secret read** (no grant on `app_secrets`), and **no _arbitrary_ outbound route** (only egress can reach the open internet). Boring by design; rarely redeployed. (It is not literally secretless or stateless: it holds its own operational keys — auth/instruction/OIDC, plus today an over-broad Blob key ([ADR-0001](adr/0001-three-runtime-split.md)) — and keeps in-memory rate-limit/projection state ([ADR-0011](adr/0011-in-memory-rate-limiting.md)).)
+- **`azx-edge` — the data/policy plane.** Terminates all `*.azx.helix.azxlabs.io` traffic: host routing, session auth + the OIDC handoff, CSP injection, asset serving from Blob, and the `/_api/*` gateway (LLM proxy, app data, the fetch-proxy *policy* — identity, authz, quota, audit). Runs with a read-only registry projection, **no app-connection-secret read** (no grant on `app_secrets`), and **no _arbitrary_ outbound route** (only egress can reach the open internet). Boring by design; rarely redeployed. (It is not literally secretless or stateless: it holds its own operational keys — auth/instruction/OIDC, plus today an over-broad Blob key ([ADR-0001](adr/0001-three-runtime-split.md)) — and keeps in-memory rate-limit/projection state ([ADR-0011](adr/0011-in-memory-rate-limiting.md)).)
 - **`azx-portal` — the control plane.** Privileged: portal UI + API, deploy endpoint, registry writes, capability approvals, secret writes, audit log UI. Not routable from app subdomains. Background work (usage rollups, audit shipping to immutable blob, ACME DNS-01 renewal) runs as scheduled jobs it owns — no standing workers.
 - **`azx-egress` — the mechanism plane.** The one component that makes governed outbound HTTP for the fetch-proxy (§6.1): it resolves connection secrets to plaintext, injects credentials server-side, and enforces SSRF controls. It runs in its **own network egress zone** (the only component with a route to the public internet) and holds the secret-read capability the edge deliberately lacks. It never terminates app-user traffic and never re-authenticates the end user — it trusts a signed attested instruction `(app, user, capability, origin, connection, request-id)` minted by the edge.
 
@@ -95,8 +97,8 @@ All three containers run on Azure Container Apps for v1 (AKS if/when needed), ke
 
 ### 4.1 Routing and TLS
 
-- Apps live on a **dedicated domain** (`azx-labs.com`), not the corporate domain. Three reasons: (a) *reputation* — vibe-coded apps never carry the weight of the main brand, and an embarrassing or compromised app doesn't taint `azx.io`; (b) *security* — complete cookie/session isolation from corporate properties: nothing an app does on `azx-labs.com` can touch `azx.io` cookies, and corporate CSP/HSTS policy stays independent; (c) *phishing hygiene* — users learn a clean rule: real company sites are on `azx.io`, hosted apps are on `azx-labs.com`, and credentials are only ever typed on the Entra domain.
-- Wildcard DNS `*.azx-labs.com` → edge proxy; wildcard cert via ACME (DNS-01) or Azure-managed cert.
+- Apps live on a **dedicated domain** (`azx.helix.azxlabs.io`), not the corporate domain. Three reasons: (a) *reputation* — vibe-coded apps never carry the weight of the main brand, and an embarrassing or compromised app doesn't taint `azx.io`; (b) *security* — complete cookie/session isolation from corporate properties: nothing an app does on `azx.helix.azxlabs.io` can touch `azx.io` cookies, and corporate CSP/HSTS policy stays independent; (c) *phishing hygiene* — users learn a clean rule: real company sites are on `azx.io`, hosted apps are on `azx.helix.azxlabs.io`, and credentials are only ever typed on the Entra domain.
+- Wildcard DNS `*.azx.helix.azxlabs.io` → edge proxy; wildcard cert via ACME (DNS-01) or Azure-managed cert.
 - Each app gets its own subdomain. **Subdomains are the isolation boundary**: separate browser origin per app means no shared DOM, storage, or cookies between apps. This is the single most important security decision in the design.
 
 ### 4.2 Authentication
@@ -106,11 +108,11 @@ The edge proxy terminates auth so apps never implement it:
 - **Private (default):** OIDC against Entra ID. Unauthenticated users are redirected to login; the proxy sets a session cookie **host-scoped to that app's subdomain only** (never a parent-domain cookie — a parent-domain cookie would let any hosted app steal sessions for all others).
 
   Host-only cookies are necessary but not sufficient, because sibling subdomains are *same-site* in browsers. Three additional controls are required:
-  - **`__Host-` cookie prefix** on the session cookie — blocks cookie-tossing/session-fixation, where a malicious app sets a `Domain=.azx-labs.com` cookie that shadows the session cookie on every other app.
+  - **`__Host-` cookie prefix** on the session cookie — blocks cookie-tossing/session-fixation, where a malicious app sets a `Domain=.azx.helix.azxlabs.io` cookie that shadows the session cookie on every other app.
   - **Origin-header validation at the gateway** plus `form-action 'self'` in CSP — `SameSite` does not protect one app's `/_api/*` from cross-subdomain form POSTs riding the user's session on another app, and `form-action` does not fall back to `default-src`, so it must be set explicitly.
-  - **Submit `azx-labs.com` to the Public Suffix List** once stable, making app subdomains cross-site to each other for cookie purposes. (Consequence: nothing can set domain-wide cookies under `azx-labs.com` — which is the point. Platform services like `auth.` and `portal.` use host-only cookies and are unaffected.)
+  - **Submit `azx.helix.azxlabs.io` to the Public Suffix List** once stable, making app subdomains cross-site to each other for cookie purposes. (Consequence: nothing can set domain-wide cookies under `azx.helix.azxlabs.io` — which is the point. Platform services like `auth.` and `portal.` use host-only cookies and are unaffected.)
 
-  **OIDC mechanics:** Entra ID does not allow wildcard redirect URIs, so per-app callbacks don't work. Use a central callback at `auth.azx-labs.com`, then a one-time signed handoff (short-lived, single-use, audience-bound to the target app) to mint the host-scoped cookie on the app subdomain. The return-URL parameter must be validated against the app registry (open-redirect risk). This handoff is the most security-sensitive code in the platform; it gets a dedicated design review. **Appendix A walks through the full flow.**
+  **OIDC mechanics:** Entra ID does not allow wildcard redirect URIs, so per-app callbacks don't work. Use a central callback at `auth.azx.helix.azxlabs.io`, then a one-time signed handoff (short-lived, single-use, audience-bound to the target app) to mint the host-scoped cookie on the app subdomain. The return-URL parameter must be validated against the app registry (open-redirect risk). This handoff is the most security-sensitive code in the platform; it gets a dedicated design review. **Appendix A walks through the full flow.**
 
   Sessions are short (hours, not weeks) with silent re-auth against Entra on refresh; group membership is re-checked at refresh, so a user removed from a group or disabled in Entra loses access within the session TTL. Per-user session revocation is a v1 control-plane feature.
 - **Group-restricted:** same, plus an Entra group check (e.g. only `eng-team` can open the app).
@@ -257,16 +259,16 @@ Portability rule: **Azure services may appear only behind internal interfaces** 
 | # | Decision | Alternative | Why |
 |---|----------|-------------|-----|
 | 1 | Static-only apps in v1 | Containers per app | Removes server-side untrusted code entirely; gateway becomes the only dynamic surface. Cuts isolation work (no per-app sandboxes, network policy, runtime patching) by an order of magnitude. |
-| 2 | Subdomain per app, host-only cookies | Path-based routing (`azx-labs.com/<app>`) | Path routing puts all apps in one origin — any XSS or malicious app reads every other app's storage and session. Non-negotiable. |
+| 2 | Subdomain per app, host-only cookies | Path-based routing (`azx.helix.azxlabs.io/<app>`) | Path routing puts all apps in one origin — any XSS or malicious app reads every other app's storage and session. Non-negotiable. |
 | 3 | Auth at the edge proxy | Per-app auth SDKs | Apps are vibe-coded; assume auth code in them is wrong. Centralizing makes SSO-by-default actually default. |
-| 4 | Same-origin `/_api/*` gateway path | Separate `api.azx-labs.com` origin | No CORS, no token-in-JS handoff; session cookie just works. Slightly more proxy complexity. |
+| 4 | Same-origin `/_api/*` gateway path | Separate `api.azx.helix.azxlabs.io` origin | No CORS, no token-in-JS handoff; session cookie just works. Slightly more proxy complexity. |
 | 5 | CSP strict on data flow (`connect-src`), relaxed on code provenance (inline/eval/CDNs) | Uniformly strict CSP | The app is untrusted either way, so blocking inline script buys nothing; blocking it breaks every single-file vibe-coded app. Containment lives at the data-flow boundary, where violations become a click-to-request flow instead of silent breakage. |
 | 6 | Self-hosted proxy/auth, not Front Door | Azure-native edge | Other customers must run this on their clouds; the edge is core IP, not infra to outsource. |
 | 7 | Postgres-backed KV for app data | Cosmos DB | Portability and operational familiarity; Cosmos is Azure-only and overkill at this scale. |
 | 8 | One org, but app-id partitioning everywhere | Multi-tenant now | Every row/blob/audit record keyed by app ID from day one; adding an org ID above it later is additive, not a migration. |
-| 9 | Dedicated apps domain (`azx-labs.com`) | Subdomain of corporate domain (`apps.azx.io`) | Reputation and security isolation from the main brand (§4.1): an ugly or compromised app can't taint `azx.io`, and app-domain cookies/policies are fully separated from corporate properties. Cost: one more domain to own and explain. |
+| 9 | Dedicated apps domain (`azx.helix.azxlabs.io`) | Subdomain of corporate domain (`apps.azx.io`) | Reputation and security isolation from the main brand (§4.1): an ugly or compromised app can't taint `azx.io`, and app-domain cookies/policies are fully separated from corporate properties. Cost: one more domain to own and explain. |
 | 10 | Upload-only deploys in v1 | Git-connect + hosted builds | Hosted builds = operating a CI system + sandboxing arbitrary code execution; high effort, blocks nothing. `azx deploy` from the user's own CI gives a Git workflow without platform build infra. Revisit at v2. |
-| 11 | No custom domains | Per-app domains (`tool.example.com`) | Breaks wildcard-cert simplicity, and hosting apps on the corporate domain would undo the separation rationale of decision 9. Apps live at `<app>.azx-labs.com`, full stop. |
+| 11 | No custom domains | Per-app domains (`tool.example.com`) | Breaks wildcard-cert simplicity, and hosting apps on the corporate domain would undo the separation rationale of decision 9. Apps live at `<app>.azx.helix.azxlabs.io`, full stop. |
 | 12 | Three containers: `azx-edge` + `azx-portal` + `azx-egress` | One monolith, or 4+ services | Split follows the trust boundary: untrusted-facing data plane runs unprivileged and rarely restarts; privileged control plane iterates fast without killing in-flight LLM streams; the egress mechanism plane isolates the two things dangerous to co-locate with a public-facing process — plaintext secrets and outbound network — in its own network zone. One process = shared fate and blast radius; a *generic* gateway split would be internal hops for nothing, but egress earns its split with a genuinely different posture (§3). Edge/portal may still ship as one binary in v0; egress is its own container from day one. |
 
 ---
@@ -281,7 +283,7 @@ Portability rule: **Azure services may appear only behind internal interfaces** 
 | Supply-chain attack in app dependencies | v1: builds happen on the author's machine/CI, so the platform never executes them; uploaded output is static and can only run client-side under CSP. When hosted builds land: ephemeral credential-free builders (primary), registry egress allowlist (leaky, secondary) |
 | Public app abused by internet traffic | Admin approval to go public, anonymous-tier quotas, per-IP limits |
 | Hijacked coding agent ships malicious code (prompt injection) | No credentials in the deploy skill (device-code auth, keychain-cached short-lived tokens); agent deploys land on preview by default, human promotes to live (§5.1) |
-| Phishing within SSO (app mimics login) | Entra login only ever happens on the Entra domain (password-gate forms are platform-rendered with distinct branding — §4.2); dedicated apps domain gives users a clean rule — credentials never get typed on `azx-labs.com`; consider a platform-standard header bar on hosted apps |
+| Phishing within SSO (app mimics login) | Entra login only ever happens on the Entra domain (password-gate forms are platform-rendered with distinct branding — §4.2); dedicated apps domain gives users a clean rule — credentials never get typed on `azx.helix.azxlabs.io`; consider a platform-standard header bar on hosted apps |
 | Platform compromise (gateway holds vendor keys) | Keys in Key Vault, managed identities, least-privilege between components (the Postgres role split, §3, is the in-DB layer of this); audit log shipped to a write-only external sink (e.g. immutable blob) so the gateway's own DB credentials can't rewrite history — *planned, project plan §5.8; today `gateway_calls` is append-only by DB grant but not yet externally sealed* |
 
 Residual risk to name explicitly: a granted capability can still be misused *within its scope* (an app granted the `azure-billing` MCP can misrepresent billing data to its users). Governance reduces blast radius; it does not make app code trustworthy.
@@ -303,7 +305,7 @@ Status as of June 2026 — most of this is built **locally**; M5 (Azure) is the 
 - **v0 (done, local):** proxy + OIDC (incl. central-callback handoff, `__Host-` cookies, baseline CSP — the isolation model ships day one, not retrofitted), upload deploys, blob serving, app registry, LLM proxy with quotas. Runs against the local OIDC issuer; a real Entra registration and the Azure pilot are the M5 tail.
 - **v1 (mostly done, local):** `azx deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). _Remaining:_ the agent deploy **skill bundle** (`packages/deploy-skill`), and admin per-user **session revocation**.
 - **M4.5 (done, local):** the `azx-egress` mechanism plane + the fetch-proxy (incl. the transparent shim) and secret-backed connections built on it (§3, §6.1). Egress ships as its own container from day one (the policy/mechanism split is physical, not deferred).
-- **M5 (next):** Azure IaC, the three planes on Container Apps, real Entra (single-tenant; authz via App Roles — see the [Entra runbook](runbooks/entra-app-registration.md)), prod Key Vault, wildcard cert on `azx-labs.com`, one real pilot app end to end.
+- **M5 (next):** Azure IaC, the three planes on Container Apps, real Entra (single-tenant; authz via App Roles — see the [Entra runbook](runbooks/entra-app-registration.md)), prod Key Vault, wildcard cert on `azx.helix.azxlabs.io`, one real pilot app end to end.
 - **v1.x:** MCP passthrough (REST-wrapped), richer usage dashboards (latency/error dimensions), audit shipping to an immutable sink.
 - **v2 candidates:** Git-connect + sandboxed build service, per-app serverless functions, multi-org tenancy, app builder.
 
@@ -311,23 +313,23 @@ Status as of June 2026 — most of this is built **locally**; M5 (Azure) is the 
 
 ## Appendix A: The auth flow in detail
 
-This expands §4.2. The actors: the browser; the edge proxy answering on the app's host (`appA.azx-labs.com`); the auth service (`auth.azx-labs.com`); and Entra ID. The proxy and auth service are the same deployment answering on different hostnames — the separation is logical, not physical.
+This expands §4.2. The actors: the browser; the edge proxy answering on the app's host (`appA.azx.helix.azxlabs.io`); the auth service (`auth.azx.helix.azxlabs.io`); and Entra ID. The proxy and auth service are the same deployment answering on different hostnames — the separation is logical, not physical.
 
 ### A.1 The login sequence
 
-1. Browser requests `appA.azx-labs.com/page`. No `__Host-session` cookie → the proxy 302s to the auth service.
-2. Browser hits `auth.azx-labs.com/start?app=appA&rd=/page`. The auth service validates both parameters against the app registry — `rd` validation is what prevents the flow being abused as an open redirector.
+1. Browser requests `appA.azx.helix.azxlabs.io/page`. No `__Host-session` cookie → the proxy 302s to the auth service.
+2. Browser hits `auth.azx.helix.azxlabs.io/start?app=appA&rd=/page`. The auth service validates both parameters against the app registry — `rd` validation is what prevents the flow being abused as an open redirector.
 3. Auth service 302s to Entra's authorize endpoint with `state`, PKCE challenge, and `nonce`.
 4. User signs in at Entra (SSO, MFA, conditional access — all Entra policy, none of it ours).
-5. Entra redirects back with an authorization code to the **single registered callback**, `auth.azx-labs.com/callback`.
+5. Entra redirects back with an authorization code to the **single registered callback**, `auth.azx.helix.azxlabs.io/callback`.
 6. Auth service exchanges the code for an ID token over the back channel, validates signature and nonce, and checks the app's visibility rule (e.g. Entra group membership).
-7. Auth service mints a **handoff token** and 302s the browser to `appA.azx-labs.com/_auth/complete?token=...`.
+7. Auth service mints a **handoff token** and 302s the browser to `appA.azx.helix.azxlabs.io/_auth/complete?token=...`.
 8. The proxy (now answering on appA's host) verifies the handoff token, burns it, mints the `__Host-session` cookie, and 302s to the original `/page`.
 9. All subsequent requests — assets and `/_api/*` — carry the session cookie.
 
 ### A.2 Why the central callback exists
 
-Entra requires every redirect URI to be registered exactly; no wildcards. Per-app callbacks would mean an Entra registry write on every app creation — slow, racy, and capped (Entra limits URIs per registration). So Entra knows exactly one callback. The cost: authentication completes on the wrong host, since `auth.azx-labs.com` cannot set a host-only cookie for a sibling subdomain. The handoff token exists purely to move the authenticated state across that gap.
+Entra requires every redirect URI to be registered exactly; no wildcards. Per-app callbacks would mean an Entra registry write on every app creation — slow, racy, and capped (Entra limits URIs per registration). So Entra knows exactly one callback. The cost: authentication completes on the wrong host, since `auth.azx.helix.azxlabs.io` cannot set a host-only cookie for a sibling subdomain. The handoff token exists purely to move the authenticated state across that gap.
 
 ### A.3 The handoff token
 

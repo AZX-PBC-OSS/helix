@@ -31,7 +31,7 @@ where the dev IdP had been doing Entra's job for us, and both already landed:
   **group visibility** (`visibility: group`) is deferred until a real app needs
   it (see [Deferred](#deferred-until-needed)).
 
-Substitute the real apex domain for `azx-labs.com` if it differs
+Substitute the real apex domain for `azx.helix.azxlabs.io` if it differs
 (`docs/platform-architecture.md` §4.2).
 
 ---
@@ -47,7 +47,7 @@ mirror the three dev-idp clients in `apps/dev-idp/src/fixtures.ts`.
 | --- | --- |
 | Supported account types | Single tenant |
 | Platform | **Web** |
-| Redirect URI | `https://auth.azx-labs.com/callback` (no port in prod) |
+| Redirect URI | `https://auth.azx.helix.azxlabs.io/callback` (no port in prod) |
 | Credentials | A **client secret** *or* a **certificate** (see below) → store in Key Vault, never in source |
 | Token (ID) optional claims | Add `email`; ensure `name` + `preferred_username` are emitted |
 
@@ -95,7 +95,7 @@ audience) — the simplest topology.
 | --- | --- |
 | Supported account types | Single tenant |
 | Platform | **Single-page application (SPA)** |
-| Redirect URI | `https://portal.azx-labs.com/auth/callback` |
+| Redirect URI | `https://portal.azx.helix.azxlabs.io/auth/callback` |
 | Expose an API → Application ID URI | `api://<helix-portal-client-id>` |
 
 - Registering the redirect under the **SPA platform** makes Entra serve CORS on
@@ -241,7 +241,7 @@ Set these in the M5 ACA app configuration / Key Vault. **The dev
 | `EDGE_OIDC_ALLOW_INSECURE` | unset |
 
 Confirm the base-domain/port config produces the portless callback
-`https://auth.azx-labs.com/callback` to match Reg 1 (`apps/edge/src/server.ts`,
+`https://auth.azx.helix.azxlabs.io/callback` to match Reg 1 (`apps/edge/src/server.ts`,
 `publicOrigin`).
 
 ### Portal (`apps/portal/src/plugins/auth.ts`)
@@ -271,11 +271,11 @@ Entra allows many per app):
 
 | Registration | Platform | Local redirect URI(s) |
 | --- | --- | --- |
-| `helix-edge` | Web | `https://auth.localtest.me:8080/callback` |
+| `helix-edge` | Web | `https://auth.local.helix.azxlabs.io:8080/callback` |
 | `helix-portal` | SPA | `http://localhost:5173/auth/callback` and `http://localhost:3001/auth/callback` |
 | `azx-cli` | — | none (device code) |
 
-- `auth.localtest.me` is **not** `localhost` to Entra, so it must be **https**
+- `auth.local.helix.azxlabs.io` is **not** `localhost` to Entra, so it must be **https**
   (the dev mkcert wildcard cert already covers it). `http://localhost:*` is
   special-cased by Entra, so the portal SPA URIs need no TLS.
 
@@ -314,9 +314,9 @@ local config of their own — they read everything from the portal's
    returns a doc advertising `device_authorization_endpoint`, `token_endpoint`,
    and `jwks_uri`.
 2. **App-user SSO (edge):** browse to a `private` pilot app → redirected to
-   `auth.azx-labs.com` → Entra login (MFA per policy) → handoff → app loads with
+   `auth.azx.helix.azxlabs.io` → Entra login (MFA per policy) → handoff → app loads with
    a `__Host-session` cookie. Confirm the display name resolves.
-3. **Portal admin (web):** sign in at `portal.azx-labs.com`. A user assigned
+3. **Portal admin (web):** sign in at `portal.azx.helix.azxlabs.io`. A user assigned
    **Platform Admin** sees the approvals/secrets admin pages; an unassigned user
    does not (proves `roles` → `PORTAL_ADMIN_GROUP_ID` gating). A denied admin
    attempt logs `admin denied: …` with the principal + the expected role value.

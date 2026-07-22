@@ -19,8 +19,8 @@ it references its step numbers.
 
 ## 1. The one-paragraph model
 
-Apps are untrusted static files on per-app subdomains (`<slug>.azx-labs.com`;
-`<slug>.localtest.me` in dev). The edge terminates auth so apps ship zero auth code. A user
+Apps are untrusted static files on per-app subdomains (`<slug>.azx.helix.azxlabs.io`;
+`<slug>.local.helix.azxlabs.io` in dev). The edge terminates auth so apps ship zero auth code. A user
 with no session is bounced to a **central** auth host (`auth.<base>`) because Entra allows
 only one registered callback — so auth completes on the *wrong* host and a **one-time
 handoff token** carries the authenticated state across to the app's own host, where a

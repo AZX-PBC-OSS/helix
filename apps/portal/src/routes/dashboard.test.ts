@@ -66,11 +66,11 @@ describe("GET / (demo dashboard)", () => {
 
   it("honours APP_PUBLIC_BASE for link origins", async () => {
     const prev = process.env.APP_PUBLIC_BASE;
-    process.env.APP_PUBLIC_BASE = "https://azx-labs.com";
+    process.env.APP_PUBLIC_BASE = "https://azx.helix.azxlabs.io";
     try {
       const live = await seedApp("Prod Domain App", { deploy: true });
       const res = await t.app.inject({ method: "GET", url: "/" });
-      expect(res.body).toContain(`href="https://${live.slug}.azx-labs.com"`);
+      expect(res.body).toContain(`href="https://${live.slug}.azx.helix.azxlabs.io"`);
     } finally {
       if (prev === undefined) delete process.env.APP_PUBLIC_BASE;
       else process.env.APP_PUBLIC_BASE = prev;

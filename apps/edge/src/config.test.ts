@@ -82,13 +82,13 @@ describe("loadConfig", () => {
   it("honors overrides", () => {
     const config = loadConfig({
       ...ENV,
-      EDGE_BASE_DOMAIN: "AZX-Labs.com",
+      EDGE_BASE_DOMAIN: "AZX.Helix.AzxLabs.io",
       BLOB_CONTAINER: "bundles",
       EDGE_DEV_ALLOW_UNAUTHENTICATED: "true",
       EDGE_RECONCILE_INTERVAL_MS: "5000",
       EDGE_STATEMENT_TIMEOUT_MS: "3000",
     });
-    expect(config.baseDomain).toBe("azx-labs.com");
+    expect(config.baseDomain).toBe("azx.helix.azxlabs.io");
     expect(config.blob.container).toBe("bundles");
     expect(config.allowUnauthenticated).toBe(true);
     expect(config.reconcileIntervalMs).toBe(5000);
@@ -354,11 +354,11 @@ describe("publicOrigin", () => {
       DATABASE_URL: ENV.DATABASE_URL,
       EDGE_DATABASE_URL: ENV.EDGE_DATABASE_URL,
       ...MI_BLOB_ENV,
-      EDGE_BASE_DOMAIN: "azx-labs.com",
+      EDGE_BASE_DOMAIN: "azx.helix.azxlabs.io",
       EDGE_PUBLIC_PORT: "443",
       NODE_ENV: "production",
     });
-    expect(publicOrigin(prod, "auth")).toBe("https://auth.azx-labs.com");
-    expect(publicOrigin(prod, null)).toBe("https://azx-labs.com");
+    expect(publicOrigin(prod, "auth")).toBe("https://auth.azx.helix.azxlabs.io");
+    expect(publicOrigin(prod, null)).toBe("https://azx.helix.azxlabs.io");
   });
 });

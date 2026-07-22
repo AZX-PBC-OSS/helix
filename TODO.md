@@ -39,7 +39,7 @@ Legend for gating conditions:
 
 ## Pre-GA — before external app owners / customer URLs commit
 
-- [ ] **Host untrusted apps on a separate registrable domain.** Apps currently share one eTLD+1 with the control plane; move untrusted apps to e.g. `*.azx-apps.<tld>` and keep portal/auth on `azx-labs.com`. Closes cookie-bomb DoS, Safe-Browsing/reputation blast radius, same-site coupling with the auth host, and storage-partitioning residuals (PSL submission only partially closes cookie vectors). Cheap now, painful after customer URLs commit — treat as a pre-GA prerequisite, not an M5 blocker. — ADR-0019, issue #16
+- [ ] **Host untrusted apps on a separate registrable domain.** Apps currently share one eTLD+1 with the control plane; move untrusted apps to e.g. `*.azx-apps.<tld>` and keep portal/auth on `azx.helix.azxlabs.io`. Closes cookie-bomb DoS, Safe-Browsing/reputation blast radius, same-site coupling with the auth host, and storage-partitioning residuals (PSL submission only partially closes cookie vectors). Cheap now, painful after customer URLs commit — treat as a pre-GA prerequisite, not an M5 blocker. — ADR-0019, issue #16
 - [ ] **Decide the trigger for making the edge/portal split physical, and add a CI gate.** Document v0 co-deploy as a time-boxed boundary collapse; add a CI check that refuses co-deploy when `NODE_ENV=production` (or revoke co-deploy when the first non-employee owner onboards). — ADR-0012
 
 ---

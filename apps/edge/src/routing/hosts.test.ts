@@ -57,11 +57,11 @@ describe("classifyHost", () => {
   });
 
   it("honors a configurable base domain", () => {
-    expect(classifyHost("demo.azx-labs.com", "azx-labs.com")).toEqual({
+    expect(classifyHost("demo.azx.helix.azxlabs.io", "azx.helix.azxlabs.io")).toEqual({
       kind: "app",
       slug: "demo",
     });
-    expect(classifyHost("demo.local.helix.azxlabs.io", "azx-labs.com")).toEqual({
+    expect(classifyHost("demo.local.helix.azxlabs.io", "azx.helix.azxlabs.io")).toEqual({
       kind: "platform",
     });
   });

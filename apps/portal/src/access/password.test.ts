@@ -98,9 +98,9 @@ describe("encryptPassword / decryptPassword", () => {
 describe("appPublicUrl", () => {
   it("prefixes the slug onto APP_PUBLIC_BASE", () => {
     const prev = process.env.APP_PUBLIC_BASE;
-    process.env.APP_PUBLIC_BASE = "https://azx-labs.com";
+    process.env.APP_PUBLIC_BASE = "https://azx.helix.azxlabs.io";
     try {
-      expect(appPublicUrl("demo")).toBe("https://demo.azx-labs.com");
+      expect(appPublicUrl("demo")).toBe("https://demo.azx.helix.azxlabs.io");
     } finally {
       if (prev === undefined) delete process.env.APP_PUBLIC_BASE;
       else process.env.APP_PUBLIC_BASE = prev;

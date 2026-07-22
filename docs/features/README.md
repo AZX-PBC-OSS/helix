@@ -54,7 +54,7 @@ grant on app connection secrets and any arbitrary outbound route (ADR-0001).
 
 - **M0** — skeleton, boot pattern, `/health`.
 - **M1** — registry + deploys (portal API + `azx` CLI). _Shipped._
-- **M2** — edge serving on `*.localtest.me`, registry projection, Blob streaming, CSP, 404/410. _Shipped._
+- **M2** — edge serving on `*.local.helix.azxlabs.io`, registry projection, Blob streaming, CSP, 404/410. _Shipped._
 - **M3** — auth: OIDC handoff, sessions, the gate, CLI/portal bearer tokens, **local issuer**. _Shipped (local half); real Entra registration is the remaining tail._
 - **M4** — gateway v0: the LLM proxy, then app-data, metering, and the DB role split. _Shipped locally._
 - **M4.5** — the `azx-egress` mechanism plane: fetch-proxy + secret-backed connections. _Shipped locally — this milestone._

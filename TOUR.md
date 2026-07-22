@@ -24,7 +24,7 @@ consequence of taking that stance seriously:
 - Apps are **static frontends only** — no server-side untrusted code to sandbox. All
   dynamic power (LLM, storage, outbound HTTP) flows through the platform gateway, which
   becomes the single choke point for identity, authorization, quotas, and audit.
-- Each app lives on **its own subdomain** (`<app>.azx-labs.com`) — a separate browser
+- Each app lives on **its own subdomain** (`<app>.azx.helix.azxlabs.io`) — a separate browser
   origin, so no app can read another's DOM, storage, or cookies.
 - The app **never holds a secret** and **never implements auth** — the edge terminates
   both, so there is nothing in the app to leak.

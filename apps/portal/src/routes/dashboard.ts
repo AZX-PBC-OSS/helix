@@ -8,7 +8,7 @@ import type { FastifyInstance } from "fastify";
  * Links target `<slug>.` prepended to `APP_PUBLIC_BASE`, which carries the
  * scheme, base domain, and port of the edge as reachable by the user
  * (architecture §4.1). Defaults to `http://local.helix.azxlabs.io:8080`, the local dev
- * edge; set `https://azx-labs.com` for prod.
+ * edge; set `https://azx.helix.azxlabs.io` for prod.
  */
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", async (_req, reply) => {

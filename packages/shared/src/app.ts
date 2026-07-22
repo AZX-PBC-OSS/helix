@@ -4,7 +4,7 @@ import { VisibilitySchema } from "./visibility.js";
 /**
  * A registered app in the control-plane registry (architecture §7).
  *
- * `slug` is the subdomain label — `<slug>.azx-labs.com` — and is the isolation
+ * `slug` is the subdomain label — `<slug>.azx.helix.azxlabs.io` — and is the isolation
  * boundary (§4.1), so it is constrained to a DNS label. Every record is keyed
  * by app id from day one (decision §9.8) to keep multi-org additive later.
  */

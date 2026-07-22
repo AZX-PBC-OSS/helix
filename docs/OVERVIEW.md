@@ -44,7 +44,7 @@ frontend + governed LLM/compute access with no app-managed secrets.
 
 | Story (priority) | How Helix delivers it | Status |
 |---|---|---|
-| Upload a bundle → secure hosted URL (P0) | Upload-only deploy → immutable version → served at `<slug>.azx-labs.com` | ✅ Shipped |
+| Upload a bundle → secure hosted URL (P0) | Upload-only deploy → immutable version → served at `<slug>.azx.helix.azxlabs.io` | ✅ Shipped |
 | SSO (Entra) **or** password per deployment (P0) | Per-app *visibility*: `groups` (OIDC/Entra) · `password` (shared passphrase) · `public` | ✅ Shipped |
 | Use pre-provisioned APIs without handling keys (P0) | LLM gateway (key injected server-side) + fetch-proxy with secret-backed *connections* for other APIs | ✅ LLM + arbitrary HTTP APIs; ⚠️ only Anthropic is a first-class LLM today (Azure OpenAI/Gemini are config, not yet a catalog) |
 | Roll back a deployment (P1) | Live pointer flip to a prior immutable version (same op as promote) | ✅ Shipped |
@@ -68,8 +68,9 @@ holds the privileged verbs, and the mechanism plane holds the two things most da
 with a public-facing process — *plaintext third-party secrets* and *a route to the open internet*.
 
 ```
- app users ── HTTPS ─▶ ┌──────────────────────────────────────────────┐
- *.azx-labs.com        │ azx-edge — data / policy plane (stateless)   │
+ app users ── HTTPS ─▶ *.azx.helix.azxlabs.io
+                       ┌──────────────────────────────────────────────┐
+                       │ azx-edge — data / policy plane (stateless)   │
                        │ host routing · sessions + OIDC handoff       │
                        │ CSP injection · static serving from Blob     │
                        │ /_api/* gateway: LLM · app-data · fetch-proxy │
@@ -90,8 +91,9 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
                                                        third-party   Key Vault
                                                        APIs          / secret store
 
- app owners ─ HTTPS ─▶ ┌──────────────────────────────────────────────┐
- portal.azx-labs.com   │ azx-portal — control plane (privileged)      │
+ app owners ─ HTTPS ─▶ portal.azx.helix.azxlabs.io
+                       ┌──────────────────────────────────────────────┐
+                       │ azx-portal — control plane (privileged)      │
                        │ portal UI + API · deploy · registry writes   │
                        │ capability approvals · secret writes · audit │
                        └──────────────────────────────────────────────┘
@@ -116,11 +118,11 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 1. **Deploy.** An owner (portal UI or `azx` CLI) uploads a static bundle. It becomes an **immutable
    version** in Blob and lands as `preview`. Promotion to `live` is a separate **atomic pointer flip**;
    rollback is the same flip in reverse. *(ADR-0018)*
-2. **Serve.** A visitor hits `<slug>.azx-labs.com`. The edge resolves the slug from an in-memory
+2. **Serve.** A visitor hits `<slug>.azx.helix.azxlabs.io`. The edge resolves the slug from an in-memory
    **registry projection** (a cache refreshed via Postgres LISTEN/NOTIFY — no per-request DB, and it
    survives portal downtime), then streams the bundle from Blob with a per-app CSP injected. *(ADR-0017,
    0009)*
-3. **Authenticate.** Per-app visibility decides access: an OIDC login on `auth.azx-labs.com` mints a
+3. **Authenticate.** Per-app visibility decides access: an OIDC login on `auth.azx.helix.azxlabs.io` mints a
    one-time signed **handoff** that crosses to the app's own subdomain and sets a `__Host-` session
    cookie; or a shared **password** challenge; or **public**. Subdomain-per-app + host-scoped cookies
    mean no app can read another's session. *(ADR-0004, 0019)*

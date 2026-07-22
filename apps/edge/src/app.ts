@@ -37,7 +37,7 @@ import type { AppDataStore } from "./gateway/data.js";
 
 /**
  * azx-edge — the data plane (architecture §3). Stateless; terminates all
- * `*.azx-labs.com` traffic. **Hard rule: dependency-minimal** — every npm
+ * `*.azx.helix.azxlabs.io` traffic. **Hard rule: dependency-minimal** — every npm
  * package here is code inside the trusted path, so additions need review
  * (project plan §6).
  *
