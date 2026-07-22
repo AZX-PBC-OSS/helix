@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { ApiErrorCode } from "@azx-pbc/shared";
+import type { ApiErrorCode, Env } from "@azx-pbc/shared";
 import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type Caller, type CallerResolver } from "../auth/gate.js";
@@ -162,10 +162,12 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     userOid: string,
     model: string,
     outcome: "ok" | "error" | "quota_blocked",
+    env: Env,
   ): void {
     rt.usage
       ?.record({
         appId,
+        env,
         userOid,
         capability: "data",
         model,
@@ -188,12 +190,13 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     reply: FastifyReply,
     entry: RegistryEntry,
     meterOid: string,
+    env: Env,
   ): Promise<boolean> {
     const budget = entry.data?.writesPerDay;
     if (budget === undefined) return true;
-    const used = rt.usage ? await rt.usage.dataWritesToday(entry.appId) : 0;
+    const used = rt.usage ? await rt.usage.dataWritesToday(entry.appId, env) : 0;
     if (used >= budget) {
-      meter(entry.appId, meterOid, "quota", "quota_blocked");
+      meter(entry.appId, meterOid, "quota", "quota_blocked", env);
       sendApiError(reply, 429, "quota_exceeded", "daily write budget exhausted");
       return false;
     }
@@ -222,13 +225,19 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", `value exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }
-      if (!(await admitWrite(reply, ctx.entry, oid))) return;
+      if (!(await admitWrite(reply, ctx.entry, oid, ctx.caller.env))) return;
       try {
-        const updatedAt = await rt.store!.putUserKey(ctx.entry.appId, oid, key, value);
-        meter(ctx.entry.appId, oid, "user.put", "ok");
+        const updatedAt = await rt.store!.putUserKey(
+          ctx.entry.appId,
+          oid,
+          key,
+          value,
+          ctx.caller.env,
+        );
+        meter(ctx.entry.appId, oid, "user.put", "ok", ctx.caller.env);
         await reply.header("cache-control", "no-store").send({ key, updatedAt });
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.put", "error");
+        meter(ctx.entry.appId, oid, "user.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putUser failed");
         sendApiError(reply, 502, "internal", "failed to store value");
       }
@@ -245,15 +254,15 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         return;
       }
       try {
-        const value = await rt.store!.getUserKey(ctx.entry.appId, oid, key);
-        meter(ctx.entry.appId, oid, "user.get", "ok");
+        const value = await rt.store!.getUserKey(ctx.entry.appId, oid, key, ctx.caller.env);
+        meter(ctx.entry.appId, oid, "user.get", "ok", ctx.caller.env);
         if (value === null) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
         }
         await reply.header("cache-control", "no-store").send({ key, value });
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.get", "error");
+        meter(ctx.entry.appId, oid, "user.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getUser failed");
         sendApiError(reply, 502, "internal", "failed to read value");
       }
@@ -270,15 +279,15 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         return;
       }
       try {
-        const deleted = await rt.store!.deleteUserKey(ctx.entry.appId, oid, key);
-        meter(ctx.entry.appId, oid, "user.delete", "ok");
+        const deleted = await rt.store!.deleteUserKey(ctx.entry.appId, oid, key, ctx.caller.env);
+        meter(ctx.entry.appId, oid, "user.delete", "ok", ctx.caller.env);
         if (!deleted) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
         }
         await reply.status(204).header("cache-control", "no-store").send();
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.delete", "error");
+        meter(ctx.entry.appId, oid, "user.delete", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data deleteUser failed");
         sendApiError(reply, 502, "internal", "failed to delete value");
       }
@@ -290,11 +299,11 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
       const oid = requireUser(reply, ctx.entry, ctx.caller);
       if (oid === null) return;
       try {
-        const keys = await rt.store!.listUserKeys(ctx.entry.appId, oid);
-        meter(ctx.entry.appId, oid, "user.list", "ok");
+        const keys = await rt.store!.listUserKeys(ctx.entry.appId, oid, ctx.caller.env);
+        meter(ctx.entry.appId, oid, "user.list", "ok", ctx.caller.env);
         await reply.header("cache-control", "no-store").send({ keys });
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.list", "error");
+        meter(ctx.entry.appId, oid, "user.list", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data listUser failed");
         sendApiError(reply, 502, "internal", "failed to list keys");
       }
@@ -329,14 +338,21 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
       }
       const userOid = ctx.caller.authenticated ? ctx.caller.oid : null;
       const meterOid = userOid ?? ANON_USER_OID;
-      if (!(await admitWrite(reply, ctx.entry, meterOid))) return;
+      if (!(await admitWrite(reply, ctx.entry, meterOid, ctx.caller.env))) return;
       try {
-        await rt.store!.appendCollection(ctx.entry.appId, name, item, userOid, triageMeta(req));
-        meter(ctx.entry.appId, meterOid, "collection.append", "ok");
+        await rt.store!.appendCollection(
+          ctx.entry.appId,
+          name,
+          item,
+          userOid,
+          triageMeta(req),
+          ctx.caller.env,
+        );
+        meter(ctx.entry.appId, meterOid, "collection.append", "ok", ctx.caller.env);
         // 201, no body — the writer gets no row id and certainly no read-back.
         await reply.status(201).header("cache-control", "no-store").send();
       } catch (err) {
-        meter(ctx.entry.appId, meterOid, "collection.append", "error");
+        meter(ctx.entry.appId, meterOid, "collection.append", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data appendCollection failed");
         sendApiError(reply, 502, "internal", "failed to append item");
       }
@@ -362,15 +378,15 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         return;
       }
       try {
-        const value = await rt.store!.getShared(ctx.entry.appId, key);
-        meter(ctx.entry.appId, meterOid, "shared.get", "ok");
+        const value = await rt.store!.getShared(ctx.entry.appId, key, ctx.caller.env);
+        meter(ctx.entry.appId, meterOid, "shared.get", "ok", ctx.caller.env);
         if (value === null) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
         }
         await reply.header("cache-control", "no-store").send({ key, value });
       } catch (err) {
-        meter(ctx.entry.appId, meterOid, "shared.get", "error");
+        meter(ctx.entry.appId, meterOid, "shared.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getShared failed");
         sendApiError(reply, 502, "internal", "failed to read value");
       }
@@ -403,13 +419,13 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", `value exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }
-      if (!(await admitWrite(reply, ctx.entry, meterOid))) return;
+      if (!(await admitWrite(reply, ctx.entry, meterOid, ctx.caller.env))) return;
       try {
-        const updatedAt = await rt.store!.putShared(ctx.entry.appId, key, value);
-        meter(ctx.entry.appId, meterOid, "shared.put", "ok");
+        const updatedAt = await rt.store!.putShared(ctx.entry.appId, key, value, ctx.caller.env);
+        meter(ctx.entry.appId, meterOid, "shared.put", "ok", ctx.caller.env);
         await reply.header("cache-control", "no-store").send({ key, updatedAt });
       } catch (err) {
-        meter(ctx.entry.appId, meterOid, "shared.put", "error");
+        meter(ctx.entry.appId, meterOid, "shared.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putShared failed");
         sendApiError(reply, 502, "internal", "failed to store value");
       }

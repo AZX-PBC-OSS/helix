@@ -53,6 +53,7 @@ export class EgressLlmProvider implements LlmProvider {
         origin,
         connection: this.#config.connection,
         requestId: opts.requestId,
+        env: opts.env,
       },
       this.#instructionKey,
     );

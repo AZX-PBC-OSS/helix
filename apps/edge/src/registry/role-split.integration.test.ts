@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { TEST_DATABASE_URL } from "../test/seed.js";
 
@@ -187,6 +188,162 @@ describe("helix_egress least-privilege grants", () => {
 
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE app_secrets")).rejects.toThrow(/must be owner/i);
+    } finally {
+      await pool.end();
+    }
+  });
+});
+
+/** The dev data-plane role's URL, derived from the owner test URL by swapping creds. */
+function devUrl(): string {
+  const u = new URL(TEST_DATABASE_URL);
+  u.username = "helix_dev";
+  u.password = "helix_dev";
+  return u.toString();
+}
+
+async function devRoleAvailable(): Promise<boolean> {
+  const pool = new Pool({ connectionString: devUrl(), max: 1 });
+  try {
+    await pool.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await pool.end();
+  }
+}
+
+/**
+ * Dev-mode design §5.3 — the load-bearing security thesis: the database itself
+ * refuses to cross the env boundary. `helix_edge`'s RLS policy hardcodes
+ * env='prod' and `helix_dev`'s hardcodes env='dev', so neither can read or write
+ * the other tier's rows — independent of the `app.env` GUC, any header, or a
+ * WHERE clause. The two isolation reads below (dev can't see a prod row; edge
+ * can't see a dev row) and the forged-GUC read are the whole feature's proof that
+ * dev mode is not a relaxation of the production APIs but a separate partition.
+ *
+ * That neither role is BYPASSRLS is proven implicitly: a BYPASSRLS role would see
+ * BOTH seeded rows in the reads below. Skips fail-soft when helix_dev isn't
+ * provisioned (CI without db-init), same as the suites above.
+ */
+describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", () => {
+  const APP = randomUUID();
+  const USER = "env-user";
+
+  beforeAll(async () => {
+    if (!(await devRoleAvailable())) return;
+    // Seed one prod row and one dev row for the same (app, user, key) as the
+    // superuser owner (bypasses RLS). Distinct values so a leak is observable.
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    try {
+      await owner.query(
+        `INSERT INTO app_data (id, "appId", env, "userOid", key, value, "updatedAt") VALUES
+           (gen_random_uuid(), $1, 'prod', $2, 'k', '"PROD"'::jsonb, now()),
+           (gen_random_uuid(), $1, 'dev',  $2, 'k', '"DEV"'::jsonb,  now())`,
+        [APP, USER],
+      );
+    } finally {
+      await owner.end();
+    }
+  });
+
+  afterAll(async () => {
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    try {
+      await owner.query(`DELETE FROM app_data WHERE "appId" = $1`, [APP]);
+    } finally {
+      await owner.end();
+    }
+  });
+
+  /** Read the seeded key as `url`'s role, with the partition GUCs set (env = `gucEnv`). */
+  async function readAs(url: string, gucEnv: "prod" | "dev"): Promise<unknown[]> {
+    const pool = new Pool({ connectionString: url, max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.app_id', $1, true), set_config('app.env', $2, true), set_config('app.user_oid', $3, true)",
+        [APP, gucEnv, USER],
+      );
+      const r = await client.query(`SELECT value FROM app_data WHERE key = 'k'`);
+      await client.query("ROLLBACK");
+      return (r.rows as { value: unknown }[]).map((row) => row.value);
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  }
+
+  /** Attempt to INSERT an `rowEnv`-tier row as `url`'s role; the WITH CHECK governs. */
+  async function writeAs(url: string, rowEnv: "prod" | "dev"): Promise<void> {
+    const pool = new Pool({ connectionString: url, max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.app_id', $1, true), set_config('app.env', $2, true), set_config('app.user_oid', $3, true)",
+        [APP, rowEnv, USER],
+      );
+      try {
+        await client.query(
+          `INSERT INTO app_data (id, "appId", env, "userOid", key, value, "updatedAt")
+             VALUES (gen_random_uuid(), $1, $2, $3, 'w', '"x"'::jsonb, now())`,
+          [APP, rowEnv, USER],
+        );
+      } finally {
+        await client.query("ROLLBACK");
+      }
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  }
+
+  it("helix_dev reads ONLY the dev row (its policy hardcodes env='dev')", async () => {
+    if (!(await devRoleAvailable())) return;
+    expect(await readAs(devUrl(), "dev")).toEqual(["DEV"]);
+  });
+
+  it("helix_edge reads ONLY the prod row (its policy hardcodes env='prod')", async () => {
+    if (!(await devRoleAvailable())) return;
+    expect(await readAs(edgeUrl(), "prod")).toEqual(["PROD"]);
+  });
+
+  it("a forged app.env GUC cannot cross the boundary — the role literal wins", async () => {
+    if (!(await devRoleAvailable())) return;
+    // helix_dev forging env=prod still sees only its dev row…
+    expect(await readAs(devUrl(), "prod")).toEqual(["DEV"]);
+    // …and helix_edge forging env=dev still sees only its prod row.
+    expect(await readAs(edgeUrl(), "dev")).toEqual(["PROD"]);
+  });
+
+  it("write containment: each role's WITH CHECK refuses the other tier's env", async () => {
+    if (!(await devRoleAvailable())) return;
+    // helix_dev cannot write a prod row…
+    await expect(writeAs(devUrl(), "prod")).rejects.toThrow(/row-level security/i);
+    // …and helix_edge cannot write a dev row.
+    await expect(writeAs(edgeUrl(), "dev")).rejects.toThrow(/row-level security/i);
+  });
+
+  it("helix_dev holds the least-privilege data-plane grant set and nothing more", async () => {
+    if (!(await devRoleAvailable())) return;
+    const pool = new Pool({ connectionString: devUrl(), max: 1 });
+    try {
+      // Owns its data-plane verbs — the grant is present; RLS scopes the rows.
+      await expect(pool.query("SELECT count(*) FROM app_data")).resolves.toBeDefined();
+      await expect(pool.query("SELECT count(*) FROM gateway_calls")).resolves.toBeDefined();
+      // Collections are write-only in dev too (§3.2): INSERT grant, no SELECT.
+      await expect(pool.query("SELECT count(*) FROM app_collection_items")).rejects.toThrow(
+        /permission denied/i,
+      );
+      // Not privileged: no registry read, no secret read, no DDL.
+      await expect(pool.query("SELECT count(*) FROM apps")).rejects.toThrow(/permission denied/i);
+      await expect(pool.query("SELECT count(*) FROM app_secrets")).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
     } finally {
       await pool.end();
     }

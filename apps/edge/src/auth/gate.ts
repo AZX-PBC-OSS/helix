@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type { Env } from "@azx-pbc/shared";
 import type { AuthConfig, EdgeConfig } from "../config.js";
 import { publicOrigin } from "../config.js";
 import type { RegistryEntry } from "../registry/projection.js";
@@ -39,10 +40,15 @@ export const ANON_USER_OID = "anon";
  * Private/group apps always yield an authenticated caller; `public` apps yield
  * an unauthenticated one with no `user`-scope access (app-data design §6, the
  * "no anon identity" starting point).
+ *
+ * `env` (dev-mode design §5.4) is the partition tier the call is served in. It is
+ * stamped by the resolver, not the handler: `makeCallerResolver` sets `'prod'`
+ * everywhere (the production path), and only a dev surface's `DevTokenResolver`
+ * (step 3) sets `'dev'`. It flows straight into `withPartition(..., env, ...)`.
  */
 export type Caller =
-  | { authenticated: true; oid: string; displayName: string; groups: string[] }
-  | { authenticated: false };
+  | { authenticated: true; oid: string; displayName: string; groups: string[]; env: Env }
+  | { authenticated: false; env: Env };
 
 /** Resolves the caller, or null after the underlying gate already responded. */
 export type CallerResolver = (
@@ -68,7 +74,7 @@ export function makeCallerResolver(gate: SessionGate, config: EdgeConfig): Calle
       return null;
     }
     if (entry.visibilityMode === "public") {
-      return { authenticated: false };
+      return { authenticated: false, env: "prod" };
     }
     const session = await gate(req, reply, entry);
     if (!session) return null;
@@ -77,6 +83,7 @@ export function makeCallerResolver(gate: SessionGate, config: EdgeConfig): Calle
       oid: session.user.oid,
       displayName: session.user.displayName,
       groups: session.user.groups,
+      env: "prod",
     };
   };
 }

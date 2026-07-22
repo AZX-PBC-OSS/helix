@@ -89,7 +89,7 @@ export class PgSessionStore implements SessionStore {
     // Wrapped in the RLS partition (ADR-0002): the sessions_edge_partition WITH
     // CHECK requires the row's appId to equal app.app_id, so a pending row can
     // only ever be minted in its own app's partition.
-    await withPartition(this.#pool, session.appId, null, (client) =>
+    await withPartition(this.#pool, session.appId, null, "prod", (client) =>
       client.query(
         `INSERT INTO sessions (id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt")
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -107,7 +107,7 @@ export class PgSessionStore implements SessionStore {
   }
 
   async createActive(session: Session, tokenHash: string): Promise<void> {
-    await withPartition(this.#pool, session.appId, null, (client) =>
+    await withPartition(this.#pool, session.appId, null, "prod", (client) =>
       client.query(
         `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", groups, "activatedAt", "refreshDueAt", "expiresAt")
        VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8)`,
@@ -131,7 +131,7 @@ export class PgSessionStore implements SessionStore {
     // the handoff JWS `aud` check — either alone defeats audience confusion.
     // Under the RLS partition, the row is also only visible/updatable within
     // its own app (app.app_id), so a cross-app redeem can't even see the row.
-    return withPartition(this.#pool, appId, null, async (client) => {
+    return withPartition(this.#pool, appId, null, "prod", async (client) => {
       const result = await client.query(
         `UPDATE sessions
        SET "tokenHash" = $1, "activatedAt" = now()
@@ -176,7 +176,7 @@ export class PgSessionStore implements SessionStore {
 
   async delete(tokenHash: string, appId: string): Promise<void> {
     // Logout is partition-scoped: the DELETE only sees this app's rows.
-    await withPartition(this.#pool, appId, null, (client) =>
+    await withPartition(this.#pool, appId, null, "prod", (client) =>
       client.query(`DELETE FROM sessions WHERE "tokenHash" = $1 AND "appId" = $2`, [
         tokenHash,
         appId,

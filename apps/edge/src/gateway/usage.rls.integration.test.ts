@@ -59,6 +59,7 @@ describe("PgUsageStore as helix_edge (RLS-backed)", () => {
     // own appId (the WITH CHECK) — a mismatch would be rejected (see below).
     await store.record({
       appId: APP,
+      env: "prod",
       userOid: "oid-alice",
       capability: "llm",
       model: "claude-opus-4-8",
@@ -70,6 +71,7 @@ describe("PgUsageStore as helix_edge (RLS-backed)", () => {
     // A different app's usage is written under its own partition…
     await store.record({
       appId: OTHER_APP,
+      env: "prod",
       userOid: "oid-bob",
       capability: "llm",
       model: "claude-opus-4-8",
@@ -81,7 +83,7 @@ describe("PgUsageStore as helix_edge (RLS-backed)", () => {
 
     // …and the budget SUM for APP sees only APP's rows, never OTHER_APP's —
     // enforced by RLS, not just the WHERE clause.
-    expect(await store.llmSpendMicroUsd(APP)).toEqual({
+    expect(await store.llmSpendMicroUsd(APP, "prod")).toEqual({
       todayMicro: 150_000,
       hourMicro: 150_000,
     });
@@ -94,6 +96,7 @@ describe("PgUsageStore as helix_edge (RLS-backed)", () => {
     store = s;
     await s.record({
       appId: APP,
+      env: "prod",
       userOid: "oid-alice",
       capability: "data",
       model: "user.put",

@@ -161,13 +161,14 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     const cap = entry.llm.dollarsPerDay;
     if (cap !== undefined) {
       const capMicro = cap * 1_000_000;
-      const { todayMicro, hourMicro } = await usage.llmSpendMicroUsd(entry.appId);
+      const { todayMicro, hourMicro } = await usage.llmSpendMicroUsd(entry.appId, caller.env);
       const overDay = todayMicro >= capMicro;
       const overBurst = hourMicro >= capMicro * BURST_BUDGET_FRACTION;
       if (overDay || overBurst) {
         await usage
           .record({
             appId: entry.appId,
+            env: caller.env,
             userOid,
             capability: "llm",
             model: chat.model,
@@ -213,6 +214,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
       await usage
         .record({
           appId: entry.appId,
+          env: caller.env,
           userOid,
           capability: "llm",
           model: chat.model,
@@ -237,6 +239,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
       appId: entry.appId,
       userOid,
       requestId: randomUUID(),
+      env: caller.env,
     });
 
     if (chat.stream) {

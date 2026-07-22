@@ -37,6 +37,7 @@ export async function mintInstruction(claims: AttestedInstruction, key: Buffer):
       capability: claims.capability,
       origin: claims.origin,
       requestId: claims.requestId,
+      env: claims.env,
       ...(claims.connection ? { connection: claims.connection } : {}),
     })
       .setProtectedHeader({ alg: ALG, typ: INSTRUCTION_JWT_TYP })

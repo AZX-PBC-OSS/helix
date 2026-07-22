@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import {
+  type Env,
   type InjectionRecipe,
   InjectionRecipeSchema,
   type InstructionCapability,
@@ -21,6 +22,13 @@ import type { SecretStore } from "@azx-pbc/secret-store";
  *  - `llm`: a `platform`-scoped secret resolved by name (the LLM vendor key). The
  *    edge sets this connection from config, not from the app's manifest, and only
  *    after it has authorized the call (model allowlist + budget).
+ *
+ * `env` (dev-mode design §6) scopes **connection** (`fetch`) secrets to the tier
+ * carried in the verified, signed attested instruction — a `dev` fetch injects
+ * only a `dev` connection secret and can never resolve a `prod` one, and
+ * vice-versa. The value comes from the attested claim, never app input.
+ * `platform` (`llm`) secrets are the tier-agnostic vendor key and resolve by
+ * name only, so a dev LLM call reuses the same platform key.
  */
 export interface ResolvedConnection {
   value: string;
@@ -32,6 +40,7 @@ export interface SecretResolver {
     appId: string,
     connection: string,
     capability: InstructionCapability,
+    env: Env,
   ): Promise<ResolvedConnection | null>;
   close(): Promise<void>;
 }
@@ -49,11 +58,13 @@ export class PgSecretResolver implements SecretResolver {
     appId: string,
     connection: string,
     capability: InstructionCapability,
+    env: Env,
   ): Promise<ResolvedConnection | null> {
     const row =
       capability === "llm"
-        ? // `llm`: a platform vendor secret, by name only (no app/grant scoping).
-          // A platform secret is reachable from nowhere else — fetch never sees it.
+        ? // `llm`: a platform vendor secret, by name only (no app/grant/env scoping).
+          // A platform secret is reachable from nowhere else — fetch never sees it —
+          // and is tier-agnostic, so a dev LLM call reuses the same key.
           (
             await this.#pool.query<{ id: string; material: string; injection: unknown }>(
               `SELECT id, material, injection FROM app_secrets
@@ -61,22 +72,23 @@ export class PgSecretResolver implements SecretResolver {
               [connection],
             )
           ).rows[0]
-        : // `fetch`: app-scoped first, then a granted global. Two narrow queries
-          // rather than an OR so the index on (appId, name) is used and the
-          // intent is explicit.
+        : // `fetch`: app-scoped first, then a granted global — both pinned to the
+          // instruction's env tier (§6), so a dev fetch never resolves a prod
+          // connection secret. Two narrow queries rather than an OR so the
+          // (appId, env, name) index is used and the intent is explicit.
           ((
             await this.#pool.query<{ id: string; material: string; injection: unknown }>(
               `SELECT id, material, injection FROM app_secrets
-                 WHERE scope = 'app' AND "appId" = $1 AND name = $2 LIMIT 1`,
-              [appId, connection],
+                 WHERE scope = 'app' AND "appId" = $1 AND env = $2 AND name = $3 LIMIT 1`,
+              [appId, env, connection],
             )
           ).rows[0] ??
           (
             await this.#pool.query<{ id: string; material: string; injection: unknown }>(
               `SELECT s.id, s.material, s.injection FROM app_secrets s
                  JOIN app_secret_grants g ON g."secretId" = s.id AND g."appId" = $1
-                WHERE s.scope = 'global' AND s.name = $2 LIMIT 1`,
-              [appId, connection],
+                WHERE s.scope = 'global' AND s.env = $2 AND s.name = $3 LIMIT 1`,
+              [appId, env, connection],
             )
           ).rows[0]);
 

@@ -144,11 +144,12 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     const usage = rt.usage;
     const budget = entry.fetch.requestsPerDay;
     if (budget !== null) {
-      const usedToday = await usage.fetchRequestsToday(entry.appId);
+      const usedToday = await usage.fetchRequestsToday(entry.appId, caller.env);
       if (usedToday >= budget) {
         await usage
           .record({
             appId: entry.appId,
+            env: caller.env,
             userOid,
             capability: "fetch",
             model: target.origin,
@@ -181,6 +182,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         capability: "fetch",
         origin: target.origin,
         requestId: randomUUID(),
+        env: caller.env,
         ...(connection ? { connection } : {}),
       },
       rt.instructionKey,
@@ -207,6 +209,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       usage
         .record({
           appId: entry.appId,
+          env: caller.env,
           userOid,
           capability: "fetch",
           model: target.origin,

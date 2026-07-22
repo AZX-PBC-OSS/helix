@@ -7,8 +7,14 @@ import { InMemoryCounterStore } from "./counterStore.js";
 
 const req = (ip: string) => ({ ip }) as FastifyRequest;
 const entry = (appId: string) => ({ appId }) as RegistryEntry;
-const ANON: Caller = { authenticated: false };
-const AUTHED: Caller = { authenticated: true, oid: "u1", displayName: "U", groups: [] };
+const ANON: Caller = { authenticated: false, env: "prod" };
+const AUTHED: Caller = {
+  authenticated: true,
+  oid: "u1",
+  displayName: "U",
+  groups: [],
+  env: "prod",
+};
 
 /** A limiter over an in-memory counter with an injectable clock. */
 function limiter(max: number, windowMs: number, clock?: () => number) {

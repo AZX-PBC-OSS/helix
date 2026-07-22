@@ -31,10 +31,11 @@ afterAll(async () => {
 
 describe("PgUsageStore", () => {
   it("starts at zero and sums today's frozen cost for the app (day + rolling hour)", async () => {
-    expect(await store.llmSpendMicroUsd(appId)).toEqual({ todayMicro: 0, hourMicro: 0 });
+    expect(await store.llmSpendMicroUsd(appId, "prod")).toEqual({ todayMicro: 0, hourMicro: 0 });
 
     await store.record({
       appId,
+      env: "prod",
       userOid: "oid-alice",
       capability: "llm",
       model: "claude-opus-4-8",
@@ -45,6 +46,7 @@ describe("PgUsageStore", () => {
     });
     await store.record({
       appId,
+      env: "prod",
       userOid: "oid-alice",
       capability: "llm",
       model: "claude-opus-4-8",
@@ -55,7 +57,7 @@ describe("PgUsageStore", () => {
     });
 
     // Both rows are within the trailing hour (just inserted), so both windows match.
-    expect(await store.llmSpendMicroUsd(appId)).toEqual({
+    expect(await store.llmSpendMicroUsd(appId, "prod")).toEqual({
       todayMicro: 165_000,
       hourMicro: 165_000,
     });
@@ -64,6 +66,7 @@ describe("PgUsageStore", () => {
   it("scopes the budget to one app", async () => {
     await store.record({
       appId: otherAppId,
+      env: "prod",
       userOid: "oid-bob",
       capability: "llm",
       model: "claude-opus-4-8",
@@ -73,7 +76,7 @@ describe("PgUsageStore", () => {
       outcome: "ok",
     });
     // The first app's total is unaffected by the other app's usage.
-    expect(await store.llmSpendMicroUsd(appId)).toEqual({
+    expect(await store.llmSpendMicroUsd(appId, "prod")).toEqual({
       todayMicro: 165_000,
       hourMicro: 165_000,
     });
@@ -82,6 +85,7 @@ describe("PgUsageStore", () => {
   it("records a blocked call with zero cost (still audited)", async () => {
     await store.record({
       appId,
+      env: "prod",
       userOid: "oid-alice",
       capability: "llm",
       model: "claude-opus-4-8",
@@ -102,6 +106,7 @@ describe("PgUsageStore", () => {
     try {
       await store.record({
         appId: meteredAppId,
+        env: "prod",
         userOid: "oid-alice",
         capability: "llm",
         model: "claude-opus-4-8",
@@ -142,6 +147,7 @@ describe("PgUsageStore", () => {
       // A minimal record (e.g. the data/quota paths) — new columns fall back.
       await store.record({
         appId: defaultsAppId,
+        env: "prod",
         userOid: "oid-bob",
         capability: "data",
         model: "user.put",

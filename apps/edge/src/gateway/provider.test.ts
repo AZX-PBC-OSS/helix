@@ -70,7 +70,13 @@ describe("AnthropicProvider (mocked upstream)", () => {
           maxTokens: 256,
           stream: true,
         },
-        { signal: new AbortController().signal, appId: "app-1", userOid: "u-1", requestId: "r-1" },
+        {
+          signal: new AbortController().signal,
+          appId: "app-1",
+          userOid: "u-1",
+          requestId: "r-1",
+          env: "prod",
+        },
       ),
     );
 
@@ -131,6 +137,7 @@ describe("AnthropicProvider (mocked upstream)", () => {
             appId: "app-1",
             userOid: "u-1",
             requestId: "r-1",
+            env: "prod",
           },
         ),
       ),
@@ -221,6 +228,7 @@ describe("AnthropicProvider (real vendor)", () => {
             appId: "app-1",
             userOid: "u-1",
             requestId: "r-1",
+            env: "prod",
           },
         ),
       );

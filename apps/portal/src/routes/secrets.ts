@@ -87,8 +87,13 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       requireActor(req);
       const appRow = await findApp(req.params.slug);
+      // Env-scoped to the prod tier: app_secrets uniqueness is now
+      // (appId, env, name) (dev-mode §6), so every name-keyed secret query must
+      // pin env or it goes nondeterministic once a same-named dev secret exists.
+      // The portal manages only prod secrets today; step 2 (the dev-secret write
+      // path) parametrizes this literal.
       const rows = await app.prisma.appSecret.findMany({
-        where: { scope: "app", appId: appRow.id },
+        where: { scope: "app", appId: appRow.id, env: "prod" },
         orderBy: { createdAt: "asc" },
       });
       return rows.map((r) => toMetadata(r));
@@ -109,6 +114,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
           data: {
             scope: "app",
             appId: appRow.id,
+            env: "prod",
             name: body.name,
             material,
             injection: body.injection,
@@ -138,7 +144,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       const appRow = await findApp(req.params.slug);
       const { value } = SecretRotateRequestSchema.parse(req.body);
       const row = await app.prisma.appSecret.findFirst({
-        where: { scope: "app", appId: appRow.id, name: req.params.name },
+        where: { scope: "app", appId: appRow.id, env: "prod", name: req.params.name },
       });
       if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
       const material = await store().seal(value);
@@ -161,7 +167,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       const actor = requireActor(req);
       const appRow = await findApp(req.params.slug);
       const row = await app.prisma.appSecret.findFirst({
-        where: { scope: "app", appId: appRow.id, name: req.params.name },
+        where: { scope: "app", appId: appRow.id, env: "prod", name: req.params.name },
       });
       if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
       await app.prisma.appSecret.delete({ where: { id: row.id } });
@@ -178,7 +184,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/v1/secrets", { preHandler: authenticate }, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.appSecret.findMany({
-      where: { scope: { in: [...ADMIN_SCOPES] } },
+      where: { scope: { in: [...ADMIN_SCOPES] }, env: "prod" },
       include: { grants: { include: { app: true } } },
       orderBy: [{ scope: "asc" }, { createdAt: "asc" }],
     });
@@ -194,9 +200,10 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     const actor = requireAdmin(req);
     const body = AdminSecretCreateSchema.parse(req.body);
     // Name uniqueness within the scope is enforced here (a partial unique index
-    // on the appId-less scopes is not expressible in the Prisma schema).
+    // on the appId-less scopes is not expressible in the Prisma schema). Pinned to
+    // the prod tier — uniqueness is now per-env (dev-mode §6); step 2 parametrizes it.
     const existing = await app.prisma.appSecret.findFirst({
-      where: { scope: body.scope, name: body.name },
+      where: { scope: body.scope, env: "prod", name: body.name },
     });
     if (existing) {
       throw new AppError("conflict", `${body.scope} secret "${body.name}" already exists`);
@@ -206,6 +213,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       data: {
         scope: body.scope,
         appId: null,
+        env: "prod",
         name: body.name,
         material,
         injection: body.injection,

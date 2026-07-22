@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { EnvSchema } from "./env.js";
+
 /**
  * The attested instruction (architecture §3, §6.2; secrets design §4) — the
  * signed boundary between the policy plane (`azx-edge`) and the mechanism plane
@@ -42,6 +44,14 @@ export const AttestedInstructionSchema = z.object({
   connection: z.string().min(1).optional(),
   /** Correlates the edge audit row with the egress call. */
   requestId: z.string().min(1),
+  /**
+   * Environment tier this call is scoped to (dev-mode design §6). Egress resolves
+   * the connection secret within this tier — a `dev` instruction can never reach a
+   * `prod` connection secret and vice-versa. Carried by the attested (signed)
+   * claim, never an app/request parameter; defaults `prod` so any instruction
+   * minted before this field existed verifies as production.
+   */
+  env: EnvSchema.default("prod"),
 });
 export type AttestedInstruction = z.infer<typeof AttestedInstructionSchema>;
 

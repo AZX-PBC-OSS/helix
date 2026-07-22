@@ -1,7 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { Pool, type Dispatcher } from "undici";
-import type { LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
+import type { Env, LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
 
 /**
  * The `LlmProvider` seam (architecture §6.1, project plan §4 M4). The gateway
@@ -29,6 +29,12 @@ export interface LlmStreamOpts {
   appId: string;
   userOid: string;
   requestId: string;
+  /**
+   * Partition tier (dev-mode design §6). The routing (egress) provider stamps it
+   * into the attested instruction so egress env-scopes secret resolution; the
+   * direct provider ignores it. Defaults to `prod` on every production path.
+   */
+  env: Env;
 }
 
 export interface LlmProvider {

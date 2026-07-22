@@ -69,6 +69,7 @@ const opts = {
   appId: "app-1",
   userOid: "user-1",
   requestId: "req-1",
+  env: "prod" as const,
 };
 
 async function collect(events: AsyncIterable<LlmStreamEvent>): Promise<LlmStreamEvent[]> {

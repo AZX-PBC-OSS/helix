@@ -65,6 +65,21 @@ async function seed(): Promise<void> {
         [id, scope, owningApp, name, material, JSON.stringify(injection)],
       );
     }
+    // A dev-tier app secret sharing the 'stripe' connection name — env isolation
+    // (dev-mode §6): a dev fetch must resolve THIS, and a prod fetch must never
+    // see it. The per-env unique index allows the same (appId, name) in both tiers.
+    const devId = randomUUID();
+    ids.push(devId);
+    await owner.query(
+      `INSERT INTO app_secrets (id, scope, "appId", env, name, material, injection, "createdBy")
+       VALUES ($1, 'app', $2, 'dev', 'stripe', $3, $4, 'test')`,
+      [
+        devId,
+        appId,
+        await store.seal("secret-for-app-stripe-DEV"),
+        JSON.stringify({ kind: "header-bearer" }),
+      ],
+    );
   } finally {
     await owner.end();
   }
@@ -95,15 +110,15 @@ describe("PgSecretResolver capability gate", () => {
     if (!provisioned) return;
     const resolver = new PgSecretResolver(egressUrl(), store, { max: 1 });
     try {
-      const viaLlm = await resolver.resolve(appId, "anthropic", "llm");
+      const viaLlm = await resolver.resolve(appId, "anthropic", "llm", "prod");
       expect(viaLlm?.value).toBe("secret-for-platform-anthropic");
       expect(viaLlm?.injection).toEqual({ kind: "header", name: "x-api-key", template: "{}" });
 
       // The platform key is unreachable on the fetch path, even by name.
-      expect(await resolver.resolve(appId, "anthropic", "fetch")).toBeNull();
+      expect(await resolver.resolve(appId, "anthropic", "fetch", "prod")).toBeNull();
       // …and from a different app, too — platform is name-scoped, not app-scoped,
       // but still only via llm.
-      expect(await resolver.resolve(otherAppId, "anthropic", "fetch")).toBeNull();
+      expect(await resolver.resolve(otherAppId, "anthropic", "fetch", "prod")).toBeNull();
     } finally {
       await resolver.close();
     }
@@ -113,11 +128,30 @@ describe("PgSecretResolver capability gate", () => {
     if (!provisioned) return;
     const resolver = new PgSecretResolver(egressUrl(), store, { max: 1 });
     try {
-      const viaFetch = await resolver.resolve(appId, "stripe", "fetch");
+      const viaFetch = await resolver.resolve(appId, "stripe", "fetch", "prod");
       expect(viaFetch?.value).toBe("secret-for-app-stripe");
 
       // llm only ever consults platform scope — an app secret named here is invisible.
-      expect(await resolver.resolve(appId, "stripe", "llm")).toBeNull();
+      expect(await resolver.resolve(appId, "stripe", "llm", "prod")).toBeNull();
+    } finally {
+      await resolver.close();
+    }
+  });
+
+  it("env-scopes connection secrets: a dev fetch and a prod fetch resolve different tiers", async () => {
+    if (!provisioned) return;
+    const resolver = new PgSecretResolver(egressUrl(), store, { max: 1 });
+    try {
+      // Same app + connection name, two tiers → two distinct secrets. If env were
+      // ignored, both calls would return the same row; that they diverge proves
+      // egress resolves the secret within the tier the attested instruction names
+      // (dev-mode §6) — a dev fetch can never inject a prod credential, or vice-versa.
+      expect((await resolver.resolve(appId, "stripe", "fetch", "prod"))?.value).toBe(
+        "secret-for-app-stripe",
+      );
+      expect((await resolver.resolve(appId, "stripe", "fetch", "dev"))?.value).toBe(
+        "secret-for-app-stripe-DEV",
+      );
     } finally {
       await resolver.close();
     }

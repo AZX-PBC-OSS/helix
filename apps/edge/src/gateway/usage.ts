@@ -1,5 +1,7 @@
 import { type Pool } from "pg";
 
+import { type Env } from "@azx-pbc/shared";
+
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
 
@@ -27,6 +29,8 @@ export type GatewayOutcome = "ok" | "error" | "refusal" | "quota_blocked";
 
 export interface GatewayCallRecord {
   appId: string;
+  /** Partition tier (dev-mode design §5.1) — keeps budgets/usage per-env. */
+  env: Env;
   userOid: string;
   /** Capability invoked — `llm` in M4. */
   capability: string;
@@ -63,21 +67,21 @@ export interface UsageStore {
    * summed from the `costMicroUsd` ledger column. Backs the per-app USD budget
    * gate (`llm.ts`).
    */
-  llmSpendMicroUsd(appId: string): Promise<LlmSpend>;
+  llmSpendMicroUsd(appId: string, env: Env): Promise<LlmSpend>;
   /**
    * Count of successful app-data **write** calls today (app-data design §7) —
    * the per-app `writesPerDay` budget window. Writes are the put/append verbs
    * (`user.put`, `collection.append`, `shared.put`); reads and quota-blocks
    * don't count.
    */
-  dataWritesToday(appId: string): Promise<number>;
+  dataWritesToday(appId: string, env: Env): Promise<number>;
   /**
    * Count of admitted fetch-proxy calls today (fetch-proxy design §7) — the
    * per-app `requestsPerDay` budget window. "Admitted" means everything we
    * recorded except the budget rejections themselves (`quota_blocked`), so a
    * flood of failing calls still counts against the cap.
    */
-  fetchRequestsToday(appId: string): Promise<number>;
+  fetchRequestsToday(appId: string, env: Env): Promise<number>;
   /** Append one call to the ledger. */
   record(call: GatewayCallRecord): Promise<void>;
   close(): Promise<void>;
@@ -96,21 +100,23 @@ export class PgUsageStore implements UsageStore {
     });
   }
 
-  async llmSpendMicroUsd(appId: string): Promise<LlmSpend> {
-    // One index scan over (appId, createdAt), two FILTERed sums. The outer
+  async llmSpendMicroUsd(appId: string, env: Env): Promise<LlmSpend> {
+    // One index scan over (appId, env, createdAt), two FILTERed sums. The outer
     // filter is day-start minus an hour so the rolling-hour window stays
     // correct across the midnight boundary (its rows can predate today). Day
     // boundary is server-local-midnight via date_trunc on now() (architecture
-    // §6.3). costMicroUsd is non-null (DEFAULT 0).
-    return withPartition(this.#pool, appId, null, async (client) => {
+    // §6.3). costMicroUsd is non-null (DEFAULT 0). The env predicate is redundant
+    // with the env-literal RLS policy (which already scopes the role to one tier)
+    // but is kept explicit so the query rides the (appId, env, createdAt) index.
+    return withPartition(this.#pool, appId, null, env, async (client) => {
       const result = await client.query(
         `SELECT
            COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= date_trunc('day', now())), 0)::bigint AS today,
            COALESCE(SUM("costMicroUsd") FILTER (WHERE "createdAt" >= now() - interval '1 hour'), 0)::bigint AS hour
          FROM gateway_calls
-         WHERE "appId" = $1 AND capability = 'llm'
+         WHERE "appId" = $1 AND env = $2 AND capability = 'llm'
            AND "createdAt" >= date_trunc('day', now()) - interval '1 hour'`,
-        [appId],
+        [appId, env],
       );
       // SUM(::bigint) comes back as a string from pg; Number is safe well below
       // 2^53 for any realistic daily micro-USD total (1e6 = $1).
@@ -119,28 +125,28 @@ export class PgUsageStore implements UsageStore {
     });
   }
 
-  async dataWritesToday(appId: string): Promise<number> {
-    return withPartition(this.#pool, appId, null, async (client) => {
+  async dataWritesToday(appId: string, env: Env): Promise<number> {
+    return withPartition(this.#pool, appId, null, env, async (client) => {
       const result = await client.query(
         `SELECT COUNT(*)::int AS n
          FROM gateway_calls
-         WHERE "appId" = $1 AND capability = 'data' AND outcome = 'ok'
-           AND model = ANY($2) AND "createdAt" >= date_trunc('day', now())`,
-        [appId, DATA_WRITE_VERBS],
+         WHERE "appId" = $1 AND env = $2 AND capability = 'data' AND outcome = 'ok'
+           AND model = ANY($3) AND "createdAt" >= date_trunc('day', now())`,
+        [appId, env, DATA_WRITE_VERBS],
       );
       const row = result.rows[0] as { n: string | number } | undefined;
       return row ? Number(row.n) : 0;
     });
   }
 
-  async fetchRequestsToday(appId: string): Promise<number> {
-    return withPartition(this.#pool, appId, null, async (client) => {
+  async fetchRequestsToday(appId: string, env: Env): Promise<number> {
+    return withPartition(this.#pool, appId, null, env, async (client) => {
       const result = await client.query(
         `SELECT COUNT(*)::int AS n
          FROM gateway_calls
-         WHERE "appId" = $1 AND capability = 'fetch' AND outcome <> 'quota_blocked'
+         WHERE "appId" = $1 AND env = $2 AND capability = 'fetch' AND outcome <> 'quota_blocked'
            AND "createdAt" >= date_trunc('day', now())`,
-        [appId],
+        [appId, env],
       );
       const row = result.rows[0] as { n: string | number } | undefined;
       return row ? Number(row.n) : 0;
@@ -148,18 +154,21 @@ export class PgUsageStore implements UsageStore {
   }
 
   async record(call: GatewayCallRecord): Promise<void> {
-    await withPartition(this.#pool, call.appId, null, async (client) => {
+    await withPartition(this.#pool, call.appId, null, call.env, async (client) => {
       await client.query(
         // Prisma's @default(uuid()) is client-side, so the raw INSERT supplies
-        // the id itself (gen_random_uuid() — built into Postgres). Optional
-        // metering columns fall back to their column defaults / NULL.
+        // the id itself (gen_random_uuid() — built into Postgres). `env` is set
+        // explicitly (not left to the column default) so a `dev` row satisfies the
+        // helix_dev WITH CHECK (env='dev') — the default 'prod' would fail it.
+        // Optional metering columns fall back to their column defaults / NULL.
         `INSERT INTO gateway_calls
-           (id, "appId", "userOid", capability, model, "inputTokens", "outputTokens",
+           (id, "appId", env, "userOid", capability, model, "inputTokens", "outputTokens",
             "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd", outcome,
             "durationMs", "statusCode", "stopReason", "errorDetail")
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           call.appId,
+          call.env,
           call.userOid,
           call.capability,
           call.model,

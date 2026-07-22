@@ -250,6 +250,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         instruction.appId,
         instruction.connection,
         instruction.capability,
+        instruction.env,
       );
       if (!resolved) {
         return fail(reply, 403, "forbidden", "connection not found or not granted");

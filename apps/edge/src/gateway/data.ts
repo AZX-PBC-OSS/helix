@@ -1,5 +1,7 @@
 import { type Pool } from "pg";
 
+import { type Env } from "@azx-pbc/shared";
+
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
 
@@ -38,13 +40,19 @@ export interface CollectionMeta {
 
 export interface AppDataStore {
   /** Read one of the caller's own user-scoped keys; null if absent. */
-  getUserKey(appId: string, userOid: string, key: string): Promise<unknown>;
+  getUserKey(appId: string, userOid: string, key: string, env: Env): Promise<unknown>;
   /** Upsert one of the caller's own user-scoped keys; returns updatedAt. */
-  putUserKey(appId: string, userOid: string, key: string, value: unknown): Promise<string>;
+  putUserKey(
+    appId: string,
+    userOid: string,
+    key: string,
+    value: unknown,
+    env: Env,
+  ): Promise<string>;
   /** Delete one of the caller's own user-scoped keys; true if a row was removed. */
-  deleteUserKey(appId: string, userOid: string, key: string): Promise<boolean>;
+  deleteUserKey(appId: string, userOid: string, key: string, env: Env): Promise<boolean>;
   /** List the caller's own user-scoped keys (no values). */
-  listUserKeys(appId: string, userOid: string): Promise<UserKeyMeta[]>;
+  listUserKeys(appId: string, userOid: string, env: Env): Promise<UserKeyMeta[]>;
   /**
    * Append one item to a collection (§3.2). Write-only by construction — the
    * edge role has INSERT and no SELECT, so there is intentionally no method to
@@ -56,11 +64,12 @@ export interface AppDataStore {
     item: unknown,
     userOid: string | null,
     meta: CollectionMeta,
+    env: Env,
   ): Promise<void>;
   /** Read an app-shared key (§3.3, userOid IS NULL); null if absent. */
-  getShared(appId: string, key: string): Promise<unknown>;
+  getShared(appId: string, key: string, env: Env): Promise<unknown>;
   /** Upsert an app-shared key (§3.3); returns updatedAt. */
-  putShared(appId: string, key: string, value: unknown): Promise<string>;
+  putShared(appId: string, key: string, value: unknown, env: Env): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -74,48 +83,54 @@ export class PgAppDataStore implements AppDataStore {
     });
   }
 
-  async getUserKey(appId: string, userOid: string, key: string): Promise<unknown> {
-    return withPartition(this.#pool, appId, userOid, async (client) => {
+  async getUserKey(appId: string, userOid: string, key: string, env: Env): Promise<unknown> {
+    return withPartition(this.#pool, appId, userOid, env, async (client) => {
       const r = await client.query(
-        `SELECT value FROM app_data WHERE "appId" = $1 AND "userOid" = $2 AND key = $3`,
-        [appId, userOid, key],
+        `SELECT value FROM app_data WHERE "appId" = $1 AND env = $2 AND "userOid" = $3 AND key = $4`,
+        [appId, env, userOid, key],
       );
       return (r.rows[0] as { value: unknown } | undefined)?.value ?? null;
     });
   }
 
-  async putUserKey(appId: string, userOid: string, key: string, value: unknown): Promise<string> {
-    return withPartition(this.#pool, appId, userOid, async (client) => {
+  async putUserKey(
+    appId: string,
+    userOid: string,
+    key: string,
+    value: unknown,
+    env: Env,
+  ): Promise<string> {
+    return withPartition(this.#pool, appId, userOid, env, async (client) => {
       // JSON.stringify + ::jsonb so every JSON type (string, number, object,
       // array) round-trips uniformly; a bare string param would not cast.
       const r = await client.query(
-        `INSERT INTO app_data (id, "appId", "userOid", key, value, "updatedAt")
-           VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, now())
-         ON CONFLICT ("appId", "userOid", key)
+        `INSERT INTO app_data (id, "appId", env, "userOid", key, value, "updatedAt")
+           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, now())
+         ON CONFLICT ("appId", env, "userOid", key)
            DO UPDATE SET value = EXCLUDED.value, "updatedAt" = now()
          RETURNING "updatedAt"`,
-        [appId, userOid, key, JSON.stringify(value)],
+        [appId, env, userOid, key, JSON.stringify(value)],
       );
       return (r.rows[0] as { updatedAt: Date }).updatedAt.toISOString();
     });
   }
 
-  async deleteUserKey(appId: string, userOid: string, key: string): Promise<boolean> {
-    return withPartition(this.#pool, appId, userOid, async (client) => {
+  async deleteUserKey(appId: string, userOid: string, key: string, env: Env): Promise<boolean> {
+    return withPartition(this.#pool, appId, userOid, env, async (client) => {
       const r = await client.query(
-        `DELETE FROM app_data WHERE "appId" = $1 AND "userOid" = $2 AND key = $3`,
-        [appId, userOid, key],
+        `DELETE FROM app_data WHERE "appId" = $1 AND env = $2 AND "userOid" = $3 AND key = $4`,
+        [appId, env, userOid, key],
       );
       return (r.rowCount ?? 0) > 0;
     });
   }
 
-  async listUserKeys(appId: string, userOid: string): Promise<UserKeyMeta[]> {
-    return withPartition(this.#pool, appId, userOid, async (client) => {
+  async listUserKeys(appId: string, userOid: string, env: Env): Promise<UserKeyMeta[]> {
+    return withPartition(this.#pool, appId, userOid, env, async (client) => {
       const r = await client.query(
         `SELECT key, "updatedAt" FROM app_data
-         WHERE "appId" = $1 AND "userOid" = $2 ORDER BY key`,
-        [appId, userOid],
+         WHERE "appId" = $1 AND env = $2 AND "userOid" = $3 ORDER BY key`,
+        [appId, env, userOid],
       );
       return (r.rows as { key: string; updatedAt: Date }[]).map((row) => ({
         key: row.key,
@@ -124,28 +139,28 @@ export class PgAppDataStore implements AppDataStore {
     });
   }
 
-  async getShared(appId: string, key: string): Promise<unknown> {
+  async getShared(appId: string, key: string, env: Env): Promise<unknown> {
     // Shared rows have userOid IS NULL; the RLS policy admits them regardless of
     // the user_oid GUC, so any empty user partition value is fine — only app_id
-    // must match. Still run inside the partition transaction for consistency.
-    return withPartition(this.#pool, appId, "", async (client) => {
+    // and env must match. Still run inside the partition transaction for consistency.
+    return withPartition(this.#pool, appId, "", env, async (client) => {
       const r = await client.query(
-        `SELECT value FROM app_data WHERE "appId" = $1 AND "userOid" IS NULL AND key = $2`,
-        [appId, key],
+        `SELECT value FROM app_data WHERE "appId" = $1 AND env = $2 AND "userOid" IS NULL AND key = $3`,
+        [appId, env, key],
       );
       return (r.rows[0] as { value: unknown } | undefined)?.value ?? null;
     });
   }
 
-  async putShared(appId: string, key: string, value: unknown): Promise<string> {
-    return withPartition(this.#pool, appId, "", async (client) => {
+  async putShared(appId: string, key: string, value: unknown, env: Env): Promise<string> {
+    return withPartition(this.#pool, appId, "", env, async (client) => {
       const r = await client.query(
-        `INSERT INTO app_data (id, "appId", "userOid", key, value, "updatedAt")
-           VALUES (gen_random_uuid(), $1, NULL, $2, $3::jsonb, now())
-         ON CONFLICT ("appId", key) WHERE "userOid" IS NULL
+        `INSERT INTO app_data (id, "appId", env, "userOid", key, value, "updatedAt")
+           VALUES (gen_random_uuid(), $1, $2, NULL, $3, $4::jsonb, now())
+         ON CONFLICT ("appId", env, key) WHERE "userOid" IS NULL
            DO UPDATE SET value = EXCLUDED.value, "updatedAt" = now()
          RETURNING "updatedAt"`,
-        [appId, key, JSON.stringify(value)],
+        [appId, env, key, JSON.stringify(value)],
       );
       return (r.rows[0] as { updatedAt: Date }).updatedAt.toISOString();
     });
@@ -157,6 +172,7 @@ export class PgAppDataStore implements AppDataStore {
     item: unknown,
     userOid: string | null,
     meta: CollectionMeta,
+    env: Env,
   ): Promise<void> {
     // INSERT-only for the edge role — the absence of SELECT/DELETE is the §3.2
     // write-only containment. On top of that, RLS partitions the write: the
@@ -165,11 +181,11 @@ export class PgAppDataStore implements AppDataStore {
     // bug (or a no-GUC path) can't pollute another app's collection — it fails
     // closed. The collection is app-scoped (no per-user read), so no user_oid
     // GUC; the row's own `userOid` column still records the submitter.
-    await withPartition(this.#pool, appId, null, async (client) => {
+    await withPartition(this.#pool, appId, null, env, async (client) => {
       await client.query(
-        `INSERT INTO app_collection_items (id, "appId", collection, "userOid", item, meta)
-           VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, $5::jsonb)`,
-        [appId, collection, userOid, JSON.stringify(item), JSON.stringify(meta)],
+        `INSERT INTO app_collection_items (id, "appId", env, collection, "userOid", item, meta)
+           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+        [appId, env, collection, userOid, JSON.stringify(item), JSON.stringify(meta)],
       );
     });
   }

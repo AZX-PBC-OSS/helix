@@ -192,6 +192,9 @@ model ApprovalRequest {
 model GatewayCall {
   id           String   @id @default(uuid()) @db.Uuid
   appId        String   @db.Uuid
+  /// Partition tier (dev-mode design §5.1): 'prod' | 'dev'. Makes budgets/usage
+  /// naturally per-env — the env-literal RLS (§5.3) scopes every SUM to one tier.
+  env          String   @default("prod")
   userOid      String
   /// Capability invoked — `llm` in M4.
   capability   String
@@ -224,8 +227,8 @@ model GatewayCall {
   createdAt    DateTime @default(now())
 
   /// Per-app windowed reads (edge budget + portal usage tab) and the audit
-  /// cursor.
-  @@index([appId, createdAt])
+  /// cursor — env-partitioned so per-tier budget SUMs hit the index.
+  @@index([appId, env, createdAt])
   /// Platform-wide rollups (architecture §8) scan by time across all apps.
   @@index([createdAt])
   @@map("gateway_calls")
@@ -280,14 +283,17 @@ model InstructionJti {
 model AppData {
   id        String   @id @default(uuid()) @db.Uuid
   appId     String   @db.Uuid
+  /// Partition tier (dev-mode design §5.1): 'prod' | 'dev'. Part of the partition
+  /// key and pinned per-role by the env-literal RLS policies (§5.3).
+  env       String   @default("prod")
   /// null = app-shared (§3.3); non-null = the owning user (§3.1).
   userOid   String?
   key       String
   value     Json
   updatedAt DateTime @default(now()) @updatedAt
 
-  /// One row per (app, user-or-shared, key); the gateway's partition is unique.
-  @@unique([appId, userOid, key])
+  /// One row per (app, env, user-or-shared, key); the gateway's partition is unique.
+  @@unique([appId, env, userOid, key])
   @@map("app_data")
 }
 
@@ -302,6 +308,8 @@ model AppData {
 model AppCollectionItem {
   id         String   @id @default(uuid()) @db.Uuid
   appId      String   @db.Uuid
+  /// Partition tier (dev-mode design §5.1): 'prod' | 'dev'. Env-literal RLS (§5.3).
+  env        String   @default("prod")
   collection String
   /// The visitor who submitted, if authenticated; null on public/anon apps (§6).
   userOid    String?
@@ -310,7 +318,7 @@ model AppCollectionItem {
   meta       Json?
   createdAt  DateTime @default(now())
 
-  @@index([appId, collection, createdAt])
+  @@index([appId, env, collection, createdAt])
   @@map("app_collection_items")
 }
 
@@ -353,6 +361,11 @@ model AppSecret {
   scope      String
   appId      String?          @db.Uuid
   app        App?             @relation(fields: [appId], references: [id], onDelete: Cascade)
+  /// Partition tier (dev-mode design §6): 'prod' | 'dev'. A dev fetch resolves
+  /// only dev connection secrets and vice-versa; egress scopes resolution by the
+  /// env carried in the attested instruction. `platform` (LLM vendor) secrets are
+  /// resolved by name only and are env-agnostic.
+  env        String           @default("prod")
   name       String
   material   String
   /// @azx-pbc/shared InjectionRecipe — how the resolved secret is applied outbound.
@@ -364,7 +377,7 @@ model AppSecret {
   lastUsedAt DateTime?
   grants     AppSecretGrant[]
 
-  @@unique([appId, name])
+  @@unique([appId, env, name])
   @@map("app_secrets")
 }
 

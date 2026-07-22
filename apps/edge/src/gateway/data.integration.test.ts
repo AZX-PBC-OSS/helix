@@ -53,25 +53,25 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
     if (!(await edgeRoleAvailable())) return;
     store = new PgAppDataStore(edgeUrl(), { max: 2 });
 
-    await store.putUserKey(APP, "alice", "todo", ["milk"]);
-    expect(await store.getUserKey(APP, "alice", "todo")).toEqual(["milk"]);
+    await store.putUserKey(APP, "alice", "todo", ["milk"], "prod");
+    expect(await store.getUserKey(APP, "alice", "todo", "prod")).toEqual(["milk"]);
 
     // Upsert replaces.
-    await store.putUserKey(APP, "alice", "todo", ["milk", "eggs"]);
-    expect(await store.getUserKey(APP, "alice", "todo")).toEqual(["milk", "eggs"]);
+    await store.putUserKey(APP, "alice", "todo", ["milk", "eggs"], "prod");
+    expect(await store.getUserKey(APP, "alice", "todo", "prod")).toEqual(["milk", "eggs"]);
 
     // Different user, same app+key: a distinct partition (absent).
-    expect(await store.getUserKey(APP, "bob", "todo")).toBeNull();
+    expect(await store.getUserKey(APP, "bob", "todo", "prod")).toBeNull();
     // Different app, same user+key: also distinct.
-    expect(await store.getUserKey(OTHER_APP, "alice", "todo")).toBeNull();
+    expect(await store.getUserKey(OTHER_APP, "alice", "todo", "prod")).toBeNull();
 
-    await store.putUserKey(APP, "alice", "prefs", { theme: "dark" });
-    const keys = await store.listUserKeys(APP, "alice");
+    await store.putUserKey(APP, "alice", "prefs", { theme: "dark" }, "prod");
+    const keys = await store.listUserKeys(APP, "alice", "prod");
     expect(keys.map((k) => k.key)).toEqual(["prefs", "todo"]);
 
-    expect(await store.deleteUserKey(APP, "alice", "todo")).toBe(true);
-    expect(await store.deleteUserKey(APP, "alice", "todo")).toBe(false);
-    expect(await store.getUserKey(APP, "alice", "todo")).toBeNull();
+    expect(await store.deleteUserKey(APP, "alice", "todo", "prod")).toBe(true);
+    expect(await store.deleteUserKey(APP, "alice", "todo", "prod")).toBe(false);
+    expect(await store.getUserKey(APP, "alice", "todo", "prod")).toBeNull();
   });
 
   it("collections are write-only for the edge role: INSERT works, SELECT/DELETE denied", async () => {
@@ -79,7 +79,14 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
     const s = new PgAppDataStore(edgeUrl(), { max: 1 });
     try {
       // The edge can append (INSERT grant).
-      await s.appendCollection(APP, "contacts", { email: "lead@x.z" }, null, { ipHash: "abc" });
+      await s.appendCollection(
+        APP,
+        "contacts",
+        { email: "lead@x.z" },
+        null,
+        { ipHash: "abc" },
+        "prod",
+      );
 
       // ...but the role has NO SELECT/DELETE — the §3.2 containment, asserted
       // against the real GRANTs. This is THE load-bearing security property.
@@ -142,13 +149,13 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
     if (!(await edgeRoleAvailable())) return;
     const s = new PgAppDataStore(edgeUrl(), { max: 1 });
     try {
-      expect(await s.getShared(APP, "tally")).toBeNull();
-      await s.putShared(APP, "tally", { yes: 1 });
-      expect(await s.getShared(APP, "tally")).toEqual({ yes: 1 });
+      expect(await s.getShared(APP, "tally", "prod")).toBeNull();
+      await s.putShared(APP, "tally", { yes: 1 }, "prod");
+      expect(await s.getShared(APP, "tally", "prod")).toEqual({ yes: 1 });
       // Upsert (not a duplicate row) — the partial unique index makes this work
       // even though the full unique index treats NULL userOid as distinct.
-      await s.putShared(APP, "tally", { yes: 2 });
-      expect(await s.getShared(APP, "tally")).toEqual({ yes: 2 });
+      await s.putShared(APP, "tally", { yes: 2 }, "prod");
+      expect(await s.getShared(APP, "tally", "prod")).toEqual({ yes: 2 });
 
       const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
       try {
@@ -167,7 +174,7 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
 
   it("RLS fails closed: a bare read with no partition GUCs sees nothing", async () => {
     if (!(await edgeRoleAvailable())) return;
-    await new PgAppDataStore(edgeUrl(), { max: 1 }).putUserKey(APP, "carol", "k", 1).then(
+    await new PgAppDataStore(edgeUrl(), { max: 1 }).putUserKey(APP, "carol", "k", 1, "prod").then(
       // keep store available for cleanup via the same APP id
       () => undefined,
     );
