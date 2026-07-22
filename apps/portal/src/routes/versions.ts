@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { RollbackRequestSchema } from "@azx-pbc/shared";
 import { toApp, toVersion } from "../db/mappers.js";
-import { authenticate, requireActor } from "../plugins/auth.js";
+import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { deployBundle, spoolUpload } from "../deploy/upload.js";
 import { setLiveVersion } from "../deploy/pointer.js";
@@ -11,7 +11,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
   // Upload a bundle as a new preview version. Mutating — requires the dev token.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/versions",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const actor = requireActor(req);
       const appRow = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
@@ -67,7 +67,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
   // Promote a preview version to live (flip the pointer). Mutating.
   app.post<{ Params: { slug: string; number: string } }>(
     "/api/v1/apps/:slug/versions/:number/promote",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       const actor = requireActor(req);
       const appRow = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
@@ -107,7 +107,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
   // the most recently archived (previously live) version.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/rollback",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       const actor = requireActor(req);
       const { toNumber } = RollbackRequestSchema.parse(req.body ?? {});

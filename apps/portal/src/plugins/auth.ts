@@ -183,6 +183,48 @@ export function actorIsAdmin(actor: Actor): boolean {
 }
 
 /**
+ * Route `preHandler` gating an app-scoped MUTATING endpoint: the actor must own
+ * the app (`ownerId === actor.sub`) or be a platform-admin. Runs AFTER
+ * {@link authenticate}, so `req.actor` is already set.
+ *
+ * This closes the v0 BOLA (ADR-0007, issue #9): before this, "authenticated"
+ * meant "authorized to mutate ANY app" — operator B could archive, redeploy,
+ * rotate secrets on, or delete data from operator A's app. `ownerId` is set to
+ * the creator's `actor.sub` at `POST /api/v1/apps` and this is the only gate
+ * that reads it for mutations (the approvals list already reads it for reads).
+ *
+ * Resolves the app from `:slug` itself (a cheap indexed lookup) rather than
+ * reusing the handler's fetch, so it attaches uniformly to every `:slug` route
+ * regardless of what that handler loads — and lives in the route declaration
+ * where it's greppable, not buried in a handler body.
+ *
+ * Fail-closed: a null `ownerId` (which cannot arise for apps created through
+ * the normal path) is not equal to any `actor.sub`, so only an admin passes.
+ */
+export async function ownsApp(req: FastifyRequest): Promise<void> {
+  const actor = requireActor(req);
+  const { slug } = req.params as { slug?: string };
+  if (!slug) {
+    throw new AppError("validation_failed", "missing app slug");
+  }
+  const row = await req.server.prisma.app.findUnique({
+    where: { slug },
+    select: { ownerId: true },
+  });
+  if (!row) {
+    throw new AppError("not_found", `app "${slug}" not found`);
+  }
+  if (row.ownerId === actor.sub || actorIsAdmin(actor)) {
+    return;
+  }
+  req.log.warn(
+    { actor: actor.sub, via: actor.via, slug },
+    "ownership denied: actor is neither the app owner nor a platform-admin",
+  );
+  throw new AppError("forbidden", "you do not own this app");
+}
+
+/**
  * Whether separation-of-duty may be waived so an admin can decide their own
  * request. Dev-only; the boot guard already refused the flag in production.
  */

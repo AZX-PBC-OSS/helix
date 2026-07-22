@@ -13,7 +13,7 @@ import {
   type ManifestUpdateResult,
   type VisibilityUpdateResult,
 } from "@azx-pbc/shared";
-import { authenticate, requireActor } from "../plugins/auth.js";
+import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import { isUniqueViolation } from "../db/errors.js";
@@ -95,7 +95,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // §7). Mutating — requires the dev token. Idempotent.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/archive",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       const actor = requireActor(req);
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
@@ -119,7 +119,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // Un-archive an app. Mutating — requires the dev token. Idempotent.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/unarchive",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       const actor = requireActor(req);
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
@@ -163,7 +163,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // request is open.
   app.put<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/manifest",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req): Promise<ManifestUpdateResult> => {
       const { capabilities: requested, reason } = SetManifestRequestSchema.parse(req.body);
       const actor = requireActor(req);
@@ -180,7 +180,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // origin is always elevated, so this opens a med-risk request.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/access/origin",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req): Promise<ManifestUpdateResult> => {
       const { origin, reason } = OriginGrantRequestSchema.parse(req.body);
       const actor = requireActor(req);
@@ -204,7 +204,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // it keeps its dedicated /access/password routes below.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/visibility",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req): Promise<VisibilityUpdateResult> => {
       const { visibility, reason } = SetVisibilityRequestSchema.parse(req.body);
       const actor = requireActor(req);
@@ -290,7 +290,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // rather than rotating it out from under a URL already handed out.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/access/password",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const actor = requireActor(req);
       // Operator policy: enabling a password app is a move into an open surface;
@@ -337,7 +337,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // ≥12 chars). Requires password access to already be enabled.
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/access/password/rotate",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       const { password: manual } = SetPasswordRequestSchema.parse(req.body ?? {});
       const actor = requireActor(req);
@@ -380,7 +380,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // Re-display the current credential. Authenticated read — never an open route.
   app.get<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/access/password",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
       if (!row) {
@@ -397,7 +397,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // idempotent — a non-password app is already in the desired state.
   app.delete<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/access/password",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const actor = requireActor(req);
       const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });

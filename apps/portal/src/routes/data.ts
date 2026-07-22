@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { CollectionItemsPageSchema, type CollectionItem } from "@azx-pbc/shared";
-import { authenticate } from "../plugins/auth.js";
+import { authenticate, ownsApp } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 
 /**
@@ -126,7 +126,7 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
   // Owner deletion of one item (GDPR-style erasure — app-data design §9).
   app.delete<{ Params: { slug: string; name: string; id: string } }>(
     "/api/v1/apps/:slug/collections/:name/items/:id",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const appId = await appIdFor(req.params.slug);
       const result = await app.prisma.appCollectionItem.deleteMany({

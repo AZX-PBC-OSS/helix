@@ -9,7 +9,7 @@ import {
   type SecretScope,
 } from "@azx-pbc/shared";
 import type { SecretStore } from "@azx-pbc/secret-store";
-import { authenticate, requireActor, requireAdmin } from "../plugins/auth.js";
+import { authenticate, ownsApp, requireActor, requireAdmin } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
 
@@ -97,7 +97,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/secrets",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const actor = requireActor(req);
       const appRow = await findApp(req.params.slug);
@@ -132,7 +132,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { slug: string; name: string } }>(
     "/api/v1/apps/:slug/secrets/:name/rotate",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       const actor = requireActor(req);
       const appRow = await findApp(req.params.slug);
@@ -156,7 +156,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
 
   app.delete<{ Params: { slug: string; name: string } }>(
     "/api/v1/apps/:slug/secrets/:name",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const actor = requireActor(req);
       const appRow = await findApp(req.params.slug);
