@@ -12,6 +12,7 @@ import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
 import { MAX_TOTAL_BYTES } from "./deploy/limits.js";
 import { appRoutes } from "./routes/apps.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { devTokenRoutes } from "./routes/devTokens.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { cspRoutes } from "./routes/csp.js";
 import { versionRoutes } from "./routes/versions.js";
@@ -66,6 +67,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
 
   app.register(appRoutes);
   app.register(secretRoutes);
+  app.register(devTokenRoutes);
   app.register(approvalRoutes);
   app.register(cspRoutes);
   app.register(versionRoutes);

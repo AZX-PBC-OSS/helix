@@ -71,6 +71,8 @@ model App {
   secrets           AppSecret[]
   /// Grants of `global` secrets to this app (the consuming side).
   grantedSecrets    AppSecretGrant[]
+  /// Dev-mode tokens for developing this app against its env=dev partition (§4).
+  devTokens         AppDevToken[]
   /// Per-app capability manifest (architecture §6.3) — what the gateway grants
   /// and enforces. JSON matches @azx-pbc/shared `CapabilitiesSchema`; the edge
   /// reads it through the registry projection. Defaults to the baseline (no
@@ -395,4 +397,31 @@ model AppSecretGrant {
   @@id([secretId, appId])
   @@index([appId])
   @@map("app_secret_grants")
+}
+
+/// A scoped credential for developing an app against its env=dev partition
+/// (dev-mode design §4, Appendix A.3). Minted/rotated/revoked from the portal
+/// (owner-gated, control-plane); verified by the step-3 dev-gateway, which hashes
+/// the presented bearer and looks up a non-revoked, non-expired row for the
+/// request's app, then checks the request Origin against `origins`. Opaque token,
+/// stored ONLY as a SHA-256 hash (`tokenHash`) — never re-displayed. `revokedAt`
+/// is a soft flip the dev-gateway checks on the hot path (revocation is immediate,
+/// §4.1). `env=dev` is implicit: the token can only ever reach the dev tier.
+model AppDevToken {
+  id           String    @id @default(uuid()) @db.Uuid
+  appId        String    @db.Uuid
+  app          App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+  /// The principal env=dev is keyed by (the minting developer's actor.sub); also
+  /// the metering/audit identity in dev.
+  developerOid String
+  /// SHA-256 hex of the opaque token (prefix included) — the revocable lookup key.
+  tokenHash    String    @unique
+  /// Exact CORS origins this token may be used from (no wildcards; §4.1).
+  origins      String[]
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([appId])
+  @@map("app_dev_token")
 }

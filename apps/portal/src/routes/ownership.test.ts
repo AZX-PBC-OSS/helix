@@ -131,6 +131,22 @@ describe("ownsApp — every app-scoped mutating route rejects a non-owner", () =
     },
     { name: "secret delete", method: "DELETE", urlOf: (s) => `/api/v1/apps/${s}/secrets/k` },
     {
+      name: "dev-token mint",
+      method: "POST",
+      urlOf: (s) => `/api/v1/apps/${s}/dev-tokens`,
+      payload: { origins: ["https://x.example"] },
+    },
+    {
+      name: "dev-token rotate",
+      method: "POST",
+      urlOf: (s) => `/api/v1/apps/${s}/dev-tokens/00000000-0000-0000-0000-000000000000/rotate`,
+    },
+    {
+      name: "dev-token revoke",
+      method: "DELETE",
+      urlOf: (s) => `/api/v1/apps/${s}/dev-tokens/00000000-0000-0000-0000-000000000000`,
+    },
+    {
       name: "collection item delete",
       method: "DELETE",
       urlOf: (s) => `/api/v1/apps/${s}/collections/c/items/00000000-0000-0000-0000-000000000000`,

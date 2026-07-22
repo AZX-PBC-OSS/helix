@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AppSchema,
   ApprovalRequestSchema,
+  DevTokenMintResponseSchema,
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
   SecretMetadataSchema,
@@ -11,6 +12,7 @@ import {
   type Capabilities,
   type CreateAppRequest,
   type App,
+  type DevTokenMintResponse,
   type InjectionRecipe,
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
@@ -325,6 +327,64 @@ export function useDeleteSecret() {
         method: "DELETE",
       }),
     onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Dev-mode tokens. Scoped bearer credentials for developing an app against its
+ * env=dev partition from a registered origin (dev-mode design §4). Write-only:
+ * the plaintext token is returned once, on mint/rotate. Server gates every
+ * mutation with ownsApp.
+ * ------------------------------------------------------------------------- */
+
+function invalidateDevTokens(queryClient: ReturnType<typeof useQueryClient>, slug: string) {
+  void queryClient.invalidateQueries({ queryKey: ["apps", slug, "devTokens"] });
+}
+
+/** Mint a dev token → the plaintext is returned once (never again). */
+export function useMintDevToken() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      origins,
+      ttlDays,
+    }: {
+      slug: string;
+      origins: string[];
+      ttlDays?: number;
+    }): Promise<DevTokenMintResponse> =>
+      fetchJson(DevTokenMintResponseSchema, `/api/v1/apps/${encodeURIComponent(slug)}/dev-tokens`, {
+        method: "POST",
+        body: { origins, ...(ttlDays ? { ttlDays } : {}) },
+      }),
+    onSuccess: (_res, { slug }) => invalidateDevTokens(queryClient, slug),
+  });
+}
+
+/** Rotate a dev token → a fresh plaintext, same origins, renewed expiry. */
+export function useRotateDevToken() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, id }: { slug: string; id: string }): Promise<DevTokenMintResponse> =>
+      fetchJson(
+        DevTokenMintResponseSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/dev-tokens/${encodeURIComponent(id)}/rotate`,
+        { method: "POST" },
+      ),
+    onSuccess: (_res, { slug }) => invalidateDevTokens(queryClient, slug),
+  });
+}
+
+/** Revoke a dev token (immediate — the dev-gateway 401s it on the next request). */
+export function useRevokeDevToken() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, id }: { slug: string; id: string }) =>
+      requestVoid(`/api/v1/apps/${encodeURIComponent(slug)}/dev-tokens/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: (_res, { slug }) => invalidateDevTokens(queryClient, slug),
   });
 }
 

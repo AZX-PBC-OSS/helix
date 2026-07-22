@@ -6,6 +6,7 @@ import {
   ApprovalRequestSchema,
   AuthConfigResponseSchema,
   CspViolationsPageSchema,
+  DevTokenMetadataSchema,
   GatewayAuditPageSchema,
   HealthStatusSchema,
   PasswordCredentialResponseSchema,
@@ -25,6 +26,17 @@ export const appSecretsQuery = (slug: string) =>
     queryKey: ["apps", slug, "secrets"],
     queryFn: () =>
       fetchJson(z.array(SecretMetadataSchema), `/api/v1/apps/${encodeURIComponent(slug)}/secrets`),
+  });
+
+/** An app's dev-mode tokens — metadata only (the token is shown once, on mint). */
+export const devTokensQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["apps", slug, "devTokens"],
+    queryFn: () =>
+      fetchJson(
+        z.array(DevTokenMetadataSchema),
+        `/api/v1/apps/${encodeURIComponent(slug)}/dev-tokens`,
+      ),
   });
 
 /** Global connection secrets (admin) — metadata + the apps each is granted to. */

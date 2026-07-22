@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./bodyCap": "./src/bodyCap.ts"
+    "./bodyCap": "./src/bodyCap.ts",
+    "./devToken": "./src/devToken.ts"
   },
   "scripts": {
     "typecheck": "tsc"

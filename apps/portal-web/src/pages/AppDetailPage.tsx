@@ -12,6 +12,7 @@ import { VersionsTab } from "./tabs/VersionsTab";
 import { CapabilitiesTab } from "./tabs/CapabilitiesTab";
 import { UsageTab } from "./tabs/UsageTab";
 import { AccessTab } from "./tabs/AccessTab";
+import { DevModeTab } from "./tabs/DevModeTab";
 
 export function AppDetailPage() {
   const { slug = "" } = useParams();
@@ -153,6 +154,9 @@ export function AppDetailPage() {
           <Tabs.Tab value="access" leftSection={<Icon name="lock" size={15} />}>
             Access
           </Tabs.Tab>
+          <Tabs.Tab value="dev-mode" leftSection={<Icon name="terminal" size={15} />}>
+            Dev mode
+          </Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="overview">
@@ -169,6 +173,9 @@ export function AppDetailPage() {
         </Tabs.Panel>
         <Tabs.Panel value="access">
           <AccessTab app={a} />
+        </Tabs.Panel>
+        <Tabs.Panel value="dev-mode">
+          <DevModeTab app={a} />
         </Tabs.Panel>
       </Tabs>
     </div>
