@@ -13,7 +13,7 @@ import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
-import { isSameOrigin } from "../auth/validate.js";
+import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
 import type { GatewayOutcome, UsageStore } from "./usage.js";
@@ -51,6 +51,8 @@ export interface LlmGatewayRuntime {
   config: EdgeConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
+  /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */
+  checkOrigin: OriginCheck;
   /** Per-IP limiter for the anonymous tier (public apps); null disables it. */
   anonLimiter: IpRateLimiter | null;
   /** Null when no vendor key is configured — the capability 503s. */
@@ -76,7 +78,7 @@ function writeSseEvent(reply: FastifyReply, event: string, data: unknown): void 
   reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function startSse(reply: FastifyReply): void {
+function startSse(reply: FastifyReply, corsOrigin?: string): void {
   reply.hijack();
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -84,6 +86,10 @@ function startSse(reply: FastifyReply): void {
     connection: "keep-alive",
     // Defeat proxy buffering so deltas reach the browser as they arrive.
     "x-accel-buffering": "no",
+    // Dev-gateway CORS: hijacking the socket bypasses the onSend ACAO hook, so
+    // reflect the (resolver-validated) origin here. Absent on the edge (never set)
+    // → no header, production SSE unchanged (dev-mode §5.4).
+    ...(corsOrigin ? { "access-control-allow-origin": corsOrigin, vary: "Origin" } : {}),
   });
 }
 
@@ -113,7 +119,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
 
     // CSRF: a sibling subdomain must not POST to this app's gateway on the
     // user's session. SameSite doesn't cover cross-subdomain; Origin does.
-    if (!isSameOrigin(req.headers.origin, rt.config, entry.slug)) {
+    if (!rt.checkOrigin(req, entry)) {
       sendApiError(reply, 403, "forbidden", "Origin not allowed");
       return;
     }
@@ -248,7 +254,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
         for await (const ev of events) {
           if (ev.type === "delta") {
             if (!started) {
-              startSse(reply);
+              startSse(reply, req.devCorsOrigin);
               started = true;
             }
             writeSseEvent(reply, "delta", { text: ev.text });
@@ -257,14 +263,14 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
             finalStopReason = ev.stopReason;
           }
         }
-        if (!started) startSse(reply);
+        if (!started) startSse(reply, req.devCorsOrigin);
         writeSseEvent(reply, "done", { stopReason: finalStopReason, usage: finalUsage });
         reply.raw.end();
         await recordOnce(outcomeFor(finalStopReason));
       } catch (err) {
         await recordOnce("error", { errorDetail: errorDetailOf(err) });
         const { code, message } = describeError(err);
-        if (!started) startSse(reply);
+        if (!started) startSse(reply, req.devCorsOrigin);
         writeSseEvent(reply, "error", { code, message });
         reply.raw.end();
       }

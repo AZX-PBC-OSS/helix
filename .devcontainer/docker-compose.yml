@@ -20,6 +20,10 @@ services:
       DATABASE_URL: postgresql://helix:helix@db:5432/helix
       PORTAL_DATABASE_URL: postgresql://helix_portal:helix_portal@db:5432/helix
       EDGE_DATABASE_URL: postgresql://helix_edge:helix_edge@db:5432/helix
+      # Dev-gateway (dev-mode §3): its own least-privilege helix_dev role +
+      # per-plane opt-in. A separate process (`pnpm dev:devgw`, :8082).
+      EDGE_DEV_DATABASE_URL: postgresql://helix_dev:helix_dev@db:5432/helix
+      EDGE_ALLOW_DEV_MODE: "true"
       # Dedicated test database (created + migrated by vitest global setup).
       TEST_DATABASE_URL: postgresql://helix:helix@db:5432/helix_test
       # Azurite well-known emulator credentials. Endpoints point at the

@@ -87,6 +87,8 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
+    // Dev-gateway off by default; the dev-gateway suites build their own config.
+    devGateway: { databaseUrl: null, allowDevMode: false, port: 8082 },
     ...overrides,
   };
 }

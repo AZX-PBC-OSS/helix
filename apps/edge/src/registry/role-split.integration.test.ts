@@ -338,8 +338,30 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
       await expect(pool.query("SELECT count(*) FROM app_collection_items")).rejects.toThrow(
         /permission denied/i,
       );
-      // Not privileged: no registry read, no secret read, no DDL.
-      await expect(pool.query("SELECT count(*) FROM apps")).rejects.toThrow(/permission denied/i);
+      // Reads the registry projection to route (dev-mode §5.4, dev_registry_grant
+      // _columns) — but ONLY the non-secret columns, under a column-scoped grant.
+      await expect(
+        pool.query(`SELECT slug, "visibilityMode", capabilities FROM apps LIMIT 1`),
+      ).resolves.toBeDefined();
+      await expect(pool.query("SELECT count(*) FROM versions")).resolves.toBeDefined();
+      // The prod password columns are OFF-LIMITS — a compromised dev-gateway can't
+      // read a `password`-app credential for any prod app (the isolation thesis).
+      await expect(pool.query(`SELECT "passwordHash" FROM apps LIMIT 1`)).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query(`SELECT "passwordSalt" FROM apps LIMIT 1`)).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query(`SELECT "passwordEnc" FROM apps LIMIT 1`)).rejects.toThrow(
+        /permission denied/i,
+      );
+      // No registry writes, no secret read, no DDL.
+      await expect(
+        pool.query(
+          `INSERT INTO apps (id, slug, "displayName", "visibilityMode")
+           VALUES (gen_random_uuid(), 'devrs', 'x', 'private')`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
       await expect(pool.query("SELECT count(*) FROM app_secrets")).rejects.toThrow(
         /permission denied/i,
       );

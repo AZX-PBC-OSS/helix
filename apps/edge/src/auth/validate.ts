@@ -1,3 +1,4 @@
+import type { FastifyRequest } from "fastify";
 import { SLUG_PATTERN } from "@azx-pbc/shared";
 import { publicOrigin, type EdgeConfig } from "../config.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
@@ -73,6 +74,21 @@ export function isSameOrigin(
   slug: string,
 ): boolean {
   return typeof originHeader === "string" && originHeader === publicOrigin(config, slug);
+}
+
+/**
+ * The gateway's CSRF seam (dev-mode §5.4). The `/_api/*` handlers call this to
+ * decide whether a request's Origin is allowed. On the edge it is the exact
+ * same-origin check above; the dev-gateway swaps in an allowlist check (the
+ * `DevTokenResolver` has already matched the Origin against the token's
+ * registered origins, so its `checkOrigin` returns true). Injected into the
+ * handler runtimes alongside `resolveCaller`.
+ */
+export type OriginCheck = (req: FastifyRequest, entry: RegistryEntry) => boolean;
+
+/** The production origin check: exact match against the app's own public origin. */
+export function makeSameOriginCheck(config: EdgeConfig): OriginCheck {
+  return (req, entry) => isSameOrigin(req.headers.origin, config, entry.slug);
 }
 
 /**

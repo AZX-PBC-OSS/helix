@@ -203,6 +203,22 @@ export interface EdgeConfig {
      */
     maxBodyBytes: number;
   };
+  /**
+   * Dev-gateway wiring (dev-mode design §3, §5.4). The dev-gateway is a SEPARATE
+   * process from the edge, running as the least-privilege `helix_dev` role, that
+   * serves the cross-origin dev surface (`dev-api.<base>`) routing to `env=dev`.
+   * `databaseUrl` is its `helix_dev` DSN; `allowDevMode` is the per-plane opt-in
+   * (default OFF — the surface must be explicitly enabled). Unused by the edge
+   * process itself; read by the dev-gateway entrypoint (`devGateway/server.ts`).
+   */
+  devGateway: {
+    /** helix_dev DSN; null disables the surface (required in prod when enabled). */
+    databaseUrl: string | null;
+    /** Per-plane opt-in (EDGE_ALLOW_DEV_MODE); the dev-gateway refuses to serve unless true. */
+    allowDevMode: boolean;
+    /** Port the dev-gateway listens on (its own process). */
+    port: number;
+  };
 }
 
 const ConnectionStringSchema = z.object({
@@ -474,6 +490,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     throw new Error("EDGE_DEV_ALLOW_UNAUTHENTICATED is a dev bypass and is refused in production");
   }
 
+  // Dev-gateway (dev-mode §3): opt-in surface, run as a separate helix_dev
+  // process. Like the edge DSN, the helix_dev DSN is required in production when
+  // the surface is enabled — the owner fallback would bypass the env-literal RLS
+  // that keeps the dev tier off production rows (ADR-0002 / dev-mode §5.3).
+  const allowDevMode = env.EDGE_ALLOW_DEV_MODE === "true";
+  const devDatabaseUrl = env.EDGE_DEV_DATABASE_URL ?? null;
+  if (allowDevMode && !devDatabaseUrl && env.NODE_ENV === "production") {
+    throw new Error(
+      "EDGE_DEV_DATABASE_URL (the least-privilege helix_dev role) is required in production " +
+        "when EDGE_ALLOW_DEV_MODE is on; refusing an owner-DSN fallback that would bypass the " +
+        "env-literal RLS isolating the dev tier (dev-mode §5.3).",
+    );
+  }
+
   const certFile = env.EDGE_TLS_CERT_FILE;
   const keyFile = env.EDGE_TLS_KEY_FILE;
   if ((certFile && !keyFile) || (!certFile && keyFile)) {
@@ -525,6 +555,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
       instructionSecret: loadInstructionSecret(env),
       timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
       maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
+    },
+    devGateway: {
+      databaseUrl: devDatabaseUrl,
+      allowDevMode,
+      port: Number(env.EDGE_DEV_GATEWAY_PORT ?? 8082),
     },
   };
 }

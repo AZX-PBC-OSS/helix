@@ -9,6 +9,7 @@
   "packageManager": "pnpm@11.5.3",
   "scripts": {
     "dev:edge": "pnpm --filter @azx-pbc/edge dev",
+    "dev:devgw": "pnpm --filter @azx-pbc/edge dev:devgw",
     "dev:egress": "pnpm --filter @azx-pbc/egress dev",
     "dev:portal": "pnpm --filter @azx-pbc/portal dev",
     "dev:idp": "pnpm --filter @azx-pbc/dev-idp dev",

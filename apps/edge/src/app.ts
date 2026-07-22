@@ -24,6 +24,7 @@ import { LoginThrottle } from "./auth/loginThrottle.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { InMemoryCounterStore } from "./gateway/counterStore.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
+import { makeSameOriginCheck } from "./auth/validate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
@@ -103,6 +104,12 @@ declare module "fastify" {
   interface FastifyRequest {
     /** Set once per request by the host-classification hook. */
     hostClass: HostClass;
+    /**
+     * Dev-gateway only (dev-mode §5.4): the request Origin the `DevTokenResolver`
+     * validated against the token's allowlist, reflected back as
+     * `Access-Control-Allow-Origin`. Never set on the edge (no CORS there).
+     */
+    devCorsOrigin?: string;
   }
 }
 
@@ -143,6 +150,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // `public` apps — app-data design §6). The resolver wraps the gate with the
   // public-app short-circuit; asset serving keeps its own public bypass.
   const resolveCaller = gate ? makeCallerResolver(gate, config) : null;
+  // Production CSRF check: exact same-origin. The dev-gateway swaps this seam
+  // for an allowlist (dev-mode §5.4); here every gateway runtime gets the same.
+  const checkOrigin = makeSameOriginCheck(config);
   // One limiter backs every public app's anonymous tier (app-data design §7).
   // server.ts injects PG-backed limiters (shared across replicas) + owns the
   // sweep; tests inject a low one. The fallback in-memory counter here keeps
@@ -188,6 +198,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           config,
           registry: deps.registry,
           resolveCaller,
+          checkOrigin,
           anonLimiter: anonRateLimiter,
           provider: deps.llmProvider ?? null,
           usage: deps.usage ?? null,
@@ -201,6 +212,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           config,
           registry: deps.registry,
           resolveCaller,
+          checkOrigin,
           anonLimiter: anonRateLimiter,
           store: deps.appData ?? null,
           usage: deps.usage ?? null,
@@ -215,6 +227,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           config,
           registry: deps.registry,
           resolveCaller,
+          checkOrigin,
           anonLimiter: anonRateLimiter,
           egress: deps.egress ?? null,
           usage: deps.usage ?? null,

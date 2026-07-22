@@ -12,7 +12,7 @@ import type { EdgeConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
-import { isSameOrigin } from "../auth/validate.js";
+import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { EgressProviderError, type EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
@@ -31,6 +31,8 @@ export interface FetchGatewayRuntime {
   config: EdgeConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
+  /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */
+  checkOrigin: OriginCheck;
   anonLimiter: IpRateLimiter | null;
   /** null ⇒ EDGE_EGRESS_URL unset; the capability 503s. */
   egress: EgressProvider | null;
@@ -116,7 +118,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     }
 
     // CSRF: the proxy call is same-origin by construction; reject anything else.
-    if (!isSameOrigin(req.headers.origin, rt.config, entry.slug)) {
+    if (!rt.checkOrigin(req, entry)) {
       sendFetchError(reply, 403, "forbidden", "Origin not allowed");
       return;
     }

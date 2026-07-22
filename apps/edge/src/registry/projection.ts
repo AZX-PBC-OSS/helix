@@ -161,16 +161,39 @@ const PROJECTION_SQL = `
   LEFT JOIN versions v ON v.id = a."currentVersionId"
 `;
 
+// The dev-gateway (role helix_dev) reads the same registry but must NEVER read the
+// prod password columns (dev-mode §5.3 — a compromise here can't touch a prod
+// secret). It runs under a column-scoped GRANT that omits passwordHash/Salt/Enc,
+// so its projection selects NULL for them (and touches no password column — the
+// column grant would otherwise deny the query). The dev tier never serves the
+// `password` login challenge, so a null hash is correct: the dev-gateway only
+// needs the slug/visibility/capabilities to route `/_api/*`.
+const PROJECTION_SQL_NO_PASSWORD = `
+  SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
+         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupId" AS visibility_group_id,
+         NULL::text AS password_hash, NULL::text AS password_salt,
+         a.capabilities AS capabilities
+  FROM apps a
+  LEFT JOIN versions v ON v.id = a."currentVersionId"
+`;
+
 export class RegistryProjection implements RegistryReader {
   #querier: ProjectionQuerier;
+  #sql: string;
   #map = new Map<string, RegistryEntry>();
   #loaded = false;
   #inFlight: Promise<void> | null = null;
   #dirty = false;
   #onLoadError: (err: unknown) => void;
 
-  constructor(querier: ProjectionQuerier, opts: { onLoadError?: (err: unknown) => void } = {}) {
+  constructor(
+    querier: ProjectionQuerier,
+    opts: { onLoadError?: (err: unknown) => void; includePasswords?: boolean } = {},
+  ) {
     this.#querier = querier;
+    // Default includes the password columns (the edge, which serves the password
+    // login). The dev-gateway passes false — it has no column grant for them.
+    this.#sql = opts.includePasswords === false ? PROJECTION_SQL_NO_PASSWORD : PROJECTION_SQL;
     this.#onLoadError = opts.onLoadError ?? (() => {});
   }
 
@@ -204,7 +227,7 @@ export class RegistryProjection implements RegistryReader {
 
   async #loadOnce(): Promise<void> {
     try {
-      const { rows } = await this.#querier.query(PROJECTION_SQL);
+      const { rows } = await this.#querier.query(this.#sql);
       // Build fresh, swap atomically (single assignment — no torn reads).
       const next = new Map<string, RegistryEntry>();
       for (const row of rows) {

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node ../../scripts/free-port.mjs 8080 && tsx watch src/server.ts",
+    "dev:devgw": "node ../../scripts/free-port.mjs 8082 && tsx watch src/devGateway/server.ts",
     "start": "tsx src/server.ts",
+    "start:devgw": "tsx src/devGateway/server.ts",
     "typecheck": "tsc"
   },
   "dependencies": {

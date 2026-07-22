@@ -1,0 +1,224 @@
+import Fastify, { type FastifyInstance } from "fastify";
+import { HealthStatusSchema } from "@azx-pbc/shared";
+import type { EdgeConfig } from "../config.js";
+import type { RegistryReader } from "../registry/projection.js";
+import { makeLlmHandler } from "../gateway/llm.js";
+import { makeDataHandlers } from "../gateway/data-handler.js";
+import { makeFetchHandler } from "../gateway/fetch.js";
+import type { LlmProvider } from "../gateway/provider.js";
+import type { EgressProvider } from "../gateway/egressProvider.js";
+import type { UsageStore } from "../gateway/usage.js";
+import type { AppDataStore } from "../gateway/data.js";
+import { makeDevTokenResolver } from "./resolver.js";
+import type { DevTokenStore } from "./devTokenStore.js";
+
+/**
+ * azx-dev-gateway (dev-mode design §3, §5.4) — the cross-origin surface a
+ * foreign app (Lovable, a cloud IDE) calls to reach an app's `env=dev` partition.
+ * A SEPARATE process from the edge, running as `helix_dev` only, so a compromise
+ * here can never touch a prod row (the isolation thesis, §5.3). It reuses the
+ * edge's `/_api/*` handler factories unchanged, swapping two seams:
+ *   - `resolveCaller` → a `DevTokenResolver` (bearer dev token, not a session;
+ *     yields `env: 'dev'`);
+ *   - `checkOrigin` → always-true (the resolver already matched the request Origin
+ *     against the token's registered allowlist).
+ * The app slug rides the **path** (`/:slug/_api/*`), since the host is fixed
+ * (`dev-api.<base>`). CORS is hand-rolled (no new dep — ADR-0003): a preflight
+ * route + an onSend reflection of the resolver-validated origin (the LLM SSE path
+ * reflects it in its own hijacked writeHead — see llm.ts).
+ */
+
+const SERVICE_NAME = "azx-dev-gateway";
+// Must cover every verb the routes accept, incl. the fetch-proxy's PATCH, or a
+// browser dev app's proxied PATCH fails preflight before reaching the handler.
+const ALLOWED_METHODS = "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";
+// Fallback when the browser doesn't send Access-Control-Request-Headers; the
+// preflight otherwise echoes the requested set (so conditional/forwarded headers
+// the egress safelist permits — If-None-Match, etc. — aren't blocked in dev).
+const DEFAULT_ALLOWED_HEADERS = "authorization, content-type";
+const PREFLIGHT_MAX_AGE = "600";
+
+/** Append `Origin` to any existing `Vary` rather than clobbering upstream directives. */
+function addVaryOrigin(reply: {
+  getHeader(k: string): unknown;
+  header(k: string, v: string): unknown;
+}): void {
+  const cur = reply.getHeader("vary");
+  const parts =
+    typeof cur === "string"
+      ? cur.split(",").map((s) => s.trim())
+      : Array.isArray(cur)
+        ? cur.flatMap((v) =>
+            String(v)
+              .split(",")
+              .map((s) => s.trim()),
+          )
+        : [];
+  const kept = parts.filter(Boolean);
+  if (!kept.some((p) => p.toLowerCase() === "origin")) kept.push("Origin");
+  reply.header("vary", kept.join(", "));
+}
+
+export interface DevGatewayDeps {
+  config: EdgeConfig;
+  registry: RegistryReader;
+  devTokens: DevTokenStore;
+  appData: AppDataStore | null;
+  usage: UsageStore | null;
+  llmProvider: LlmProvider | null;
+  egress: EgressProvider | null;
+  instructionKey: Buffer | null;
+  https?: { cert: Buffer; key: Buffer } | null;
+}
+
+const DATA_ROUTES = [
+  ["PUT", "/_api/data/user/:key", "putUser"],
+  ["GET", "/_api/data/user/:key", "getUser"],
+  ["DELETE", "/_api/data/user/:key", "deleteUser"],
+  ["GET", "/_api/data/user", "listUser"],
+  ["POST", "/_api/data/collections/:name", "postCollection"],
+  ["GET", "/_api/data/shared/:key", "getShared"],
+  ["PUT", "/_api/data/shared/:key", "putShared"],
+] as const;
+
+function slugOf(req: { params: unknown }): string {
+  return (req.params as { slug: string }).slug;
+}
+
+export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
+  const { config } = deps;
+  const app = Fastify({
+    logger: process.env.NODE_ENV !== "test",
+    trustProxy: config.trustProxy,
+    ...(deps.https ? { https: deps.https } : {}),
+  }) as unknown as FastifyInstance;
+
+  app.decorateRequest("devCorsOrigin", undefined);
+
+  const resolveCaller = makeDevTokenResolver(deps.devTokens);
+  // The DevTokenResolver already validated Origin ∈ the token's allowlist, so the
+  // handlers' CSRF seam is a no-op here (the cross-origin caller can never match
+  // the production exact-origin check).
+  const checkOrigin = (): boolean => true;
+
+  const handleLlmChat = makeLlmHandler({
+    config,
+    registry: deps.registry,
+    resolveCaller,
+    checkOrigin,
+    anonLimiter: null,
+    provider: deps.llmProvider,
+    usage: deps.usage,
+  });
+  const dataHandlers = makeDataHandlers({
+    config,
+    registry: deps.registry,
+    resolveCaller,
+    checkOrigin,
+    anonLimiter: null,
+    store: deps.appData,
+    usage: deps.usage,
+  });
+  const handleFetch = makeFetchHandler({
+    config,
+    registry: deps.registry,
+    resolveCaller,
+    checkOrigin,
+    anonLimiter: null,
+    egress: deps.egress,
+    usage: deps.usage,
+    instructionKey: deps.instructionKey,
+  });
+
+  // Reflect the resolver-validated origin on normal (non-hijacked) responses. The
+  // LLM SSE path hijacks the socket and reflects it in its own writeHead instead.
+  app.addHook("onSend", async (req, reply, payload) => {
+    if (req.devCorsOrigin) {
+      // Overwriting ACAO is correct — it defeats an upstream reflecting its own on
+      // a proxied fetch. Vary is appended so upstream cache directives survive.
+      reply.header("access-control-allow-origin", req.devCorsOrigin);
+      addVaryOrigin(reply);
+    }
+    return payload;
+  });
+
+  app.route({
+    method: ["GET", "HEAD"],
+    url: "/health",
+    handler: async () =>
+      HealthStatusSchema.parse({ status: "ok", service: SERVICE_NAME, uptime: process.uptime() }),
+  });
+
+  // CORS preflight: a preflight carries no Authorization, so authorize by the
+  // app's registered origins (any live token). Reflect only a registered origin.
+  app.route({
+    method: "OPTIONS",
+    url: "/:slug/_api/*",
+    handler: async (req, reply) => {
+      const origin = typeof req.headers.origin === "string" ? req.headers.origin : null;
+      const entry = deps.registry.getApp(slugOf(req));
+      const allowed =
+        origin !== null &&
+        entry !== undefined &&
+        !entry.archived &&
+        (await deps.devTokens.originAllowed(entry.appId, origin));
+      if (allowed) {
+        // Echo the browser's requested headers (bounded by the origin allowlist),
+        // falling back to the static set — so a dev app's conditional/custom
+        // request headers aren't blocked at preflight.
+        const requested = req.headers["access-control-request-headers"];
+        const allowHeaders =
+          typeof requested === "string" && requested.length > 0
+            ? requested
+            : DEFAULT_ALLOWED_HEADERS;
+        reply
+          .header("access-control-allow-origin", origin)
+          .header("access-control-allow-methods", ALLOWED_METHODS)
+          .header("access-control-allow-headers", allowHeaders)
+          .header("access-control-max-age", PREFLIGHT_MAX_AGE)
+          .header("vary", "Origin, Access-Control-Request-Headers");
+        await reply.status(204).send();
+        return;
+      }
+      await reply
+        .status(403)
+        .header("cache-control", "no-store")
+        .type("application/json; charset=utf-8")
+        .send({ error: { code: "forbidden", message: "origin not allowed" } });
+    },
+  });
+
+  app.route({
+    method: "POST",
+    url: "/:slug/_api/llm/chat",
+    handler: (req, reply) => handleLlmChat(req, reply, slugOf(req)),
+  });
+
+  for (const [method, url, name] of DATA_ROUTES) {
+    app.route({
+      method,
+      url: `/:slug${url}`,
+      handler: (req, reply) => dataHandlers[name](req, reply, slugOf(req)),
+    });
+  }
+
+  // Fetch-proxy: a passthrough body parser keeps `req.raw` streamable for egress
+  // (the proxy re-streams arbitrary bodies), scoped so it doesn't disturb the JSON
+  // parsing the llm/data routes rely on (mirrors the edge). parseTarget finds
+  // `/_api/fetch/` anywhere in the URL, so the `/:slug` prefix is harmless.
+  void app.register((fetchScope, _opts, doneRegister) => {
+    fetchScope.removeAllContentTypeParsers();
+    fetchScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+    // No OPTIONS here: a browser preflight to the fetch endpoint is a CORS
+    // preflight handled by the top-level `OPTIONS /:slug/_api/*` route, not an
+    // app-intended proxied OPTIONS. (Proxying OPTIONS through egress is deferred.)
+    fetchScope.route({
+      method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+      url: "/:slug/_api/fetch/*",
+      handler: (req, reply) => handleFetch(req, reply, slugOf(req)),
+    });
+    doneRegister();
+  });
+
+  return app;
+}

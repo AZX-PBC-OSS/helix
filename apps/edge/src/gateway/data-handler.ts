@@ -6,7 +6,7 @@ import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type Caller, type CallerResolver } from "../auth/gate.js";
 import type { RegistryEntry } from "../registry/projection.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
-import { isSameOrigin } from "../auth/validate.js";
+import type { OriginCheck } from "../auth/validate.js";
 import type { AppDataStore, CollectionMeta } from "./data.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import type { UsageStore } from "./usage.js";
@@ -27,6 +27,8 @@ export interface DataGatewayRuntime {
   config: EdgeConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
+  /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */
+  checkOrigin: OriginCheck;
   /** Per-IP limiter for the anonymous tier (public apps); null disables it. */
   anonLimiter: IpRateLimiter | null;
   /** Null when the capability isn't configured on this edge — handlers 503. */
@@ -123,7 +125,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
       return null;
     }
 
-    if (opts.mutation && !isSameOrigin(req.headers.origin, rt.config, entry.slug)) {
+    if (opts.mutation && !rt.checkOrigin(req, entry)) {
       sendApiError(reply, 403, "forbidden", "Origin not allowed");
       return null;
     }

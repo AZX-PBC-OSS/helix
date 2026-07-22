@@ -44,6 +44,13 @@ export class LiveRegistry implements RegistryReader {
     reconcileIntervalMs: number;
     statementTimeoutMs?: number;
     log: RegistryLogger;
+    /**
+     * Whether the projection reads the `apps` password columns. Default true (the
+     * edge serves the password login). The dev-gateway passes false — under its
+     * column-scoped `helix_dev` grant it has no access to those columns and must
+     * not read a prod credential (dev-mode §5.3).
+     */
+    includePasswords?: boolean;
   }) {
     this.#databaseUrl = opts.databaseUrl;
     this.#reconcileIntervalMs = opts.reconcileIntervalMs;
@@ -55,6 +62,7 @@ export class LiveRegistry implements RegistryReader {
       statementTimeoutMs: this.#statementTimeoutMs,
     });
     this.#projection = new RegistryProjection(this.#pool, {
+      includePasswords: opts.includePasswords,
       onLoadError: (err) =>
         this.#log.warn({ err }, "registry projection load failed; serving stale"),
     });
