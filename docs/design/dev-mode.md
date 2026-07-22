@@ -1,9 +1,23 @@
 # AZX App Platform — Dev Mode (develop-against-the-platform) (design doc)
 
-**Status:** Design draft v1 · June 2026
+**Status:** Design draft **v2** · July 2026 (reconciled against the M4/M4.5 hardening now landed locally)
 **Companion to:** `platform-architecture.md` (the _what & why_ — §2 names "apps built elsewhere with Lovable/Cursor/Claude Code" as a given, §3 the trust split, §6.1 the gateway) and `platform-project-plan.md` (§4 the gateway milestones, §6 the adversarial-test discipline).
-**Builds on:** `app-data-storage.md` (the partition model + DB-role split this extends), `secrets-and-connections.md` (dev-tier secrets), `fetch-proxy.md`.
+**Builds on:** `app-data-storage.md` (the partition model + DB-role split this extends), `secrets-and-connections.md` (dev-tier secrets), `fetch-proxy.md`, and the hardening ADRs this revision leans on: **ADR-0002** (role split + RLS, now with NOBYPASSRLS and the `withPartition` choke point), **ADR-0007** (portal authz v0 — the BOLA this feature must *not* inherit), **ADR-0011** (shared-counter rate limiting), **ADR-0013** (egress trust model — the attested instruction now `jti`-burned + `aud`-pinned), **ADR-0019** (subdomain/domain-per-app isolation, which decides where the dev-gateway lives).
 **Why this exists:** The architecture assumes apps are authored *elsewhere* and only specs the **deploy** path (the deploy skill + upload API, §5.1). It never specs the **develop-against** path — how an app still under development, running on `localhost` or in a cloud IDE like Lovable / Claude Artifacts, reaches the platform capabilities (`/_api/llm`, `/_api/data`, `/_api/fetch`) it is being written to use. Without that path the platform is only usable by apps that are *first* built fully self-contained and *then* brought over — which is most apps' worst-case workflow and, for any app that is non-trivially coupled to our APIs, no workflow at all. This doc closes the gap by introducing a **dev tier: a separate data partition on the same app**, reachable from foreign origins through a dedicated dev surface, isolated from production data, budget, and secrets by the same role/RLS machinery the app-data design already established.
+
+---
+
+## 0. What changed since v1 (and why this is now buildable, not just sketchable)
+
+v1 was written against the platform as it stood in June: the mechanisms this feature rides — the RLS partition, the egress instruction, rate limiting, role isolation — were real but soft in places. Since then the hardening pass landed most of the load-bearing primitives, which turns several of this doc's "sketches" into concrete wiring against named code. The deltas that matter here:
+
+- **The RLS partition has one choke point now.** `apps/edge/src/db/partition.ts` `withPartition(pool, appId, userOid, fn)` is the *only* place the edge sets the partition GUCs, and a lint rule (ADR-0002, commit `82e9074`) bans raw RLS-table SQL outside it. So "add an `env` dimension to the partition" (§5) is now a precise change — **one signature gains `env`**, not a scattered `set_config` audit. All runtime roles are explicitly `NOBYPASSRLS` (`5127306`) and the edge/portal **boot-fail when their least-privilege role DSN is absent in prod** (`408a395`); `helix_dev` inherits both, which is what makes §5.3's "the role literally cannot cross env" claim enforceable rather than aspirational.
+- **The attested instruction is `jti`-burned and `aud`-pinned** (ADR-0013 step 1, `e542bf2`/`357bfb7`). `mintInstruction` (`apps/edge/src/gateway/instruction.ts`) stamps `jti = requestId` + `aud: "azx-egress"`; egress asserts `aud` and burns the `jti` in a shared `instruction_jti` table before resolving any secret. The dev fetch path inherits this for free — but the instruction carries **no `env` today**, so §6 now specifies adding `env` to `AttestedInstruction` so egress env-scopes secret resolution (and pairs it with the step-2 `method`+`path` binding, issue #6).
+- **Rate limiting / throttle is a shared Postgres counter now**, not in-memory (ADR-0011, `b939318`, `rate_counters` table). This matters because the dev-gateway is a *new replica surface*: its per-env budgets (§5.1) and any dev-side throttle ride the same shared counter by construction, and it inherits the open `EDGE_TRUST_PROXY` residual (issue #13) — the throttle key is `${req.ip}:${appId}`, so the dev-gateway must resolve the real client IP behind ingress too.
+- **`Caller` is a discriminated union** (`apps/edge/src/auth/gate.ts:43`), not the flat struct v1's §5.4 assumed. The `env` field is added to the authenticated arm (defaulting `'prod'`), and the resolver — not the handler — is where it's stamped.
+- **The BOLA is still live.** `ownsApp` does **not** exist yet (ADR-0007 authenticated==authorized still holds; issue #9 is a Pre-M5 exit criterion). This is the single most important reconciliation: **the dev-token mint/rotate/revoke routes are exactly the app-scoped mutating writes the BOLA exposes**, so this feature *cannot* ship on the v0 posture — `ownsApp` is a hard co-requisite of step 2, not a background cleanup (§4.1, §7.2, §11).
+
+The rest of the doc is unchanged in intent; the edits below thread these five facts through the sections they touch.
 
 ---
 
@@ -119,7 +133,11 @@ model AppCollectionItem {
 
 `gateway_calls` (the meter, `apps/edge/src/gateway/usage.ts`) gains the same `env` column, so **budgets and usage are naturally per-env**: a developer hammering the LLM in dev burns the dev budget window, never the live one, because the `SUM(...) WHERE env = ?` that enforces the cap is partitioned too. No new budget concept — the existing `dollarsPerDay` / `writesPerDay` / `requestsPerDay` knobs apply within each env independently, falling straight out of the ledger column.
 
+The short-window **rate limiting / throttle** is a separate mechanism from the daily budget, and since v1 it moved to a shared Postgres counter (`rate_counters`, ADR-0011 / `b939318`) precisely so it holds across replicas. The dev-gateway is a *new* replica surface, so this is load-bearing: its throttle rides the same shared counter (never a per-process in-memory count), keyed like the edge's on `${req.ip}:${appId}`. That inherits the open `EDGE_TRUST_PROXY` residual (issue #13) — behind the prod ingress `req.ip` may be the ingress hop unless the trust-proxy hop count is set, so the dev-gateway must resolve the real client IP before its per-client limits mean anything. Fold the dev-gateway into that same Pre-M5 task rather than discovering it separately.
+
 ### 5.2 The RLS predicate gains `env`
+
+Concretely, the `env` GUC is set in exactly one place: `withPartition` (`apps/edge/src/db/partition.ts`), the single choke point that already sets `app.app_id` / `app.user_oid` and behind which the ADR-0002 lint rule bans raw RLS-table SQL. Its signature gains `env` — `withPartition(pool, appId, userOid, env, fn)` — and its `set_config` call adds `app.env`. Because it's the only door, every RLS-guarded table the runtime touches (`app_data`, `gateway_calls`, `app_collection_items`) is env-scoped by that one edit; a path that forgets it resolves `env` to NULL via `current_setting(..., true)` and matches zero rows / fails the `WITH CHECK` — fail-closed, exactly as the missing-`app_id` case does today.
 
 The app-data partition policy (`app-data-storage.md` Appendix A.2) gets one more clause, set per request from the surface — never from app input:
 
@@ -156,7 +174,7 @@ CREATE POLICY app_data_dev_only ON app_data TO helix_dev
 
 The promise this buys, stated as the app-data doc states its own: **a compromised production edge cannot read or write a single dev row, and a compromised dev-gateway cannot read or write a single prod row — because each role's RLS policy hardcodes its env, independent of any GUC, header, or `WHERE`.** The `env` GUC in §5.2 is convenience/defense-in-depth; the role policies are the invariant.
 
-`helix_dev`'s grant set otherwise mirrors `helix_edge` (the dev-gateway runs the same gateway verbs): `SELECT/INSERT/UPDATE/DELETE` on `app_data` (dev rows only, per policy), `INSERT`-only on `app_collection_items` (the no-collection-read property holds in dev too — `app-data-storage.md` §3.2), `SELECT/INSERT` on `gateway_calls`. Like `helix_edge`, it is `NOINHERIT`, owns nothing, and has no `BYPASSRLS`.
+`helix_dev`'s grant set otherwise mirrors `helix_edge` (the dev-gateway runs the same gateway verbs): `SELECT/INSERT/UPDATE/DELETE` on `app_data` (dev rows only, per policy), `INSERT`-only on `app_collection_items` (the no-collection-read property holds in dev too — `app-data-storage.md` §3.2), `SELECT/INSERT` on `gateway_calls` and `instruction_jti` (the dev fetch path burns its own instruction `jti`s — §6). Like `helix_edge`, it is `NOINHERIT`, owns nothing, and is **explicitly `NOBYPASSRLS`** (the hardening pass made this explicit on every runtime role, `5127306`) — so the env-literal policy cannot be sidestepped. And like the edge/portal roles, the dev-gateway **boot-fails in prod if its `helix_dev` DSN is absent** (`408a395`): it cannot silently fall back to a superuser connection that would ignore the policy. Its pools carry the same `statement_timeout` as the rest (`f50ffd2`).
 
 ### 5.4 The gate seam already supports this
 
@@ -165,13 +183,14 @@ The promise this buys, stated as the app-data doc states its own: **a compromise
 - a **`DevTokenResolver`** in place of `makeCallerResolver` — it validates the dev token (signature + revocation lookup + Origin-in-allowlist) and yields a `Caller` carrying `{ authenticated: true, oid: developerOid, env: 'dev', ... }`;
 - a **CORS-allowlist Origin check** in place of `isSameOrigin` — reflecting only the token's registered origins (vs. production's exact-`publicOrigin` match).
 
-`Caller` grows an `env: 'prod' | 'dev'` field (defaulting `'prod'` everywhere it's constructed today, so the production path is unchanged). Every handler already threads `Caller` into the data store calls; it now also passes `caller.env` into the `set_config('app.env', ...)`.
+`Caller` is a discriminated union today (`gate.ts:43`): `{ authenticated: true; oid; displayName; groups } | { authenticated: false }`. The `env: 'prod' | 'dev'` field is added to **both arms** (or, equivalently, alongside the union) and defaults `'prod'` everywhere `makeCallerResolver` constructs it, so the production path is byte-identical. Only the `DevTokenResolver` sets `env: 'dev'`. Handlers already thread `Caller` into the store calls; the one wiring change is that the resolver's `env` flows into the new `withPartition(..., env, ...)` argument (§5.2) — the handlers themselves don't learn a new concept.
 
 ---
 
 ## 6. Connections, secrets, and budgets in dev
 
 - **Dev-tier secrets.** The "can't put prod credentials on a laptop / in Lovable" problem from the conversation is solved by the partition: connections resolve to **dev-tier secret values** the developer configures separately in the portal (`secrets-and-connections.md` write path, scoped to `env=dev`). A dev fetch-proxy call injects the *dev* credential; it can never resolve a prod connection secret. (Egress's `PgSecretResolver` gains the same `env` scoping; `helix_egress`'s grant is env-split exactly like `helix_dev`'s.)
+  - **The attested instruction must carry `env`.** This is the concrete delta since v1. `AttestedInstruction` (`@azx-pbc/shared`, minted by `apps/edge/src/gateway/instruction.ts`) carries `appId / userOid / capability / origin / requestId / connection` — **no `env` today**. Add `env` to the claims so egress resolves the secret under the `env`-split `helix_egress` policy rather than trusting the edge to have picked the right connection row. The dev fetch path otherwise inherits the ADR-0013 step-1 hardening unchanged: the dev-minted instruction is `jti`-burned (in the shared `instruction_jti` table) and `aud: "azx-egress"`-pinned, so a captured dev instruction can't be replayed. Fold `env` in **together with** the step-2 `method`+`path` binding (issue #6) — both are the same one-field-per-claim change to the shared schema and both verify sides, so do them in one pass rather than twice.
 - **Budgets are per-env** (§5.1) — dev experimentation never exhausts a live app's daily LLM dollars or fetch budget, and vice-versa.
 - **Same manifest, same approvals.** Because dev and prod share the app row and manifest (§2), a capability the app isn't granted is 403 in dev too — which is the point: you find the missing grant while developing, not after promoting.
 
@@ -195,7 +214,9 @@ A lightweight **`draft`** state (an app with no live version) is worth surfacing
 
 ### 7.2 Registering dev origins
 
-The owner registers the foreign origins their dev token may be used from (the Lovable preview URL, their `localhost` port) in the portal — the same screen that mints/rotates the dev token. This is owner-driven control-plane state; it rides the existing portal auth (app ownership) and gains an `app_dev_token` / `app_dev_origin` table (Appendix A.3).
+The owner registers the foreign origins their dev token may be used from (the Lovable preview URL, their `localhost` port) in the portal — the same screen that mints/rotates the dev token. This is owner-driven control-plane state and gains an `app_dev_token` / `app_dev_origin` table (Appendix A.3).
+
+**This is where the live BOLA bites, and it changes the plan.** v1 said this "rides the existing portal auth (app ownership)" — but that ownership check does **not exist**. ADR-0007's v0 posture is authenticated == authorized: any authenticated principal can mutate any app's control-plane state, and the app-scoped mutating routes do *no* ownership check (issue #9, a Pre-M5 exit criterion). A dev-token mint route is precisely one of those routes, and it mints a *credential* — so shipping it on the v0 posture would let any authenticated user mint a working dev token (and register CORS origins) against **anyone's** app, i.e. a self-service path into another owner's dev partition and dev secrets. Therefore: **`ownsApp` (issue #9) is a hard co-requisite of the dev-token mint/rotate/revoke routes, not a background cleanup.** The interim gate is the ~3-line `ownsApp` preHandler already scoped in TODO.md (handling the nullable-legacy-`ownerId` case); the dev-token routes must adopt it from their first commit, and the adversarial twin is "operator B cannot mint/rotate/revoke a dev token for operator A's app."
 
 ### 7.3 Dev data is throwaway, and never promoted
 
@@ -233,6 +254,8 @@ The transport is selected from injected config (base URL + optional dev token), 
 | Developer uses **impersonation** (`X-Helix-Dev-As`) to reach another real user | Header honored only on dev surfaces, only within `env=dev`; `helix_dev` can't touch prod rows, so the synthetic user is always a dev-partition row (§4.3). |
 | Dev secret used to reach a prod connection (or vice-versa) | Secrets are `env`-scoped; `helix_egress`'s grant/policy is env-split like `helix_dev` (§6). A dev fetch injects only dev credentials. |
 | Dev data silently leaks into production | No promotion-of-data path exists by construction (§7.3); promotion moves code only. |
+| A logged-in user mints a dev token / registers CORS origins against **someone else's** app | The mint/rotate/revoke routes gate on `ownsApp` (issue #9) — a hard co-requisite, not the ADR-0007 v0 posture (§7.2). Without it, this is a self-service path into another owner's dev partition; adversarial twin required. |
+| Captured **dev** attested instruction replayed against egress | Inherits ADR-0013 step-1: `jti` burned in `instruction_jti`, `aud: "azx-egress"` asserted, short TTL. Dev mints ride the same choke point (§6). |
 
 Residual risk (consistent with architecture §residual-risk and `app-data-storage.md` §8): a dev token is a real credential and a careless developer can leak their *own* dev tier. Governance bounds that to one app's throwaway partition and one developer's budget, and makes it revocable; it does not make a leaked dev token a non-event, only a small and recoverable one.
 
@@ -241,9 +264,9 @@ Residual risk (consistent with architecture §residual-risk and `app-data-storag
 ## 10. What's deferred / open questions
 
 - **Is the SDK mandatory?** If apps may still call `/_api/*` by hand, the dev-gateway must accept the same raw calls (it does — same verbs); the SDK is then ergonomics, not a gate. Leaning: SDK optional but strongly recommended, mock + impersonation are SDK-only conveniences.
-- **Dev token shape:** stateless JWT-over-JWKS (like the portal bearer chain) vs. opaque token in an `app_dev_token` table. Revocation immediacy (§4.1) and origin-binding push toward an opaque, looked-up token; a short-TTL JWT + a small revocation set is the hybrid. Decide alongside the portal mint route.
-- **Impersonation (§4.3):** ship in v1 or fast-follow? It is the highest-value dev affordance for `user`-scoped apps but adds a header path to test carefully.
-- **dev-gateway placement:** dedicated host (`dev-api.azx-labs.com`) vs. a path on an existing control-plane host. Dedicated host keeps CORS config and the `helix_dev` role cleanly isolated; favored.
+- **Dev token shape:** ~~open~~ **leaning resolved toward opaque + looked-up.** The `app_dev_token` table (Appendix A.3) already stores a hash; revocation immediacy (§4.1) and origin-binding both want a per-request lookup, and we now have a *precedent* for lookup-on-the-hot-path being acceptable at this scale — the egress `jti` burn (ADR-0013 step 1) is exactly a per-call DB check on a shared table. So the opaque-token design is no longer a trade-off against a "stateless is cheaper" default; take it. (A short-TTL JWT + small revocation set stays available if the dev tier ever outgrows a table lookup, but there's no reason to start there.)
+- **Impersonation (§4.3):** ship in v1 or fast-follow? It is the highest-value dev affordance for `user`-scoped apps but adds a header path to test carefully. Leaning: fast-follow (step 5) — it's SDK-only and rides the partition, so it doesn't gate the isolation work.
+- **dev-gateway placement:** ~~open~~ **now coupled to ADR-0019 / issue #16.** The Pre-GA move is to host untrusted apps on a *separate registrable domain* (`*.azx-apps.<tld>`), keeping the control plane on `azx-labs.com`. The dev-gateway is neither an app subdomain nor the app domain — it's a control-plane-adjacent surface — so it belongs on the control-plane eTLD+1 (e.g. `dev-api.azx-labs.com`), and its host name should be **decided in the same pass as the domain split**, not before it. A dedicated host still wins (clean CORS config + `helix_dev` isolation); the new constraint is only *which* eTLD+1 it sits under. Also make it a **per-plane opt-in flag** in the mold of `EDGE_ALLOW_PUBLIC_APPS` / `EDGE_ALLOW_PASSWORD_APPS` (`663bf1f`) so the dev surface can be disabled per environment.
 - **`azx dev` proxy fidelity:** how much of the real edge it runs in-process (ideally the actual `buildApp()` with a `DevTokenResolver` + CORS-allowlist injected, so dev ≡ prod code) vs. a thinner shim. Favored: reuse `buildApp()` — the seams (§5.4) exist precisely so this is a wiring change, not a fork.
 - **Artifacts beyond mock:** if Anthropic's artifact sandbox ever permits a narrow allowlisted `connect-src`, the dev-gateway becomes reachable from artifacts too; until then, mock is the ceiling there.
 - **Multiple developers per app:** dev partition is keyed by `developerOid`; do co-developers share one dev partition or get their own sub-partition? Today each developer's `user`-scope is naturally separate; `shared`/`collections` in dev would be common across the team. Probably fine; revisit with per-app RBAC (the existing v1 `PreviewBadge` item).
@@ -252,15 +275,20 @@ Residual risk (consistent with architecture §residual-risk and `app-data-storag
 
 This is **M5+ territory** — it depends on the `/_api/*` gateway (M4) and the secrets/egress plane (M4.5) being in place, which they are locally, and it pairs naturally with the prod Azure deploy (M5) since the dev-gateway is a new deployable surface. It also relates to the deferred **PR preview environments** in `git-connections.md` (§"deferred") — that feature is the *git-driven* cousin of this *manual/IDE-driven* dev tier, and both want the same `env` partition; this doc should land first and the preview-env work reuse its partition + role split.
 
-Suggested order, each shipping adversarial tests in lockstep (project plan §6):
+**Hard prerequisites (must land first, and are already on the roadmap independent of this feature):**
 
-1. **Schema + role split:** the `env` dimension on `app_data` / `app_collection_items` / `gateway_calls`, the `helix_dev` role with the env-literal RLS policies (§5). Load-bearing assertions: "`helix_dev` cannot SELECT a prod row" and "`helix_edge` cannot SELECT a dev row."
-2. **Dev token + origins:** portal mint/rotate/revoke routes, the `app_dev_token` / `app_dev_origin` tables, dev-origin registration UI (§4, §7.2).
-3. **dev-gateway surface:** the `DevTokenResolver` + CORS-allowlist seam injection, routed to `env=dev` (§5.4). Adversarial twins: cross-origin/unregistered-Origin rejection, prod-data isolation, `env` forgery.
-4. **`azx dev` local proxy:** reuse `buildApp()` with the dev seams; developer identity from the `azx login` token (§3, §4.2).
+- **`ownsApp` / issue #9.** Non-negotiable before step 2 ships (§7.2). The mint routes are BOLA-exposed credential writes; they must gate on ownership from their first commit. Pre-M5 exit criterion regardless, so this is a scheduling constraint, not new scope.
+- **Domain split / ADR-0019 (issue #16).** Decide the dev-gateway host in the same pass (§10). Doesn't block the schema/role work (step 1), but the dev-gateway surface (step 3) shouldn't pick a hostname before it.
+
+Suggested order, each shipping adversarial tests in lockstep (project plan §6), with the concrete anchor each step touches:
+
+1. **Schema + role split.** The `env` dimension on `app_data` / `app_collection_items` / `gateway_calls` (+ `instruction_jti` scoping if needed); the `helix_dev` role — `NOINHERIT`, `NOBYPASSRLS`, boot-fail DSN — with the env-**literal** RLS policies (§5, Appendix A.2); `env` added to `withPartition` (`apps/edge/src/db/partition.ts`) and the `Caller` union (`gate.ts:43`). **Load-bearing assertions:** "`helix_dev` cannot SELECT a prod row" and "`helix_edge` cannot SELECT a dev row" — extend the existing `role-split.integration.test.ts` rather than writing a parallel suite. This step has no external dependency and is the whole security thesis; do it first and completely.
+2. **Dev token + origins.** Portal mint/rotate/revoke routes (opaque token, hashed in `app_dev_token`, §10), the `app_dev_token` / `app_dev_origin` tables, dev-origin registration UI (§4, §7.2). **Gated on `ownsApp`.** Adversarial twin: operator B cannot mint/rotate/revoke against operator A's app.
+3. **dev-gateway surface.** The `DevTokenResolver` (validate → revocation lookup → Origin-in-allowlist) + CORS-allowlist Origin check injected in place of `makeCallerResolver` / `isSameOrigin` (§5.4), routed to `env=dev`; per-plane opt-in flag (§10); shared-counter throttle + `EDGE_TRUST_PROXY` (§5.1). Extend `AttestedInstruction` with `env` (+ the step-2 `method`/`path` binding, issue #6) so dev fetch env-scopes secret resolution (§6). Adversarial twins: cross-origin / unregistered-Origin rejection, prod-data isolation, `env` forgery, dev-instruction replay.
+4. **`azx dev` local proxy.** Reuse `buildApp()` with the dev seams injected (the §5.4 seams exist precisely so this is wiring, not a fork); developer identity from the `azx login` token (§3, §4.2).
 5. **SDK + mock + impersonation** (§8, §4.3) — the ergonomic layer that makes Lovable/Artifacts turnkey.
 
-The load-bearing security assertions across the whole feature are the two isolation tests in step 1: dev mode is only "not a relaxation of the production APIs" if the database itself refuses to cross the env boundary.
+The load-bearing security assertions across the whole feature are the two isolation tests in step 1: dev mode is only "not a relaxation of the production APIs" if the database itself refuses to cross the env boundary. The second-most-important is the step-2 cross-owner-mint test — because a dev token is a credential, and the platform's current default authorizes anyone to mint one.
 
 ---
 
@@ -292,6 +320,9 @@ GRANT USAGE   ON SCHEMA public  TO helix_dev;
 GRANT SELECT, INSERT, UPDATE, DELETE ON app_data             TO helix_dev;
 GRANT INSERT                         ON app_collection_items  TO helix_dev;  -- no read, as in prod
 GRANT SELECT, INSERT                 ON gateway_calls         TO helix_dev;
+GRANT SELECT, INSERT                 ON instruction_jti       TO helix_dev;  -- dev fetch burns its own jti (§6)
+-- helix_dev is NOINHERIT + NOBYPASSRLS (declared with the role in A.1); the
+-- env-literal policies below are therefore un-bypassable by the running process.
 
 -- Env-literal policies: the isolation invariant (§5.3). Independent of any GUC.
 DROP POLICY IF EXISTS app_data_partition ON app_data;  -- replaced by per-role policies
@@ -343,14 +374,26 @@ The dev-gateway's `DevTokenResolver`: hash the presented bearer → look up a no
 
 ### A.4 The dev surface's request shape
 
-Identical to `app-data-storage.md` A.3, with one added GUC:
+Identical to `app-data-storage.md` A.3, with one added GUC — but in the current code the raw `set_config` lives inside `withPartition` (`apps/edge/src/db/partition.ts`) and the ADR-0002 lint rule forbids RLS-table SQL anywhere else. So the delta is to that helper's signature, and every call site inherits it:
 
 ```ts
-// dev surfaces set app.env alongside app.app_id / app.user_oid. Same set_config
-// (parameterized, transaction-local) discipline; value is server-derived from
-// the Caller, never app input. The helix_dev role's policy pins env='dev' anyway.
-await client.query(
-  "SELECT set_config('app.app_id', $1, true), set_config('app.user_oid', $2, true), set_config('app.env', $3, true)",
-  [appId, callerOid, caller.env],   // caller.env === 'dev' on every dev-surface call
-);
+// apps/edge/src/db/partition.ts — env joins app_id / app_user_oid as a GUC.
+// Same set_config (parameterized, transaction-local) discipline; value is
+// server-derived from the Caller, never app input. The helix_dev role's policy
+// pins env='dev' anyway (the GUC is convenience / defense-in-depth, §5.3).
+export async function withPartition<T>(
+  pool: Pool, appId: string, userOid: string | null,
+  env: "prod" | "dev",                     // NEW — defaults 'prod' at every prod call site
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  // ...BEGIN...
+  await client.query(
+    "SELECT set_config('app.app_id', $1, true), set_config('app.env', $2, true)",
+    [appId, env],
+  );
+  if (userOid !== null) {
+    await client.query("SELECT set_config('app.user_oid', $1, true)", [userOid]);
+  }
+  // ...fn(client); COMMIT...
+}
 ```
