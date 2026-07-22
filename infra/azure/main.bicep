@@ -39,8 +39,8 @@ param connectionsVaultName string
 @description('Postgres flexible server name (globally unique, lowercase).')
 param postgresServerName string
 
-@description('Public apps domain, e.g. azx-labs.com.')
-param appsDomain string = 'azx-labs.com'
+@description('Public apps domain, e.g. azx.helix.azxlabs.io.')
+param appsDomain string = 'azx.helix.azxlabs.io'
 
 @description('Blob container for app bundles.')
 param blobContainerName string = 'app-bundles'

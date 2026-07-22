@@ -1,19 +1,22 @@
 // dns.bicep — the public DNS zone for the apps domain.
 //
-// All hosted apps live at <app>.azx-labs.com, the central OIDC callback at
-// auth.azx-labs.com, and the (internal) control plane is fronted at
-// portal.azx-labs.com. The wildcard + auth + portal records point at the apps
+// All hosted apps live at <app>.azx.helix.azxlabs.io, the central OIDC callback at
+// auth.azx.helix.azxlabs.io, and the (internal) control plane is fronted at
+// portal.azx.helix.azxlabs.io. The wildcard + auth + portal records point at the apps
 // environment's public static IP (the edge takes external ingress there).
 //
-// TLS: the wildcard cert (*.azx-labs.com) and the ACA custom-domain bindings are
+// TLS: the wildcard cert (*.azx.helix.azxlabs.io) and the ACA custom-domain bindings are
 // handled separately — issuance/renewal is the portal's ACME DNS-01 job
 // (deferred, M5 tail). `domainVerificationId`, when supplied, writes the asuid
 // TXT record ACA needs to verify ownership before a custom-domain binding.
 //
-// NOTE: delegate azx-labs.com to this zone's name servers at the registrar
-// (output `nameServers`) before the records resolve publicly.
+// NOTE: azx.helix.azxlabs.io is a SUBDOMAIN of azxlabs.io (the parent zone lives
+// in Cloudflare). Delegate it by adding NS records for `azx.helix` in the
+// azxlabs.io Cloudflare zone, pointing at this zone's name servers (output
+// `nameServers`) — not at the registrar. The records resolve publicly once that
+// delegation is in place.
 
-@description('Apps domain, e.g. azx-labs.com.')
+@description('Apps domain, e.g. azx.helix.azxlabs.io.')
 param appsDomain string
 
 @description('Public static IP of the apps Container Apps environment (edge ingress).')

@@ -6,8 +6,8 @@ The three OIDC clients (architecture §4.2) as Infrastructure-as-Code, via the
 [`docs/runbooks/entra-app-registration.md`](../../docs/runbooks/entra-app-registration.md).
 
 > **Status: reference, not yet wired into a pipeline.** The pilot tenant's three
-> apps were created by hand. This module is "our best shot" for the **next**
-> environment (staging/prod), where reproducibility pays. It is intentionally a
+> apps were created by hand. This module is "our best shot" for the **production
+> deployment** (`azx.helix.azxlabs.io`), where reproducibility pays. It is intentionally a
 > sibling of `../azure` (the Azure resources), not folded into it — Entra apps
 > are tenant objects with a different lifecycle and scope than a resource group.
 

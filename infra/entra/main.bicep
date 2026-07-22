@@ -6,10 +6,10 @@
 // declared property here.
 //
 // STATUS: reference / not yet wired into a pipeline. The pilot tenant's three
-// apps were created by hand; this is "our best shot" for the NEXT environment
-// (staging/prod), where reproducibility pays. See README.md for why we don't
-// retro-import the hand-made ones, and for the deploy-principal Graph
-// permissions this requires.
+// apps were created by hand; this is "our best shot" for the production
+// deployment (azx.helix.azxlabs.io), where reproducibility pays. See README.md
+// for why we don't retro-import the hand-made ones, and for the deploy-principal
+// Graph permissions this requires.
 //
 // Outputs (client ids + audience) are meant to feed the sibling Azure stack's
 // params: edgeOidcClientId, portalOidcAudience, azxWebClientId, azxCliClientId.
@@ -24,17 +24,17 @@ extension microsoftGraphV1 // configured in bicepconfig.json
 // Parameters
 // ---------------------------------------------------------------------------
 
-@description('Name prefix for the registrations, e.g. "helix-staging".')
-param namePrefix string = 'helix-staging'
+@description('Name prefix for the registrations, e.g. "helix-prod".')
+param namePrefix string = 'helix-prod'
 
 @description('Redirect URIs for the edge confidential web client (the auth host callback).')
 param edgeRedirectUris array = [
-  'https://auth.staging.azx-labs.com/callback'
+  'https://auth.azx.helix.azxlabs.io/callback'
 ]
 
 @description('Redirect URIs for the portal SPA (browser code+PKCE callback).')
 param portalSpaRedirectUris array = [
-  'https://portal.staging.azx-labs.com/auth/callback'
+  'https://portal.azx.helix.azxlabs.io/auth/callback'
 ]
 
 @description('Base64 of the edge public certificate (DER/.cer) for private_key_jwt. Empty = add the keyCredential later. The PRIVATE key goes to Key Vault for the running edge, never here.')

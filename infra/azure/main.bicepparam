@@ -9,7 +9,7 @@ param storageAccountName = 'helixprodbundles'
 param platformVaultName = 'helix-prod-kvp'
 param connectionsVaultName = 'helix-prod-kvc'
 param postgresServerName = 'helix-prod-pg'
-param appsDomain = 'azx-labs.com'
+param appsDomain = 'azx.helix.azxlabs.io'
 
 // Entra / OIDC. Fill in once the app registrations exist (operator step, or the
 // infra/entra Bicep). portalOidcAudience is the bare helix-portal client-id GUID

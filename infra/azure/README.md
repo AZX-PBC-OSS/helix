@@ -161,9 +161,10 @@ az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
 
 ### 6. DNS + TLS
 
-- Delegate `azx-labs.com` to the zone's name servers (deployment output
-  `dnsNameServers`).
-- Bind the wildcard cert (`*.azx-labs.com`) and ACA custom domains. The cert
+- Delegate `azx.helix.azxlabs.io` (a subdomain of `azxlabs.io`) by adding NS
+  records for `azx.helix` in the parent `azxlabs.io` Cloudflare zone, pointing at
+  the deployment output `dnsNameServers` — not at the registrar.
+- Bind the wildcard cert (`*.azx.helix.azxlabs.io`) and ACA custom domains. The cert
   itself (ACME DNS-01) is the portal's scheduled job — **deferred (M5 tail)**.
   Supply `domainVerificationId` to write the `asuid` TXT record ACA needs.
 
