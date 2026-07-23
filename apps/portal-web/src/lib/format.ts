@@ -48,3 +48,17 @@ export function appHost(slug: string): string {
 export function appUrl(slug: string): string {
   return `${APP_PUBLIC_BASE.protocol}//${appHost(slug)}`;
 }
+
+/**
+ * Where the dev-gateway (`dev-api.<base>`, a separate process/port) is reachable
+ * from this browser (dev-mode design §3). The app slug is in the PATH, not the
+ * host — this base is the prefix a dev app points its `/_api/*` calls at.
+ */
+const DEV_API_BASE = new URL(
+  (import.meta.env.VITE_DEV_API_BASE as string | undefined) ??
+    "https://dev-api.local.helix.azxlabs.io:8082",
+);
+
+export function devApiBaseUrl(slug: string): string {
+  return `${DEV_API_BASE.protocol}//${DEV_API_BASE.host}/${slug}`;
+}

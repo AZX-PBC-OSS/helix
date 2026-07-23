@@ -5,6 +5,7 @@ import { isValidDevOrigin, type App, type DevTokenMetadata } from "@azx-pbc/shar
 import { devTokensQuery } from "../../api/queries";
 import { useMintDevToken, useRevokeDevToken, useRotateDevToken } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
+import { devApiBaseUrl } from "../../lib/format";
 import { Icon } from "../../components/Icon";
 import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
@@ -100,6 +101,21 @@ export function DevModeTab({ app }: { app: App }) {
         paste it into your app's config. A dev token only ever reaches dev data and the dev budget —
         never production.
       </Text>
+
+      {/* The dev-gateway base URL — not a secret, so shown persistently (the app
+          slug is in the path, the host is fixed). Append /_api/llm/chat,
+          /_api/data/*, /_api/fetch/<url>. */}
+      <Eyebrow mb={4}>API base URL</Eyebrow>
+      <Text size="xs" c="dark.2" mb={6} lh={1.5}>
+        Point your app's Helix calls here (append <Code>/_api/llm/chat</Code>,{" "}
+        <Code>/_api/data/…</Code>, <Code>/_api/fetch/…</Code>) and send your dev token as a bearer.
+      </Text>
+      <Group gap={8} wrap="nowrap" mb={18}>
+        <Code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap" }}>
+          {devApiBaseUrl(app.slug)}
+        </Code>
+        <CopyBtn value={devApiBaseUrl(app.slug)} label="Copy" />
+      </Group>
 
       {/* Just-minted token — shown once, never retrievable again. */}
       {minted && (
