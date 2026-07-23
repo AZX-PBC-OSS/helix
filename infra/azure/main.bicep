@@ -3,8 +3,10 @@
 // Stands up the three-plane platform (architecture §3) on Azure Container Apps:
 //   - networking with the egress-zone isolation enforced by firewall + UDRs
 //   - private Postgres / Blob / Key Vault (×2) / ACR, all behind private endpoints
-//   - three user-assigned identities with a least-privilege RBAC matrix
-//   - two ACA environments + the edge / portal / egress container apps
+//   - four user-assigned identities with a least-privilege RBAC matrix (the
+//     fourth, dev-gateway, is idle unless deployDevGateway is set)
+//   - two ACA environments + the edge / portal / egress container apps, plus the
+//     opt-in dev-gateway (edge image, helix_dev role) when deployDevGateway=true
 //   - the public DNS zone for the apps domain
 //
 // Two-phase deploy (see README): apply once with deployApps=false to build the
@@ -64,6 +66,9 @@ param edgeDbPassword string
 @secure()
 @description('Password for the helix_egress runtime role.')
 param egressDbPassword string
+@secure()
+@description('Password for the helix_dev runtime role (dev-gateway). Only needed when deployDevGateway=true.')
+param devDbPassword string = ''
 
 // Symmetric platform secrets (base64, >= 32 bytes). Generate with
 // `openssl rand -base64 48`.
@@ -110,6 +115,12 @@ param imageTag string = 'latest'
 
 @description('Phase gate: false = infra only; true = also deploy the container apps.')
 param deployApps bool = false
+
+@description('Opt-in dev-gateway (dev-mode design §3): the cross-origin dev surface on dev-api.<appsDomain>, run as helix_dev. Off by default — enabling it needs the helix_dev role + password (README step 4) and the pre-deploy riders in docs/features/dev-mode.md. Only takes effect together with deployApps=true.')
+param deployDevGateway bool = false
+
+@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — VERIFY against the live ingress before relying on per-client limits; a too-trusting value makes X-Forwarded-For spoofable.')
+param edgeTrustProxy string = '1'
 
 @description('ACA custom-domain verification id (asuid TXT). Empty = skip.')
 param domainVerificationId string = ''
@@ -230,6 +241,7 @@ module rbac 'modules/rbac.bicep' = {
     edgePrincipalId: identity.outputs.edgeIdentityPrincipalId
     portalPrincipalId: identity.outputs.portalIdentityPrincipalId
     egressPrincipalId: identity.outputs.egressIdentityPrincipalId
+    devPrincipalId: identity.outputs.devIdentityPrincipalId
   }
 }
 
@@ -245,6 +257,11 @@ var egressDbConn = 'postgresql://helix_egress:${egressDbPassword}@${pgFqdn}:5432
 // DDL. Migrations run as the admin out-of-band (README step 4), so the admin DSN
 // never reaches a container or kv-platform.
 var portalDbConn = 'postgresql://helix_portal:${portalDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+// helix_dev DSN — written to kv-platform only when the opt-in dev-gateway is
+// deployed (kv-secrets skips an empty value).
+var devDbConn = deployDevGateway
+  ? 'postgresql://helix_dev:${devDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+  : ''
 
 module platformSecrets 'modules/kv-secrets.bicep' = {
   name: 'platform-secrets'
@@ -258,6 +275,7 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     instructionSecret: instructionSecret
     edgeOidcPrivateKey: edgeOidcPrivateKey
     edgeOidcCertificate: edgeOidcCertificate
+    edgeDevDatabaseUrl: devDbConn
   }
   dependsOn: [
     keyvault
@@ -368,6 +386,10 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'roles' }
       { name: 'EDGE_OIDC_SCOPES', value: 'openid profile email' }
       { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
+      // Behind ACA's Envoy ingress the socket peer is the ingress, so the
+      // per-IP anon rate limiter and the password-login throttle need the hop
+      // count to recover the real client IP (issue #13). See edgeTrustProxy.
+      { name: 'EDGE_TRUST_PROXY', value: edgeTrustProxy }
       { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
       { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
       // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
@@ -427,6 +449,63 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
   ]
 }
 
+// The opt-in dev-gateway (dev-mode design §3): the edge image run as the
+// least-privilege helix_dev role, serving the cross-origin dev surface on
+// dev-api.<appsDomain> and routing to env=dev. External ingress in the apps env
+// (a CORS surface for Lovable / cloud IDEs), reachable only when BOTH deployApps
+// and deployDevGateway are set. See docs/features/dev-mode.md for the riders
+// (distinct dev LLM budget; verified EDGE_TRUST_PROXY hop count) before enabling.
+//
+// It never holds the helix_edge pool — every store connects on the helix_dev
+// DSN. loadConfig still requires EDGE_DATABASE_URL + blob config to parse, so we
+// point EDGE_DATABASE_URL at the SAME helix_dev DSN (config.databaseUrl is never
+// read by devGateway/server.ts, so no helix_edge connection is ever opened) and
+// supply the blob endpoint/client-id the parser wants (no blob read ever
+// happens, and the dev identity has no blob role regardless).
+module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevGateway) {
+  name: 'app-dev-gateway'
+  params: {
+    location: location
+    name: '${namePrefix}-dev-gateway'
+    environmentId: appsEnv.outputs.environmentId
+    userAssignedIdentityId: identity.outputs.devIdentityId
+    acrLoginServer: acrLoginServer
+    image: '${acrLoginServer}/helix-edge:${imageTag}'
+    targetPort: 8082
+    external: true
+    command: ['pnpm', '--filter', '@azx-pbc/edge', 'start:devgw']
+    secrets: [
+      { name: 'edge-dev-database-url', keyVaultUrl: '${platformVaultUri}secrets/edge-dev-database-url' }
+      { name: 'helix-instruction-secret', keyVaultUrl: '${platformVaultUri}secrets/helix-instruction-secret' }
+    ]
+    envVars: [
+      { name: 'NODE_ENV', value: 'production' }
+      { name: 'HOST', value: '0.0.0.0' }
+      { name: 'EDGE_DEV_GATEWAY_PORT', value: '8082' }
+      // The per-plane opt-in; the dev-gateway entrypoint exits unless this is true.
+      { name: 'EDGE_ALLOW_DEV_MODE', value: 'true' }
+      { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
+      // Blob config is parsed by loadConfig but never used here (no serving).
+      { name: 'AZURE_CLIENT_ID', value: identity.outputs.devIdentityClientId }
+      { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
+      { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
+      { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
+      // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
+      // dev throttle keys on the real client IP behind ingress too.
+      { name: 'EDGE_TRUST_PROXY', value: edgeTrustProxy }
+      // Both point at the helix_dev DSN. EDGE_DATABASE_URL only satisfies
+      // loadConfig's parse; every store uses EDGE_DEV_DATABASE_URL.
+      { name: 'EDGE_DATABASE_URL', secretRef: 'edge-dev-database-url' }
+      { name: 'EDGE_DEV_DATABASE_URL', secretRef: 'edge-dev-database-url' }
+      { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+    ]
+  }
+  dependsOn: [
+    rbac
+    platformSecrets
+  ]
+}
+
 // ---------------------------------------------------------------------------
 // Public DNS
 // ---------------------------------------------------------------------------
@@ -437,6 +516,7 @@ module dns 'modules/dns.bicep' = {
     appsDomain: appsDomain
     edgeStaticIp: appsEnv.outputs.staticIp
     domainVerificationId: domainVerificationId
+    deployDevGateway: deployDevGateway
   }
 }
 
@@ -452,3 +532,4 @@ output dnsNameServers array = dns.outputs.nameServers
 output edgeFqdn string = edgeApp.?outputs.fqdn ?? ''
 output egressFqdn string = egressApp.?outputs.fqdn ?? ''
 output portalFqdn string = portalApp.?outputs.fqdn ?? ''
+output devGatewayFqdn string = devGatewayApp.?outputs.fqdn ?? ''

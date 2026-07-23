@@ -25,6 +25,9 @@ param edgeStaticIp string
 @description('ACA custom-domain verification id (asuid TXT). Empty = skip.')
 param domainVerificationId string = ''
 
+@description('Add the dev-gateway host (dev-api) record. Off unless the opt-in surface is deployed.')
+param deployDevGateway bool = false
+
 resource zone 'Microsoft.Network/dnsZones@2018-05-01' = {
   name: appsDomain
   location: 'global'
@@ -55,6 +58,21 @@ resource authRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = {
 resource portalRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = {
   parent: zone
   name: 'portal'
+  properties: {
+    TTL: 3600
+    ARecords: [
+      { ipv4Address: edgeStaticIp }
+    ]
+  }
+}
+
+// dev-api — the opt-in cross-origin dev surface (dev-mode design §3). Lives on
+// the control-plane base of this deployment, never an app subdomain, and shares
+// the apps env static IP (the dev-gateway takes external ingress there like the
+// edge). A CORS surface, so it is deliberately its own host.
+resource devApiRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = if (deployDevGateway) {
+  parent: zone
+  name: 'dev-api'
   properties: {
     TTL: 3600
     ARecords: [

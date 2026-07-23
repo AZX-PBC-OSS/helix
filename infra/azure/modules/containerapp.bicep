@@ -48,6 +48,9 @@ param envVars array = []
 @description('Key Vault-backed secrets: array of { name, keyVaultUrl }.')
 param secrets array = []
 
+@description('Container start command override (replaces the image CMD). Empty = use the image default. Used to run the edge image as the dev-gateway (`start:devgw`).')
+param command array = []
+
 // Attach the app identity to every KV-backed secret so resolution uses it.
 var acaSecrets = [
   for s in secrets: {
@@ -92,15 +95,19 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     }
     template: {
       containers: [
-        {
-          name: name
-          image: image
-          resources: {
-            cpu: json(cpuCores)
-            memory: memory
-          }
-          env: envVars
-        }
+        union(
+          {
+            name: name
+            image: image
+            resources: {
+              cpu: json(cpuCores)
+              memory: memory
+            }
+            env: envVars
+          },
+          // Only override the image CMD when a command is supplied (dev-gateway).
+          empty(command) ? {} : { command: command }
+        )
       ]
       scale: {
         minReplicas: minReplicas

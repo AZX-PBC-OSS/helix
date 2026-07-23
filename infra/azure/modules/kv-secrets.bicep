@@ -34,6 +34,9 @@ param edgeOidcPrivateKey string
 @secure()
 @description('EDGE_OIDC_CLIENT_CERTIFICATE (edge cert, PEM or base64 PEM).')
 param edgeOidcCertificate string
+@secure()
+@description('EDGE_DEV_DATABASE_URL (helix_dev DSN, dev-gateway). Empty = skip — the surface is opt-in and off unless deployDevGateway is set.')
+param edgeDevDatabaseUrl string = ''
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: vaultName
@@ -59,3 +62,13 @@ resource secretResources 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [
     }
   }
 ]
+
+// The dev-gateway DSN is written only when the opt-in surface is deployed, so a
+// stock deploy never lands an (empty) helix_dev secret in kv-platform.
+resource devDatabaseSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(edgeDevDatabaseUrl)) {
+  parent: vault
+  name: 'edge-dev-database-url'
+  properties: {
+    value: edgeDevDatabaseUrl
+  }
+}

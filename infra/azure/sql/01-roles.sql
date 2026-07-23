@@ -1,6 +1,6 @@
 -- 01-roles.sql — PROD analog of .devcontainer/db-init/01-roles.sql (ADR-0002).
 --
--- Creates the three least-privilege runtime roles beside the `helixadmin`
+-- Creates the least-privilege runtime roles beside the `helixadmin`
 -- object owner. This is data-plane, NOT infrastructure: postgres.bicep
 -- provisions the server + `helix` DB only, and these roles + their table GRANTs
 -- come from role SQL + Prisma `db:deploy` run post-deploy as the admin (see the
@@ -15,8 +15,16 @@
 --     -v edge_password="$HELIX_EDGE_DB_PASSWORD" \
 --     -v portal_password="$HELIX_PORTAL_DB_PASSWORD" \
 --     -v egress_password="$HELIX_EGRESS_DB_PASSWORD" \
+--     -v dev_password="$HELIX_DEV_DB_PASSWORD" \
 --     -v ON_ERROR_STOP=1 \
 --     -f infra/azure/sql/01-roles.sql
+--
+-- `dev_password` is only used when the opt-in dev-gateway is deployed
+-- (deployDevGateway=true). Pass a throwaway value even if you are not deploying
+-- it — the role is created regardless (harmless, unreachable without the app),
+-- and creating it later needs the whole migration re-run to pick up its guarded
+-- grants. Its grants + the env-literal RLS come from the migration (guarded by an
+-- `IF EXISTS (pg_roles …)` check, so the role must exist first).
 --
 -- NOINHERIT + no role membership => no runtime role can SET ROLE up to the owner;
 -- the boundary lives entirely in the GRANTs.
@@ -37,11 +45,18 @@ CREATE ROLE helix_edge   LOGIN PASSWORD :'edge_password'   NOINHERIT NOBYPASSRLS
 -- the only runtime role with SELECT on app_secrets.material; like helix_edge it
 -- gets NO blanket grant (fail-closed) — every table is explicit in a migration.
 CREATE ROLE helix_egress LOGIN PASSWORD :'egress_password' NOINHERIT NOBYPASSRLS;
+-- The dev data plane (dev-mode design §5.3): the opt-in dev-gateway runs as this
+-- role. Least-privilege like helix_edge — NO blanket grant, NOINHERIT,
+-- NOBYPASSRLS — and RLS-pinned to env='dev' by the env-literal policy in
+-- migration 20260722192440_dev_env_partition, so it cannot read a single
+-- production row. Created unconditionally; its verbs mirror helix_edge's and are
+-- issued by that migration (guarded by an IF EXISTS role check).
+CREATE ROLE helix_dev    LOGIN PASSWORD :'dev_password'    NOINHERIT NOBYPASSRLS;
 
 -- All runtime roles connect to the same database and need the schema on their
 -- search_path.
-GRANT CONNECT ON DATABASE helix TO helix_portal, helix_edge, helix_egress;
-GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress;
+GRANT CONNECT ON DATABASE helix TO helix_portal, helix_edge, helix_egress, helix_dev;
+GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress, helix_dev;
 
 -- helix_portal: full DML runtime (control plane — collection drain, usage
 -- reads, registry writes). Table grants are reissued by migrations as tables
@@ -60,8 +75,10 @@ ALTER DEFAULT PRIVILEGES FOR ROLE helixadmin
 ALTER DEFAULT PRIVILEGES FOR ROLE helixadmin
   GRANT USAGE, SELECT ON SEQUENCES TO helix_portal;
 
--- helix_edge / helix_egress: NO blanket grant, NO default privileges. Every
--- table is owner-only until a migration grants it explicitly (fail-closed,
--- ADR-0002). Do NOT add ALTER DEFAULT PRIVILEGES for them — that would silently
--- grant new tables and defeat the whole point. The collection write-only
--- property and the app_secrets deny ARE the absence of a SELECT grant here.
+-- helix_edge / helix_egress / helix_dev: NO blanket grant, NO default
+-- privileges. Every table is owner-only until a migration grants it explicitly
+-- (fail-closed, ADR-0002). Do NOT add ALTER DEFAULT PRIVILEGES for them — that
+-- would silently grant new tables and defeat the whole point. The collection
+-- write-only property and the app_secrets deny ARE the absence of a SELECT grant
+-- here. helix_dev additionally never gets a prod row: its env='dev' RLS literal
+-- (the migration) confines it regardless of any grant.

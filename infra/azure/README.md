@@ -11,9 +11,9 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 | Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones |
 | Data     | Postgres Flexible Server (private), Storage (blob, private), ACR (Premium, private)         |
 | Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) — both private     |
-| Identity | 3 user-assigned managed identities + the least-privilege RBAC matrix                        |
-| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps               |
-| DNS      | public zone for the apps domain (`*`, `auth`, `portal`)                                     |
+| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`) |
+| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) |
+| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)   |
 
 ### The security shape, in one diagram
 
@@ -37,6 +37,11 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 - All data services are private-endpoint only; `publicNetworkAccess` is off.
 - The **edge identity has no role on `kv-connections`** — an edge RCE cannot read
   an app connection secret. (Mirrors the `helix_edge` Postgres grant hole.)
+- **dev-gateway** (opt-in, `deployDevGateway`) is the edge image run as the
+  `helix_dev` role on `dev-api.<appsDomain>`, external in the apps env like the
+  edge. Its identity mirrors the edge's holes — no blob, no `kv-connections` —
+  and the `helix_dev` env-literal RLS keeps it off every production row. Off by
+  default; see [`docs/features/dev-mode.md`](../../docs/features/dev-mode.md).
 
 ## Layout
 
@@ -53,11 +58,11 @@ modules/
   storage.bicep       storage account + app-bundles container + PE
   keyvault.bicep      kv-platform + kv-connections + PEs
   postgres.bicep      Flexible Server (private) + helix DB
-  identity.bicep      3 user-assigned managed identities
+  identity.bicep      4 user-assigned managed identities (edge/portal/egress + dev-gateway)
   rbac.bicep          role assignments (the grant matrix)
   aca-environment.bicep   reusable managed environment (called twice)
-  containerapp.bicep  reusable container app (called x3)
-  dns.bicep           public DNS zone + records
+  containerapp.bicep  reusable container app (edge/portal/egress + opt-in dev-gateway)
+  dns.bicep           public DNS zone + records (incl. opt-in dev-api)
 ```
 
 Production Dockerfiles for the three apps live next to their source
@@ -87,6 +92,7 @@ export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24)
 export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24)
 export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24)   # helix_portal runtime role (role created in step 4)
 export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24)
+export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24)     # helix_dev role — create it now even if deployDevGateway stays false (see step 4)
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
 export HELIX_INSTRUCTION_SECRET=$(openssl rand -base64 48)
@@ -126,18 +132,23 @@ docker push $ACR/helix-edge:$TAG && docker push $ACR/helix-portal:$TAG && docker
 The server and `helix` DB exist; the least-privilege roles and grants do not yet.
 From inside the VNet, connect as the admin and run the committed role SQL
 (`sql/01-roles.sql` — the prod analog of `.devcontainer/db-init/01-roles.sql`,
-with `NOBYPASSRLS` explicit on all three roles) with the **same passwords** you
+with `NOBYPASSRLS` explicit on all four roles) with the **same passwords** you
 set above, then apply migrations (whose per-table GRANTs are guarded by an
 `IF EXISTS role` check, so the roles must exist first):
+
+> Create `helix_dev` here even if you are not deploying the dev-gateway
+> (`deployDevGateway=false`) — the role is harmless without its app, and adding
+> it later means re-running the migration to pick up its guarded grants + RLS.
 
 ```bash
 ADMIN_URL="postgresql://helixadmin:$HELIX_PG_ADMIN_PASSWORD@<pgFqdn>:5432/helix?sslmode=require"
 
-# 1. create the three least-privilege runtime roles (NOBYPASSRLS, per-role passwords)
+# 1. create the four least-privilege runtime roles (NOBYPASSRLS, per-role passwords)
 psql "$ADMIN_URL" \
   -v edge_password="$HELIX_EDGE_DB_PASSWORD" \
   -v portal_password="$HELIX_PORTAL_DB_PASSWORD" \
   -v egress_password="$HELIX_EGRESS_DB_PASSWORD" \
+  -v dev_password="$HELIX_DEV_DB_PASSWORD" \
   -v ON_ERROR_STOP=1 \
   -f sql/01-roles.sql
 
@@ -145,11 +156,12 @@ psql "$ADMIN_URL" \
 DATABASE_URL="$ADMIN_URL" pnpm --filter @azx-pbc/portal db:deploy
 ```
 
-> **Note:** all three container runtimes connect as their least-privilege role
-> (`helix_portal` / `helix_edge` / `helix_egress`) — the portal reads
-> `PORTAL_DATABASE_URL` and, under `NODE_ENV=production`, refuses the
-> `DATABASE_URL` owner fallback (ADR-0002). The admin DSN is used only here in
-> step 4 for `db:deploy` and is never placed in a container or in kv-platform.
+> **Note:** every container runtime connects as its least-privilege role
+> (`helix_portal` / `helix_edge` / `helix_egress`, and `helix_dev` for the
+> dev-gateway) — the portal reads `PORTAL_DATABASE_URL` and, under
+> `NODE_ENV=production`, refuses the `DATABASE_URL` owner fallback (ADR-0002).
+> The admin DSN is used only here in step 4 for `db:deploy` and is never placed
+> in a container or in kv-platform.
 
 ### 5. Phase 2 — deploy the apps (`deployApps=true`)
 
@@ -159,6 +171,22 @@ az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
   --parameters deployApps=true
 ```
 
+#### (Optional) the dev-gateway
+
+The opt-in dev-mode surface (`dev-api.<appsDomain>`) is off by default. To stand
+it up, add `deployDevGateway=true` (it shares the edge image, so no extra build):
+
+```bash
+az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
+  --parameters deployApps=true deployDevGateway=true
+```
+
+Before enabling it on a real deployment, read the riders in
+[`docs/features/dev-mode.md`](../../docs/features/dev-mode.md): a verified
+`edgeTrustProxy` hop count (issue #13 — the dev throttle keys on the real client
+IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
+`dev-api` DNS/TLS binding (step 6, added when this flag is set).
+
 ### 6. DNS + TLS
 
 - Delegate `azx.helix.azxlabs.io` (a subdomain of `azxlabs.io`) by adding NS
@@ -167,6 +195,8 @@ az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
 - Bind the wildcard cert (`*.azx.helix.azxlabs.io`) and ACA custom domains. The cert
   itself (ACME DNS-01) is the portal's scheduled job — **deferred (M5 tail)**.
   Supply `domainVerificationId` to write the `asuid` TXT record ACA needs.
+  (The wildcard already covers `dev-api.azx.helix.azxlabs.io`; the dev-gateway
+  still needs its own ACA custom-domain binding when `deployDevGateway` is set.)
 
 ## Operator steps NOT done by this template
 

@@ -8,9 +8,13 @@
 //   edge     |   yes   | Data Reader    | Secrets User  |  —  (none)
 //   portal   |   yes   | Data Contrib.  | Secrets User  | Secrets Officer
 //   egress   |   yes   |  —             | Secrets User  | Secrets User
+//   dev      |   yes   |  —             | Secrets User  |  —  (none)
 //
 // The deliberate hole: the edge identity has NO role on kv-connections, so an
-// edge compromise cannot read a single app connection secret.
+// edge compromise cannot read a single app connection secret. The dev-gateway
+// identity has the same hole (and no blob) for the same reason — it reaches
+// third-party APIs through egress and never resolves a connection secret. Its
+// only kv-platform read is its own helix_dev DSN + the shared instruction key.
 
 @description('ACR name (to scope AcrPull).')
 param registryName string
@@ -32,6 +36,9 @@ param portalPrincipalId string
 
 @description('Principal id of the egress managed identity.')
 param egressPrincipalId string
+
+@description('Principal id of the dev-gateway managed identity (helix_dev).')
+param devPrincipalId string
 
 // Built-in role definition ids (constant across tenants).
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
@@ -81,6 +88,15 @@ resource egressAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalType: 'ServicePrincipal'
   }
 }
+resource devAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, devPrincipalId, acrPullRoleId)
+  scope: registry
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: devPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
 // --- Blob (edge: reader, portal: contributor; egress: none) ---
 resource edgeBlobReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -127,6 +143,15 @@ resource egressPlatformSecrets 'Microsoft.Authorization/roleAssignments@2022-04-
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
     principalId: egressPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+resource devPlatformSecrets 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(platformVault.id, devPrincipalId, kvSecretsUserRoleId)
+  scope: platformVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+    principalId: devPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
