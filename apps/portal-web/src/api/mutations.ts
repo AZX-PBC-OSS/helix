@@ -282,15 +282,17 @@ export function useCreateSecret() {
       name,
       value,
       injection,
+      env,
     }: {
       slug: string;
       name: string;
       value: string;
       injection?: InjectionRecipe;
+      env?: "prod" | "dev";
     }): Promise<SecretMetadata> =>
       fetchJson(SecretMetadataSchema, `/api/v1/apps/${encodeURIComponent(slug)}/secrets`, {
         method: "POST",
-        body: { name, value, ...(injection ? { injection } : {}) },
+        body: { name, value, ...(injection ? { injection } : {}), ...(env ? { env } : {}) },
       }),
     onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
   });
@@ -304,14 +306,18 @@ export function useRotateSecret() {
       slug,
       name,
       value,
+      env,
     }: {
       slug: string;
       name: string;
       value: string;
+      env?: "prod" | "dev";
     }): Promise<SecretMetadata> =>
       fetchJson(
         SecretMetadataSchema,
-        `/api/v1/apps/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}/rotate`,
+        `/api/v1/apps/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}/rotate${
+          env ? `?env=${env}` : ""
+        }`,
         { method: "POST", body: { value } },
       ),
     onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
@@ -322,10 +328,13 @@ export function useRotateSecret() {
 export function useDeleteSecret() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ slug, name }: { slug: string; name: string }) =>
-      requestVoid(`/api/v1/apps/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`, {
-        method: "DELETE",
-      }),
+    mutationFn: ({ slug, name, env }: { slug: string; name: string; env?: "prod" | "dev" }) =>
+      requestVoid(
+        `/api/v1/apps/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}${
+          env ? `?env=${env}` : ""
+        }`,
+        { method: "DELETE" },
+      ),
     onSuccess: (_res, { slug }) => invalidateSecrets(queryClient, slug),
   });
 }

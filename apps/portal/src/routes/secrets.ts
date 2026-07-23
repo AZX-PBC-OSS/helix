@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import {
+  EnvSchema,
   InjectionRecipeSchema,
   SecretCreateRequestSchema,
   SecretGrantRequestSchema,
@@ -40,6 +41,7 @@ interface SecretRow {
   id: string;
   name: string;
   scope: string;
+  env: string;
   injection: unknown;
   createdBy: string;
   createdAt: Date;
@@ -52,6 +54,7 @@ function toMetadata(row: SecretRow, boundApps: string[] = []): SecretMetadata {
     id: row.id,
     name: row.name,
     scope: row.scope as SecretScope,
+    env: row.env === "dev" ? "dev" : "prod",
     injection: InjectionRecipeSchema.parse(row.injection),
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
@@ -87,14 +90,12 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       requireActor(req);
       const appRow = await findApp(req.params.slug);
-      // Env-scoped to the prod tier: app_secrets uniqueness is now
-      // (appId, env, name) (dev-mode §6), so every name-keyed secret query must
-      // pin env or it goes nondeterministic once a same-named dev secret exists.
-      // The portal manages only prod secrets today; step 2 (the dev-secret write
-      // path) parametrizes this literal.
+      // Both tiers (dev-mode §6): each row's metadata carries `env`, so the owner
+      // sees prod + dev connection secrets side by side. Uniqueness is per-env
+      // (appId, env, name), so a name can appear once per tier.
       const rows = await app.prisma.appSecret.findMany({
-        where: { scope: "app", appId: appRow.id, env: "prod" },
-        orderBy: { createdAt: "asc" },
+        where: { scope: "app", appId: appRow.id },
+        orderBy: [{ env: "asc" }, { createdAt: "asc" }],
       });
       return rows.map((r) => toMetadata(r));
     },
@@ -114,7 +115,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
           data: {
             scope: "app",
             appId: appRow.id,
-            env: "prod",
+            env: body.env,
             name: body.name,
             material,
             injection: body.injection,
@@ -126,11 +127,18 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
           .destroy(material)
           .catch(() => {});
         if (isUniqueViolation(err)) {
-          throw new AppError("conflict", `secret "${body.name}" already exists for this app`);
+          throw new AppError(
+            "conflict",
+            `${body.env} secret "${body.name}" already exists for this app`,
+          );
         }
         throw err;
       }
-      await audit(appRow.id, actor.sub, "secret.created", { scope: "app", name: body.name });
+      await audit(appRow.id, actor.sub, "secret.created", {
+        scope: "app",
+        env: body.env,
+        name: body.name,
+      });
       reply.status(201);
       return toMetadata(row);
     },
@@ -143,8 +151,11 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       const actor = requireActor(req);
       const appRow = await findApp(req.params.slug);
       const { value } = SecretRotateRequestSchema.parse(req.body);
+      // `?env=prod|dev` (default prod) — the tier discriminator, since a name is
+      // unique only within a tier (dev-mode §6).
+      const env = EnvSchema.default("prod").parse((req.query as { env?: string }).env);
       const row = await app.prisma.appSecret.findFirst({
-        where: { scope: "app", appId: appRow.id, env: "prod", name: req.params.name },
+        where: { scope: "app", appId: appRow.id, env, name: req.params.name },
       });
       if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
       const material = await store().seal(value);
@@ -155,7 +166,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       await store()
         .destroy(row.material)
         .catch(() => {});
-      await audit(appRow.id, actor.sub, "secret.rotated", { scope: "app", name: row.name });
+      await audit(appRow.id, actor.sub, "secret.rotated", { scope: "app", env, name: row.name });
       return toMetadata(updated);
     },
   );
@@ -166,15 +177,16 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const actor = requireActor(req);
       const appRow = await findApp(req.params.slug);
+      const env = EnvSchema.default("prod").parse((req.query as { env?: string }).env);
       const row = await app.prisma.appSecret.findFirst({
-        where: { scope: "app", appId: appRow.id, env: "prod", name: req.params.name },
+        where: { scope: "app", appId: appRow.id, env, name: req.params.name },
       });
       if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
       await app.prisma.appSecret.delete({ where: { id: row.id } });
       await store()
         .destroy(row.material)
         .catch(() => {});
-      await audit(appRow.id, actor.sub, "secret.deleted", { scope: "app", name: row.name });
+      await audit(appRow.id, actor.sub, "secret.deleted", { scope: "app", env, name: row.name });
       reply.status(204);
     },
   );

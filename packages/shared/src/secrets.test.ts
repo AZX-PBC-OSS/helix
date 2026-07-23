@@ -47,6 +47,7 @@ describe("SecretMetadataSchema", () => {
       id: "sec_1",
       name: "stripe-live",
       scope: "global",
+      env: "prod",
       injection: { kind: "header-bearer" },
       createdBy: "alice",
       createdAt: "2026-06-19T00:00:00.000Z",

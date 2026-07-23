@@ -36,10 +36,12 @@ export function SecretsCard({ app }: { app: App }) {
 
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  const [env, setEnv] = useState<"prod" | "dev">("prod");
   const [kind, setKind] = useState<string>("header-bearer");
   const [headerName, setHeaderName] = useState("");
   const [queryParam, setQueryParam] = useState("");
-  const [rotating, setRotating] = useState<{ name: string; value: string } | null>(null);
+  // Keyed by secret id — a name is no longer unique (it can exist per tier).
+  const [rotating, setRotating] = useState<{ id: string; value: string } | null>(null);
 
   const mutationError = create.error ?? rotate.error ?? del.error;
   const nameValid = /^[a-z0-9][a-z0-9-]*$/.test(name);
@@ -86,6 +88,11 @@ export function SecretsCard({ app }: { app: App }) {
                   <Text className="az-mono" fz={13} fw={600}>
                     {s.name}
                   </Text>
+                  {s.env === "dev" && (
+                    <ToneBadge tone="violet" icon="terminal">
+                      dev
+                    </ToneBadge>
+                  )}
                   <ToneBadge tone="neutral" icon="key">
                     {describeInjection(s.injection)}
                   </ToneBadge>
@@ -101,7 +108,7 @@ export function SecretsCard({ app }: { app: App }) {
                   variant="default"
                   size="compact-xs"
                   onClick={() =>
-                    setRotating((r) => (r?.name === s.name ? null : { name: s.name, value: "" }))
+                    setRotating((r) => (r?.id === s.id ? null : { id: s.id, value: "" }))
                   }
                 >
                   Rotate
@@ -111,18 +118,18 @@ export function SecretsCard({ app }: { app: App }) {
                   color="red"
                   size="compact-xs"
                   loading={del.isPending}
-                  onClick={() => del.mutate({ slug: app.slug, name: s.name })}
+                  onClick={() => del.mutate({ slug: app.slug, name: s.name, env: s.env })}
                 >
                   Delete
                 </Button>
               </Group>
             </Group>
-            {rotating?.name === s.name && (
+            {rotating?.id === s.id && (
               <Group gap={8} mt={10} align="flex-end" wrap="nowrap">
                 <PasswordInput
                   label="New value"
                   value={rotating.value}
-                  onChange={(e) => setRotating({ name: s.name, value: e.currentTarget.value })}
+                  onChange={(e) => setRotating({ id: s.id, value: e.currentTarget.value })}
                   style={{ flex: 1 }}
                   size="xs"
                 />
@@ -132,7 +139,7 @@ export function SecretsCard({ app }: { app: App }) {
                   loading={rotate.isPending}
                   onClick={() =>
                     rotate.mutate(
-                      { slug: app.slug, name: s.name, value: rotating.value },
+                      { slug: app.slug, name: s.name, value: rotating.value, env: s.env },
                       { onSuccess: () => setRotating(null) },
                     )
                   }
@@ -162,6 +169,18 @@ export function SecretsCard({ app }: { app: App }) {
             data={INJECTION_KINDS.map((k) => ({ value: k, label: k }))}
             value={kind}
             onChange={(v) => setKind(v ?? "header-bearer")}
+            size="xs"
+            allowDeselect={false}
+          />
+          <Select
+            label="Tier"
+            description="dev = the env=dev partition"
+            data={[
+              { value: "prod", label: "prod" },
+              { value: "dev", label: "dev" },
+            ]}
+            value={env}
+            onChange={(v) => setEnv(v === "dev" ? "dev" : "prod")}
             size="xs"
             allowDeselect={false}
           />
@@ -203,6 +222,7 @@ export function SecretsCard({ app }: { app: App }) {
                   slug: app.slug,
                   name,
                   value,
+                  env,
                   injection: buildInjection(kind, headerName, queryParam),
                 },
                 {
@@ -212,6 +232,7 @@ export function SecretsCard({ app }: { app: App }) {
                     setHeaderName("");
                     setQueryParam("");
                     setKind("header-bearer");
+                    setEnv("prod");
                   },
                 },
               )

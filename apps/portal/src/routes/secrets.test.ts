@@ -90,6 +90,57 @@ describe("app-scoped secrets", () => {
     const dup = await post(`/api/v1/apps/${slug}/secrets`, { name: "dupe", value: "v2" });
     expect(dup.statusCode).toBe(409);
   });
+
+  it("keeps prod and dev tiers of the same name isolated (dev-mode §6)", async () => {
+    const slug = await createApp();
+    // Same name, two tiers — allowed (uniqueness is per-env).
+    expect(
+      (await post(`/api/v1/apps/${slug}/secrets`, { name: "conn", value: "PROD" })).statusCode,
+    ).toBe(201);
+    const devCreate = await post(`/api/v1/apps/${slug}/secrets`, {
+      name: "conn",
+      value: "DEV",
+      env: "dev",
+    });
+    expect(devCreate.statusCode).toBe(201);
+    expect(devCreate.json().env).toBe("dev");
+
+    // List shows both tiers, each tagged.
+    const list = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+    });
+    const envs = (list.json() as { env: string }[]).map((s) => s.env).sort();
+    expect(envs).toEqual(["dev", "prod"]);
+
+    // Rotating ?env=dev touches only the dev row; a plain (prod) rotate is separate.
+    const rotDev = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets/conn/rotate?env=dev`,
+      headers: authHeader(),
+      payload: { value: "DEV2" },
+    });
+    expect(rotDev.statusCode).toBe(200);
+    expect(rotDev.json().env).toBe("dev");
+
+    // Deleting ?env=dev removes only the dev row — the prod one survives.
+    const delDev = await t.app.inject({
+      method: "DELETE",
+      url: `/api/v1/apps/${slug}/secrets/conn?env=dev`,
+      headers: authHeader(),
+    });
+    expect(delDev.statusCode).toBe(204);
+    const after = (
+      await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/secrets`,
+        headers: authHeader(),
+      })
+    ).json() as { name: string; env: string }[];
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ name: "conn", env: "prod" });
+  });
 });
 
 describe("global secrets + grants", () => {

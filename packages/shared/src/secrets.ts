@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { EnvSchema } from "./env.js";
+
 /**
  * Connection secrets (design doc `docs/design/secrets-and-connections.md`).
  *
@@ -57,6 +59,8 @@ export const SecretMetadataSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
   scope: SecretScopeSchema,
+  /** Partition tier (dev-mode §6): a dev fetch injects only `dev` connection secrets. */
+  env: EnvSchema,
   injection: InjectionRecipeSchema,
   createdBy: z.string(),
   createdAt: z.string(),
@@ -78,6 +82,8 @@ export const SecretCreateRequestSchema = z.object({
     .max(64)
     .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters, digits, and hyphens"),
   value: z.string().min(1),
+  /** Target tier (dev-mode §6). Defaults `prod`; `dev` configures a dev-tier credential. */
+  env: EnvSchema.default("prod"),
   injection: InjectionRecipeSchema.default({ kind: "header-bearer" }),
 });
 export type SecretCreateRequest = z.infer<typeof SecretCreateRequestSchema>;

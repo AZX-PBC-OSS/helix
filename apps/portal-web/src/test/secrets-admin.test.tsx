@@ -23,6 +23,7 @@ const SECRET: SecretMetadata = {
   id: "sec-1",
   name: "stripe-live",
   scope: "global",
+  env: "prod",
   injection: { kind: "header-bearer" },
   createdBy: "alice",
   createdAt: new Date().toISOString(),
