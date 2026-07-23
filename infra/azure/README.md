@@ -132,7 +132,7 @@ run the deployment.
 > **public** (Package settings → Change visibility → Public — the repo can be
 > public while packages default to private). To keep them private instead, pass
 > a `registries` entry to the container apps (a `{ server: 'ghcr.io', username,
-> passwordSecretRef }` with a `read:packages` PAT) and provision that secret.
+passwordSecretRef }` with a `read:packages` PAT) and provision that secret.
 
 To build/publish manually (e.g. off-CI), from the repo root:
 
