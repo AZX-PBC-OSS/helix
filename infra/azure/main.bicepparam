@@ -1,10 +1,9 @@
 using './main.bicep'
 
 // Non-secret configuration. Edit the resource names to globally-unique values
-// before first deploy (ACR / storage / Key Vault / Postgres names are global).
+// before first deploy (storage / Key Vault / Postgres names are global).
 param namePrefix = 'helix-prod'
 param location = 'eastus2'
-param registryName = 'helixprodacr'
 param storageAccountName = 'helixprodbundles'
 param platformVaultName = 'helix-prod-kvp'
 param connectionsVaultName = 'helix-prod-kvc'
@@ -20,9 +19,11 @@ param portalAdminGroupId = readEnvironmentVariable('HELIX_PORTAL_ADMIN_GROUP_ID'
 param azxCliClientId = readEnvironmentVariable('HELIX_AZX_CLI_CLIENT_ID', '')
 param azxWebClientId = readEnvironmentVariable('HELIX_AZX_WEB_CLIENT_ID', '')
 
-// Phase gate. Leave false for the first apply (infra + empty ACR), flip to true
-// after the three images are pushed.
+// Phase gate. Leave false for the first apply (infra only), flip to true once the
+// three images are published to GHCR by CI (see README step 3).
 param deployApps = false
+// GHCR registry + owner for the CI-built images. Override for a fork.
+param imageRegistry = readEnvironmentVariable('HELIX_IMAGE_REGISTRY', 'ghcr.io/azx-pbc-oss')
 param imageTag = readEnvironmentVariable('HELIX_IMAGE_TAG', 'latest')
 
 // Opt-in dev-gateway (docs/features/dev-mode.md). Off by default; flip to true

@@ -1,6 +1,6 @@
 // private-endpoint.bicep — reusable: one private endpoint + its DNS zone group.
 //
-// Shared by registry.bicep, storage.bicep, and keyvault.bicep so the PE wiring
+// Shared by storage.bicep and keyvault.bicep so the PE wiring
 // (which is identical apart from the target resource, the groupId, and the DNS
 // zone) lives in one place.
 

@@ -2,7 +2,8 @@
 //
 // Stands up the three-plane platform (architecture §3) on Azure Container Apps:
 //   - networking with the egress-zone isolation enforced by firewall + UDRs
-//   - private Postgres / Blob / Key Vault (×2) / ACR, all behind private endpoints
+//   - private Postgres / Blob / Key Vault (×2), all behind private endpoints
+//     (app images are pulled from public GHCR, so there is no private registry)
 //   - four user-assigned identities with a least-privilege RBAC matrix (the
 //     fourth, dev-gateway, is idle unless deployDevGateway is set)
 //   - two ACA environments + the edge / portal / egress container apps, plus the
@@ -10,9 +11,8 @@
 //   - the public DNS zone for the apps domain
 //
 // Two-phase deploy (see README): apply once with deployApps=false to build the
-// infra and the empty ACR, push the three images, then apply with
-// deployApps=true to roll out the apps. This avoids the apps failing to pull
-// from an empty registry on the very first apply.
+// infra, ensure the three app images are published to GHCR (CI does this), then
+// apply with deployApps=true to roll out the apps.
 
 targetScope = 'resourceGroup'
 
@@ -26,8 +26,6 @@ param location string = resourceGroup().location
 @description('Resource name prefix, e.g. "helix-prod".')
 param namePrefix string = 'helix-prod'
 
-@description('Globally-unique ACR name (5-50 alphanumerics).')
-param registryName string
 
 @description('Globally-unique storage account name (3-24 lowercase alphanumerics).')
 param storageAccountName string
@@ -109,7 +107,12 @@ param azxWebClientId string
 @description('LLM upstream endpoint for the edge gateway.')
 param llmEndpoint string = 'https://api.anthropic.com'
 
-// Image references (phase 2). Repo names are fixed; tag is parameterized.
+// Image references (phase 2). Repo names are fixed; registry + tag are parameterized.
+// The three app images are built and published by this repo's CI to GHCR
+// (docker/metadata-action lowercases the owner). Override imageRegistry for a fork.
+@description('Registry + owner holding the GHCR-built images, e.g. ghcr.io/azx-pbc-oss.')
+param imageRegistry string = 'ghcr.io/azx-pbc-oss'
+
 @description('Container image tag to deploy for all three apps.')
 param imageTag string = 'latest'
 
@@ -174,16 +177,6 @@ module privateDns 'modules/privatedns.bicep' = {
 // Managed dependencies (all private)
 // ---------------------------------------------------------------------------
 
-module registry 'modules/registry.bicep' = {
-  name: 'registry'
-  params: {
-    location: location
-    registryName: registryName
-    privateEndpointSubnetId: network.outputs.privateEndpointSubnetId
-    acrPrivateDnsZoneId: privateDns.outputs.acrZoneId
-  }
-}
-
 module storage 'modules/storage.bicep' = {
   name: 'storage'
   params: {
@@ -234,7 +227,6 @@ module identity 'modules/identity.bicep' = {
 module rbac 'modules/rbac.bicep' = {
   name: 'rbac'
   params: {
-    registryName: registry.outputs.registryName
     storageAccountName: storage.outputs.storageAccountName
     platformVaultName: keyvault.outputs.platformVaultName
     connectionsVaultName: keyvault.outputs.connectionsVaultName
@@ -319,8 +311,6 @@ module egressEnv 'modules/aca-environment.bicep' = {
 // Container apps (phase 2)
 // ---------------------------------------------------------------------------
 
-var acrLoginServer = registry.outputs.loginServer
-
 module egressApp 'modules/containerapp.bicep' = if (deployApps) {
   name: 'app-egress'
   params: {
@@ -328,8 +318,7 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
     name: '${namePrefix}-egress'
     environmentId: egressEnv.outputs.environmentId
     userAssignedIdentityId: identity.outputs.egressIdentityId
-    acrLoginServer: acrLoginServer
-    image: '${acrLoginServer}/helix-egress:${imageTag}'
+    image: '${imageRegistry}/helix-egress:${imageTag}'
     targetPort: 8081
     external: false
     secrets: [
@@ -358,8 +347,7 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     name: '${namePrefix}-edge'
     environmentId: appsEnv.outputs.environmentId
     userAssignedIdentityId: identity.outputs.edgeIdentityId
-    acrLoginServer: acrLoginServer
-    image: '${acrLoginServer}/helix-edge:${imageTag}'
+    image: '${imageRegistry}/helix-edge:${imageTag}'
     targetPort: 8080
     external: true
     secrets: [
@@ -412,8 +400,7 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     name: '${namePrefix}-portal'
     environmentId: appsEnv.outputs.environmentId
     userAssignedIdentityId: identity.outputs.portalIdentityId
-    acrLoginServer: acrLoginServer
-    image: '${acrLoginServer}/helix-portal:${imageTag}'
+    image: '${imageRegistry}/helix-portal:${imageTag}'
     targetPort: 3001
     external: false // control plane: internal ingress only, not app-routable
     secrets: [
@@ -469,8 +456,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
     name: '${namePrefix}-dev-gateway'
     environmentId: appsEnv.outputs.environmentId
     userAssignedIdentityId: identity.outputs.devIdentityId
-    acrLoginServer: acrLoginServer
-    image: '${acrLoginServer}/helix-edge:${imageTag}'
+    image: '${imageRegistry}/helix-edge:${imageTag}'
     targetPort: 8082
     external: true
     command: ['pnpm', '--filter', '@azx-pbc/edge', 'start:devgw']
@@ -519,7 +505,6 @@ module dns 'modules/dns.bicep' = {
 // Outputs
 // ---------------------------------------------------------------------------
 
-output acrLoginServer string = acrLoginServer
 output appsEnvStaticIp string = appsEnv.outputs.staticIp
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output connectionsVaultUri string = connectionsVaultUri

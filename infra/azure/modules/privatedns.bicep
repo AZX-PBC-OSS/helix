@@ -4,7 +4,7 @@
 //   - Postgres Flexible Server *private access* (VNet injection) needs a zone
 //     ending in `.postgres.database.azure.com` (NOT a privatelink zone) wired
 //     into the server's network config.
-//   - Blob / Key Vault / ACR use *private endpoints*, which resolve through the
+//   - Blob / Key Vault use *private endpoints*, which resolve through the
 //     standard `privatelink.*` zones.
 //
 // ACA managed environments create and link their OWN private DNS zone for the
@@ -19,7 +19,6 @@ param vnetId string
 var postgresZoneName = '${namePrefix}.private.postgres.database.azure.com'
 var blobZoneName = 'privatelink.blob.${environment().suffixes.storage}'
 var keyVaultZoneName = 'privatelink${environment().suffixes.keyvaultDns}'
-var acrZoneName = 'privatelink.azurecr.io'
 
 resource postgresZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: postgresZoneName
@@ -31,10 +30,6 @@ resource blobZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
 }
 resource keyVaultZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: keyVaultZoneName
-  location: 'global'
-}
-resource acrZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: acrZoneName
   location: 'global'
 }
 
@@ -65,17 +60,6 @@ resource keyVaultLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@202
     virtualNetwork: { id: vnetId }
   }
 }
-resource acrLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  parent: acrZone
-  name: 'link-to-vnet'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: { id: vnetId }
-  }
-}
-
 output postgresZoneId string = postgresZone.id
 output blobZoneId string = blobZone.id
 output keyVaultZoneId string = keyVaultZone.id
-output acrZoneId string = acrZone.id

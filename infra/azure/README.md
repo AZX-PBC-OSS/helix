@@ -9,7 +9,7 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 | Layer    | Resources                                                                                                                       |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                     |
-| Data     | Postgres Flexible Server (private), Storage (blob, private), ACR (Premium, private)                                             |
+| Data     | Postgres Flexible Server (private), Storage (blob, private)                                                                     |
 | Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) — both private                                         |
 | Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`)  |
 | Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) |
@@ -27,7 +27,8 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
         │   UDR → Firewall DENY  │       │  UDR → Firewall ALLOW│
         └───────────┬───────────┘       └────────┬────────────┘
                     └──────── same VNet ──────────┘
-            private endpoints → Postgres · Blob · KV×2 · ACR
+            private endpoints → Postgres · Blob · KV×2
+       (app images pulled from public GHCR, not a private registry)
 ```
 
 - **edge** can be reached from the internet (public ingress) but **cannot reach
@@ -54,7 +55,6 @@ modules/
   firewall.bicep      Azure Firewall + policy + default routes
   privatedns.bicep    private DNS zones + VNet links
   private-endpoint.bicep  reusable PE + DNS zone group
-  registry.bicep      ACR (Premium) + PE
   storage.bicep       storage account + app-bundles container + PE
   keyvault.bicep      kv-platform + kv-connections + PEs
   postgres.bicep      Flexible Server (private) + helix DB
@@ -85,7 +85,7 @@ az deployment group what-if \
 
 ### 2. Phase 1 — infra only (`deployApps=false`)
 
-Set the secret env vars, then deploy. ACR comes up empty; the apps are skipped.
+Set the secret env vars, then deploy. The apps are skipped on this pass.
 
 ```bash
 export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24)
@@ -110,22 +110,40 @@ export HELIX_AZX_WEB_CLIENT_ID=<helix-portal client id (GUID)>
 az deployment group create -g <rg> -f main.bicep -p main.bicepparam
 ```
 
-### 3. Build + push the three images
+### 3. Build + publish the three images
 
-```bash
-az acr login -n <registryName>
-ACR=$(az acr show -n <registryName> --query loginServer -o tsv)
+CI builds and publishes all three images to **GHCR** on pushes to the default
+branch and on `v*` tags (`.github/workflows/ci.yml`):
 
-# build from the repo root (workspace context)
-docker build -f apps/edge/Dockerfile   -t $ACR/helix-edge:$TAG   .
-docker build -f apps/portal/Dockerfile -t $ACR/helix-portal:$TAG .
-docker build -f apps/egress/Dockerfile -t $ACR/helix-egress:$TAG .
-docker push $ACR/helix-edge:$TAG && docker push $ACR/helix-portal:$TAG && docker push $ACR/helix-egress:$TAG
+```
+ghcr.io/azx-pbc-oss/helix-edge:<tag>
+ghcr.io/azx-pbc-oss/helix-portal:<tag>
+ghcr.io/azx-pbc-oss/helix-egress:<tag>
 ```
 
-> ACR has a private endpoint. Push from inside the VNet (a build agent / jump
-> box), or temporarily enable a network rule / use ACR Tasks (`az acr build`)
-> which builds inside the registry.
+Tags produced per push: the branch name, the commit SHA (`sha-<short>`), the
+semver on `v*` tags, and `latest` on the default branch. The container apps pull
+these directly (see `imageRegistry` / `imageTag` in `main.bicepparam`), so a
+normal deploy needs no local build — set `imageTag` to the tag CI published and
+run the deployment.
+
+> **GHCR packages must be pullable by the deploy.** The bicep does an anonymous
+> pull by default (empty `registries`), which requires the three packages to be
+> **public** (Package settings → Change visibility → Public — the repo can be
+> public while packages default to private). To keep them private instead, pass
+> a `registries` entry to the container apps (a `{ server: 'ghcr.io', username,
+> passwordSecretRef }` with a `read:packages` PAT) and provision that secret.
+
+To build/publish manually (e.g. off-CI), from the repo root:
+
+```bash
+echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
+REG=ghcr.io/azx-pbc-oss
+docker build -f apps/edge/Dockerfile   -t $REG/helix-edge:$TAG   .
+docker build -f apps/portal/Dockerfile -t $REG/helix-portal:$TAG .
+docker build -f apps/egress/Dockerfile -t $REG/helix-egress:$TAG .
+docker push $REG/helix-edge:$TAG && docker push $REG/helix-portal:$TAG && docker push $REG/helix-egress:$TAG
+```
 
 ### 4. Create the Postgres runtime roles + run migrations
 

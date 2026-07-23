@@ -34,12 +34,16 @@ param appsRouteTableName string
 @description('Name of the egress route table (default route is added to it).')
 param egressRouteTableName string
 
-@description('FQDNs the ACA managed environments need outbound to function (MCR, control plane, monitoring). Both subnets are allowed to reach these. Review against current ACA networking docs before deploying.')
+@description('FQDNs the ACA managed environments need outbound to function (MCR + ACA system images, control plane, monitoring) plus GHCR for the app image pulls. Both subnets are allowed to reach these. Review against current ACA networking docs before deploying.')
 param acaPlatformFqdns array = [
   'mcr.microsoft.com'
   '*.data.mcr.microsoft.com'
   '*.cdn.mscr.io'
-  '*.azurecr.io'
+  // App images are pulled from GHCR (not ACR): the registry/token host plus the
+  // githubusercontent host that serves the layer blobs. Without both, the apps
+  // subnet (deny-by-default here) cannot pull and every deploy fails.
+  'ghcr.io'
+  'pkg-containers.githubusercontent.com'
   #disable-next-line no-hardcoded-env-urls
   '*.blob.core.windows.net'
   '*.monitoring.azure.com'

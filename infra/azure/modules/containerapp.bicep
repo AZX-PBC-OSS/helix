@@ -18,10 +18,7 @@ param environmentId string
 @description('User-assigned managed identity resource id.')
 param userAssignedIdentityId string
 
-@description('ACR login server (e.g. helixprod.azurecr.io).')
-param acrLoginServer string
-
-@description('Container image reference (loginServer/repo:tag).')
+@description('Container image reference (registry/repo:tag), e.g. ghcr.io/azx-pbc-oss/helix-edge:latest.')
 param image string
 
 @description('Container listen port.')
@@ -47,6 +44,9 @@ param envVars array = []
 
 @description('Key Vault-backed secrets: array of { name, keyVaultUrl }.')
 param secrets array = []
+
+@description('Registry auth entries for the pull. Empty = anonymous pull (public images, e.g. public GHCR packages). For a private registry pass e.g. { server, identity } (managed identity) or { server, username, passwordSecretRef }.')
+param registries array = []
 
 @description('Container start command override (replaces the image CMD). Empty = use the image default. Used to run the edge image as the dev-gateway (`start:devgw`).')
 param command array = []
@@ -85,12 +85,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
         ]
       }
-      registries: [
-        {
-          server: acrLoginServer
-          identity: userAssignedIdentityId
-        }
-      ]
+      registries: registries
       secrets: acaSecrets
     }
     template: {

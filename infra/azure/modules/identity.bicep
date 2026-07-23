@@ -27,7 +27,7 @@ resource egressIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-0
 
 // The dev-gateway (opt-in, dev-mode design §3) runs the edge image as the
 // helix_dev role. Its own identity so its Azure grants stay least-privilege:
-// AcrPull + kv-platform Secrets User only — NO blob, NO kv-connections (it
+// kv-platform Secrets User only — NO blob, NO kv-connections (it
 // reaches third-party APIs through egress, never resolving a secret itself),
 // mirroring the deliberate edge hole. Always created (cheap, no runtime); the
 // container is gated on deployDevGateway.
