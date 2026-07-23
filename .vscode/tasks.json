@@ -3,7 +3,7 @@
   "tasks": [
     {
       "label": "dev: all",
-      "dependsOn": ["dev:idp", "dev:portal", "dev:edge", "dev:egress", "dev:web"],
+      "dependsOn": ["dev:idp", "dev:portal", "dev:edge", "dev:egress", "dev:devgw", "dev:web"],
       "dependsOrder": "parallel",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
@@ -52,6 +52,19 @@
       "detail": "azx-egress (:8081, mechanism plane — fetch-proxy + secret injection)",
       "type": "shell",
       "command": "pnpm dev:egress",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:devgw",
+      "detail": "azx-dev-gateway (:8082, HTTPS — cross-origin dev surface, helix_dev/env=dev)",
+      "type": "shell",
+      "command": "pnpm dev:devgw",
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
