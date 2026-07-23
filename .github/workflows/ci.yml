@@ -1,0 +1,191 @@
+name: CI
+
+# Basic CI: runs the same checks as ./check-and-lint.sh (typecheck, lint,
+# format:check, tests) against live Postgres + Azurite, then builds the three
+# app images and publishes them to the GitHub Container Registry (GHCR).
+#
+# The `check` job reproduces the dev-container environment (.devcontainer/
+# docker-compose.yml): the same least-privilege Postgres role split, an Azurite
+# blob emulator, and the same (dev-only, well-known) env values. `db` and
+# `azurite` are aliased to localhost so the hostnames the tests hardcode resolve
+# exactly as they do in the dev container.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+# Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: typecheck · lint · format · test
+    runs-on: ubuntu-latest
+
+    services:
+      # Matches .devcontainer/docker-compose.yml's `db`. Least-privilege runtime
+      # roles are created below from the same db-init SQL the container uses.
+      db:
+        image: postgres:18
+        env:
+          POSTGRES_USER: helix
+          POSTGRES_PASSWORD: helix
+          POSTGRES_DB: helix
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U helix -d helix"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # ── Mirror of .devcontainer/docker-compose.yml's env (dev-only, well-known
+      # values — NOT secrets). Hostnames `db`/`azurite` are aliased to localhost
+      # in the "Resolve db/azurite hostnames" step below.
+      DATABASE_URL: postgresql://helix:helix@db:5432/helix
+      PORTAL_DATABASE_URL: postgresql://helix_portal:helix_portal@db:5432/helix
+      EDGE_DATABASE_URL: postgresql://helix_edge:helix_edge@db:5432/helix
+      EDGE_DEV_DATABASE_URL: postgresql://helix_dev:helix_dev@db:5432/helix
+      EGRESS_DATABASE_URL: postgresql://helix_egress:helix_egress@db:5432/helix
+      TEST_DATABASE_URL: postgresql://helix:helix@db:5432/helix_test
+      EDGE_ALLOW_DEV_MODE: "true"
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1"
+      BLOB_CONTAINER: app-bundles
+      PORTAL_DEV_TOKEN: dev-deploy-token
+      PORTAL_SECRET: aGVsaXgtZGV2LXBvcnRhbC1zZWNyZXQtMzItYnl0ZXMh
+      PORTAL_OIDC_ISSUER: http://localhost:3002
+      PORTAL_OIDC_AUDIENCE: urn:helix:portal
+      PORTAL_OIDC_ALLOW_INSECURE: "true"
+      AZX_CLI_CLIENT_ID: azx-cli
+      PORTAL_ADMIN_GROUP_ID: platform-admin
+      PORTAL_ALLOW_SELF_APPROVE: "true"
+      PORTAL_DEV_ACTOR_GROUPS: platform-admin
+      EDGE_DEV_ALLOW_UNAUTHENTICATED: "false"
+      EDGE_ALLOW_PUBLIC_APPS: "true"
+      EDGE_ALLOW_PASSWORD_APPS: "true"
+      PORTAL_ALLOW_PUBLIC_APPS: "true"
+      PORTAL_ALLOW_PASSWORD_APPS: "true"
+      EDGE_BASE_DOMAIN: local.helix.azxlabs.io
+      EDGE_OIDC_ISSUER: http://localhost:3002
+      EDGE_OIDC_CLIENT_ID: helix-edge
+      EDGE_OIDC_CLIENT_SECRET: edge-dev-secret
+      EDGE_OIDC_ALLOW_INSECURE: "true"
+      EDGE_AUTH_SECRET: aGVsaXgtZGV2LWVkZ2UtYXV0aC1zZWNyZXQtMzItYiE=
+      HELIX_INSTRUCTION_SECRET: aGVsaXgtZGV2LWluc3RydWN0aW9uLXNlY3JldC0zMmItbWluIQ==
+      EDGE_EGRESS_URL: http://localhost:8081
+      # Dev secret-store KEK — generated below (mirrors post-create.sh); the
+      # portal/egress boot paths read it, returning a null store (503) if absent.
+      DEV_SECRETS_KEK_FILE: ${{ github.workspace }}/.ci-secrets-kek.dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve db/azurite hostnames to localhost
+        # The Postgres service and the Azurite container both publish to
+        # localhost; the tests reference them by the dev-container hostnames.
+        run: echo "127.0.0.1 db azurite" | sudo tee -a /etc/hosts
+
+      - name: Start Azurite (blob/queue/table emulator)
+        # Not a GHA service: we need the `--skipApiVersionCheck` flag (the SDK
+        # sends a newer x-ms-version than Azurite accepts), which services can't
+        # pass. Command mirrors .devcontainer/docker-compose.yml.
+        run: |
+          docker run -d --name azurite \
+            -p 10000:10000 -p 10001:10001 -p 10002:10002 \
+            mcr.microsoft.com/azure-storage/azurite \
+            azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 \
+                    --location /data --skipApiVersionCheck
+          echo "Waiting for Azurite…"
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://azurite:10000/devstoreaccount1; then
+              echo "Azurite is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Azurite did not become ready" >&2; docker logs azurite >&2; exit 1
+
+      - name: Create least-privilege Postgres roles
+        # Same db-init the dev container runs on first boot (helix_portal /
+        # helix_edge / helix_egress / helix_dev). Roles are cluster-global, so
+        # they apply to the helix_test database vitest creates + migrates too.
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+
+      - name: Generate dev secret-store KEK
+        run: openssl rand -hex 32 > "$DEV_SECRETS_KEK_FILE" && chmod 600 "$DEV_SECRETS_KEK_FILE"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run checks (typecheck · lint · format · test)
+        # The script runs every step even if an earlier one fails, then exits
+        # non-zero if any failed — so one run surfaces the full picture.
+        run: ./check-and-lint.sh
+
+  images:
+    name: build ${{ matrix.app }} image
+    runs-on: ubuntu-latest
+    needs: check
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [edge, portal, egress]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Only needed when we actually push (skipped on PRs from forks, which
+        # cannot receive a write token anyway).
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # metadata-action lowercases the owner for us (GHCR requires lowercase).
+          images: ghcr.io/${{ github.repository_owner }}/helix-${{ matrix.app }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.app }}/Dockerfile
+          platforms: linux/amd64 # Azure Container Apps is amd64
+          # Build on every event to catch Dockerfile breaks; push only off PRs.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
