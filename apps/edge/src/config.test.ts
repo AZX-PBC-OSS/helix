@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig, parseConnectionString, publicOrigin } from "./config.js";
+import { loadConfig, loadDevGatewayConfig, parseConnectionString, publicOrigin } from "./config.js";
 
 // The well-known Azurite dev credentials (public, not a secret).
 const AZURITE_KEY =
@@ -360,5 +360,68 @@ describe("publicOrigin", () => {
     });
     expect(publicOrigin(prod, "auth")).toBe("https://auth.azx.helix.azxlabs.io");
     expect(publicOrigin(prod, null)).toBe("https://azx.helix.azxlabs.io");
+  });
+});
+
+describe("loadDevGatewayConfig", () => {
+  // The dev-gateway's ONLY required env is its own helix_dev DSN (+ TLS in dev).
+  const DEV_ENV = {
+    EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
+  };
+
+  it("loads from the dev DSN alone — no edge DSN or blob env required", () => {
+    // Deliberately NO EDGE_DATABASE_URL, DATABASE_URL, or AZURE_STORAGE_* here.
+    const config = loadDevGatewayConfig({ ...DEV_ENV });
+    expect(config.devGateway.databaseUrl).toBe(DEV_ENV.EDGE_DEV_DATABASE_URL);
+    expect(config.devGateway.allowDevMode).toBe(false); // opt-in, default off
+    expect(config.devGateway.port).toBe(8082);
+    // Shared gateway defaults still resolve.
+    expect(config.baseDomain).toBe("local.helix.azxlabs.io");
+    expect(config.llm.connection).toBe("anthropic");
+    expect(config.fetch.egressUrl).toBeNull();
+    // Airtight: the type — and the value — structurally lack the edge data plane,
+    // so this process cannot name the helix_edge pool or a blob account.
+    expect("databaseUrl" in config).toBe(false);
+    expect("blob" in config).toBe(false);
+    expect("auth" in config).toBe(false);
+  });
+
+  it("reflects the opt-in flag and port overrides", () => {
+    const config = loadDevGatewayConfig({
+      ...DEV_ENV,
+      EDGE_ALLOW_DEV_MODE: "true",
+      EDGE_DEV_GATEWAY_PORT: "9099",
+    });
+    expect(config.devGateway.allowDevMode).toBe(true);
+    expect(config.devGateway.port).toBe(9099);
+  });
+
+  it("requires EDGE_DEV_DATABASE_URL with NO owner-DSN fallback", () => {
+    // Even a full set of edge/owner DSNs must not satisfy the dev-gateway — the
+    // env-literal RLS only holds when it connects as helix_dev (dev-mode §5.3).
+    expect(() =>
+      loadDevGatewayConfig({
+        DATABASE_URL: "postgresql://helix@db/helix",
+        EDGE_DATABASE_URL: "postgresql://helix_edge@db/helix",
+        EDGE_TLS_CERT_FILE: "/c.pem",
+        EDGE_TLS_KEY_FILE: "/k.pem",
+      }),
+    ).toThrow(/EDGE_DEV_DATABASE_URL/);
+  });
+
+  it("enforces the HTTPS-only TLS rule outside production", () => {
+    const noTls = { EDGE_DEV_DATABASE_URL: DEV_ENV.EDGE_DEV_DATABASE_URL };
+    expect(() => loadDevGatewayConfig(noTls)).toThrow(/TLS is required/);
+  });
+
+  it("runs without a local cert in production (ingress terminates TLS)", () => {
+    const config = loadDevGatewayConfig({
+      EDGE_DEV_DATABASE_URL: DEV_ENV.EDGE_DEV_DATABASE_URL,
+      NODE_ENV: "production",
+    });
+    expect(config.tls).toBeNull();
+    expect(config.devGateway.databaseUrl).toBe(DEV_ENV.EDGE_DEV_DATABASE_URL);
   });
 });

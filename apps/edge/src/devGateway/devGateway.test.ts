@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { hashDevToken, newDevToken } from "@azx-pbc/shared/devToken";
 import { buildDevGateway } from "./app.js";
 import type { DevTokenRow, DevTokenStore } from "./devTokenStore.js";
-import { testEdgeConfig } from "../test/config.js";
+import { testDevGatewayConfig } from "../test/config.js";
 import { FakeAppDataStore, FakeRegistry, FakeUsageStore, registryEntry } from "../test/fakes.js";
 import type { AppDataStore } from "../gateway/data.js";
 import type { Env } from "@azx-pbc/shared";
@@ -92,7 +92,7 @@ function build(devTokens: FakeDevTokenStore, store: AppDataStore = new FakeAppDa
     }),
   ]);
   const app: FastifyInstance = buildDevGateway({
-    config: testEdgeConfig(),
+    config: testDevGatewayConfig(),
     registry,
     devTokens,
     appData: store,

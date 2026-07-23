@@ -1,4 +1,4 @@
-import type { AuthConfig, AzureBlobConfig, EdgeConfig } from "../config.js";
+import type { AuthConfig, AzureBlobConfig, DevGatewayConfig, EdgeConfig } from "../config.js";
 
 /** The well-known unit-test auth secret (32 bytes). Tests may derive keys
  *  from it to forge tokens — proving forgery still requires the key. */
@@ -87,8 +87,39 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
-    // Dev-gateway off by default; the dev-gateway suites build their own config.
-    devGateway: { databaseUrl: null, allowDevMode: false, port: 8082 },
+    ...overrides,
+  };
+}
+
+/**
+ * Dev-gateway config for the dev-gateway suites. Structurally lacks the
+ * helix_edge DSN / blob (see {@link DevGatewayConfig}); buildDevGateway's deps
+ * only need the shared {@link GatewayConfig} fields, which this shares with
+ * {@link testEdgeConfig}.
+ */
+export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}): DevGatewayConfig {
+  return {
+    baseDomain: "local.helix.azxlabs.io",
+    tls: null,
+    reconcileIntervalMs: 60_000,
+    statementTimeoutMs: 10_000,
+    trustProxy: false,
+    llm: {
+      endpoint: "https://api.anthropic.com",
+      anthropicVersion: "2023-06-01",
+      connection: "anthropic",
+    },
+    fetch: {
+      egressUrl: null,
+      instructionSecret: null,
+      timeoutMs: 30_000,
+      maxBodyBytes: 10 * 1024 * 1024,
+    },
+    devGateway: {
+      databaseUrl: "postgresql://helix_dev:unused@db/helix",
+      allowDevMode: true,
+      port: 8082,
+    },
     ...overrides,
   };
 }

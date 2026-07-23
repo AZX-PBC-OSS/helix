@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema } from "@azx-pbc/shared";
-import type { EdgeConfig } from "../config.js";
+import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { makeLlmHandler } from "../gateway/llm.js";
 import { makeDataHandlers } from "../gateway/data-handler.js";
@@ -60,7 +60,7 @@ function addVaryOrigin(reply: {
 }
 
 export interface DevGatewayDeps {
-  config: EdgeConfig;
+  config: GatewayConfig;
   registry: RegistryReader;
   devTokens: DevTokenStore;
   appData: AppDataStore | null;

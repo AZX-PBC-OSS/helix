@@ -86,9 +86,97 @@ export interface AuthConfig {
   clockToleranceSec: number;
 }
 
-export interface EdgeConfig {
+/**
+ * Config shared by the two processes that run the gateway machinery — the edge
+ * and the dev-gateway. These are the only fields the reusable `/_api/*`
+ * handlers, the registry projection, and CORS/TLS setup read. Everything a
+ * *data plane* needs beyond this (a database role, blob custody, sessions) is
+ * added by the per-process config that extends this base. Splitting it this way
+ * is what lets {@link DevGatewayConfig} *structurally omit* `databaseUrl`/`blob`:
+ * the dev-gateway process cannot even name the `helix_edge` pool or the blob
+ * account, so the isolation thesis (dev-mode design §5.3) is a type property,
+ * not a wiring convention.
+ */
+export interface GatewayConfig {
   /** Apps are served on `<slug>.<baseDomain>` (architecture §4.1). */
   baseDomain: string;
+  /**
+   * Edge-terminated TLS (mkcert in dev). **Required outside production** — the
+   * platform is HTTPS-only (`__Host-` cookies need Secure; app crypto APIs
+   * like `crypto.randomUUID`/SubtleCrypto need a secure context). In
+   * production this is null: ingress owns the cert and the process runs plain
+   * HTTP behind it.
+   */
+  tls: { certFile: string; keyFile: string } | null;
+  /** Full projection reload interval — the LISTEN/NOTIFY safety net. */
+  reconcileIntervalMs: number;
+  /**
+   * Per-query `statement_timeout` (ms) applied to every Postgres pool so a
+   * slow/stuck query can't pin a pooled connection and exhaust the pool — a DoS
+   * the exposed plane must resist (ADR-0002 ISSUE-05 / issue #12). `0` disables.
+   */
+  statementTimeoutMs: number;
+  /**
+   * Fastify `trustProxy` — how `req.ip` is derived behind a proxy, which is the
+   * rate-limit / login-throttle key. Default `false` (the socket peer). Behind
+   * Container Apps' Envoy ingress that peer is the ingress, collapsing all
+   * clients into one bucket, so per-client limits need EDGE_TRUST_PROXY set to
+   * the ingress hop **count** (a number). `"true"`/`"false"` and a CIDR/IP-list
+   * string are also accepted. A too-trusting value makes X-Forwarded-For
+   * spoofable, so it is opt-in — verify the hop count against the live ingress
+   * before relying on per-client limits (issue #13). The dev-gateway inherits
+   * this residual (dev-mode design §5.4).
+   */
+  trustProxy: boolean | number | string;
+  /**
+   * LLM gateway vendor settings (architecture §6.1, M4). Always present with
+   * defaults; whether the capability is *enabled* is gated separately by egress
+   * being configured (`EDGE_EGRESS_URL` + `HELIX_INSTRUCTION_SECRET`) — the
+   * vendor key is a `platform` secret egress resolves, never held by the edge
+   * (ADR-0008). This block only names the vendor endpoint/version/connection.
+   */
+  llm: {
+    /** Vendor origin (no path), e.g. `https://api.anthropic.com`. */
+    endpoint: string;
+    /** `anthropic-version` header value. */
+    anthropicVersion: string;
+    /**
+     * Name of the `platform`-scoped secret holding the vendor key, resolved by
+     * egress on the `llm` path. When set (with egress + instruction key), the LLM
+     * call routes through egress and the edge never holds the key. The key value
+     * lives in the secret store, never in edge config.
+     */
+    connection: string;
+  };
+  /**
+   * Fetch-proxy wiring (M4.5). The policy plane authorizes a `/_api/fetch` call
+   * and hands a signed attested instruction to `azx-egress`. The capability is
+   * enabled only when BOTH `egressUrl` and `instructionSecret` are present —
+   * otherwise `/_api/fetch` 503s (fail-closed, like the LLM key).
+   */
+  fetch: {
+    /** Internal URL of the egress service; null disables the capability. */
+    egressUrl: string | null;
+    /** Shared with azx-egress; HKDF-derived into the instruction signing key. */
+    instructionSecret: Buffer | null;
+    /** Timeout for the egress round-trip. */
+    timeoutMs: number;
+    /**
+     * Per-direction body-size cap, enforced with a byte counter on the request
+     * re-stream to egress and the response re-stream to the app (issue #8).
+     * Mirrors egress's `EGRESS_MAX_BODY_BYTES` so both hops cap independently.
+     */
+    maxBodyBytes: number;
+  };
+}
+
+/**
+ * Edge (data/policy plane) config: the gateway base plus everything the edge
+ * uniquely needs — its least-privilege database role, blob custody, app-user
+ * sessions, and the open-surface toggles. Resolved by {@link loadConfig}.
+ */
+export interface EdgeConfig extends GatewayConfig {
+  /** helix_edge DSN — the registry projection + gateway stores connect on it. */
   databaseUrl: string;
   blob: BlobConfig;
   /**
@@ -128,42 +216,6 @@ export interface EdgeConfig {
   /** Public port for built URLs; scheme-default ports are omitted. */
   publicPort: number;
   /**
-   * Edge-terminated TLS (mkcert in dev). **Required outside production** — the
-   * platform is HTTPS-only (`__Host-` cookies need Secure; app crypto APIs
-   * like `crypto.randomUUID`/SubtleCrypto need a secure context). In
-   * production this is null: ingress owns the cert and the edge runs plain
-   * HTTP behind it.
-   */
-  tls: { certFile: string; keyFile: string } | null;
-  /** Full projection reload interval — the LISTEN/NOTIFY safety net. */
-  reconcileIntervalMs: number;
-  /**
-   * Per-query `statement_timeout` (ms) applied to every edge Postgres pool so a
-   * slow/stuck query can't pin a pooled connection and exhaust the pool — a DoS
-   * the exposed plane must resist (ADR-0002 ISSUE-05 / issue #12). `0` disables.
-   */
-  statementTimeoutMs: number;
-  /**
-   * LLM gateway vendor settings (architecture §6.1, M4). Always present with
-   * defaults; whether the capability is *enabled* is gated separately by egress
-   * being configured (`EDGE_EGRESS_URL` + `HELIX_INSTRUCTION_SECRET`) — the
-   * vendor key is a `platform` secret egress resolves, never held by the edge
-   * (ADR-0008). This block only names the vendor endpoint/version/connection.
-   */
-  llm: {
-    /** Vendor origin (no path), e.g. `https://api.anthropic.com`. */
-    endpoint: string;
-    /** `anthropic-version` header value. */
-    anthropicVersion: string;
-    /**
-     * Name of the `platform`-scoped secret holding the vendor key, resolved by
-     * egress on the `llm` path. When set (with egress + instruction key), the LLM
-     * call routes through egress and the edge never holds the key. The key value
-     * lives in the secret store, never in edge config.
-     */
-    connection: string;
-  };
-  /**
    * Per-IP rate limit for the anonymous tier on `public` apps (app-data design
    * §7). Caps every anonymous `/_api/*` gateway call, keyed per IP+app within a
    * fixed window — the anonymous writer/visitor has no per-user budget to
@@ -172,48 +224,20 @@ export interface EdgeConfig {
    * budgets). `max: 0` disables the limiter.
    */
   anonRateLimit: { max: number; windowMs: number };
-  /**
-   * Fastify `trustProxy` — how `req.ip` is derived behind a proxy, which is the
-   * rate-limit / login-throttle key. Default `false` (the socket peer). Behind
-   * Container Apps' Envoy ingress that peer is the ingress, collapsing all
-   * clients into one bucket, so per-client limits need EDGE_TRUST_PROXY set to
-   * the ingress hop **count** (a number). `"true"`/`"false"` and a CIDR/IP-list
-   * string are also accepted. A too-trusting value makes X-Forwarded-For
-   * spoofable, so it is opt-in — verify the hop count against the live ingress
-   * before relying on per-client limits (issue #13).
-   */
-  trustProxy: boolean | number | string;
-  /**
-   * Fetch-proxy wiring (M4.5). The edge is the policy plane: it authorizes a
-   * `/_api/fetch` call and hands a signed attested instruction to `azx-egress`.
-   * The capability is enabled only when BOTH `egressUrl` and `instructionSecret`
-   * are present — otherwise `/_api/fetch` 503s (fail-closed, like the LLM key).
-   */
-  fetch: {
-    /** Internal URL of the egress service; null disables the capability. */
-    egressUrl: string | null;
-    /** Shared with azx-egress; HKDF-derived into the instruction signing key. */
-    instructionSecret: Buffer | null;
-    /** Edge-side timeout for the egress round-trip. */
-    timeoutMs: number;
-    /**
-     * Per-direction body-size cap, enforced with a byte counter on the request
-     * re-stream to egress and the response re-stream to the app (issue #8).
-     * Mirrors egress's `EGRESS_MAX_BODY_BYTES` so both hops cap independently.
-     */
-    maxBodyBytes: number;
-  };
-  /**
-   * Dev-gateway wiring (dev-mode design §3, §5.4). The dev-gateway is a SEPARATE
-   * process from the edge, running as the least-privilege `helix_dev` role, that
-   * serves the cross-origin dev surface (`dev-api.<base>`) routing to `env=dev`.
-   * `databaseUrl` is its `helix_dev` DSN; `allowDevMode` is the per-plane opt-in
-   * (default OFF — the surface must be explicitly enabled). Unused by the edge
-   * process itself; read by the dev-gateway entrypoint (`devGateway/server.ts`).
-   */
+}
+
+/**
+ * Dev-gateway config (dev-mode design §3, §5.4): the gateway base plus the
+ * `helix_dev` DSN it runs on. It deliberately has NO `databaseUrl`/`blob`/`auth`
+ * — the dev-gateway never opens the `helix_edge` pool, reads a blob, or runs the
+ * session path, and the type makes that *unrepresentable* rather than merely
+ * unused. Resolved by {@link loadDevGatewayConfig}, which requires
+ * `EDGE_DEV_DATABASE_URL` and refuses any owner-DSN fallback.
+ */
+export interface DevGatewayConfig extends GatewayConfig {
   devGateway: {
-    /** helix_dev DSN; null disables the surface (required in prod when enabled). */
-    databaseUrl: string | null;
+    /** helix_dev DSN — required (no fallback); the env-literal RLS holds only as helix_dev. */
+    databaseUrl: string;
     /** Per-plane opt-in (EDGE_ALLOW_DEV_MODE); the dev-gateway refuses to serve unless true. */
     allowDevMode: boolean;
     /** Port the dev-gateway listens on (its own process). */
@@ -452,6 +476,55 @@ function parseTrustProxy(raw: string | undefined): boolean | number | string {
   return v;
 }
 
+/**
+ * Parse the config the gateway machinery shares across the edge and the
+ * dev-gateway (see {@link GatewayConfig}). Neither the helix_edge DSN nor blob
+ * custody appears here — those are edge-only and live in {@link loadConfig} — so
+ * the dev-gateway loader can reuse this without being forced to supply env it
+ * never uses. The HTTPS-only TLS rule applies to both processes (both terminate
+ * TLS in dev, both run HTTP behind ingress in prod).
+ */
+function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
+  const certFile = env.EDGE_TLS_CERT_FILE;
+  const keyFile = env.EDGE_TLS_KEY_FILE;
+  if ((certFile && !keyFile) || (!certFile && keyFile)) {
+    throw new Error("EDGE_TLS_CERT_FILE and EDGE_TLS_KEY_FILE must be set together");
+  }
+  const tls = certFile && keyFile ? { certFile, keyFile } : null;
+
+  // HTTPS-only platform: outside production the process must terminate TLS
+  // itself (mkcert). `__Host-` cookies require Secure, and hosted apps' crypto
+  // APIs (`crypto.randomUUID`, SubtleCrypto) only exist in a secure context — so
+  // a plain-HTTP dev process is never allowed. Production opts out only by being
+  // production: ingress owns the cert and the process runs HTTP behind it.
+  if (!tls && env.NODE_ENV !== "production") {
+    throw new Error(
+      "TLS is required for local dev (the platform is HTTPS-only): set " +
+        "EDGE_TLS_CERT_FILE and EDGE_TLS_KEY_FILE. Re-run .devcontainer/post-create.sh " +
+        "to generate the mkcert certs for *.local.helix.azxlabs.io.",
+    );
+  }
+
+  return {
+    baseDomain: (env.EDGE_BASE_DOMAIN ?? "local.helix.azxlabs.io").toLowerCase(),
+    tls,
+    reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
+    statementTimeoutMs: Number(env.EDGE_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),
+    trustProxy: parseTrustProxy(env.EDGE_TRUST_PROXY),
+    llm: {
+      endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
+      anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
+      connection: env.EDGE_LLM_ANTHROPIC_CONNECTION ?? "anthropic",
+    },
+    fetch: {
+      egressUrl: env.EDGE_EGRESS_URL || null,
+      instructionSecret: loadInstructionSecret(env),
+      timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
+      maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
+    },
+  };
+}
+
 /** Load and validate the edge config from the environment; throws on gaps. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
   // The edge connects as the least-privilege runtime role (app-data design
@@ -490,42 +563,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     throw new Error("EDGE_DEV_ALLOW_UNAUTHENTICATED is a dev bypass and is refused in production");
   }
 
-  // Dev-gateway (dev-mode §3): opt-in surface, run as a separate helix_dev
-  // process. Like the edge DSN, the helix_dev DSN is required in production when
-  // the surface is enabled — the owner fallback would bypass the env-literal RLS
-  // that keeps the dev tier off production rows (ADR-0002 / dev-mode §5.3).
-  const allowDevMode = env.EDGE_ALLOW_DEV_MODE === "true";
-  const devDatabaseUrl = env.EDGE_DEV_DATABASE_URL ?? null;
-  if (allowDevMode && !devDatabaseUrl && env.NODE_ENV === "production") {
-    throw new Error(
-      "EDGE_DEV_DATABASE_URL (the least-privilege helix_dev role) is required in production " +
-        "when EDGE_ALLOW_DEV_MODE is on; refusing an owner-DSN fallback that would bypass the " +
-        "env-literal RLS isolating the dev tier (dev-mode §5.3).",
-    );
-  }
-
-  const certFile = env.EDGE_TLS_CERT_FILE;
-  const keyFile = env.EDGE_TLS_KEY_FILE;
-  if ((certFile && !keyFile) || (!certFile && keyFile)) {
-    throw new Error("EDGE_TLS_CERT_FILE and EDGE_TLS_KEY_FILE must be set together");
-  }
-  const tls = certFile && keyFile ? { certFile, keyFile } : null;
-
-  // HTTPS-only platform: outside production the edge must terminate TLS itself
-  // (mkcert). `__Host-` cookies require Secure, and hosted apps' crypto APIs
-  // (`crypto.randomUUID`, SubtleCrypto) only exist in a secure context — so a
-  // plain-HTTP dev edge is never allowed. Production opts out only by being
-  // production: ingress owns the cert and the edge runs HTTP behind it.
-  if (!tls && env.NODE_ENV !== "production") {
-    throw new Error(
-      "TLS is required for local dev (the platform is HTTPS-only): set " +
-        "EDGE_TLS_CERT_FILE and EDGE_TLS_KEY_FILE. Re-run .devcontainer/post-create.sh " +
-        "to generate the mkcert certs for *.local.helix.azxlabs.io.",
-    );
-  }
-
   return {
-    baseDomain: (env.EDGE_BASE_DOMAIN ?? "local.helix.azxlabs.io").toLowerCase(),
+    ...loadGatewayConfig(env),
     databaseUrl,
     blob,
     auth: loadAuthConfig(env),
@@ -537,28 +576,37 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     allowPasswordApps: env.EDGE_ALLOW_PASSWORD_APPS !== "false",
     publicScheme: "https",
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
-    tls,
-    reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
-    statementTimeoutMs: Number(env.EDGE_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),
-    llm: {
-      endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
-      anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
-      connection: env.EDGE_LLM_ANTHROPIC_CONNECTION ?? "anthropic",
-    },
     anonRateLimit: {
       max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),
       windowMs: Number(env.EDGE_ANON_RATE_WINDOW_MS ?? 60_000),
     },
-    trustProxy: parseTrustProxy(env.EDGE_TRUST_PROXY),
-    fetch: {
-      egressUrl: env.EDGE_EGRESS_URL || null,
-      instructionSecret: loadInstructionSecret(env),
-      timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
-      maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
-    },
+  };
+}
+
+/**
+ * Load and validate the dev-gateway config (dev-mode design §3, §5.4). Unlike
+ * {@link loadConfig} it reads NO edge-only env: no `EDGE_DATABASE_URL`, no blob
+ * config, no auth. The one DSN it needs — `EDGE_DEV_DATABASE_URL` (the helix_dev
+ * role) — is **required, with no owner-DSN fallback**: the env-literal RLS that
+ * pins the dev tier to `env='dev'` only holds when the process actually connects
+ * as `helix_dev` (dev-mode §5.3), so an owner fallback would silently defeat the
+ * whole isolation. The returned {@link DevGatewayConfig} structurally lacks the
+ * helix_edge DSN and blob custody, so the process can't hold either.
+ */
+export function loadDevGatewayConfig(env: NodeJS.ProcessEnv = process.env): DevGatewayConfig {
+  const databaseUrl = env.EDGE_DEV_DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      "EDGE_DEV_DATABASE_URL (the least-privilege helix_dev role DSN) is required to run the " +
+        "dev-gateway. There is deliberately no DATABASE_URL/owner fallback — the env-literal RLS " +
+        "isolating the dev tier only holds when the process connects as helix_dev (dev-mode §5.3).",
+    );
+  }
+  return {
+    ...loadGatewayConfig(env),
     devGateway: {
-      databaseUrl: devDatabaseUrl,
-      allowDevMode,
+      databaseUrl,
+      allowDevMode: env.EDGE_ALLOW_DEV_MODE === "true",
       port: Number(env.EDGE_DEV_GATEWAY_PORT ?? 8082),
     },
   };

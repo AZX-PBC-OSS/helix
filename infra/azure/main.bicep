@@ -456,12 +456,12 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
 // and deployDevGateway are set. See docs/features/dev-mode.md for the riders
 // (distinct dev LLM budget; verified EDGE_TRUST_PROXY hop count) before enabling.
 //
-// It never holds the helix_edge pool — every store connects on the helix_dev
-// DSN. loadConfig still requires EDGE_DATABASE_URL + blob config to parse, so we
-// point EDGE_DATABASE_URL at the SAME helix_dev DSN (config.databaseUrl is never
-// read by devGateway/server.ts, so no helix_edge connection is ever opened) and
-// supply the blob endpoint/client-id the parser wants (no blob read ever
-// happens, and the dev identity has no blob role regardless).
+// It never holds the helix_edge pool or a blob credential: loadDevGatewayConfig
+// reads ONLY the dev-gateway's own env (the helix_dev DSN + shared gateway
+// config), and DevGatewayConfig structurally lacks databaseUrl/blob — so the
+// container is given neither EDGE_DATABASE_URL nor any AZURE_STORAGE_* env, and
+// the dev identity has no blob role. The isolation is a type property, not a
+// wiring convention (dev-mode design §5.3).
 module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevGateway) {
   name: 'app-dev-gateway'
   params: {
@@ -485,17 +485,12 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       // The per-plane opt-in; the dev-gateway entrypoint exits unless this is true.
       { name: 'EDGE_ALLOW_DEV_MODE', value: 'true' }
       { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
-      // Blob config is parsed by loadConfig but never used here (no serving).
-      { name: 'AZURE_CLIENT_ID', value: identity.outputs.devIdentityClientId }
-      { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
       { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
       { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
       // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
       // dev throttle keys on the real client IP behind ingress too.
       { name: 'EDGE_TRUST_PROXY', value: edgeTrustProxy }
-      // Both point at the helix_dev DSN. EDGE_DATABASE_URL only satisfies
-      // loadConfig's parse; every store uses EDGE_DEV_DATABASE_URL.
-      { name: 'EDGE_DATABASE_URL', secretRef: 'edge-dev-database-url' }
+      // The one DSN it holds — the least-privilege helix_dev role.
       { name: 'EDGE_DEV_DATABASE_URL', secretRef: 'edge-dev-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
     ]

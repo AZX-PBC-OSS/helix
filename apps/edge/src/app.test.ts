@@ -43,7 +43,6 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
-    devGateway: { databaseUrl: null, allowDevMode: false, port: 8082 },
     ...overrides,
   };
 }

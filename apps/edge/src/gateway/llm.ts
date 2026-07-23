@@ -9,7 +9,7 @@ import {
   type LlmChatRequest,
   type LlmUsage,
 } from "@azx-pbc/shared";
-import type { EdgeConfig } from "../config.js";
+import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
@@ -48,7 +48,7 @@ const BURST_WINDOW_DIVISOR = 6;
 const BURST_BUDGET_FRACTION = 1 / BURST_WINDOW_DIVISOR;
 
 export interface LlmGatewayRuntime {
-  config: EdgeConfig;
+  config: GatewayConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
   /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */

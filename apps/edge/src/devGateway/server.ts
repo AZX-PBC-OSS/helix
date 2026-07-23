@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { buildDevGateway } from "./app.js";
-import { loadConfig } from "../config.js";
+import { loadDevGatewayConfig, type DevGatewayConfig } from "../config.js";
 import { LiveRegistry, type RegistryLogger } from "../registry/listener.js";
 import { EgressLlmProvider } from "../gateway/egressLlmProvider.js";
 import { HttpEgressProvider, type EgressProvider } from "../gateway/egressProvider.js";
@@ -46,11 +46,20 @@ function loadDotEnvLocal(): void {
 loadDotEnvLocal();
 
 const host = process.env.HOST ?? "0.0.0.0";
-const config = loadConfig();
+// loadDevGatewayConfig reads ONLY the dev-gateway's own env (no edge DSN, no
+// blob) and hard-requires EDGE_DEV_DATABASE_URL with no owner fallback — so the
+// helix_dev DSN below is guaranteed, and this process can't hold a helix_edge
+// pool (dev-mode §5.3). A config gap is a clean refuse-to-start, not a stack.
+let config: DevGatewayConfig;
+try {
+  config = loadDevGatewayConfig();
+} catch (err) {
+  console.error(`azx-dev-gateway: refusing to start — ${(err as Error).message}`);
+  process.exit(1);
+}
 
-// Opt-in surface (dev-mode §10): refuse to serve unless explicitly enabled, and
-// require the helix_dev DSN (loadConfig already boot-fails on a missing DSN in
-// prod; here we also refuse outside prod so the surface never runs as the owner).
+// The explicit per-plane opt-in (dev-mode §10), kept separate from config
+// validity so a not-enabled deployment reads clearly rather than as a gap.
 if (!config.devGateway.allowDevMode) {
   console.error(
     "azx-dev-gateway: refusing to start — set EDGE_ALLOW_DEV_MODE=true to enable the dev surface.",
@@ -58,12 +67,6 @@ if (!config.devGateway.allowDevMode) {
   process.exit(1);
 }
 const devDatabaseUrl = config.devGateway.databaseUrl;
-if (!devDatabaseUrl) {
-  console.error(
-    "azx-dev-gateway: refusing to start — EDGE_DEV_DATABASE_URL (the helix_dev role DSN) is required.",
-  );
-  process.exit(1);
-}
 
 let https: { cert: Buffer; key: Buffer } | null = null;
 if (config.tls) {

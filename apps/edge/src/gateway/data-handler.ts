@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ApiErrorCode, Env } from "@azx-pbc/shared";
-import type { EdgeConfig } from "../config.js";
+import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type Caller, type CallerResolver } from "../auth/gate.js";
 import type { RegistryEntry } from "../registry/projection.js";
@@ -24,7 +24,7 @@ import type { UsageStore } from "./usage.js";
  */
 
 export interface DataGatewayRuntime {
-  config: EdgeConfig;
+  config: GatewayConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
   /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */

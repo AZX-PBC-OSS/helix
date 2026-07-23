@@ -8,7 +8,7 @@ import {
   RESPONSE_HEADER_BLOCKLIST,
 } from "@azx-pbc/shared";
 import { capBody } from "@azx-pbc/shared/bodyCap";
-import type { EdgeConfig } from "../config.js";
+import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
@@ -28,7 +28,7 @@ import type { GatewayOutcome, UsageStore } from "./usage.js";
  */
 
 export interface FetchGatewayRuntime {
-  config: EdgeConfig;
+  config: GatewayConfig;
   registry: RegistryReader;
   resolveCaller: CallerResolver;
   /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */
