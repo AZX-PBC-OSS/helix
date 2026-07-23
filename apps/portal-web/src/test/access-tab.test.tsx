@@ -23,16 +23,30 @@ function makeApp(visibility: Visibility): App {
 }
 
 /**
- * Route the visibility POST to a canned result; everything else (auth config,
- * /me) never resolves — irrelevant to these assertions, and `retry: false` in
- * the test QueryClient keeps it quiet.
+ * Route the visibility POST to a canned result and the auth-config query to a
+ * deployment that permits both open surfaces (so the public option is offered —
+ * these assertions are about the request flow, not the policy gate). Everything
+ * else (/me) never resolves — irrelevant here, and `retry: false` in the test
+ * QueryClient keeps it quiet.
  */
 function stubFetch(result: VisibilityUpdateResult): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((url: string) => {
     if (typeof url === "string" && url.endsWith("/visibility")) {
       return Promise.resolve({ ok: true, status: 200, json: async () => result });
     }
-    return new Promise(() => {}); // auth config / me — pending forever
+    if (typeof url === "string" && url.endsWith("/auth/config")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          issuer: "https://idp.example",
+          cliClientId: "azx-cli",
+          allowPublicApps: true,
+          allowPasswordApps: true,
+        }),
+      });
+    }
+    return new Promise(() => {}); // /me — pending forever
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -78,7 +92,8 @@ describe("AccessTab visibility switcher", () => {
     render(makeApp({ mode: "private" }));
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Request public access" }));
+    // The public option appears once the auth-config policy resolves.
+    await user.click(await screen.findByRole("button", { name: "Request public access" }));
     // Confirm dialog explains it pauses for approval.
     expect(await screen.findByText("Request public access for Demo?")).toBeDefined();
     await user.click(screen.getByRole("button", { name: "Request approval" }));

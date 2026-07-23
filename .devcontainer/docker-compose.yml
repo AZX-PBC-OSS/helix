@@ -67,6 +67,15 @@ services:
       # exercisable through the browser. Flip to "true" only to serve app
       # content without login (e.g. debugging asset serving in isolation).
       EDGE_DEV_ALLOW_UNAUTHENTICATED: "false"
+      # Open-surface visibility policy. Both flags default OFF (opt-in) as the
+      # platform default — a deployment must opt each surface in. Enabled here so
+      # local dev can still create/serve `public` (anonymous) and `password`
+      # (shared-passphrase) apps; the edge and portal each enforce their own half,
+      # so both planes need the pair. Leave a surface off to exercise the 403 path.
+      EDGE_ALLOW_PUBLIC_APPS: "true"
+      EDGE_ALLOW_PASSWORD_APPS: "true"
+      PORTAL_ALLOW_PUBLIC_APPS: "true"
+      PORTAL_ALLOW_PASSWORD_APPS: "true"
       # Apps serve on `<slug>.<EDGE_BASE_DOMAIN>`, auth on `auth.<EDGE_BASE_DOMAIN>`.
       # `*.local.helix.azxlabs.io` is a platform-owned wildcard that resolves to
       # 127.0.0.1 (see the DNS note in the repo docs) — a controlled replacement

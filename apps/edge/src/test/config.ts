@@ -60,8 +60,9 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     blob: testBlobConfig(),
     auth: null,
     allowUnauthenticated: true,
-    // Both open surfaces permitted by default (matches the shipped default);
-    // suites exercising the disallow path override these to false.
+    // Both open surfaces opted in for the fixture so serving suites can exercise
+    // them. NB the shipped default is now off (opt-in) — suites exercising the
+    // disallow path override these to false.
     allowPublicApps: true,
     allowPasswordApps: true,
     publicScheme: "https",

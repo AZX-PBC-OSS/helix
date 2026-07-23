@@ -195,15 +195,16 @@ export interface EdgeConfig extends GatewayConfig {
    * false, the edge refuses to serve a public app — assets 403, `/_api/*`
    * refuses the anonymous caller — even one already set that way; the owner
    * migrates it down to private/group in the portal to restore service. The
-   * flag polarity is "allow", defaulting on today; the intent is to eventually
-   * flip the default off (the parse below becomes `=== "true"`).
+   * flag polarity is "allow", defaulting off: a deployment must set
+   * `EDGE_ALLOW_PUBLIC_APPS=true` to opt this surface in (the parse below is
+   * `=== "true"`).
    */
   allowPublicApps: boolean;
   /**
    * Whether this deployment permits `password` (shared-passphrase) apps — the
    * other open surface. When false, the edge refuses to serve a password app
    * (assets 403, `/_api/*` and the `/_auth/login` challenge both dead). Same
-   * "allow"/default-on polarity as {@link allowPublicApps}.
+   * "allow"/default-off polarity as {@link allowPublicApps}.
    */
   allowPasswordApps: boolean;
   /**
@@ -569,11 +570,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     blob,
     auth: loadAuthConfig(env),
     allowUnauthenticated,
-    // "Allow" polarity, default on: a mode is permitted unless explicitly set
-    // to "false". To make disallowed the platform default later, flip these to
-    // `=== "true"` (see the field docs on EdgeConfig).
-    allowPublicApps: env.EDGE_ALLOW_PUBLIC_APPS !== "false",
-    allowPasswordApps: env.EDGE_ALLOW_PASSWORD_APPS !== "false",
+    // "Allow" polarity, default off: a mode is permitted only when explicitly
+    // set to "true". This is the opt-in platform default (see the field docs on
+    // EdgeConfig); a deployment opts a surface back in per environment.
+    allowPublicApps: env.EDGE_ALLOW_PUBLIC_APPS === "true",
+    allowPasswordApps: env.EDGE_ALLOW_PASSWORD_APPS === "true",
     publicScheme: "https",
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     anonRateLimit: {

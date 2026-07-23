@@ -34,8 +34,9 @@ export interface AuthState {
   loginAvailable: boolean;
   /**
    * Deployment visibility policy (from /auth/config). Drives which open-surface
-   * modes the visibility UI offers. Default true when config is absent (older
-   * portal / dev-token-only) — server-side enforcement is the real guard.
+   * modes the visibility UI offers. Default false when config is absent (older
+   * portal / dev-token-only) — open surfaces are opt-in, and server-side
+   * enforcement is the real guard.
    */
   allowPublicApps: boolean;
   allowPasswordApps: boolean;
@@ -92,8 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAdmin: me.data?.isAdmin ?? false,
       meLoading: authenticated && me.isLoading,
       loginAvailable: authConfig.isSuccess && Boolean(authConfig.data.webClientId),
-      allowPublicApps: authConfig.data?.allowPublicApps ?? true,
-      allowPasswordApps: authConfig.data?.allowPasswordApps ?? true,
+      allowPublicApps: authConfig.data?.allowPublicApps ?? false,
+      allowPasswordApps: authConfig.data?.allowPasswordApps ?? false,
       login,
       adoptToken,
       logout,

@@ -62,21 +62,21 @@ describe("loadConfig", () => {
     });
     expect(config.publicScheme).toBe("https");
     expect(config.publicPort).toBe(8080);
-    // "Allow" polarity, default on: both open surfaces permitted unless opted out.
-    expect(config.allowPublicApps).toBe(true);
-    expect(config.allowPasswordApps).toBe(true);
-  });
-
-  it("disallows open surfaces only on an explicit 'false' (EDGE_ALLOW_*_APPS)", () => {
-    const config = loadConfig({
-      ...ENV,
-      EDGE_ALLOW_PUBLIC_APPS: "false",
-      EDGE_ALLOW_PASSWORD_APPS: "false",
-    });
+    // "Allow" polarity, default off: both open surfaces forbidden unless opted in.
     expect(config.allowPublicApps).toBe(false);
     expect(config.allowPasswordApps).toBe(false);
-    // Any other value (or unset) leaves the surface permitted.
-    expect(loadConfig({ ...ENV, EDGE_ALLOW_PUBLIC_APPS: "0" }).allowPublicApps).toBe(true);
+  });
+
+  it("permits open surfaces only on an explicit 'true' (EDGE_ALLOW_*_APPS)", () => {
+    const config = loadConfig({
+      ...ENV,
+      EDGE_ALLOW_PUBLIC_APPS: "true",
+      EDGE_ALLOW_PASSWORD_APPS: "true",
+    });
+    expect(config.allowPublicApps).toBe(true);
+    expect(config.allowPasswordApps).toBe(true);
+    // Any other value (or unset) leaves the surface forbidden.
+    expect(loadConfig({ ...ENV, EDGE_ALLOW_PUBLIC_APPS: "1" }).allowPublicApps).toBe(false);
   });
 
   it("honors overrides", () => {

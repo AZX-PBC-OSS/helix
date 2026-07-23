@@ -50,9 +50,10 @@ export const AuthConfigResponseSchema = z.object({
   audience: z.string().min(1).optional(),
   /**
    * Whether this deployment permits `public` (anonymous) apps. Drives the SPA's
-   * visibility UI — it hides the public option when false. Absent = permitted
-   * (older portal / dev-token-only where this endpoint 404s). Server-side
-   * enforcement is independent of this hint (portal routes + edge serving).
+   * visibility UI — it hides the public option when false. Absent = forbidden
+   * (older portal / dev-token-only where this endpoint 404s — open surfaces are
+   * opt-in). Server-side enforcement is independent of this hint (portal routes
+   * + edge serving).
    */
   allowPublicApps: z.boolean().optional(),
   /** Whether this deployment permits `password` (shared-passphrase) apps. Same shape as {@link allowPublicApps}. */
