@@ -1,5 +1,10 @@
 # Helix — AZX App Platform
 
+> ⚠️ **Alpha — not yet suitable for public consumption.** Helix is under active
+> development. Interfaces, data formats, and security posture are still changing,
+> there is no stability or support guarantee, and it has not been hardened for
+> production or third-party use. Use at your own risk.
+
 Secure hosting for vibe-coded AI apps. **New here? Start with [`TOUR.md`](./TOUR.md)** — the
 high-level map. Then: [`docs/features/`](./docs/features/) for per-feature docs (the _what &
 how, today_), [`docs/platform-architecture.md`](./docs/platform-architecture.md) (the _what &
