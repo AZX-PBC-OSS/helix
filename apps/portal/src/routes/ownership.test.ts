@@ -117,6 +117,7 @@ describe("ownsApp — every app-scoped mutating route rejects a non-owner", () =
     { name: "deploy", method: "POST", urlOf: (s) => `/api/v1/apps/${s}/versions` },
     { name: "promote", method: "POST", urlOf: (s) => `/api/v1/apps/${s}/versions/1/promote` },
     { name: "rollback", method: "POST", urlOf: (s) => `/api/v1/apps/${s}/rollback`, payload: {} },
+    { name: "secret list", method: "GET", urlOf: (s) => `/api/v1/apps/${s}/secrets` },
     {
       name: "secret create",
       method: "POST",

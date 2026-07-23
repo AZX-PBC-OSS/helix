@@ -86,7 +86,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/secrets",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsApp] },
     async (req) => {
       requireActor(req);
       const appRow = await findApp(req.params.slug);
