@@ -45,6 +45,22 @@ export const AttestedInstructionSchema = z.object({
   /** Correlates the edge audit row with the egress call. */
   requestId: z.string().min(1),
   /**
+   * The HTTP method + URL pathname the edge authorized (ADR-0013 step 2, issue #6).
+   * Egress refuses a mismatched verb/resource, so a captured instruction can't be
+   * redirected to a different request on the same origin (origin is already bound
+   * above; the `jti` burn already blocks replay — this closes the residual
+   * same-origin-different-request gap). Bound to `pathname` only (not query): the
+   * app controls the query, and origin + jti already constrain the call.
+   *
+   * Optional for rollout safety (like `env`): within one instance edge+egress
+   * deploy together and instructions live 30 s, but a rolling restart may briefly
+   * verify an old-edge token that lacks these. Only the edge can sign, so absence
+   * means "old edge", not tampering — egress asserts ONLY when the claim is
+   * present. Make required once a fleet is reliably past deploy.
+   */
+  method: z.string().min(1).optional(),
+  path: z.string().optional(),
+  /**
    * Environment tier this call is scoped to (dev-mode design §6). Egress resolves
    * the connection secret within this tier — a `dev` instruction can never reach a
    * `prod` connection secret and vice-versa. Carried by the attested (signed)

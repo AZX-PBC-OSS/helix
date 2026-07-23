@@ -218,6 +218,16 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     if (target.origin !== instruction.origin) {
       return fail(reply, 403, "forbidden", "target origin does not match the authorization");
     }
+    // ...and (ADR-0013 step 2, issue #6) the method + pathname, so a captured
+    // instruction can't be redirected to a different verb/resource on that origin.
+    // Assert only when bound (an old-edge instruction may omit them — rollout
+    // safety; only the edge can sign, so absence isn't tampering).
+    if (instruction.method !== undefined && instruction.method !== method) {
+      return fail(reply, 403, "forbidden", "method does not match the authorization");
+    }
+    if (instruction.path !== undefined && instruction.path !== target.pathname) {
+      return fail(reply, 403, "forbidden", "path does not match the authorization");
+    }
 
     // Request body cap, fast-path: a truthful oversized content-length is
     // refused before we resolve a secret or dial out. The real enforcement is

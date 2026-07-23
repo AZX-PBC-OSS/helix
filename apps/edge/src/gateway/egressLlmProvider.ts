@@ -54,6 +54,8 @@ export class EgressLlmProvider implements LlmProvider {
         connection: this.#config.connection,
         requestId: opts.requestId,
         env: opts.env,
+        method: "POST",
+        path: "/v1/messages",
       },
       this.#instructionKey,
     );

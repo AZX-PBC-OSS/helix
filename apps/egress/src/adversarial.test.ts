@@ -97,6 +97,7 @@ async function mint(
   connection?: string,
   capability: "fetch" | "llm" = "fetch",
   requestId: string = randomUUID(),
+  bind: { method?: string; path?: string } = {},
 ): Promise<string> {
   return new SignJWT({
     appId: "app-1",
@@ -104,6 +105,8 @@ async function mint(
     capability,
     origin: o,
     requestId,
+    ...(bind.method ? { method: bind.method } : {}),
+    ...(bind.path !== undefined ? { path: bind.path } : {}),
     ...(connection ? { connection } : {}),
   })
     .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
@@ -597,6 +600,77 @@ describe("egress instruction replay + audience (ADR-0013 Step 1, issue #3)", () 
       headers: { [INSTRUCTION_HEADER]: mismatched, [TARGET_HEADER]: `${origin}/` },
     });
     expect(res.statusCode).toBe(401);
+    await app.close();
+  });
+});
+
+describe("egress method/path binding (ADR-0013 step 2, issue #6)", () => {
+  it("proxies when the request's method + pathname match the instruction", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin, undefined, "fetch", randomUUID(), {
+          method: "GET",
+          path: "/ok",
+        }),
+        [TARGET_HEADER]: `${origin}/ok`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("refuses a mismatched method — a captured instruction can't change the verb", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin, undefined, "fetch", randomUUID(), {
+          method: "GET",
+          path: "/ok",
+        }),
+        [TARGET_HEADER]: `${origin}/ok`,
+        [METHOD_HEADER]: "POST", // ← differs from the bound GET
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("refuses a mismatched pathname — a captured instruction can't change the resource", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin, undefined, "fetch", randomUUID(), {
+          method: "GET",
+          path: "/ok",
+        }),
+        [TARGET_HEADER]: `${origin}/evil`, // ← differs from the bound /ok
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("tolerates a legacy instruction with no method/path bound (rollout safety)", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin), // no method/path claims
+        [TARGET_HEADER]: `${origin}/anything`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(200);
     await app.close();
   });
 });

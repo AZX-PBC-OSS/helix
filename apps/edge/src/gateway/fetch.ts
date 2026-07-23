@@ -185,6 +185,8 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         origin: target.origin,
         requestId: randomUUID(),
         env: caller.env,
+        method: req.method,
+        path: target.pathname,
         ...(connection ? { connection } : {}),
       },
       rt.instructionKey,
