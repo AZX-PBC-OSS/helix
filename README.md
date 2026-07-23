@@ -69,6 +69,8 @@ pnpm dev:edge     # :8080 — HTTPS. Apps at https://<slug>.local.helix.azxlabs.
                   #         login on https://auth.local.helix.azxlabs.io:8080
 pnpm dev:egress   # :8081 — mechanism plane (fetch-proxy + secret injection).
                   #         Only needed when exercising /_api/fetch or connections.
+pnpm dev:devgw    # :8082 — HTTPS. The dev-gateway: develop an app against its
+                  #         isolated env=dev tier from Lovable / localhost (see below).
 ```
 
 `*.local.helix.azxlabs.io` resolves to `127.0.0.1`, so app subdomains and the auth host work with no
@@ -110,20 +112,46 @@ signed-in user. See [`apps/edge/README.md`](./apps/edge/README.md) for the reque
 config, [`apps/dev-idp/README.md`](./apps/dev-idp/README.md) for the IdP, and
 [`packages/cli/README.md`](./packages/cli/README.md) for the CLI and its auth.
 
+## Develop an app against Helix (dev mode)
+
+The flow above _deploys_ a finished app. To iterate on an app that's still being written
+elsewhere — on `localhost`, in Lovable, in a cloud IDE — and have it call the real platform
+(LLM, data, fetch) as you go, use **dev mode**: an isolated `env=dev` tier on the same app,
+reached through the **dev-gateway** (`pnpm dev:devgw`, `:8082`). It never touches production
+data, budget, or secrets, and promotion later moves _code_, never dev data.
+
+```bash
+# 1. Create the app (no code needed yet) and grant its capabilities in the portal.
+# 2. In the portal "Dev mode" tab: register your app's origin (e.g. http://localhost:5173
+#    or your Lovable URL) and mint a dev token (shown once, azxdev_…). Configure any
+#    env=dev connection secrets in the "Secrets" tab (Tier → dev).
+# 3. From your in-development app, call the dev-gateway — same /_api/* shape as prod,
+#    slug in the path, token as a bearer:
+curl -k -X PUT https://dev-api.local.helix.azxlabs.io:8082/<slug>/_api/data/user/todo \
+  -H "Authorization: Bearer azxdev_…" -H "Origin: http://localhost:5173" \
+  -H "content-type: application/json" -d '["milk","eggs"]'
+```
+
+The full walkthrough (surfaces, isolation, and what's not yet built — `azx dev` and the client
+SDK) is in [`docs/features/dev-mode.md`](./docs/features/dev-mode.md). The dev-gateway is
+opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-privilege
+`helix_dev` role, so it physically can't read a production row.
+
 ## Commands (from the repo root)
 
-| Command                     | What                                             |
-| --------------------------- | ------------------------------------------------ |
-| `pnpm install`              | Install all workspace deps                       |
-| `pnpm typecheck`            | `tsc` across every package                       |
-| `pnpm lint` / `pnpm format` | ESLint / Prettier                                |
-| `pnpm test`                 | Vitest across the workspace                      |
-| `pnpm dev:idp`              | Local OIDC issuer (`:3002`)                      |
-| `pnpm dev:portal`           | azx-portal (`:3001`, registry + deploy API)      |
-| `pnpm dev:edge`             | azx-edge (`:8080`, HTTPS)                        |
-| `pnpm dev:egress`           | azx-egress (`:8081`, fetch-proxy + secrets)      |
-| `pnpm dev:web`              | portal SPA (`:5173`, proxies `/api` to :3001)    |
-| `./check-and-lint.sh`       | Poor-man's CI: typecheck + lint + format + tests |
+| Command                     | What                                               |
+| --------------------------- | -------------------------------------------------- |
+| `pnpm install`              | Install all workspace deps                         |
+| `pnpm typecheck`            | `tsc` across every package                         |
+| `pnpm lint` / `pnpm format` | ESLint / Prettier                                  |
+| `pnpm test`                 | Vitest across the workspace                        |
+| `pnpm dev:idp`              | Local OIDC issuer (`:3002`)                        |
+| `pnpm dev:portal`           | azx-portal (`:3001`, registry + deploy API)        |
+| `pnpm dev:edge`             | azx-edge (`:8080`, HTTPS)                          |
+| `pnpm dev:egress`           | azx-egress (`:8081`, fetch-proxy + secrets)        |
+| `pnpm dev:devgw`            | azx-dev-gateway (`:8082`, develop against env=dev) |
+| `pnpm dev:web`              | portal SPA (`:5173`, proxies `/api` to :3001)      |
+| `./check-and-lint.sh`       | Poor-man's CI: typecheck + lint + format + tests   |
 
 ## Conventions
 
