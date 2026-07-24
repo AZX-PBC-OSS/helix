@@ -52,7 +52,7 @@ only `snet-egress` out** (to any FQDN) plus a narrow platform allow-list, and
 **denies the apps subnet** (edge/portal) by default. Per
 [ADR-0005](../../docs/adr/0005-ssrf-egress-controls.md) this network-zone
 allow-list is the **primary** SSRF/egress control; the egress app's own
-`ssrf.ts` IP validation + header filtering is explicitly *defense-in-depth*
+`ssrf.ts` IP validation + header filtering is explicitly _defense-in-depth_
 behind it (ADR [0001](../../docs/adr/0001-three-runtime-split.md),
 [0013](../../docs/adr/0013-egress-trust-model.md)).
 
@@ -68,7 +68,7 @@ adoption barrier for a customer-deployed product, so it is **opt-out** via
   **default internet egress**. A compromised **edge can now reach the internet**
   directly, and the primary egress control is gone — only the egress app-level
   denylist (defense-in-depth, a validation surface that must be kept current)
-  remains, and it only governs traffic that actually goes *through* egress.
+  remains, and it only governs traffic that actually goes _through_ egress.
 - The isolation guarantee in the diagram above no longer holds; the
   isolation-verification checks below invert (edge outbound **succeeds**).
 
@@ -80,7 +80,7 @@ regardless of this flag. Turning the firewall off does **not** expose them.
 single-tenant install where you accept the app-level denylist as the outbound
 control. **When it is not:** production, or any install hosting untrusted /
 multi-tenant apps — keep the firewall (or your own equivalent network egress
-control). Cheaper options if you want *some* always-on control: Azure Firewall
+control). Cheaper options if you want _some_ always-on control: Azure Firewall
 **Basic** (~$290/mo, same FQDN model) or — losing FQDN filtering — NAT Gateway +
 NSGs. An NSG-only substitute cannot replicate the apps-subnet
 posture because the platform image pulls (GHCR/MCR) require **FQDN** rules NSGs
@@ -351,7 +351,7 @@ if a deploy misbehaves:
 
 - **Changing a secret value does not roll a new ACA revision.** Container Apps
   secrets are app-level, not part of the revision template, so a redeploy that only
-  changes secret *values* won't restart the apps to pick them up (a failed revision
+  changes secret _values_ won't restart the apps to pick them up (a failed revision
   will keep failing on the old value). After rotating a secret, force a new
   revision: `az containerapp update -g <rg> -n <app> --revision-suffix <tag>`.
 
