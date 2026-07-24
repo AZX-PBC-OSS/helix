@@ -88,6 +88,28 @@ can't express, which is why a firewall was chosen in the first place. For a
 temporary install, `az network firewall deallocate` also stops the hourly charge
 between test sessions without losing config.
 
+## Platform secret delivery ([ADR-0029](../../docs/adr/0029-platform-secret-delivery.md))
+
+The container apps receive their **platform/bootstrap** secrets (per-role Postgres
+DSNs, `EDGE_AUTH_SECRET`, `HELIX_INSTRUCTION_SECRET`, the edge OIDC cert) as
+**direct values injected by this deployment**, surfaced to the app as env vars
+(`containerapp.bicep`'s `secretValues`). The app reads only env vars — no Key
+Vault SDK — so it stays portable across clouds.
+
+**Why not ACA Key Vault references?** They resolve on the Container Apps **control
+plane, outside the VNet**, at revision-provisioning time, so they cannot read
+`kv-platform` (`publicNetworkAccess: Disabled`, private-endpoint only). ACA is not
+a Key Vault trusted service, so `networkAcls.bypass: AzureServices` doesn't admit
+it either. Direct injection sidesteps this entirely and keeps `kv-platform` fully
+private.
+
+`kv-platform` is still written at deploy (ARM management-plane, bypasses the
+firewall) as the **canonical store** for audit/rotation — it's just not on the
+provisioning path. **Connection** secrets are different: they stay in
+`kv-connections` and are read by egress **at runtime from inside the VNet** (a
+data-plane path that works with a private vault) via the `@azx-pbc/secret-store`
+seam ([ADR-0006](../../docs/adr/0006-secret-custody-seam.md)).
+
 ## Layout
 
 ```
@@ -272,6 +294,38 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
 - **Passwordless (Entra) Postgres auth** — a hardening follow-up; the MIs and
   blob RBAC roles are already granted so the switch is config-only.
 - **Audit-log shipping to immutable blob** — architecture §10 follow-up.
+
+## Known deploy gotchas
+
+Wrinkles hit during the first real deploy (franklin-energy smoketest). Check these
+if a deploy misbehaves:
+
+- **Key Vault private-endpoint DNS may not auto-register.** The two `kv-*` private
+  endpoints' `privateDnsZoneGroups` can report `Succeeded` yet leave
+  `privatelink.vault.azure.net` with **no A records** (the blob PE registered fine
+  in the same deploy; the vault PEs didn't, and re-creating the zone group didn't
+  fix it). Without the A records the vault FQDN won't resolve in the VNet, so any
+  in-VNet KV access (e.g. egress → `kv-connections` at runtime) fails. **Verify and
+  backfill after deploy:**
+
+  ```bash
+  az network private-dns record-set a list -g <rg> -z privatelink.vault.azure.net -o table
+  # if empty, add one A record per vault pointing at its PE NIC IP:
+  az network private-endpoint show -g <rg> -n <kv>-pe \
+    --query "customDnsConfigs[0].ipAddresses[0]" -o tsv
+  az network private-dns record-set a add-record -g <rg> \
+    -z privatelink.vault.azure.net -n <kv-name> -a <pe-ip>
+  ```
+
+- **Changing a secret value does not roll a new ACA revision.** Container Apps
+  secrets are app-level, not part of the revision template, so a redeploy that only
+  changes secret *values* won't restart the apps to pick them up (a failed revision
+  will keep failing on the old value). After rotating a secret, force a new
+  revision: `az containerapp update -g <rg> -n <app> --revision-suffix <tag>`.
+
+- **Provider registration can wedge.** `Microsoft.DBforPostgreSQL` (and friends) can
+  sit in `Registering` for a long time; re-issuing `az provider register -n <ns>`
+  nudges it to `Registered`.
 
 ## Verifying the isolation (post-deploy)
 

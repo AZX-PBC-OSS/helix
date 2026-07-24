@@ -295,7 +295,6 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
   ]
 }
 
-var platformVaultUri = keyvault.outputs.platformVaultUri
 var connectionsVaultUri = keyvault.outputs.connectionsVaultUri
 
 // ---------------------------------------------------------------------------
@@ -342,10 +341,10 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
     image: '${imageRegistry}/helix-egress:${imageTag}'
     targetPort: 8081
     external: false
-    secrets: [
-      { name: 'egress-database-url', keyVaultUrl: '${platformVaultUri}secrets/egress-database-url' }
-      { name: 'helix-instruction-secret', keyVaultUrl: '${platformVaultUri}secrets/helix-instruction-secret' }
-    ]
+    secretValues: {
+      'egress-database-url': egressDbConn
+      'helix-instruction-secret': instructionSecret
+    }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'EGRESS_PORT', value: '8081' }
@@ -371,13 +370,13 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     image: '${imageRegistry}/helix-edge:${imageTag}'
     targetPort: 8080
     external: true
-    secrets: [
-      { name: 'edge-database-url', keyVaultUrl: '${platformVaultUri}secrets/edge-database-url' }
-      { name: 'edge-oidc-private-key', keyVaultUrl: '${platformVaultUri}secrets/edge-oidc-private-key' }
-      { name: 'edge-oidc-certificate', keyVaultUrl: '${platformVaultUri}secrets/edge-oidc-certificate' }
-      { name: 'edge-auth-secret', keyVaultUrl: '${platformVaultUri}secrets/edge-auth-secret' }
-      { name: 'helix-instruction-secret', keyVaultUrl: '${platformVaultUri}secrets/helix-instruction-secret' }
-    ]
+    secretValues: {
+      'edge-database-url': edgeDbConn
+      'edge-oidc-private-key': edgeOidcPrivateKey
+      'edge-oidc-certificate': edgeOidcCertificate
+      'edge-auth-secret': edgeAuthSecret
+      'helix-instruction-secret': instructionSecret
+    }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'PORT', value: '8080' }
@@ -424,10 +423,10 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     image: '${imageRegistry}/helix-portal:${imageTag}'
     targetPort: 3001
     external: false // control plane: internal ingress only, not app-routable
-    secrets: [
-      { name: 'portal-database-url', keyVaultUrl: '${platformVaultUri}secrets/portal-database-url' }
-      { name: 'portal-secret', keyVaultUrl: '${platformVaultUri}secrets/portal-secret' }
-    ]
+    secretValues: {
+      'portal-database-url': portalDbConn
+      'portal-secret': portalSecret
+    }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'PORTAL_PORT', value: '3001' }
@@ -481,10 +480,10 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
     targetPort: 8082
     external: true
     command: ['pnpm', '--filter', '@azx-pbc/edge', 'start:devgw']
-    secrets: [
-      { name: 'edge-dev-database-url', keyVaultUrl: '${platformVaultUri}secrets/edge-dev-database-url' }
-      { name: 'helix-instruction-secret', keyVaultUrl: '${platformVaultUri}secrets/helix-instruction-secret' }
-    ]
+    secretValues: {
+      'edge-dev-database-url': devDbConn
+      'helix-instruction-secret': instructionSecret
+    }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'HOST', value: '0.0.0.0' }
