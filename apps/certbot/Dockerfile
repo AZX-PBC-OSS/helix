@@ -16,11 +16,14 @@
 # so each goes in its own venv. Build context is the repo root (matches CI).
 FROM python:3.12
 
-# certbot + the Azure DNS plugin, isolated. pyOpenSSL is pinned <24: the plugin
-# pulls josepy 1.x, which uses `crypto.X509Req`/`X509Extension` that pyOpenSSL 24+
-# removed (certbot then crashes on import).
+# certbot + the Azure DNS plugin, isolated. Two pins the plugin (2.6.x) needs:
+#  - pyOpenSSL<24: it pulls josepy 1.x, which uses crypto.X509Req/X509Extension
+#    that pyOpenSSL 24+ removed (certbot crashes on import otherwise);
+#  - azure-mgmt-dns<9: the plugin calls DnsManagementClient(cred, sub, None,
+#    base_url, ...) — positional api_version+base_url that 9.0 dropped.
 RUN python -m venv /opt/certbot \
- && /opt/certbot/bin/pip install --no-cache-dir "certbot>=3,<4" "certbot-dns-azure>=2,<3" "pyOpenSSL<24"
+ && /opt/certbot/bin/pip install --no-cache-dir \
+      "certbot>=3,<4" "certbot-dns-azure>=2,<3" "pyOpenSSL<24" "azure-mgmt-dns>=8,<9"
 
 # the az CLI, isolated, + the (preview) containerapp extension for cert/hostname.
 RUN python -m venv /opt/azcli \
