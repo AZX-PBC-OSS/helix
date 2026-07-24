@@ -11,13 +11,24 @@
 # Contributor on the zone) — then uploads the cert to the ACA environment and
 # (re)binds the edge's wildcard custom domain (needs Container Apps mgmt rights).
 #
-# No official certbot image carries the Azure DNS plugin, and we also need the
-# az CLI for the upload/bind, so we layer both onto the azure-cli image.
-# Build context is the repo root (matches the other images' CI build).
-FROM mcr.microsoft.com/azure-cli:2.64.0
+# certbot and the az CLI have CONFLICTING cryptography/pyOpenSSL pins (a shared
+# env breaks certbot's acme: "OpenSSL.crypto has no attribute X509Extension"),
+# so each goes in its own venv. Build context is the repo root (matches CI).
+FROM python:3.12
 
-# certbot + the third-party Azure DNS plugin (terrycain/certbot-dns-azure).
-RUN pip install --no-cache-dir "certbot>=3,<4" "certbot-dns-azure>=2,<3"
+# certbot + the Azure DNS plugin, isolated. pyOpenSSL is pinned <24: the plugin
+# pulls josepy 1.x, which uses `crypto.X509Req`/`X509Extension` that pyOpenSSL 24+
+# removed (certbot then crashes on import).
+RUN python -m venv /opt/certbot \
+ && /opt/certbot/bin/pip install --no-cache-dir "certbot>=3,<4" "certbot-dns-azure>=2,<3" "pyOpenSSL<24"
+
+# the az CLI, isolated, + the (preview) containerapp extension for cert/hostname.
+RUN python -m venv /opt/azcli \
+ && /opt/azcli/bin/pip install --no-cache-dir "azure-cli>=2.60" \
+ && /opt/azcli/bin/az extension add --name containerapp --yes
+
+# certbot + az on PATH (each resolves to its own venv; openssl is the system one).
+ENV PATH="/opt/certbot/bin:/opt/azcli/bin:${PATH}"
 
 COPY apps/certbot/issue-and-bind.sh /usr/local/bin/issue-and-bind.sh
 RUN chmod +x /usr/local/bin/issue-and-bind.sh
