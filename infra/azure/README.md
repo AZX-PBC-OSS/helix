@@ -44,6 +44,50 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
   and the `helix_dev` env-literal RLS keeps it off every production row. Off by
   default; see [`docs/features/dev-mode.md`](../../docs/features/dev-mode.md).
 
+## Optional: the egress firewall (`deployFirewall`)
+
+The Azure Firewall (Standard tier) is the enforcement point for the egress-only
+network zone: it forces both app subnets' `0.0.0.0/0` through itself, **allows
+only `snet-egress` out** (to any FQDN) plus a narrow platform allow-list, and
+**denies the apps subnet** (edge/portal) by default. Per
+[ADR-0005](../../docs/adr/0005-ssrf-egress-controls.md) this network-zone
+allow-list is the **primary** SSRF/egress control; the egress app's own
+`ssrf.ts` IP validation + header filtering is explicitly *defense-in-depth*
+behind it (ADR [0001](../../docs/adr/0001-three-runtime-split.md),
+[0013](../../docs/adr/0013-egress-trust-model.md)).
+
+It is also the single most expensive resource in the stack: **~$900/mo** for the
+Standard-tier deployment charge alone (a flat, always-on reservation — an idle
+firewall costs the same as a busy one), before data processing. That is a real
+adoption barrier for a customer-deployed product, so it is **opt-out** via
+`deployFirewall` (default **`true`** — secure by default).
+
+**What you lose when `deployFirewall=false`:**
+
+- The firewall and its forced-tunnel routes are not created; both app subnets get
+  **default internet egress**. A compromised **edge can now reach the internet**
+  directly, and the primary egress control is gone — only the egress app-level
+  denylist (defense-in-depth, a validation surface that must be kept current)
+  remains, and it only governs traffic that actually goes *through* egress.
+- The isolation guarantee in the diagram above no longer holds; the
+  isolation-verification checks below invert (edge outbound **succeeds**).
+
+**What you keep either way:** all data services stay private — Postgres, Blob,
+and both Key Vaults remain private-endpoint-only (`publicNetworkAccess` disabled)
+regardless of this flag. Turning the firewall off does **not** expose them.
+
+**When off is acceptable:** dev, smoketest/integration scaffolding, or a trusted
+single-tenant install where you accept the app-level denylist as the outbound
+control. **When it is not:** production, or any install hosting untrusted /
+multi-tenant apps — keep the firewall (or your own equivalent network egress
+control). Cheaper options if you want *some* always-on control: Azure Firewall
+**Basic** (~$290/mo, same FQDN model) or — losing FQDN filtering — NAT Gateway +
+NSGs. An NSG-only substitute cannot replicate the apps-subnet
+posture because the platform image pulls (GHCR/MCR) require **FQDN** rules NSGs
+can't express, which is why a firewall was chosen in the first place. For a
+temporary install, `az network firewall deallocate` also stops the hourly charge
+between test sessions without losing config.
+
 ## Layout
 
 ```
@@ -230,6 +274,11 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
 - **Audit-log shipping to immutable blob** — architecture §10 follow-up.
 
 ## Verifying the isolation (post-deploy)
+
+> Assumes `deployFirewall=true` (the default). With the firewall **off**, the
+> edge outbound check below **succeeds** instead of failing — the egress-only
+> zone is not enforced (see "Optional: the egress firewall"). The private
+> data-services checks hold regardless of the flag.
 
 ```bash
 # from an edge replica console: outbound internet must FAIL, egress must succeed

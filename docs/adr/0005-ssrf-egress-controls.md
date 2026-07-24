@@ -40,4 +40,19 @@ IP-pinning **verified to defeat DNS-rebind** (refuted a reviewer's "socket not p
 
 WEAKEN — ISSUE-01/02/09/10 above all re-confirmed; the SNI-preservation refutation holds (`servername: target.hostname`). One **new, undocumented** gap (filed **#11**): egress injects a connection secret over **cleartext `http://`** — `proxy.ts:97-99` accepts `http:`, and secret injection (`:108-121`, `applyInjection`) applies no `target.protocol` guard. Require `https://` on any secret-backed origin. (Response-header safelist → **#7**; body-size cap → **#8**; IPv6 ranges → **#2**.) Also reframe: the IP denylist is defense-in-depth — the network-zone egress allowlist (ADR-0001) is the primary control.
 
+## Deployment note (2026-07-23, `deployFirewall`)
+
+The network-zone egress allow-list named here as the **primary control** is
+realized on Azure by the Azure Firewall in `infra/azure` (deny-by-default; only
+`snet-egress` is allowed out). That firewall is now **operator-optional**
+(`deployFirewall`, default `true`) because its ~$900/mo flat cost is an adoption
+barrier for a customer-deployed product. **Turning it off removes this ADR's
+primary control**, demoting the outbound posture to the app-level `ssrf.ts`
+denylist (the defense-in-depth surface described above) and letting the edge
+reach the internet directly. This is acceptable only for dev / smoketest /
+trusted single-tenant installs; production and untrusted/multi-tenant hosting
+must keep it (or an equivalent network egress control). Data-plane privacy
+(private endpoints on Postgres/Blob/KV) is independent of the flag. See
+`infra/azure/README.md` → "Optional: the egress firewall".
+
 **Perf note (Resolved):** egress originally built a **fresh undici `Agent` per request** because the dispatcher carried the per-request pinned IP + `servername` (SNI), which defeated cross-request connection pooling (a TCP+TLS handshake per outbound call) — an accepted simplicity-for-isolation trade. This is now **optimized**: `makeProxyHandler` holds **one long-lived shared `Agent`** (closed on app teardown via a Fastify `onClose` hook) whose connector — built with `buildConnector` — runs `resolveAndValidate` and **pins the socket to the validated IP on every new connection**, then hands off to the default connector with `servername` pinned to the real hostname. The request dials the **real origin** (undici pools by origin and derives Host/SNI from it), so keep-alive is recovered (a `proxy.test.ts` case asserts one TCP connection across six requests). The IP-pin is unweakened: validation runs per *new* socket, a pooled/keep-alive socket is already bonded to a validated IP (so reuse can't reach a rebound address and the next fresh socket re-validates), and a blocked/unresolvable host throws `SsrfBlockedError` from the connector, which undici propagates verbatim to the `request()` rejection where the handler maps it to `403 blocked` — preserving the old upfront-check semantics.

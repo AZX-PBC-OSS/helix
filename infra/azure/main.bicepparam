@@ -37,6 +37,14 @@ param imageTag = readEnvironmentVariable('HELIX_IMAGE_TAG', 'latest')
 // helix_dev role (README step 4) and the pre-deploy riders in the feature doc.
 param deployDevGateway = false
 
+// Egress firewall (ADR-0001/0005). true = deploy the Azure Firewall that enforces
+// the egress-only network zone (the PRIMARY SSRF/egress control). Secure default.
+// false skips it to save ~$900/mo but drops that control (a compromised edge can
+// then reach the internet; only the egress app-level denylist remains). Data
+// services stay private either way. Disable ONLY for dev/smoketest/trusted
+// installs — see README "Optional: the egress firewall".
+param deployFirewall = true
+
 // Fastify trustProxy for the edge — the ACA Envoy ingress hop count. "1" is the
 // usual single-hop value; VERIFY against the live ingress (issue #13).
 param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', '1')

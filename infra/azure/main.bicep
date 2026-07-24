@@ -131,6 +131,9 @@ param deployApps bool = false
 @description('Opt-in dev-gateway (dev-mode design §3): the cross-origin dev surface on dev-api.<appsDomain>, run as helix_dev. Off by default — enabling it needs the helix_dev role + password (README step 4) and the pre-deploy riders in docs/features/dev-mode.md. Only takes effect together with deployApps=true.')
 param deployDevGateway bool = false
 
+@description('Deploy the Azure Firewall that enforces the egress-only network zone (ADR-0001) — the PRIMARY SSRF/egress control per ADR-0005. Default true (secure by default). Setting false SKIPS the firewall + its forced-tunnel routes to save ~$900/mo: the apps subnet then gets default internet egress, so a compromised edge can reach the internet and the only remaining outbound control is the egress app-level denylist (defense-in-depth). Data services stay private (private endpoints) either way. Only disable for dev / smoketest / trusted single-tenant installs — NOT production or untrusted-app hosting. See README "Optional: the egress firewall".')
+param deployFirewall bool = true
+
 @description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — VERIFY against the live ingress before relying on per-client limits; a too-trusting value makes X-Forwarded-For spoofable.')
 param edgeTrustProxy string = '1'
 
@@ -161,7 +164,13 @@ module network 'modules/network.bicep' = {
   }
 }
 
-module firewall 'modules/firewall.bicep' = {
+// The egress-zone enforcement point (ADR-0001 / ADR-0005). Optional: when
+// deployFirewall=false the firewall and its forced-tunnel default routes are
+// skipped, leaving the app subnets with default internet egress (see the param
+// doc + README for the security trade-off). The route tables themselves stay
+// (created empty in routing.bicep) — an empty UDR is a no-op, so both subnets
+// fall back to system routing.
+module firewall 'modules/firewall.bicep' = if (deployFirewall) {
   name: 'firewall'
   params: {
     location: location
