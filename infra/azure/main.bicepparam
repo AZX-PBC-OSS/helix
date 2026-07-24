@@ -8,6 +8,12 @@ param storageAccountName = 'helixprodbundles'
 param platformVaultName = 'helix-prod-kvp'
 param connectionsVaultName = 'helix-prod-kvc'
 param postgresServerName = 'helix-prod-pg'
+// Postgres compute. Burstable (Standard_B1ms / Standard_B2s) is plenty for light
+// or smoketest installs; GeneralPurpose Standard_D2ds_v5 is the default here.
+// skuTier must match the SKU family: Burstable | GeneralPurpose | MemoryOptimized.
+param postgresSkuName = 'Standard_D2ds_v5'
+param postgresSkuTier = 'GeneralPurpose'
+param postgresStorageSizeGB = 32
 param appsDomain = 'azx.helix.azxlabs.io'
 
 // Entra / OIDC. Fill in once the app registrations exist (operator step, or the

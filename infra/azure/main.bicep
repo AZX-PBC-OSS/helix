@@ -39,6 +39,15 @@ param connectionsVaultName string
 @description('Postgres flexible server name (globally unique, lowercase).')
 param postgresServerName string
 
+@description('Postgres compute SKU (e.g. Standard_B1ms/B2s burstable, Standard_D2ds_v5 general purpose).')
+param postgresSkuName string = 'Standard_D2ds_v5'
+
+@description('Postgres compute tier. Must match the SKU family: Burstable | GeneralPurpose | MemoryOptimized.')
+param postgresSkuTier string = 'GeneralPurpose'
+
+@description('Postgres storage size in GB.')
+param postgresStorageSizeGB int = 32
+
 @description('Public apps domain, e.g. azx.helix.azxlabs.io.')
 param appsDomain string = 'azx.helix.azxlabs.io'
 
@@ -209,6 +218,9 @@ module postgres 'modules/postgres.bicep' = {
     delegatedSubnetId: network.outputs.postgresSubnetId
     privateDnsZoneId: privateDns.outputs.postgresZoneId
     databaseName: 'helix'
+    skuName: postgresSkuName
+    skuTier: postgresSkuTier
+    storageSizeGB: postgresStorageSizeGB
   }
 }
 
