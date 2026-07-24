@@ -148,7 +148,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: [edge, portal, egress]
+        # edge/portal/egress are the runtime apps; certbot is the wildcard-TLS
+        # automation image (scheduled ACA Job, not an app) — same build path.
+        app: [edge, portal, egress, certbot]
 
     steps:
       - uses: actions/checkout@v4

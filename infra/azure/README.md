@@ -110,6 +110,38 @@ provisioning path. **Connection** secrets are different: they stay in
 data-plane path that works with a private vault) via the `@azx-pbc/secret-store`
 seam ([ADR-0006](../../docs/adr/0006-secret-custody-seam.md)).
 
+## Wildcard TLS (`deployCertbot`, [ADR-0029](../../docs/adr/0029-platform-secret-delivery.md))
+
+Apps live on per-app subdomains (`<app>.<appsDomain>`, ADR-0019), so serving them
+over HTTPS needs a **wildcard cert** `*.<appsDomain>`. ACA managed certificates
+don't do wildcards, so `deployCertbot=true` stands up **`apps/certbot`** — a
+scheduled Container Apps Job (not an app/sidecar; TLS terminates at ingress) that:
+
+1. issues/renews `*.<appsDomain>` (+ apex) from Let's Encrypt via **DNS-01**
+   (`certbot-dns-azure` writes the `_acme-challenge` TXT using the job's managed
+   identity — DNS Zone Contributor on the zone),
+2. uploads the cert to the **ACA environment cert store** (not Key Vault — same
+   control-plane-can't-reach-a-private-vault reason as ADR-0029), and
+3. binds the **wildcard custom domain** on the edge.
+
+It renews on a daily cron. Requires `acmeEmail`; defaults to the **LE staging**
+directory (`acmeServer`) — validate the flow there, then flip `acmeServer` to the
+prod directory.
+
+**Bootstrap (one-time, after deploy):** the cert must exist before the domain can
+bind, so trigger the job once:
+
+```bash
+# ensure the ownership record exists (asuid TXT), then run the job:
+az containerapp job start -g <rg> -n <namePrefix>-certbot
+# watch it: az containerapp job execution list -g <rg> -n <namePrefix>-certbot
+```
+
+The `asuid.<appsDomain>` TXT (`domainVerificationId`) must be present for the bind
+to validate — set `domainVerificationId` (the edge app's
+`customDomainVerificationId`) so `dns.bicep` writes it, or add it out-of-band
+before the first bootstrap run.
+
 ## Layout
 
 ```

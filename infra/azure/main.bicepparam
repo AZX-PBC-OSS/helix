@@ -45,6 +45,15 @@ param deployDevGateway = false
 // installs — see README "Optional: the egress firewall".
 param deployFirewall = true
 
+// Wildcard TLS automation (apps/certbot, ADR-0029). true = deploy the certbot
+// scheduled job that issues/renews *.appsDomain via ACME DNS-01 and binds the
+// edge wildcard custom domain. Needs acmeEmail (skipped when empty). acmeServer
+// defaults to LE staging — flip to the prod directory once validated. Bootstrap:
+// trigger the job once after deploy (see README "Wildcard TLS").
+param deployCertbot = true
+param acmeEmail = readEnvironmentVariable('HELIX_ACME_EMAIL', '')
+param acmeServer = readEnvironmentVariable('HELIX_ACME_SERVER', 'https://acme-staging-v02.api.letsencrypt.org/directory')
+
 // Fastify trustProxy for the edge — the ACA Envoy ingress hop count. "1" is the
 // usual single-hop value; VERIFY against the live ingress (issue #13).
 param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', '1')

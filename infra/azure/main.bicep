@@ -134,6 +134,15 @@ param deployDevGateway bool = false
 @description('Deploy the Azure Firewall that enforces the egress-only network zone (ADR-0001) — the PRIMARY SSRF/egress control per ADR-0005. Default true (secure by default). Setting false SKIPS the firewall + its forced-tunnel routes to save ~$900/mo: the apps subnet then gets default internet egress, so a compromised edge can reach the internet and the only remaining outbound control is the egress app-level denylist (defense-in-depth). Data services stay private (private endpoints) either way. Only disable for dev / smoketest / trusted single-tenant installs — NOT production or untrusted-app hosting. See README "Optional: the egress firewall".')
 param deployFirewall bool = true
 
+@description('Deploy the certbot wildcard-TLS automation job (apps/certbot, ADR-0029): a scheduled Container Apps Job that issues/renews the *.<appsDomain> Let\'s Encrypt cert via DNS-01 and binds the edge wildcard custom domain. Requires acmeEmail. Only takes effect with deployApps=true.')
+param deployCertbot bool = true
+
+@description('ACME registration / expiry-notice email for the wildcard cert. REQUIRED for wildcard TLS — certbot is skipped when this is empty.')
+param acmeEmail string = ''
+
+@description('ACME directory URL. Default = Let\'s Encrypt STAGING (untrusted cert, high rate limits); set the prod directory (https://acme-v02.api.letsencrypt.org/directory) once the flow is validated.')
+param acmeServer string = 'https://acme-staging-v02.api.letsencrypt.org/directory'
+
 @description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — VERIFY against the live ingress before relying on per-client limits; a too-trusting value makes X-Forwarded-For spoofable.')
 param edgeTrustProxy string = '1'
 
@@ -519,6 +528,32 @@ module dns 'modules/dns.bicep' = {
     domainVerificationId: domainVerificationId
     deployDevGateway: deployDevGateway
   }
+}
+
+// ---------------------------------------------------------------------------
+// Wildcard TLS automation (apps/certbot, ADR-0029). Scheduled job that issues +
+// renews *.<appsDomain> via ACME DNS-01 and binds the edge wildcard custom
+// domain. Bootstrap: trigger once after deploy (the cert must exist before the
+// bind). Skipped without an acmeEmail.
+// ---------------------------------------------------------------------------
+
+module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !empty(acmeEmail)) {
+  name: 'certbot'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    appsDomain: appsDomain
+    acaEnvName: '${namePrefix}-apps-env'
+    acaEnvId: appsEnv.outputs.environmentId
+    edgeAppName: '${namePrefix}-edge'
+    image: '${imageRegistry}/helix-certbot:${imageTag}'
+    acmeEmail: acmeEmail
+    acmeServer: acmeServer
+  }
+  dependsOn: [
+    edgeApp
+    dns
+  ]
 }
 
 // ---------------------------------------------------------------------------
