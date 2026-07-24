@@ -44,7 +44,7 @@ param devPrincipalId string
 var blobDataReaderRoleId = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var blobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
-var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee7-ecca2c97b03e'
+var kvSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
