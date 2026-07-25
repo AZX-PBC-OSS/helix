@@ -142,6 +142,28 @@ to validate — set `domainVerificationId` (the edge app's
 `customDomainVerificationId`) so `dns.bicep` writes it, or add it out-of-band
 before the first bootstrap run.
 
+## Portal access (`portalExternal`, [ADR-0007](../../docs/adr/0007-portal-authz-v0.md))
+
+The **edge** (app-serving) is public; the **portal** (control plane + `azx-cli`
+target) is **internal ingress by default** — which means nobody can actually
+deploy or manage anything until you make it reachable. Under
+[ADR-0028](../../docs/adr/0028-deployment-model-customer-deployed.md) the customer
+runs it themselves, so this can't be left as an out-of-band operator chore.
+
+`portalExternal=true` serves the portal at `portal.<appsDomain>` on the public LB,
+**gated by Entra OIDC** (portal audience + the `platform-admin` App Role), with
+per-app authz enforced by `ownsApp` (ADR-0007, issue #9 closed). When set, the
+certbot job also binds `portal.<appsDomain>` to the wildcard cert. The perimeter
+is **identity + device posture** (Entra Conditional Access) — deliberately **not**
+IP-allowlists or a bastion, which don't fit a remote team. A specific
+`portal.<appsDomain>` hostname on the portal app takes precedence over the edge
+wildcard in the shared environment.
+
+Default is **false** (internal, secure-by-default); flip it per install. For a
+zero-public-exposure posture instead, keep it internal and reach it via a VNet
+path (VPN / Tailscale / Front Door + Private Link) — but that's friction a
+customer-run, remote-team install usually doesn't want.
+
 ## Layout
 
 ```

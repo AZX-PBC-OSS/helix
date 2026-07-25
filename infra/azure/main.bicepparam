@@ -54,6 +54,13 @@ param deployCertbot = true
 param acmeEmail = readEnvironmentVariable('HELIX_ACME_EMAIL', '')
 param acmeServer = readEnvironmentVariable('HELIX_ACME_SERVER', 'https://acme-staging-v02.api.letsencrypt.org/directory')
 
+// Portal access. false = internal ingress (secure default). true = expose the
+// control plane at portal.<appsDomain> on the public LB, gated by Entra OIDC
+// (per-app authz via ownsApp, ADR-0007). A customer-run install (ADR-0028)
+// generally needs this — the portal is the control plane + azx-cli target. See
+// README "Portal access".
+param portalExternal = false
+
 // Fastify trustProxy for the edge — the ACA Envoy ingress hop count. "1" is the
 // usual single-hop value; VERIFY against the live ingress (issue #13).
 param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', '1')

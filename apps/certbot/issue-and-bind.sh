@@ -73,4 +73,20 @@ az containerapp hostname add -g "${RG}" -n "${EDGE_APP}" \
 az containerapp hostname bind -g "${RG}" -n "${EDGE_APP}" \
   --hostname "*.${APPS_DOMAIN}" --environment "${ACA_ENV}" --certificate "${CERT_ID}"
 
+# --- optional: the control-plane portal on portal.<APPS_DOMAIN> ---------------
+# A specific hostname on the portal app; Envoy routes it there ahead of the edge
+# wildcard. Needs its own asuid.<label> ownership TXT (the wildcard used asuid at
+# the apex) — the job's DNS Zone Contributor role writes it. The wildcard cert
+# covers this host, so it reuses ${CERT_ID}; ACA updates the cert in place on
+# renewal, so the binding tracks it.
+if [ -n "${PORTAL_APP:-}" ] && [ -n "${PORTAL_HOSTNAME:-}" ]; then
+  echo "== bind ${PORTAL_HOSTNAME} on ${PORTAL_APP} =="
+  VID="$(az containerapp show -g "${RG}" -n "${PORTAL_APP}" --query "properties.customDomainVerificationId" -o tsv)"
+  az network dns record-set txt add-record -g "${DNS_ZONE_RG}" -z "${APPS_DOMAIN}" \
+    -n "asuid.${PORTAL_HOSTNAME%%.*}" --value "${VID}" >/dev/null 2>&1 || true
+  az containerapp hostname add -g "${RG}" -n "${PORTAL_APP}" --hostname "${PORTAL_HOSTNAME}" 2>/dev/null || true
+  az containerapp hostname bind -g "${RG}" -n "${PORTAL_APP}" \
+    --hostname "${PORTAL_HOSTNAME}" --environment "${ACA_ENV}" --certificate "${CERT_ID}"
+fi
+
 echo "== done: *.${APPS_DOMAIN} bound to ${CERT_NAME} =="

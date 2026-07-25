@@ -37,6 +37,9 @@ param acaEnvId string
 @description('Edge container app name (the wildcard custom domain binds here).')
 param edgeAppName string
 
+@description('Portal app name to also bind portal.<appsDomain> to (when the portal is external). Empty = skip the portal binding.')
+param portalAppName string = ''
+
 @description('certbot image, e.g. ghcr.io/azx-pbc-oss/helix-certbot:sha-xxxx.')
 param image string
 
@@ -66,6 +69,9 @@ resource acaEnv 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
 resource edgeApp 'Microsoft.App/containerApps@2024-03-01' existing = {
   name: edgeAppName
 }
+resource portalApp 'Microsoft.App/containerApps@2024-03-01' existing = if (!empty(portalAppName)) {
+  name: portalAppName
+}
 
 resource dnsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(dnsZone.id, certbotIdentity.id, dnsZoneContributorRoleId)
@@ -88,6 +94,15 @@ resource envRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 resource edgeRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(edgeApp.id, certbotIdentity.id, contributorRoleId)
   scope: edgeApp
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleId)
+    principalId: certbotIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+resource portalRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(portalAppName)) {
+  name: guid(resourceGroup().id, portalAppName, certbotIdentity.id, contributorRoleId)
+  scope: portalApp
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleId)
     principalId: certbotIdentity.properties.principalId
@@ -135,6 +150,8 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
             { name: 'RG', value: resourceGroup().name }
             { name: 'ACA_ENV', value: acaEnvName }
             { name: 'EDGE_APP', value: edgeAppName }
+            { name: 'PORTAL_APP', value: portalAppName }
+            { name: 'PORTAL_HOSTNAME', value: empty(portalAppName) ? '' : 'portal.${appsDomain}' }
           ]
         }
       ]

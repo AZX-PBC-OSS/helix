@@ -143,6 +143,9 @@ param acmeEmail string = ''
 @description('ACME directory URL. Default = Let\'s Encrypt STAGING (untrusted cert, high rate limits); set the prod directory (https://acme-v02.api.letsencrypt.org/directory) once the flow is validated.')
 param acmeServer string = 'https://acme-staging-v02.api.letsencrypt.org/directory'
 
+@description('Expose the portal on the public LB at portal.<appsDomain>, gated by Entra OIDC (portal audience + platform-admin App Role). Default false (internal ingress — secure by default). The portal is the control plane + the azx-cli target, so a customer-run install (ADR-0028) generally needs it reachable; per-app authz is enforced by ownsApp (ADR-0007, issue #9 closed), and identity/device posture is the perimeter (Conditional Access), not network location. When true the certbot job also binds portal.<appsDomain>. See README "Portal access".')
+param portalExternal bool = false
+
 @description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — VERIFY against the live ingress before relying on per-client limits; a too-trusting value makes X-Forwarded-For spoofable.')
 param edgeTrustProxy string = '1'
 
@@ -431,7 +434,7 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     userAssignedIdentityId: identity.outputs.portalIdentityId
     image: '${imageRegistry}/helix-portal:${imageTag}'
     targetPort: 3001
-    external: false // control plane: internal ingress only, not app-routable
+    external: portalExternal // internal by default; portalExternal exposes it on the public LB (Entra-gated)
     secretValues: {
       'portal-database-url': portalDbConn
       'portal-secret': portalSecret
@@ -546,12 +549,15 @@ module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !emp
     acaEnvName: '${namePrefix}-apps-env'
     acaEnvId: appsEnv.outputs.environmentId
     edgeAppName: '${namePrefix}-edge'
+    // When the portal is external, certbot also binds portal.<appsDomain> to it.
+    portalAppName: portalExternal ? '${namePrefix}-portal' : ''
     image: '${imageRegistry}/helix-certbot:${imageTag}'
     acmeEmail: acmeEmail
     acmeServer: acmeServer
   }
   dependsOn: [
     edgeApp
+    portalApp
     dns
   ]
 }
