@@ -50,7 +50,7 @@ openssl pkcs12 -export -out /tmp/cert.pfx \
 
 # --- authenticate as the managed identity -----------------------------------
 echo "== az login (managed identity ${MI_CLIENT_ID}) =="
-az login --identity --username "${MI_CLIENT_ID}" >/dev/null
+az login --identity --client-id "${MI_CLIENT_ID}" >/dev/null
 az account set --subscription "${AZURE_SUBSCRIPTION_ID}"
 
 # --- upload to the ACA environment cert store -------------------------------
