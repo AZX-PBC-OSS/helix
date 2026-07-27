@@ -1,7 +1,11 @@
 # 0026. Hosted-build isolation prerequisites (the build-step boundary shift)
 
-**Status:** Proposed (2026-06-26)
-**Related:** ADR [0018](0018-deploy-model-immutable-versions.md) (upload-only, immutable versions — the model this would extend), [0020](0020-static-only-apps-v1.md) (static-only apps), [0001](0001-three-runtime-split.md) (the credential-free / network-zoned isolation pattern a builder must reuse), [0006](0006-secret-custody-seam.md) (SecretStore custody). **Design:** `docs/design/git-connections.md`.
+**Status:** Proposed (2026-06-26) — **in force but displaced in practice by ADR [0030](0030-repo-backed-apps-pull-attested-artifacts.md) (2026-07-27).**
+**Related:** ADR [0030](0030-repo-backed-apps-pull-attested-artifacts.md) (repo-backed apps by pulling CI-built attested artifacts — the cheaper path that removes the motivation for hosted builds), [0018](0018-deploy-model-immutable-versions.md) (upload-only, immutable versions — the model this would extend), [0020](0020-static-only-apps-v1.md) (static-only apps), [0001](0001-three-runtime-split.md) (the credential-free / network-zoned isolation pattern a builder must reuse), [0006](0006-secret-custody-seam.md) (SecretStore custody). **Design:** `docs/design/git-connections.md`.
+
+> **Read this with ADR [0030](0030-repo-backed-apps-pull-attested-artifacts.md).** Repo-backed apps now reach production by having the **author's CI** build and publish an attested artifact that Helix *pulls* — the platform runs no build at all. That makes gates 1–3 below moot (there is no builder to make credential-free, ephemeral, or network-restricted) and satisfies gate 4 **more strongly** than a Helix-run builder could: a Sigstore-signed `actions/attest-build-provenance` attestation is a *third-party* claim about origin, whereas a compromised in-house builder can always forge its own self-attestation.
+>
+> This ADR is **not superseded.** Hosted builds remain a plausible later rung — ADR [0030](0030-repo-backed-apps-pull-attested-artifacts.md) assumes the author has working CI, which many vibe-coding authors will not. If that rung is ever built, **every gate below still applies unchanged.**
 
 ## Context
 
