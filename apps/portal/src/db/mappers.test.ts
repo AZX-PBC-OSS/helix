@@ -78,6 +78,8 @@ describe("row mappers validate against the shared schema", () => {
       archivedAt: null,
       createdAt: NOW.toISOString(),
       updatedAt: NOW.toISOString(),
+      // Composed from the deployment's apps base so clients never template it.
+      url: "https://cost-explorer.local.helix.azxlabs.io:8080",
     });
   });
 

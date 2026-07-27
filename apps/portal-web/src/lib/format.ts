@@ -32,33 +32,6 @@ export function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-/**
- * Where apps are served, as reachable by this browser (architecture §4.1).
- * Carries scheme + host + port of the edge; the slug is prepended.
- */
-const APP_PUBLIC_BASE = new URL(
-  (import.meta.env.VITE_APP_PUBLIC_BASE as string | undefined) ??
-    "https://local.helix.azxlabs.io:8080",
-);
-
-export function appHost(slug: string): string {
-  return `${slug}.${APP_PUBLIC_BASE.host}`;
-}
-
-export function appUrl(slug: string): string {
-  return `${APP_PUBLIC_BASE.protocol}//${appHost(slug)}`;
-}
-
-/**
- * Where the dev-gateway (`dev-api.<base>`, a separate process/port) is reachable
- * from this browser (dev-mode design §3). The app slug is in the PATH, not the
- * host — this base is the prefix a dev app points its `/_api/*` calls at.
- */
-const DEV_API_BASE = new URL(
-  (import.meta.env.VITE_DEV_API_BASE as string | undefined) ??
-    "https://dev-api.local.helix.azxlabs.io:8082",
-);
-
-export function devApiBaseUrl(slug: string): string {
-  return `${DEV_API_BASE.protocol}//${DEV_API_BASE.host}/${slug}`;
-}
+// Deployment topology (apps base, dev-gateway base, spend cap) is NOT here: it
+// used to be burned in from `import.meta.env` at build time, which meant the
+// prebuilt bundle showed dev domains in every deployment. See lib/deployment.ts.

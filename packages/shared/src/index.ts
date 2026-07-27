@@ -8,6 +8,7 @@ export * from "./approval.js";
 export * from "./health.js";
 export * from "./api.js";
 export * from "./auth.js";
+export * from "./deployment.js";
 export * from "./scrypt.js";
 export * from "./llm.js";
 export * from "./pricing.js";

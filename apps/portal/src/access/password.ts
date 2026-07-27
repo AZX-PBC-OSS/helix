@@ -107,13 +107,3 @@ export function decryptPassword(enc: string): string {
     "utf8",
   );
 }
-
-/**
- * The app's public URL (`https://<slug>.<base>`), built from `APP_PUBLIC_BASE`
- * exactly like the stopgap dashboard (routes/dashboard.ts). Handed back with
- * the credential so the UI can offer a one-click "copy URL + password".
- */
-export function appPublicUrl(slug: string): string {
-  const base = new URL(process.env.APP_PUBLIC_BASE ?? "http://local.helix.azxlabs.io:8080");
-  return `${base.protocol}//${slug}.${base.host}`;
-}

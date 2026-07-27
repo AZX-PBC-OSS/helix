@@ -28,11 +28,13 @@ import {
   ToneBadge,
   VisibilityBadge,
 } from "../components/primitives";
-import { appHost, appUrl, timeAgo } from "../lib/format";
+import { timeAgo } from "../lib/format";
+import { useDeployment } from "../lib/deployment";
 import { appStatus, awaitingPromote, deployCadence, liveVersion } from "../lib/appStatus";
 import { useDeploy } from "../modals/DeployContext";
 
 function AppCard({ app }: { app: App }) {
+  const { hostFor } = useDeployment();
   const versions = useQuery(versionsQuery(app.slug));
   const vs = versions.data ?? [];
   const status = appStatus(app, vs);
@@ -67,7 +69,7 @@ function AppCard({ app }: { app: App }) {
               {app.displayName}
             </Text>
             <Text className="az-mono" fz={11.5} c="dark.2" mt={3} truncate>
-              {appHost(app.slug)}
+              {hostFor(app)}
             </Text>
           </Box>
         </Group>
@@ -121,6 +123,7 @@ type Filter = "all" | "live" | "preview" | "archived";
 
 export function AppsListPage() {
   const apps = useQuery(appsQuery);
+  const { appHost, appUrl } = useDeployment();
   const { openDeploy } = useDeploy();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -148,7 +151,9 @@ export function AppsListPage() {
   return (
     <div>
       <PageHead
-        eyebrow={`Workspace · ${appHost("<slug>")}`}
+        // The apps domain arrives with the deployment config; until it does, the
+        // eyebrow is just "Workspace" rather than a guessed host.
+        eyebrow={["Workspace", appHost("<slug>")].filter(Boolean).join(" · ")}
         title="My Apps"
         sub="Static apps you've deployed."
         actions={
@@ -225,12 +230,19 @@ export function AppsListPage() {
               {list.length === 0 ? (
                 <>
                   Create one here or from the CLI —{" "}
-                  <Anchor onClick={() => openDeploy()}>deploy your first app</Anchor>. It will be
-                  served at{" "}
-                  <Text component="span" className="az-mono" fz={12}>
-                    {appUrl("<slug>")}
-                  </Text>
-                  .
+                  <Anchor onClick={() => openDeploy()}>deploy your first app</Anchor>.
+                  {/* Drop the "served at" clause entirely until the deployment
+                      config lands — a half-rendered URL is worse than none. */}
+                  {appUrl("<slug>") && (
+                    <>
+                      {" "}
+                      It will be served at{" "}
+                      <Text component="span" className="az-mono" fz={12}>
+                        {appUrl("<slug>")}
+                      </Text>
+                      .
+                    </>
+                  )}
                 </>
               ) : (
                 "Try a different filter or search."

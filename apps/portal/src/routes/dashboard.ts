@@ -1,18 +1,18 @@
 import type { FastifyInstance } from "fastify";
+import { resolveAppPublicBase } from "../deployment.js";
 
 /**
  * Barebones demo dashboard: an open, unstyled HTML index of every registered
  * app with a link to its live site. The real portal dashboard is deferred
  * past M5 (project plan §4) — this is a stopgap for demos.
  *
- * Links target `<slug>.` prepended to `APP_PUBLIC_BASE`, which carries the
- * scheme, base domain, and port of the edge as reachable by the user
- * (architecture §4.1). Defaults to `http://local.helix.azxlabs.io:8080`, the local dev
- * edge; set `https://azx.helix.azxlabs.io` for prod.
+ * Links target `<slug>.` prepended to the deployment's apps base, which carries
+ * the scheme, base domain, and port of the edge as reachable by the user
+ * (architecture §4.1) — see `deployment.ts`.
  */
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", async (_req, reply) => {
-    const base = new URL(process.env.APP_PUBLIC_BASE ?? "http://local.helix.azxlabs.io:8080");
+    const base = resolveAppPublicBase();
     const apps = await app.prisma.app.findMany({
       orderBy: { createdAt: "asc" },
       include: { currentVersion: true },

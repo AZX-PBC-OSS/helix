@@ -12,16 +12,7 @@ import {
 } from "../../components/usageCharts";
 import { Eyebrow, Hint, PageHead, Stat, ToneBadge } from "../../components/primitives";
 import { fmtCount, fmtUsd } from "../../lib/format";
-
-/**
- * Month-to-date platform spend ceiling (USD), for the display-only budget alert.
- * Configured per-deploy; the platform rollup is exact (gateway is the choke
- * point), so this is a watch line, not an enforced kill-switch. `0`/unset ⇒ no
- * ceiling shown.
- */
-const PLATFORM_MONTHLY_USD_CAP = Number(
-  (import.meta.env.VITE_PLATFORM_MONTHLY_USD_CAP as string | undefined) ?? 1000,
-);
+import { useDeployment } from "../../lib/deployment";
 
 /** Distinct colors for the capability-mix donut, cycled by index. */
 const CAP_COLORS = [
@@ -64,6 +55,7 @@ export function PlatformPage() {
   const [metric, setMetric] = useState<UsageMetric>("cost");
   const apps = useQuery(appsQuery);
   const platform = useQuery(platformUsageQuery(range));
+  const { platformMonthlyUsdCap } = useDeployment();
 
   const total = apps.data?.length ?? 0;
   const live = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
@@ -81,11 +73,15 @@ export function PlatformPage() {
   const mixTotal = p?.capabilityMix.reduce((s, c) => s + c.tokens, 0) ?? 0;
   const metricSeries = p?.series.map((pt) => metricValue(pt, metric)) ?? [];
 
-  // Display-only spend-ceiling watch: MTD spend vs the configured platform cap.
+  // Display-only spend-ceiling watch: MTD spend vs the deployment's platform cap
+  // (PLATFORM_MONTHLY_USD_CAP, served by GET /api/v1/config). The platform rollup
+  // is exact — the gateway is the choke point — so this is a watch line, not an
+  // enforced kill-switch. No cap configured ⇒ nothing shown.
   const costMTD = p?.totals.costMTD ?? 0;
-  const capActive = PLATFORM_MONTHLY_USD_CAP > 0;
-  const capPct = capActive ? Math.round((costMTD / PLATFORM_MONTHLY_USD_CAP) * 100) : 0;
-  const capOver = capActive && costMTD >= PLATFORM_MONTHLY_USD_CAP;
+  const cap = platformMonthlyUsdCap;
+  const capActive = cap !== null;
+  const capPct = cap !== null ? Math.round((costMTD / cap) * 100) : 0;
+  const capOver = cap !== null && costMTD >= cap;
   const capNear = capActive && !capOver && capPct >= 80;
 
   return (
@@ -107,7 +103,7 @@ export function PlatformPage() {
             icon="db"
             label="Spend MTD"
             value={fmtUsd(costMTD)}
-            sub={capActive ? `${capPct}% of ${fmtUsd(PLATFORM_MONTHLY_USD_CAP)} cap` : "estimated"}
+            sub={cap !== null ? `${capPct}% of ${fmtUsd(cap)} cap` : "estimated"}
             tone={capOver ? "var(--az-bad)" : capNear ? "var(--az-warn)" : undefined}
           />
         </Card>
@@ -116,12 +112,12 @@ export function PlatformPage() {
         </Card>
       </SimpleGrid>
 
-      {(capOver || capNear) && (
+      {cap !== null && (capOver || capNear) && (
         <Box mb={18}>
           <Hint icon="alert" tone={capOver ? "bad" : "warn"}>
             {capOver
-              ? `Platform spend this month (${fmtUsd(costMTD)}) has reached the ${fmtUsd(PLATFORM_MONTHLY_USD_CAP)} ceiling. Per-app daily caps still apply — this is a platform-wide watch line, not an enforced cut-off.`
-              : `Platform spend this month (${fmtUsd(costMTD)}) is at ${capPct}% of the ${fmtUsd(PLATFORM_MONTHLY_USD_CAP)} ceiling.`}
+              ? `Platform spend this month (${fmtUsd(costMTD)}) has reached the ${fmtUsd(cap)} ceiling. Per-app daily caps still apply — this is a platform-wide watch line, not an enforced cut-off.`
+              : `Platform spend this month (${fmtUsd(costMTD)}) is at ${capPct}% of the ${fmtUsd(cap)} ceiling.`}
           </Hint>
         </Box>
       )}

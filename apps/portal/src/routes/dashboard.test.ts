@@ -46,8 +46,9 @@ describe("GET / (demo dashboard)", () => {
     expect(res.headers["content-type"]).toContain("text/html");
 
     const html = res.body;
-    // Deployed app: linked to the dev edge (scheme + port) and shows its live version.
-    expect(html).toContain(`href="http://${live.slug}.local.helix.azxlabs.io:8080"`);
+    // Deployed app: linked to the dev edge (scheme + port) and shows its live
+    // version. https, not http — the dev edge is TLS-only (edge config.ts).
+    expect(html).toContain(`href="https://${live.slug}.local.helix.azxlabs.io:8080"`);
     expect(html).toContain("Deployed App");
     expect(html).toContain("live · v1");
     // Never-deployed app: shown but flagged, no live link required.

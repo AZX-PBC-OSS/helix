@@ -40,6 +40,13 @@ function stubApi(me: PortalMeResponse | { status: 401 }): void {
       if (url.endsWith("/api/v1/apps")) {
         return Promise.resolve({ ok: true, status: 200, json: async () => [] });
       }
+      if (url.endsWith("/api/v1/config")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ appPublicBase: "https://franklin.helix.azxlabs.io" }),
+        });
+      }
       return new Promise(() => {}); // health etc.: pending
     }),
   );

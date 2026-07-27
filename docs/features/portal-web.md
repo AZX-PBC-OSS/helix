@@ -67,6 +67,34 @@ every page: a full-page `RequireAuth` gate wraps the SPA and `RequireAdmin` gate
 IdP's `clientBasedCORS` is scoped to **this client only**, so the
 token endpoint opens to the SPA without opening it to the world.
 
+### Deployment configuration (`src/lib/deployment.ts`)
+
+The SPA's **only** build-time configuration is the portal origin it is served from. Anything
+deployment-specific — where apps are served, whether dev mode exists, the admin spend watch line —
+comes from the public `GET /api/v1/config` at runtime, via `deploymentConfigQuery` →
+`useDeployment()`:
+
+| Field                   | Portal env var             | Absent means                                     |
+| ----------------------- | -------------------------- | ------------------------------------------------ |
+| `appPublicBase`         | `APP_PUBLIC_BASE`          | never absent (the portal refuses to boot in prod) |
+| `devApiBase`            | `DEV_API_PUBLIC_BASE`      | dev mode isn't enabled here — `DevModeTab` says so |
+| `platformMonthlyUsdCap` | `PLATFORM_MONTHLY_USD_CAP` | no spend ceiling shown on the admin Activity page  |
+
+This is a **correctness** requirement, not a convenience one. `dist/` is baked into the portal
+image, so the previous `import.meta.env.VITE_APP_PUBLIC_BASE` (never set by any Dockerfile, CI job,
+or Bicep) meant every deployment displayed the dev domain `*.local.helix.azxlabs.io:8080`. Deriving
+it from `window.location` instead was rejected: the port and scheme aren't recoverable (the edge is
+:8080 in dev, 443 in prod), local dev serves the portal from `localhost` while apps are on
+`local.helix.azxlabs.io`, and `portalExternal` doesn't require the portal to be a sibling of the
+apps domain — its failure mode would be a silently wrong-but-plausible URL.
+
+Where a full app object is in hand, prefer `hostFor(app)` / `urlFor(app)`, which use the `url` the
+control plane computed (`AppSchema.url`, from `toApp()`); the base-composing `appHost`/`appUrl` are
+for previews of apps that don't exist yet (create-app, the empty state). Every getter returns `null`
+while the config is in flight or the value is absent, and callers **drop the affected text** rather
+than render a guess. Call `useDeployment()` once per component — the returned functions are safe
+inside a `.map()`, a hook call would not be.
+
 ### Serving + dev
 
 The portal serves `portal-web/dist` statically when built (deep links fall back to index.html;

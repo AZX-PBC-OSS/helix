@@ -20,7 +20,9 @@ import { usageRoutes } from "./routes/usage.js";
 import { dataRoutes } from "./routes/data.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { authRoutes } from "./routes/auth.js";
+import { configRoutes } from "./routes/config.js";
 import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
+import { assertDeploymentConfig } from "./deployment.js";
 
 /**
  * azx-portal — the control plane (architecture §3, §7). Privileged: registry
@@ -45,6 +47,10 @@ export interface BuildAppOptions {
 }
 
 export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
+  // Fail the boot, not each request: a production portal without APP_PUBLIC_BASE
+  // would hand every client — portal UI and `azx` alike — unreachable dev URLs.
+  assertDeploymentConfig();
+
   const app = Fastify({
     logger: process.env.NODE_ENV !== "test",
   });
@@ -74,6 +80,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(usageRoutes);
   app.register(dataRoutes);
   app.register(authRoutes);
+  app.register(configRoutes);
 
   // The real dashboard when a built SPA is present; the M2 stopgap otherwise.
   const spaDist = opts.spaDist !== undefined ? opts.spaDist : resolveSpaDist();

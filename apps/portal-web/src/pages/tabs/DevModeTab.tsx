@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { Button, Card, Code, CopyButton, Group, Stack, TagsInput, Text } from "@mantine/core";
+import { Box, Button, Card, Code, CopyButton, Group, Stack, TagsInput, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { isValidDevOrigin, type App, type DevTokenMetadata } from "@azx-pbc/shared";
 import { devTokensQuery } from "../../api/queries";
 import { useMintDevToken, useRevokeDevToken, useRotateDevToken } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
-import { devApiBaseUrl } from "../../lib/format";
+import { useDeployment } from "../../lib/deployment";
 import { Icon } from "../../components/Icon";
 import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
@@ -58,6 +58,7 @@ function statusBadge(t: DevTokenMetadata) {
 
 export function DevModeTab({ app }: { app: App }) {
   const { authenticated, login, loginAvailable } = useAuth();
+  const { devApiBaseUrl } = useDeployment();
   const tokens = useQuery({ ...devTokensQuery(app.slug), enabled: authenticated });
   const mint = useMintDevToken();
   const rotate = useRotateDevToken();
@@ -69,6 +70,7 @@ export function DevModeTab({ app }: { app: App }) {
   const [revealed, setRevealed] = useState(false);
   const [revoking, setRevoking] = useState<DevTokenMetadata | null>(null);
 
+  const devApiBase = devApiBaseUrl(app.slug);
   const invalidOrigins = origins.filter((o) => !isValidDevOrigin(o));
   const canMint = origins.length > 0 && invalidOrigins.length === 0;
   const mutationError = mint.error ?? rotate.error ?? revoke.error;
@@ -104,18 +106,33 @@ export function DevModeTab({ app }: { app: App }) {
 
       {/* The dev-gateway base URL — not a secret, so shown persistently (the app
           slug is in the path, the host is fixed). Append /_api/llm/chat,
-          /_api/data/*, /_api/fetch/<url>. */}
+          /_api/data/*, /_api/fetch/<url>.
+
+          The dev gateway is an opt-in deployment (deployDevGateway in the Bicep),
+          so its base can be absent: say so rather than print an unreachable host
+          that would fail at request time with no explanation. */}
       <Eyebrow mb={4}>API base URL</Eyebrow>
-      <Text size="xs" c="dark.2" mb={6} lh={1.5}>
-        Point your app's Helix calls here (append <Code>/_api/llm/chat</Code>,{" "}
-        <Code>/_api/data/…</Code>, <Code>/_api/fetch/…</Code>) and send your dev token as a bearer.
-      </Text>
-      <Group gap={8} wrap="nowrap" mb={18}>
-        <Code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap" }}>
-          {devApiBaseUrl(app.slug)}
-        </Code>
-        <CopyBtn value={devApiBaseUrl(app.slug)} label="Copy" />
-      </Group>
+      {devApiBase ? (
+        <>
+          <Text size="xs" c="dark.2" mb={6} lh={1.5}>
+            Point your app's Helix calls here (append <Code>/_api/llm/chat</Code>,{" "}
+            <Code>/_api/data/…</Code>, <Code>/_api/fetch/…</Code>) and send your dev token as a
+            bearer.
+          </Text>
+          <Group gap={8} wrap="nowrap" mb={18}>
+            <Code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap" }}>{devApiBase}</Code>
+            <CopyBtn value={devApiBase} label="Copy" />
+          </Group>
+        </>
+      ) : (
+        <Box mb={18}>
+          <Hint tone="slate" icon="alert">
+            The dev gateway isn&apos;t enabled on this deployment, so there&apos;s no cross-origin
+            API base to point a dev environment at. Tokens minted here still work once an operator
+            deploys it.
+          </Hint>
+        </Box>
+      )}
 
       {/* Just-minted token — shown once, never retrievable again. */}
       {minted && (

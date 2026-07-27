@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { appQuery, versionsQuery } from "../api/queries";
 import { Icon } from "../components/Icon";
 import { Hint, StatusLine, ToneBadge, VisibilityBadge } from "../components/primitives";
-import { appHost, appUrl } from "../lib/format";
+import { useDeployment } from "../lib/deployment";
 import { appStatus, awaitingPromote, liveVersion } from "../lib/appStatus";
 import { useDeploy } from "../modals/DeployContext";
 import { OverviewTab } from "./tabs/OverviewTab";
@@ -22,6 +22,7 @@ export function AppDetailPage() {
 
   const app = useQuery(appQuery(slug));
   const versions = useQuery(versionsQuery(slug));
+  const { hostFor, urlFor } = useDeployment();
 
   if (app.isPending) {
     return (
@@ -47,6 +48,8 @@ export function AppDetailPage() {
   const live = liveVersion(a, vs);
   const pending = awaitingPromote(a, vs);
   const tab = params.get("tab") ?? "overview";
+  const appLink = urlFor(a);
+  const appHostText = hostFor(a);
 
   return (
     <div>
@@ -83,9 +86,11 @@ export function AppDetailPage() {
               </Title>
               <StatusLine kind={status} />
             </Group>
-            {status === "live" ? (
+            {/* Only a link once we know where the app actually is — otherwise
+                (not live, or the deployment config hasn't landed) plain text. */}
+            {status === "live" && appLink ? (
               <Anchor
-                href={appUrl(a.slug)}
+                href={appLink}
                 target="_blank"
                 rel="noreferrer"
                 className="az-mono"
@@ -94,11 +99,11 @@ export function AppDetailPage() {
                 mt={7}
                 style={{ display: "inline-flex", alignItems: "center", gap: 7 }}
               >
-                {appHost(a.slug)} <Icon name="ext" size={13} />
+                {appHostText} <Icon name="ext" size={13} />
               </Anchor>
             ) : (
               <Text className="az-mono" fz={13} c="dark.2" mt={7}>
-                {appHost(a.slug)}
+                {appHostText}
               </Text>
             )}
             <Group gap={8} mt={12} wrap="wrap">

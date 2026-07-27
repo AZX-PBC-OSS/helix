@@ -5,7 +5,7 @@ import { SLUG_PATTERN, type Visibility, type VisibilityMode } from "@azx-pbc/sha
 import { useCreateApp } from "../api/mutations";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon } from "../components/Icon";
-import { appHost } from "../lib/format";
+import { useDeployment } from "../lib/deployment";
 
 const VISIBILITY_OPTIONS: Array<{
   mode: VisibilityMode;
@@ -36,6 +36,7 @@ export function CreateAppModal({ opened, onClose }: { opened: boolean; onClose: 
     if (o.mode === "password" && !allowPasswordApps) return false;
     return true;
   });
+  const { appHost } = useDeployment();
   const create = useCreateApp();
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -85,9 +86,10 @@ export function CreateAppModal({ opened, onClose }: { opened: boolean; onClose: 
         <TextInput
           label="Slug"
           description={
-            slug && slugValid
-              ? `Will serve at ${appHost(slug)}`
-              : "Lowercase DNS label — it becomes the subdomain and the isolation boundary"
+            // Falls back to the generic description until the deployment config
+            // arrives — we don't preview a host we can't name yet.
+            (slug && slugValid && appHost(slug) ? `Will serve at ${appHost(slug)}` : null) ??
+            "Lowercase DNS label — it becomes the subdomain and the isolation boundary"
           }
           placeholder="cost-explorer"
           value={slug}

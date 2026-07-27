@@ -25,5 +25,14 @@ export const AppSchema = z.object({
   archivedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
+  /**
+   * Where this app is served, computed control-plane-side from the deployment's
+   * apps base (`APP_PUBLIC_BASE`) — so clients render a URL instead of
+   * templating `<slug>.<domain>` themselves and drifting per deployment. Optional
+   * on the wire: the CLI parses this schema, so requiring it would break a newer
+   * CLI against an older portal. Clients that lack it fall back to composing the
+   * slug onto `appPublicBase` from `GET /api/v1/config`.
+   */
+  url: z.url().optional(),
 });
 export type App = z.infer<typeof AppSchema>;

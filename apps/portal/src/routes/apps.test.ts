@@ -251,6 +251,38 @@ describe("GET /api/v1/apps and /:slug", () => {
     expect(missing.json().error.code).toBe("not_found");
   });
 
+  // Clients render this rather than templating `<slug>.<domain>` themselves —
+  // the SPA ships prebuilt, so anything it composed would be wrong per-deploy.
+  it("carries the app's public URL, composed from the deployment's apps base", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({ slug, displayName: "Locatable" });
+    expect(created.json().url).toBe(`https://${slug}.local.helix.azxlabs.io:8080`);
+
+    const detail = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+    });
+    expect(detail.json().url).toBe(`https://${slug}.local.helix.azxlabs.io:8080`);
+
+    const list = await t.app.inject({ method: "GET", url: "/api/v1/apps", headers: authHeader() });
+    const listed = list.json().find((a: { slug: string }) => a.slug === slug);
+    expect(listed.url).toBe(`https://${slug}.local.helix.azxlabs.io:8080`);
+  });
+
+  it("follows APP_PUBLIC_BASE, so a redeploy to a new domain needs no client change", async () => {
+    const prev = process.env.APP_PUBLIC_BASE;
+    process.env.APP_PUBLIC_BASE = "https://franklin.helix.azxlabs.io";
+    try {
+      const slug = uniqueSlug();
+      const created = await createApp({ slug, displayName: "Rehomed" });
+      expect(created.json().url).toBe(`https://${slug}.franklin.helix.azxlabs.io`);
+    } finally {
+      if (prev === undefined) delete process.env.APP_PUBLIC_BASE;
+      else process.env.APP_PUBLIC_BASE = prev;
+    }
+  });
+
   it("requires sign-in to read the registry (401)", async () => {
     const list = await t.app.inject({ method: "GET", url: "/api/v1/apps" });
     expect(list.statusCode).toBe(401);

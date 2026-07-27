@@ -51,6 +51,9 @@ param postgresStorageSizeGB int = 32
 @description('Public apps domain, e.g. azx.helix.azxlabs.io.')
 param appsDomain string = 'azx.helix.azxlabs.io'
 
+@description('Display-only month-to-date platform spend watch line in USD, surfaced on the admin Activity page via GET /api/v1/config. Defaults to 1000 so an install gets a budget signal without being configured for one; set 0 to show no ceiling. Nothing enforces this — per-app daily token budgets are the real limit.')
+param platformMonthlyUsdCap int = 1000
+
 @description('Blob container for app bundles.')
 param blobContainerName string = 'app-bundles'
 
@@ -453,7 +456,17 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'PORTAL_ADMIN_GROUP_ID', value: portalAdminGroupId }
       { name: 'AZX_CLI_CLIENT_ID', value: azxCliClientId }
       { name: 'AZX_WEB_CLIENT_ID', value: azxWebClientId }
+      // Deployment topology, served to the prebuilt portal SPA at runtime by
+      // GET /api/v1/config — the bundle is baked into this image, so anything it
+      // burned in at build time would be wrong in every environment but one.
       { name: 'APP_PUBLIC_BASE', value: 'https://${appsDomain}' }
+      // Empty when the opt-in dev gateway isn't deployed; the portal reads that
+      // as "not enabled" and the SPA hides the dev-mode API base accordingly.
+      {
+        name: 'DEV_API_PUBLIC_BASE'
+        value: deployDevGateway ? 'https://dev-api.${appsDomain}' : ''
+      }
+      { name: 'PLATFORM_MONTHLY_USD_CAP', value: string(platformMonthlyUsdCap) }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
       // helix_portal DSN. The portal runtime reads PORTAL_DATABASE_URL and (in
       // production) refuses the DATABASE_URL owner fallback (ADR-0002,

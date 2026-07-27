@@ -6,6 +6,7 @@ import {
   ApprovalRequestSchema,
   AuthConfigResponseSchema,
   CspViolationsPageSchema,
+  DeploymentConfigResponseSchema,
   DevTokenMetadataSchema,
   GatewayAuditPageSchema,
   HealthStatusSchema,
@@ -165,5 +166,17 @@ export const healthQuery = queryOptions({
 export const authConfigQuery = queryOptions({
   queryKey: ["auth", "config"],
   queryFn: () => fetchJson(AuthConfigResponseSchema, "/api/v1/auth/config"),
+  staleTime: Infinity,
+});
+
+/**
+ * This deployment's topology — where apps are served, whether dev mode exists.
+ * Public and fetched before sign-in. Fixed for the lifetime of the page, so
+ * `staleTime: Infinity`; consume it through `useDeployment()` (lib/deployment.ts)
+ * rather than reading it directly.
+ */
+export const deploymentConfigQuery = queryOptions({
+  queryKey: ["config"],
+  queryFn: () => fetchJson(DeploymentConfigResponseSchema, "/api/v1/config"),
   staleTime: Infinity,
 });

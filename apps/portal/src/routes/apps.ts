@@ -21,12 +21,12 @@ import { capabilitiesFromRow, toApp, toManifest, visibilityToColumns } from "../
 import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
 import { Prisma } from "../db/client.js";
 import {
-  appPublicUrl,
   decryptPassword,
   encryptPassword,
   generatePassphrase,
   hashPassword,
 } from "../access/password.js";
+import { appPublicUrl } from "../deployment.js";
 
 /** App registry routes: create, list, get (architecture §7). */
 export async function appRoutes(app: FastifyInstance): Promise<void> {

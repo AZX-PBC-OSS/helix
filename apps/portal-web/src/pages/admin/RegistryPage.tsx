@@ -5,12 +5,14 @@ import { useQuery } from "@tanstack/react-query";
 import { appsQuery } from "../../api/queries";
 import { Icon } from "../../components/Icon";
 import { PageHead, StatusLine, VisibilityBadge } from "../../components/primitives";
-import { appHost, timeAgo } from "../../lib/format";
+import { timeAgo } from "../../lib/format";
+import { useDeployment } from "../../lib/deployment";
 import { appStatus } from "../../lib/appStatus";
 
 /** REAL — the org-wide registry, dense table form (source of truth: Postgres). */
 export function RegistryPage() {
   const apps = useQuery(appsQuery);
+  const { hostFor } = useDeployment();
   const [q, setQ] = useState("");
 
   const rows = (apps.data ?? []).filter((a) =>
@@ -82,7 +84,7 @@ export function RegistryPage() {
                         {a.displayName}
                       </Text>
                       <Text className="az-mono" fz={11} c="dark.2">
-                        {appHost(a.slug)}
+                        {hostFor(a)}
                       </Text>
                     </Box>
                   </Group>

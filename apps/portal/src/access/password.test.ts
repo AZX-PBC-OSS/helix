@@ -4,7 +4,6 @@ import { promisify } from "node:util";
 import { SCRYPT_PARAMS } from "@azx-pbc/shared";
 import {
   SCRYPT_KEYLEN,
-  appPublicUrl,
   decryptPassword,
   encryptPassword,
   generatePassphrase,
@@ -92,18 +91,5 @@ describe("encryptPassword / decryptPassword", () => {
     const [iv, tag, ct] = enc.split(":");
     const flipped = ct!.slice(0, -1) + (ct!.endsWith("0") ? "1" : "0");
     expect(() => decryptPassword([iv, tag, flipped].join(":"))).toThrow();
-  });
-});
-
-describe("appPublicUrl", () => {
-  it("prefixes the slug onto APP_PUBLIC_BASE", () => {
-    const prev = process.env.APP_PUBLIC_BASE;
-    process.env.APP_PUBLIC_BASE = "https://azx.helix.azxlabs.io";
-    try {
-      expect(appPublicUrl("demo")).toBe("https://demo.azx.helix.azxlabs.io");
-    } finally {
-      if (prev === undefined) delete process.env.APP_PUBLIC_BASE;
-      else process.env.APP_PUBLIC_BASE = prev;
-    }
   });
 });

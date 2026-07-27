@@ -23,6 +23,7 @@ import {
   type Visibility,
   type VisibilityMode,
 } from "@azx-pbc/shared";
+import { appPublicUrl } from "../deployment.js";
 import type {
   App as AppRow,
   ApprovalRequest as ApprovalRequestRow,
@@ -54,6 +55,10 @@ export function visibilityToColumns(visibility: Visibility): VisibilityColumns {
 /**
  * Map an `apps` row to the wire `App`, validating through the shared schema so
  * any drift between the DB shape and the contract fails loudly at the boundary.
+ *
+ * `url` is computed here rather than templated client-side: this is the one
+ * chokepoint every app-shaped response goes through, so every client gets the
+ * deployment's real apps domain without knowing how the host is composed.
  */
 export function toApp(row: AppRow): App {
   return AppSchema.parse({
@@ -65,6 +70,7 @@ export function toApp(row: AppRow): App {
     archivedAt: row.archivedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    url: appPublicUrl(row.slug),
   });
 }
 

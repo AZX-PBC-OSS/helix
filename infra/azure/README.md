@@ -164,6 +164,28 @@ zero-public-exposure posture instead, keep it internal and reach it via a VNet
 path (VPN / Tailscale / Front Door + Private Link) — but that's friction a
 customer-run, remote-team install usually doesn't want.
 
+## Deployment topology handed to the portal SPA
+
+The portal SPA is a **prebuilt bundle baked into the portal image**, so it cannot
+know this install's domain at build time — there are deliberately no `VITE_*`
+build args. It reads the topology at runtime from the public
+`GET /api/v1/config`, which the template feeds via three portal env vars:
+
+| Env var                    | Set from                                                                 | Absent means                                           |
+| -------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `APP_PUBLIC_BASE`          | `https://<appsDomain>`                                                   | **Boot failure** — the portal refuses to start in prod |
+| `DEV_API_PUBLIC_BASE`      | `https://dev-api.<appsDomain>`, or `''` when `deployDevGateway` is false | The SPA says dev mode isn't enabled on this deployment |
+| `PLATFORM_MONTHLY_USD_CAP` | `platformMonthlyUsdCap` (default `1000`)                                 | No spend watch line on the admin Activity page         |
+
+`APP_PUBLIC_BASE` also drives the `url` field on every app the API returns, so a
+redeployment onto a different `appsDomain` needs no client or image change.
+
+The spend cap defaults to **$1000/mo** so an install gets a budget signal without
+being configured for one; pass `platformMonthlyUsdCap=0` to show no ceiling. It is
+display-only — the rollup is exact (the gateway is the choke point) but nothing
+enforces it, so treat it as a watch line, not a kill-switch. Local dev leaves it
+unset (no ceiling); see `.env.example`.
+
 ## Layout
 
 ```
