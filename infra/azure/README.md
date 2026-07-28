@@ -389,8 +389,28 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
 - **Wildcard ACME cert issuance/renewal** — portal scheduled job (deferred).
 - **Postgres runtime roles + migrations** — step 4 above (data-plane, not IaC).
 - **Front Door / bastion** for operator access to the internal portal.
-- **Passwordless (Entra) Postgres auth** — a hardening follow-up; the MIs and
-  blob RBAC roles are already granted so the switch is config-only.
+- **Passwordless (Entra) Postgres auth** — a hardening follow-up, and **not** the
+  config flip an earlier version of this list implied. The managed identities do
+  exist, but none of their grants are Postgres, and the server is deployed with
+  `activeDirectoryAuth` disabled and no Entra administrator (`postgres.bicep`
+  supports neither today). Four things would have to change together:
+  1. the server: enable Entra auth + set an administrator;
+  2. **the role model**: `pgaadauth_create_principal` names the Postgres role
+     after the Entra identity, so the runtime role would be
+     `<namePrefix>-edge-id`, not `helix_edge` — and every GRANT in every
+     migration, plus the env-literal RLS policy pinning `helix_dev` to
+     `env='dev'`, references those four names;
+  3. **the apps**: an Entra token *is* the password and expires hourly, so the
+     static `connectionString` in `apps/portal/src/db/client.ts` and
+     `apps/edge/src/db/pool.ts` can't hold it (`pg.Pool` does accept a `password`
+     function, so it is feasible — but it is a change in three planes);
+  4. **ADR-0029's portability premise**: the apps read env vars only, no cloud
+     SDK. Token acquisition puts `@azure/identity` in every plane's request path.
+
+  Treat it as its own ADR, not a step inside another piece of work. Note also
+  that it would not by itself stop a resource-group Contributor reading platform
+  secrets — those are readable from the container app definitions regardless (see
+  "Known deploy gotchas"), so the win is narrower than it first appears.
 - **Audit-log shipping to immutable blob** — architecture §10 follow-up.
 
 ## Known deploy gotchas
@@ -420,6 +440,21 @@ if a deploy misbehaves:
   changes secret _values_ won't restart the apps to pick them up (a failed revision
   will keep failing on the old value). After rotating a secret, force a new
   revision: `az containerapp update -g <rg> -n <app> --revision-suffix <tag>`.
+
+- **Resource-group Contributor is effectively platform-secret read access.** Because
+  the container apps receive their secrets as directly-injected values (see
+  "Platform secret delivery"), those values are readable back off the app
+  definitions: `az containerapp secret list -n <app> --show-values` returns them.
+  That is a control-plane call, so `kv-platform` being private-endpoint-only does
+  not prevent it. Two consequences worth planning around:
+  - **Scope deploy principals accordingly.** Anything holding Contributor on the
+    resource group can read every per-role Postgres DSN, `EDGE_AUTH_SECRET`,
+    `PORTAL_SECRET`, `HELIX_INSTRUCTION_SECRET`, and the edge OIDC private key.
+  - **It is also the recovery path.** Secrets generated at deploy time and never
+    captured are *not* lost — they can be read back from a running install (the
+    same eight are in `kv-platform`). Only the Postgres admin password and, when
+    the dev surface is off, the `helix_dev` DSN are absent, and both reset
+    losslessly: nothing depends on the admin password at runtime.
 
 - **A template re-apply WIPES the certbot custom-domain bindings.** The bindings are
   made by the job at runtime (see "Wildcard TLS"), but `containerapp.bicep`'s
