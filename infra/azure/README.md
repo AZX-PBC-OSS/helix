@@ -404,6 +404,24 @@ if a deploy misbehaves:
   will keep failing on the old value). After rotating a secret, force a new
   revision: `az containerapp update -g <rg> -n <app> --revision-suffix <tag>`.
 
+- **A template re-apply WIPES the certbot custom-domain bindings.** The bindings are
+  made by the job at runtime (see "Wildcard TLS"), but `containerapp.bicep`'s
+  declarative `ingress` block does not list `customDomains` — so any subsequent
+  `az deployment group create` removes every bound hostname, and all custom domains
+  immediately serve the ACA default cert (browsers fail TLS verification). **After
+  any re-apply, re-bind.** Prefer re-binding against the cert already in the
+  environment store rather than re-running the job, so you don't spend a Let's
+  Encrypt issuance:
+
+  ```bash
+  CERT_ID=$(az containerapp env certificate list -g <rg> -n <env> --query "[0].id" -o tsv)
+  az containerapp hostname bind -g <rg> -n <app> \
+    --hostname '<host>' --environment <env> --certificate "$CERT_ID"
+  ```
+
+  This matters most for **CI-driven deploys** (Phase 3): a workflow that re-applies
+  the template on every release silently breaks TLS unless it re-binds afterwards.
+
 - **Provider registration can wedge.** `Microsoft.DBforPostgreSQL` (and friends) can
   sit in `Registering` for a long time; re-issuing `az provider register -n <ns>`
   nudges it to `Registered`.
