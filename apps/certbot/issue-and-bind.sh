@@ -73,20 +73,36 @@ az containerapp hostname add -g "${RG}" -n "${EDGE_APP}" \
 az containerapp hostname bind -g "${RG}" -n "${EDGE_APP}" \
   --hostname "*.${APPS_DOMAIN}" --environment "${ACA_ENV}" --certificate "${CERT_ID}"
 
-# --- optional: the control-plane portal on portal.<APPS_DOMAIN> ---------------
-# A specific hostname on the portal app; Envoy routes it there ahead of the edge
-# wildcard. Needs its own asuid.<label> ownership TXT (the wildcard used asuid at
-# the apex) — the job's DNS Zone Contributor role writes it. The wildcard cert
-# covers this host, so it reuses ${CERT_ID}; ACA updates the cert in place on
-# renewal, so the binding tracks it.
-if [ -n "${PORTAL_APP:-}" ] && [ -n "${PORTAL_HOSTNAME:-}" ]; then
-  echo "== bind ${PORTAL_HOSTNAME} on ${PORTAL_APP} =="
-  VID="$(az containerapp show -g "${RG}" -n "${PORTAL_APP}" --query "properties.customDomainVerificationId" -o tsv)"
+# --- optional: specific hostnames on their own apps ---------------------------
+# The wildcard cert covers every <label>.<APPS_DOMAIN>, but a custom-domain
+# BINDING is per container app: any plane with its own external ingress needs its
+# own bind or it serves the ACA default cert. Envoy routes a specific hostname to
+# its app ahead of the edge's wildcard. Each needs its own asuid.<label>
+# ownership TXT (the wildcard used asuid at the apex) — the job's DNS Zone
+# Contributor role writes it. All reuse ${CERT_ID}; ACA updates the cert in place
+# on renewal, so the bindings track it.
+bind_host() {
+  local app="$1" host="$2" vid
+  echo "== bind ${host} on ${app} =="
+  vid="$(az containerapp show -g "${RG}" -n "${app}" --query "properties.customDomainVerificationId" -o tsv)"
   az network dns record-set txt add-record -g "${DNS_ZONE_RG}" -z "${APPS_DOMAIN}" \
-    -n "asuid.${PORTAL_HOSTNAME%%.*}" --value "${VID}" >/dev/null 2>&1 || true
-  az containerapp hostname add -g "${RG}" -n "${PORTAL_APP}" --hostname "${PORTAL_HOSTNAME}" 2>/dev/null || true
-  az containerapp hostname bind -g "${RG}" -n "${PORTAL_APP}" \
-    --hostname "${PORTAL_HOSTNAME}" --environment "${ACA_ENV}" --certificate "${CERT_ID}"
+    -n "asuid.${host%%.*}" --value "${vid}" >/dev/null 2>&1 || true
+  az containerapp hostname add -g "${RG}" -n "${app}" --hostname "${host}" 2>/dev/null || true
+  az containerapp hostname bind -g "${RG}" -n "${app}" \
+    --hostname "${host}" --environment "${ACA_ENV}" --certificate "${CERT_ID}"
+}
+
+# The control-plane portal on portal.<APPS_DOMAIN> (portalExternal).
+if [ -n "${PORTAL_APP:-}" ] && [ -n "${PORTAL_HOSTNAME:-}" ]; then
+  bind_host "${PORTAL_APP}" "${PORTAL_HOSTNAME}"
+fi
+
+# The opt-in dev-gateway on dev-api.<APPS_DOMAIN> (deployDevGateway,
+# docs/features/dev-mode.md). It exists to serve cross-origin dev calls from
+# cloud IDEs, so an untrusted cert here fails the exact browser requests the
+# surface is for — this bind is what makes the dev host usable, not a nicety.
+if [ -n "${DEV_GATEWAY_APP:-}" ] && [ -n "${DEV_GATEWAY_HOSTNAME:-}" ]; then
+  bind_host "${DEV_GATEWAY_APP}" "${DEV_GATEWAY_HOSTNAME}"
 fi
 
 echo "== done: *.${APPS_DOMAIN} bound to ${CERT_NAME} =="

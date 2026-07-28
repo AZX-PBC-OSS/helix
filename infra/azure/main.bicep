@@ -583,6 +583,9 @@ module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !emp
     edgeAppName: '${namePrefix}-edge'
     // When the portal is external, certbot also binds portal.<appsDomain> to it.
     portalAppName: portalExternal ? '${namePrefix}-portal' : ''
+    // Likewise the dev-gateway on dev-api.<appsDomain> — its own external
+    // ingress needs its own binding or it serves the ACA default cert.
+    devGatewayAppName: deployDevGateway ? '${namePrefix}-dev-gateway' : ''
     image: '${imageRegistry}/helix-certbot:${imageTag}'
     acmeEmail: acmeEmail
     acmeServer: acmeServer
@@ -590,6 +593,7 @@ module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !emp
   dependsOn: [
     edgeApp
     portalApp
+    devGatewayApp
     dns
   ]
 }

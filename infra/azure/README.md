@@ -352,11 +352,16 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
 - Delegate `azx.helix.azxlabs.io` (a subdomain of `azxlabs.io`) by adding NS
   records for `azx.helix` in the parent `azxlabs.io` Cloudflare zone, pointing at
   the deployment output `dnsNameServers` — not at the registrar.
-- Bind the wildcard cert (`*.azx.helix.azxlabs.io`) and ACA custom domains. The cert
-  itself (ACME DNS-01) is the portal's scheduled job — **deferred (M5 tail)**.
-  Supply `domainVerificationId` to write the `asuid` TXT record ACA needs.
-  (The wildcard already covers `dev-api.azx.helix.azxlabs.io`; the dev-gateway
-  still needs its own ACA custom-domain binding when `deployDevGateway` is set.)
+- Bind the wildcard cert (`*.azx.helix.azxlabs.io`) and ACA custom domains — the
+  `deployCertbot` job does this (see "Wildcard TLS"). Supply
+  `domainVerificationId` to write the `asuid` TXT record ACA needs.
+  A custom-domain binding is **per container app**, so the job binds each plane
+  that has its own external ingress: the edge wildcard always, plus
+  `portal.<appsDomain>` when `portalExternal` and `dev-api.<appsDomain>` when
+  `deployDevGateway`. Nothing to bind by hand.
+- **Delegation must exist before the first certbot run** — Let's Encrypt has to
+  resolve the DNS-01 TXT in the Azure zone publicly, so a cert issued before the
+  NS records propagate will fail validation.
 
 ## Operator steps NOT done by this template
 

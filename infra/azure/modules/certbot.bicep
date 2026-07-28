@@ -2,10 +2,17 @@
 //
 // Provisions the certbot job + its own managed identity + the least-privilege
 // RBAC it needs: DNS Zone Contributor on the public zone (to write the ACME
-// DNS-01 `_acme-challenge` TXT) and Contributor on the ACA environment + edge
-// app (to upload the issued cert to the environment cert store and bind the
-// wildcard custom domain). See `apps/certbot` for the image/entrypoint, and
-// ADR-0029 for why the cert lands on the ACA env, not Key Vault.
+// DNS-01 `_acme-challenge` TXT) and Contributor on the ACA environment + every
+// app it binds a hostname on (to upload the issued cert to the environment cert
+// store and bind the custom domains). See `apps/certbot` for the
+// image/entrypoint, and ADR-0029 for why the cert lands on the ACA env, not Key
+// Vault.
+//
+// One cert, several bindings: the wildcard covers every `<label>.<appsDomain>`,
+// but an ACA custom-domain binding is per container app. The edge takes the
+// `*.<appsDomain>` wildcard; each plane with its own external ingress
+// (`portalExternal`, `deployDevGateway`) takes its specific hostname, which Envoy
+// routes ahead of the wildcard.
 //
 // Issuance + binding happen in the job at RUNTIME — a cert must exist before a
 // custom domain can bind to it, an ordering the declarative template can't
@@ -40,6 +47,9 @@ param edgeAppName string
 @description('Portal app name to also bind portal.<appsDomain> to (when the portal is external). Empty = skip the portal binding.')
 param portalAppName string = ''
 
+@description('Dev-gateway app name to also bind dev-api.<appsDomain> to (when deployDevGateway is set). Empty = skip the dev-gateway binding. The wildcard cert covers the host, but a custom-domain binding is per container app, and the dev surface has its own external ingress.')
+param devGatewayAppName string = ''
+
 @description('certbot image, e.g. ghcr.io/azx-pbc-oss/helix-certbot:sha-xxxx.')
 param image string
 
@@ -72,6 +82,9 @@ resource edgeApp 'Microsoft.App/containerApps@2024-03-01' existing = {
 resource portalApp 'Microsoft.App/containerApps@2024-03-01' existing = if (!empty(portalAppName)) {
   name: portalAppName
 }
+resource devGatewayApp 'Microsoft.App/containerApps@2024-03-01' existing = if (!empty(devGatewayAppName)) {
+  name: devGatewayAppName
+}
 
 resource dnsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(dnsZone.id, certbotIdentity.id, dnsZoneContributorRoleId)
@@ -103,6 +116,16 @@ resource edgeRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 resource portalRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(portalAppName)) {
   name: guid(resourceGroup().id, portalAppName, certbotIdentity.id, contributorRoleId)
   scope: portalApp
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleId)
+    principalId: certbotIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource devGatewayRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(devGatewayAppName)) {
+  name: guid(resourceGroup().id, devGatewayAppName, certbotIdentity.id, contributorRoleId)
+  scope: devGatewayApp
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleId)
     principalId: certbotIdentity.properties.principalId
@@ -152,6 +175,8 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
             { name: 'EDGE_APP', value: edgeAppName }
             { name: 'PORTAL_APP', value: portalAppName }
             { name: 'PORTAL_HOSTNAME', value: empty(portalAppName) ? '' : 'portal.${appsDomain}' }
+            { name: 'DEV_GATEWAY_APP', value: devGatewayAppName }
+            { name: 'DEV_GATEWAY_HOSTNAME', value: empty(devGatewayAppName) ? '' : 'dev-api.${appsDomain}' }
           ]
         }
       ]
