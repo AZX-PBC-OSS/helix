@@ -149,6 +149,12 @@ param acmeServer string = 'https://acme-staging-v02.api.letsencrypt.org/director
 @description('Expose the portal on the public LB at portal.<appsDomain>, gated by Entra OIDC (portal audience + platform-admin App Role). Default false (internal ingress — secure by default). The portal is the control plane + the azx-cli target, so a customer-run install (ADR-0028) generally needs it reachable; per-app authz is enforced by ownsApp (ADR-0007, issue #9 closed), and identity/device posture is the perimeter (Conditional Access), not network location. When true the certbot job also binds portal.<appsDomain>. See README "Portal access".')
 param portalExternal bool = false
 
+@description('Permit `public` (anonymous) apps on this install. Sets the matched pair EDGE_ALLOW_PUBLIC_APPS + PORTAL_ALLOW_PUBLIC_APPS — one param because the two planes MUST agree: the portal gates setting the visibility and the edge gates serving it, so a split leaves apps the portal accepts but the edge 403s. Default false (deny — the app-level default too). Review ADR-0010 (anonymous shared writes) before enabling.')
+param allowPublicApps bool = false
+
+@description('Permit `password` (shared-passphrase) apps on this install. Sets the matched pair EDGE_ALLOW_PASSWORD_APPS + PORTAL_ALLOW_PASSWORD_APPS — same paired-planes reasoning as allowPublicApps; when false the edge 403s the assets and the /_auth/login challenge 404s. Default false (deny).')
+param allowPasswordApps bool = false
+
 @description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — VERIFY against the live ingress before relying on per-client limits; a too-trusting value makes X-Forwarded-For spoofable.')
 param edgeTrustProxy string = '1'
 
@@ -408,6 +414,13 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       // App Roles (the `roles` claim), not security groups — see the runbook.
       { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'roles' }
       { name: 'EDGE_OIDC_SCOPES', value: 'openid profile email' }
+      // Operator visibility policy — the serving half of the pair (the portal
+      // holds the authoring half). The app parses these STRICTLY (`=== "true"`),
+      // and ARM's string(bool) yields 'True' — which would silently read as
+      // false — so emit the lowercase literal explicitly. Same reason
+      // EDGE_ALLOW_DEV_MODE below is a literal.
+      { name: 'EDGE_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
+      { name: 'EDGE_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
       { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
       // Behind ACA's Envoy ingress the socket peer is the ingress, so the
       // per-IP anon rate limiter and the password-login throttle need the hop
@@ -456,6 +469,12 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'PORTAL_ADMIN_GROUP_ID', value: portalAdminGroupId }
       { name: 'AZX_CLI_CLIENT_ID', value: azxCliClientId }
       { name: 'AZX_WEB_CLIENT_ID', value: azxWebClientId }
+      // Operator visibility policy — the authoring half of the pair (the edge
+      // holds the serving half). visibilityPolicy.ts parses strictly `=== "true"`,
+      // so emit the lowercase literal, NOT string(bool) — ARM renders that as
+      // 'True', which reads as false.
+      { name: 'PORTAL_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
+      { name: 'PORTAL_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
       // Deployment topology, served to the prebuilt portal SPA at runtime by
       // GET /api/v1/config — the bundle is baked into this image, so anything it
       // burned in at build time would be wrong in every environment but one.

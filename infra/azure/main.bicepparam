@@ -61,6 +61,14 @@ param acmeServer = readEnvironmentVariable('HELIX_ACME_SERVER', 'https://acme-st
 // README "Portal access".
 param portalExternal = false
 
+// App visibility policy. Each sets a MATCHED PAIR of app env vars (edge serves,
+// portal authors) — deliberately one knob per mode so the two planes cannot
+// disagree. Both default false, matching the app-level default: an install
+// serves only Entra-authenticated apps until an operator opts in. Review
+// ADR-0010 (anonymous shared writes) before enabling public apps.
+param allowPublicApps = false
+param allowPasswordApps = false
+
 // Fastify trustProxy for the edge — the ACA Envoy ingress hop count. "1" is the
 // usual single-hop value; VERIFY against the live ingress (issue #13).
 param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', '1')
