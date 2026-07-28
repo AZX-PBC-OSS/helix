@@ -32,7 +32,7 @@ param location string
 @description('Resource name prefix.')
 param namePrefix string
 
-@description('Apps domain == public DNS zone name, e.g. franklin.helix.azxlabs.io.')
+@description('Apps domain == public DNS zone name, e.g. apps.example.com.')
 param appsDomain string
 
 @description('ACA managed environment name (the edge lives here).')

@@ -22,7 +22,7 @@ const APP: App = {
   archivedAt: null,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
-  url: "https://cost-explorer.franklin.helix.azxlabs.io",
+  url: "https://cost-explorer.apps.example.com",
 };
 
 const AUTH_CONFIG = {
@@ -66,18 +66,16 @@ describe("DevModeTab", () => {
   it("shows the dev-gateway base with the app slug in the path", async () => {
     setToken("t");
     stubApi({
-      appPublicBase: "https://franklin.helix.azxlabs.io",
-      devApiBase: "https://dev-api.franklin.helix.azxlabs.io",
+      appPublicBase: "https://apps.example.com",
+      devApiBase: "https://dev-api.apps.example.com",
     });
     render();
-    expect(
-      await screen.findByText("https://dev-api.franklin.helix.azxlabs.io/cost-explorer"),
-    ).toBeDefined();
+    expect(await screen.findByText("https://dev-api.apps.example.com/cost-explorer")).toBeDefined();
   });
 
   it("says dev mode isn't enabled when the deployment has no dev gateway", async () => {
     setToken("t");
-    stubApi({ appPublicBase: "https://franklin.helix.azxlabs.io" });
+    stubApi({ appPublicBase: "https://apps.example.com" });
     render();
     expect(await screen.findByText(/dev gateway isn't enabled on this deployment/i)).toBeDefined();
     // Critically: no invented host anywhere on the page.

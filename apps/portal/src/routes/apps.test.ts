@@ -272,11 +272,11 @@ describe("GET /api/v1/apps and /:slug", () => {
 
   it("follows APP_PUBLIC_BASE, so a redeploy to a new domain needs no client change", async () => {
     const prev = process.env.APP_PUBLIC_BASE;
-    process.env.APP_PUBLIC_BASE = "https://franklin.helix.azxlabs.io";
+    process.env.APP_PUBLIC_BASE = "https://apps.example.com";
     try {
       const slug = uniqueSlug();
       const created = await createApp({ slug, displayName: "Rehomed" });
-      expect(created.json().url).toBe(`https://${slug}.franklin.helix.azxlabs.io`);
+      expect(created.json().url).toBe(`https://${slug}.apps.example.com`);
     } finally {
       if (prev === undefined) delete process.env.APP_PUBLIC_BASE;
       else process.env.APP_PUBLIC_BASE = prev;

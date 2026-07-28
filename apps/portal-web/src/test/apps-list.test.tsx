@@ -11,7 +11,7 @@ import { DeployProvider } from "../modals/DeployContext";
  * prebuilt bundle showing `*.local.helix.azxlabs.io:8080` in production, so a
  * test that asserted the dev default would pass on the broken code.
  */
-const APPS_BASE = "https://franklin.helix.azxlabs.io";
+const APPS_BASE = "https://apps.example.com";
 
 function makeApp(slug: string, displayName: string, live: boolean, url?: string): App {
   return {
@@ -28,13 +28,8 @@ function makeApp(slug: string, displayName: string, live: boolean, url?: string)
 }
 
 const APPS = [
-  makeApp(
-    "cost-explorer",
-    "Cost Explorer",
-    true,
-    "https://cost-explorer.franklin.helix.azxlabs.io",
-  ),
-  makeApp("standup", "Standup", false, "https://standup.franklin.helix.azxlabs.io"),
+  makeApp("cost-explorer", "Cost Explorer", true, "https://cost-explorer.apps.example.com"),
+  makeApp("standup", "Standup", false, "https://standup.apps.example.com"),
 ];
 
 function jsonResponse(body: unknown) {
@@ -89,8 +84,8 @@ describe("AppsListPage", () => {
   it("shows each app's host from the URL the server computed", async () => {
     stubFetch(APPS);
     render();
-    expect(await screen.findByText("cost-explorer.franklin.helix.azxlabs.io")).toBeDefined();
-    expect(screen.getByText("standup.franklin.helix.azxlabs.io")).toBeDefined();
+    expect(await screen.findByText("cost-explorer.apps.example.com")).toBeDefined();
+    expect(screen.getByText("standup.apps.example.com")).toBeDefined();
   });
 
   // An older portal predating AppSchema.url: compose the slug onto the base from
@@ -98,7 +93,7 @@ describe("AppsListPage", () => {
   it("falls back to the deployment base when an app carries no url", async () => {
     stubFetch([makeApp("legacy", "Legacy", true)]);
     render();
-    expect(await screen.findByText("legacy.franklin.helix.azxlabs.io")).toBeDefined();
+    expect(await screen.findByText("legacy.apps.example.com")).toBeDefined();
   });
 
   it("renders no host at all while the deployment config is in flight", async () => {
@@ -114,7 +109,7 @@ describe("AppsListPage", () => {
     render();
     expect(await screen.findByText("No apps yet")).toBeDefined();
     // The "served at <slug>.<domain>" hint uses the deployment base.
-    expect(screen.getByText(`https://<slug>.franklin.helix.azxlabs.io`)).toBeDefined();
+    expect(screen.getByText(`https://<slug>.apps.example.com`)).toBeDefined();
   });
 
   it("omits the empty-state URL hint until the deployment config arrives", async () => {

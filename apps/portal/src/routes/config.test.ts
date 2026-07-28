@@ -47,11 +47,9 @@ describe("GET /api/v1/config", () => {
   });
 
   it("reports the deployment's apps base", async () => {
-    await withEnv({ APP_PUBLIC_BASE: "https://franklin.helix.azxlabs.io" }, async () => {
+    await withEnv({ APP_PUBLIC_BASE: "https://apps.example.com" }, async () => {
       const res = await t.app.inject({ url: "/api/v1/config" });
-      expect(res.json<{ appPublicBase: string }>().appPublicBase).toBe(
-        "https://franklin.helix.azxlabs.io",
-      );
+      expect(res.json<{ appPublicBase: string }>().appPublicBase).toBe("https://apps.example.com");
     });
   });
 
@@ -89,15 +87,12 @@ describe("GET /api/v1/config", () => {
     });
 
     it("reports devApiBase when it is deployed", async () => {
-      await withEnv(
-        { DEV_API_PUBLIC_BASE: "https://dev-api.franklin.helix.azxlabs.io" },
-        async () => {
-          const body = (await t.app.inject({ url: "/api/v1/config" })).json<{
-            devApiBase: string;
-          }>();
-          expect(body.devApiBase).toBe("https://dev-api.franklin.helix.azxlabs.io");
-        },
-      );
+      await withEnv({ DEV_API_PUBLIC_BASE: "https://dev-api.apps.example.com" }, async () => {
+        const body = (await t.app.inject({ url: "/api/v1/config" })).json<{
+          devApiBase: string;
+        }>();
+        expect(body.devApiBase).toBe("https://dev-api.apps.example.com");
+      });
     });
   });
 

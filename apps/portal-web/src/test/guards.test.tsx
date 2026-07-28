@@ -44,7 +44,7 @@ function stubApi(me: PortalMeResponse | { status: 401 }): void {
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: async () => ({ appPublicBase: "https://franklin.helix.azxlabs.io" }),
+          json: async () => ({ appPublicBase: "https://apps.example.com" }),
         });
       }
       return new Promise(() => {}); // health etc.: pending

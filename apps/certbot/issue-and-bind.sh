@@ -14,7 +14,7 @@
 # user-assigned managed identity — no secrets in the image or the env.
 set -euo pipefail
 
-: "${APPS_DOMAIN:?}"            # e.g. franklin.helix.azxlabs.io
+: "${APPS_DOMAIN:?}"            # e.g. apps.example.com
 : "${ACME_EMAIL:?}"            # registration/expiry-notice email
 : "${AZURE_SUBSCRIPTION_ID:?}"
 : "${DNS_ZONE_RG:?}"           # RG holding the public DNS zone (== APPS_DOMAIN)

@@ -17,7 +17,7 @@ The M5 Azure infra stored the platform secrets in a private Key Vault
 the container apps to them via **ACA Key Vault secret references**
 (`keyVaultUrl` + managed identity).
 
-The franklin-energy smoketest (first real end-to-end deploy) proved that
+The first real end-to-end deploy proved that
 combination cannot work: **ACA resolves Key Vault references on the Container
 Apps control plane — outside the app's VNet — at revision-provisioning time.** A
 vault with public access disabled is reachable only through its private
@@ -69,7 +69,7 @@ with a private vault.
   That path is already behind the `@azx-pbc/secret-store` abstraction, so
   portability there is a matter of adding a non-Azure backend, not re-architecting.
 
-## Note (2026-07-24, franklin-energy smoketest)
+## Note (2026-07-24, first real end-to-end deploy)
 
 Found on the first Azure deploy: apps failed to provision with *"unable to fetch
 secret … using Managed identity"* until the KV references were replaced with

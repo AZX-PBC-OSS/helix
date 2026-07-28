@@ -416,7 +416,7 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
 
 ## Known deploy gotchas
 
-Wrinkles hit during the first real deploy (franklin-energy smoketest). Check these
+Wrinkles hit during the first real end-to-end deploy. Check these
 if a deploy misbehaves:
 
 - **Key Vault private-endpoint DNS may not auto-register.** The two `kv-*` private
