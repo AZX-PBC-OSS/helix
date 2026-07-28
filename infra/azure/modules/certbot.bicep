@@ -59,8 +59,11 @@ param acmeEmail string
 @description('ACME directory URL. Default = LE staging (untrusted cert, high rate limits); set the prod directory once the flow is validated.')
 param acmeServer string = 'https://acme-staging-v02.api.letsencrypt.org/directory'
 
-@description('Cron for the renewal check. Default daily 03:00 UTC.')
+@description('Cron for the renewal check. Default daily 03:00 UTC. A daily check is cheap because the job only contacts the CA inside the renewal window (renewBeforeDays) — it reads the current expiry from the environment cert store, since this container keeps no certbot state of its own.')
 param cronExpression string = '0 3 * * *'
+
+@description('Re-issue only when the cert in the environment store has fewer than this many whole days left. Default 30 against a ~90-day Let\'s Encrypt cert, so there are weeks of daily retries before expiry is at risk. Raising it toward the cert lifetime reintroduces the re-issue-every-run behaviour this guard exists to prevent (LE allows 5 certs per identical identifier set per 7 days).')
+param renewBeforeDays int = 30
 
 var dnsZoneContributorRoleId = 'befefa01-2a29-4197-83a8-272ff33ce314'
 var contributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
@@ -177,6 +180,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
             { name: 'PORTAL_HOSTNAME', value: empty(portalAppName) ? '' : 'portal.${appsDomain}' }
             { name: 'DEV_GATEWAY_APP', value: devGatewayAppName }
             { name: 'DEV_GATEWAY_HOSTNAME', value: empty(devGatewayAppName) ? '' : 'dev-api.${appsDomain}' }
+            { name: 'RENEW_BEFORE_DAYS', value: string(renewBeforeDays) }
           ]
         }
       ]

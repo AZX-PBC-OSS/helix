@@ -128,6 +128,23 @@ It renews on a daily cron. Requires `acmeEmail`; defaults to the **LE staging**
 directory (`acmeServer`) — validate the flow there, then flip `acmeServer` to the
 prod directory.
 
+**Why a daily cron is safe.** The job container is ephemeral — nothing mounts
+`/etc/letsencrypt` — so certbot's own "skip unless due for renewal" logic can
+never fire: it always believes it has no cert. Left alone it would request a new
+certificate *every run*, which outspends Let's Encrypt's duplicate-certificate
+limit (**5 per identical identifier set per 7 days**, refilling 1 per 34h): a
+daily schedule drains the budget in ~2.5 weeks, then fails roughly a third of its
+runs — including any emergency re-issue you actually need. So the job takes its
+renewal clock from the **expiry of the cert already in the environment cert
+store**, the durable state it does have, and contacts the CA only within
+`renewBeforeDays` (default 30) of expiry. The decision **fails open**: a missing
+cert, unreadable expiry, or failed query all fall through to issuing, so the worst
+case is a wasted issuance rather than a silent expiry.
+
+The **bind** steps run on every execution regardless of that decision. They are
+idempotent, and it means a scheduled run repairs bindings stripped by a template
+re-apply (see "Known deploy gotchas") without spending an issuance.
+
 **Bootstrap (one-time, after deploy):** the cert must exist before the domain can
 bind, so trigger the job once:
 
