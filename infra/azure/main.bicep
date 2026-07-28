@@ -402,6 +402,14 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'NODE_ENV', value: 'production' }
       { name: 'PORT', value: '8080' }
       { name: 'HOST', value: '0.0.0.0' }
+      // The port the edge LISTENS on (PORT, above) is not the port the world
+      // reaches it on: ACA's ingress terminates TLS at 443 and forwards to 8080.
+      // publicOrigin() builds every externally visible URL from publicPort and
+      // omits it only when it is 443 — and publicPort falls back to PORT — so
+      // without this the edge advertises `https://auth.<domain>:8080/callback`,
+      // which fails Entra's redirect-URI match (AADSTS50011) and, more quietly,
+      // breaks the per-app Origin check in auth/validate.ts for every app.
+      { name: 'EDGE_PUBLIC_PORT', value: '443' }
       { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
       { name: 'BLOB_CONTAINER', value: blobContainerName }
       // Blob reads via managed identity (issue #15) — no account key. AZURE_CLIENT_ID
