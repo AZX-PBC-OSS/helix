@@ -400,7 +400,7 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
      `<namePrefix>-edge-id`, not `helix_edge` — and every GRANT in every
      migration, plus the env-literal RLS policy pinning `helix_dev` to
      `env='dev'`, references those four names;
-  3. **the apps**: an Entra token *is* the password and expires hourly, so the
+  3. **the apps**: an Entra token _is_ the password and expires hourly, so the
      static `connectionString` in `apps/portal/src/db/client.ts` and
      `apps/edge/src/db/pool.ts` can't hold it (`pg.Pool` does accept a `password`
      function, so it is feasible — but it is a change in three planes);
@@ -411,6 +411,7 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
   that it would not by itself stop a resource-group Contributor reading platform
   secrets — those are readable from the container app definitions regardless (see
   "Known deploy gotchas"), so the win is narrower than it first appears.
+
 - **Audit-log shipping to immutable blob** — architecture §10 follow-up.
 
 ## Known deploy gotchas
@@ -451,7 +452,7 @@ if a deploy misbehaves:
     resource group can read every per-role Postgres DSN, `EDGE_AUTH_SECRET`,
     `PORTAL_SECRET`, `HELIX_INSTRUCTION_SECRET`, and the edge OIDC private key.
   - **It is also the recovery path.** Secrets generated at deploy time and never
-    captured are *not* lost — they can be read back from a running install (the
+    captured are _not_ lost — they can be read back from a running install (the
     same eight are in `kv-platform`). Only the Postgres admin password and, when
     the dev surface is off, the `helix_dev` DSN are absent, and both reset
     losslessly: nothing depends on the admin password at runtime.
