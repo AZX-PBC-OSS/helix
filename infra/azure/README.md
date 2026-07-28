@@ -419,8 +419,12 @@ if a deploy misbehaves:
     --hostname '<host>' --environment <env> --certificate "$CERT_ID"
   ```
 
-  This matters most for **CI-driven deploys** (Phase 3): a workflow that re-applies
-  the template on every release silently breaks TLS unless it re-binds afterwards.
+  A **scoped `az containerapp update`** (e.g. `--set-env-vars`) does *not* wipe the
+  bindings — only a full ARM apply reconciles the whole resource — so prefer that for
+  single-knob changes to a live install.
+
+  This matters most for **CI-driven deploys**: a workflow that re-applies the template
+  on every release silently breaks TLS unless it re-binds afterwards.
 
 - **Provider registration can wedge.** `Microsoft.DBforPostgreSQL` (and friends) can
   sit in `Registering` for a long time; re-issuing `az provider register -n <ns>`
