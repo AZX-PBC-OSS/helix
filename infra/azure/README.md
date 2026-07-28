@@ -131,7 +131,7 @@ prod directory.
 **Why a daily cron is safe.** The job container is ephemeral — nothing mounts
 `/etc/letsencrypt` — so certbot's own "skip unless due for renewal" logic can
 never fire: it always believes it has no cert. Left alone it would request a new
-certificate *every run*, which outspends Let's Encrypt's duplicate-certificate
+certificate _every run_, which outspends Let's Encrypt's duplicate-certificate
 limit (**5 per identical identifier set per 7 days**, refilling 1 per 34h): a
 daily schedule drains the budget in ~2.5 weeks, then fails roughly a third of its
 runs — including any emergency re-issue you actually need. So the job takes its
@@ -436,7 +436,7 @@ if a deploy misbehaves:
     --hostname '<host>' --environment <env> --certificate "$CERT_ID"
   ```
 
-  A **scoped `az containerapp update`** (e.g. `--set-env-vars`) does *not* wipe the
+  A **scoped `az containerapp update`** (e.g. `--set-env-vars`) does _not_ wipe the
   bindings — only a full ARM apply reconciles the whole resource — so prefer that for
   single-knob changes to a live install.
 
