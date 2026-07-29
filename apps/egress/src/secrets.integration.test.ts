@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DevEnvelopeSecretStore } from "@azx-pbc/secret-store";
+import { DevEnvelopeSecretStore, KeyVaultSecretStore } from "@azx-pbc/secret-store";
 import { PgSecretResolver } from "./secrets.js";
 
 /**
@@ -152,6 +152,84 @@ describe("PgSecretResolver capability gate", () => {
       expect((await resolver.resolve(appId, "stripe", "fetch", "dev"))?.value).toBe(
         "secret-for-app-stripe-DEV",
       );
+    } finally {
+      await resolver.close();
+    }
+  });
+});
+
+/**
+ * The custody seam across two processes, under Key Vault (ADR-0006).
+ *
+ * The one thing `SecretStore` exists to guarantee is that the `material` the
+ * portal writes is byte-identical to what egress reads back — the two run in
+ * different containers under different identities and never share memory. The
+ * unit tests exercise one store instance; this exercises *two*, over one vault,
+ * with the real `app_secrets` row and the real `helix_egress` role in between.
+ * A dev-envelope store cannot catch a divergence here because both sides derive
+ * the same key from the same file.
+ */
+describe("PgSecretResolver over Key Vault custody", () => {
+  /** An in-memory vault shared by the two store instances, as Azure would be. */
+  function sharedVault() {
+    const values = new Map<string, string>(); // "name/version" → plaintext
+    let n = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const [, name = "", version] = url.pathname.split("/").filter(Boolean);
+      const method = init?.method ?? "GET";
+      if (method === "PUT") {
+        n += 1;
+        const v = n.toString(16).padStart(32, "0");
+        values.set(`${name}/${v}`, (JSON.parse(String(init?.body)) as { value: string }).value);
+        return new Response(JSON.stringify({ id: `https://kv.example/secrets/${name}/${v}` }), {
+          status: 200,
+        });
+      }
+      const value = values.get(`${name}/${version ?? ""}`);
+      if (value === undefined) return new Response("{}", { status: 404 });
+      return new Response(JSON.stringify({ value }), { status: 200 });
+    };
+    return { fetchImpl, values };
+  }
+
+  it("a secret sealed by the portal store opens in the egress store, through the DB", async () => {
+    if (!provisioned) return;
+    const vault = sharedVault();
+    const opts = {
+      vaultUrl: "https://kv.example",
+      getToken: async () => "tok",
+      fetchImpl: vault.fetchImpl,
+    };
+    // Two instances, as in production: the control plane seals, the mechanism
+    // plane opens. Separate caches, separate credentials, no shared state.
+    const portalSide = new KeyVaultSecretStore(opts);
+    const egressSide = new KeyVaultSecretStore(opts);
+
+    const id = randomUUID();
+    ids.push(id);
+    const material = await portalSide.seal("sk_live_crossseam");
+    // The DB column holds a *reference*, not the credential: a stolen backup is
+    // inert without the vault and an identity RBAC admits to it.
+    expect(material).toMatch(/^kv:hx-[0-9a-f]{32}\/[0-9a-f]+$/);
+    expect(material).not.toContain("sk_live_crossseam");
+
+    const owner = new Pool({ connectionString: OWNER_URL, max: 1 });
+    try {
+      await owner.query(
+        `INSERT INTO app_secrets (id, scope, "appId", name, material, injection, "createdBy")
+         VALUES ($1, 'app', $2, 'kv-conn', $3, $4, 'test')`,
+        [id, appId, material, JSON.stringify({ kind: "header-bearer" })],
+      );
+    } finally {
+      await owner.end();
+    }
+
+    const resolver = new PgSecretResolver(egressUrl(), egressSide, { max: 1 });
+    try {
+      const resolved = await resolver.resolve(appId, "kv-conn", "fetch", "prod");
+      expect(resolved?.value).toBe("sk_live_crossseam");
+      expect(resolved?.injection).toEqual({ kind: "header-bearer" });
     } finally {
       await resolver.close();
     }

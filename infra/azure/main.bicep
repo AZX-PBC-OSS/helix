@@ -376,6 +376,11 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EGRESS_PORT', value: '8081' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
+      // Egress reads connection secrets from kv-connections under its own managed
+      // identity. It does NOT use @azure/identity (the mechanism plane stays
+      // dependency-minimal — ADR-0031); it calls the ACA identity endpoint
+      // directly, and a user-assigned identity is ambiguous without the client id.
+      { name: 'AZURE_CLIENT_ID', value: identity.outputs.egressIdentityClientId }
       { name: 'EGRESS_DATABASE_URL', secretRef: 'egress-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
     ]

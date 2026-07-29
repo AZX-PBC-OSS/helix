@@ -1,5 +1,6 @@
 import fp from "fastify-plugin";
-import { createSecretStore, readDevKey, type SecretStore } from "@azx-pbc/secret-store";
+import type { SecretStore } from "@azx-pbc/secret-store";
+import { createSecretStoreFromEnv } from "../secrets/custody.js";
 
 export interface SecretStorePluginOptions {
   /** Inject a store (tests). When omitted, one is built from the environment. */
@@ -17,23 +18,23 @@ export interface SecretStorePluginOptions {
 export const secretStorePlugin = fp<SecretStorePluginOptions>(
   async (app, opts) => {
     // Distinguish "not injected" (build from env) from an explicit null (none).
-    app.decorate("secretStore", opts.store !== undefined ? opts.store : buildFromEnv());
+    app.decorate("secretStore", opts.store !== undefined ? opts.store : buildFromEnv(app.log));
   },
   { name: "secret-store" },
 );
 
-function buildFromEnv(): SecretStore | null {
+function buildFromEnv(log: { error: (obj: object, msg: string) => void }): SecretStore | null {
   try {
-    if (process.env.AZURE_KEY_VAULT_URL) {
-      return createSecretStore({ keyVaultUrl: process.env.AZURE_KEY_VAULT_URL });
-    }
-    if (process.env.DEV_SECRETS_KEK_FILE) {
-      return createSecretStore({ devMasterKey: readDevKey(process.env.DEV_SECRETS_KEK_FILE) });
-    }
-  } catch {
-    // Misconfigured custody (missing/short KEK) ⇒ no store; routes 503 rather
-    // than seal under a weak key.
+    return createSecretStoreFromEnv();
+  } catch (err) {
+    // Misconfigured custody (missing/short KEK, unusable vault credential) ⇒ no
+    // store; the secret routes 503 rather than seal under a weak key. Log it —
+    // silently degrading to "secrets unavailable" is otherwise indistinguishable
+    // from never having configured custody at all.
+    log.error(
+      { err },
+      "secret store is configured but could not be built — secret routes will 503",
+    );
     return null;
   }
-  return null;
 }

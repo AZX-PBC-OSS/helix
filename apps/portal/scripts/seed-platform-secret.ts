@@ -1,5 +1,6 @@
-import { createSecretStore, readDevKey, type SecretStore } from "@azx-pbc/secret-store";
+import type { SecretStore } from "@azx-pbc/secret-store";
 import { createPrismaClient } from "../src/db/client.js";
+import { createSecretStoreFromEnv } from "../src/secrets/custody.js";
 
 /**
  * Dev convenience: seed the platform LLM vendor secret so `pnpm dev:edge` +
@@ -14,17 +15,17 @@ import { createPrismaClient } from "../src/db/client.js";
  *   pnpm --filter @azx-pbc/portal seed:llm -- --force           # rotate existing
  *
  * Custody mirrors the running portal: Key Vault when `AZURE_KEY_VAULT_URL` is set,
- * else the dev envelope under `DEV_SECRETS_KEK_FILE`.
+ * else the dev envelope under `DEV_SECRETS_KEK_FILE`. Against a real vault the
+ * credential comes from `DefaultAzureCredential`, so an operator running this
+ * under `az login` needs no extra setup.
  */
 
 function buildStore(): SecretStore {
-  if (process.env.AZURE_KEY_VAULT_URL) {
-    return createSecretStore({ keyVaultUrl: process.env.AZURE_KEY_VAULT_URL });
+  const store = createSecretStoreFromEnv();
+  if (!store) {
+    throw new Error("no secret store configured — set DEV_SECRETS_KEK_FILE or AZURE_KEY_VAULT_URL");
   }
-  if (process.env.DEV_SECRETS_KEK_FILE) {
-    return createSecretStore({ devMasterKey: readDevKey(process.env.DEV_SECRETS_KEK_FILE) });
-  }
-  throw new Error("no secret store configured — set DEV_SECRETS_KEK_FILE or AZURE_KEY_VAULT_URL");
+  return store;
 }
 
 async function main(): Promise<void> {
@@ -55,7 +56,16 @@ async function main(): Promise<void> {
         where: { id: existing.id },
         data: { material, rotatedAt: new Date() },
       });
-      await store.destroy(existing.material).catch(() => {});
+      // Non-fatal (the row already points at the new value) but never silent: a
+      // failed destroy strands a live vault entry holding the old vendor key.
+      await store.destroy(existing.material).catch((err: unknown) => {
+        console.error(
+          `WARNING: rotated "${name}" but could not destroy the previous material — ` +
+            `the old value may still be readable in the vault. Delete it by hand.`,
+          err instanceof Error ? err.message : err,
+        );
+        process.exitCode = 1;
+      });
       console.log(`rotated platform secret "${name}" (id ${existing.id}).`);
     } else {
       const row = await prisma.appSecret.create({

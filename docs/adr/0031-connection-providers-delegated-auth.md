@@ -73,7 +73,7 @@ Introduce a **connection provider catalog** as first-class control-plane data, w
 15. **Token refresh is single-flight per `(userOid, providerId)`.** Vendors that rotate refresh tokens invalidate the old one on use, so two concurrent refreshes race and one loses the token permanently. The new token must be stored atomically.
 
 16. **Two hard prerequisites, not follow-ups.**
-    - The **prod Key Vault `SecretStore` must be wired** before per-user tokens ship. It is an unwired stub today (`open()` throws — ADR [0006](0006-secret-custody-seam.md)), and the dev AES-GCM envelope is documented as hygiene, not a boundary. A refresh token is *standing access*, not a rotatable string, and this stores N users × M providers of them.
+    - The **prod Key Vault `SecretStore` must be wired** before per-user tokens ship. The dev AES-GCM envelope is documented as hygiene, not a boundary, and a refresh token is *standing access*, not a rotatable string — this stores N users × M providers of them. **Cleared 2026-07-29:** `KeyVaultSecretStore` is implemented (`packages/secret-store/src/keyvault.ts`) with a timeout/retry budget and a version-pinned plaintext cache; see the [ADR-0006 amendment](0006-secret-custody-seam.md). Two residuals this decision should carry forward: `destroy()` is a *soft* delete under purge protection (90-day retention), which matters more for a revoked user token than for an API key; and decision 15's atomic store-on-refresh must not reuse the best-effort destroy pattern.
     - **ADR [0007](0007-portal-authz-v0.md) must be resolved** before decision 12. "Appropriate access controls on who can use what" is not expressible while `authenticated == authorized` and per-app RBAC is still the `PreviewBadge` stub.
 
 ## Consequences

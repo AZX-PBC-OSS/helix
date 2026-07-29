@@ -63,9 +63,11 @@ Legend for gating conditions:
 
 ## Secret custody (ADR-0006)
 
-- [ ] **Mark KEK rotation explicitly deferred.** No KEK rotation / rekey path exists — record it as a known deferral. — ADR-0006
-- [ ] **State plainly that the dev AES-GCM envelope is not a security boundary.** — ADR-0006
-- [ ] **Spec a timeout/retry for the prod Key Vault `open()` hot path.** Currently an unwired stub with no timeout/retry (Key Vault wired in M5). — ADR-0006
+- [x] **Mark KEK rotation explicitly deferred.** No KEK rotation / rekey path exists — record it as a known deferral. — ADR-0006 _(done: ADR-0006 amendment §2 + `packages/secret-store/src/dev.ts` class doc. Note per-secret rotation under Key Vault **is** supported — `seal` mints a new name/version and `destroy` releases the old — so the deferral is the KEK itself, not credential rotation.)_
+- [x] **State plainly that the dev AES-GCM envelope is not a security boundary.** — ADR-0006 _(done: ADR-0006 amendment §1, `packages/secret-store/src/store.ts` interface doc, `dev.ts` class doc.)_
+- [x] **Spec a timeout/retry for the prod Key Vault `open()` hot path.** Currently an unwired stub with no timeout/retry (Key Vault wired in M5). — ADR-0006 _(done with the Key Vault impl: per-attempt 3s/10s, a total deadline of 8s/25s so retries can't stack past the egress budget, retry only on transport error/429/5xx with `Retry-After` honoured, 4xx terminal. `KeyVaultError.status` separates 404-integrity from 403-RBAC; egress maps any resolution throw to an opaque 502. Covered in `packages/secret-store/src/keyvault.test.ts`.)_
+- [ ] **Design a real erasure path for connection secrets.** `destroy()` under `kv-connections` is a _soft_ delete — purge protection + 90-day retention mean the value stays recoverable and cannot be purged early, so crypto-shredding is not achievable through the seam. Needs its own design alongside the metering crypto-shred item below. — ADR-0006 amendment §3
+- [ ] **Reconcile plaintext dwell with the new `open()` cache.** The store now holds opened plaintext for a 5-minute TTL (bounded LRU, version-pinned so it cannot go stale). The trade is documented, but "plaintext dwell" is still unspecified as a _policy_ — decide a target and whether egress should flush on idle. — ADR-0006 amendment §5
 
 ---
 

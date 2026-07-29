@@ -82,6 +82,47 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
   const audit = (appId: string | null, actor: string, action: string, metadata: object = {}) =>
     app.prisma.auditEvent.create({ data: { appId, actor, action, metadata } });
 
+  /**
+   * Release a superseded `material` — **non-throwing, but never silent**.
+   *
+   * Every caller has already committed the row change, so failing the request now
+   * would be strictly worse than reporting it. But against Key Vault a swallowed
+   * failure strands a live vault entry still holding the old credential — exactly
+   * the leak `destroy()` exists to prevent (ADR-0006). So a failure becomes an
+   * operator-visible `secret.destroy_failed` audit event, not a dropped promise.
+   *
+   * The `ref` is recorded only for `kv:` material, which is a *reference* and is
+   * what an operator needs to find the orphan. Dev `aesgcm:` material is the
+   * ciphertext itself and is never copied into the audit table.
+   */
+  const release = async (
+    material: string,
+    ctx: {
+      appId: string | null;
+      actor: string;
+      scope: string;
+      env: string;
+      name: string;
+      reason: "rotate" | "delete" | "create-rollback";
+    },
+  ): Promise<void> => {
+    try {
+      await store().destroy(material);
+    } catch (err) {
+      const ref = material.startsWith("kv:") ? material : undefined;
+      app.log.error({ err, ...ctx, ref }, "secret destroy failed — vault entry may be stranded");
+      await audit(ctx.appId, ctx.actor, "secret.destroy_failed", {
+        scope: ctx.scope,
+        env: ctx.env,
+        name: ctx.name,
+        reason: ctx.reason,
+        ...(ref ? { ref } : {}),
+      }).catch((auditErr: unknown) => {
+        app.log.error({ err: auditErr }, "could not record secret.destroy_failed");
+      });
+    }
+  };
+
   // ── App-scoped secrets (owner) ────────────────────────────────────────────
 
   app.get<{ Params: { slug: string } }>(
@@ -123,9 +164,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
           },
         });
       } catch (err) {
-        await store()
-          .destroy(material)
-          .catch(() => {});
+        await release(material, {
+          appId: appRow.id,
+          actor: actor.sub,
+          scope: "app",
+          env: body.env,
+          name: body.name,
+          reason: "create-rollback",
+        });
         if (isUniqueViolation(err)) {
           throw new AppError(
             "conflict",
@@ -163,9 +209,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         where: { id: row.id },
         data: { material, rotatedAt: new Date() },
       });
-      await store()
-        .destroy(row.material)
-        .catch(() => {});
+      await release(row.material, {
+        appId: appRow.id,
+        actor: actor.sub,
+        scope: "app",
+        env,
+        name: row.name,
+        reason: "rotate",
+      });
       await audit(appRow.id, actor.sub, "secret.rotated", { scope: "app", env, name: row.name });
       return toMetadata(updated);
     },
@@ -183,9 +234,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
       await app.prisma.appSecret.delete({ where: { id: row.id } });
-      await store()
-        .destroy(row.material)
-        .catch(() => {});
+      await release(row.material, {
+        appId: appRow.id,
+        actor: actor.sub,
+        scope: "app",
+        env,
+        name: row.name,
+        reason: "delete",
+      });
       await audit(appRow.id, actor.sub, "secret.deleted", { scope: "app", env, name: row.name });
       reply.status(204);
     },
@@ -252,9 +308,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         where: { id: row.id },
         data: { material, rotatedAt: new Date() },
       });
-      await store()
-        .destroy(row.material)
-        .catch(() => {});
+      await release(row.material, {
+        appId: null,
+        actor: actor.sub,
+        scope: row.scope,
+        env: row.env,
+        name: row.name,
+        reason: "rotate",
+      });
       await audit(null, actor.sub, "secret.rotated", { scope: row.scope, name: row.name });
       return toMetadata(updated);
     },
@@ -270,9 +331,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!row) throw new AppError("not_found", "secret not found");
       await app.prisma.appSecret.delete({ where: { id: row.id } }); // cascades grants
-      await store()
-        .destroy(row.material)
-        .catch(() => {});
+      await release(row.material, {
+        appId: null,
+        actor: actor.sub,
+        scope: row.scope,
+        env: row.env,
+        name: row.name,
+        reason: "delete",
+      });
       await audit(null, actor.sub, "secret.deleted", { scope: row.scope, name: row.name });
       reply.status(204);
     },

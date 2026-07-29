@@ -54,10 +54,14 @@ environment (architecture §8):
   env var that tempts cross-environment reuse). This envelope is **hygiene, not a
   security boundary** — the KEK and the ciphertext share one dev machine — and
   there is **no KEK rotation path** (explicitly deferred). (ADR-0006.)
-- **prod:** `KeyVaultSecretStore` — the value lives in Key Vault; `material` is
-  only a reference; read via managed identity (no app-held key). This is an
-  **unwired stub today**: `open()` throws "not wired — M5" and the dev envelope
-  is the only working path until M5. (ADR-0006.)
+- **prod:** `KeyVaultSecretStore` — the value lives in Key Vault (`kv-connections`);
+  `material` is only a reference (`kv:<name>/<version>`); read via managed identity
+  (no app-held key). Wired: Key Vault data-plane REST over global `fetch`, so the
+  package stays zero-dependency, with the credential injected as a one-function
+  seam (egress hand-rolls the managed-identity call, the portal uses
+  `DefaultAzureCredential`). `open()` carries an explicit timeout/retry budget and
+  a version-pinned plaintext cache; `destroy()` is a *soft* delete under purge
+  protection. (ADR-0006 and its 2026-07-29 amendment.)
 
 Encryption-at-rest only buys anything when the key and the ciphertext have
 *different* exposure profiles — so the key never sits next to the ciphertext.
@@ -104,13 +108,14 @@ credential — and the value was never in the bundle.
 ## Key files
 
 - `apps/portal/src/routes/secrets.ts` — the CRUD + grant routes (seal-on-write).
-- `packages/secret-store/src/index.ts` — the `SecretStore` seam (`seal`/`open`/`destroy`), dev + prod impls.
+- `packages/secret-store/src/` — the `SecretStore` seam (`store.ts`), the dev envelope (`dev.ts`), the Key Vault impl (`keyvault.ts`), and the managed-identity token provider (`token.ts`).
 - `apps/egress/src/secrets.ts` — `PgSecretResolver`, the only reader (`helix_egress` role).
 - `apps/portal/prisma/migrations/…_secrets_and_egress_grants/` — `app_secrets`/`app_secret_grants` + the role grants.
 
 ## Planned / not yet built
 
-- **Key Vault `SecretStore`** (prod custody) — seam present, wired in M5.
+- **A real erasure path.** `destroy()` under purge protection is a soft delete —
+  90-day retention, no early purge — so crypto-shredding needs its own design.
 - **Grant via the approval queue** (separation-of-duty between granting and
   approving admins) — design §10.
 - **Rotation policy / expiry** off `rotatedAt` — design §10.

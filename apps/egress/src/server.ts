@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import { createSecretStore, readDevKey, type SecretStore } from "@azx-pbc/secret-store";
+import {
+  createSecretStore,
+  managedIdentityTokenProviderFromEnv,
+  readDevKey,
+  type SecretStore,
+  type TokenProvider,
+} from "@azx-pbc/secret-store";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";
@@ -50,11 +56,30 @@ const instructionKey = deriveInstructionKey(config.instructionSecret);
 // Build the secret-store custody (prod: Key Vault; dev: local envelope). If
 // neither is configured the resolver stays null — keyless proxying still works,
 // secret-backed calls 502 (fail-closed).
+//
+// Deliberately not wrapped in try/catch (unlike the portal plugin): egress cannot
+// do its job without custody, so misconfiguration must crash the boot rather than
+// silently degrade every secret-backed call to a 502.
 let store: SecretStore | null = null;
+let tokenProvider: TokenProvider | null = null;
+let custody: "keyvault" | "dev" | "off" = "off";
 if (config.keyVaultUrl) {
-  store = createSecretStore({ keyVaultUrl: config.keyVaultUrl });
+  // The mechanism plane stays off `@azure/identity` (ADR-0031 extends the edge's
+  // dependency-minimal reasoning here by degree) — the managed-identity token
+  // endpoint is a plain HTTP call we make ourselves.
+  tokenProvider = managedIdentityTokenProviderFromEnv();
+  if (!tokenProvider) {
+    throw new Error(
+      "AZURE_KEY_VAULT_URL is set but the managed-identity env is not " +
+        "(need IDENTITY_ENDPOINT, IDENTITY_HEADER, AZURE_CLIENT_ID)",
+    );
+  }
+  const getToken = tokenProvider.getToken.bind(tokenProvider);
+  store = createSecretStore({ keyVaultUrl: config.keyVaultUrl, getToken });
+  custody = "keyvault";
 } else if (config.devKeyPath) {
   store = createSecretStore({ devMasterKey: readDevKey(config.devKeyPath) });
+  custody = "dev";
 }
 const resolver: SecretResolver | null = store
   ? new PgSecretResolver(config.databaseUrl, store)
@@ -78,12 +103,13 @@ app.addHook("onClose", async () => {
   clearInterval(burnSweep);
   await burnStore.close();
   await resolver?.close();
+  await tokenProvider?.close();
 });
 
 try {
   await app.listen({ port: config.port, host: config.host });
   app.log.info(
-    { port: config.port, secretStore: store ? "on" : "off", allowPrivate: config.allowPrivate },
+    { port: config.port, secretStore: custody, allowPrivate: config.allowPrivate },
     "azx-egress serving",
   );
   if (config.allowPrivate) {

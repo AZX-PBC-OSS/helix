@@ -52,19 +52,20 @@ describe("createSecretStore", () => {
   it("returns the dev store with a master key", () => {
     expect(createSecretStore({ devMasterKey: key })).toBeInstanceOf(DevEnvelopeSecretStore);
   });
-  it("returns the Key Vault store when a vault URL is given", () => {
-    expect(createSecretStore({ keyVaultUrl: "https://v.vault.azure.net" })).toBeInstanceOf(
-      KeyVaultSecretStore,
+  it("returns the Key Vault store when a vault URL and token source are given", () => {
+    expect(
+      createSecretStore({
+        keyVaultUrl: "https://v.vault.azure.net",
+        getToken: async () => "tok",
+      }),
+    ).toBeInstanceOf(KeyVaultSecretStore);
+  });
+  it("requires a token source with a vault URL — fails at construction, not first use", () => {
+    expect(() => createSecretStore({ keyVaultUrl: "https://v.vault.azure.net" })).toThrow(
+      /getToken is required/,
     );
   });
   it("requires a master key when no vault URL is set", () => {
     expect(() => createSecretStore({})).toThrow(/devMasterKey is required/);
-  });
-});
-
-describe("KeyVaultSecretStore", () => {
-  it("is a present-but-unwired seam (throws until M5)", async () => {
-    const store: SecretStore = new KeyVaultSecretStore("https://v.vault.azure.net");
-    await expect(store.seal("v")).rejects.toThrow(/not wired/);
   });
 });

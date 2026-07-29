@@ -217,3 +217,59 @@ describe("platform secrets (vendor keys, e.g. the LLM key)", () => {
 async function post(url: string, payload: Record<string, unknown>) {
   return t.app.inject({ method: "POST", url, headers: authHeader(), payload });
 }
+
+/**
+ * Against the dev store `destroy()` is a no-op and can't fail. Against Key Vault
+ * it is a network call, and a swallowed failure strands a live vault entry still
+ * holding the old credential — the exact leak `destroy()` exists to prevent
+ * (ADR-0006). The request must still succeed (the row is already written), but
+ * the failure has to land somewhere an operator will see it.
+ */
+describe("a failed destroy is reported, not swallowed", () => {
+  let f: TestApp;
+
+  beforeAll(async () => {
+    const failing = new DevEnvelopeSecretStore({ masterKey: randomBytes(32) });
+    failing.destroy = async () => {
+      throw new Error("vault delete denied");
+    };
+    f = buildTestApp({ secretStore: failing });
+    await f.app.ready();
+  });
+  afterAll(async () => {
+    await f.close();
+  });
+
+  it("still rotates, and records secret.destroy_failed", async () => {
+    const slug = uniqueSlug();
+    const created = await f.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: authHeader(),
+      payload: { slug, displayName: "Demo" },
+    });
+    expect(created.statusCode).toBe(201);
+
+    await f.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+      payload: { name: "conn", value: "v1" },
+    });
+    const rotate = await f.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets/conn/rotate`,
+      headers: authHeader(),
+      payload: { value: "v2" },
+    });
+    // The row already points at the new value; failing the request would be worse.
+    expect(rotate.statusCode).toBe(200);
+
+    const appRow = await f.prisma.app.findUnique({ where: { slug } });
+    const events = await f.prisma.auditEvent.findMany({
+      where: { appId: appRow?.id, action: "secret.destroy_failed" },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.metadata).toMatchObject({ name: "conn", reason: "rotate" });
+  });
+});

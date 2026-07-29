@@ -1,7 +1,7 @@
 # 0006. `SecretStore` custody seam (dev envelope / prod Key Vault)
 
-**Status:** Accepted
-**Related:** `packages/secret-store`; ADR [0002](0002-postgres-role-split-rls.md), [0013](0013-egress-trust-model.md)
+**Status:** Accepted (amended 2026-07-29 — Key Vault wired)
+**Related:** `packages/secret-store`; ADR [0002](0002-postgres-role-split-rls.md), [0013](0013-egress-trust-model.md), [0031](0031-connection-providers-delegated-auth.md)
 
 ## Context
 
@@ -11,8 +11,8 @@ Connection secrets (third-party API credentials, the LLM vendor key) must be wri
 
 A single `seal` / `open` / `destroy` custody seam, `@azx-pbc/secret-store`, shared by portal (write) and egress (read):
 
-- **dev:** AES-GCM envelope under a post-create-generated KEK.
-- **prod:** Azure Key Vault (wired in M5).
+- **dev:** AES-GCM envelope under a post-create-generated KEK. `material` is `aesgcm:<iv>:<tag>:<ciphertext>`, all hex.
+- **prod:** Azure Key Vault (`kv-connections`). `material` is `kv:<name>/<version>` — a reference, never ciphertext.
 
 Secrets are managed write-only via the portal (`app_secrets`, app-scoped + admin-global with grants). `helix_edge` has **no grant** on `app_secrets` (ADR [0002](0002-postgres-role-split-rls.md)).
 
@@ -29,3 +29,26 @@ Custody boundary confirmed. The residual exposure is not in custody but in *use*
 ## Challenge outcome (2026-06-26)
 
 WEAKEN — verified: `open()` returns an unzeroable `string` (plaintext dwell unspecified); **no KEK rotation / rekey** path exists; `destroy()` semantics diverge (dev no-op vs Key Vault delete — documented, worth restating); the prod Key Vault `open()` is currently an unwired stub with **no timeout/retry**, a network failure mode the pure-CPU dev path can't surface. Amend: mark KEK rotation **explicitly deferred**; state plainly that the **dev envelope is not a security boundary** (the ADR is silent, not wrong — don't imply dev ≈ Key Vault); spec a timeout/retry for the prod hot path.
+
+## Amendment (2026-07-29) — Key Vault wired
+
+ADR [0031](0031-connection-providers-delegated-auth.md) §16 made this a hard prerequisite rather than a follow-up: per-user OAuth refresh tokens are *standing access*, stored N users × M providers, and the dev envelope is hygiene. `KeyVaultSecretStore` is now implemented (`packages/secret-store/src/keyvault.ts`), which resolves the four amendments above.
+
+**1. The dev envelope is not a security boundary.** Stated plainly in the code (`src/store.ts`, `src/dev.ts`): the KEK sits on the same host as the database it protects, so anyone who can read the row can read the key. Its job is to keep plaintext credentials out of local dumps and to make the dev and prod call sites identical — not to withstand an attacker. Do not reason about dev custody as if it were Key Vault.
+
+**2. KEK rotation is explicitly deferred.** There is no rotation or rekey path, in either backend. For the dev KEK the recovery is to re-enter the dev secrets, which is acceptable precisely because it is dev. For Key Vault the equivalent question is per-secret rotation, which *is* supported: `seal` mints a new random name and version and `destroy` releases the old, so rotating a credential never mutates an entry in place.
+
+**3. `destroy()` semantics, restated — and now consequential.**
+
+- dev: a genuine no-op. The ciphertext *is* the row and dies with it.
+- prod: deletes the vault entry. But `kv-connections` runs `enablePurgeProtection: true` with 90-day soft delete, so this is a **soft** delete — the value stays recoverable for the retention window and cannot be purged early. `destroy()` means "stop serving it and start the retention clock", not "erase". **Crypto-shredding is therefore not achievable through `destroy()` alone**; a GDPR Art. 17 erasure path needs its own design (related: the metering crypto-shred item in `TODO.md`).
+- Because names are random (`hx-` + 16 random bytes), a soft-deleted tombstone never blocks a later `seal`.
+- A *failed* `destroy` strands a live vault entry still holding the old credential. Callers may no longer swallow it: the portal emits a `secret.destroy_failed` audit event carrying the `kv:` reference (a reference, not a credential — dev ciphertext is never copied into the audit table) so an operator can find and delete the orphan.
+
+**4. Timeout and retry on the prod hot path.** Per-attempt timeout 3 s for `open()`, 10 s for `seal()`/`destroy()`. A **total deadline** (8 s / 25 s) bounds the whole call so retries can never stack past the egress request budget however slow the vault is. Retry only on a transport error, `429`, or `5xx`, 2 extra attempts, honouring `Retry-After` capped at the remaining deadline. `403`/`404`/other `4xx` are terminal — an RBAC or integrity failure must fail fast. `KeyVaultError` carries the status so callers can tell a missing vault entry (404, an integrity failure) from an RBAC denial (403). Egress maps any resolution throw to an opaque `502`; the untrusted app never sees the vault host or secret name.
+
+**5. Plaintext dwell — now bounded and stated, not unspecified.** `open()` still returns an unzeroable `string` (unchanged; Node offers no better). What is new is a **version-pinned plaintext cache** inside the store: keyed by the full `kv:<name>/<version>` material, bounded LRU, 5-minute TTL, dropped on `destroy()` before the vault call. Because `material` pins an immutable vault version and rotation mints a new name *and* version, a cache hit can never serve a stale value — that is a property of the format, not a hope. The trade is deliberate: without it every secret-backed proxy request becomes a Key Vault round-trip, coupling the whole fetch/LLM path to vault latency and per-vault throttling, which ADR-0031's N users × M providers makes worse. Plaintext already lives in egress by design; the cache bounds *how long*, where before it was per-request but the availability coupling was total.
+
+**Not changed:** the custody boundary itself. `helix_edge` still has no grant on `app_secrets`, no decryption seam, and no vault identity — and `rbac.bicep` deliberately gives the edge identity no role on `kv-connections`. Grant-absence remains the boundary.
+
+**Transport note.** The implementation calls the Key Vault data plane over REST (`api-version=7.4`) rather than taking `@azure/keyvault-secrets`, keeping `@azx-pbc/secret-store` zero-dependency — it is consumed by egress, and ADR-0031 asks that the edge's dependency-minimal reasoning extend to the mechanism plane by degree. The credential is a one-function seam: egress hand-rolls the managed-identity call (mirroring `apps/edge/src/blob/token.ts`), while the portal injects `DefaultAzureCredential`, which it already depends on for Blob (ADR [0027](0027-blob-auth-managed-identity.md)) and which also lets operator scripts run under `az login`.

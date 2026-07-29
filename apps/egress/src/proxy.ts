@@ -256,12 +256,26 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       if (!deps.resolver) {
         return fail(reply, 502, "upstream_error", "secret store not configured");
       }
-      const resolved = await deps.resolver.resolve(
-        instruction.appId,
-        instruction.connection,
-        instruction.capability,
-        instruction.env,
-      );
+      // Resolution can now fail on the network (Key Vault) or on custody (RBAC,
+      // a material referencing a deleted vault entry), not just return "no such
+      // connection". Contain it here: an uncaught throw would reach Fastify's
+      // default handler as a 500 whose body could echo the vault host or secret
+      // name back to the untrusted app. Log the detail, return an opaque 502.
+      let resolved: Awaited<ReturnType<typeof deps.resolver.resolve>>;
+      try {
+        resolved = await deps.resolver.resolve(
+          instruction.appId,
+          instruction.connection,
+          instruction.capability,
+          instruction.env,
+        );
+      } catch (err) {
+        req.log.error(
+          { err, appId: instruction.appId, connection: instruction.connection },
+          "connection secret resolution failed",
+        );
+        return fail(reply, 502, "upstream_error", "connection secret unavailable");
+      }
       if (!resolved) {
         return fail(reply, 403, "forbidden", "connection not found or not granted");
       }

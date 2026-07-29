@@ -49,7 +49,7 @@ frontend + governed LLM/compute access with no app-managed secrets.
 | Use pre-provisioned APIs without handling keys (P0) | LLM gateway (key injected server-side) + fetch-proxy with secret-backed *connections* for other APIs | ✅ LLM + arbitrary HTTP APIs; ⚠️ only Anthropic is a first-class LLM today (Azure OpenAI/Gemini are config, not yet a catalog) |
 | Roll back a deployment (P1) | Live pointer flip to a prior immutable version (same op as promote) | ✅ Shipped |
 | Usage metrics — sessions, errors, latency (P1) | Per-app + per-gateway usage dashboards over the metering ledger | ⚠️ Tokens/requests/outcome shipped; **latency & error-detail are deliberately not recorded** |
-| One vault for all keys + client tokens (P0) | `SecretStore` custody seam (prod Key Vault / dev envelope); portal write-only secret management | ✅ Shipped (Key Vault wiring is M5) |
+| One vault for all keys + client tokens (P0) | `SecretStore` custody seam (prod Key Vault / dev envelope); portal write-only secret management | ✅ Shipped |
 | Embed a client org's own licensed tokens (P0) | Secret *connections*: `app`-scoped and `global` (granted per app); the app's calls use the client's contract, never an AZX key | ✅ Shipped |
 | Restrict which models/capabilities each team can use (P0) | Capability manifest + approval classifier (model allowlist, budgets, origins) enforced at the gateway | ✅ Per-**app**; ⚠️ "per-team" grouping isn't a first-class concept (one org, app-id partitioning) |
 | Tamper-evident audit log of every AI call (P0) | Append-only `gateway_calls` ledger; `helix_edge` has INSERT-only | ⚠️ Append-only **by DB grant**, not cryptographically tamper-evident — an immutable sink is deferred |
