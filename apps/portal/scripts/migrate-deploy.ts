@@ -127,5 +127,12 @@ main().catch((error: unknown) => {
   // Deliberately the message only — an Error carrying the DSN in a stack frame
   // would put the password in the job log.
   console.error(`migrate-deploy failed: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+  // `process.exitCode`, NOT `process.exit()`. When stdout/stderr is a pipe — which it
+  // always is under a container log collector — Node's writes are asynchronous, and
+  // `process.exit()` tears the process down before the buffer flushes. That silently
+  // swallowed the only diagnostic this script produces: the first real failure in the
+  // Franklin migrate job logged nothing but pnpm's "Exit status 1", and the cause had
+  // to be found with a separate diagnostic job. Setting exitCode lets the event loop
+  // drain and still exits non-zero.
+  process.exitCode = 1;
 });

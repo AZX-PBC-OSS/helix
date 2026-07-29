@@ -447,21 +447,59 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
 Wrinkles hit during the first real end-to-end deploy. Check these
 if a deploy misbehaves:
 
-- **Key Vault private-endpoint DNS may not auto-register.** The two `kv-*` private
-  endpoints' `privateDnsZoneGroups` can report `Succeeded` yet leave
-  `privatelink.vault.azure.net` with **no A records** (the blob PE registered fine
-  in the same deploy; the vault PEs didn't, and re-creating the zone group didn't
-  fix it). Without the A records the vault FQDN won't resolve in the VNet, so any
-  in-VNet KV access (e.g. egress → `kv-connections` at runtime) fails. **Verify and
-  backfill after deploy:**
+- **✅ FIXED — the Key Vault private DNS zone had the wrong NAME.** `privatedns.bicep`
+  derived it from `environment().suffixes.keyvaultDns`, which returns the **public**
+  suffix `.vault.azure.net` and so produced `privatelink.vault.azure.net`. A vault's
+  public name actually CNAMEs to `<name>.privatelink.`**`vaultcore`**`.azure.net`, so
+  that is the only zone a private endpoint resolves through. The zone the template
+  created was one nothing ever queried.
+
+  > An earlier version of this entry diagnosed this as "the A records failed to
+  > auto-register" and told you to backfill them into `privatelink.vault.azure.net`.
+  > That was wrong and made it worse — it put records in the unused zone, which looks
+  > like a fix and changes nothing.
+
+  **The failure is silent in every place you would look.** The private endpoint
+  provisions fine, its `privateDnsZoneGroups` reports `Succeeded`, A records are
+  present, and the zone is linked to the VNet. Only a data-plane call from inside the
+  VNet reveals it — in-VNet DNS falls through to the vault's public IPs and Key Vault
+  rejects the request:
+
+  ```
+  (Forbidden) Public network access is disabled and request is not from a trusted
+  service nor via an approved private link.
+  ```
+
+  Diagnose it by resolving the vault from **inside** the VNet and checking whether you
+  get the PE's private IP or a public one:
 
   ```bash
-  az network private-dns record-set a list -g <rg> -z privatelink.vault.azure.net -o table
-  # if empty, add one A record per vault pointing at its PE NIC IP:
-  az network private-endpoint show -g <rg> -n <kv>-pe \
-    --query "customDnsConfigs[0].ipAddresses[0]" -o tsv
-  az network private-dns record-set a add-record -g <rg> \
-    -z privatelink.vault.azure.net -n <kv-name> -a <pe-ip>
+  getent hosts <kv-name>.vault.azure.net    # from a job/container in the apps env
+  ```
+
+  **This went unnoticed on both installs for a long time because nothing depended on
+  it.** Platform secrets are direct-injected as env vars (ADR-0029), not read from the
+  vault at runtime, so the apps never resolved it. The first component that genuinely
+  needs it is the migration job (see step 4's "Later migrations"). Note that
+  **egress → `kv-connections` at runtime (ADR-0006) is affected too** — it will fail
+  the same way as soon as a connection secret exists.
+
+  Repairing an install deployed before the fix, without a full re-apply:
+
+  ```bash
+  ZONE=privatelink.vaultcore.azure.net
+  az network private-dns zone create -g <rg> -n $ZONE
+  az network private-dns link vnet create -g <rg> -z $ZONE -n link-to-vnet \
+    --virtual-network <vnet> --registration-enabled false
+  # repoint each vault PE at the correct zone; Azure then registers the A records
+  for pe in <kv-connections>-pe <kv-platform>-pe; do
+    az network private-endpoint dns-zone-group add -g <rg> --endpoint-name "$pe" \
+      -n default --private-dns-zone $ZONE --zone-name vaultcore
+    az network private-endpoint dns-zone-group remove -g <rg> --endpoint-name "$pe" \
+      -n default --zone-name vault          # drop the stale config
+  done
+  # then delete the orphaned privatelink.vault.azure.net zone (and its vnet link) so it
+  # cannot mislead the next person
   ```
 
 - **Changing a secret value does not roll a new ACA revision.** Container Apps
