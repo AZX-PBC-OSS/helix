@@ -44,3 +44,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0028](0028-deployment-model-customer-deployed.md) | Deployment model: single-tenant, customer-deployed into the customer's cloud | Accepted |
 | [0029](0029-platform-secret-delivery.md) | Platform secret delivery: deployment-injected env vars, not ACA Key Vault references | Accepted |
 | [0030](0030-repo-backed-apps-pull-attested-artifacts.md) | Repo-backed apps: pull CI-built attested artifacts (no hosted build) | Proposed |
+| [0031](0031-connection-providers-delegated-auth.md) | Connection providers: MCP-first delegated auth, tenant-key as fallback | Proposed |

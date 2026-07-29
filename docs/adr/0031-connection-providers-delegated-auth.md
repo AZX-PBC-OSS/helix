@@ -1,0 +1,138 @@
+# 0031. Connection providers: MCP-first delegated auth, tenant-key as fallback
+
+**Status:** Proposed (2026-07-29)
+**Related:** ADR [0006](0006-secret-custody-seam.md) (`SecretStore` custody — the seam per-user tokens reuse), [0005](0005-ssrf-egress-controls.md) (SSRF + secret injection — the outbound mechanism), [0013](0013-egress-trust-model.md) (egress trust model — the attested instruction this extends), [0002](0002-postgres-role-split-rls.md) (role split — why `helix_edge` still cannot read a token), [0007](0007-portal-authz-v0.md) (portal authz v0 — **blocks** the group-policy half), [0016](0016-capability-manifest-approval-classifier.md) (approval classifier — catalog edits ride it), [0014](0014-same-origin-api-gateway.md) (same-origin gateway), [0017](0017-registry-listen-notify-projection.md) (LISTEN/NOTIFY projection — the no-redeploy mechanism), [0028](0028-deployment-model-customer-deployed.md) (customer-deployed — why registration is per-deployment), [0021](0021-metering-ledger.md) (metering — where "who used what" is already answered). **Design:** `docs/design/secrets-and-connections.md` §10 q2 and `docs/design/fetch-proxy.md` §10 q2 both defer "injection recipes beyond the three"; this ADR answers them and supersedes that deferral.
+
+## Context
+
+A connection today is a manifest binding — `capabilities.fetch.origins[].connection` names a sealed secret, and `azx-egress` resolves and injects it on the outbound hop (ADR [0005](0005-ssrf-egress-controls.md)/[0006](0006-secret-custody-seam.md)). The injection recipes are all **static credential** shapes: `header-bearer`, `header`, `query`. OAuth was explicitly deferred twice (design §10 q2 in both documents).
+
+Three requirements arrived together and turn out to have one answer:
+
+1. **Pluggable connected services** — adding a service should not be bespoke manifest editing, and the operator wants to edit the definition **in a UI without redeploying infra**, with import/export of the underlying format and direct text editing as a backstop.
+2. **Access controls on who can use what.**
+3. **The supported APIs and their docs discoverable by an agent via MCP / remote MCP.**
+
+Two findings shape the decision.
+
+**Finding 1 — the authorization asymmetry.** If a provider supports per-user delegated auth, the provider enforces access and Helix carries no policy. If it does not, Helix becomes the authorization authority for that provider's data — for Ashby that means reimplementing recruiting permissions in a manifest, where every gap is a candidate-PII disclosure. The consequence asymmetry, not the probability, settles the preference: **prefer delegation wherever it is on offer.**
+
+**Finding 2 — for several target services the MCP surface delegates and the REST surface does not.** From a 2026-07-29 vendor survey:
+
+| Service | REST auth | MCP auth | Kind |
+| --- | --- | --- | --- |
+| **Ashby** | Basic auth, **workspace** API key, coarse per-module read/write | `mcp.ashbyhq.com/mcp/v1` — per-user OAuth, scoped to that user's Ashby permissions | `mcp-remote` (REST would be `rest-tenant-key`) |
+| **Asana** | OAuth2 (self-serve registration, refresh tokens) or PAT | `mcp.asana.com/v2/mcp` — OAuth2, per-user permissions, **no** dynamic client registration | `mcp-remote` |
+| **Harvest** | OAuth2 (self-serve) or PAT + `Harvest-Account-Id` | none | `rest-delegated` |
+| **Forecast** | same Harvest ID OAuth app (select both products at registration) | none | `rest-delegated` |
+| **GitHub** | GitHub App user access tokens (fine-grained) — preferred over OAuth Apps | `api.githubcopilot.com/mcp/` — OAuth | `mcp-remote` |
+| **Fathom** | `X-Api-Key`, **per-user** keys, 60 req/min | community only; official unclear | `rest-delegated` (manual acquisition) |
+| **Clarify** | `Authorization: api-key`, **per-workspace, admin-only**; OAuth "for partners" | exists, appears API-key-based | `rest-tenant-key` |
+
+So the highest-risk integration on the list moves from "Helix must implement recruiting permissions" to "Ashby enforces it" purely by choosing MCP over REST. That reframes requirement 3: **MCP is not a discoverability layer bolted on top of the connection story — for a majority of these providers it *is* the connection story**, and it satisfies requirements 1–3 at once.
+
+**A third constraint rules out the cheap path.** Apps on this platform will be used by non-technical internal staff. "Mint a PAT and paste it into Helix" is not viable as a user-facing flow, and it is also a *security* regression: PATs on these services are typically unscoped and non-expiring, so it amounts to collecting maximally-privileged permanent credentials from people not equipped to evaluate that. OAuth is both the better UX (the "Sign in with Google" pattern users already know) and the better posture. PAT entry survives only as a developer bootstrap path.
+
+## Decision
+
+Introduce a **connection provider catalog** as first-class control-plane data, with three provider kinds, and prefer delegated auth wherever the vendor offers it.
+
+1. **Three provider kinds, one catalog object.** The `kind` determines how credentials are acquired and **who enforces access**:
+   - **`mcp-remote`** — a hosted MCP server, per-user OAuth. The vendor enforces access. Tool and documentation discovery is intrinsic.
+   - **`rest-delegated`** — REST behind per-user OAuth (or, degraded, a per-user key). The vendor still enforces access.
+   - **`rest-tenant-key`** — one workspace/tenant credential. **Helix must carry policy** (decision 11).
+
+   The manifest binding widens from `connection: <secretName>` to a provider reference carrying the kind, so an app author names a provider rather than a credential.
+
+2. **MCP-first where available.** When a vendor's MCP server delegates per-user, prefer it over that vendor's REST API. It collapses three problems into one mechanism: delegated authorization, agent-facing discoverability, and one auth pattern instead of two.
+
+3. **The catalog is Postgres data; the text format is a projection, not the source of truth.** A Caddyfile-style config file is the wrong shape here: catalog entries are referenced by grants, manifest bindings, approval rows, and audit rows in `gateway_calls`, so they need stable IDs and foreign keys, and they change on a different clock than infra.
+
+4. **One zod schema, two editors, one write path.** The schema lives in `@azx-pbc/shared` (convention: zod at every boundary). The structured form and the raw-YAML backstop both parse → validate → `PUT` the same route, so the raw editor can never express what the form cannot. Precedent: `CapabilitiesTab.tsx:497` already renders a read-only `manifest.yaml` beside a structured form; this makes that pattern editable. Import/export falls out of round-tripping the same schema.
+
+5. **Catalog edits ride the approval write-gate** (`classifyChange`, ADR [0016](0016-capability-manifest-approval-classifier.md)). Adding an origin, widening allowed paths, or changing an injection recipe is a privilege change, not a UI save.
+
+6. **Catalog invalidation over LISTEN/NOTIFY** (ADR [0017](0017-registry-listen-notify-projection.md) pattern), because egress will cache resolved provider config. This is what actually delivers the "edit in a UI without redeploying infra" requirement; without it the requirement is unmet regardless of where the data lives.
+
+7. **Per-user credentials are keyed `(userOid, providerId)` — not per app.** A new sealed table (`user_connections`: access material, refresh material, `expiresAt`, granted scopes, `grantedAt`), sealed via the existing `SecretStore` seam and readable **only** by `helix_egress`, exactly as `app_secrets` is (ADR [0002](0002-postgres-role-split-rls.md)/[0006](0006-secret-custody-seam.md)). Consequence worth stating: a user connects a provider **once, platform-wide**, and every app granted that provider reuses it. The friction is one action per person per provider for the lifetime of the platform, not one per app.
+
+8. **`connection_required` is a structured error, and the shim owns the connect UX.** A missing connection must not surface as a bare 403. Egress/edge return a distinguishable code plus provider metadata; the already-injected fetch shim (`apps/edge/src/serving/shim.ts`, opt-in via `capabilities.fetch.shim`) renders a **platform-provided** connect interstitial, runs the flow, and retries the original call. This is the difference between one correct implementation and N vibe-coded apps each reinventing it badly — and it is the strongest argument yet for the shim's existence.
+
+9. **OAuth client credentials are `platform`-scoped secrets.** That scope already exists in `SecretScopeSchema` for the LLM key. An admin pastes `client_id`/`client_secret` into the catalog UI after the out-of-band vendor registration. No env var, no deploy.
+
+10. **One fixed callback URL for every provider**, disambiguated by `state`: `https://auth.<base>/connections/callback`. Several vendors require exact-match redirect URIs, so a single stable value means each new registration pastes the same string. **The OAuth client and callback live on the control plane, not the edge** — OAuth client code has no business in the dependency-minimal trusted path (ADR [0003](0003-dependency-minimal-edge.md)).
+
+11. **Registration is per-deployment, not Helix-owned.** Same argument as ADR [0030](0030-repo-backed-apps-pull-attested-artifacts.md) decision 9: under ADR [0028](0028-deployment-model-customer-deployed.md) a Helix-owned OAuth client would require shipping its `client_secret` into every customer deployment, letting each customer's Helix impersonate the platform against every other customer's tenant. Each deployment registers its own apps. This is a real onboarding cost and it is not avoidable.
+
+12. **`rest-tenant-key` providers get a coarse allowlist over `(method, path, caller groups)`, deny-by-default.** Enforced twice: the edge decides and stamps the decision into the attested instruction — which already binds `method` + `path` (ADR [0013](0013-egress-trust-model.md) step 2) — and egress re-checks independently. `groups` already rides the session into `apps/edge/src/auth/gate.ts:50,85`, so the enforcement point exists.
+
+13. **Explicit non-goal: row-level authorization.** The decision-12 allowlist is path-level. It expresses "recruiting may list candidates"; it cannot express "Kyle sees only candidates for reqs he owns," and no catalog schema fixes that because the vendor's API will not partition it. The governing rule: **for tenant-key providers, only expose endpoints where path-level granularity is sufficient.** An endpoint needing row-level rules does not go in the catalog — it goes behind a purpose-built app with its own logic, or it is not exposed. This line is what prevents slowly reimplementing a vendor's permission model badly.
+
+14. **No response-body filtering, ever.** Allow or deny the call; never rewrite the answer. Filtering fields out of responses means owning a security-critical transformation per endpoint per API version that fails silently when the vendor adds a field.
+
+15. **Token refresh is single-flight per `(userOid, providerId)`.** Vendors that rotate refresh tokens invalidate the old one on use, so two concurrent refreshes race and one loses the token permanently. The new token must be stored atomically.
+
+16. **Two hard prerequisites, not follow-ups.**
+    - The **prod Key Vault `SecretStore` must be wired** before per-user tokens ship. It is an unwired stub today (`open()` throws — ADR [0006](0006-secret-custody-seam.md)), and the dev AES-GCM envelope is documented as hygiene, not a boundary. A refresh token is *standing access*, not a rotatable string, and this stores N users × M providers of them.
+    - **ADR [0007](0007-portal-authz-v0.md) must be resolved** before decision 12. "Appropriate access controls on who can use what" is not expressible while `authenticated == authorized` and per-app RBAC is still the `PreviewBadge` stub.
+
+## Consequences
+
+- **The flat-key RBAC problem shrinks to one provider.** Ashby, Asana, and GitHub move to delegated auth via MCP; Harvest, Forecast, and Fathom are per-user on the REST path. **Clarify is the only true `rest-tenant-key` service on the list.** Building the decision-12 allowlist engine as general infrastructure for one provider is premature — defer it until Clarify (or a second tenant-key provider) is actually in scope.
+- **Registration burden is smaller than feared, and it is not a review process.** Asana, Harvest, and GitHub are all self-serve with no approval for internal use; only app-directory/marketplace *listing* is reviewed, and that is never needed. One Harvest ID OAuth app covers both Harvest and Forecast, so **3 registrations cover 4 services.**
+- **The `SecretStore` seam absorbs per-user tokens with no new custody mechanism** — same `seal`/`open`/`destroy`, same `helix_egress`-only read, same "edge RCE cannot dump a credential" property. What is new is quantity and value, which is what makes decision 16 non-negotiable.
+- **`gateway_calls` already answers "who used what"** (ADR [0021](0021-metering-ledger.md)), so the audit half of requirement 2 needs no new machinery.
+- **The MCP surface becomes a second protocol in the egress path.** Today egress speaks HTTP request/response. An MCP client (streamable HTTP, session semantics, tool listing) is genuinely new surface, and it lands in the *mechanism* plane where the credentials are. Weigh against ADR [0003](0003-dependency-minimal-edge.md) — the edge stays untouched, but "dependency-minimal" reasoning should extend to egress by degree.
+- **A vendor's MCP token may not be reusable for its REST API.** Asana states plainly that tokens issued for MCP apps only work with the MCP server. Supporting both surfaces for one vendor therefore means two registrations and two token sets in `user_connections` — the data model must not assume one token per `(user, provider)` pair.
+- **The catalog UI cannot be fully self-service.** Every OAuth provider requires an out-of-band vendor-side registration before an admin can paste credentials, and Asana's V2 MCP explicitly does not support dynamic client registration. The no-redeploy requirement is met; a no-human-steps requirement is not achievable.
+- **Org-level app allowlisting is a deployment prerequisite.** Asana Enterprise plans can allowlist integrations with admin approve/block, and the authorize endpoint requires the app be available in the user's workspace. If that is on and Helix is not pre-approved, *every* user hits a confusing wall. Must be a deliberate onboarding step.
+- **Inbound MCP (Helix as a remote MCP server) is not decided here.** It is the natural sibling — and notably it is where dynamic client registration *does* earn its keep, unlike the outbound direction — but it is a separate surface with its own authz story. Out of scope; see Open questions.
+
+## Threat model (extends architecture §10)
+
+| Threat | Mitigation |
+| --- | --- |
+| Compromised edge dumps third-party credentials | No grant on `app_secrets` or `user_connections`, no decryption seam (ADR [0002](0002-postgres-role-split-rls.md)/[0006](0006-secret-custody-seam.md)) |
+| App reads another user's third-party data | Delegated token is resolved from the *verified session's* `oid`; the vendor enforces scope (decisions 1, 7) |
+| App escalates via a tenant key beyond its grant | Deny-by-default `(method, path, groups)` allowlist, enforced at edge **and** egress (decision 12) |
+| Helix's policy gap discloses vendor-protected records | Row-level authorization is an explicit non-goal; only path-granular endpoints are exposed (decision 13) |
+| Response filtering silently fails open on a new vendor field | No response filtering exists to fail (decision 14) |
+| Non-technical user hands over an unscoped permanent PAT | PAT entry is not a user-facing path; OAuth is (Context, third constraint) |
+| Concurrent refresh permanently invalidates a user's connection | Single-flight per `(userOid, providerId)`, atomic store (decision 15) |
+| Refresh-token exfil from DB backup / snapshot | Key Vault as store — the row holds a reference, not ciphertext beside its key (ADR [0006](0006-secret-custody-seam.md), decision 16) |
+| Cross-customer impersonation from a shared OAuth client secret | Per-deployment registration; no client secret ships to customers (decision 11) |
+| Instruction replay / verb-resource confusion on the new path | Existing `jti` burn + `aud` + `method`/`path` binding (ADR [0013](0013-egress-trust-model.md)) |
+| Catalog edited in the UI to widen reach silently | Catalog edits ride the approval write-gate (decision 5) |
+| Authorization-code interception on the callback | PKCE + `state` nonce; one fixed HTTPS callback (decision 10) |
+| Stale catalog serves a revoked provider indefinitely | LISTEN/NOTIFY invalidation; inherit ADR [0025](0025-registry-projection-hardening.md)'s staleness observability |
+
+## Phasing
+
+1. **Catalog as data.** Schema in `@azx-pbc/shared`, `connection_providers` table, portal CRUD, structured form + raw-YAML backstop, import/export, approval-gate wiring, LISTEN/NOTIFY invalidation. Ships value immediately for the *existing* static-secret providers with no new auth machinery.
+2. **Prerequisites.** Key Vault `SecretStore` wired; ADR [0007](0007-portal-authz-v0.md) resolved (decision 16).
+3. **Per-user connection substrate.** `user_connections` table + custody, egress resolution by `(userOid, providerId)`, `connection_required` error code, shim connect interstitial, portal "my connections" page with revoke. Testable end to end against **one** provider.
+4. **First delegated provider: Asana or GitHub** on `rest-delegated`/OAuth — self-serve registration, refresh + single-flight, real consent flow. Chosen over Ashby first because the failure modes are cheaper to debug against non-sensitive data.
+5. **`mcp-remote` kind.** MCP client in egress, tool/doc discovery surfaced to app authors and agents, then Ashby (the highest-value case) via `mcp.ashbyhq.com/mcp/v1`.
+6. **`rest-tenant-key` + the group allowlist** — only when Clarify or a second tenant-key provider is actually in scope (see Consequences).
+7. **Later.** Inbound MCP (Helix as a remote MCP server); OAuth client-credentials for service-to-service providers; rotation/expiry policy off `rotatedAt`.
+
+## Open questions
+
+- **Which Fathom?** The survey covered Fathom the AI notetaker (`developers.fathom.ai`). Fathom Analytics (`usefathom.com`) is a different product with different auth. Load-bearing for its kind; confirm before phase 5.
+- **Do Asana's refresh tokens rotate?** Their docs do not say. Determines whether decision 15's single-flight guard is load-bearing or merely prudent for that provider.
+- **Does Ashby's MCP server require pre-registration, or support dynamic client registration?** Not confirmed. Affects whether phase 5 needs a fourth vendor registration.
+- **Is Clarify's partner OAuth programme reachable?** This is the one place a vendor gate could genuinely block delegation. Worth a direct sales-channel question rather than more desk research — and the answer decides whether phase 6 is ever needed.
+- **Does the MCP client belong in `azx-egress`, or in a fourth runtime?** Egress is the credential holder, which argues for it. But MCP is materially more protocol surface than HTTP request/response, and ADR [0001](0001-three-runtime-split.md)'s split was drawn on trust boundaries — is "speaks a chatty session protocol to the internet" a different enough zone to matter?
+- **How do background / scheduled callers work?** Anything without a user session has no delegated token. Options: a service-account fallback per provider (reintroducing the tenant-key policy problem for that path only), or refusing unattended access to delegated providers outright. Leaning refuse-by-default, but it needs deciding before the first scheduled workload.
+- **Should `mcp` in `CapabilitiesSchema` be reused or replaced?** It exists today as a `string[]` with an approval classifier and zero runtime. Reusing it for `mcp-remote` provider references is tempting but it currently means something vaguer ("platform-registered MCP servers this app may reach, exposed as REST").
+- **Does per-user delegation change the metering story?** `gateway_calls` is app-keyed. Per-user delegated calls may want a user dimension for quota and audit, which is a schema question against ADR [0021](0021-metering-ledger.md).
+
+## Provenance
+
+Design conversation, 2026-07-28/29, from a request to make the backend pluggable across connected services with access controls and agent-facing discoverability. Three corrections landed against the initial framing and are recorded because each changed the architecture:
+
+1. **A PAT-first sequencing was proposed and withdrawn.** It assumed a developer user population; the actual users are non-technical internal staff, and PATs are additionally unscoped and non-expiring, making the "cheap" path both worse UX and worse security.
+2. **A Caddyfile-style config file was the initial instinct and was rejected** in favour of DB-as-source-of-truth with the text format as a projection — because catalog rows are referenced by grants, approvals, and audit history, and because the no-redeploy requirement is actually satisfied by LISTEN/NOTIFY invalidation, not by file-versus-database.
+3. **MCP was initially framed as a discoverability layer on top of the fetch-proxy.** The vendor survey inverted this: for Ashby, Asana, and GitHub the MCP surface delegates per-user while the REST surface does not, so MCP-first is the *authorization* decision as much as the discoverability one. This is the reason the ADR is titled the way it is.
+
+Vendor findings are dated 2026-07-29 and several are marked unverified in Open questions rather than assumed. Registration programmes change; re-verify before each provider lands.
