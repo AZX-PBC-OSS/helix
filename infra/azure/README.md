@@ -337,8 +337,33 @@ DATABASE_URL="$ADMIN_URL" pnpm --filter @azx-pbc/portal db:deploy
 > (`helix_portal` / `helix_edge` / `helix_egress`, and `helix_dev` for the
 > dev-gateway) — the portal reads `PORTAL_DATABASE_URL` and, under
 > `NODE_ENV=production`, refuses the `DATABASE_URL` owner fallback (ADR-0002).
-> The admin DSN is used only here in step 4 for `db:deploy` and is never placed
-> in a container or in kv-platform.
+> The admin DSN is never placed in a container.
+
+#### Later migrations: use the migrate job, not this step
+
+Step 4 is the **bootstrap**, and it is manual because the roles SQL needs the
+per-role passwords. Every migration _after_ that is applied by the
+`<namePrefix>-migrate` Container Apps Job (`modules/migrate-job.bicep`), which
+`deployApps=true` creates:
+
+```bash
+az containerapp job update -g <rg> -n <namePrefix>-migrate --image <registry>/helix-portal:<tag>
+az containerapp job start  -g <rg> -n <namePrefix>-migrate
+```
+
+The job runs the portal image inside the VNet — needed either way, since Postgres
+is private-endpoint-only — and resolves the admin password itself: it reads the
+`postgres-admin-password` secret from `kv-platform` using a deploy-scoped managed
+identity whose only permission is `Key Vault Secrets User` on that vault
+(`apps/portal/scripts/migrate-deploy.ts`). So no pipeline, and no ARM resource,
+has to hold the schema-owner credential, and there is nothing to delete after a
+run.
+
+That secret is written by `kv-secrets.bicep` from the same `postgresAdminPassword`
+parameter that provisions the server, so one apply sets both and they cannot
+drift. Rotating the admin password out-of-band (e.g.
+`az postgres flexible-server update --admin-password`) **will** drift from the
+stored copy and break the job — change the parameter and re-apply instead.
 
 ### 5. Phase 2 — deploy the apps (`deployApps=true`)
 
@@ -387,7 +412,10 @@ IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
   certificate params. Full walkthrough + gotchas (v2 tokens, cert auth, App
   Roles): `docs/runbooks/entra-app-registration.md`.
 - **Wildcard ACME cert issuance/renewal** — portal scheduled job (deferred).
-- **Postgres runtime roles + migrations** — step 4 above (data-plane, not IaC).
+- **Postgres runtime roles + the FIRST migration** — step 4 above (data-plane, not
+  IaC). Subsequent migrations are not an operator step: `deployApps=true` creates
+  the `<namePrefix>-migrate` job, which applies them without anyone handling the
+  admin password (step 4's "Later migrations" note).
 - **Front Door / bastion** for operator access to the internal portal.
 - **Passwordless (Entra) Postgres auth** — a hardening follow-up, and **not** the
   config flip an earlier version of this list implied. The managed identities do
@@ -453,9 +481,14 @@ if a deploy misbehaves:
     `PORTAL_SECRET`, `HELIX_INSTRUCTION_SECRET`, and the edge OIDC private key.
   - **It is also the recovery path.** Secrets generated at deploy time and never
     captured are _not_ lost — they can be read back from a running install (the
-    same eight are in `kv-platform`). Only the Postgres admin password and, when
-    the dev surface is off, the `helix_dev` DSN are absent, and both reset
-    losslessly: nothing depends on the admin password at runtime.
+    same values are in `kv-platform`). When the dev surface is off the `helix_dev`
+    DSN is absent, but it resets losslessly.
+  - **The Postgres admin password is now in `kv-platform` too**, because the
+    migrate job needs to read it (see step 4). It is still absent from every
+    container, so `containerapp secret list` does not expose it — but a principal
+    that can read the vault's data plane from inside the VNet can. That is a
+    deliberate trade: it buys migrations that no human or pipeline has to hold a
+    schema-owner credential for.
 
 - **A template re-apply WIPES the certbot custom-domain bindings.** The bindings are
   made by the job at runtime (see "Wildcard TLS"), but `containerapp.bicep`'s

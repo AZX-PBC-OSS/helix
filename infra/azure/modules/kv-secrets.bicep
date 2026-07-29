@@ -2,7 +2,7 @@
 //
 // Separated from main so the vault name is a module *parameter* (known at start
 // of deployment), which a parent-of-secret reference requires, and so the apps
-// can depend on this whole module rather than eight individual secret resources.
+// can depend on this whole module rather than the individual secret resources.
 //
 // ARM management-plane secret writes bypass the vault's data-plane firewall, so
 // these succeed even though kv-platform has publicNetworkAccess disabled.
@@ -38,6 +38,16 @@ param edgeOidcCertificate string
 @description('EDGE_DEV_DATABASE_URL (helix_dev DSN, dev-gateway). Empty = skip — the surface is opt-in and off unless deployDevGateway is set.')
 param edgeDevDatabaseUrl string = ''
 
+// The one secret here that is NOT consumed by a running app. It is stored so the
+// migration job can fetch it with its managed identity at run time, which is what
+// keeps the schema-owner credential out of CI entirely — see migrate-job.bicep.
+// Storing it also removes the drift hazard of rotating it out-of-band: this module
+// and `postgres.bicep` are fed the same parameter, so one apply sets the server
+// password and this copy together.
+@secure()
+@description('Postgres administrator password (schema owner). Deploy-time + migrations only; never injected into a runtime container.')
+param postgresAdminPassword string
+
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: vaultName
 }
@@ -51,6 +61,7 @@ var secrets = {
   'helix-instruction-secret': instructionSecret
   'edge-oidc-private-key': edgeOidcPrivateKey
   'edge-oidc-certificate': edgeOidcCertificate
+  'postgres-admin-password': postgresAdminPassword
 }
 
 resource secretResources 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [

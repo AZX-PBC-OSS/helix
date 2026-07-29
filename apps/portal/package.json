@@ -11,6 +11,7 @@
     "db:generate": "rm -rf src/db/generated && prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
+    "db:deploy:azure": "tsx scripts/migrate-deploy.ts",
     "db:reset": "prisma migrate reset --force",
     "seed:llm": "tsx scripts/seed-platform-secret.ts"
   },

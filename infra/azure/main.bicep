@@ -58,10 +58,14 @@ param platformMonthlyUsdCap int = 1000
 param blobContainerName string = 'app-bundles'
 
 // Postgres credentials. The admin owns the schema + runs migrations (== the dev
-// `helix` owner) — used only to provision the server and, out-of-band, for the
-// operator's `db:deploy` step; it is NOT handed to any runtime container. The
-// portal/edge/egress containers connect as the least-privilege runtime roles,
-// which the post-deploy role SQL creates with these same passwords.
+// `helix` owner); it is NOT handed to any runtime container. The portal/edge/egress
+// containers connect as the least-privilege runtime roles, which the post-deploy
+// role SQL creates with these same passwords.
+//
+// The admin password is used to provision the server AND stored in kv-platform, so
+// the migration job can fetch it with its own managed identity instead of CI holding
+// it (see modules/migrate-job.bicep). Both are fed this same parameter in one apply,
+// so the server and the stored copy cannot drift.
 @description('Postgres administrator login.')
 param postgresAdminLogin string = 'helixadmin'
 @secure()
@@ -310,6 +314,7 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     edgeOidcPrivateKey: edgeOidcPrivateKey
     edgeOidcCertificate: edgeOidcCertificate
     edgeDevDatabaseUrl: devDbConn
+    postgresAdminPassword: postgresAdminPassword
   }
   dependsOn: [
     keyvault
@@ -607,11 +612,39 @@ module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !emp
 }
 
 // ---------------------------------------------------------------------------
+// Prisma migrations (modules/migrate-job.bicep). A Manual job — declared here so
+// it exists to be triggered, never run by the template. It reads the schema-owner
+// password from kv-platform with its own identity, so neither this template's
+// caller nor CI has to hold it. Gated on deployApps because it runs the portal
+// image at `imageTag`.
+// ---------------------------------------------------------------------------
+
+module migrateJob 'modules/migrate-job.bicep' = if (deployApps) {
+  name: 'migrate-job'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    acaEnvId: appsEnv.outputs.environmentId
+    platformVaultName: keyvault.outputs.platformVaultName
+    platformVaultUri: keyvault.outputs.platformVaultUri
+    image: '${imageRegistry}/helix-portal:${imageTag}'
+    postgresHost: pgFqdn
+    postgresAdminLogin: postgresAdminLogin
+    postgresDatabase: postgres.outputs.databaseName
+  }
+  dependsOn: [
+    // The password must be in the vault before the job could successfully run.
+    platformSecrets
+  ]
+}
+
+// ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
 output appsEnvStaticIp string = appsEnv.outputs.staticIp
 output postgresServerFqdn string = postgres.outputs.serverFqdn
+output migrateJobName string = migrateJob.?outputs.jobName ?? ''
 output connectionsVaultUri string = connectionsVaultUri
 output dnsNameServers array = dns.outputs.nameServers
 output edgeFqdn string = edgeApp.?outputs.fqdn ?? ''
