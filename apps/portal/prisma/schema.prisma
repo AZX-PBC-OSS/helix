@@ -355,9 +355,13 @@ model CspReport {
 /// `material` is the only credential-bearing column: dev holds AES-256-GCM
 /// ciphertext, prod a Key Vault reference — never plaintext, never re-displayed
 /// (write-only / rotate-only, §3). `scope` is `app` (owning `appId` set) or
-/// `global` (`appId` null, usable only via `AppSecretGrant`). Global-name
-/// uniqueness is enforced at the portal route (a partial unique index is not
-/// expressible here); `@@unique([appId, name])` covers the app-scoped case.
+/// `global` (`appId` null, usable only via `AppSecretGrant`). `@@unique([appId,
+/// env, name])` covers the app-scoped case; the admin scopes carry `appId` NULL,
+/// which Postgres treats as distinct, so they are covered by a **raw** partial
+/// unique index — `app_secrets_admin_scope_name_key`, migration
+/// 20260730001500_app_secrets_admin_scope_unique (not expressible here). The
+/// route's pre-check remains as a friendly 409; the index is what makes it safe
+/// under concurrency, because `seal()` writes to the vault before the row exists.
 model AppSecret {
   id         String           @id @default(uuid()) @db.Uuid
   scope      String

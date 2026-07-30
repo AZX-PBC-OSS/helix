@@ -67,7 +67,10 @@ if (config.keyVaultUrl) {
   // The mechanism plane stays off `@azure/identity` (ADR-0031 extends the edge's
   // dependency-minimal reasoning here by degree) — the managed-identity token
   // endpoint is a plain HTTP call we make ourselves.
-  tokenProvider = managedIdentityTokenProviderFromEnv();
+  // 5s, below the store's own 8s `open()` budget. `KeyVaultSecretStore` bounds every
+  // token wait anyway, so this governs how long an abandoned refresh lingers — but a
+  // default larger than the budget it feeds is a contradiction worth not shipping.
+  tokenProvider = managedIdentityTokenProviderFromEnv(process.env, { timeoutMs: 5_000 });
   if (!tokenProvider) {
     throw new Error(
       "AZURE_KEY_VAULT_URL is set but the managed-identity env is not " +
@@ -114,6 +117,19 @@ try {
   );
   if (config.allowPrivate) {
     app.log.warn("EGRESS_ALLOW_PRIVATE is set — private/loopback targets are NOT blocked");
+  }
+  // Say it once at boot rather than making the operator infer it from N identical 502s.
+  // A row sealed under the dev envelope cannot be opened here, and there is no migration
+  // path between backends — the values have to be re-entered.
+  if (custody === "keyvault" && resolver instanceof PgSecretResolver) {
+    const foreign = await resolver.countForeignMaterial("kv");
+    if (foreign) {
+      app.log.warn(
+        { count: foreign },
+        "app_secrets rows hold non-Key-Vault material — these were sealed under a " +
+          "different custody backend and every call resolving them will fail; re-enter them",
+      );
+    }
   }
 } catch (err) {
   app.log.error(err);

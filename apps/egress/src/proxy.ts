@@ -270,8 +270,19 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
           instruction.env,
         );
       } catch (err) {
+        // Surface the vault's own status/code explicitly. `KeyVaultError` carries them
+        // precisely so an operator can tell 403-RBAC from 403-SecretDisabled, and
+        // 404-integrity (a row referencing a deleted entry) from a transport failure —
+        // none of which is deducible from the opaque 502 the app receives.
+        const kv = err as { status?: unknown; code?: unknown };
         req.log.error(
-          { err, appId: instruction.appId, connection: instruction.connection },
+          {
+            err,
+            appId: instruction.appId,
+            connection: instruction.connection,
+            vaultStatus: typeof kv.status === "number" ? kv.status : undefined,
+            vaultCode: typeof kv.code === "string" ? kv.code : undefined,
+          },
           "connection secret resolution failed",
         );
         return fail(reply, 502, "upstream_error", "connection secret unavailable");

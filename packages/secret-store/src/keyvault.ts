@@ -33,12 +33,17 @@ import type { GetVaultToken } from "./token.js";
  * **Timeout / retry** (the ADR-0006 challenge amendment — the dev path is pure
  * CPU and cannot surface these failure modes):
  *  - Per-attempt timeout: 3 s on the `open()` hot path, 10 s for `seal()` /
- *    `destroy()` (control plane, not latency-critical).
+ *    `destroy()` (control plane, not latency-critical). This covers **token
+ *    acquisition as well as the vault call** — the identity endpoint is a network
+ *    hop with its own failure modes, and leaving it unbounded made the deadline
+ *    below unenforceable however healthy the vault was.
  *  - A **total deadline** bounds the whole call (8 s / 25 s), so retries can never
- *    stack past the egress request budget however slow the vault is.
+ *    stack past the egress request budget however slow the vault *or the identity
+ *    endpoint* is.
  *  - Retry only on a transport error, `429`, or `5xx`; `2` extra attempts.
- *    `Retry-After` is honoured when present, capped at the remaining deadline,
- *    otherwise exponential backoff with jitter.
+ *    `Retry-After` is honoured when present; a hint larger than the remaining
+ *    budget fails immediately rather than sleeping out the budget to no purpose.
+ *    Otherwise exponential backoff with jitter.
  *  - `403` / `404` / any other `4xx` are **terminal** — an RBAC or integrity
  *    failure must fail fast rather than burn the budget.
  */
@@ -105,10 +110,21 @@ interface VaultRef {
 /** Parse `kv:<name>/<version>`, rejecting anything that could escape the URL path. */
 function parseMaterial(material: string): VaultRef {
   const sep = material.indexOf(":");
-  if (sep === -1 || material.slice(0, sep) !== SCHEME) {
+  const scheme = sep === -1 ? null : material.slice(0, sep);
+  if (scheme !== SCHEME) {
     // No fallback to the dev `aesgcm:` scheme — a cross-scheme read would be a
     // downgrade seam, letting DB-resident ciphertext substitute for the vault.
-    throw new KeyVaultError("malformed secret material");
+    //
+    // Name the scheme we found. It is not a secret, and it is the only signal an
+    // operator gets: an environment whose rows were sealed under the dev envelope
+    // and then pointed at a vault fails *every* secret, and "malformed" alone
+    // reads as corruption rather than "these rows are under the other backend".
+    throw new KeyVaultError(
+      scheme && /^[a-z0-9-]{1,16}$/.test(scheme)
+        ? `secret material is not Key Vault material (scheme "${scheme}") — ` +
+            `rows sealed under a different custody backend cannot be read here`
+        : "malformed secret material",
+    );
   }
   const rest = material.slice(sep + 1);
   const slash = rest.indexOf("/");
@@ -145,6 +161,34 @@ function parseRetryAfter(header: string | null, nowMs: number): number | null {
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Thrown when a raced promise misses its deadline. Retryable, like a transport error. */
+class DeadlineError extends Error {}
+
+/**
+ * Wait for `promise`, but no longer than `ms`.
+ *
+ * Deliberately a **race, not a cancellation**. The one caller is token acquisition, and
+ * `ManagedIdentityTokenProvider.getToken()` is single-flight — every concurrent caller
+ * shares one promise backed by one HTTP call. Cancelling it on behalf of whichever caller
+ * happens to run out of budget first would fail every other waiter too, exactly under the
+ * burst that single-flight exists to collapse. Letting the refresh run to completion under
+ * its own timeout instead means it still populates the provider's cache, so the request
+ * after this one gets a hit — the abandoned work warms the cache rather than being wasted.
+ *
+ * The `.catch` on the loser is not optional: an unobserved late rejection is fatal under
+ * `--unhandled-rejections=strict`.
+ */
+function raceTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new DeadlineError(`${label} exceeded ${ms}ms`)), ms);
+  });
+  promise.catch(() => {});
+  return Promise.race([promise, deadline]).finally(() => {
+    clearTimeout(timer);
+  }) as Promise<T>;
+}
+
 export class KeyVaultSecretStore implements SecretStore {
   readonly #base: string;
   readonly #getToken: GetVaultToken;
@@ -169,9 +213,26 @@ export class KeyVaultSecretStore implements SecretStore {
   readonly #cache = new Map<string, { value: string; expiresAtMs: number }>();
   /** Single-flight per material: a burst of requests makes one vault call. */
   readonly #inFlight = new Map<string, Promise<string>>();
+  /**
+   * Materials released by `destroy()` while an `open()` for them was already in flight.
+   * Without this the in-flight read resolves *after* the delete and re-caches plaintext
+   * the operator just released, for a full TTL. Scoped to the in-flight window and cleared
+   * alongside it, so it stays bounded — unlike an open-ended tombstone set.
+   */
+  readonly #released = new Set<string>();
 
   constructor(opts: KeyVaultSecretStoreOptions) {
-    this.#base = opts.vaultUrl.replace(/\/+$/, "");
+    // Parse rather than trim. An `http://` typo in AZURE_KEY_VAULT_URL would send the
+    // vault bearer token — a credential for the whole kv-connections data plane — in
+    // cleartext, and receive secrets back the same way. Building off `origin` also drops
+    // any stray path/query that would otherwise be concatenated into every request path.
+    // Throwing here is the right failure: the portal catches it into a 503 and egress
+    // refuses to boot, both fail-closed.
+    const parsed = new URL(opts.vaultUrl);
+    if (parsed.protocol !== "https:") {
+      throw new Error(`secret-store: vault URL must be https (got ${parsed.protocol}//)`);
+    }
+    this.#base = parsed.origin;
     this.#getToken = opts.getToken;
     this.#fetch = opts.fetchImpl ?? globalThis.fetch;
     this.#now = opts.now ?? Date.now;
@@ -184,6 +245,17 @@ export class KeyVaultSecretStore implements SecretStore {
     this.#writeTotalMs = opts.writeTotalMs ?? DEFAULT_WRITE_TOTAL_MS;
     this.#retries = opts.retries ?? DEFAULT_RETRIES;
     this.#retryBaseMs = opts.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
+  }
+
+  /**
+   * How many plaintext entries the cache currently holds. A count only — never the
+   * materials and never the values. Exists so "an expired entry is *swept*, not merely
+   * unservable" is assertable (the difference is invisible from behaviour alone, which is
+   * exactly how the missing sweep went unnoticed), and it is the natural hook if this ever
+   * wants a gauge.
+   */
+  cachedCount(): number {
+    return this.#cache.size;
   }
 
   async seal(value: string): Promise<string> {
@@ -215,6 +287,7 @@ export class KeyVaultSecretStore implements SecretStore {
 
     const pending = this.#fetchAndCache(material, ref).finally(() => {
       this.#inFlight.delete(material);
+      this.#released.delete(material);
     });
     this.#inFlight.set(material, pending);
     return pending;
@@ -225,6 +298,8 @@ export class KeyVaultSecretStore implements SecretStore {
     // Drop the cached plaintext *first*: if the vault delete then fails, we have
     // not left a warm copy of a secret the operator asked us to release.
     this.#cache.delete(material);
+    // …and stop an already-in-flight read from putting it straight back.
+    if (this.#inFlight.has(material)) this.#released.add(material);
     await this.#call("DELETE", `/secrets/${ref.name}`, {
       perAttemptMs: this.#writeTimeoutMs,
       totalMs: this.#writeTotalMs,
@@ -243,8 +318,21 @@ export class KeyVaultSecretStore implements SecretStore {
     if (typeof value !== "string") {
       throw new KeyVaultError("key vault response missing secret value");
     }
+    // A `destroy()` landed while this read was in flight — the operator released this
+    // material, so return the value to the caller that asked but do not warm the cache.
+    if (this.#released.has(material)) return value;
+
+    const now = this.#now();
+    // Sweep expired entries rather than waiting for a later `open()` of the same material
+    // to notice. They are never *served* stale (the TTL is checked on read), but an
+    // unswept entry keeps a revoked credential resident in the egress heap indefinitely,
+    // where a core dump or a memory-disclosure bug can still recover it.
+    for (const [key, entry] of this.#cache) {
+      if (entry.expiresAtMs <= now) this.#cache.delete(key);
+    }
+
     // Only successful reads are cached — a failure must not be memoized.
-    this.#cache.set(material, { value, expiresAtMs: this.#now() + this.#cacheTtlMs });
+    this.#cache.set(material, { value, expiresAtMs: now + this.#cacheTtlMs });
     if (this.#cache.size > this.#cacheMax) {
       const oldest = this.#cache.keys().next();
       if (!oldest.done) this.#cache.delete(oldest.value);
@@ -278,30 +366,59 @@ export class KeyVaultSecretStore implements SecretStore {
       let text: string;
       let retryAfter: string | null;
       try {
-        const token = await this.#getToken();
+        // Bound the token call too. It is a network hop (the ACA identity endpoint) with
+        // its own failure modes, and leaving it outside the budget made the documented
+        // `open()` deadline unenforceable — a slow identity endpoint could blow the whole
+        // 8s on its own before the vault was touched.
+        const token = await raceTimeout(
+          this.#getToken(),
+          Math.min(opts.perAttemptMs, remaining),
+          "key vault token acquisition",
+        );
+        // Recompute: `remaining` predates the token call, so deriving the request timeout
+        // from it would hand the vault a budget that was already spent.
+        const left = deadline - this.#now();
+        if (left <= 0) {
+          lastError = new KeyVaultError(
+            `key vault ${method} ${path} exhausted its ${opts.totalMs}ms budget acquiring a token`,
+          );
+          break;
+        }
         const headers: Record<string, string> = { authorization: `Bearer ${token}` };
         if (opts.json !== undefined) headers["content-type"] = "application/json";
         const res = await this.#fetch(url, {
           method,
           headers,
           body: opts.json === undefined ? undefined : JSON.stringify(opts.json),
-          signal: AbortSignal.timeout(Math.min(opts.perAttemptMs, remaining)),
+          signal: AbortSignal.timeout(Math.min(opts.perAttemptMs, left)),
         });
         status = res.status;
         text = await res.text();
         retryAfter = res.headers.get("retry-after");
       } catch (err) {
-        // Transport error or per-attempt timeout — retryable.
+        // Transport error, token deadline, or per-attempt timeout — all retryable.
         lastError = new KeyVaultError(`key vault ${method} ${path} failed`, undefined, undefined, {
           cause: err,
         });
         if (attempt === this.#retries) break;
-        await this.#backoff(attempt, null, deadline);
+        if (!(await this.#backoff(attempt, null, deadline))) break;
         continue;
       }
 
       if (status >= 200 && status < 300) {
-        return text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        if (!text) return {};
+        try {
+          return JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          // A 2xx with a non-JSON body (a proxy or private-endpoint interstitial, say)
+          // must still honour the KeyVaultError contract — callers branch on `.status`.
+          // The body is deliberately not attached: a GET body starts `{"value":"<cred>`
+          // and V8's `Unexpected token …` form echoes its input.
+          throw new KeyVaultError(
+            `key vault ${method} ${path} returned an unparseable body`,
+            status,
+          );
+        }
       }
       if (opts.okStatuses?.includes(status)) return {};
 
@@ -313,7 +430,7 @@ export class KeyVaultSecretStore implements SecretStore {
           code,
         );
         if (attempt === this.#retries) break;
-        await this.#backoff(attempt, retryAfter, deadline);
+        if (!(await this.#backoff(attempt, retryAfter, deadline))) break;
         continue;
       }
       // 4xx other than 429: RBAC (403), missing entry (404), bad request. All
@@ -327,14 +444,30 @@ export class KeyVaultSecretStore implements SecretStore {
     );
   }
 
-  async #backoff(attempt: number, retryAfter: string | null, deadline: number): Promise<void> {
+  /**
+   * Sleep before the next attempt. Returns `false` when there is no point retrying, so
+   * the caller must `break` rather than `continue`.
+   *
+   * The `false` cases matter for more than tidiness. An unsatisfiable `Retry-After` (the
+   * vault says 30 s, the budget has 8 s) previously slept the *entire* remaining budget
+   * and then failed anyway — holding an egress request and the edge's undici connection
+   * for 8 s to accomplish nothing, which under sustained throttling turns a vault-side
+   * rate limit into egress-side connection exhaustion. Failing now is strictly better.
+   *
+   * Note this has to be a verdict, not an early `return`: returning without sleeping would
+   * fall through to `continue`, and since no time was consumed the loop's `remaining <= 0`
+   * guard would not fire — turning a throttle into an immediate retry storm.
+   */
+  async #backoff(attempt: number, retryAfter: string | null, deadline: number): Promise<boolean> {
     const now = this.#now();
     const budget = deadline - now;
-    if (budget <= 0) return;
+    if (budget <= 0) return false;
     const hinted = parseRetryAfter(retryAfter, now);
+    if (hinted !== null && hinted > budget) return false;
     const backoff = this.#retryBaseMs * 3 ** attempt;
     const jittered = backoff + Math.random() * backoff * 0.5;
     await this.#sleep(Math.max(0, Math.min(hinted ?? jittered, budget)));
+    return true;
   }
 }
 

@@ -85,11 +85,13 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Release a superseded `material` — **non-throwing, but never silent**.
    *
-   * Every caller has already committed the row change, so failing the request now
-   * would be strictly worse than reporting it. But against Key Vault a swallowed
-   * failure strands a live vault entry still holding the old credential — exactly
-   * the leak `destroy()` exists to prevent (ADR-0006). So a failure becomes an
-   * operator-visible `secret.destroy_failed` audit event, not a dropped promise.
+   * Used in two directions. Post-commit (`rotate`, `delete`) the row change already
+   * landed, so failing the request would be strictly worse than reporting it. In the
+   * rollback direction (`create-rollback`, `rotate-rollback`) the row change did *not*
+   * land and we are releasing material `seal()` already wrote to the vault. Either way a
+   * swallowed failure strands a live vault entry — exactly the leak `destroy()` exists to
+   * prevent (ADR-0006) — so it becomes an operator-visible `secret.destroy_failed` audit
+   * event, not a dropped promise. The `reason` tells the two directions apart.
    *
    * The `ref` is recorded only for `kv:` material, which is a *reference* and is
    * what an operator needs to find the orphan. Dev `aesgcm:` material is the
@@ -103,7 +105,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       scope: string;
       env: string;
       name: string;
-      reason: "rotate" | "delete" | "create-rollback";
+      reason: "rotate" | "delete" | "create-rollback" | "rotate-rollback";
     },
   ): Promise<void> => {
     try {
@@ -121,6 +123,41 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         app.log.error({ err: auditErr }, "could not record secret.destroy_failed");
       });
     }
+  };
+
+  /**
+   * Swap in freshly sealed `material`, then release the old — as a **compare-and-swap**
+   * on the material we read.
+   *
+   * A plain `update` by id makes concurrent rotations last-write-wins, and each request
+   * only releases the material *it* read. Both writes succeed, both release the same
+   * original, and the loser's brand-new vault entry is left live, plaintext, and
+   * referenced by nothing — under an opaque random name, so nothing can correlate it back.
+   * Invisible in dev, where `destroy()` is a no-op and there is nothing to orphan.
+   *
+   * Losing the CAS is a 409, not a silent 200: the caller's value is not what is stored,
+   * and saying otherwise would be a lie about a credential.
+   */
+  const rotateOrRelease = async (
+    row: { id: string; material: string; name: string },
+    material: string,
+    ctx: { appId: string | null; actor: string; scope: string; env: string; name: string },
+  ) => {
+    const { count } = await app.prisma.appSecret.updateMany({
+      where: { id: row.id, material: row.material },
+      data: { material, rotatedAt: new Date() },
+    });
+    if (count === 0) {
+      await release(material, { ...ctx, reason: "rotate-rollback" });
+      throw new AppError(
+        "conflict",
+        `secret "${row.name}" was rotated concurrently — re-read it and retry`,
+      );
+    }
+    await release(row.material, { ...ctx, reason: "rotate" });
+    const updated = await app.prisma.appSecret.findUnique({ where: { id: row.id } });
+    if (!updated) throw new AppError("not_found", `secret "${row.name}" not found`);
+    return updated;
   };
 
   // ── App-scoped secrets (owner) ────────────────────────────────────────────
@@ -205,17 +242,12 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
       const material = await store().seal(value);
-      const updated = await app.prisma.appSecret.update({
-        where: { id: row.id },
-        data: { material, rotatedAt: new Date() },
-      });
-      await release(row.material, {
+      const updated = await rotateOrRelease(row, material, {
         appId: appRow.id,
         actor: actor.sub,
         scope: "app",
         env,
         name: row.name,
-        reason: "rotate",
       });
       await audit(appRow.id, actor.sub, "secret.rotated", { scope: "app", env, name: row.name });
       return toMetadata(updated);
@@ -267,9 +299,11 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/v1/secrets", { preHandler: authenticate }, async (req, reply) => {
     const actor = requireAdmin(req);
     const body = AdminSecretCreateSchema.parse(req.body);
-    // Name uniqueness within the scope is enforced here (a partial unique index
-    // on the appId-less scopes is not expressible in the Prisma schema). Pinned to
-    // the prod tier — uniqueness is now per-env (dev-mode §6); step 2 parametrizes it.
+    // A friendly pre-check, but *not* the guarantee — it's a non-atomic read-then-insert.
+    // The partial unique index `app_secrets_admin_scope_name_key` is what actually holds
+    // under concurrency (Postgres treats the NULL `appId` as distinct, so the model's
+    // @@unique doesn't cover these scopes). Pinned to the prod tier — uniqueness is now
+    // per-env (dev-mode §6); step 2 parametrizes it.
     const existing = await app.prisma.appSecret.findFirst({
       where: { scope: body.scope, env: "prod", name: body.name },
     });
@@ -277,17 +311,36 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("conflict", `${body.scope} secret "${body.name}" already exists`);
     }
     const material = await store().seal(body.value);
-    const row = await app.prisma.appSecret.create({
-      data: {
-        scope: body.scope,
+    let row;
+    try {
+      row = await app.prisma.appSecret.create({
+        data: {
+          scope: body.scope,
+          appId: null,
+          env: "prod",
+          name: body.name,
+          material,
+          injection: body.injection,
+          createdBy: actor.sub,
+        },
+      });
+    } catch (err) {
+      // seal() already wrote to the vault, so anything that stops the row landing —
+      // the uniqueness race above, or any transient DB error — would otherwise leave a
+      // live, unreferenced credential in the vault. Mirrors the app-scoped create.
+      await release(material, {
         appId: null,
+        actor: actor.sub,
+        scope: body.scope,
         env: "prod",
         name: body.name,
-        material,
-        injection: body.injection,
-        createdBy: actor.sub,
-      },
-    });
+        reason: "create-rollback",
+      });
+      if (isUniqueViolation(err)) {
+        throw new AppError("conflict", `${body.scope} secret "${body.name}" already exists`);
+      }
+      throw err;
+    }
     await audit(null, actor.sub, "secret.created", { scope: body.scope, name: body.name });
     reply.status(201);
     return toMetadata(row);
@@ -304,17 +357,12 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!row) throw new AppError("not_found", "secret not found");
       const material = await store().seal(value);
-      const updated = await app.prisma.appSecret.update({
-        where: { id: row.id },
-        data: { material, rotatedAt: new Date() },
-      });
-      await release(row.material, {
+      const updated = await rotateOrRelease(row, material, {
         appId: null,
         actor: actor.sub,
         scope: row.scope,
         env: row.env,
         name: row.name,
-        reason: "rotate",
       });
       await audit(null, actor.sub, "secret.rotated", { scope: row.scope, name: row.name });
       return toMetadata(updated);

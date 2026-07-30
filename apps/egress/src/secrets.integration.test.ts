@@ -201,8 +201,17 @@ describe("PgSecretResolver over Key Vault custody", () => {
       getToken: async () => "tok",
       fetchImpl: vault.fetchImpl,
     };
-    // Two instances, as in production: the control plane seals, the mechanism
-    // plane opens. Separate caches, separate credentials, no shared state.
+    // Two independent instances, as in production: the control plane seals, the
+    // mechanism plane opens. Separate caches, no shared in-process state.
+    //
+    // What this proves is `material` **portability** — that a token written by one
+    // process is readable by another with nothing but the vault between them, which the
+    // dev envelope cannot demonstrate because both sides derive the same key from the
+    // same file. What it explicitly does NOT prove is identity separation: both stores
+    // share one stub `getToken` and the fake vault ignores the authorization header, so
+    // a broken managed-identity selection, a missing RBAC assignment, or an accidental
+    // edge grant would all pass here. Those need a post-deploy smoke test against the
+    // three real managed identities.
     const portalSide = new KeyVaultSecretStore(opts);
     const egressSide = new KeyVaultSecretStore(opts);
 

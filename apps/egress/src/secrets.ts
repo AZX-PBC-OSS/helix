@@ -104,6 +104,24 @@ export class PgSecretResolver implements SecretResolver {
     return { value, injection };
   }
 
+  /**
+   * How many rows hold material the configured custody backend cannot open — a count
+   * only, never the material. Under Key Vault every row should be `kv:`; rows left over
+   * from a dev-envelope run fail individually with an opaque 502, and without this the
+   * operator has no way to see that the cause is *every row being under the other
+   * backend* rather than corruption in one. Best-effort: a failed count is not a reason
+   * to refuse to boot.
+   */
+  async countForeignMaterial(scheme: string): Promise<number | null> {
+    return this.#pool
+      .query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM app_secrets WHERE material NOT LIKE $1`,
+        [`${scheme}:%`],
+      )
+      .then((r) => Number(r.rows[0]?.n ?? 0))
+      .catch(() => null);
+  }
+
   async close(): Promise<void> {
     await this.#pool.end();
   }

@@ -120,8 +120,28 @@ describe("KeyVaultSecretStore — material contract", () => {
   it("refuses dev `aesgcm:` material — no cross-scheme downgrade", async () => {
     const vault = fakeVault();
     const store = new KeyVaultSecretStore(opts(vault.fetchImpl));
-    await expect(store.open("aesgcm:00:11:22")).rejects.toThrow(/malformed/);
+    await expect(store.open("aesgcm:00:11:22")).rejects.toThrow(/not Key Vault material/);
     expect(vault.requests).toHaveLength(0);
+  });
+
+  it("names the offending scheme, so a wrong-backend environment is diagnosable", async () => {
+    // The failure an operator actually hits is an environment sealed under the dev
+    // envelope then pointed at a vault: *every* secret fails at once. An opaque
+    // "malformed" reads as corruption and hides the real cause.
+    const vault = fakeVault();
+    const store = new KeyVaultSecretStore(opts(vault.fetchImpl));
+    const err = await store.open("aesgcm:00:11:22").catch((e: unknown) => e);
+    expect(String(err)).toContain('scheme "aesgcm"');
+    // A scheme tag is not a secret, but the material still must not be logged.
+    expect(String(err)).not.toContain("00:11:22");
+  });
+
+  it("does not echo an implausible scheme back into the message", async () => {
+    const vault = fakeVault();
+    const store = new KeyVaultSecretStore(opts(vault.fetchImpl));
+    await expect(store.open("A".repeat(200) + ":x/y")).rejects.toThrow(
+      /^malformed secret material$/,
+    );
   });
 
   it("rejects malformed material without touching the network", async () => {
@@ -244,6 +264,52 @@ describe("KeyVaultSecretStore — version-pinned cache", () => {
     await store.open(b); // evicted → re-fetch
     expect(gets()).toBe(4);
   });
+
+  it("sweeps expired entries instead of leaving revoked plaintext resident", async () => {
+    // Expired entries were only ever dropped lazily, on a later open() of the *same*
+    // material. Nothing was served stale, but after an operator rotates a compromised key
+    // egress still *held* the old plaintext — recoverable from a core dump.
+    const vault = fakeVault();
+    let now = 1_000_000;
+    const store = new KeyVaultSecretStore(
+      opts(vault.fetchImpl, { now: () => now, cacheTtlMs: 60_000 }),
+    );
+    const [a, b] = [await store.seal("a"), await store.seal("b")];
+    await store.open(a);
+    await store.open(b);
+    expect(store.cachedCount()).toBe(2);
+
+    now += 61_000; // both expire, and neither is opened again
+    await store.open(await store.seal("c")); // any insert sweeps
+
+    // `a` and `b` are gone from the heap, not merely unservable.
+    expect(store.cachedCount()).toBe(1);
+  });
+
+  it("does not re-warm the cache when destroy() lands mid-open", async () => {
+    // destroy() clears the cache before the vault DELETE, but an open() already in flight
+    // resolves afterwards and would put the plaintext straight back for a full TTL.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET") {
+        await gate;
+        return json(200, { id: `${VAULT}/secrets/hx-a/0a`, value: "v" });
+      }
+      return json(200, { id: `${VAULT}/secrets/hx-a/0a`, value: "v" });
+    };
+    const store = new KeyVaultSecretStore(opts(fetchImpl));
+
+    const reading = store.open("kv:hx-a/0a");
+    await store.destroy("kv:hx-a/0a"); // lands while the read is in flight
+    release();
+    expect(await reading).toBe("v"); // the caller that asked still gets its answer…
+
+    expect(store.cachedCount()).toBe(0); // …but nothing is retained
+  });
 });
 
 describe("KeyVaultSecretStore — timeout and retry", () => {
@@ -263,6 +329,118 @@ describe("KeyVaultSecretStore — timeout and retry", () => {
     expect(await store.open("kv:hx-a/0a")).toBe("v");
     expect(s.calls()).toBe(2);
     expect(waits).toEqual([1000]);
+  });
+
+  it("fails immediately when Retry-After exceeds the remaining budget", async () => {
+    // Sleeping out the whole budget to then fail anyway holds an egress request and the
+    // edge's undici connection for nothing; under sustained vault throttling that turns a
+    // vault-side rate limit into egress-side connection exhaustion.
+    const waits: number[] = [];
+    const s = scripted([json(429, { error: { code: "Throttled" } }, { "retry-after": "30" })]);
+    const store = new KeyVaultSecretStore(
+      opts(s.fetchImpl, {
+        openTotalMs: 8000,
+        sleep: async (ms: number) => {
+          waits.push(ms);
+        },
+      }),
+    );
+    await expect(store.open("kv:hx-a/0a")).rejects.toMatchObject({ status: 429 });
+    expect(waits).toEqual([]); // never slept
+    expect(s.calls()).toBe(1); // and did not hammer the throttled vault either
+  });
+
+  it("still honours a Retry-After that fits inside the budget", async () => {
+    const waits: number[] = [];
+    const s = scripted([
+      json(429, { error: { code: "Throttled" } }, { "retry-after": "2" }),
+      json(200, { id: `${VAULT}/secrets/hx-a/0a`, value: "v" }),
+    ]);
+    const store = new KeyVaultSecretStore(
+      opts(s.fetchImpl, {
+        openTotalMs: 8000,
+        sleep: async (ms: number) => {
+          waits.push(ms);
+        },
+      }),
+    );
+    expect(await store.open("kv:hx-a/0a")).toBe("v");
+    expect(waits).toEqual([2000]);
+  });
+
+  it("counts token acquisition against the deadline", async () => {
+    // The regression that shipped: `getToken` sat inside the retry loop but outside every
+    // bound, and the vault call's timeout was derived from a pre-token `remaining`. The
+    // original deadline test only advanced the clock inside `sleep()`, so it missed this.
+    let now = 0;
+    let vaultCalls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      vaultCalls += 1;
+      return json(200, { id: `${VAULT}/secrets/hx-a/0a`, value: "v" });
+    };
+    const store = new KeyVaultSecretStore({
+      vaultUrl: VAULT,
+      fetchImpl,
+      now: () => now,
+      sleep: async () => {},
+      retryBaseMs: 0,
+      openTotalMs: 10,
+      openTimeoutMs: 10,
+      getToken: async () => {
+        now += 60; // the identity endpoint burns more than the whole budget
+        return "tok";
+      },
+    });
+    await expect(store.open("kv:hx-a/0a")).rejects.toThrow(/budget/);
+    // …and crucially never issued a vault call it could not afford.
+    expect(vaultCalls).toBe(0);
+  });
+
+  it("bounds a hung token call rather than waiting on it forever", async () => {
+    let vaultCalls = 0;
+    const store = new KeyVaultSecretStore({
+      vaultUrl: VAULT,
+      fetchImpl: async () => {
+        vaultCalls += 1;
+        return json(200, { id: `${VAULT}/secrets/hx-a/0a`, value: "v" });
+      },
+      sleep: async () => {},
+      retryBaseMs: 0,
+      retries: 0,
+      openTimeoutMs: 5,
+      getToken: () => new Promise<string>(() => {}), // never settles
+    });
+    await expect(store.open("kv:hx-a/0a")).rejects.toThrow(/failed/);
+    expect(vaultCalls).toBe(0);
+  });
+
+  it("treats a token failure as retryable", async () => {
+    let attempt = 0;
+    const store = new KeyVaultSecretStore({
+      vaultUrl: VAULT,
+      fetchImpl: async () => json(200, { id: `${VAULT}/secrets/hx-a/0a`, value: "v" }),
+      sleep: async () => {},
+      retryBaseMs: 0,
+      getToken: async () => {
+        attempt += 1;
+        if (attempt === 1) throw new Error("identity endpoint down");
+        return "tok";
+      },
+    });
+    expect(await store.open("kv:hx-a/0a")).toBe("v");
+    expect(attempt).toBe(2);
+  });
+
+  it("surfaces a non-JSON 2xx as a KeyVaultError carrying the status", async () => {
+    const s = scripted([new Response("<html>gateway interstitial</html>", { status: 200 })]);
+    const store = new KeyVaultSecretStore(opts(s.fetchImpl));
+    const err = await store.open("kv:hx-a/0a").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(KeyVaultError);
+    expect((err as KeyVaultError).status).toBe(200);
+    // Not retried — a malformed 2xx is not a transient condition.
+    expect(s.calls()).toBe(1);
+    // The body is never attached: a real GET body starts `{"value":"<credential>`.
+    expect(JSON.stringify((err as KeyVaultError).cause ?? null)).not.toContain("interstitial");
   });
 
   it("retries 5xx and gives up after the configured attempts", async () => {
@@ -330,11 +508,47 @@ describe("KeyVaultSecretStore — timeout and retry", () => {
     expect(aborts).toBe(1);
   });
 
-  it("never puts the secret value in an error message", async () => {
-    const s = scripted([json(500, { error: { code: "InternalError" } })]);
-    const store = new KeyVaultSecretStore(opts(s.fetchImpl));
+  it("never puts the secret value anywhere a logger would find it", async () => {
+    // `String(err)` is only `name: message` — it never reaches `cause`, which is the one
+    // field #call populates with a foreign object and the one pino's error serializer
+    // walks where proxy.ts and secrets.ts log `{ err }`. Walk the chain instead.
+    const s = scripted([new Error("connect ECONNREFUSED"), new Error("connect ECONNREFUSED")]);
+    const store = new KeyVaultSecretStore(opts(s.fetchImpl, { retries: 1 }));
     const err = await store.seal("sk_live_abc123").catch((e: unknown) => e);
-    expect(String(err)).not.toContain("sk_live_abc123");
+
+    const seen: string[] = [];
+    for (let e: unknown = err, depth = 0; e && depth < 10; depth += 1) {
+      const asErr = e as Error & { cause?: unknown };
+      seen.push(asErr.message ?? "", asErr.stack ?? "", JSON.stringify(asErr) || "");
+      e = asErr.cause;
+    }
+    expect(seen.join("\n")).not.toContain("sk_live_abc123");
+  });
+});
+
+describe("KeyVaultSecretStore — construction", () => {
+  it("refuses a non-https vault URL", () => {
+    // An http:// typo would put the vault bearer token — a credential for the whole
+    // kv-connections data plane — on the wire in cleartext, and take secrets back the
+    // same way. Fail at construction: the portal turns that into a 503, egress won't boot.
+    expect(
+      () => new KeyVaultSecretStore(opts(fakeVault().fetchImpl, { vaultUrl: "http://kv.example" })),
+    ).toThrow(/must be https/);
+  });
+
+  it("refuses a vault URL that isn't a URL at all", () => {
+    expect(
+      () => new KeyVaultSecretStore(opts(fakeVault().fetchImpl, { vaultUrl: "kv.example" })),
+    ).toThrow();
+  });
+
+  it("drops a stray path or query rather than splicing it into every request", async () => {
+    const vault = fakeVault();
+    const store = new KeyVaultSecretStore(
+      opts(vault.fetchImpl, { vaultUrl: "https://kv.example/some/path?x=1" }),
+    );
+    await store.seal("v");
+    expect(new URL(vault.requests[0]?.url ?? "").pathname).toMatch(/^\/secrets\/hx-[0-9a-f]{32}$/);
   });
 });
 

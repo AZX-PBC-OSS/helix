@@ -273,3 +273,144 @@ describe("a failed destroy is reported, not swallowed", () => {
     expect(events[0]?.metadata).toMatchObject({ name: "conn", reason: "rotate" });
   });
 });
+
+/**
+ * `seal()` writes to the vault *before* the DB row exists, so every path from seal to a
+ * committed row is a window in which a failure strands a live, unreferenced credential —
+ * under a deliberately opaque random name, unpurgeable for 90 days under purge protection.
+ *
+ * This is invisible under the dev envelope (`destroy()` is a no-op and `material` is the
+ * ciphertext in the row, so there is nothing to orphan), so it needs a store that actually
+ * tracks entries. The invariant asserted throughout: **the vault holds no entry the
+ * database doesn't reference.**
+ */
+describe("no path strands an unreferenced vault entry", () => {
+  /**
+   * A dev store that also keeps a set of live "vault" entries, keyed by material, plus
+   * a gate so a `seal()` can be stalled — the only way to force two rotations to both
+   * read the row before either writes, which is the interleaving the CAS exists for.
+   * Left to `Promise.all` alone the two requests serialize and both legitimately succeed.
+   */
+  class TrackingStore extends DevEnvelopeSecretStore {
+    readonly live = new Set<string>();
+    readonly sealed = new Set<string>();
+    stallNext: Promise<void> | null = null;
+    onStall: (() => void) | null = null;
+    override async seal(value: string): Promise<string> {
+      const stall = this.stallNext;
+      if (stall) {
+        this.stallNext = null;
+        this.onStall?.();
+        this.onStall = null;
+        await stall;
+      }
+      const material = await super.seal(value);
+      this.live.add(material);
+      this.sealed.add(material);
+      return material;
+    }
+    override async destroy(material: string): Promise<void> {
+      this.live.delete(material);
+    }
+  }
+
+  let t2: TestApp;
+  let vault: TrackingStore;
+
+  beforeAll(async () => {
+    vault = new TrackingStore({ masterKey: randomBytes(32) });
+    t2 = buildTestApp({ secretStore: vault });
+    await t2.app.ready();
+  });
+  afterAll(async () => {
+    await t2.close();
+  });
+
+  const inject = (method: "POST" | "DELETE", url: string, payload?: Record<string, unknown>) =>
+    t2.app.inject({ method, url, headers: authHeader(), payload });
+
+  /**
+   * Materials the DB references. The test database is shared, so this is scoped to what
+   * *this* store minted — rows from other suites are sealed by other store instances.
+   */
+  async function referenced(): Promise<Set<string>> {
+    const rows = await t2.prisma.appSecret.findMany({ select: { material: true } });
+    return new Set(rows.map((r) => r.material).filter((m) => vault.sealed.has(m)));
+  }
+
+  /** The invariant: the vault holds no entry the database doesn't reference. */
+  async function expectNoOrphans(): Promise<void> {
+    const refs = await referenced();
+    expect([...vault.live].filter((m) => !refs.has(m))).toEqual([]);
+  }
+
+  it("releases the sealed material when an admin create loses the uniqueness race", async () => {
+    const name = uniqueSlug("g");
+    expect((await inject("POST", "/api/v1/secrets", { name, value: "a" })).statusCode).toBe(201);
+
+    // Bypass the route's non-atomic pre-check to hit the partial unique index directly —
+    // this is what two concurrent admin POSTs collide on.
+    const dup = await inject("POST", "/api/v1/secrets", { name, value: "b" });
+    expect(dup.statusCode).toBe(409);
+    await expectNoOrphans();
+  });
+
+  it("releases the sealed material when the DB write fails outright", async () => {
+    const slug = uniqueSlug();
+    expect((await inject("POST", "/api/v1/apps", { slug, displayName: "Demo" })).statusCode).toBe(
+      201,
+    );
+    expect(
+      (await inject("POST", `/api/v1/apps/${slug}/secrets`, { name: "conn", value: "v1" }))
+        .statusCode,
+    ).toBe(201);
+    // Same (appId, env, name) → unique violation on the app-scoped index.
+    expect(
+      (await inject("POST", `/api/v1/apps/${slug}/secrets`, { name: "conn", value: "v2" }))
+        .statusCode,
+    ).toBe(409);
+    await expectNoOrphans();
+  });
+
+  it("releases the loser's material when two rotations race", async () => {
+    const slug = uniqueSlug();
+    await inject("POST", "/api/v1/apps", { slug, displayName: "Demo" });
+    await inject("POST", `/api/v1/apps/${slug}/secrets`, { name: "conn", value: "v1" });
+
+    // Stall A's seal so B runs to completion in between. Both requests then hold the
+    // same pre-rotation material, which is the state a plain `update` resolves as
+    // last-write-wins — leaving the loser's fresh vault entry live and unreferenced.
+    let release!: () => void;
+    let entered!: () => void;
+    const stalled = new Promise<void>((r) => {
+      entered = r;
+    });
+    vault.stallNext = new Promise<void>((r) => {
+      release = r;
+    });
+    vault.onStall = entered;
+
+    // The async IIFE matters: `inject()` is chainable and light-my-request defers the
+    // actual dispatch until something calls `.then()`, so a bare `const a = inject(…)`
+    // never runs and the two requests deadlock on the gate.
+    const a = (async () =>
+      inject("POST", `/api/v1/apps/${slug}/secrets/conn/rotate`, {
+        value: "v2",
+      }))();
+    await stalled; // A has read the row and is now parked inside seal()
+    const b = await inject("POST", `/api/v1/apps/${slug}/secrets/conn/rotate`, { value: "v3" });
+    release();
+
+    expect(b.statusCode).toBe(200); // B read and wrote while A was stalled
+    expect((await a).statusCode).toBe(409); // A's compare-and-swap finds the row moved
+    await expectNoOrphans(); // …and A released the material it had already sealed
+  });
+
+  it("leaves no orphan and no dead reference across the whole suite", async () => {
+    const refs = await referenced();
+    // Nothing live-but-unreferenced (an orphan)…
+    expect([...vault.live].filter((m) => !refs.has(m))).toEqual([]);
+    // …and nothing referenced-but-released (a row pointing at a destroyed entry).
+    expect([...refs].filter((m) => !vault.live.has(m))).toEqual([]);
+  });
+});

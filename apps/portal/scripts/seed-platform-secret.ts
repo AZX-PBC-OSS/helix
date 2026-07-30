@@ -50,35 +50,55 @@ async function main(): Promise<void> {
       return;
     }
 
+    // seal() writes to the vault before the row exists, so every path from here to a
+    // committed row needs a rollback — otherwise a failure leaves a live, unreferenced
+    // credential under an opaque name that nothing can correlate back.
     const material = await store.seal(value);
-    if (existing) {
-      await prisma.appSecret.update({
-        where: { id: existing.id },
-        data: { material, rotatedAt: new Date() },
-      });
-      // Non-fatal (the row already points at the new value) but never silent: a
-      // failed destroy strands a live vault entry holding the old vendor key.
-      await store.destroy(existing.material).catch((err: unknown) => {
-        console.error(
-          `WARNING: rotated "${name}" but could not destroy the previous material — ` +
-            `the old value may still be readable in the vault. Delete it by hand.`,
-          err instanceof Error ? err.message : err,
-        );
-        process.exitCode = 1;
-      });
-      console.log(`rotated platform secret "${name}" (id ${existing.id}).`);
-    } else {
-      const row = await prisma.appSecret.create({
-        data: {
-          scope: "platform",
-          appId: null,
-          name,
-          material,
-          injection: { kind: "header", name: "x-api-key", template: "{}" },
-          createdBy: "seed-script",
-        },
-      });
-      console.log(`created platform secret "${name}" (id ${row.id}).`);
+    let committed = false;
+    try {
+      if (existing) {
+        await prisma.appSecret.update({
+          where: { id: existing.id },
+          data: { material, rotatedAt: new Date() },
+        });
+        committed = true;
+        // Non-fatal (the row already points at the new value) but never silent: a
+        // failed destroy strands a live vault entry holding the old vendor key.
+        // Note this leaves exitCode 1 on an otherwise successful rotation — deliberate
+        // as an operator signal, but it means a retry wrapper would re-rotate every pass.
+        await store.destroy(existing.material).catch((err: unknown) => {
+          console.error(
+            `WARNING: rotated "${name}" but could not destroy the previous material — ` +
+              `the old value may still be readable in the vault. Delete it by hand.`,
+            err instanceof Error ? err.message : err,
+          );
+          process.exitCode = 1;
+        });
+        console.log(`rotated platform secret "${name}" (id ${existing.id}).`);
+      } else {
+        const row = await prisma.appSecret.create({
+          data: {
+            scope: "platform",
+            appId: null,
+            name,
+            material,
+            injection: { kind: "header", name: "x-api-key", template: "{}" },
+            createdBy: "seed-script",
+          },
+        });
+        committed = true;
+        console.log(`created platform secret "${name}" (id ${row.id}).`);
+      }
+    } finally {
+      if (!committed) {
+        await store.destroy(material).catch((err: unknown) => {
+          console.error(
+            `WARNING: could not release the newly sealed material after a failed write — ` +
+              `an unreferenced entry may be live in the vault.`,
+            err instanceof Error ? err.message : err,
+          );
+        });
+      }
     }
   } finally {
     await prisma.$disconnect();

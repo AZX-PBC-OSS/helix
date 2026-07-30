@@ -54,7 +54,11 @@ export class DevEnvelopeSecretStore implements SecretStore {
     return out.toString("utf8");
   }
 
-  async destroy(): Promise<void> {
+  // Takes `material` it does not use, matching {@link SecretStore} rather than eliding
+  // the parameter — a zero-arg `destroy()` still satisfies the interface structurally but
+  // cannot be overridden with the real signature (which test doubles need to do).
+  async destroy(material: string): Promise<void> {
+    void material;
     // The ciphertext lives in the DB row; deleting the row is the deletion.
   }
 }

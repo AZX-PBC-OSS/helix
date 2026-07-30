@@ -173,10 +173,18 @@ export class ManagedIdentityTokenProvider implements TokenProvider {
  */
 export function managedIdentityTokenProviderFromEnv(
   env: NodeJS.ProcessEnv = process.env,
+  overrides: Partial<
+    Omit<ManagedIdentityTokenProviderOptions, "identityEndpoint" | "identityHeader" | "clientId">
+  > = {},
 ): ManagedIdentityTokenProvider | null {
   const identityEndpoint = env.IDENTITY_ENDPOINT;
   const identityHeader = env.IDENTITY_HEADER;
   const clientId = env.AZURE_CLIENT_ID;
   if (!identityEndpoint || !identityHeader || !clientId) return null;
-  return new ManagedIdentityTokenProvider({ identityEndpoint, identityHeader, clientId });
+  return new ManagedIdentityTokenProvider({
+    identityEndpoint,
+    identityHeader,
+    clientId,
+    ...overrides,
+  });
 }
