@@ -9,7 +9,7 @@
 
 ## Context
 
-Today the deploy model is **upload-only**: the `azx` CLI zips a **prebuilt** static bundle and uploads it; the platform never runs `npm install` / a build / app code server-side (verified — `packages/cli` only zips; no `exec`/`spawn`/`child_process` in the edge serving path; no SSR of uploaded HTML). The author's build happens on the author's machine/CI, **outside the platform's blast radius**.
+Today the deploy model is **upload-only**: the `helix` CLI zips a **prebuilt** static bundle and uploads it; the platform never runs `npm install` / a build / app code server-side (verified — `packages/cli` only zips; no `exec`/`spawn`/`child_process` in the edge serving path; no SSR of uploaded HTML). The author's build happens on the author's machine/CI, **outside the platform's blast radius**.
 
 A future "hosted build" / git-connect milestone (the project calls it **v2**; sometimes referenced as "M6") would clone an app's repo and **build it on platform infrastructure**. A 5-model review (2026-06-26) of the "build-step trap" risk note unanimously returned **"real but needs refinement"** and surfaced the precise shape of the risk:
 
@@ -33,7 +33,7 @@ Hosted builds remain **deferred**. When they ship, they must clear these **launc
 
 - Hosted builds become a **manageable new isolation tier**, mirroring the edge→egress policy/mechanism split, rather than a contradiction of the "app code is untrusted" model.
 - The headline supply-chain risk (credential theft + artifact forging) is structurally neutralised by **credential-free + provenance**, independent of how good the sandbox is.
-- Cost: real engineering (ephemeral builder orchestration, a clone-outside-the-zone flow, an attestation pipeline) — which is exactly why it stays deferred until a real app needs it. Until then, the answer is **"authors run `azx deploy` from their own CI"** (zero platform build infrastructure).
+- Cost: real engineering (ephemeral builder orchestration, a clone-outside-the-zone flow, an attestation pipeline) — which is exactly why it stays deferred until a real app needs it. Until then, the answer is **"authors run `helix deploy` from their own CI"** (zero platform build infrastructure).
 - The `--ignore-scripts` flag is **defense-in-depth only** — it breaks legitimate packages (esbuild native bindings, node-gyp, husky) and is not a substitute for credential-free isolation.
 
 ## Open question

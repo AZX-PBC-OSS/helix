@@ -21,5 +21,5 @@ param edgeCertificateBase64 = readEnvironmentVariable('HELIX_EDGE_CERT_BASE64', 
 param adminPrincipalId = readEnvironmentVariable('HELIX_ADMIN_PRINCIPAL_ID', '')
 
 // Pre-grant tenant-wide consent for CLI -> portal scope (needs an admin deploy
-// principal). false = users consent at first `azx login`.
+// principal). false = users consent at first `helix login`.
 param grantAdminConsent = false

@@ -6,7 +6,7 @@
 does (architecture §6.1, §12; design `docs/design/secrets-and-connections.md`).
 A secret is stored sealed, referenced by name from a proxied origin
 (`capabilities.fetch.origins[].connection`), and injected server-side by
-`azx-egress` on the outbound hop — so an API key reaches the third party without
+`helix-egress` on the outbound hop — so an API key reaches the third party without
 ever reaching the browser, the edge, or the registry projection.
 
 | Route | Who | What |
@@ -121,7 +121,7 @@ owner re-display.)
 
 ### The role split (the real boundary)
 
-The portal **seals** (writes); the **`azx-egress`** service is the only reader,
+The portal **seals** (writes); the **`helix-egress`** service is the only reader,
 under the dedicated `helix_egress` role. That role has `SELECT` on
 `app_secrets`/`app_secret_grants` and `UPDATE` on `lastUsedAt` only — and nothing
 else. The policy edge (`helix_edge`) has **no grant on `app_secrets` at all**.

@@ -2,7 +2,7 @@
 
 > **Related ADRs:** [ADR-0017](../adr/0017-registry-listen-notify-projection.md) (registry projection) · [ADR-0025](../adr/0025-registry-projection-hardening.md) (projection hardening) · [ADR-0009](../adr/0009-relaxed-csp.md) (relaxed CSP) · [ADR-0019](../adr/0019-subdomain-per-app-isolation.md) (subdomain isolation) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps) · [ADR-0003](../adr/0003-dependency-minimal-edge.md) (dependency-minimal edge) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (Postgres role split) · [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split).
 
-**What it is.** The data plane (`apps/edge` — azx-edge) terminates all untrusted app-user
+**What it is.** The data plane (`apps/edge` — helix-edge) terminates all untrusted app-user
 traffic: it routes a request to an app by hostname, serves that app's static assets straight
 from Blob, injects the platform CSP on every response, and answers `404`/`410` uniformly so
 the registry can't be enumerated. It is **stateless** and **dependency-minimal** — every npm
@@ -93,7 +93,7 @@ fail-closed. A same-origin `report-uri /_csp-report` funnels violations to the e
 ### Transparent fetch shim (serve-time HTML injection)
 
 The fetch-proxy contract is a path prefix: app code calls `fetch('/_api/fetch/https://…')`,
-a same-origin call the CSP permits, which the edge authorizes and forwards to azx-egress (see
+a same-origin call the CSP permits, which the edge authorizes and forwards to helix-egress (see
 [fetch-proxy.md](./fetch-proxy.md)). The shim is the **zero-edit adoption path** on top of that
 contract — for apps that opt in via `capabilities.fetch.shim`, the edge serves a tiny per-app
 script that monkeypatches `window.fetch` **and** `XMLHttpRequest.prototype.open` (both, because

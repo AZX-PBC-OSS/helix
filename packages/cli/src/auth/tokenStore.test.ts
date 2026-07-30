@@ -11,7 +11,7 @@ const KEY = { portalUrl: PORTAL, issuer: ISSUER };
 let file: string;
 
 beforeEach(async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "azx-tokens-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "helix-tokens-"));
   file = path.join(dir, "nested", "tokens.json");
 });
 
@@ -40,7 +40,7 @@ describe("token store", () => {
   });
 
   it("never returns tokens for a different portal origin, same issuer", async () => {
-    // The attack the binding kills: a planted azx.json points the CLI at a
+    // The attack the binding kills: a planted helix.json points the CLI at a
     // hostile portal that echoes the REAL issuer in its auth config.
     await writeTokens(KEY, TOKENS, file);
     expect(
@@ -92,7 +92,7 @@ describe("token store", () => {
   });
 
   it("defaultTokenPath honors XDG_CONFIG_HOME", () => {
-    expect(defaultTokenPath({ XDG_CONFIG_HOME: "/tmp/xdg" })).toBe("/tmp/xdg/azx/tokens.json");
-    expect(defaultTokenPath({})).toContain(path.join(".config", "azx", "tokens.json"));
+    expect(defaultTokenPath({ XDG_CONFIG_HOME: "/tmp/xdg" })).toBe("/tmp/xdg/helix/tokens.json");
+    expect(defaultTokenPath({})).toContain(path.join(".config", "helix", "tokens.json"));
   });
 });

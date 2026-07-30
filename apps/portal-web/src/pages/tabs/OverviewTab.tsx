@@ -97,7 +97,7 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
           )}
           {versions.length === 0 && (
             <Hint icon="upload" tone="info">
-              No versions yet — run <span className="az-mono">azx deploy</span> from the app
+              No versions yet — run <span className="az-mono">helix deploy</span> from the app
               directory, or drop a zip in the Deploy dialog.
             </Hint>
           )}

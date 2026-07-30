@@ -22,31 +22,48 @@ export interface ResolvedConfig {
 const DEFAULT_PORTAL_URL = "http://localhost:3001";
 const DEFAULT_DIR = "dist";
 
-interface AzxFile {
+interface HelixConfigFile {
   slug?: string;
   portalUrl?: string;
   dir?: string;
 }
 
-async function readAzxJson(cwd: string): Promise<AzxFile> {
-  try {
-    return JSON.parse(await readFile(path.join(cwd, "azx.json"), "utf8")) as AzxFile;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw err;
+/**
+ * Config filenames in precedence order. `azx.json` is the pre-rename name,
+ * still read so an app directory that predates the rename keeps deploying;
+ * `helix.json` wins when both are present.
+ */
+const CONFIG_FILENAMES = ["helix.json", "azx.json"] as const;
+
+async function readConfigFile(cwd: string): Promise<HelixConfigFile> {
+  for (const name of CONFIG_FILENAMES) {
+    try {
+      return JSON.parse(await readFile(path.join(cwd, name), "utf8")) as HelixConfigFile;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
   }
+  return {};
 }
 
-/** Merge config from azx.json, environment, and flags (flags win). */
+/** Merge config from helix.json, environment, and flags (flags win). */
 export async function resolveConfig(
   flags: CliFlags,
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
 ): Promise<ResolvedConfig> {
-  const file = await readAzxJson(cwd);
+  const file = await readConfigFile(cwd);
+  // AZX_* are the pre-rename names, still read as a fallback so existing
+  // shells and CI env blocks keep working; HELIX_* wins when both are set.
   return {
-    portalUrl: flags.portalUrl ?? env.AZX_PORTAL_URL ?? file.portalUrl ?? DEFAULT_PORTAL_URL,
-    token: flags.token ?? env.AZX_TOKEN,
+    portalUrl:
+      flags.portalUrl ??
+      env.HELIX_PORTAL_URL ??
+      env.AZX_PORTAL_URL ??
+      file.portalUrl ??
+      DEFAULT_PORTAL_URL,
+    token: flags.token ?? env.HELIX_TOKEN ?? env.AZX_TOKEN,
     slug: flags.slug ?? file.slug,
     dir: flags.dir ?? file.dir ?? DEFAULT_DIR,
     bundle: flags.bundle,

@@ -20,7 +20,7 @@ const DEV_APP_PUBLIC_BASE = "https://local.helix.azxlabs.io:8080";
  * Scheme + host + port where apps are served, from `APP_PUBLIC_BASE`
  * (architecture §4.1). Required in production — a portal that fell back to the
  * dev default there would hand out unreachable URLs to every client, in the
- * portal UI and in `azx` output alike. Same prod-strict posture as
+ * portal UI and in `helix` output alike. Same prod-strict posture as
  * `resolvePortalRuntimeUrl` (db/client.ts).
  */
 export function resolveAppPublicBase(env: NodeJS.ProcessEnv = process.env): URL {

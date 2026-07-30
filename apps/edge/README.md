@@ -1,4 +1,4 @@
-# azx-edge
+# helix-edge
 
 The data plane (architecture §3): stateless, terminates all `*.azx.helix.azxlabs.io` traffic. As of **M3 (local half)** it serves deployed apps behind real authentication: host routing, a cached registry projection (Postgres LISTEN/NOTIFY), the §4.2/Appendix A OIDC login flow (central callback on `auth.<base>`, one-time handoff token, `__Host-session` cookies, server-side sessions in Postgres), `/_api/me`, group-based visibility checks, silent refresh, asset streaming from Blob (managed-identity bearer in prod, hand-rolled SharedKey dev/Azurite-only — issue #15), baseline CSP injection, and 404/410 (+ `Clear-Site-Data`) semantics.
 
@@ -63,7 +63,7 @@ pnpm dev:edge       # :8080 — https (mkcert) with the real login flow;
 
 # Deploy + promote an example app (see packages/cli/README.md):
 cd examples/hello-world
-pnpm --filter @azx-pbc/cli azx -- deploy --promote   # or: azx deploy --promote
+pnpm --filter @azx-pbc/helix-cli helix -- deploy --promote   # or: helix deploy --promote
 
 # *.local.helix.azxlabs.io resolves to 127.0.0.1 (note: https now):
 curl -ik https://hello-world.local.helix.azxlabs.io:8080/    # 302 → auth host (or 200 with the bypass)

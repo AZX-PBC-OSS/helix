@@ -188,7 +188,7 @@ permissions → check **`access`** → Add._ The CLI's access token then carries
 users" can consent. The "Grant admin consent for \<tenant\>" button is greyed out
 unless you hold a directory admin role (Global / Application / Cloud Application
 Admin) — that's expected, not a blocker. Without it, the user simply gets a
-one-time browser consent prompt during `azx login` (device flow) and approves
+one-time browser consent prompt during `helix login` (device flow) and approves
 "Access the Helix portal." Granting admin consent only pre-approves it tenant-wide
 so nobody is ever prompted. A permission status of "Not granted for \<tenant\>"
 is fine.
@@ -285,7 +285,7 @@ where it **overrides** the devcontainer env). The cert lives in the gitignored
 `.devcontainer/certs/`. Example:
 
 ```sh
-# apps/edge/.env.local — repoints azx-edge at Entra; delete to fall back to dev-idp.
+# apps/edge/.env.local — repoints helix-edge at Entra; delete to fall back to dev-idp.
 EDGE_OIDC_ISSUER=https://login.microsoftonline.com/<TENANT_ID>/v2.0
 EDGE_OIDC_CLIENT_ID=<HELIX_EDGE_CLIENT_ID>
 EDGE_OIDC_CLIENT_SECRET=          # empty: disables the dev secret so it doesn't collide with the cert
@@ -320,8 +320,8 @@ local config of their own — they read everything from the portal's
    **Platform Admin** sees the approvals/secrets admin pages; an unassigned user
    does not (proves `roles` → `PORTAL_ADMIN_GROUP_ID` gating). A denied admin
    attempt logs `admin denied: …` with the principal + the expected role value.
-4. **CLI:** `azx login` completes the device flow against Entra; `azx whoami`
-   shows the identity; `azx deploy` succeeds (proves the access token `aud`
+4. **CLI:** `helix login` completes the device flow against Entra; `helix whoami`
+   shows the identity; `helix deploy` succeeds (proves the access token `aud`
    matches `PORTAL_OIDC_AUDIENCE`).
 5. **Escape hatches refuse:** the services boot with `NODE_ENV=production`, and
    setting any `*_ALLOW_INSECURE` / `PORTAL_DEV_TOKEN` would throw at startup.

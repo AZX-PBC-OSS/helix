@@ -13,14 +13,14 @@ in what order_). The whole design rests on one stance — **every hosted app is 
 and contains the blast radius per app instead of trying to verify it.
 
 > **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Registry + deploys
-> (portal API + `azx` CLI),
+> (portal API + `helix` CLI),
 > edge serving on the wildcard apps domain, the §4.2 / Appendix A auth flow against **real Entra**
 > in production and a local OIDC issuer in dev (central callback, one-time handoff token,
 > `__Host-session` cookies, server-side
 > sessions, group visibility, silent refresh, password/public modes, `/_api/me`; portal/CLI
 > bearer JWTs), the `/_api/*` **gateway** (LLM proxy `/_api/llm/chat`, app-data `/_api/data/*` —
 > user / collection / shared — with a metering ledger and the Postgres role split), an enforced
-> capability **approval** workflow, **plus the `azx-egress` mechanism plane**: the fetch-proxy
+> capability **approval** workflow, **plus the `helix-egress` mechanism plane**: the fetch-proxy
 > (`/_api/fetch/<url>` + an opt-in transparent fetch/XHR shim) and secret-backed connections,
 > built as a third container from day one. The Entra registration and the Azure deploy have both
 > landed; a real pilot app end to end is the outstanding M5 residual.
@@ -29,16 +29,16 @@ and contains the blast radius per app instead of trying to verify it.
 
 ```
 apps/
-  edge/        # azx-edge — data/policy plane (Fastify). Hard rule: dependency-minimal.
-  portal/      # azx-portal — control plane (Fastify + Prisma). Owns the schema.
+  edge/        # helix-edge — data/policy plane (Fastify). Hard rule: dependency-minimal.
+  portal/      # helix-portal — control plane (Fastify + Prisma). Owns the schema.
   portal-web/  # the portal SPA (Vite + React 19 + Mantine + TanStack Query)
-  egress/      # azx-egress — mechanism plane: outbound HTTP + secret injection + SSRF
+  egress/      # helix-egress — mechanism plane: outbound HTTP + secret injection + SSRF
   dev-idp/     # local OIDC issuer (oidc-provider). Dev only, never deployed.
 packages/
   shared/        # @azx-pbc/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage, instruction
   secret-store/  # @azx-pbc/secret-store — seal/open/destroy seam (dev envelope / prod Key Vault)
-  cli/           # azx — the deploy CLI (azx login / deploy / promote / …)
-examples/      # reference apps to `azx deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy); built dist/ committed
+  cli/           # helix — the deploy CLI (login / deploy / promote / …)
+examples/      # reference apps to `helix deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy); built dist/ committed
 docs/          # TOUR is at repo root; here: platform-architecture, project-plan, phase-1-user-stories, features/, design/
 .devcontainer/ # VS Code dev container; also runs Postgres 18 + Azurite
 ```
@@ -101,11 +101,11 @@ EDGE_DEV_ALLOW_UNAUTHENTICATED= pnpm dev:edge
 
 ```bash
 # 1. Sign the CLI in (OIDC device flow against the dev IdP). Or export
-#    AZX_TOKEN=$PORTAL_DEV_TOKEN to use the static dev token instead.
+#    HELIX_TOKEN=$PORTAL_DEV_TOKEN to use the static dev token instead.
 cd examples/notes
 node --import tsx ../../packages/cli/src/bin.ts login     # prints a URL + code; pick alice
 
-# 2. Register + deploy + promote (slug/dir come from azx.json):
+# 2. Register + deploy + promote (slug/dir come from helix.json):
 node --import tsx ../../packages/cli/src/bin.ts create
 node --import tsx ../../packages/cli/src/bin.ts deploy --promote
 
@@ -139,7 +139,7 @@ curl -k -X PUT https://dev-api.local.helix.azxlabs.io:8082/<slug>/_api/data/user
   -H "content-type: application/json" -d '["milk","eggs"]'
 ```
 
-The full walkthrough (surfaces, isolation, and what's not yet built — `azx dev` and the client
+The full walkthrough (surfaces, isolation, and what's not yet built — `helix dev` and the client
 SDK) is in [`docs/features/dev-mode.md`](./docs/features/dev-mode.md). The dev-gateway is
 opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-privilege
 `helix_dev` role, so it physically can't read a production row.
@@ -153,9 +153,9 @@ opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-pr
 | `pnpm lint` / `pnpm format` | ESLint / Prettier                                  |
 | `pnpm test`                 | Vitest across the workspace                        |
 | `pnpm dev:idp`              | Local OIDC issuer (`:3002`)                        |
-| `pnpm dev:portal`           | azx-portal (`:3001`, registry + deploy API)        |
-| `pnpm dev:edge`             | azx-edge (`:8080`, HTTPS)                          |
-| `pnpm dev:egress`           | azx-egress (`:8081`, fetch-proxy + secrets)        |
+| `pnpm dev:portal`           | helix-portal (`:3001`, registry + deploy API)      |
+| `pnpm dev:edge`             | helix-edge (`:8080`, HTTPS)                        |
+| `pnpm dev:egress`           | helix-egress (`:8081`, fetch-proxy + secrets)      |
 | `pnpm dev:devgw`            | azx-dev-gateway (`:8082`, develop against env=dev) |
 | `pnpm dev:web`              | portal SPA (`:5173`, proxies `/api` to :3001)      |
 | `./check-and-lint.sh`       | Poor-man's CI: typecheck + lint + format + tests   |

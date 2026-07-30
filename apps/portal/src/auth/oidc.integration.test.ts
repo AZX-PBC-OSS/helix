@@ -6,7 +6,7 @@ import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 /**
  * Portal auth against the REAL pieces: a live in-process dev-idp, a real
  * device-code login, and the verifier's real discovery + remote-JWKS path
- * (no injected keys). This is the proof that `azx login` tokens drive the
+ * (no injected keys). This is the proof that `helix login` tokens drive the
  * deploy API end to end — and that foreign tokens don't.
  */
 

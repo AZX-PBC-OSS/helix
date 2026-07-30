@@ -63,7 +63,7 @@ The material risks are: (1) **one unhardened seam** — edge→egress trust is a
 - **Where:** `apps/edge/src/gateway/instruction.ts:31-43`, `apps/egress/src/instruction.ts:35-53`
 - **Signal:** `[5/5]` · `Brave ✓` (one-time-use + audience are standard for sensitive service tokens)
 - **Problem:** `requestId` is a correlation id, not a dedup key; a captured instruction is replayable for the full 30s TTL, re-triggering metered LLM spend or a secret-backed fetch. No `aud` means any consumer sharing the secret accepts it (token passthrough).
-- **Fix:** `setJti()` at mint + bounded seen-`jti` LRU (or `used_instructions` table) at egress; `setAudience("azx-egress")` and assert it in `jwtVerify`. (See ADR above.)
+- **Fix:** `setJti()` at mint + bounded seen-`jti` LRU (or `used_instructions` table) at egress; `setAudience("helix-egress")` and assert it in `jwtVerify`. (See ADR above.)
 
 ### ISSUE-05 — No `statement_timeout` / `idle_in_transaction_session_timeout` on edge pg pools
 - **Where:** `apps/edge/src/gateway/data.ts:67`, `gateway/usage.ts:82` (repo-wide grep: none)

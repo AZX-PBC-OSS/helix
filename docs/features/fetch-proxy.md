@@ -12,7 +12,7 @@ it. The blocked-`connect-src` call has an on-platform answer.
 | Route | Who | What |
 | --- | --- | --- |
 | `ALL /_api/fetch/<url>` | app host (edge) | authorize → mint instruction → forward to egress → stream back |
-| `POST /proxy` | `azx-egress` (internal) | verify instruction → inject secret → SSRF controls → outbound call |
+| `POST /proxy` | `helix-egress` (internal) | verify instruction → inject secret → SSRF controls → outbound call |
 
 ## How it works
 
@@ -45,7 +45,7 @@ decides *whether* the call may happen and to *where*; egress actually makes it.
    and today an over-broad Blob access key (tightening that to a read-only managed
    identity is tracked). (ADR-0001.)
 
-### `azx-egress` (mechanism plane)
+### `helix-egress` (mechanism plane)
 
 `POST /proxy` (`apps/egress/src/proxy.ts`) — the only component that touches
 plaintext secrets or the public internet:

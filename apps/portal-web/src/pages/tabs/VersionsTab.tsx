@@ -85,7 +85,7 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
               <Table.Tr>
                 <Table.Td colSpan={5}>
                   <Text c="dark.2" size="sm" ta="center" py={24}>
-                    No versions yet — <span className="az-mono">azx deploy</span> creates v1.
+                    No versions yet — <span className="az-mono">helix deploy</span> creates v1.
                   </Text>
                 </Table.Td>
               </Table.Tr>

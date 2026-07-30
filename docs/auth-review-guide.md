@@ -4,7 +4,7 @@ This is a hand-off doc for reviewing **authentication and authorization** across
 platform. It started life as the M3 handoff-token review and has grown with the surface:
 the OIDC handoff is still the crux, but the gate now fronts the `/_api/*` gateway, there is
 a second same-origin front door (shared-password apps), an anonymous tier for public apps,
-and a signed trust hop from the edge to `azx-egress`. This is the most security-sensitive
+and a signed trust hop from the edge to `helix-egress`. This is the most security-sensitive
 code in the platform, and the project plan calls for a dedicated review pass before things
 build on it (project plan §6, architecture Appendix A.3). Read this first; it tells you
 what the code is trying to do, where the load-bearing pieces are, the invariants that must
@@ -37,7 +37,7 @@ Three separate auth surfaces; don't conflate them:
 | **Portal API auth** | the CLI / SPA (operators) | stateless bearer **JWT** over JWKS | `apps/portal/src/auth/` |
 
 Cookies are the *edge* mechanism. The portal has no cookies or sessions. The fourth hop —
-the edge handing a signed instruction to `azx-egress` — is **not** an auth surface for a
+the edge handing a signed instruction to `helix-egress` — is **not** an auth surface for a
 user (egress never re-authenticates anyone); it's a service-to-service attestation, covered
 in §11.
 
@@ -371,15 +371,15 @@ confirm:
 
 ## 13. CLI auth
 
-`packages/cli/src/auth/`. The `azx` CLI authenticates with the **OIDC device flow**
+`packages/cli/src/auth/`. The `helix` CLI authenticates with the **OIDC device flow**
 (`deviceFlow.ts`, RFC 8628) and caches tokens in an XDG path (`tokenStore.ts`), keyed on
 portal origin + issuer. Review points:
 
 - **No long-lived secret in a repo or agent context** — the device flow is the design's
   answer to "a deploy token is code execution in front of every user" (architecture §5.1).
-- `session.ts` precedence: `AZX_TOKEN` / `--token` wins (headless/CI), else the cache, with
+- `session.ts` precedence: `HELIX_TOKEN` / `--token` wins (headless/CI), else the cache, with
   auto-refresh near expiry. The cache is **bound to the portal origin + issuer**, so a
-  planted `portalUrl` in an `azx.json` can't replay a token at a different host. Confirm that
+  planted `portalUrl` in an `helix.json` can't replay a token at a different host. Confirm that
   binding holds.
 
 ---

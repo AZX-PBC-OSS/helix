@@ -47,7 +47,7 @@ export function findFixtureUser(id: string): FixtureUser | undefined {
 /** Audience of portal API access tokens (Entra later: the App ID URI). */
 export const PORTAL_AUDIENCE = "urn:helix:portal";
 
-/** Public client for the `azx` CLI — device-code + refresh grants. */
+/** Public client for the `helix` CLI — device-code + refresh grants. */
 export const CLI_CLIENT_ID = "azx-cli";
 
 /** Confidential client for the edge auth service — code + PKCE + nonce. */

@@ -1,24 +1,39 @@
 {
-  "name": "@azx-pbc/cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@azx-pbc/helix-cli",
+  "version": "0.1.0",
+  "description": "Deploy CLI for Helix, the AZX App Platform",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AZX-PBC-OSS/helix.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
   "bin": {
-    "azx": "./src/bin.ts"
+    "helix": "./dist/helix.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
   },
   "scripts": {
-    "azx": "tsx src/bin.ts",
+    "helix": "tsx src/bin.ts",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@azx-pbc/shared": "workspace:*",
     "archiver": "catalog:",
     "openid-client": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@azx-pbc/dev-idp": "workspace:*",
+    "@azx-pbc/shared": "workspace:*",
     "@types/archiver": "catalog:",
+    "esbuild": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"
   }

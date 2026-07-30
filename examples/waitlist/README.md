@@ -30,12 +30,12 @@ owner ──GET /api/v1/apps/waitlist/collections/signups──▶ portal ──
 
 ## Grant the data capability
 
-After `azx create --visibility public`, set the manifest (the CLI manifest
+After `helix create --visibility public`, set the manifest (the CLI manifest
 command is a later addition — use the portal API, like `chatbot`):
 
 ```bash
 curl -fsS -X PUT "http://localhost:3001/api/v1/apps/waitlist/manifest" \
-  -H "authorization: Bearer $AZX_TOKEN" \
+  -H "authorization: Bearer $HELIX_TOKEN" \
   -H "content-type: application/json" \
   -d '{"capabilities":{"data":{
         "collections":["signups"],
@@ -57,10 +57,10 @@ cd examples/waitlist
 pnpm install --ignore-workspace   # standalone install (not the root workspace)
 pnpm build                        # regenerate dist/ (committed to git)
 
-export AZX_TOKEN="$PORTAL_DEV_TOKEN"
-azx create --display-name "Waitlist" --visibility public
+export HELIX_TOKEN="$PORTAL_DEV_TOKEN"
+helix create --display-name "Waitlist" --visibility public
 # grant the data capability (see above)
-azx deploy --promote
+helix deploy --promote
 ```
 
 The data capability comes up with the edge's auth stack (it is gated and
@@ -86,6 +86,6 @@ never reachable from the app:
 
 ```bash
 curl -fsS "http://localhost:3001/api/v1/apps/waitlist/collections/signups" \
-  -H "authorization: Bearer $AZX_TOKEN"
+  -H "authorization: Bearer $HELIX_TOKEN"
 # or export: …/collections/signups/export?format=csv
 ```

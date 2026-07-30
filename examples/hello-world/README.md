@@ -11,5 +11,5 @@ pnpm install --ignore-workspace
 pnpm build
 ```
 
-Then deploy with the `azx` CLI (`slug` and bundle dir come from `azx.json`). See
+Then deploy with the `helix` CLI (`slug` and bundle dir come from `helix.json`). See
 [`../README.md`](../README.md) for the deploy walkthrough.

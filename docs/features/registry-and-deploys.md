@@ -2,7 +2,7 @@
 
 > **Related ADRs:** [ADR-0018](../adr/0018-deploy-model-immutable-versions.md) (immutable versions, preview→live) · [ADR-0017](../adr/0017-registry-listen-notify-projection.md) (LISTEN/NOTIFY projection) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (approval classifier) · [ADR-0026](../adr/0026-hosted-build-isolation-prerequisites.md) (hosted-build isolation).
 
-**What it is.** The control plane (`apps/portal` — azx-portal) owns the registry and the deploy
+**What it is.** The control plane (`apps/portal` — helix-portal) owns the registry and the deploy
 pipeline under `/api/v1`. It is the only writer of the Postgres schema (Prisma 7 + pg driver
 adapter); the edge reads a cached projection. All `/api/v1` routes — reads and mutations
 alike — require a bearer token (only `/health` and the auth-config bootstrap stay public);

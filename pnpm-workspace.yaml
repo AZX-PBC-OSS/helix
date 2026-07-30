@@ -42,7 +42,7 @@ catalog:
   # signing — the edge stays off the Azure SDK (dep-minimal, project plan §1).
   undici: ^7.16.0
   # Zip handling: yauzl reads (portal, streaming + zip-bomb-safe), archiver
-  # writes (azx CLI).
+  # writes (helix CLI).
   yauzl: ^3.4.0
   archiver: ^8.0.0
   fastify-plugin: ^6.0.0
@@ -95,6 +95,11 @@ catalog:
   form-data: ^4.0.5 # build multipart bodies in app.inject tests
   eslint: ^10.4.1
   prettier: ^3.8.4
+  # Bundles the helix CLI to a single publishable dist/helix.js — the one place
+  # we emit JS. Lets @azx-pbc/shared stay a build-free raw-TS workspace package
+  # (its `exports` point at ./src) without leaking `workspace:*` into a
+  # published manifest.
+  esbuild: ^0.28.0
   tsx: ^4.22.4
   typescript: ^6.0.3
   typescript-eslint: ^8.61.0

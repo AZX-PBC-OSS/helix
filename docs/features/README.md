@@ -12,7 +12,7 @@ track the **code as it stands today**; the _why_ behind the design lives in
 
 > **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Everything M2/M3/M4 had (registry + deploys,
 > edge serving, the OIDC auth flow, the `/_api/*` LLM + app-data gateway with a Postgres role
-> split) **plus** the **`azx-egress`** mechanism plane: the fetch-proxy (`/_api/fetch/<url>`) and
+> split) **plus** the **`helix-egress`** mechanism plane: the fetch-proxy (`/_api/fetch/<url>`) and
 > secret-backed connections, built as their own container from day one. The edge stays the policy
 > plane; egress is the only component with app **connection** secrets and an **arbitrary** internet
 > route (the edge is not secretless — it holds its own operational keys, and today an over-broad
@@ -41,24 +41,24 @@ grant on app connection secrets and any arbitrary outbound route (ADR-0001).
 | [authentication.md](./authentication.md) | App-user OIDC flow, sessions, the per-request gate, portal bearer JWTs | `apps/edge`, `apps/portal` |
 | [llm-gateway.md](./llm-gateway.md) | `POST /_api/llm/chat` — metered, allowlisted, key-hiding LLM proxy | `apps/edge` |
 | [app-data-gateway.md](./app-data-gateway.md) | `/_api/data/*` user / collection / shared storage + owner drain | `apps/edge`, `apps/portal` |
-| [fetch-proxy.md](./fetch-proxy.md) | `/_api/fetch/<url>` — governed outbound HTTP via the `azx-egress` plane | `apps/edge`, `apps/egress` |
+| [fetch-proxy.md](./fetch-proxy.md) | `/_api/fetch/<url>` — governed outbound HTTP via the `helix-egress` plane | `apps/edge`, `apps/egress` |
 | [secrets-and-connections.md](./secrets-and-connections.md) | Connection secrets: sealed credentials injected server-side | `apps/portal`, `apps/egress`, `packages/secret-store` |
 | [dev-mode.md](./dev-mode.md) | Develop an app against an isolated `env=dev` tier via the dev-gateway | `apps/edge`, `apps/portal` |
 | [registry-and-deploys.md](./registry-and-deploys.md) | App CRUD, version lifecycle, zip upload, promote/rollback, archive | `apps/portal` |
 | [capabilities-and-manifests.md](./capabilities-and-manifests.md) | The per-app manifest the gateway enforces | `packages/shared`, `apps/portal` |
-| [cli.md](./cli.md) | The `azx` CLI: deploy + OIDC device-flow login | `packages/cli` |
+| [cli.md](./cli.md) | The `helix` CLI: deploy + OIDC device-flow login | `packages/cli` |
 | [portal-web.md](./portal-web.md) | The React/Mantine portal SPA | `apps/portal-web` |
 | [dev-idp.md](./dev-idp.md) | The local OIDC issuer used in dev/test | `apps/dev-idp` |
-| [examples.md](./examples.md) | Reference apps you can `azx deploy` | `examples/` |
+| [examples.md](./examples.md) | Reference apps you can `helix deploy` | `examples/` |
 
 ## Milestone map (project plan §4)
 
 - **M0** — skeleton, boot pattern, `/health`.
-- **M1** — registry + deploys (portal API + `azx` CLI). _Shipped._
+- **M1** — registry + deploys (portal API + `helix` CLI). _Shipped._
 - **M2** — edge serving on `*.local.helix.azxlabs.io`, registry projection, Blob streaming, CSP, 404/410. _Shipped._
 - **M3** — auth: OIDC handoff, sessions, the gate, CLI/portal bearer tokens, **local issuer**. _Shipped (local half); real Entra registration is the remaining tail._
 - **M4** — gateway v0: the LLM proxy, then app-data, metering, and the DB role split. _Shipped locally._
-- **M4.5** — the `azx-egress` mechanism plane: fetch-proxy + secret-backed connections. _Shipped locally — this milestone._
+- **M4.5** — the `helix-egress` mechanism plane: fetch-proxy + secret-backed connections. _Shipped locally — this milestone._
 - **M5** — Azure deploy + pilot. _Ahead._
 
 Each doc has a **Planned / not yet built** section calling out what is deferred or config-only.

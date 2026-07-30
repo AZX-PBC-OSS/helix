@@ -11,7 +11,7 @@ const PORTAL = "http://localhost:3001";
 let storePath: string;
 
 beforeEach(async () => {
-  storePath = path.join(await mkdtemp(path.join(os.tmpdir(), "azx-session-")), "tokens.json");
+  storePath = path.join(await mkdtemp(path.join(os.tmpdir(), "helix-session-")), "tokens.json");
 });
 
 function deps(overrides: Partial<SessionDeps> = {}): SessionDeps {
@@ -33,7 +33,7 @@ describe("makeTokenProvider", () => {
     expect(d.getAuthConfig).not.toHaveBeenCalled();
   });
 
-  it("returns undefined (→ 'run azx login') with an empty cache", async () => {
+  it("returns undefined (→ 'run helix login') with an empty cache", async () => {
     const provider = makeTokenProvider({ portalUrl: PORTAL }, deps());
     expect(await provider()).toBeUndefined();
   });
@@ -96,7 +96,7 @@ describe("makeTokenProvider", () => {
   });
 
   it("never sends a token cached for portal A to portal B (same issuer)", async () => {
-    // The verified review attack: a planted azx.json points the CLI at a
+    // The verified review attack: a planted helix.json points the CLI at a
     // hostile portal whose /auth/config echoes the REAL issuer. The cached
     // credential is bound to portal A's origin and must not surface.
     await writeTokens(

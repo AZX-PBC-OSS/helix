@@ -403,7 +403,7 @@ export function CapabilitiesTab({ app }: { app: App }) {
             <CapBlock
               icon="globe"
               title="Fetch proxy"
-              desc="Governed outbound HTTP through azx-egress — audited, metered, SSRF-controlled. Each origin is reached via /_api/fetch; attach a connection secret and it's injected server-side (the app never sees it)."
+              desc="Governed outbound HTTP through helix-egress — audited, metered, SSRF-controlled. Each origin is reached via /_api/fetch; attach a connection secret and it's injected server-side (the app never sees it)."
             >
               <Stack gap={10}>
                 {draft.fetchOrigins.map((o, i) => (

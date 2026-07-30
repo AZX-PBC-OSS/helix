@@ -1,4 +1,7 @@
-#!/usr/bin/env -S tsx
+// No shebang here on purpose: the published entrypoint is the bundled
+// `dist/helix.js`, which `scripts/build.mjs` stamps with `#!/usr/bin/env node`.
+// A shebang in this file would be hoisted above that banner and send the
+// installed binary looking for tsx. In dev, run it via `pnpm helix`.
 import { parseCliArgs } from "./args.js";
 import { CliError, PortalClient } from "./client.js";
 import {
@@ -14,21 +17,21 @@ import {
 import { makeTokenProvider } from "./auth/session.js";
 import { resolveConfig } from "./config.js";
 
-const USAGE = `azx — Helix deploy CLI
+const USAGE = `helix — Helix deploy CLI
 
 Usage:
-  azx login                # sign in via the browser (OIDC device flow)
-  azx logout
-  azx whoami
-  azx deploy   [--dir <dir>] [--bundle <zip>] [--promote]
-  azx create   [--display-name <name>] [--visibility <v>]
-  azx versions
-  azx promote  <number>
-  azx rollback [number]
+  helix login                # sign in via the browser (OIDC device flow)
+  helix logout
+  helix whoami
+  helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]
+  helix create   [--display-name <name>] [--visibility <v>]
+  helix versions
+  helix promote  <number>
+  helix rollback [number]
 
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
-Env:  AZX_PORTAL_URL, AZX_TOKEN (static token — skips login; CI/scripts).
-Config file: azx.json { slug, portalUrl, dir }
+Env:  HELIX_PORTAL_URL, HELIX_TOKEN (static token — skips login; CI/scripts).
+Config file: helix.json { slug, portalUrl, dir }
 Visibility: private | group:<id> | password | public
 `;
 
@@ -48,7 +51,7 @@ async function main(): Promise<void> {
     bundle: values.bundle,
     token: values.token,
   });
-  // AZX_TOKEN/--token wins; otherwise tokens come from the `azx login` cache
+  // HELIX_TOKEN/--token wins; otherwise tokens come from the `helix login` cache
   // (with silent refresh) via the provider.
   const client = new PortalClient(
     config.portalUrl,
@@ -79,14 +82,14 @@ async function main(): Promise<void> {
       break;
     case "promote": {
       const number = Number(positionals[1]);
-      if (!Number.isInteger(number)) throw new CliError("usage: azx promote <number>");
+      if (!Number.isInteger(number)) throw new CliError("usage: helix promote <number>");
       await promoteCommand(client, config, number);
       break;
     }
     case "rollback": {
       const number = positionals[1] !== undefined ? Number(positionals[1]) : undefined;
       if (number !== undefined && !Number.isInteger(number)) {
-        throw new CliError("usage: azx rollback [number]");
+        throw new CliError("usage: helix rollback [number]");
       }
       await rollbackCommand(client, config, number);
       break;

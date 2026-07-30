@@ -15,7 +15,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return AuthConfigResponseSchema.parse(config);
   });
 
-  // Who am I, per the verifier chain — powers `azx whoami` and the v1 SPA.
+  // Who am I, per the verifier chain — powers `helix whoami` and the v1 SPA.
   app.get("/api/v1/me", { preHandler: authenticate }, async (req) => {
     const actor = requireActor(req);
     return PortalMeResponseSchema.parse({

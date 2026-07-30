@@ -60,7 +60,7 @@ dependency-minimal, project plan §1), always requesting `stream: true` upstream
 **Where the vendor key lives.** The default provider, `EgressLlmProvider`
 (`apps/edge/src/gateway/egressLlmProvider.ts`), does **not** hold the key: the key is a
 `platform`-scoped secret (named by `EDGE_LLM_ANTHROPIC_CONNECTION`, default `anthropic`) managed
-in the portal Secrets admin page and resolved by `azx-egress`. The edge keeps all the policy
+in the portal Secrets admin page and resolved by `helix-egress`. The edge keeps all the policy
 above; it only mints an attested `llm` instruction and forwards the call over the `EgressProvider`
 seam — egress injects `x-api-key` and streams the SSE back, which the edge parses for usage and
 metering (shared `mapAnthropicStream`). This is the same policy/mechanism split as the fetch-proxy,

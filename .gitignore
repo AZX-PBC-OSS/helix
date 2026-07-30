@@ -7,7 +7,7 @@ dist/
 build/
 *.tsbuildinfo
 
-# Example apps commit their built dist/ so `azx deploy` works without a build step.
+# Example apps commit their built dist/ so `helix deploy` works without a build step.
 # Re-include after the global dist/ ignore above: un-ignore the directory, then
 # its contents (git won't descend into an excluded directory otherwise).
 !examples/**/dist/

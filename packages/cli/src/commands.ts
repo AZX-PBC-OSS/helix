@@ -8,7 +8,7 @@ import { deleteTokens, writeTokens } from "./auth/tokenStore.js";
 
 function requireSlug(config: ResolvedConfig): string {
   if (!config.slug) {
-    throw new CliError("no app slug; set it in azx.json or pass --slug");
+    throw new CliError("no app slug; set it in helix.json or pass --slug");
   }
   return config.slug;
 }
@@ -74,7 +74,7 @@ export async function deployCommand(
     console.log(`\nPromoted version ${version.number} to live.`);
     printApp(app);
   } else {
-    console.log(`\nNot live yet — promote with: azx promote ${version.number}`);
+    console.log(`\nNot live yet — promote with: helix promote ${version.number}`);
   }
 }
 
@@ -114,9 +114,9 @@ export async function rollbackCommand(
 }
 
 /**
- * `azx login` — OIDC device flow against the issuer the portal advertises.
+ * `helix login` — OIDC device flow against the issuer the portal advertises.
  * Stores tokens in the XDG cache; nothing here is auto-launched on 401
- * (agents and CI run headless — they use AZX_TOKEN).
+ * (agents and CI run headless — they use HELIX_TOKEN).
  */
 export async function loginCommand(client: PortalClient, config: ResolvedConfig): Promise<void> {
   const { issuer, cliClientId, audience } = await client.getAuthConfig();
@@ -127,7 +127,7 @@ export async function loginCommand(client: PortalClient, config: ResolvedConfig)
     log: console.log,
   });
   // Bound to THIS portal's origin: a different portal (e.g. one planted via
-  // a repo's azx.json) never receives this credential, even if it advertises
+  // a repo's helix.json) never receives this credential, even if it advertises
   // the same issuer.
   await writeTokens({ portalUrl: config.portalUrl, issuer }, tokens, undefined, { audience });
 

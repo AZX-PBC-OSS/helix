@@ -39,13 +39,13 @@ browser fetch just works (no CORS wall behind it).
 ## Deploy
 
 ```bash
-export AZX_TOKEN="$PORTAL_DEV_TOKEN"        # same value the portal was started with
+export HELIX_TOKEN="$PORTAL_DEV_TOKEN"        # same value the portal was started with
 cd examples/github-stars
 node --import tsx ../../packages/cli/src/bin.ts create --display-name "GitHub Stars"
 node --import tsx ../../packages/cli/src/bin.ts deploy --promote
 ```
 
-(Substitute `azx` for the `node … bin.ts` invocation once the CLI is on your
+(Substitute `helix` for the `node … bin.ts` invocation once the CLI is on your
 PATH — see [`packages/cli/README.md`](../../packages/cli/README.md).) The deploy
 endpoint's courtesy CSP lint will **warn** about `api.github.com` — that warning
 is the whole point of this app; it's non-blocking.
@@ -66,7 +66,7 @@ To skip the UI and grant the origin directly through the manifest write-gate
 
 ```bash
 curl -fsS -X POST "http://localhost:3001/api/v1/apps/github-stars/access/origin" \
-  -H "authorization: Bearer $AZX_TOKEN" \
+  -H "authorization: Bearer $HELIX_TOKEN" \
   -H "content-type: application/json" \
   -d '{"origin":"https://api.github.com"}'
 ```

@@ -37,7 +37,7 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
 ```
  app users ── HTTPS ──▶ *.azx.helix.azxlabs.io
                         ┌─────────────────────────────────────────────┐
-                        │ azx-edge — data/policy plane (stateless)    │
+                        │ helix-edge — data/policy plane (stateless)  │
                         │ host routing · sessions + OIDC handoff      │
                         │ CSP injection · asset serving from Blob     │
                         │ /_api/* gateway: LLM proxy · app data ·     │
@@ -50,7 +50,7 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
                                                   sessions·        │
                                                   audit)           ▼
                                           ┌──────────────────────────────────────┐
-                                          │ azx-egress — mechanism plane          │
+                                          │ helix-egress — mechanism plane        │
                                           │ (its own network egress zone)         │
                                           │ secret injection · SSRF controls ·    │
                                           │ outbound HTTP to third-party APIs     │
@@ -61,7 +61,7 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
 
  app owners ── HTTPS ─▶ portal.azx.helix.azxlabs.io
                         ┌─────────────────────────────────────────────┐
-                        │ azx-portal — control plane (privileged)     │
+                        │ helix-portal — control plane (privileged)   │
                         │ portal UI + API · deploy endpoint           │
                         │ registry writes · capability approvals      │
                         │ scheduled jobs: usage rollups · audit       │
@@ -73,9 +73,9 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
 
 Three deployable containers plus managed storage:
 
-- **`azx-edge` — the data/policy plane.** Terminates all `*.azx.helix.azxlabs.io` traffic: host routing, session auth + the OIDC handoff, CSP injection, asset serving from Blob, and the `/_api/*` gateway (LLM proxy, app data, the fetch-proxy *policy* — identity, authz, quota, audit). Runs with a read-only registry projection, **no app-connection-secret read** (no grant on `app_secrets`), and **no _arbitrary_ outbound route** (only egress can reach the open internet). Boring by design; rarely redeployed. (It is not literally secretless or stateless: it holds its own operational keys — auth/instruction/OIDC, plus today an over-broad Blob key ([ADR-0001](adr/0001-three-runtime-split.md)) — and keeps in-memory rate-limit/projection state ([ADR-0011](adr/0011-in-memory-rate-limiting.md)).)
-- **`azx-portal` — the control plane.** Privileged: portal UI + API, deploy endpoint, registry writes, capability approvals, secret writes, audit log UI. Not routable from app subdomains. Background work (usage rollups, audit shipping to immutable blob, ACME DNS-01 renewal) runs as scheduled jobs it owns — no standing workers.
-- **`azx-egress` — the mechanism plane.** The one component that makes governed outbound HTTP for the fetch-proxy (§6.1): it resolves connection secrets to plaintext, injects credentials server-side, and enforces SSRF controls. It runs in its **own network egress zone** (the only component with a route to the public internet) and holds the secret-read capability the edge deliberately lacks. It never terminates app-user traffic and never re-authenticates the end user — it trusts a signed attested instruction `(app, user, capability, origin, connection, request-id)` minted by the edge.
+- **`helix-edge` — the data/policy plane.** Terminates all `*.azx.helix.azxlabs.io` traffic: host routing, session auth + the OIDC handoff, CSP injection, asset serving from Blob, and the `/_api/*` gateway (LLM proxy, app data, the fetch-proxy *policy* — identity, authz, quota, audit). Runs with a read-only registry projection, **no app-connection-secret read** (no grant on `app_secrets`), and **no _arbitrary_ outbound route** (only egress can reach the open internet). Boring by design; rarely redeployed. (It is not literally secretless or stateless: it holds its own operational keys — auth/instruction/OIDC, plus today an over-broad Blob key ([ADR-0001](adr/0001-three-runtime-split.md)) — and keeps in-memory rate-limit/projection state ([ADR-0011](adr/0011-in-memory-rate-limiting.md)).)
+- **`helix-portal` — the control plane.** Privileged: portal UI + API, deploy endpoint, registry writes, capability approvals, secret writes, audit log UI. Not routable from app subdomains. Background work (usage rollups, audit shipping to immutable blob, ACME DNS-01 renewal) runs as scheduled jobs it owns — no standing workers.
+- **`helix-egress` — the mechanism plane.** The one component that makes governed outbound HTTP for the fetch-proxy (§6.1): it resolves connection secrets to plaintext, injects credentials server-side, and enforces SSRF controls. It runs in its **own network egress zone** (the only component with a route to the public internet) and holds the secret-read capability the edge deliberately lacks. It never terminates app-user traffic and never re-authenticates the end user — it trusts a signed attested instruction `(app, user, capability, origin, connection, request-id)` minted by the edge.
 
 **Why three — not two, not four.** The split follows the trust boundary. The data plane faces untrusted app users (eventually anonymous internet traffic); the control plane holds the privileged verbs — grants, secrets, approvals; the mechanism plane holds the two capabilities that are dangerous to co-locate with a public-facing process — *plaintext third-party secrets* and *unrestricted outbound network*. In one process, a bug in the public-facing path exposes control-plane memory and identity, and every portal deploy restarts the data path, killing in-flight LLM streams — the portal iterates constantly while the edge should be boring. The egress split is the one gateway extraction that *isn't* ceremony: a generic gateway service would only buy an internal hop (it shares the edge's request path, session store, and registry cache), but egress genuinely needs a *different* posture — its own network zone so an SSRF bug in the edge reaches nothing, and custody of secrets the edge must never hold. Building egress in-process and extracting later would mean shipping that blast radius first; we draw the boundary from day one instead. (A standalone build service appears only if Git-connect lands, §5.)
 
@@ -87,7 +87,7 @@ Three deployable containers plus managed storage:
 
 So the runtime split (process + network zone) and the role split (database authority) say the same thing in two enforcement layers — a defence-in-depth that survives an in-process compromise. Asserted in `role-split.integration.test.ts`.
 
-**v0 consolidation option:** the edge and portal modules may still ship as a single binary/container if it accelerates the pilot — with two routers strictly keyed by hostname, and control-plane handlers never mounted on app-subdomain hosts. Built with that discipline, the later edge/portal process split is a deploy-config change; built without it, it's a rewrite. Split at the latest before the first public app ships. ([ADR-0012](adr/0012-edge-portal-codeploy.md): the challenge review found the split scaffolding is not actually in place today — the `platform` HostClass is unused — so treat the "deploy-config change" as a goal to protect with a CI gate, not a delivered property.) **`azx-egress` is the exception: it ships as its own container from the start** — its network-zone and secret-custody isolation is the entire point, and folding it into either module would forfeit it.
+**v0 consolidation option:** the edge and portal modules may still ship as a single binary/container if it accelerates the pilot — with two routers strictly keyed by hostname, and control-plane handlers never mounted on app-subdomain hosts. Built with that discipline, the later edge/portal process split is a deploy-config change; built without it, it's a rewrite. Split at the latest before the first public app ships. ([ADR-0012](adr/0012-edge-portal-codeploy.md): the challenge review found the split scaffolding is not actually in place today — the `platform` HostClass is unused — so treat the "deploy-config change" as a goal to protect with a CI gate, not a delivered property.) **`helix-egress` is the exception: it ships as its own container from the start** — its network-zone and secret-custody isolation is the entire point, and folding it into either module would forfeit it.
 
 All three containers run on Azure Container Apps for v1 (AKS if/when needed), keeping the stack portable. Egress sits in its own egress-permitted network zone; the edge and portal run with no outbound internet route.
 
@@ -164,7 +164,7 @@ v1 has exactly one path into the platform: **upload of a pre-built bundle** (zip
 - Egress allowlisted to package registries, acknowledging it's leaky (git deps, tarball URLs, postinstall scripts) — the credential-free environment is the real defense
 - Build output enters the same upload pipeline as manual deploys, so validation and CSP linting are shared
 
-Until then, a thin CLI (`azx deploy`) keeps the workflow one command, and teams who want CI can run the CLI from their own GitHub Actions — Git-based workflow, zero platform build infrastructure.
+Until then, a thin CLI (`helix deploy`) keeps the workflow one command, and teams who want CI can run the CLI from their own GitHub Actions — Git-based workflow, zero platform build infrastructure.
 
 ### 5.1 Agent-driven deploys (the deploy skill)
 
@@ -187,12 +187,12 @@ Apps get capabilities by calling the platform gateway — same-origin path `/_ap
 
 ### 6.1 Service catalog
 
-- **LLM inference:** chat/completions/embeddings proxied to Azure OpenAI / Anthropic etc. Platform holds the vendor keys; apps never see them. Per-app model allowlists, token budgets, and rate limits. Quota enforcement: in-flight requests (including streams) run to completion; new requests are blocked once the budget is hit — no mid-stream cutoffs. The vendor key is a `platform`-scoped connection secret resolved by `azx-egress`, not held by the edge: the edge keeps all the policy (allowlist, budget, metering, SSE relay) and mints an `llm` attested instruction, and egress injects the key and streams the response back — the same policy/mechanism split as the fetch-proxy (see `docs/design/secrets-and-connections.md`). The edge holds no vendor key in any environment: when egress is unconfigured the LLM capability fails **closed** (503) — there is no direct edge→Anthropic path ([ADR-0008](adr/0008-llm-key-via-egress.md), issue #10).
+- **LLM inference:** chat/completions/embeddings proxied to Azure OpenAI / Anthropic etc. Platform holds the vendor keys; apps never see them. Per-app model allowlists, token budgets, and rate limits. Quota enforcement: in-flight requests (including streams) run to completion; new requests are blocked once the budget is hit — no mid-stream cutoffs. The vendor key is a `platform`-scoped connection secret resolved by `helix-egress`, not held by the edge: the edge keeps all the policy (allowlist, budget, metering, SSE relay) and mints an `llm` attested instruction, and egress injects the key and streams the response back — the same policy/mechanism split as the fetch-proxy (see `docs/design/secrets-and-connections.md`). The edge holds no vendor key in any environment: when egress is unconfigured the LLM capability fails **closed** (503) — there is no direct edge→Anthropic path ([ADR-0008](adr/0008-llm-key-via-egress.md), issue #10).
 - **App data (shipped):** KV/document storage at `/_api/data/...` in **three scopes** — per-user (RLS-partitioned by the authenticated user, so apps cannot read one user's data on behalf of another), app-`shared`, and write-only `collections` (the app appends but cannot read or enumerate; the owner drains them through the portal export API — a contact-form pattern where the app must not be able to harvest its own submissions). Backed by Postgres (JSONB) internally. This is what removes the need for custom backends: most vibe-coded apps need "save my stuff" and nothing more. Design: `docs/design/app-data-storage.md`.
 - **File storage:** scoped blob upload/download for user files.
-- **Fetch-proxy (shipped, M4.5):** governed outbound HTTP at `/_api/fetch/<url>` for third-party APIs, so a blocked `connect-src` call has an on-platform answer — audited, metered, with secrets injected server-side where configured. The edge enforces the *policy* (identity, authz, quota, audit) and hands a signed attested instruction to **`azx-egress`**, which performs the call under SSRF hardening: isolated egress zone, private/link-local ranges blocked, no redirect-follow, per-app origin allowlist. An **opt-in transparent shim** (`capabilities.fetch.shim`) goes further: the edge injects a one-line script into the app's HTML at serve time that monkeypatches `fetch`/`XMLHttpRequest`, so a vibe-coded `fetch('https://api.github.com/…')` routes through the proxy **unedited**. Design: `docs/design/fetch-proxy.md`.
+- **Fetch-proxy (shipped, M4.5):** governed outbound HTTP at `/_api/fetch/<url>` for third-party APIs, so a blocked `connect-src` call has an on-platform answer — audited, metered, with secrets injected server-side where configured. The edge enforces the *policy* (identity, authz, quota, audit) and hands a signed attested instruction to **`helix-egress`**, which performs the call under SSRF hardening: isolated egress zone, private/link-local ranges blocked, no redirect-follow, per-app origin allowlist. An **opt-in transparent shim** (`capabilities.fetch.shim`) goes further: the edge injects a one-line script into the app's HTML at serve time that monkeypatches `fetch`/`XMLHttpRequest`, so a vibe-coded `fetch('https://api.github.com/…')` routes through the proxy **unedited**. Design: `docs/design/fetch-proxy.md`.
 - **MCP passthrough (v1.x):** platform-registered MCP servers (internal tools, SaaS connectors) exposed to apps as governed endpoints — **wrapped as REST**, since plain HTTP is what vibe-coded frontends can actually call. Apps speaking MCP directly to the gateway is deferred until demand materializes. The app declares which MCP servers it needs; the gateway enforces the grant.
-- **Secret-backed connections (shipped, M4.5):** when an app needs a third-party API requiring a secret, the secret lives in the platform (Key Vault in prod; an envelope-encrypted store in dev) and is read only by `azx-egress`, which injects credentials server-side on the outbound hop. Secrets never reach the browser, and never the edge (`helix_edge` has no grant on the secrets table). Design: `docs/design/secrets-and-connections.md`.
+- **Secret-backed connections (shipped, M4.5):** when an app needs a third-party API requiring a secret, the secret lives in the platform (Key Vault in prod; an envelope-encrypted store in dev) and is read only by `helix-egress`, which injects credentials server-side on the outbound hop. Secrets never reach the browser, and never the edge (`helix_edge` has no grant on the secrets table). Design: `docs/design/secrets-and-connections.md`.
 
 ### 6.2 Request identity
 
@@ -227,7 +227,7 @@ Public apps still get gateway access but with an anonymous user identity, much t
 
 ---
 
-## 7. Control plane (`azx-portal`)
+## 7. Control plane (`helix-portal`)
 
 Portal + REST API:
 
@@ -242,7 +242,7 @@ The registry is the source of truth (Postgres). The edge proxy and gateway read 
 
 ## 8. Azure mapping (v1)
 
-- **Compute:** Azure Container Apps — two apps (`azx-edge`, `azx-portal`) plus scheduled ACA jobs; builders only if Git-connect lands
+- **Compute:** Azure Container Apps — two apps (`helix-edge`, `helix-portal`) plus scheduled ACA jobs; builders only if Git-connect lands
 - **Assets/files:** Blob Storage
 - **Registry + app data:** Azure Database for PostgreSQL (flexible server)
 - **Secrets:** Key Vault (platform vendor keys, app connection secrets)
@@ -267,9 +267,9 @@ Portability rule: **Azure services may appear only behind internal interfaces** 
 | 7 | Postgres-backed KV for app data | Cosmos DB | Portability and operational familiarity; Cosmos is Azure-only and overkill at this scale. |
 | 8 | One org, but app-id partitioning everywhere | Multi-tenant now | Every row/blob/audit record keyed by app ID from day one; adding an org ID above it later is additive, not a migration. |
 | 9 | Dedicated apps domain (`azx.helix.azxlabs.io`) | Subdomain of corporate domain (`apps.azx.io`) | Reputation and security isolation from the main brand (§4.1): an ugly or compromised app can't taint `azx.io`, and app-domain cookies/policies are fully separated from corporate properties. Cost: one more domain to own and explain. |
-| 10 | Upload-only deploys in v1 | Git-connect + hosted builds | Hosted builds = operating a CI system + sandboxing arbitrary code execution; high effort, blocks nothing. `azx deploy` from the user's own CI gives a Git workflow without platform build infra. Revisit at v2. |
+| 10 | Upload-only deploys in v1 | Git-connect + hosted builds | Hosted builds = operating a CI system + sandboxing arbitrary code execution; high effort, blocks nothing. `helix deploy` from the user's own CI gives a Git workflow without platform build infra. Revisit at v2. |
 | 11 | No per-app vanity domains; the *base* domain is a per-deployment parameter | Per-app domains (`tool.example.com`) | **Per-app vanity domains stay rejected** — one app reachable at two origins reintroduces origin ambiguity and breaks wildcard-cert simplicity. But the base domain is **not** hardwired: it is a deploy-time parameter (`EDGE_BASE_DOMAIN`), so each deployment serves apps at `<app>.<base>` — our reference deployment at `<app>.azx.helix.azxlabs.io`, a customer-cloud install at `<app>.helix.<customer-domain>`. One canonical origin per app whatever the base. This is the parameterization ADR-0028 makes explicit: "custom domains" as a *feature* still doesn't exist; there is only *this deployment's* domain. |
-| 12 | Three containers: `azx-edge` + `azx-portal` + `azx-egress` | One monolith, or 4+ services | Split follows the trust boundary: untrusted-facing data plane runs unprivileged and rarely restarts; privileged control plane iterates fast without killing in-flight LLM streams; the egress mechanism plane isolates the two things dangerous to co-locate with a public-facing process — plaintext secrets and outbound network — in its own network zone. One process = shared fate and blast radius; a *generic* gateway split would be internal hops for nothing, but egress earns its split with a genuinely different posture (§3). Edge/portal may still ship as one binary in v0; egress is its own container from day one. |
+| 12 | Three containers: `helix-edge` + `helix-portal` + `helix-egress` | One monolith, or 4+ services | Split follows the trust boundary: untrusted-facing data plane runs unprivileged and rarely restarts; privileged control plane iterates fast without killing in-flight LLM streams; the egress mechanism plane isolates the two things dangerous to co-locate with a public-facing process — plaintext secrets and outbound network — in its own network zone. One process = shared fate and blast radius; a *generic* gateway split would be internal hops for nothing, but egress earns its split with a genuinely different posture (§3). Edge/portal may still ship as one binary in v0; egress is its own container from day one. |
 
 ---
 
@@ -303,8 +303,8 @@ Resolved since draft v1 (decisions folded into the sections above): MCP is expos
 Status as of July 2026 — the platform is **deployed on Azure**; what remains of M5 is a pilot app, not infrastructure (project plan §4, §5):
 
 - **v0 (done):** proxy + OIDC (incl. central-callback handoff, `__Host-` cookies, baseline CSP — the isolation model ships day one, not retrofitted), upload deploys, blob serving, app registry, LLM proxy with quotas. Now runs against **real Entra**, not the local OIDC issuer; `apps/dev-idp` is a development convenience, never deployed.
-- **v1 (mostly done):** `azx deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). _Remaining:_ the agent deploy **skill bundle** (`packages/deploy-skill`), and admin per-user **session revocation**.
-- **M4.5 (done):** the `azx-egress` mechanism plane + the fetch-proxy (incl. the transparent shim) and secret-backed connections built on it (§3, §6.1). Egress ships as its own container from day one (the policy/mechanism split is physical, not deferred).
+- **v1 (mostly done):** `helix deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). _Remaining:_ the agent deploy **skill bundle** (`packages/deploy-skill`), and admin per-user **session revocation**.
+- **M4.5 (done):** the `helix-egress` mechanism plane + the fetch-proxy (incl. the transparent shim) and secret-backed connections built on it (§3, §6.1). Egress ships as its own container from day one (the policy/mechanism split is physical, not deferred).
 - **M5 (deployed):** Azure IaC ✅, the three planes on Container Apps ✅, real Entra (single-tenant; authz via App Roles — see the [Entra runbook](runbooks/entra-app-registration.md)) ✅, prod Key Vault verified against a live vault ✅, wildcard cert on the apps domain ✅ (automated via a scheduled certbot DNS-01 job). _Outstanding:_ one real pilot app end to end, and confirming the operator-optional egress firewall is on (project plan §4 residuals).
 - **v1.x:** MCP passthrough (REST-wrapped), richer usage dashboards (latency/error dimensions), audit shipping to an immutable sink.
 - **v2 candidates:** Git-connect + sandboxed build service, per-app serverless functions, multi-org tenancy, app builder.

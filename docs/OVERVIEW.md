@@ -72,7 +72,7 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 ```
  app users ── HTTPS ─▶ *.azx.helix.azxlabs.io
                        ┌──────────────────────────────────────────────┐
-                       │ azx-edge — data / policy plane (stateless)   │
+                       │ helix-edge — data / policy plane (stateless) │
                        │ host routing · sessions + OIDC handoff       │
                        │ CSP injection · static serving from Blob     │
                        │ /_api/* gateway: LLM · app-data · fetch-proxy │
@@ -84,7 +84,7 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
                       bundles)    (via egress) app-data·         │
                                               sessions·          ▼
                                               audit)   ┌───────────────────────────┐
-                                                       │ azx-egress — mechanism    │
+                                                       │ helix-egress — mechanism  │
                                                        │ plane (own egress zone)   │
                                                        │ resolve+inject secret ·   │
                                                        │ SSRF controls · outbound  │
@@ -95,21 +95,21 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 
  app owners ─ HTTPS ─▶ portal.azx.helix.azxlabs.io
                        ┌──────────────────────────────────────────────┐
-                       │ azx-portal — control plane (privileged)      │
+                       │ helix-portal — control plane (privileged)    │
                        │ portal UI + API · deploy · registry writes   │
                        │ capability approvals · secret writes · audit │
                        └──────────────────────────────────────────────┘
 ```
 
-- **`azx-edge` — data/policy plane.** Stateless; terminates all untrusted app-user traffic. Host
+- **`helix-edge` — data/policy plane.** Stateless; terminates all untrusted app-user traffic. Host
   routing, session auth, CSP, static serving from Blob, and the `/_api/*` gateway *policy* (identity,
   authorization, quota, audit). Runs as a least-privilege Postgres role with **no app-connection-secret
   read** (no grant on `app_secrets`) and **no arbitrary outbound** — it can only ask egress to make
   calls it has already authorized. (It is not secretless: it holds its own operational keys — auth,
   instruction, OIDC — and today an over-broad Blob key; see [ADR-0001](adr/0001-three-runtime-split.md).)
-- **`azx-portal` — control plane.** Privileged: portal UI/API, deploys, registry writes, capability
+- **`helix-portal` — control plane.** Privileged: portal UI/API, deploys, registry writes, capability
   approvals, secret writes. Owns the Postgres schema and migrations. Not routable from app subdomains.
-- **`azx-egress` — mechanism plane.** The only component holding plaintext connection secrets or a
+- **`helix-egress` — mechanism plane.** The only component holding plaintext connection secrets or a
   route to the public internet. Internal-only: it verifies the edge's signed instruction, resolves +
   injects the secret server-side, enforces SSRF controls, and streams the call back.
 - **Storage:** Postgres (registry, app-data, sessions, audit), Blob (immutable versioned app bundles),
@@ -117,7 +117,7 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 
 ### The request lifecycle
 
-1. **Deploy.** An owner (portal UI or `azx` CLI) uploads a static bundle. It becomes an **immutable
+1. **Deploy.** An owner (portal UI or `helix` CLI) uploads a static bundle. It becomes an **immutable
    version** in Blob and lands as `preview`. Promotion to `live` is a separate **atomic pointer flip**;
    rollback is the same flip in reverse. *(ADR-0018)*
 2. **Serve.** A visitor hits `<slug>.azx.helix.azxlabs.io`. The edge resolves the slug from an in-memory

@@ -9,7 +9,7 @@ The core stance (dev-mode design §1): production's gateway is safe _because_ it
 | Surface | For | Status |
 | --- | --- | --- |
 | **dev-gateway** (`dev-api.<base>`, `:8082`) — CORS + dev token | Lovable, cloud IDEs, and localhost dev apps | **✅ built** |
-| **`azx dev`** — a local same-origin proxy | `localhost` development (nicer DX, no token paste) | _planned (design §3, step 4)_ |
+| **`helix dev`** — a local same-origin proxy | `localhost` development (nicer DX, no token paste) | _planned (design §3, step 4)_ |
 | **client SDK + in-memory mock** | turnkey portability; Claude Artifacts / offline | _planned (design §8, step 5)_ |
 
 Today you develop against Helix through the **dev-gateway**. It works for both cross-origin IDEs (Lovable) and localhost apps.
@@ -22,7 +22,7 @@ Everything below is control-plane setup in the **portal** plus calls from your i
 
 ### 1. Create the app (before there's any code)
 
-An app can exist with zero deployed versions. Create it in the portal (or `azx create`) — you get a **slug**, and the **manifest is editable and enforced immediately**, deployed code or not. This is the "draft" state: you develop against `env=dev`, and only later `azx deploy` + promote a real version.
+An app can exist with zero deployed versions. Create it in the portal (or `helix create`) — you get a **slug**, and the **manifest is editable and enforced immediately**, deployed code or not. This is the "draft" state: you develop against `env=dev`, and only later `helix deploy` + promote a real version.
 
 ### 2. Grant the capabilities you'll use
 
@@ -64,7 +64,7 @@ curl -k -X PUT https://dev-api.local.helix.azxlabs.io:8082/<slug>/_api/data/user
 
 ### 6. Promote when ready — code moves, dev data never does
 
-`azx deploy` a version and promote it (registry + deploys). Production then serves the app at `https://<slug>.local.helix.azxlabs.io:8080/` behind SSO, under the **same manifest** you developed against. Promotion moves **code** (the version pointer), never data — there is deliberately no "copy my dev rows to prod." The portal offers a **"clear dev data"** reset for the throwaway `env=dev` partition.
+`helix deploy` a version and promote it (registry + deploys). Production then serves the app at `https://<slug>.local.helix.azxlabs.io:8080/` behind SSO, under the **same manifest** you developed against. Promotion moves **code** (the version pointer), never data — there is deliberately no "copy my dev rows to prod." The portal offers a **"clear dev data"** reset for the throwaway `env=dev` partition.
 
 ---
 
@@ -96,7 +96,7 @@ pnpm dev:egress   # :8081 — only if you exercise /_api/fetch or connections
 
 ## Planned / not yet built
 
-- **`azx dev`** — a local same-origin proxy so `localhost` development uses your `azx login` token ambiently (no token paste, no CORS). Today localhost works through the dev-gateway instead. (design §3/§4.2, step 4)
+- **`helix dev`** — a local same-origin proxy so `localhost` development uses your `helix login` token ambiently (no token paste, no CORS). Today localhost works through the dev-gateway instead. (design §3/§4.2, step 4)
 - **Client SDK + in-memory mock + impersonation** — `helix.llm.chat()`-style calls with a swappable transport so app source is identical across prod / localhost / dev-gateway / mock; the mock is the only way to reach Claude Artifacts (sandbox CSP blocks the gateway); `X-Helix-Dev-As` for testing as multiple synthetic users. (design §8/§4.3, step 5)
 - **Before enabling the surface in a real (non-local) deployment:** a short-window throttle on the dev-gateway itself, a distinct dev LLM budget (the vendor key is env-agnostic — design §11), and host/TLS wiring for `dev-api.<base>`. _(The `EDGE_TRUST_PROXY` half of that rider is done — the hop count is verified and passed to the dev-gateway container, so a throttle added here keys on the real client IP.)_
 - **Dev _global_ connection secrets** — dev connection secrets are app-scoped today; a dev fetch bound to a shared **global** connection is a documented gap.

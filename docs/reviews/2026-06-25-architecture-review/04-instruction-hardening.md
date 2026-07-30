@@ -47,7 +47,7 @@ Two forward-compat gaps with no concrete exposure today:
    option (`egress/instruction.ts:41-46`). The handoff token does both (`handoff.ts:40`). But the `typ`
    header (`helix-instruction+jwt`) and the distinct HKDF info string (`helix-instruction-v1`) already
    domain-separate the key, and no second service shares `HELIX_INSTRUCTION_SECRET` — so the "leaked
-   instruction accepted anywhere" premise is overstated. Add `setAudience("azx-egress")` + an `audience`
+   instruction accepted anywhere" premise is overstated. Add `setAudience("helix-egress")` + an `audience`
    verify option as cheap insurance before any second consumer of the secret appears.
 
 2. **No key rotation.** A single HS256 key is HKDF-derived on both sides (`instruction.ts:23-28`); no

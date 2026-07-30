@@ -198,7 +198,7 @@ resource cliSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
 }
 
 // Optional: pre-consent the CLI->portal scope for the whole tenant (else each
-// user consents once at first `azx login`). Requires the deploy principal to be
+// user consents once at first `helix login`). Requires the deploy principal to be
 // able to grant consent.
 resource cliConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (grantAdminConsent) {
   clientId: cliSp.id

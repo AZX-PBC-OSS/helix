@@ -48,12 +48,12 @@ export class PortalClient {
     return this.#json(AppSchema, "POST", "/api/v1/apps", { auth: true, body: input });
   }
 
-  /** Public IdP discovery info — how `azx login` finds the issuer. */
+  /** Public IdP discovery info — how `helix login` finds the issuer. */
   getAuthConfig(): Promise<AuthConfigResponse> {
     return this.#json(AuthConfigResponseSchema, "GET", "/api/v1/auth/config", {});
   }
 
-  /** The authenticated actor, per the portal — powers `azx whoami`. */
+  /** The authenticated actor, per the portal — powers `helix whoami`. */
   me(): Promise<PortalMeResponse> {
     return this.#json(PortalMeResponseSchema, "GET", "/api/v1/me", { auth: true });
   }
@@ -98,7 +98,7 @@ export class PortalClient {
     if (!auth) return {};
     const token = await this.#tokenProvider?.();
     if (!token) {
-      throw new CliError("not signed in; run `azx login` (or set AZX_TOKEN / pass --token)");
+      throw new CliError("not signed in; run `helix login` (or set HELIX_TOKEN / pass --token)");
     }
     return { authorization: `Bearer ${token}` };
   }

@@ -8,10 +8,10 @@ what the (correct) design actually does.
 
 ## 1. Stale §3 system-overview diagram
 
-`docs/platform-architecture.md:38-59` shows `azx-edge` with a **direct arrow to "LLM vendors"**,
+`docs/platform-architecture.md:38-59` shows `helix-edge` with a **direct arrow to "LLM vendors"**,
 contradicting (a) the same doc's line 74 ("no route to the public internet except through egress"),
 (b) line 188's prose, and (c) the egress-default code (`apps/edge/src/server.ts:136`). **Fix:** route
-the LLM-vendor arrow through `azx-egress` in the diagram. (This is the real stale artifact behind the
+the LLM-vendor arrow through `helix-egress` in the diagram. (This is the real stale artifact behind the
 original "stale LLM diagram" report — a minor doc fix, not a blocking one.)
 
 ## 2. State edge-compromise blast radius explicitly

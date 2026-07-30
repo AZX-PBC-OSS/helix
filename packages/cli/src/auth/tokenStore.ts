@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * On-disk token cache for `azx login`: one file, mode 0600 — it holds bearer
+ * On-disk token cache for `helix login`: one file, mode 0600 — it holds bearer
  * credentials. Entries are keyed by the **portal origin** the user logged in
  * to, with the issuer recorded alongside: the portal URL is repo-influenced
- * config (`azx.json`), so a token cached for portal A must never be sent to
+ * config (`helix.json`), so a token cached for portal A must never be sent to
  * portal B — even one that advertises the same (real) issuer and would
  * otherwise be handed a replayable credential.
  */
@@ -45,10 +45,10 @@ export function portalOrigin(portalUrl: string): string {
   return new URL(portalUrl).origin;
 }
 
-/** `$XDG_CONFIG_HOME/azx/tokens.json`, defaulting to `~/.config`. */
+/** `$XDG_CONFIG_HOME/helix/tokens.json`, defaulting to `~/.config`. */
 export function defaultTokenPath(env: NodeJS.ProcessEnv = process.env): string {
   const base = env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
-  return path.join(base, "azx", "tokens.json");
+  return path.join(base, "helix", "tokens.json");
 }
 
 async function readFileTolerant(file: string): Promise<TokenFile> {
@@ -56,7 +56,7 @@ async function readFileTolerant(file: string): Promise<TokenFile> {
   try {
     const parsed = JSON.parse(await readFile(file, "utf8")) as TokenFile;
     // A version-1 file (issuer-keyed, unbound to a portal) reads as logged
-    // out — re-running `azx login` rebinds the tokens correctly.
+    // out — re-running `helix login` rebinds the tokens correctly.
     if (parsed.version !== 2 || typeof parsed.byPortal !== "object" || !parsed.byPortal) {
       return empty;
     }
@@ -70,7 +70,7 @@ async function readFileTolerant(file: string): Promise<TokenFile> {
 /**
  * Tokens for this portal origin, but only if the issuer it advertises today
  * matches the one it advertised at login — an origin whose config changed
- * gets a fresh `azx login`, never a silently re-targeted credential.
+ * gets a fresh `helix login`, never a silently re-targeted credential.
  */
 export async function readTokens(
   key: TokenKey,

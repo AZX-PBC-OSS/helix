@@ -4,13 +4,13 @@ import { defaultTokenPath, readTokens, writeTokens, type StoredTokens } from "./
 
 /**
  * Token acquisition for every authenticated CLI call. Precedence:
- * `AZX_TOKEN`/`--token` (static — the dev-token/CI path) wins outright;
+ * `HELIX_TOKEN`/`--token` (static — the dev-token/CI path) wins outright;
  * otherwise the cache entry bound to this portal's origin (and the issuer it
  * advertises), silently refreshed when within a minute of expiry.
  * `undefined` means "not logged in" — the caller turns that into a friendly
- * "run `azx login`" error. No flow is ever auto-launched: agents and CI run
+ * "run `helix login`" error. No flow is ever auto-launched: agents and CI run
  * headless. The portal-origin binding is load-bearing: `portalUrl` can come
- * from a repo's `azx.json`, and a planted URL must never receive a token
+ * from a repo's `helix.json`, and a planted URL must never receive a token
  * minted for a different portal.
  */
 
@@ -30,7 +30,7 @@ export async function fetchAuthConfig(portalUrl: string): Promise<AuthConfigResp
   if (!res.ok) {
     throw new Error(
       `portal has no OIDC configured (GET /api/v1/auth/config → ${res.status}); ` +
-        "use AZX_TOKEN / --token instead",
+        "use HELIX_TOKEN / --token instead",
     );
   }
   return AuthConfigResponseSchema.parse(await res.json());

@@ -49,7 +49,7 @@ export interface BuildAppOptions {
 
 export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   // Fail the boot, not each request: a production portal without APP_PUBLIC_BASE
-  // would hand every client — portal UI and `azx` alike — unreachable dev URLs.
+  // would hand every client — portal UI and `helix` alike — unreachable dev URLs.
   assertDeploymentConfig();
 
   const app = Fastify({

@@ -5,7 +5,7 @@
 
 ## Context
 
-Deploys today are **upload-only** (ADR [0018](0018-deploy-model-immutable-versions.md)): `azx deploy` zips a prebuilt bundle and POSTs it. The missing rung is "connect a repo, and a push becomes a preview version."
+Deploys today are **upload-only** (ADR [0018](0018-deploy-model-immutable-versions.md)): `helix deploy` zips a prebuilt bundle and POSTs it. The missing rung is "connect a repo, and a push becomes a preview version."
 
 `docs/design/git-connections.md` proposed getting there by **cloning and building on platform infrastructure**, and ADR [0026](0026-hosted-build-isolation-prerequisites.md) gated that behind four non-negotiable launch gates (credential-free builder, ephemeral-by-construction, network-restricted install, build provenance) precisely because building untrusted code *is* executing it — a fourth untrusted execution zone, with Shai-Hulud-class `postinstall` credential theft as the live threat.
 
@@ -36,7 +36,7 @@ Ship **repo-backed apps as pull-only over a CI-published, attested artifact**. H
    - **Bound the amplification.** A poke resolves the OCI **manifest** first (hundreds of bytes) and downloads the layer only when the digest differs from the live version.
    - Return `202` unconditionally. Slugs are already public as subdomains (ADR [0019](0019-subdomain-per-app-isolation.md)), so enumeration is a non-concern, but there is no reason to leak existence either.
 
-6. **No inbound authentication on this path, by construction.** Authorization is *inherited from GitHub*: whoever can publish to the bound package can land a preview. That set is approximately whoever has push access to the repo — **which is exactly the trust boundary already accepted for `azx deploy`**, so it is not a regression. Stated plainly: *provenance proves origin, not safety; anyone with push access to the bound repo can deploy a preview of the bound app.*
+6. **No inbound authentication on this path, by construction.** Authorization is *inherited from GitHub*: whoever can publish to the bound package can land a preview. That set is approximately whoever has push access to the repo — **which is exactly the trust boundary already accepted for `helix deploy`**, so it is not a regression. Stated plainly: *provenance proves origin, not safety; anyone with push access to the bound repo can deploy a preview of the bound app.*
 
 7. **Verify the attestation at pull, and verify it names the bound repo.** Checking only that "a valid attestation exists" is insufficient — anyone able to write the package could publish bytes carrying an honest attestation from a *different* repository. The verifier **must** assert the attestation's `repository_id` equals the binding's stored ID (per decision 4), and should additionally constrain `ref` to the tracked branch and reject `event_name` of `pull_request` / `pull_request_target` (fork-poisoning guard). Unattested artifacts are rejected in v1 (see Open questions).
 
@@ -48,7 +48,7 @@ Ship **repo-backed apps as pull-only over a CI-published, attested artifact**. H
    - **Under ADR [0028](0028-deployment-model-customer-deployed.md), each customer deployment must register its own App.** One Helix-owned App would require shipping its private key into every customer deployment, letting each customer's Helix mint tokens for every other customer's installation — disqualifying. Onboarding uses the **GitHub App Manifest flow** (`github.com/settings/apps/new?manifest=…`), which exists for exactly this self-hosted case: the customer confirms once, and GitHub returns the generated private key, webhook secret, and client credentials in a single exchange, straight into `SecretStore`.
    - Handle the `installation.deleted` / `installation_repositories` webhooks so revoked bindings fail loudly rather than silently.
 
-10. **GitHub Actions OIDC is *not* part of this path.** In a pull model the CI never talks to Helix, so there is no live token to present. The workflow's OIDC identity still reaches Helix — embedded in the Sigstore attestation (Context §2), bound to the bytes and verifiable offline, which is the stronger form of the same claim. OIDC remains valuable on the **separate direct-upload path** (`azx deploy` from CI, where a request *does* ask Helix to act and today carries a long-lived portal token in repo secrets); adding GitHub's issuer to the ADR [0024](0024-portal-cli-bearer-jwt-jwks.md) verifier chain is worth doing independently and is out of scope here.
+10. **GitHub Actions OIDC is *not* part of this path.** In a pull model the CI never talks to Helix, so there is no live token to present. The workflow's OIDC identity still reaches Helix — embedded in the Sigstore attestation (Context §2), bound to the bytes and verifiable offline, which is the stronger form of the same claim. OIDC remains valuable on the **separate direct-upload path** (`helix deploy` from CI, where a request *does* ask Helix to act and today carries a long-lived portal token in repo secrets); adding GitHub's issuer to the ADR [0024](0024-portal-cli-bearer-jwt-jwks.md) verifier chain is worth doing independently and is out of scope here.
 
 ## Consequences
 
@@ -92,8 +92,8 @@ Ship **repo-backed apps as pull-only over a CI-published, attested artifact**. H
 - **Reject unattested artifacts outright, or allow an explicit per-binding opt-out?** v1 says reject. An opt-out would widen adoption (authors who do not run `attest-build-provenance`) at the cost of reducing the guarantee to "the bytes at this digest," and if allowed it should route through the approval write-gate like any above-baseline capability.
 - **How does `/poke/:slug` get exposed when the portal is internal or Entra-gated?** Options: a single unauthenticated path carved out of the Entra gate (preferred — the route is provably inert); serve it from the already-public edge, which would require a narrow write grant that pokes a hole in the ADR [0002](0002-postgres-role-split-rls.md) role split; or a tiny separate public receiver. Because polling is the floor (decision 5), *none of these is blocking* — the answer can be "not exposed, poll only."
 - **Releases: first-class backend or fallback?** Depends on the GHCR question above, and on whether requiring GHCR of customers is acceptable.
-- **Where does the drain worker live?** Portal-internal timer versus a separate process. It holds the App key path in phase 3, which is the mechanism-zone argument that made `azx-egress` its own deployable (architecture §3) — but it runs no untrusted code, which was the actual reason that mattered.
-- **Should `azx deploy`-from-CI also carry provenance?** Restates ADR [0026](0026-hosted-build-isolation-prerequisites.md)'s open question. This path now demonstrates the machinery; applying it to direct uploads is additive.
+- **Where does the drain worker live?** Portal-internal timer versus a separate process. It holds the App key path in phase 3, which is the mechanism-zone argument that made `helix-egress` its own deployable (architecture §3) — but it runs no untrusted code, which was the actual reason that mattered.
+- **Should `helix deploy`-from-CI also carry provenance?** Restates ADR [0026](0026-hosted-build-isolation-prerequisites.md)'s open question. This path now demonstrates the machinery; applying it to direct uploads is additive.
 
 ## Provenance
 

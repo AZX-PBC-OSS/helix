@@ -19,12 +19,12 @@ browser ──POST /_api/llm/chat──▶ edge ──(injects key, checks allow
 ## Grant the LLM capability
 
 Unlike `hello-world`/`notes`, this app needs an LLM grant in its manifest
-(architecture §6.3). After `azx create`, set it with the portal API (the CLI
+(architecture §6.3). After `helix create`, set it with the portal API (the CLI
 manifest command is a later addition):
 
 ```bash
 curl -fsS -X PUT "http://localhost:3001/api/v1/apps/chatbot/manifest" \
-  -H "authorization: Bearer $AZX_TOKEN" \
+  -H "authorization: Bearer $HELIX_TOKEN" \
   -H "content-type: application/json" \
   -d '{"capabilities":{"llm":{"models":["claude-opus-4-8"],"tokensPerDay":200000}}}'
 ```
@@ -38,13 +38,13 @@ cd examples/chatbot
 pnpm install --ignore-workspace   # standalone install (not the root workspace)
 pnpm build                        # regenerate dist/ (committed to git)
 
-export AZX_TOKEN="$PORTAL_DEV_TOKEN"
-azx create --display-name "Chatbot"
+export HELIX_TOKEN="$PORTAL_DEV_TOKEN"
+helix create --display-name "Chatbot"
 # grant the llm capability (see above)
-azx deploy --promote
+helix deploy --promote
 ```
 
-The LLM capability routes through `azx-egress` — the edge never holds the
+The LLM capability routes through `helix-egress` — the edge never holds the
 vendor key. To serve it locally:
 
 ```bash

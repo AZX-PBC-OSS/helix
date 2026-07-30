@@ -1,6 +1,6 @@
 # Git connections (deploy-from-repo)
 
-**Status: design, not built.** The deploy path today is upload-only (`azx deploy`
+**Status: design, not built.** The deploy path today is upload-only (`helix deploy`
 zips a build dir, or the portal takes a multipart zip; architecture §5). This doc
 proposes the missing rung: **connect a git repo, and a push lands a preview
 version.**
@@ -85,7 +85,7 @@ steps:
   - run: curl -fsS -X POST https://portal.example/poke/my-app || true   # optional
 ```
 
-Helix ships this as a starter workflow (and an `azx` command that writes it), so
+Helix ships this as a starter workflow (and an `helix` command that writes it), so
 the author's job is a copy-paste. **Note the poke is `|| true`** — it is a hint,
 never a dependency (§2.4).
 
@@ -102,7 +102,7 @@ author push ─▶ GitHub Actions              GitHub's infrastructure, GitHub's
                        │
       poll (floor) ────┤  or  poke (latency optimization)
                        ▼
-               azx-portal drain worker                          control plane
+               helix-portal drain worker                          control plane
                • resolve tag → digest (manifest only, ~hundreds of bytes)
                • unchanged? stop.  ← bounds amplification to ~1
                • pull layer by digest
@@ -195,14 +195,14 @@ talks to Helix, so there is no live token to present. The workflow's OIDC
 identity still reaches Helix — *embedded in the Sigstore attestation*, bound to
 the bytes and verifiable offline, which is the stronger form of the same claim.
 (OIDC remains worth adopting on the **separate direct-upload path**, where
-`azx deploy` from CI today carries a long-lived portal token in repo secrets;
+`helix deploy` from CI today carries a long-lived portal token in repo secrets;
 that is ADR [0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) verifier-chain work,
 not this feature.)
 
 **The trust boundary, stated plainly:** provenance proves origin, not safety.
 Whoever can publish to the bound package can land a **preview** of the bound app.
 That set is approximately whoever has push access to the repo — *exactly* the
-boundary already accepted for `azx deploy`, so it is not a regression. The human
+boundary already accepted for `helix deploy`, so it is not a regression. The human
 promote gate (architecture §5.1) is what stands between a preview and traffic.
 
 ### 2.6 Private repos: the GitHub App
@@ -301,7 +301,7 @@ how `/poke/:slug` is exposed when the portal is internal or Entra-gated (a
 carved-out unauthenticated path is preferred — the route is provably inert —
 but *nothing is blocked*, since polling is the floor); whether Releases is
 first-class or fallback; and where the drain worker lives (it holds the App key
-path in phase 3, the mechanism-zone argument that made `azx-egress` its own
+path in phase 3, the mechanism-zone argument that made `helix-egress` its own
 deployable — but it runs no untrusted code, which was the reason that actually
 mattered).
 
@@ -376,7 +376,7 @@ and exits.
 ### 3.4 Wiring
 
 ```
-GitHub push ─▶ webhook ─▶ azx-portal                     control plane
+GitHub push ─▶ webhook ─▶ helix-portal                     control plane
                           • verify HMAC (X-Hub-Signature-256)
                           • match installation + tracked branch, enqueue
                                   ▼
@@ -387,12 +387,12 @@ GitHub push ─▶ webhook ─▶ azx-portal                     control plane
                           build job (ACI / Container Apps Job)  untrusted exec zone
                           • one-shot, sandboxed, --ignore-scripts default
                           • run declared build → artifact
-                                  ▼  same artifact `azx deploy` produces
-                          azx-portal deploy API ─▶ preview version  existing gate
+                                  ▼  same artifact `helix deploy` produces
+                          helix-portal deploy API ─▶ preview version  existing gate
 ```
 
 **The output rejoins the existing path.** The build emits the same zip
-`azx deploy` produces and POSTs it with a scoped build token; it does not write
+`helix deploy` produces and POSTs it with a scoped build token; it does not write
 the registry, the live pointer, or Blob directly. So it inherits `validate.ts`,
 the CSP lint, the approval write-gate and preview-then-promote for nothing. The
 worst a compromised build achieves is submitting a malicious *preview*.
@@ -426,7 +426,7 @@ own code, so the trade is deliberate.
 
 ### 3.6 Open questions (unchanged)
 
-Orchestrator home (fold into `azx-egress` vs. a new `apps/build-orchestrator` —
+Orchestrator home (fold into `helix-egress` vs. a new `apps/build-orchestrator` —
 leaning separate: egress is request/response-shaped and dependency-minimal, a job
 runner has a different lifecycle); ACI vs. Container Apps Jobs against real
 latency and cost numbers; how many real vibe-coded apps `--ignore-scripts`
@@ -446,7 +446,7 @@ builds, pushes an OCI artifact with ORAS, and attests it" is a real ask of
 someone whose mental model stops at "I made an app." Mitigations, in order of
 how much they help:
 
-- **Ship the workflow.** A starter file plus an `azx` command that writes it into
+- **Ship the workflow.** A starter file plus an `helix` command that writes it into
   the repo turns this into a copy-paste. Most of the gap closes here.
 - **A reusable workflow** (`azxlabs/deploy@v1`) the author calls in five lines,
   so upgrades to the build/attest steps do not require every repo to change.

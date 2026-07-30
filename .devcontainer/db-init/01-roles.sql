@@ -25,7 +25,7 @@ CREATE ROLE helix_edge   LOGIN PASSWORD 'helix_edge'   NOINHERIT NOBYPASSRLS;
 -- gets NO blanket grant (fail-closed) — every table is explicit in a migration.
 CREATE ROLE helix_egress LOGIN PASSWORD 'helix_egress' NOINHERIT NOBYPASSRLS;
 -- The dev data plane (dev-mode design §5.3): the dev surfaces (dev-gateway,
--- `azx dev`) run as this role. Least-privilege like helix_edge — NO blanket
+-- `helix dev`) run as this role. Least-privilege like helix_edge — NO blanket
 -- grant, NOINHERIT, NOBYPASSRLS — and, crucially, RLS-pinned to env='dev' by the
 -- env-literal policy in migration 20260722192440_dev_env_partition, so it cannot
 -- read a single production row. Its grants mirror helix_edge's data-plane verbs.

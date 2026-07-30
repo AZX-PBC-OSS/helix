@@ -193,7 +193,7 @@ preHandler).
 
 Supporting routes: **`GET /api/v1/auth/config`** (public — issuer + client IDs for the CLI/web
 to bootstrap) and **`GET /api/v1/me`** (echoes the authenticated actor `{sub, via, name?,
-email?}`, powering `azx whoami`). Tested in `apps/portal/src/auth/oidc.integration.test.ts`.
+email?}`, powering `helix whoami`). Tested in `apps/portal/src/auth/oidc.integration.test.ts`.
 
 **Authorization model (v0):** authz is **flat** — any authenticated portal-audience principal may
 mutate ("authenticated == authorized"), the same level as the old shared token, now attributed in

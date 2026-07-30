@@ -24,9 +24,9 @@ cd examples/fetch-proxy
 pnpm install --ignore-workspace   # standalone install (not the root workspace)
 pnpm build                        # regenerate dist/ (committed to git)
 
-export AZX_TOKEN="$PORTAL_DEV_TOKEN"
-azx create --display-name "Fetch proxy"
-azx deploy --promote
+export HELIX_TOKEN="$PORTAL_DEV_TOKEN"
+helix create --display-name "Fetch proxy"
+helix deploy --promote
 ```
 
 Make sure `pnpm dev:egress` is running (the mechanism plane, `:8081`) — without
@@ -39,7 +39,7 @@ origin**, or the manifest write-gate directly):
 
 ```bash
 curl -fsS -X PUT "http://localhost:3001/api/v1/apps/fetch-proxy/manifest" \
-  -H "authorization: Bearer $AZX_TOKEN" -H "content-type: application/json" \
+  -H "authorization: Bearer $HELIX_TOKEN" -H "content-type: application/json" \
   -d '{"capabilities":{"fetch":{"origins":[{"origin":"https://api.github.com"}]}}}'
 ```
 
@@ -58,18 +58,18 @@ Connection secrets**, or curl), then bind the origin to it:
 ```bash
 # store the credential (write-only — never returned)
 curl -fsS -X POST "http://localhost:3001/api/v1/apps/fetch-proxy/secrets" \
-  -H "authorization: Bearer $AZX_TOKEN" -H "content-type: application/json" \
+  -H "authorization: Bearer $HELIX_TOKEN" -H "content-type: application/json" \
   -d '{"name":"github","value":"ghp_YOURTOKEN","injection":{"kind":"header-bearer"}}'
 
 # bind api.github.com → the `github` connection (re-opens an approval; approve it)
 curl -fsS -X PUT "http://localhost:3001/api/v1/apps/fetch-proxy/manifest" \
-  -H "authorization: Bearer $AZX_TOKEN" -H "content-type: application/json" \
+  -H "authorization: Bearer $HELIX_TOKEN" -H "content-type: application/json" \
   -d '{"capabilities":{"fetch":{"origins":[{"origin":"https://api.github.com","connection":"github"}]}}}'
 ```
 
 Approve, wait for the projection, reload: **probe 1** now shows `limit 5000` and
 **probe 2** shows `injected — authenticated as @you`. The PAT was never in the
-bundle — `azx-egress` injected `Authorization: Bearer …` server-side; the app
+bundle — `helix-egress` injected `Authorization: Bearer …` server-side; the app
 sent nothing.
 
 ## 3 · The transparent shim (fetch + XHR)

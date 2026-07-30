@@ -110,7 +110,7 @@ browser → edge /_api/fetch/<url> → [signed instruction] → egress → third
 **Deploy + promote** (an app owner):
 
 ```
-azx deploy (CLI, OIDC device-flow token) → portal API → Blob (immutable version) → registry (preview)
+helix deploy (CLI, OIDC device-flow token) → portal API → Blob (immutable version) → registry (preview)
 portal UI: promote → registry pointer flips to live → edge re-projects (LISTEN/NOTIFY), sub-second
 ```
 
@@ -126,16 +126,16 @@ never holds the secret; egress never re-checks the user. That asymmetry is the d
 ```
 helix/
   apps/
-    edge/         # azx-edge — data/policy plane: routing, auth, serving, /_api/* gateway policy
-    portal/       # azx-portal — control plane: registry/deploy API, approvals, secret writes (owns the schema)
+    edge/         # helix-edge — data/policy plane: routing, auth, serving, /_api/* gateway policy
+    portal/       # helix-portal — control plane: registry/deploy API, approvals, secret writes (owns the schema)
     portal-web/   # the React 19 + Mantine SPA (Vite); served statically by the portal
-    egress/       # azx-egress — mechanism plane: outbound HTTP, secret injection, SSRF controls
+    egress/       # helix-egress — mechanism plane: outbound HTTP, secret injection, SSRF controls
     dev-idp/      # local OIDC issuer (dev/test only; never deployed)
   packages/
     shared/       # @azx-pbc/shared — zod schemas at every boundary (manifest, registry, instruction, …)
     secret-store/ # @azx-pbc/secret-store — seal/open/destroy seam: dev AES-GCM envelope / prod Key Vault
-    cli/          # @azx-pbc/cli — the `azx` CLI (deploy, versions, promote/rollback, login/logout/whoami)
-  examples/       # reference apps you can `azx deploy` (built dist/ committed)
+    cli/          # @azx-pbc/helix-cli — the `helix` CLI (deploy, versions, promote/rollback, login/logout/whoami)
+  examples/       # reference apps you can `helix deploy` (built dist/ committed)
   docs/           # architecture, project plan, per-feature docs, deep designs (see below)
   .devcontainer/  # Node 24, Postgres, Azurite, mkcert TLS, role bootstrap, dev KEK
 ```

@@ -8,7 +8,7 @@ describe("parseCliArgs", () => {
     expect(values.promote).toBe(true);
   });
 
-  it("strips a leading `--` forwarded by `pnpm … azx -- <cmd>`", () => {
+  it("strips a leading `--` forwarded by `pnpm … helix -- <cmd>`", () => {
     const { values, positionals } = parseCliArgs(["--", "deploy", "--promote"]);
     expect(positionals[0]).toBe("deploy");
     expect(values.promote).toBe(true);

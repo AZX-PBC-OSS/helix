@@ -105,7 +105,7 @@ Anthropic SSE? That's a "buy a component," not "buy the platform," decision.)
 The bucket that takes "untrusted code" as seriously as we do. **Cloudflare Workers for
 Platforms** runs each tenant in an isolated V8 isolate with an "untrusted by default" mode.
 **E2B/Modal** run Firecracker microVMs. **Blaxel** notably does **proxy secret injection** so
-credentials never touch agent code — conceptually our `azx-egress` (§3, C4/C6).
+credentials never touch agent code — conceptually our `helix-egress` (§3, C4/C6).
 
 **Where they fall short for us:** these are **primitives, not a platform**. E2B (per 2026
 comparisons) passes secrets as env vars *visible inside the sandbox* and needs you to operate
@@ -156,7 +156,7 @@ The honest minimum to replicate Helix from off-the-shelf parts:
 2. **Portkey or Kong AI Gateway** for the LLM proxy (≈ C5, model traffic only), *plus*
 3. **Blaxel or a custom MITM egress proxy** for secret injection + SSRF (≈ C4/C6), *plus*
 4. **An SSO/identity layer** terminated in front of every app (≈ C3), *plus*
-5. **A control-plane app** for deploys, approvals, secret writes, audit UI (≈ everything in `azx-portal`).
+5. **A control-plane app** for deploys, approvals, secret writes, audit UI (≈ everything in `helix-portal`).
 
 And you would **still hand-build the riskiest parts yourself**, because no vendor sells them:
 

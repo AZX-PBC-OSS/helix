@@ -2,7 +2,7 @@
 
 > **Related ADRs:** [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps).
 
-**What they are.** Reference apps under `examples/` that you can `azx deploy` to the platform —
+**What they are.** Reference apps under `examples/` that you can `helix deploy` to the platform —
 the canonical answer to "what does a hosted AZX app look like?" They are **static frontends
 only**; every dynamic capability flows through the edge gateway at `/_api/*`. Full notes:
 [`examples/README.md`](../../examples/README.md).
@@ -22,7 +22,7 @@ only**; every dynamic capability flows through the edge gateway at `/_api/*`. Fu
   model the untrusted user apps the platform hosts, not platform code. Rebuild in isolation:
   `pnpm install --ignore-workspace && pnpm build` from inside the app dir.
 - The built `dist/` is **committed to git** (a negation rule in the root `.gitignore` re-includes
-  `examples/**/dist/`), so the primary workflow — `azx deploy` — needs no build step.
+  `examples/**/dist/`), so the primary workflow — `helix deploy` — needs no build step.
 - All are fully self-hosted, so they **deploy clean** through the CSP courtesy lint (no external
   origins outside the curated CDN allowlist — see [registry-and-deploys.md](./registry-and-deploys.md)).
 

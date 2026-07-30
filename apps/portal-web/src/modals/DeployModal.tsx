@@ -47,7 +47,7 @@ export function DeployModal({
 
   const target = slug ?? initialSlug ?? null;
   const deployable = (apps.data ?? []).filter((a) => !a.archivedAt);
-  const cliCmd = `azx deploy${target ? ` --slug ${target}` : ""}`;
+  const cliCmd = `helix deploy${target ? ` --slug ${target}` : ""}`;
 
   function close() {
     setSlug(null);
@@ -99,7 +99,7 @@ export function DeployModal({
           <Tabs.Panel value="cli" pt="md">
             <Stack gap="sm">
               <Text size="sm" c="dark.2">
-                From your app directory (after <Code>azx login</Code>):
+                From your app directory (after <Code>helix login</Code>):
               </Text>
               <Group gap={8} wrap="nowrap">
                 <Code block style={{ flex: 1, fontSize: 13 }}>
@@ -180,7 +180,7 @@ export function DeployModal({
                     />
                     <Text fw={500}>{target ? "Drop a build zip here" : "Pick an app first"}</Text>
                     <Text size="xs" c="dark.2">
-                      A zipped static build (what <Code>azx deploy</Code> would send)
+                      A zipped static build (what <Code>helix deploy</Code> would send)
                     </Text>
                   </Stack>
                 </Dropzone>

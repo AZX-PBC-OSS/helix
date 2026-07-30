@@ -33,7 +33,7 @@ describe("resolveAppPublicBase", () => {
   });
 
   // The whole point of the prod-strict check: a portal that silently fell back
-  // here would hand every client — portal UI and `azx` alike — dev URLs that
+  // here would hand every client — portal UI and `helix` alike — dev URLs that
   // resolve to 127.0.0.1.
   it("refuses the dev fallback in production", () => {
     expect(() => resolveAppPublicBase({ NODE_ENV: "production" })).toThrow(

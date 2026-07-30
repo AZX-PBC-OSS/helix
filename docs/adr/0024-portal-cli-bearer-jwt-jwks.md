@@ -5,11 +5,11 @@
 
 ## Context
 
-The control plane (portal API, `azx` CLI) needs its own authentication, distinct from app-user auth (ADR-0004, which is cookie + OIDC handoff on app origins). Options: issue portal-side sessions, or verify stateless bearer tokens.
+The control plane (portal API, `helix` CLI) needs its own authentication, distinct from app-user auth (ADR-0004, which is cookie + OIDC handoff on app origins). Options: issue portal-side sessions, or verify stateless bearer tokens.
 
 ## Decision
 
-Portal mutating routes accept **bearer JWTs verified statelessly over the issuer's JWKS** — no portal-side session store. `azx login` is an **OIDC device flow** with an XDG token cache (`AZX_TOKEN` short-circuits). **`PORTAL_DEV_TOKEN` is demoted to one verifier in a chain** (CI/dev fallback) and **refused in production**. Reads are sign-in-gated (only `/health` + the auth-config bootstrap stay public); the *authorization* level is ADR-0007 (v0: authenticated == authorized).
+Portal mutating routes accept **bearer JWTs verified statelessly over the issuer's JWKS** — no portal-side session store. `helix login` is an **OIDC device flow** with an XDG token cache (`HELIX_TOKEN` short-circuits). **`PORTAL_DEV_TOKEN` is demoted to one verifier in a chain** (CI/dev fallback) and **refused in production**. Reads are sign-in-gated (only `/health` + the auth-config bootstrap stay public); the *authorization* level is ADR-0007 (v0: authenticated == authorized).
 
 ## Consequences
 

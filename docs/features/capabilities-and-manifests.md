@@ -34,7 +34,7 @@ AppManifest = { app: slug; visibility: Visibility; capabilities: Capabilities }
 ```
 
 `externalOrigins` (direct browser call, widened into CSP) and `fetch.origins` (routed through the
-`/_api/fetch` proxy + `azx-egress`, where a secret can be injected server-side) are the "one knob,
+`/_api/fetch` proxy + `helix-egress`, where a secret can be injected server-side) are the "one knob,
 two settings" — same mental model, different `mode`. See [edge-serving.md](./edge-serving.md) and
 [fetch-proxy.md](./fetch-proxy.md) and [secrets-and-connections.md](./secrets-and-connections.md).
 

@@ -5,7 +5,7 @@
 
 ## Context
 
-A connection today is a manifest binding — `capabilities.fetch.origins[].connection` names a sealed secret, and `azx-egress` resolves and injects it on the outbound hop (ADR [0005](0005-ssrf-egress-controls.md)/[0006](0006-secret-custody-seam.md)). The injection recipes are all **static credential** shapes: `header-bearer`, `header`, `query`. OAuth was explicitly deferred twice (design §10 q2 in both documents).
+A connection today is a manifest binding — `capabilities.fetch.origins[].connection` names a sealed secret, and `helix-egress` resolves and injects it on the outbound hop (ADR [0005](0005-ssrf-egress-controls.md)/[0006](0006-secret-custody-seam.md)). The injection recipes are all **static credential** shapes: `header-bearer`, `header`, `query`. OAuth was explicitly deferred twice (design §10 q2 in both documents).
 
 Three requirements arrived together and turn out to have one answer:
 
@@ -125,7 +125,7 @@ Introduce a **connection provider catalog** as first-class control-plane data, w
 - **Do Asana's refresh tokens rotate?** Their docs do not say. Determines whether decision 15's single-flight guard is load-bearing or merely prudent for that provider.
 - **Does Ashby's MCP server require pre-registration, or support dynamic client registration?** Not confirmed. Affects whether phase 5 needs a fourth vendor registration.
 - **Is Clarify's partner OAuth programme reachable?** This is the one place a vendor gate could genuinely block delegation. Worth a direct sales-channel question rather than more desk research — and the answer decides whether phase 6 is ever needed.
-- **Does the MCP client belong in `azx-egress`, or in a fourth runtime?** Egress is the credential holder, which argues for it. But MCP is materially more protocol surface than HTTP request/response, and ADR [0001](0001-three-runtime-split.md)'s split was drawn on trust boundaries — is "speaks a chatty session protocol to the internet" a different enough zone to matter?
+- **Does the MCP client belong in `helix-egress`, or in a fourth runtime?** Egress is the credential holder, which argues for it. But MCP is materially more protocol surface than HTTP request/response, and ADR [0001](0001-three-runtime-split.md)'s split was drawn on trust boundaries — is "speaks a chatty session protocol to the internet" a different enough zone to matter?
 - **How do background / scheduled callers work?** Anything without a user session has no delegated token. Options: a service-account fallback per provider (reintroducing the tenant-key policy problem for that path only), or refusing unattended access to delegated providers outright. Leaning refuse-by-default, but it needs deciding before the first scheduled workload.
 - **Should `mcp` in `CapabilitiesSchema` be reused or replaced?** It exists today as a `string[]` with an approval classifier and zero runtime. Reusing it for `mcp-remote` provider references is tempting but it currently means something vaguer ("platform-registered MCP servers this app may reach, exposed as REST").
 - **Does per-user delegation change the metering story?** `gateway_calls` is app-keyed. Per-user delegated calls may want a user dimension for quota and audit, which is a schema question against ADR [0021](0021-metering-ledger.md).

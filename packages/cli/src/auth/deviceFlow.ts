@@ -3,7 +3,7 @@ import { portalApiScope } from "@azx-pbc/shared";
 import type { StoredTokens } from "./tokenStore.js";
 
 /**
- * OIDC device-authorization flow (RFC 8628) for `azx login`: print the
+ * OIDC device-authorization flow (RFC 8628) for `helix login`: print the
  * verification URL + code, poll until the user approves in a browser. The
  * issuer comes from the portal's /api/v1/auth/config, so this is IdP-generic
  * (dev-idp locally; Entra later, env-only).

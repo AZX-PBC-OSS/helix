@@ -137,6 +137,72 @@ jobs:
         # non-zero if any failed — so one run surfaces the full picture.
         run: ./check-and-lint.sh
 
+  package:
+    name: pack helix CLI
+    runs-on: ubuntu-latest
+    needs: check
+    # The CLI is the one package we publish (ADR-0032), and the only one that
+    # emits JS. Nothing in the unit suite touches the packaged artifact, so
+    # without this job a broken shebang, a missed esbuild external, or a
+    # tsx-at-runtime regression ships silently. Build → pack → install → run.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the bundle
+        run: pnpm --filter @azx-pbc/helix-cli build
+
+      - name: Pack
+        working-directory: packages/cli
+        # `pnpm pack`, never `npm pack`: only pnpm rewrites the `catalog:`
+        # specifiers (and `workspace:*`) to real semver ranges. An npm-packed
+        # tarball ships `"archiver": "catalog:"`, which no npm client can
+        # resolve — the install below is what catches that.
+        run: |
+          pnpm pack --out "$RUNNER_TEMP/helix-cli.tgz"
+          echo "TARBALL=$RUNNER_TEMP/helix-cli.tgz" >> "$GITHUB_ENV"
+          tar -tzf "$RUNNER_TEMP/helix-cli.tgz"
+
+      - name: Assert tarball contents
+        working-directory: packages/cli
+        # dist/helix.js is the bin target; src/ must not ship (it would drag in
+        # the raw-TS @azx-pbc/shared imports that the bundle exists to inline).
+        run: |
+          tar -tzf "$TARBALL" | grep -qx 'package/dist/helix.js'
+          if tar -tzf "$TARBALL" | grep -q 'package/src/'; then
+            echo "::error::tarball ships src/ — check the \"files\" allowlist"
+            exit 1
+          fi
+
+      - name: Smoke-test the installed binary
+        # The load-bearing step: a clean global prefix, and tsx removed from
+        # PATH entirely, so this passes only if the published artifact really
+        # runs on plain node.
+        run: |
+          npm config set prefix "$RUNNER_TEMP/npm-global"
+          npm i -g "$TARBALL"
+          rm -rf node_modules packages/cli/node_modules
+          export PATH="$RUNNER_TEMP/npm-global/bin:/usr/bin:/bin"
+          command -v tsx && { echo "::error::tsx still on PATH — test is not proving anything"; exit 1; }
+          helix --help | tee /tmp/help.txt
+          grep -q 'helix deploy' /tmp/help.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helix-cli-tarball
+          path: ${{ env.TARBALL }}
+
   images:
     name: build ${{ matrix.app }} image
     runs-on: ubuntu-latest
