@@ -1,6 +1,6 @@
 # AZX App Platform — Architecture Design Doc
 
-**Status:** Draft v2 · June 2026 (v2: dedicated `azx.helix.azxlabs.io` domain, Git builds deferred to v2 phase, auth appendix added). Implementation is at **M4.5 (local)** — all three planes, the gateway, secret-backed connections, and the approval workflow run locally; Azure deploy + a real Entra registration are the remaining tail (project plan §4, §5).
+**Status:** Draft v2 · updated July 2026 (v2: dedicated `azx.helix.azxlabs.io` domain, Git builds deferred to v2 phase, auth appendix added). Implementation is **deployed on Azure** — all three planes, the gateway, secret-backed connections, and the approval workflow run in production against real Entra OIDC and a live Key Vault. The outstanding M5 residual is a real pilot app end to end (project plan §4, §5).
 **Scope:** Secure hosting for vibe-coded AI apps. Self-hosted, Azure first (we are customer #0), portable to other clouds later.
 
 ---
@@ -232,7 +232,7 @@ Public apps still get gateway access but with an anonymous user identity, much t
 Portal + REST API:
 
 - **App registry:** create app, subdomain, visibility, manifest, deploy history, rollback
-- **RBAC:** platform admins approve elevated grants (built — §6.3). App owners/editors/viewers mapped to Entra users and groups is a v1 item, not yet enforced. Note ([ADR-0007](adr/0007-portal-authz-v0.md)) that until then the v0 posture is **authenticated == authorized**: any authenticated principal can mutate any app and manage any app's secrets. The app-scoped secrets/mutating routes performing no ownership check is a live BOLA to close before M5 (issue #9), not merely a missing convenience feature
+- **RBAC:** platform admins approve elevated grants (built — §6.3). App owners/editors/viewers mapped to Entra users and groups is a v1 item, not yet enforced. Note ([ADR-0007](adr/0007-portal-authz-v0.md)) that the v0 posture was **authenticated == authorized**; the BOLA half is now closed by an `ownsApp` owner-or-admin gate on every app-scoped mutating route (issue #9). What is still absent is per-app RBAC: reads remain authenticated-only, so any authenticated principal can still *see* any app's metadata
 - **Observability:** per-app usage (requests, LLM tokens, storage), gateway audit log search, deploy logs
 - **Lifecycle:** archive/disable apps — proxy returns 410 with `Clear-Site-Data`, capabilities revoked immediately at the gateway (a cached service worker can keep serving the UI, but its API calls die instantly). Retired subdomains are quarantined, not reused, to avoid stale cookies/service workers leaking to a new occupant
 
@@ -300,12 +300,12 @@ Resolved since draft v1 (decisions folded into the sections above): MCP is expos
 
 ## 12. Phasing sketch
 
-Status as of June 2026 — most of this is built **locally**; M5 (Azure) is the gate to production (project plan §4, §5):
+Status as of July 2026 — the platform is **deployed on Azure**; what remains of M5 is a pilot app, not infrastructure (project plan §4, §5):
 
-- **v0 (done, local):** proxy + OIDC (incl. central-callback handoff, `__Host-` cookies, baseline CSP — the isolation model ships day one, not retrofitted), upload deploys, blob serving, app registry, LLM proxy with quotas. Runs against the local OIDC issuer; a real Entra registration and the Azure pilot are the M5 tail.
-- **v1 (mostly done, local):** `azx deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). _Remaining:_ the agent deploy **skill bundle** (`packages/deploy-skill`), and admin per-user **session revocation**.
-- **M4.5 (done, local):** the `azx-egress` mechanism plane + the fetch-proxy (incl. the transparent shim) and secret-backed connections built on it (§3, §6.1). Egress ships as its own container from day one (the policy/mechanism split is physical, not deferred).
-- **M5 (next):** Azure IaC, the three planes on Container Apps, real Entra (single-tenant; authz via App Roles — see the [Entra runbook](runbooks/entra-app-registration.md)), prod Key Vault, wildcard cert on `azx.helix.azxlabs.io`, one real pilot app end to end.
+- **v0 (done):** proxy + OIDC (incl. central-callback handoff, `__Host-` cookies, baseline CSP — the isolation model ships day one, not retrofitted), upload deploys, blob serving, app registry, LLM proxy with quotas. Now runs against **real Entra**, not the local OIDC issuer; `apps/dev-idp` is a development convenience, never deployed.
+- **v1 (mostly done):** `azx deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). _Remaining:_ the agent deploy **skill bundle** (`packages/deploy-skill`), and admin per-user **session revocation**.
+- **M4.5 (done):** the `azx-egress` mechanism plane + the fetch-proxy (incl. the transparent shim) and secret-backed connections built on it (§3, §6.1). Egress ships as its own container from day one (the policy/mechanism split is physical, not deferred).
+- **M5 (deployed):** Azure IaC ✅, the three planes on Container Apps ✅, real Entra (single-tenant; authz via App Roles — see the [Entra runbook](runbooks/entra-app-registration.md)) ✅, prod Key Vault verified against a live vault ✅, wildcard cert on the apps domain ✅ (automated via a scheduled certbot DNS-01 job). _Outstanding:_ one real pilot app end to end, and confirming the operator-optional egress firewall is on (project plan §4 residuals).
 - **v1.x:** MCP passthrough (REST-wrapped), richer usage dashboards (latency/error dimensions), audit shipping to an immutable sink.
 - **v2 candidates:** Git-connect + sandboxed build service, per-app serverless functions, multi-org tenancy, app builder.
 

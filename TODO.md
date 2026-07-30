@@ -5,7 +5,7 @@ Follow-up work extracted from the Architecture Decision Records in [`docs/adr/`]
 Legend for gating conditions:
 
 - **P0** — security-critical, do now.
-- **Pre-M5** — must land before the M5 production pilot.
+- **Pre-M5** — was gated on the M5 production deploy. **That deploy has happened**, so anything still open under this label is now a gap in a _running_ system rather than a chore ahead of one. Re-read these as overdue, not scheduled.
 - **Pre-GA** — cheap now, painful once customer URLs / external owners commit.
 - **Before multi-tenant** — required before the platform serves more than one trusted operator.
 - **Before multi-replica** — required before the edge runs more than one replica.
@@ -27,11 +27,17 @@ Legend for gating conditions:
 
 ---
 
-## Pre-M5 — before the production pilot
+## Pre-M5 — now live in production
 
+> The platform is deployed on Azure. Every unchecked item below was written as "before we go
+> to production" and is now running without it. Nothing here is theoretical any more.
+
+- [ ] **Confirm `deployFirewall` is on in the live deployments.** It defaults `true` and is operator-optional for cost (~$900/mo, `infra/azure/README.md`), but with it off the app subnets keep default internet egress — which removes what ADR [0005](docs/adr/0005-ssrf-egress-controls.md) names the **primary** SSRF/egress control and demotes the whole outbound posture to the app-level `ssrf.ts` denylist that ADR calls defense-in-depth. The reason to check rather than assume: with the firewall absent everything still works, so nothing surfaces the difference. If it is deliberately off, record that as an accepted risk against ADR-0005 rather than leaving the ADR asserting a control that isn't there. — ADR-0005 deployment note (2026-07-23)
+- [ ] **Deploy a real pilot app end to end** (`azx deploy` → SSO login → app calls the LLM gateway). The last M5 exit criterion, and the only evidence that isn't self-referential — everything else is the platform testing itself. — project plan §4
 - [ ] **Verify + configure `EDGE_TRUST_PROXY` for the Container Apps ingress.** The shared-counter throttle above holds across replicas, but its key is `${req.ip}:${appId}` and `EDGE_TRUST_PROXY` defaults **off** — behind the external Envoy ingress `req.ip` may be the ingress hop, collapsing all clients into one bucket per app (and a too-trusting value makes `x-forwarded-for` spoofable). Determine the correct hop count against the live deployment, set `EDGE_TRUST_PROXY`, and confirm `req.ip` resolves to the real client before relying on per-client limits. — ADR-0011, issue #13 (residual)
 - [ ] **Strip the handoff token from access logs.** Default request logging / upstream proxies capture the `/_auth/complete?token=…` query string. Single-use + 30 s TTL bounds it, but prod log retention shouldn't persist it — add a log serializer that redacts `?token=` on that route (or a documented ops note). — issue #20 (part 3, not covered by the throttle fix)
 - [x] **Make `ownsApp` an M5 exit criterion (BOLA/IDOR).** Secrets and app-scoped mutating routes perform no ownership check — any authenticated principal can rotate/delete another app's secrets. `ownerId` already exists; interim gate is a ~3-line `ownsApp` preHandler (handle nullable legacy `ownerId`). Test: a second operator cannot write another's app. — ADR-0007, issue #9 (DEC-01) _(done: `ownsApp` preHandler in `apps/portal/src/plugins/auth.ts` — owner-or-admin, fail-closed on null `ownerId`; attached to every app-scoped mutating route across `apps.ts`/`versions.ts`/`secrets.ts`/`data.ts`, plus the credential-returning `GET /:slug/access/password`. Adversarial sweep in `apps/portal/src/routes/ownership.test.ts` (non-owner → 403, owner/admin pass, unknown app → 404). **Residual:** owner-scoped **read** filtering / per-app RBAC (owner/editor/viewer) is still the v1 `PreviewBadge` feature — reads stay authenticated-only; and the portal SPA still shows mutate controls for non-owned apps (server 403 is the boundary). Dev-mode's dev-token mint routes must adopt `ownsApp` from their first commit.)_
+- [ ] **Assert the _negative_ half of Key Vault custody against the live vault: the edge identity is refused by `kv-connections`.** The positive path is verified in the deployment (2026-07-30) — portal seals, egress opens, real managed identities, real vault. The negative is not, and it is the half that carries the security property: the boundary is **grant-absence** (`rbac.bicep` deliberately gives the edge identity no role on `kv-connections`), so an accidental role assignment breaks nothing, changes no behaviour, and passes every test that isn't specifically looking for it — including the local suite, where both stores share one stub `getToken` against a fake vault that ignores the authorization header. Check it directly: `az role assignment list --scope <kv-connections>` shows no edge principal, and an edge-identity data-plane read returns 403. Worth re-running after any `rbac.bicep` change, not once. — ADR-0002, ADR-0006 amendment, ADR-0031 §16
 - [ ] **Registry projection: staleness observability.** Expose `lastSuccessfulLoadAt` + `consecutiveLoadFailures`, degrade `/health` past a staleness threshold, emit a load-failure metric, promote the first failure to `error`-level. Closes the "serves stale forever, silently" edge (flagged by all 5 reviewers). — ADR-0025 (must-do)
 - [ ] **Registry projection: jitter the reconcile poll.** Wrap the fixed `setInterval` in a jittered `setTimeout` chain (±20%) to avoid a synchronized DB herd across replicas. — ADR-0025
 
@@ -40,7 +46,7 @@ Legend for gating conditions:
 ## Pre-GA — before external app owners / customer URLs commit
 
 - [ ] **Host untrusted apps on a separate registrable domain.** Apps currently share one eTLD+1 with the control plane; move untrusted apps to e.g. `*.azx-apps.<tld>` and keep portal/auth on `azx.helix.azxlabs.io`. Closes cookie-bomb DoS, Safe-Browsing/reputation blast radius, same-site coupling with the auth host, and storage-partitioning residuals (PSL submission only partially closes cookie vectors). Cheap now, painful after customer URLs commit — treat as a pre-GA prerequisite, not an M5 blocker. — ADR-0019, issue #16
-- [ ] **Decide the trigger for making the edge/portal split physical, and add a CI gate.** Document v0 co-deploy as a time-boxed boundary collapse; add a CI check that refuses co-deploy when `NODE_ENV=production` (or revoke co-deploy when the first non-employee owner onboards). — ADR-0012
+- [ ] **Add the CI gate that refuses co-deploy when `NODE_ENV=production`.** The _trigger_ question is resolved — the Azure deploy provisions edge, portal and egress as three separate container apps, so the boundary collapse doesn't exist in the live topology (ADR-0012 Resolution). What's missing is the gate that keeps it that way: today the split is a property of the current Bicep, not a guarantee, and co-deploy remains reachable in code. — ADR-0012
 
 ---
 

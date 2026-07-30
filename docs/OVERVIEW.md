@@ -5,8 +5,10 @@ security, or engineering — meeting the platform for the first time. Deeper det
 [`docs/platform-architecture.md`](platform-architecture.md), the per-decision records in
 [`docs/adr/`](adr/), and the per-feature docs in [`docs/features/`](features/).
 
-> **Status (2026-06):** working end-to-end **locally** (milestone M4.5). The Azure production
-> deploy (M5) is in progress. Where a capability isn't fully delivered yet, this doc says so.
+> **Status (2026-07):** **deployed and running on Azure** — the three planes on Container Apps,
+> real Entra OIDC, wildcard TLS, and Key Vault custody verified against a live vault (M5).
+> Outstanding: a real pilot app end to end. Where a capability isn't fully delivered yet, this
+> doc says so.
 
 ---
 
@@ -53,7 +55,7 @@ frontend + governed LLM/compute access with no app-managed secrets.
 | Embed a client org's own licensed tokens (P0) | Secret *connections*: `app`-scoped and `global` (granted per app); the app's calls use the client's contract, never an AZX key | ✅ Shipped |
 | Restrict which models/capabilities each team can use (P0) | Capability manifest + approval classifier (model allowlist, budgets, origins) enforced at the gateway | ✅ Per-**app**; ⚠️ "per-team" grouping isn't a first-class concept (one org, app-id partitioning) |
 | Tamper-evident audit log of every AI call (P0) | Append-only `gateway_calls` ledger; `helix_edge` has INSERT-only | ⚠️ Append-only **by DB grant**, not cryptographically tamper-evident — an immutable sink is deferred |
-| Provision/deprovision builders via Entra groups (P0) | Group visibility re-checked per request; admin gated on a `platform-admin` group claim | ✅ Mechanism shipped; real Entra registration is the M3 tail / M5 |
+| Provision/deprovision builders via Entra groups (P0) | Group visibility re-checked per request; admin gated on a `platform-admin` group claim | ✅ Shipped and running against real Entra |
 | Alerts on spend/usage thresholds (P1) | Budgets *block* over-limit calls | ❌ Hard budget yes; proactive **alerting** not built |
 | Export audit/usage to a warehouse (P2) | — | ❌ Not built (P2) |
 | End-user fallback when AI is down (P1) | Gateway surfaces structured error/`event: error`; the app renders the fallback | ⚠️ Platform surfaces failures; the fallback UX is app-side |
@@ -153,8 +155,9 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
    (`helix_edge`); app-data is Row-Level-Security-partitioned per user; collections are INSERT-only (an
    app can write but never read back others' entries — defeating data-harvesting); metering is
    append-only by grant. The process split is re-enforced inside the database. *(ADR-0002, 0015, 0021)*
-   *(Caveat, ADR-0002: the split isn't fully realized — the portal connects as the schema owner, and the
-   edge falls back to the owner DSN if its role DSN is unset; both tracked to be hardened before M5.)*
+   *(Caveat, ADR-0002: the portal still connects as the schema owner. The edge's owner-DSN fallback is
+   closed — `EDGE_DATABASE_URL` (the `helix_edge` role) is **required** in production and the edge refuses
+   to start on the `DATABASE_URL` fallback, which would bypass RLS; the Azure deploy passes it explicitly.)*
 
 Honest residual: relaxed CSP (necessary for vibe-coded bundles) gives up XSS prevention by design, and
 granted channels (LLM prompts, approved origins, navigation) remain possible exfil paths — containment
@@ -187,10 +190,12 @@ secrets-and-connections) and [`docs/features/`](features/) (one per shipped capa
 
 ## 6. What's next
 
-- **M5 — Azure deploy:** Container Apps, Key Vault custody wired in prod, real Entra app registration,
-  the production network zones that make the egress isolation physical.
-- **Known hardening before the pilot:** the open security issues (instruction replay/scope, edge↔egress
-  TLS, portal per-app authorization, rate-limit-across-replicas) — see the GitHub issue tracker.
+- **A real pilot app end to end** — the last outstanding M5 exit criterion. The Azure deploy itself
+  has landed: Container Apps, Key Vault custody verified against a live vault, real Entra, and the
+  production network zones that make the egress isolation physical.
+- **Known hardening:** the open security issues (instruction replay/scope, edge↔egress
+  TLS, portal per-app RBAC, rate-limit-across-replicas) — see the GitHub issue tracker and
+  [`TODO.md`](../TODO.md).
 - **Capability catalog:** additional first-class LLM providers (Azure OpenAI, Gemini) and curated API
   endpoints (geocoding) behind the existing provider/connection seams.
 - **Admin depth:** spend/usage **alerting** (P1) and **warehouse export** (P2) of audit/usage data.

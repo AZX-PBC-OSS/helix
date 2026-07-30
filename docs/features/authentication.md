@@ -11,7 +11,7 @@ There are **two** auth paths, deliberately separate:
    via a bearer JWT verified statelessly over the issuer's JWKS.
 
 Both run against the local OIDC issuer in dev (see [dev-idp.md](./dev-idp.md)); production
-points at Entra (config-only, the M3 tail) — see the
+runs against **real Entra** — the swap was config-only, as designed. See the
 [Entra registration runbook](../runbooks/entra-app-registration.md).
 
 ---
@@ -168,20 +168,24 @@ email?}`, powering `azx whoami`). Tested in `apps/portal/src/auth/oidc.integrati
 
 **Authorization model (v0):** authz is **flat** — any authenticated portal-audience principal may
 mutate ("authenticated == authorized"), the same level as the old shared token, now attributed in
-the audit log. This is **not** a benign gap: the app-scoped secret and mutating routes do **no
-ownership check**, so any authenticated principal can act on any app's objects — a live **BOLA**
-(broken object-level authorization) to close before M5 (ADR-0007, issue #9). Per-app RBAC is the
-v1 fix, not merely a nice-to-have.
+the audit log. The **BOLA** (broken object-level authorization) half of that is now closed: an
+`ownsApp` owner-or-admin gate guards every app-scoped mutating and secret route, fail-closed on a
+null `ownerId` (ADR-0007, issue #9). What remains is per-app **RBAC** — reads are still
+authenticated-only, so any authenticated principal can see any app's metadata. That is the v1 fix,
+not merely a nice-to-have.
 
 ## Planned / not yet built
 
-- **Real Entra registration** — the remaining M3 tail; the flow is designed to be config-only
-  (issuer/client swap), already exercised end-to-end against the local issuer. The step-by-step
-  setup is the [Entra registration runbook](../runbooks/entra-app-registration.md). Two decisions
-  baked in there: authorization rides **Entra App Roles** (the `roles` claim carries
-  human-readable values like `platform-admin` — no GUIDs, no Graph, no group-overage), and the
-  portal audience moves from the dev `urn:helix:portal` to `api://<guid>` (an env change only).
-  Per-app **group visibility** (`visibility: group`) is deferred until a pilot app needs it;
-  pilot apps use `private`/`password`.
-- **Per-app RBAC / ownership** on the portal side (v1) — the fix for the flat-authz BOLA noted
-  above (ADR-0007, issue #9), not merely a cosmetic role feature.
+- **Per-app RBAC** on the portal side (v1). The BOLA half is done (`ownsApp`); what's left is
+  owner/editor/viewer roles and owner-scoped **reads**, which are still authenticated-only
+  (ADR-0007, issue #9).
+- Per-app **group visibility** (`visibility: group`) is built but deferred in practice until a
+  pilot app needs it; pilot apps use `private`/`password`.
+
+**Since shipped — real Entra registration.** Production now authenticates against a real Entra
+app registration; the swap was config-only (issuer/client), exactly as designed, and the local
+issuer had already exercised the flow end to end. The step-by-step setup is the
+[Entra registration runbook](../runbooks/entra-app-registration.md). Two decisions are baked in
+there: authorization rides **Entra App Roles** (the `roles` claim carries human-readable values
+like `platform-admin` — no GUIDs, no Graph, no group-overage), and the portal audience is
+`api://<guid>` rather than the dev `urn:helix:portal`.

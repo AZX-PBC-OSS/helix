@@ -111,9 +111,9 @@ primitive, not an observability sink).
 - **Per-app RBAC** — `App.ownerId` is recorded at create, but per-app owner/editor/viewer roles
   are not yet enforced. v0 authz is deliberately flat (authenticated == authorized, ADR-0007): any
   authenticated portal principal may mutate **any** app and manage **any** app's secrets — the app-
-  scoped mutating + secret routes perform **no `ownsApp` check**. That flatness is a deliberate v0
-  choice for the single-operator pilot, but the missing ownership check is a live BOLA/IDOR to close
-  before M5 (issue #9), not a benign placeholder — the roles UI surface is separately marked with a
+  scoped mutating + secret routes now enforce an `ownsApp` owner-or-admin check, so the BOLA/IDOR
+  half is closed (issue #9). What is still flat is **read** access — any authenticated principal can
+  list and inspect any app — and per-app roles, whose UI surface is separately marked with a
   `PreviewBadge` in the portal SPA.
 - **Manifest versioning** history beyond the current full-replace PUT.
 

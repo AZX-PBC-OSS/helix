@@ -153,10 +153,14 @@ Two conventions to know before you read code:
 
 ## Where it is right now
 
-**M4.5 (local).** Three real containers; the full auth flow; the `/_api/*` gateway (LLM,
-app-data, fetch-proxy); secret-backed connections; the Postgres role split; the approval
-workflow; and a real, wired portal SPA — all running locally. Remaining: a real Entra app
-registration (config-only tail) and the Azure deploy + pilot (**M5**).
+**Deployed on Azure (M5).** Three real containers; the full auth flow against **real Entra**;
+the `/_api/*` gateway (LLM, app-data, fetch-proxy); secret-backed connections on a live Key
+Vault; the Postgres role split; the approval workflow; and a real, wired portal SPA — running
+in production behind wildcard TLS, not only on a laptop. Remaining from M5: a real pilot app
+end to end.
+
+Everything still runs locally too — `apps/dev-idp` stands in for Entra and the dev envelope
+stands in for Key Vault, so nothing below requires a cloud subscription to work on.
 
 → Exact done/partial/deferred status: [`docs/platform-project-plan.md`](docs/platform-project-plan.md).
 

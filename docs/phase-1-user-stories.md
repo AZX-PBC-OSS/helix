@@ -24,11 +24,11 @@ Cross-references point at the feature docs in [`features/`](./features/).
 
 | Story | Pri | Status | How / Gap |
 |---|---|---|---|
-| Manage all AI keys / enterprise tokens in one vault | P0 | ✅ | App-scoped and global connection secrets are managed (write-only/rotate-only) through the portal and sealed by the `SecretStore` seam; the egress role is the only reader. Prod **Key Vault** backing is wired — the DB row holds only a `kv:<name>/<version>` reference. Unexercised against a live vault until the M5 deploy. [secrets-and-connections](./features/secrets-and-connections.md) |
+| Manage all AI keys / enterprise tokens in one vault | P0 | ✅ | App-scoped and global connection secrets are managed (write-only/rotate-only) through the portal and sealed by the `SecretStore` seam; the egress role is the only reader. Prod **Key Vault** backing is wired and verified against a live vault in the deployment — the DB row holds only a `kv:<name>/<version>` reference. [secrets-and-connections](./features/secrets-and-connections.md) |
 | Embed a client org's licensed API tokens (e.g. a client's own licensed contracts) | P0 | ✅ | **Global** secrets + per-app **grants**: store the client's token once, grant the apps that may spend it; one secret backs many connections, so rotation is one write. [secrets-and-connections](./features/secrets-and-connections.md) |
 | Define + enforce which AI models each team can access | P0 | ⚠️ | Enforced **per app**: the manifest model allowlist gates every LLM call, and an **approval workflow** makes any non-curated model an admin-gated elevated grant (a platform-wide policy, not a courtesy). *Gap:* policy is per-app + platform-wide, **not per-team/per-group** — there is no "group X may only use models Y." [capabilities-and-manifests](./features/capabilities-and-manifests.md) |
 | Tamper-evident audit log of every AI call | P0 | ⚠️ | Every gateway call is recorded to the append-only `gateway_calls` ledger (the edge role has INSERT, not UPDATE/DELETE) and surfaced in the portal Audit log — now with per-call latency, status, cost, and error detail. *Gap:* **not cryptographically tamper-evident** (no hash chain / signature), and audit shipping to an immutable external sink is deferred (project plan §5.8). [llm-gateway](./features/llm-gateway.md), [portal-web](./features/portal-web.md) |
-| Provision/deprovision builders via Entra groups | P0 | ⚠️ | Auth is group-aware end to end: app visibility checks Entra groups, admin rights are a group claim, and deploy access rides the per-user Entra device-flow token (revocation is free when the Entra account dies). *Gap:* the real Entra registration is the M3 tail (M5), and there's no dedicated builder-provisioning UI — it's group membership, not a console. [authentication](./features/authentication.md), [cli](./features/cli.md) |
+| Provision/deprovision builders via Entra groups | P0 | ⚠️ | Auth is group-aware end to end: app visibility checks Entra groups, admin rights are a group claim, and deploy access rides the per-user Entra device-flow token (revocation is free when the Entra account dies). *Gap:* there's no dedicated builder-provisioning UI — it's group membership, not a console. (The real Entra registration is now live.) [authentication](./features/authentication.md), [cli](./features/cli.md) |
 | Alert when usage/spend thresholds are exceeded | P1 | ⬜ | Per-app daily **budgets** exist and block-new once hit (runaway is *capped*), and **spend is now tracked in dollars** (per-model rates, cache-aware) across every dashboard — the precondition for alerting. *Gap:* still no **alerting/notification** when a threshold trips; now a small add on top of the dollar data. [llm-gateway](./features/llm-gateway.md) |
 | Export audit + usage data to a data warehouse | P2 | ⬜ | App-data collections have an owner export path, but there is no audit/usage **warehouse export** — tied to the deferred immutable-sink shipping (project plan §5.8). |
 
@@ -58,7 +58,8 @@ views) have since landed.
 
 The platform's **mechanisms** for the P0 stories largely exist — deploy, per-app SSO/password,
 key-free API access, a single secret vault, per-app model policy, an audit ledger, group-aware
-auth. The recurring P0 gaps are **production hardening** (Key Vault, real Entra — both M5) and
+auth. The recurring P0 gaps are **production hardening** (real Entra — M5; Key Vault custody is
+now wired and live-verified) and
 **governance depth** (team-scoped policy, tamper-evident audit). **Usage visibility is now a
 strength** — dollar-denominated spend, latency, and errors over selectable time ranges, presented
 as real charts. The clearest remaining asks are **alerting** (now a small add on top of the dollar

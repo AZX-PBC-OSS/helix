@@ -55,17 +55,22 @@ Config selects implementations per environment. CI runs against local/emulated; 
 
 Goal: one pilot app, end to end, on Azure. Definition of done is §12 v0 in the architecture doc. v0 may ship both modules as a single binary/container if that's faster — but with two routers strictly keyed by hostname from day one (architecture §3, decision 12).
 
-**Status at a glance (June 2026).** Everything through M4.5 is built and running **locally**; M5 (Azure) is the only milestone still ahead. Milestone numbers and `§`-anchors are stable — other docs and code comments reference them — so this section keeps the original sequence and annotates each header with where it actually landed.
+**Status at a glance (July 2026).** Helix is **deployed and running on Azure**, not only locally: the three planes on Container Apps, real Entra OIDC (no `dev-idp`), a wildcard TLS cert on the apps domain, and Key Vault custody verified against a live vault. M5 has therefore shipped; what remains of it is a short residuals list rather than a milestone. Milestone numbers and `§`-anchors are stable — other docs and code comments reference them — so this section keeps the original sequence and annotates each header with where it actually landed.
 
 | Milestone | Status |
 |---|---|
 | **M0** Skeleton | ✅ Done |
 | **M1** Registry + deploys | ✅ Done |
 | **M2** Edge serving | ✅ Done |
-| **M3** Auth | ✅ Done (local) · ⏳ real Entra registration is the tail |
-| **M4** Gateway v0 (LLM, then app-data) | ✅ Done (local) |
-| **M4.5** Egress: fetch-proxy + connections | ✅ Done (local) |
-| **M5** Azure + pilot | ⬜ Next |
+| **M3** Auth | ✅ Done · real Entra registration is **live** (the "config-only tail" is closed) |
+| **M4** Gateway v0 (LLM, then app-data) | ✅ Done |
+| **M4.5** Egress: fetch-proxy + connections | ✅ Done |
+| **M5** Azure + pilot | ✅ Deployed · ⏳ residuals below |
+
+**M5 residuals.** The infrastructure milestone is met; two of its stated exit criteria are not yet:
+
+- **A real vibe-coded pilot app end to end** (`azx deploy` → SSO login → app calls the LLM gateway) — the original §12 v0 definition of done. Until one exists, "the platform works" is an argument from its test suite and its deployment, not from a user.
+- **Confirm the egress firewall (`deployFirewall`) is on in the live deployments.** It defaults `true`, but it is operator-optional for cost reasons and turning it off silently removes what ADR [0005](adr/0005-ssrf-egress-controls.md) names the **primary** SSRF control, leaving the app-level `ssrf.ts` denylist — explicitly defense-in-depth — carrying the whole outbound posture. This is a check, not an assumption, precisely because the failure is invisible from inside the app.
 
 Much of the **v1 backlog (§5)** was also pulled forward against the local stack — see that section for item-by-item status.
 
@@ -87,10 +92,14 @@ The §4.2 / Appendix A flow: central callback on the auth host, OIDC against loc
 `/_api/llm/*` on the edge: streaming proxy via the `LlmProvider` interface, per-app model allowlist, token budgets with finish-in-flight/block-new semantics, metering + audit records per call. Origin validation on `/_api/*` (CSRF — §4.2). Test quota edge cases against the fake provider; verify streaming against a real vendor.
 
 ### M4.5 — Egress mechanism plane: fetch-proxy + secret-backed connections ✅ Done (local)
-The `azx-egress` service (`apps/egress`, DB role `helix_egress`) as its own deployable unit from day one — **not** built in-edge and extracted later (architecture §3). The edge stays the policy plane (identity, authz, quota, audit) and hands a signed attested instruction to egress, which resolves connection secrets, injects credentials server-side, enforces SSRF controls, and makes the outbound call. Ships with: `/_api/fetch/<url>` on the edge; the **opt-in transparent fetch/XHR shim** injected at serve time (`capabilities.fetch.shim` → `/_helix/fetch-shim.js`, so unedited `fetch()`/`axios` calls route through the proxy); the `SecretStore` seam (`packages/secret-store` — dev envelope / prod Key Vault); secret CRUD + the manifest `connection` binding through the approval write-gate; the app-scoped Secrets card and the global-admin Secrets page; the `helix_edge`-can't-read-`material` role-split assertion; and the adversarial SSRF suite (DNS-rebind, redirect-to-IMDS, header smuggling). The prod Key Vault impl landed here too (pulled forward — ADR-0031 made it a hard prerequisite); it is unexercised against a live vault until the M5 deploy. Designs: `docs/design/fetch-proxy.md`, `docs/design/secrets-and-connections.md`.
+The `azx-egress` service (`apps/egress`, DB role `helix_egress`) as its own deployable unit from day one — **not** built in-edge and extracted later (architecture §3). The edge stays the policy plane (identity, authz, quota, audit) and hands a signed attested instruction to egress, which resolves connection secrets, injects credentials server-side, enforces SSRF controls, and makes the outbound call. Ships with: `/_api/fetch/<url>` on the edge; the **opt-in transparent fetch/XHR shim** injected at serve time (`capabilities.fetch.shim` → `/_helix/fetch-shim.js`, so unedited `fetch()`/`axios` calls route through the proxy); the `SecretStore` seam (`packages/secret-store` — dev envelope / prod Key Vault); secret CRUD + the manifest `connection` binding through the approval write-gate; the app-scoped Secrets card and the global-admin Secrets page; the `helix_edge`-can't-read-`material` role-split assertion; and the adversarial SSRF suite (DNS-rebind, redirect-to-IMDS, header smuggling). The prod Key Vault impl landed here too (pulled forward — ADR-0031 made it a hard prerequisite), and is verified against a live vault in the deployment rather than only against test fakes. Designs: `docs/design/fetch-proxy.md`, `docs/design/secrets-and-connections.md`.
 
-### M5 — Azure + pilot ⬜ Next
-Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-permitted network zone**; edge/portal with no outbound internet route), Postgres flexible server, Blob, Key Vault, Entra app registration ([runbook](runbooks/entra-app-registration.md) — three registrations, single `platform-admin` app role), wildcard DNS + cert on `azx.helix.azxlabs.io`. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway. **v0 done.**
+### M5 — Azure + pilot ✅ Deployed (pilot outstanding)
+Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-permitted network zone**; edge/portal with no outbound internet route), Postgres flexible server, Blob, Key Vault, Entra app registration ([runbook](runbooks/entra-app-registration.md) — three registrations, single `platform-admin` app role), wildcard DNS + cert on the apps domain. Deploy a real vibe-coded pilot app end to end: `azx deploy` → SSO login → app calls LLM through the gateway.
+
+**Landed:** the IaC is real and applied (`infra/azure`, Bicep) — the three planes on Container Apps across two ACA environments, private-endpoint-only Postgres/Blob/Key Vault, the least-privilege managed-identity matrix, real Entra OIDC replacing `dev-idp`, and automated wildcard TLS via a scheduled certbot job (DNS-01). Key Vault custody is verified against a live vault. Beyond the original scope: platform secrets by direct injection rather than ACA Key Vault references (ADR [0029](adr/0029-platform-secret-delivery.md)), images from public GHCR rather than a private ACR, an ACA job that applies migrations, the opt-in dev-gateway, and operator flags for public/password app hosting.
+
+**Outstanding:** the pilot app itself, and confirming `deployFirewall` (see the residuals note in §4). The definition of done was a *user* on a *real app* — the deployment is the means, not the criterion.
 
 ## 5. v1 backlog (rough order, re-plan after v0)
 

@@ -149,7 +149,8 @@ the portal migration `20260616000001_edge_role_grants` (see
   `Secure` and app crypto APIs need a secure context).
 - **Azure Blob** in production; dev uses Azurite. The signing/stream path is provider-shaped
   already.
-- A real Entra app registration (M3 tail, config-only) and the Azure deploy (M5).
+- _(Since shipped: the real Entra app registration and the Azure deploy both landed — the edge
+  now serves on the wildcard apps domain in production.)_
 
 Visibility at serving is fully wired: `public` apps short-circuit the gate (served to everyone,
 no session), `password` apps route through the gate to their own same-origin `/_auth/login`

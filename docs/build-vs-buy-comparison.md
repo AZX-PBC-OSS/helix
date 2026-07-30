@@ -138,8 +138,9 @@ the value is the *combination*, and the combination is opinionated to one threat
 
 > **Caveat on Helix's ● scores.** These mark *architectural* coverage — Helix is designed for
 > each criterion — not that every control is fully hardened today. Notably C4/C6 carry open
-> items the ADRs track: the dev secret envelope is not the prod boundary (Key Vault is M5 —
-> [ADR-0006](adr/0006-secret-custody-seam.md)); the egress response filter is a blocklist with
+> items the ADRs track: the dev secret envelope is not the prod boundary — though the prod
+> Key Vault store is now wired and live-verified
+> ([ADR-0006](adr/0006-secret-custody-seam.md)); the egress response filter is a blocklist with
 > gaps and the injection path still accepts `http://` ([ADR-0005](adr/0005-ssrf-egress-controls.md),
 > issues #7/#8/#11); and a legacy ungated LLM-key fallback still exists
 > ([ADR-0008](adr/0008-llm-key-via-egress.md), issue #10). See [`TODO.md`](../TODO.md) for the
@@ -239,9 +240,11 @@ A design review should hear the strongest version of the other side:
   ops/SLA/billing surface would favor a managed PaaS; we explicitly scope to "tens of apps,
   one org" (§2, C8) and keep multi-org as a non-blocking future (§9).
 - **Component-level buys we should keep open:** wrapping the `LlmProvider` seam around
-  LiteLLM/Portkey, and the prod `SecretStore` around Key Vault (already the M5 plan). These
-  are "buy a part behind a seam," which the architecture is explicitly built to allow — and
-  they don't change the build-vs-buy verdict on the platform.
+  LiteLLM/Portkey. The equivalent move on the custody side is **already made** — the prod
+  `SecretStore` is Key Vault behind the seam, and it swapped in with the portal and egress
+  call sites untouched, which is the cleanest evidence available that "buy a part behind a
+  seam" is real here rather than aspirational. It didn't change the build-vs-buy verdict on
+  the platform, and neither would the LLM one.
 
 **Cost of building:** real, and concentrated in the auth handoff and the gateway/egress planes
 (M3–M4.5, mostly done locally). **Cost of buying:** the integration glue above, *plus* accepting

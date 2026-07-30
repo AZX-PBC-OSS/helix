@@ -431,8 +431,9 @@ Call these out only if you disagree with the *decision*, not as bugs:
 
 ## 16. Out of scope for this review
 
-- **Real Entra** verification — the M3 tail; the seams are env-only by design, exercised
-  end-to-end against the local issuer.
+- **Real Entra** verification — now live in the deployed platform (the swap was env-only, as
+  designed). This guide's walkthrough still uses the local issuer, which exercises the identical
+  flow.
 - **Admin per-user *session* revocation UI** — the `sessions` table is migrated but there is
   no revoke route/UI yet (project plan §5.7). (Logout and app-disable already revoke; this is
   the admin-initiated kill of a *specific* live session.)

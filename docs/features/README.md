@@ -10,14 +10,14 @@ track the **code as it stands today**; the _why_ behind the design lives in
 [`../design/app-data-storage.md`](../design/app-data-storage.md). Section references
 ("§4.2", "project plan §6", "app-data design §3.2") point back into those.
 
-> **Status: M4.5 (local) — Egress & Connections.** Everything M2/M3/M4 had (registry + deploys,
+> **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Everything M2/M3/M4 had (registry + deploys,
 > edge serving, the OIDC auth flow, the `/_api/*` LLM + app-data gateway with a Postgres role
 > split) **plus** the **`azx-egress`** mechanism plane: the fetch-proxy (`/_api/fetch/<url>`) and
 > secret-backed connections, built as their own container from day one. The edge stays the policy
 > plane; egress is the only component with app **connection** secrets and an **arbitrary** internet
 > route (the edge is not secretless — it holds its own operational keys, and today an over-broad
-> Blob key; ADR-0001). Still ahead:
-> a real Entra app registration and the Azure deploy (M5).
+> Blob key; ADR-0001). The Entra registration and the Azure deploy have both landed; still ahead
+> is a real pilot app end to end.
 
 ## The platform in one paragraph
 

@@ -12,16 +12,18 @@ why_), and [`docs/platform-project-plan.md`](./docs/platform-project-plan.md) (t
 in what order_). The whole design rests on one stance — **every hosted app is untrusted code** —
 and contains the blast radius per app instead of trying to verify it.
 
-> **Status: M4.5 (local) — Egress & Connections.** Registry + deploys (portal API + `azx` CLI),
-> edge serving on `*.local.helix.azxlabs.io`, the §4.2 / Appendix A auth flow against a **local OIDC
-> issuer** (central callback, one-time handoff token, `__Host-session` cookies, server-side
+> **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Registry + deploys
+> (portal API + `azx` CLI),
+> edge serving on the wildcard apps domain, the §4.2 / Appendix A auth flow against **real Entra**
+> in production and a local OIDC issuer in dev (central callback, one-time handoff token,
+> `__Host-session` cookies, server-side
 > sessions, group visibility, silent refresh, password/public modes, `/_api/me`; portal/CLI
 > bearer JWTs), the `/_api/*` **gateway** (LLM proxy `/_api/llm/chat`, app-data `/_api/data/*` —
 > user / collection / shared — with a metering ledger and the Postgres role split), an enforced
 > capability **approval** workflow, **plus the `azx-egress` mechanism plane**: the fetch-proxy
 > (`/_api/fetch/<url>` + an opt-in transparent fetch/XHR shim) and secret-backed connections,
-> built as a third container from day one. A real Entra registration (M3 tail) and the Azure
-> deploy (M5) are next.
+> built as a third container from day one. The Entra registration and the Azure deploy have both
+> landed; a real pilot app end to end is the outstanding M5 residual.
 
 ## Layout
 

@@ -21,6 +21,15 @@ In v0, edge and portal *may* ship as a single binary keyed by hostname, while eg
 
 Decide the trigger for making the edge/portal split physical (e.g. before onboarding external app owners, or before M5 prod). Until then, document that v0 co-deploy is an accepted, time-boxed boundary collapse.
 
+## Resolution (2026-07) — the Azure deploy made the split physical
+
+The question is answered by deployment rather than by decision. `infra/azure` provisions **edge, portal and egress as three separate container apps** (`main.bicep` → `edgeApp` / `portalApp` / `egressApp`), with the portal on internal ingress only and unreachable from app subdomains. So in the deployed platform the boundary collapse described above **does not exist**: an edge compromise is not in-process with a `helix_portal`-capable control plane, and the "three blast radii" claim the 2026-06-25 reviewers flagged is now literally true there.
+
+What survives is narrower and worth stating rather than quietly dropping:
+
+- **Co-deploy remains possible in code.** The trade-off documented above still applies to any topology that runs them together, so this ADR is not obsolete — it describes a configuration the codebase still permits. The CI gate proposed in `TODO.md` (refuse co-deploy when `NODE_ENV=production`) is what would make the physical split a *guarantee* rather than a property of the current Bicep; it has not been added.
+- **The portal still connects to Postgres as the schema owner** (ADR [0002](0002-postgres-role-split-rls.md)), so process separation is now real while the in-DB privilege separation on the control-plane side is still partial.
+
 ## Review notes (2026-06-25)
 
 Two reviewers noted the footnote quietly undercuts the "three blast radii" claim; the decision is sound but the v0 trade-off should be stated explicitly rather than as an aside.

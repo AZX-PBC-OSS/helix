@@ -63,6 +63,49 @@ environment (architecture §8):
   a version-pinned plaintext cache; `destroy()` is a *soft* delete under purge
   protection. (ADR-0006 and its 2026-07-29 amendment.)
 
+Which backend is in play is decided in one place — `apps/portal/src/secrets/custody.ts`
+for the portal, `apps/egress/src/config.ts` for egress — off two env vars:
+`AZURE_KEY_VAULT_URL` (Key Vault, wins if both are set) and `DEV_SECRETS_KEK_FILE`
+(the dev envelope). Neither configured means no store; **configured-but-broken
+throws** — a missing KEK or an unusable credential is never a fallback to a weaker
+seal. The vault URL must be `https:`. Material is scheme-checked on read, so an
+environment sealed under the dev envelope and then pointed at a vault fails every
+secret at once with a named scheme rather than a vague "malformed"; egress also
+warns at boot with a count of cross-scheme rows.
+
+**Live-vault status.** Verified in the deployment against a real Key Vault
+(2026-07-30) — the portal seals and egress opens through the vault under the real
+managed identities, not just against the test fakes. The local suite (unit +
+cross-seam integration against injected transports) proves `material` portability
+but deliberately cannot prove identity separation: both stores there share one stub
+`getToken` and the fake vault ignores the authorization header. See `TODO.md` for
+the one assertion that still wants a live check — that the **edge** identity is
+refused by `kv-connections`, which is grant-*absence* and so fails open in every
+test that doesn't look for it.
+
+### Orphan safety on write (prod-only, invisible in dev)
+
+`seal()` writes the value to the vault **before** the DB row exists, so any failure
+between the two strands a live, unreferenced credential under a deliberately opaque
+random name — with no audit trail and, under purge protection, unremovable for 90
+days. Three mechanisms close it, and none of them is observable in dev, where
+`destroy()` is a no-op and `material` *is* the row:
+
+- **Rollback on every seal→write path.** A failed create or rotate releases the
+  entry it just minted, audited as `secret.destroy_failed` with a
+  `create-rollback` / `rotate-rollback` reason (the `kv:` reference is recorded —
+  a reference, not a credential; dev ciphertext is never copied into the audit
+  table). A *failed* rollback is likewise audited so an operator can find the
+  orphan.
+- **Compare-and-swap on rotate → `409`.** Two concurrent rotations both succeed
+  under a plain update, both release the *same* original, and strand the loser's
+  fresh entry. Losing the CAS is now a `409`, not a silent `200` — the API is
+  telling the caller their value is **not** what is stored, and the rotation should
+  be retried.
+- **A partial unique index on the admin scopes** (`app_secrets_admin_scope_name_key`),
+  because `appId IS NULL` defeats the model's `@@unique` and the route's pre-check
+  is a non-atomic read-then-insert.
+
 Encryption-at-rest only buys anything when the key and the ciphertext have
 *different* exposure profiles — so the key never sits next to the ciphertext.
 The original plan was an env-var KEK; it was **reversed**, because

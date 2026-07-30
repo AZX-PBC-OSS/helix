@@ -119,10 +119,11 @@ portal serve it at :3001.
 ## Planned / not yet built
 
 - **Per-app RBAC** (owner / editor / viewer) — the only `PreviewBadge` left (`milestone="v1"`).
-  v0 authz is deliberately flat (authenticated == authorized, ADR-0007): any authenticated portal
-  actor may mutate **any** app and manage **any** app's secrets, with **no `ownsApp` check** on the
-  app-scoped mutating + secret routes — a live BOLA/IDOR to close before M5 (issue #9), not a benign
-  placeholder. Actions are attributed in the audit trail, but attribution is not authorization.
+  v0 authz was deliberately flat (authenticated == authorized, ADR-0007). The server side is no
+  longer flat for **writes**: an `ownsApp` owner-or-admin gate guards the app-scoped mutating and
+  secret routes (issue #9). Two things remain — reads are still authenticated-only, and the SPA
+  still *renders* mutate controls for apps the actor doesn't own, so the 403 is the boundary rather
+  than the UI. Actions are attributed in the audit trail, but attribution is not authorization.
 - **No Playwright/E2E suite yet** — there are colocated `*.test.tsx` (apps-list, settings-tab,
   versions-tab, secrets-admin) running under a dedicated **jsdom Vitest project** (root
   `vitest.config.ts` splits the node suite from the portal-web jsdom suite, which carries the React

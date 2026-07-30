@@ -64,5 +64,6 @@ through the device page, and `decodeJwtPayload()`. These back the edge and CLI i
 
 ## Planned / not yet built
 
-- Production swaps this for an **Entra** app registration (config-only — the M3 tail). The
-  issuer/clients are the only things that change; the flows are identical.
+- Production **has** swapped this for an **Entra** app registration, and the swap was config-only
+  as designed — the issuer/clients were the only things that changed, the flows are identical.
+  This service remains dev-only and is never deployed.
