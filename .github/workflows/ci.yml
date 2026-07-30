@@ -188,12 +188,18 @@ jobs:
       - name: Smoke-test the installed binary
         # The load-bearing step: a clean global prefix, and tsx removed from
         # PATH entirely, so this passes only if the published artifact really
-        # runs on plain node.
+        # runs on plain node. Node's own bin dir has to stay on PATH — the
+        # bundle's `#!/usr/bin/env node` shebang needs an interpreter, and
+        # setup-node's is in the toolcache, not /usr/bin — but that dir holds
+        # only node/npm/npx/corepack, so keeping it smuggles nothing back in.
+        # The `command -v tsx` guard below is what actually enforces that.
         run: |
+          NODE_BIN="$(dirname "$(command -v node)")"
           npm config set prefix "$RUNNER_TEMP/npm-global"
           npm i -g "$TARBALL"
           rm -rf node_modules packages/cli/node_modules
-          export PATH="$RUNNER_TEMP/npm-global/bin:/usr/bin:/bin"
+          export PATH="$RUNNER_TEMP/npm-global/bin:$NODE_BIN:/usr/bin:/bin"
+          command -v node || { echo "::error::node not on the stripped PATH"; exit 1; }
           command -v tsx && { echo "::error::tsx still on PATH — test is not proving anything"; exit 1; }
           helix --help | tee /tmp/help.txt
           grep -q 'helix deploy' /tmp/help.txt

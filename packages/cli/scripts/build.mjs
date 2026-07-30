@@ -31,8 +31,10 @@ await build({
   target: "node24",
   format: "esm",
   sourcemap: false,
-  // esbuild strips the source's own `#!/usr/bin/env -S tsx` shebang; the
-  // published bin must run on plain node, with no tsx anywhere on PATH.
+  // This banner is the bin's only shebang — `src/bin.ts` deliberately has
+  // none, since one there would be hoisted above this line and send the
+  // installed binary looking for tsx. The published bin must run on plain
+  // node, with no tsx anywhere on PATH.
   banner: { js: "#!/usr/bin/env node" },
   external: ["archiver", "openid-client", "zod"],
   logLevel: "info",
