@@ -384,10 +384,11 @@ az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
 ```
 
 Before enabling it on a real deployment, read the riders in
-[`docs/features/dev-mode.md`](../../docs/features/dev-mode.md): a verified
-`edgeTrustProxy` hop count (issue #13 — the dev throttle keys on the real client
-IP), a **distinct dev LLM budget** (the vendor key is env-agnostic), and the
-`dev-api` DNS/TLS binding (step 6, added when this flag is set).
+[`docs/features/dev-mode.md`](../../docs/features/dev-mode.md): a **short-window
+throttle** on the dev-gateway itself, a **distinct dev LLM budget** (the vendor
+key is env-agnostic), and the `dev-api` DNS/TLS binding (step 6, added when this
+flag is set). The `edgeTrustProxy` hop count is verified and already passed to
+this container, so it is no longer one of the riders (issue #13).
 
 ### 6. DNS + TLS
 

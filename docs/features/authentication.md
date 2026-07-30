@@ -121,10 +121,11 @@ Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 > holds across replicas (no more per-process N×), the atomic `INSERT … ON CONFLICT … RETURNING`
 > makes the login throttle **reserve-first** (closing the check-then-increment TOCTOU), and one
 > interval sweep in `server.ts` GCs it (the old never-scheduled `sweep()` is gone). Scrypt cost is
-> at OWASP's `N=2^17` (ISSUE-08). **One residual:** `trustProxy` is now a config knob
-> (`EDGE_TRUST_PROXY`, default off) but the correct Container Apps ingress hop count must still be
-> verified against the live deployment before per-client limits can be trusted — until then
-> `req.ip` may collapse to the ingress address (tracked under issue #13).
+> at OWASP's `N=2^17` (ISSUE-08). `trustProxy` is a config knob (`EDGE_TRUST_PROXY`, default off in
+> code) and the Container Apps ingress hop count is now **verified and set in the deployments**, so
+> `req.ip` is the real client and the per-client limits are per-client (issue #13). That value
+> belongs to a deployment's ingress topology, not to Helix — front the edge with a CDN or WAF and it
+> must be re-verified there.
 
 ### Crypto + key material
 

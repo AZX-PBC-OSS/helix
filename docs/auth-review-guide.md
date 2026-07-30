@@ -234,11 +234,14 @@ Review it as its own small front door:
   counts against the throttle; the verify is constant-time; the throttle key can't be
   bypassed by spoofable headers (it must derive the client IP the same trusted way the rest
   of the edge does).
-  > **Caveat — [ADR-0004](adr/0004-auth-model.md)/[ADR-0011](adr/0011-in-memory-rate-limiting.md).**
-  > The throttle is in-memory per-process and check-then-increment (non-atomic/TOCTOU), its
-  > `sweep()` is never scheduled (unbounded map growth), and `trustProxy` is unset — all of
-  > which weaken it under the shipped `maxReplicas>1`. scrypt cost (`N=2^14`) is below OWASP's
-  > `2^17`. Tracked as issue #13; know the true boundary rather than re-filing it.
+  > **Resolved — [ADR-0004](adr/0004-auth-model.md)/[ADR-0011](adr/0011-in-memory-rate-limiting.md), issue #13.**
+  > This review previously flagged four weaknesses here; all four are fixed, so don't re-file them.
+  > The throttle is now a **shared PG counter** (`PgCounterStore`, `rate_counters`) rather than an
+  > in-memory per-process map, so it holds under `maxReplicas>1`; the atomic upsert makes it
+  > reserve-first, closing the check-then-increment TOCTOU; one interval sweep in `server.ts` GCs it;
+  > `EDGE_TRUST_PROXY` is verified against the live ingress and set, so the key derives the real
+  > client IP; and scrypt is at OWASP's `N=2^17`. The remaining judgement call is the *policy* —
+  > window and threshold — not the mechanism.
 - **The session it mints.** On success `SessionStore.createActive` inserts an **active**
   session directly (no pending/redeem) with a fresh pseudonym (`pw_<random>`,
   `displayName: "Guest"`, **no groups**), so each visitor gets isolated `user`-scope storage.

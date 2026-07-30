@@ -70,7 +70,8 @@ param allowPublicApps = false
 param allowPasswordApps = false
 
 // Fastify trustProxy for the edge — the ACA Envoy ingress hop count. "1" is the
-// usual single-hop value; VERIFY against the live ingress (issue #13).
+// single-hop value and is verified correct against a live ACA external ingress
+// (issue #13). Re-verify only if something else fronts the edge (CDN, WAF).
 param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', '1')
 
 // Secrets — sourced from environment variables, never committed. Generate the

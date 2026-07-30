@@ -159,7 +159,7 @@ param allowPublicApps bool = false
 @description('Permit `password` (shared-passphrase) apps on this install. Sets the matched pair EDGE_ALLOW_PASSWORD_APPS + PORTAL_ALLOW_PASSWORD_APPS — same paired-planes reasoning as allowPublicApps; when false the edge 403s the assets and the /_auth/login challenge 404s. Default false (deny).')
 param allowPasswordApps bool = false
 
-@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — VERIFY against the live ingress before relying on per-client limits; a too-trusting value makes X-Forwarded-For spoofable.')
+@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — verified correct against a live ACA external ingress. Re-verify if anything else fronts the edge (CDN, WAF, second proxy): too low collapses every client into one bucket, too high makes X-Forwarded-For spoofable.')
 param edgeTrustProxy string = '1'
 
 @description('ACA custom-domain verification id (asuid TXT). Empty = skip.')
@@ -523,7 +523,9 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
 // dev-api.<appsDomain> and routing to env=dev. External ingress in the apps env
 // (a CORS surface for Lovable / cloud IDEs), reachable only when BOTH deployApps
 // and deployDevGateway are set. See docs/features/dev-mode.md for the riders
-// (distinct dev LLM budget; verified EDGE_TRUST_PROXY hop count) before enabling.
+// (a short-window throttle on the dev-gateway; a distinct dev LLM budget) before
+// enabling. EDGE_TRUST_PROXY is no longer a rider — the hop count is verified and
+// passed to this container below, so a throttle here keys on the real client IP.
 //
 // It never holds the helix_edge pool or a blob credential: loadDevGatewayConfig
 // reads ONLY the dev-gateway's own env (the helix_dev DSN + shared gateway
