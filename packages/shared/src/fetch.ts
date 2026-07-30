@@ -15,6 +15,42 @@ import { z } from "zod";
 /** Same-origin path prefix the edge serves the proxy on. */
 export const FETCH_PROXY_PREFIX = "/_api/fetch/";
 
+function safeDecode(s: string): string | null {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract the target URL from a `/_api/fetch/<url>` request URL — raw first,
+ * then percent-decoded, so both shapes the shim and hand-written callers
+ * produce resolve to the same target. `indexOf` rather than `startsWith`: the
+ * dev gateway serves the same handler under `/:slug/_api/fetch/*`.
+ *
+ * Shared because two callers must agree on what "the target" is: the gateway
+ * authorizes it against the manifest (`apps/edge/src/gateway/fetch.ts`) and the
+ * log serializer redacts it (`@azx-pbc/shared/logging`). If those two ever
+ * parsed differently, the log would describe a call the edge didn't make.
+ */
+export function parseFetchTarget(rawUrl: string): URL | null {
+  const i = rawUrl.indexOf(FETCH_PROXY_PREFIX);
+  if (i === -1) return null;
+  const tail = rawUrl.slice(i + FETCH_PROXY_PREFIX.length);
+  if (!tail) return null;
+  for (const candidate of [tail, safeDecode(tail)]) {
+    if (candidate === null) continue;
+    try {
+      const url = new URL(candidate);
+      if (url.protocol === "https:" || url.protocol === "http:") return url;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
 // ── Internal edge → egress transport (control via headers; bodies stream) ─────
 
 /** Carries the signed attested instruction JWT (edge → egress). */

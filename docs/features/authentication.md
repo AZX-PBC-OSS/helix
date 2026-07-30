@@ -137,6 +137,34 @@ Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
   `EDGE_AUTH_SECRET` (≥32 bytes). Auth env vars are set together or not at all; missing them
   fails closed.
 
+### Keeping the URL-borne token out of logs (issue #20)
+
+Steps 2–3 put live credentials in query strings (`?code=` on the callback, `?token=` on
+`/_auth/complete`), and the portal SPA's own redirect URI (`/auth/callback?code=…`) is the same
+shape on the control plane. Fastify's default request serializer would write all of them into
+stdout, which in Azure means 30 days of Log Analytics retention.
+[`@azx-pbc/shared/logging`](../../packages/shared/src/logging.ts) replaces that serializer with one
+that rewrites sensitive query values to `REDACTED` (names matched case-insensitively, after
+percent-decoding, `&`/`;`/`#` all treated as separators), on every route, with the rest of the URL
+byte-identical. `loggerOption()` is wired into **all four** Fastify services — edge, dev gateway,
+portal, egress — so the control plane doesn't leak what the data plane redacts.
+
+Two auth-specific consequences beyond the token itself:
+
+- **`error_description` never reaches a log.** `AuthorizationResponseError` carries it as an own
+  enumerable property, so pino's stock `err` serializer wrote IdP-chosen (and, with a valid flow
+  cookie + state, attacker-chosen) free text verbatim. `summarizeExchangeError`
+  (`apps/edge/src/auth/oidc.ts`) reduces an OAuth failure to its enumerated `error` code; anything
+  else — IdP down, bad nonce — keeps its full `err` and stack, because that text is ours.
+- **Both redirect legs** send `Cache-Control: no-store` + `Referrer-Policy: no-referrer`.
+
+The guarantee is scoped to the `req.url` field — Fastify's own double-send messages interpolate a
+raw URL, and hand-rolled log calls must pass `redactUrl` themselves. What we don't own — a Front
+Door / WAF / CDN placed in front of the edge, which logs full request URIs by default — is the ops
+note in [`apps/edge/README.md`](../../apps/edge/README.md#logging-and-redaction); browser history is
+the residual. Tests: `packages/shared/src/logging.test.ts`, `apps/edge/src/logging.test.ts`, and the
+callback-redirect + `error_description` cases in the adversarial suite.
+
 ### The adversarial suite (project plan §6)
 
 Anything touching this path changes its tests **in lockstep**:

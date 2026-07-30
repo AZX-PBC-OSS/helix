@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { LightMyRequestResponse } from "fastify";
+import { AuthorizationResponseError } from "openid-client";
+import { redactUrl } from "@azx-pbc/shared/logging";
 import { buildApp } from "../app.js";
+import { summarizeExchangeError } from "./oidc.js";
 import { deriveAuthKeys } from "./secrets.js";
 import { mintHandoffToken } from "./handoff.js";
 import { hashSessionToken, newSessionToken } from "./sessions.js";
@@ -164,6 +167,64 @@ describe("the happy path (everything the attacks try to subvert)", () => {
     expect(start.statusCode).toBe(302);
     expect(start.headers["cache-control"]).toBe("no-store");
     expect(start.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
+  it("the token-bearing callback redirect is no-store, no-referrer, and log-redacted", async () => {
+    const edge = buildAuthEdge();
+    const start = await edge.app.inject({
+      url: "/start?app=appa&rd=/page",
+      headers: AUTH_HOST,
+    });
+    const flowCookie = cookieValue(start, FLOW_COOKIE);
+    const state = new URL(start.headers.location as string).searchParams.get("state");
+
+    const callback = await edge.app.inject({
+      url: `/callback?code=good&state=${state}`,
+      headers: { ...AUTH_HOST, cookie: `${FLOW_COOKIE}=${flowCookie}` },
+    });
+    expect(callback.statusCode).toBe(302);
+    // The Location carries a live handoff token — no caches, no referrers...
+    expect(callback.headers["cache-control"]).toBe("no-store");
+    expect(callback.headers["referrer-policy"]).toBe("no-referrer");
+
+    // ...and no access logs, on either leg of the redirect (issue #20).
+    const completeUrl = new URL(callback.headers.location as string);
+    const handoff = completeUrl.searchParams.get("token") as string;
+    expect(handoff).toBeTruthy();
+    expect(redactUrl(`/callback?code=good&state=${state}`)).toBe(
+      `/callback?code=REDACTED&state=${state}`,
+    );
+    expect(redactUrl(completeUrl.pathname + completeUrl.search)).toBe(
+      "/_auth/complete?token=REDACTED",
+    );
+  });
+
+  it("a failed exchange logs the OAuth code, not the text the caller chose", async () => {
+    // Reachable with a valid flow cookie + state: `invalid_request` is not in
+    // SILENT_LOGIN_ERRORS, and the callback hands the raw query to exchangeCode.
+    // openid-client lifts `error_description` onto an own enumerable property,
+    // and carries the whole response in `cause` — pino's stock `err` serializer
+    // writes both verbatim (issue #20).
+    const params = new URLSearchParams({
+      error: "invalid_request",
+      error_description: "SENTINEL_SECRET_abc123",
+      state: "xyz",
+    });
+    const authError = new AuthorizationResponseError("authorization response error", {
+      cause: params,
+    });
+    expect(authError.error_description).toBe("SENTINEL_SECRET_abc123");
+
+    const logged = summarizeExchangeError(authError);
+    expect(JSON.stringify(logged)).not.toContain("SENTINEL_SECRET_abc123");
+    expect(logged).toEqual({
+      errName: "AuthorizationResponseError",
+      oauthError: "invalid_request",
+    });
+
+    // Anything that isn't an OAuth error keeps its stack: that text is ours.
+    const ours = new Error("discovery has not completed");
+    expect(summarizeExchangeError(ours)).toEqual({ err: ours });
   });
 
   it("silent=1 requests prompt=none from the IdP", async () => {

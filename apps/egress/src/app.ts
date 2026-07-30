@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema } from "@azx-pbc/shared";
+import { loggerOption } from "@azx-pbc/shared/logging";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
 import type { InstructionBurnStore } from "./burn.js";
@@ -24,7 +25,11 @@ export interface EgressDeps {
 }
 
 export function buildApp(deps: EgressDeps): FastifyInstance {
-  const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
+  // The same redacting serializer the edge and portal use (issue #20). Nothing
+  // here is query-borne today — `POST /proxy` carries the attested instruction
+  // in a header and the target in another — so this is for the next route, not
+  // a live leak.
+  const app = Fastify({ logger: loggerOption() });
 
   // The proxy re-streams arbitrary request bodies; never buffer/parse them.
   // `removeAllContentTypeParsers` is essential: Fastify's BUILT-IN

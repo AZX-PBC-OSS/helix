@@ -2,6 +2,7 @@ import fp from "fastify-plugin";
 import type { FastifyError } from "fastify";
 import { ZodError } from "zod";
 import type { ApiError, ApiErrorCode } from "@azx-pbc/shared";
+import { redactUrl } from "@azx-pbc/shared/logging";
 
 /** Default HTTP status for each error code. AppError may override. */
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
@@ -61,7 +62,13 @@ export const errorsPlugin = fp(
       ) {
         return reply.sendFile("index.html");
       }
-      reply.status(404).send(envelope("not_found", `route ${req.method} ${req.url} not found`));
+      // Redacted for the same reason the access log is: without a built SPA,
+      // `/auth/callback?code=…` falls through to here and the envelope would
+      // echo the authorization code into a body that ends up in consoles,
+      // client-side error reporting, and support tickets (issue #20).
+      reply
+        .status(404)
+        .send(envelope("not_found", `route ${req.method} ${redactUrl(req.url)} not found`));
     });
 
     app.setErrorHandler((err: FastifyError, req, reply) => {

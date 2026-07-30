@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   type FetchErrorCode,
-  FETCH_PROXY_PREFIX,
   OUTCOME_HEADER,
+  parseFetchTarget,
   REQUEST_HEADER_SAFELIST,
   RESPONSE_HEADER_BLOCKLIST,
 } from "@azx-pbc/shared";
@@ -58,32 +58,6 @@ function sendFetchError(
     .send({ code, message });
 }
 
-/** Extract the target URL from `/_api/fetch/<url>` (raw, then percent-decoded). */
-function parseTarget(rawUrl: string): URL | null {
-  const i = rawUrl.indexOf(FETCH_PROXY_PREFIX);
-  if (i === -1) return null;
-  const tail = rawUrl.slice(i + FETCH_PROXY_PREFIX.length);
-  if (!tail) return null;
-  for (const candidate of [tail, safeDecode(tail)]) {
-    if (candidate === null) continue;
-    try {
-      const url = new URL(candidate);
-      if (url.protocol === "https:" || url.protocol === "http:") return url;
-    } catch {
-      // try the next candidate
-    }
-  }
-  return null;
-}
-
-function safeDecode(s: string): string | null {
-  try {
-    return decodeURIComponent(s);
-  } catch {
-    return null;
-  }
-}
-
 function safeRequestHeaders(headers: FastifyRequest["headers"]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
@@ -128,7 +102,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       return;
     }
 
-    const target = parseTarget(req.raw.url ?? "");
+    const target = parseFetchTarget(req.raw.url ?? "");
     if (!target) {
       sendFetchError(reply, 400, "bad_target", "missing or invalid target URL");
       return;

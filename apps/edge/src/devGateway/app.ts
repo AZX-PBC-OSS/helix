@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema } from "@azx-pbc/shared";
+import { loggerOption } from "@azx-pbc/shared/logging";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { makeLlmHandler } from "../gateway/llm.js";
@@ -88,7 +89,10 @@ function slugOf(req: { params: unknown }): string {
 export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
   const { config } = deps;
   const app = Fastify({
-    logger: process.env.NODE_ENV !== "test",
+    // Same redacting serializer as the edge (issue #20). No handoff token
+    // reaches this process, but it serves `/:slug/_api/fetch/<url>` — where the
+    // app-chosen target URL, credentials and all, becomes our query string.
+    logger: loggerOption(),
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;

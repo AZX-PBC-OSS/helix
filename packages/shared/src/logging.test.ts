@@ -1,0 +1,228 @@
+import { describe, expect, it } from "vitest";
+import { loggerOption, redactUrl } from "./logging.js";
+
+describe("redactUrl — platform-minted credentials", () => {
+  it("redacts the Appendix A handoff token", () => {
+    expect(redactUrl("/_auth/complete?token=eyJhbGciOiJIUzI1NiJ9.abc.def")).toBe(
+      "/_auth/complete?token=REDACTED",
+    );
+  });
+
+  it("redacts the OIDC authorization code on both callbacks, keeping state", () => {
+    // The edge's auth host...
+    expect(redactUrl("/callback?code=SplxlOBeZQQYbYS6WxSbIA&state=xyz")).toBe(
+      "/callback?code=REDACTED&state=xyz",
+    );
+    // ...and the portal SPA's own redirect URI.
+    expect(redactUrl("/auth/callback?code=SplxlOBeZQQYbYS6WxSbIA&state=xyz")).toBe(
+      "/auth/callback?code=REDACTED&state=xyz",
+    );
+  });
+
+  it("redacts IdP-chosen error_description but keeps the enumerated error", () => {
+    expect(redactUrl("/callback?error=invalid_request&error_description=free+text&state=x")).toBe(
+      "/callback?error=invalid_request&error_description=REDACTED&state=x",
+    );
+  });
+
+  it("leaves URLs without a query untouched", () => {
+    expect(redactUrl("/")).toBe("/");
+    expect(redactUrl("/assets/app.js")).toBe("/assets/app.js");
+  });
+
+  it("preserves parameter order and every non-sensitive value", () => {
+    expect(redactUrl("/x?a=1&token=secret&b=2&code=secret2&c=3")).toBe(
+      "/x?a=1&token=REDACTED&b=2&code=REDACTED&c=3",
+    );
+  });
+
+  it("redacts repeats of the same parameter", () => {
+    expect(redactUrl("/x?token=one&token=two")).toBe("/x?token=REDACTED&token=REDACTED");
+  });
+
+  it("matches the name case-insensitively and through percent-encoding", () => {
+    expect(redactUrl("/x?TOKEN=secret")).toBe("/x?TOKEN=REDACTED");
+    expect(redactUrl("/x?%74oken=secret")).toBe("/x?%74oken=REDACTED");
+    expect(redactUrl("/x?+token+=secret")).toBe("/x?+token+=REDACTED");
+  });
+
+  it("does not redact parameters that merely contain a sensitive name", () => {
+    expect(redactUrl("/x?tokenish=fine&mycode=fine&rd=/token")).toBe(
+      "/x?tokenish=fine&mycode=fine&rd=/token",
+    );
+  });
+
+  it("keeps `=`-bearing values intact when redacting (splits on the first `=`)", () => {
+    expect(redactUrl("/x?token=a=b=c&next=/a?b=c")).toBe("/x?token=REDACTED&next=/a?b=c");
+  });
+
+  it("survives malformed query strings", () => {
+    expect(redactUrl("/x?")).toBe("/x?");
+    expect(redactUrl("/x?token")).toBe("/x?token"); // no value to leak
+    expect(redactUrl("/x?%zz=1&token=secret")).toBe("/x?%zz=1&token=REDACTED");
+    expect(redactUrl("/x?&&token=secret&&")).toBe("/x?&&token=REDACTED&&");
+  });
+});
+
+describe("redactUrl — the third-party credential names", () => {
+  it("redacts the common API-key and signed-URL conventions", () => {
+    for (const name of [
+      "api_key",
+      "apikey",
+      "key",
+      "sig",
+      "signature",
+      "secret",
+      "client_secret",
+      "password",
+      "passphrase",
+      "assertion",
+      "authorization",
+      "session",
+      "sid",
+      "access_token",
+      "refresh_token",
+      "id_token",
+    ]) {
+      expect(redactUrl(`/x?${name}=SENTINEL`)).toBe(`/x?${name}=REDACTED`);
+    }
+  });
+
+  it("redacts an Azure SAS query while keeping its non-secret parts", () => {
+    expect(redactUrl("/x?sv=2021-08-06&se=2026-01-01&sp=r&sig=abc%2Bdef")).toBe(
+      "/x?sv=2021-08-06&se=2026-01-01&sp=r&sig=REDACTED",
+    );
+  });
+});
+
+describe("redactUrl — no unscanned windows", () => {
+  it("scans the fragment too (a fragment on the wire is hand-crafted)", () => {
+    expect(redactUrl("/x?a=1#token=SUPERSECRET")).toBe("/x?a=1#token=REDACTED");
+  });
+
+  it("splits on `;` as well as `&`", () => {
+    expect(redactUrl("/_auth/complete?rd=/;token=SECRET")).toBe(
+      "/_auth/complete?rd=/;token=REDACTED",
+    );
+    expect(redactUrl("/x?a=1;token=SECRET;b=2")).toBe("/x?a=1;token=REDACTED;b=2");
+  });
+});
+
+/**
+ * `/_api/fetch/<target>`: the target is an arbitrary third-party URL the app
+ * chose, so no name list covers it — the rule is to keep origin + path and drop
+ * the query wholesale. Cases mirror the ones the review probed.
+ */
+describe("redactUrl — the fetch-proxy target", () => {
+  it("A: drops the target's query, which the shim splices in unencoded", () => {
+    expect(
+      redactUrl("/_api/fetch/https://api.example.com/v1?api_key=sk-live-DEADBEEF&token=t"),
+    ).toBe("/_api/fetch/https://api.example.com/v1?REDACTED");
+  });
+
+  it("B: covers a percent-encoded target, where the query hides in the path", () => {
+    expect(
+      redactUrl("/_api/fetch/https%3A%2F%2Fapi.example.com%2Fv1%3Faccess_token%3Dsk-live-DEADBEEF"),
+    ).toBe("/_api/fetch/https://api.example.com/v1?REDACTED");
+  });
+
+  it("D: drops `user:pass@` userinfo (origin excludes it)", () => {
+    expect(redactUrl("/_api/fetch/https://user:pa55w0rd@api.example.com/v1")).toBe(
+      "/_api/fetch/https://api.example.com/v1",
+    );
+  });
+
+  it("keeps origin + path when the target has no query", () => {
+    expect(redactUrl("/_api/fetch/https://api.example.com/v1/models")).toBe(
+      "/_api/fetch/https://api.example.com/v1/models",
+    );
+  });
+
+  it("covers the dev gateway's slug-prefixed route", () => {
+    expect(redactUrl("/demo/_api/fetch/https://api.example.com/v1?sig=SECRET")).toBe(
+      "/demo/_api/fetch/https://api.example.com/v1?REDACTED",
+    );
+  });
+
+  it("drops an unparseable target entirely (it can only 400)", () => {
+    expect(redactUrl("/_api/fetch/not-a-url?token=x")).toBe("/_api/fetch/REDACTED");
+    expect(redactUrl("/_api/fetch/")).toBe("/_api/fetch/REDACTED");
+  });
+
+  it("matches the prefix in the PATH only — a query value can't divert the scan", () => {
+    // Otherwise this URL takes the fetch branch, whose `head` is everything
+    // before the prefix — carrying the token straight back into the log.
+    expect(redactUrl("/x?token=SECRET&y=/_api/fetch/https://api.example.com/")).toBe(
+      "/x?token=REDACTED&y=/_api/fetch/https://api.example.com/",
+    );
+  });
+});
+
+describe("loggerOption", () => {
+  it("is off under NODE_ENV=test", () => {
+    expect(loggerOption("test")).toBe(false);
+  });
+
+  it("carries the redacting serializer otherwise", () => {
+    for (const env of ["production", "development"]) {
+      const option = loggerOption(env);
+      expect(option).not.toBe(false);
+      expect(typeof (option as { serializers: { req: unknown } }).serializers.req).toBe("function");
+    }
+  });
+
+  it("logs when NODE_ENV is unset — only `test` is quiet", () => {
+    const saved = process.env.NODE_ENV;
+    try {
+      delete process.env.NODE_ENV;
+      expect(loggerOption()).not.toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = saved;
+    }
+  });
+
+  it("mirrors Fastify's default req fields, with the url redacted", () => {
+    const option = loggerOption("production");
+    expect(option).not.toBe(false);
+    const serialize = (option as { serializers: { req: (r: unknown) => unknown } }).serializers.req;
+
+    expect(
+      serialize({
+        method: "GET",
+        url: "/_auth/complete?token=SECRET",
+        host: "demo.local.helix.azxlabs.io",
+        ip: "203.0.113.7",
+        headers: { "accept-version": "1.x" },
+        socket: { remotePort: 54321 },
+      }),
+    ).toEqual({
+      method: "GET",
+      url: "/_auth/complete?token=REDACTED",
+      version: "1.x",
+      host: "demo.local.helix.azxlabs.io",
+      remoteAddress: "203.0.113.7",
+      remotePort: 54321,
+    });
+  });
+
+  it("does not throw when the socket is gone (pino would lose the whole line)", () => {
+    const option = loggerOption("production");
+    expect(option).not.toBe(false);
+    const serialize = (option as { serializers: { req: (r: unknown) => { remotePort?: number } } })
+      .serializers.req;
+
+    expect(serialize({ method: "GET", url: "/", headers: {} }).remotePort).toBeUndefined();
+  });
+
+  it("drops a duplicated accept-version header rather than logging an array", () => {
+    const option = loggerOption("production");
+    expect(option).not.toBe(false);
+    const serialize = (option as { serializers: { req: (r: unknown) => { version?: string } } })
+      .serializers.req;
+
+    expect(
+      serialize({ method: "GET", url: "/", headers: { "accept-version": ["1.x", "2.x"] } }).version,
+    ).toBeUndefined();
+  });
+});

@@ -19,8 +19,9 @@ export * from "./env.js";
 export * from "./devTokens.js";
 export * from "./instruction.js";
 export * from "./fetch.js";
-// NB: `./bodyCap.js` and `./devToken.js` are deliberately NOT re-exported here —
-// they depend on `node:stream`/`Buffer` / `node:crypto`, and this barrel is
-// consumed by the browser SPA (`apps/portal-web`, moduleResolution: bundler, no
-// node types). Server code imports them from the `@azx-pbc/shared/bodyCap` and
-// `@azx-pbc/shared/devToken` subpaths instead.
+// NB: `./bodyCap.js`, `./devToken.js` and `./logging.js` are deliberately NOT
+// re-exported here — they depend on `node:stream`/`Buffer` / `node:crypto` /
+// `process.env`, and this barrel is consumed by the browser SPA
+// (`apps/portal-web`, moduleResolution: bundler, no node types). Server code
+// imports them from the `@azx-pbc/shared/bodyCap`, `@azx-pbc/shared/devToken`
+// and `@azx-pbc/shared/logging` subpaths instead.

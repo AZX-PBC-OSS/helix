@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { HealthStatusSchema } from "@azx-pbc/shared";
+import { loggerOption } from "@azx-pbc/shared/logging";
 import type { PrismaClient } from "./db/client.js";
 import type { BlobStore } from "./blob/store.js";
 import type { SecretStore } from "@azx-pbc/secret-store";
@@ -52,7 +53,11 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   assertDeploymentConfig();
 
   const app = Fastify({
-    logger: process.env.NODE_ENV !== "test",
+    // The SPA's OIDC redirect URI is `/auth/callback?code=…` on this very
+    // origin (routes/spa.ts serves it as a deep link), so the portal logs the
+    // same shape of credential the edge does — same stdout, same Log Analytics
+    // retention. Redact it (issue #20 — `@azx-pbc/shared/logging`).
+    logger: loggerOption(),
   });
 
   app.register(errorsPlugin);

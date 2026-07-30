@@ -184,8 +184,12 @@ export function makeCallbackHandler(rt: AuthHostRuntime) {
     const complete = new URL(`${publicOrigin(rt.config, entry.slug)}/_auth/complete`);
     complete.searchParams.set("token", handoff);
     reply
-      // The token is in this URL: keep it out of referrers and caches.
+      // The token is in this URL: keep it out of referrers and caches. A 302
+      // isn't cacheable without explicit headers, but the Location carries a
+      // live credential — say so rather than rely on the default (issue #20;
+      // the access-log half is `src/logging.ts`).
       .header("referrer-policy", "no-referrer")
+      .header("cache-control", "no-store")
       .redirect(complete.toString(), 302);
   };
 }

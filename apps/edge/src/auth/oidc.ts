@@ -109,6 +109,31 @@ export async function buildClientAuth(
 
 const SILENT_LOGIN_ERRORS = new Set(["login_required", "interaction_required", "consent_required"]);
 
+/**
+ * What we're willing to retain about a failed code exchange (issue #20).
+ *
+ * `AuthorizationResponseError` carries `error_description` as an own enumerable
+ * property, so pino's stock `err` serializer writes it verbatim — and that field
+ * is free text chosen by whoever drove the IdP response. It is reachable: the
+ * callback handler passes the raw query to `exchangeCode` with no short-circuit
+ * on `error`, so anyone holding a valid flow cookie + state can hit
+ * `/callback?error=invalid_request&error_description=<text>` (`invalid_request`
+ * is not in SILENT_LOGIN_ERRORS) and place bounded text of their choosing into
+ * 30 days of retained logs. Nothing redeemable leaks, but the whole point of the
+ * URL redaction is that request-derived content doesn't reach the log.
+ *
+ * So an OAuth error is reduced to its **enumerated** code — which is what triage
+ * actually keys on — while any other failure (IdP unreachable, discovery not
+ * done, a bad nonce from `jose`) keeps its full `err` with the stack, since that
+ * text is ours.
+ */
+export function summarizeExchangeError(err: unknown): object {
+  if (err instanceof oidc.AuthorizationResponseError) {
+    return { errName: err.name, oauthError: err.error };
+  }
+  return { err };
+}
+
 export interface OidcLogger {
   info(msg: string): void;
   warn(obj: object, msg: string): void;
@@ -213,7 +238,7 @@ export class OpenIdConnectClient implements OidcClient {
       }
       // Everything else — bad state, bad nonce, bad code, IdP down — is one
       // opaque failure to the caller; detail goes to logs only.
-      this.#log.warn({ err }, "OIDC code exchange failed");
+      this.#log.warn(summarizeExchangeError(err), "OIDC code exchange failed");
       return { kind: "invalid" };
     }
   }
