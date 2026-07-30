@@ -59,7 +59,11 @@ export class PortalClient {
   }
 
   listVersions(slug: string): Promise<Version[]> {
-    return this.#json(VersionListSchema, "GET", `/api/v1/apps/${enc(slug)}/versions`, {});
+    // `auth: true` — portal reads are sign-in-gated too (ADR-0024); only
+    // /health and the auth-config bootstrap are public.
+    return this.#json(VersionListSchema, "GET", `/api/v1/apps/${enc(slug)}/versions`, {
+      auth: true,
+    });
   }
 
   promote(slug: string, number: number): Promise<App> {
