@@ -23,14 +23,12 @@ export function DeployProvider({ children }: { children: ReactNode }) {
   return (
     <DeployCtx.Provider value={value}>
       {children}
+      {/* Registering an app is step 1 *inside* the deploy modal; this standalone
+          one is for the "just register it, I'll deploy later" path. */}
       <DeployModal
         opened={deploySlug !== undefined}
         initialSlug={deploySlug ?? undefined}
         onClose={() => setDeploySlug(undefined)}
-        onCreateApp={() => {
-          setDeploySlug(undefined);
-          setCreateOpen(true);
-        }}
       />
       <CreateAppModal opened={createOpen} onClose={() => setCreateOpen(false)} />
     </DeployCtx.Provider>

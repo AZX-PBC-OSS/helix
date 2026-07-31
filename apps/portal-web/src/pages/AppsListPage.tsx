@@ -124,7 +124,7 @@ type Filter = "all" | "live" | "preview" | "archived";
 export function AppsListPage() {
   const apps = useQuery(appsQuery);
   const { appHost, appUrl } = useDeployment();
-  const { openDeploy } = useDeploy();
+  const { openDeploy, openCreate } = useDeploy();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
 
@@ -157,9 +157,18 @@ export function AppsListPage() {
         title="My Apps"
         sub="Static apps you've deployed."
         actions={
-          <Button leftSection={<Icon name="upload" size={15} />} onClick={() => openDeploy()}>
-            Deploy app
-          </Button>
+          <>
+            <Button
+              variant="default"
+              leftSection={<Icon name="plus" size={15} />}
+              onClick={openCreate}
+            >
+              New app
+            </Button>
+            <Button leftSection={<Icon name="upload" size={15} />} onClick={() => openDeploy()}>
+              Deploy app
+            </Button>
+          </>
         }
       />
 

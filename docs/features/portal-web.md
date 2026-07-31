@@ -52,8 +52,15 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     `GET /api/v1/secrets` (see [secrets-and-connections.md](./secrets-and-connections.md)).
   - **Violations** (`/admin/violations`) — CSP violation reports off `GET /api/v1/csp/violations`,
     each a one-click origin-grant request (`useGrantOrigin`).
-- **Deploy modal** — a drag-and-drop **zip upload** that renders the CSP lint warnings inline
-  (see [registry-and-deploys.md](./registry-and-deploys.md)).
+- **Deploy modal** (`src/modals/DeployModal.tsx`) — two ordered steps: **1 · Choose an app**
+  (pick an existing one, or register a new one right there via the shared `AppCreateForm`) and
+  **2 · Ship a build** — the `helix deploy --slug …` command or a drag-and-drop **zip upload**
+  that renders the CSP lint warnings inline (see
+  [registry-and-deploys.md](./registry-and-deploys.md)). Step 2 stays inert until step 1 has a
+  target, since both halves address the app by slug. Registration must stay reachable from step 1
+  itself: when it lived in the picker's `nothingFoundMessage`, a single existing app hid the only
+  path to creating a second one. The standalone `CreateAppModal` (**New app** on the apps list,
+  `openCreate` on `DeployContext`) is the same form for the register-now-deploy-later path.
 
 `src/api/queries.ts` / `mutations.ts` are TanStack Query hooks over a bearer-injecting client
 (`client.ts`), every response validated through a `@azx-pbc/shared` zod schema.
