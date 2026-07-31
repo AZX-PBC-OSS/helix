@@ -149,6 +149,19 @@ const PATHS: Record<string, ReactNode> = {
       <rect x="2" y="3" width="20" height="18" rx="2" />
     </>
   ),
+  book: (
+    <>
+      <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v17H6.5A2.5 2.5 0 0 0 4 21.5z" />
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M12 4v12" />
+      <path d="m6 10 6 6 6-6" />
+      <path d="M4 18v2h16v-2" />
+    </>
+  ),
 };
 
 export type IconName = keyof typeof PATHS;

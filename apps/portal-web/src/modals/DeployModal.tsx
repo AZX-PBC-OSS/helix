@@ -5,7 +5,6 @@ import {
   Box,
   Button,
   Code,
-  CopyButton,
   Group,
   Modal,
   Select,
@@ -20,7 +19,7 @@ import { useUploadVersion } from "../api/mutations";
 import { appsQuery } from "../api/queries";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon } from "../components/Icon";
-import { Hint, ToneBadge } from "../components/primitives";
+import { CopyBtn, Hint, ToneBadge } from "../components/primitives";
 
 /**
  * Deploy = upload a zipped build as a new immutable *preview* version
@@ -105,18 +104,7 @@ export function DeployModal({
                 <Code block style={{ flex: 1, fontSize: 13 }}>
                   {cliCmd}
                 </Code>
-                <CopyButton value={cliCmd}>
-                  {({ copied, copy }) => (
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={copy}
-                      leftSection={<Icon name="copy" size={13} />}
-                    >
-                      {copied ? "Copied" : "Copy"}
-                    </Button>
-                  )}
-                </CopyButton>
+                <CopyBtn value={cliCmd} label="Copy" size="sm" />
               </Group>
             </Stack>
           </Tabs.Panel>

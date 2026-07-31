@@ -211,7 +211,7 @@ Each app has a manifest (editable in the portal, versioned):
 app: cost-explorer
 visibility: private            # private | group | password | public
 capabilities:
-  llm: { models: [claude-fable-5, claude-opus-4-8], tokensPerDay: 2000000 }
+  llm: { models: [claude-fable-5, claude-opus-4-8], dollarsPerDay: 50 }
   data: { user: true, shared: true, collections: [contact] }
   fetch: { shim: true, origins: [{ origin: https://api.github.com, connection: github }] }
   mcp: []                      # MCP servers (REST-wrapped, v1.x)
@@ -303,7 +303,7 @@ Resolved since draft v1 (decisions folded into the sections above): MCP is expos
 Status as of July 2026 — the platform is **deployed on Azure**; what remains of M5 is a pilot app, not infrastructure (project plan §4, §5):
 
 - **v0 (done):** proxy + OIDC (incl. central-callback handoff, `__Host-` cookies, baseline CSP — the isolation model ships day one, not retrofitted), upload deploys, blob serving, app registry, LLM proxy with quotas. Now runs against **real Entra**, not the local OIDC issuer; `apps/dev-idp` is a development convenience, never deployed.
-- **v1 (mostly done):** `helix deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). _Remaining:_ the agent deploy **skill bundle** (`packages/deploy-skill`), and admin per-user **session revocation**.
+- **v1 (mostly done):** `helix deploy` CLI ✅, app data API ✅, capabilities manifest + **enforced** approvals ✅, audit/usage UI ✅, password/public modes ✅, CSP violation reporting with click-to-request origins ✅ (§4.4). the agent deploy **skill bundle** (`packages/deploy-skill`) ✅. _Remaining:_ admin per-user **session revocation**.
 - **M4.5 (done):** the `helix-egress` mechanism plane + the fetch-proxy (incl. the transparent shim) and secret-backed connections built on it (§3, §6.1). Egress ships as its own container from day one (the policy/mechanism split is physical, not deferred).
 - **M5 (deployed):** Azure IaC ✅, the three planes on Container Apps ✅, real Entra (single-tenant; authz via App Roles — see the [Entra runbook](runbooks/entra-app-registration.md)) ✅, prod Key Vault verified against a live vault ✅, wildcard cert on the apps domain ✅ (automated via a scheduled certbot DNS-01 job). _Outstanding:_ one real pilot app end to end, and confirming the operator-optional egress firewall is on (project plan §4 residuals).
 - **v1.x:** MCP passthrough (REST-wrapped), richer usage dashboards (latency/error dimensions), audit shipping to an immutable sink.

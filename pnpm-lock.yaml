@@ -372,6 +372,9 @@ importers:
 
   apps/portal-web:
     dependencies:
+      '@azx-pbc/deploy-skill':
+        specifier: workspace:*
+        version: link:../../packages/deploy-skill
       '@azx-pbc/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -482,6 +485,12 @@ importers:
       tsx:
         specifier: 'catalog:'
         version: 4.22.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
+  packages/deploy-skill:
+    devDependencies:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

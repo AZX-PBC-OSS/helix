@@ -38,13 +38,13 @@ packages/
   shared/        # @azx-pbc/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage, instruction
   secret-store/  # @azx-pbc/secret-store — seal/open/destroy seam (dev envelope / prod Key Vault)
   cli/           # helix — the deploy CLI (login / deploy / promote / …)
+  deploy-skill/  # SKILL.md — the agent skill for building apps on Helix
 examples/      # reference apps to `helix deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy); built dist/ committed
 docs/          # TOUR is at repo root; here: platform-architecture, project-plan, phase-1-user-stories, features/, design/
 .devcontainer/ # VS Code dev container; also runs Postgres 18 + Azurite
 ```
 
-`packages/deploy-skill` and `infra/` are in the target layout (project plan §2) but land in
-later milestones.
+`infra/` is in the target layout (project plan §2) but lands in a later milestone.
 
 ## Prerequisites
 

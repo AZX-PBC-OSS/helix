@@ -18,6 +18,10 @@ export interface Deployment {
   devApiBaseUrl: (slug: string) => string | null;
   /** False when the opt-in dev gateway isn't deployed here. */
   devModeAvailable: boolean;
+  /** Bare apps host, no slug — for prose that talks about `<slug>.<host>` generically. */
+  appsHost: string | null;
+  /** Bare dev-gateway base, no slug — same, for documentation-shaped surfaces. */
+  devApiBase: string | null;
   /** Display-only monthly spend watch line, or null for no ceiling. */
   platformMonthlyUsdCap: number | null;
 }
@@ -55,6 +59,8 @@ export function useDeployment(): Deployment {
     devApiBaseUrl: (slug) =>
       data?.devApiBase ? `${data.devApiBase.replace(/\/+$/, "")}/${slug}` : null,
     devModeAvailable: Boolean(data?.devApiBase),
+    appsHost: appBase?.host ?? null,
+    devApiBase: data?.devApiBase ? data.devApiBase.replace(/\/+$/, "") : null,
     platformMonthlyUsdCap: data?.platformMonthlyUsdCap ?? null,
   };
 }

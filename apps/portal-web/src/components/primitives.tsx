@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
-import { Badge, Box, Group, Stack, Text, Title, Tooltip } from "@mantine/core";
+import { Badge, Box, Button, CopyButton, Group, Stack, Text, Title, Tooltip } from "@mantine/core";
 import type { Visibility } from "@azx-pbc/shared";
 import { Icon, type IconName } from "./Icon";
 
@@ -292,5 +292,37 @@ export function Hint({
       </Text>
       {action}
     </Group>
+  );
+}
+
+/**
+ * Copy-to-clipboard button with the copied acknowledgement. The control plane
+ * hands out a lot of values that only exist to be pasted somewhere else — base
+ * URLs, tokens, passphrases, the agent skill — so this is the one spelling of it.
+ */
+export function CopyBtn({
+  value,
+  label,
+  size = "xs",
+  variant = "default",
+}: {
+  value: string;
+  label: string;
+  size?: string;
+  variant?: string;
+}) {
+  return (
+    <CopyButton value={value}>
+      {({ copied, copy }) => (
+        <Button
+          variant={variant}
+          size={size}
+          onClick={copy}
+          leftSection={<Icon name={copied ? "check" : "copy"} size={12} />}
+        >
+          {copied ? "Copied" : label}
+        </Button>
+      )}
+    </CopyButton>
   );
 }

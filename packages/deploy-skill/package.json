@@ -1,0 +1,16 @@
+{
+  "name": "@azx-pbc/deploy-skill",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./SKILL.md": "./SKILL.md"
+  },
+  "scripts": {
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

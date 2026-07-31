@@ -54,7 +54,7 @@ else 503) → app holds a `data` grant (`entry.data`, else 403). Then per verb:
 Validation knobs: keys ≤ 256 chars with no control chars; values size-capped at **64 KiB** of
 opaque app JSON (`MAX_VALUE_BYTES`). Writes (`user.put`, `collection.append`, `shared.put`) go
 through `admitWrite` — a per-app daily `writesPerDay` budget, block-new like the LLM
-`tokensPerDay` (over budget → `429` + a `quota_blocked` meter row). Every verb meters into
+`dollarsPerDay` (over budget → `429` + a `quota_blocked` meter row). Every verb meters into
 `gateway_calls` with `capability: "data"` and a `model` like `user.put` / `collection.append`.
 On `public` apps the **anonymous tier is also per-IP rate-limited** ahead of the store call (the
 shared preamble, before the size/budget checks): a fixed-window limiter keyed per IP+app

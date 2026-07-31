@@ -12,3 +12,8 @@ docs
 
 # Example apps are standalone projects with their own build, not platform source.
 examples
+
+# A template, not prose: Prettier reflows its `<!-- IF:… -->` conditional markers
+# into headings and adds trailing commas to the manifest sample, which would ship
+# uncopyable JSON to an agent.
+packages/deploy-skill/SKILL.md

@@ -48,6 +48,7 @@ grant on app connection secrets and any arbitrary outbound route (ADR-0001).
 | [capabilities-and-manifests.md](./capabilities-and-manifests.md) | The per-app manifest the gateway enforces | `packages/shared`, `apps/portal` |
 | [cli.md](./cli.md) | The `helix` CLI: deploy + OIDC device-flow login | `packages/cli` |
 | [portal-web.md](./portal-web.md) | The React/Mantine portal SPA | `apps/portal-web` |
+| [onboarding.md](./onboarding.md) | The in-app "How to develop" guide + the downloadable agent skill | `packages/deploy-skill`, `apps/portal-web` |
 | [dev-idp.md](./dev-idp.md) | The local OIDC issuer used in dev/test | `apps/dev-idp` |
 | [examples.md](./examples.md) | Reference apps you can `helix deploy` | `examples/` |
 

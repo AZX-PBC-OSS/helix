@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { NavLink as RouterNavLink, useLocation } from "react-router";
 import {
   AppShell,
@@ -19,8 +19,9 @@ import { useAuth } from "../auth/AuthProvider";
 import { Icon, type IconName } from "./Icon";
 import { Logo } from "./Logo";
 import { Eyebrow, ToneBadge } from "./primitives";
+import { HelpModal } from "../modals/HelpModal";
 
-/** App chrome: sidebar nav (Workspace / Admin), header with live health. */
+/** App chrome: sidebar nav (Workspace / Admin), onboarding, live health. */
 
 interface NavItem {
   to: string;
@@ -174,6 +175,9 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
   const { isAdmin } = useAuth();
   const apps = useQuery(appsQuery);
   const liveCount = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
+  // The sidebar is the only entry point today; if a second one appears (an
+  // empty-state CTA, say), lift this into a provider like DeployContext.
+  const [helpOpen, setHelpOpen] = useState(false);
 
   return (
     <AppShell navbar={{ width: 248, breakpoint: "xs" }} padding={0}>
@@ -210,6 +214,16 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
 
         <Box style={{ flex: 1 }} />
         <Box pt={14} style={{ borderTop: "1px solid var(--az-line)" }}>
+          <Button
+            variant="default"
+            leftSection={<Icon name="book" size={15} />}
+            onClick={() => setHelpOpen(true)}
+            fullWidth
+            mb={12}
+            styles={{ label: { flex: 1, textAlign: "left" } }}
+          >
+            How to develop
+          </Button>
           <Box px={8} pb={12}>
             <ToneBadge tone={apps.isError ? "bad" : "live"} icon="dot">
               {apps.isPending
@@ -222,6 +236,8 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
           <UserChip />
         </Box>
       </AppShell.Navbar>
+
+      <HelpModal opened={helpOpen} onClose={() => setHelpOpen(false)} />
 
       <AppShell.Main style={{ position: "relative", zIndex: 1 }}>
         <ScrollArea h="100vh" type="auto">

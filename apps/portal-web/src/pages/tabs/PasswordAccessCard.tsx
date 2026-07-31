@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { Button, Card, Code, CopyButton, Group, Stack, Text, TextInput } from "@mantine/core";
+import { Button, Card, Code, Group, Stack, Text, TextInput } from "@mantine/core";
 import { MIN_PASSWORD_LENGTH, type App } from "@azx-pbc/shared";
 import { useQuery } from "@tanstack/react-query";
 import { passwordCredentialQuery } from "../../api/queries";
 import { useDisablePassword, useEnablePassword, useRotatePassword } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon } from "../../components/Icon";
-import { Eyebrow, Hint } from "../../components/primitives";
+import { CopyBtn, Eyebrow, Hint } from "../../components/primitives";
 
 /**
  * Shared-password access management (`password` visibility). Owners enable it,
@@ -14,23 +14,6 @@ import { Eyebrow, Hint } from "../../components/primitives";
  * manual one, and disable it. The cleartext credential is fetched from an
  * authenticated endpoint — it never rides the open app/manifest reads.
  */
-
-function CopyBtn({ value, label }: { value: string; label: string }) {
-  return (
-    <CopyButton value={value}>
-      {({ copied, copy }) => (
-        <Button
-          variant="default"
-          size="xs"
-          onClick={copy}
-          leftSection={<Icon name={copied ? "check" : "copy"} size={12} />}
-        >
-          {copied ? "Copied" : label}
-        </Button>
-      )}
-    </CopyButton>
-  );
-}
 
 export function PasswordAccessCard({ app }: { app: App }) {
   const { authenticated, login, loginAvailable, allowPasswordApps } = useAuth();

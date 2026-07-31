@@ -13,6 +13,7 @@
     "@fontsource-variable/hanken-grotesk": "catalog:",
     "@fontsource-variable/jetbrains-mono": "catalog:",
     "@fontsource-variable/space-grotesk": "catalog:",
+    "@azx-pbc/deploy-skill": "workspace:*",
     "@azx-pbc/shared": "workspace:*",
     "@mantine/charts": "catalog:",
     "@mantine/core": "catalog:",

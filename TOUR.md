@@ -135,6 +135,7 @@ helix/
     shared/       # @azx-pbc/shared — zod schemas at every boundary (manifest, registry, instruction, …)
     secret-store/ # @azx-pbc/secret-store — seal/open/destroy seam: dev AES-GCM envelope / prod Key Vault
     cli/          # @azx-pbc/helix-cli — the `helix` CLI (deploy, versions, promote/rollback, login/logout/whoami)
+    deploy-skill/ # @azx-pbc/deploy-skill — SKILL.md: how to build a Helix app, for a coding agent
   examples/       # reference apps you can `helix deploy` (built dist/ committed)
   docs/           # architecture, project plan, per-feature docs, deep designs (see below)
   .devcontainer/  # Node 24, Postgres, Azurite, mkcert TLS, role bootstrap, dev KEK

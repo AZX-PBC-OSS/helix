@@ -17,7 +17,7 @@ Approval classifier + thresholds: `packages/shared/src/approval.ts`.
 
 ```ts
 Capabilities = {
-  llm?:  { models: string[]; tokensPerDay?: int }
+  llm?:  { models: string[]; dollarsPerDay?: number }   // daily USD spend cap
   data?: { user: boolean
            collections: string[]      // append-only; no app-facing read
            sharedRead: string[]       // world-readable-within-gate keys
@@ -52,7 +52,7 @@ by the mappers.
    projection picks it up (`apps/edge/src/registry/projection.ts`, parsing `llm`/`data`/`fetch`
    fail-closed). The live registry entry now carries `entry.llm` / `entry.data` / `entry.fetch`.
 3. **Enforce** — each gateway handler checks the relevant grant per request:
-   - LLM: `entry.llm` must exist and `chat.model ∈ entry.llm.models`; `tokensPerDay` bounds the
+   - LLM: `entry.llm` must exist and `chat.model ∈ entry.llm.models`; `dollarsPerDay` bounds the
      daily budget (see [llm-gateway.md](./llm-gateway.md)).
    - Data: `entry.data` gates the scope, and `collections` / `sharedRead` / `sharedWrite` are
      per-name allowlists; `writesPerDay` bounds writes (see [app-data-gateway.md](./app-data-gateway.md)).
@@ -92,7 +92,7 @@ SPA's pre-submit warning never drift:
 | Area | Baseline (applies now) | Elevated (needs approval) | Risk |
 |---|---|---|---|
 | LLM models | `CURATED_LLM_MODELS` (fable-5 / opus-4-8 / sonnet-4-6 / haiku-4-5) | any other model | med |
-| LLM budget | `tokensPerDay ≤ BASELINE_TOKENS` (1,000,000) | above threshold | med |
+| LLM budget | `dollarsPerDay ≤ BASELINE_DOLLARS_PER_DAY` ($50) | above threshold | med |
 | data scopes | user store, collections, shared keys | — | low |
 | data budgets | writes/bytes ≤ thresholds | above threshold | med |
 | mcp | `CURATED_MCP_ALLOWLIST` (**empty** ⇒ *every* MCP grant elevates) | any MCP server | high |

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Box, Button, Card, Code, CopyButton, Group, Stack, TagsInput, Text } from "@mantine/core";
+import { Box, Button, Card, Code, Group, Stack, TagsInput, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { isValidDevOrigin, type App, type DevTokenMetadata } from "@azx-pbc/shared";
 import { devTokensQuery } from "../../api/queries";
@@ -7,7 +7,7 @@ import { useMintDevToken, useRevokeDevToken, useRotateDevToken } from "../../api
 import { useAuth } from "../../auth/AuthProvider";
 import { useDeployment } from "../../lib/deployment";
 import { Icon } from "../../components/Icon";
-import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
+import { CopyBtn, Eyebrow, Hint, ToneBadge } from "../../components/primitives";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
 
 /**
@@ -18,23 +18,6 @@ import { ConfirmDialog } from "../../modals/ConfirmDialog";
  * re-rolls the secret; revoke is immediate. `env=dev` is implicit — a dev token
  * can never reach production data or the live budget (dev-mode design §4, §10).
  */
-
-function CopyBtn({ value, label }: { value: string; label: string }) {
-  return (
-    <CopyButton value={value}>
-      {({ copied, copy }) => (
-        <Button
-          variant="default"
-          size="xs"
-          onClick={copy}
-          leftSection={<Icon name={copied ? "check" : "copy"} size={12} />}
-        >
-          {copied ? "Copied" : label}
-        </Button>
-      )}
-    </CopyButton>
-  );
-}
 
 function statusBadge(t: DevTokenMetadata) {
   if (t.revokedAt)

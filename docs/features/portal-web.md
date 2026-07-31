@@ -19,9 +19,10 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   app shell + nav.
 - `src/pages/` — top-level routes (`AppsListPage`, `AppDetailPage`, `UsagePage`) and
   `src/pages/admin/` — the admin surfaces. `src/pages/tabs/` — the app-detail tabs.
-- `src/modals/` — create-app + deploy dialogs and the confirm dialog; `src/components/` — shared
-  UI (`primitives.tsx`, `charts.tsx`, `Icon.tsx`); `src/api/` — the typed client + query/mutation
-  hooks; `src/auth/` — browser sign-in.
+- `src/modals/` — create-app + deploy dialogs, the confirm dialog, and the onboarding
+  `HelpModal`; `src/components/` — shared UI (`primitives.tsx`, `charts.tsx`, `Icon.tsx`);
+  `src/api/` — the typed client + query/mutation hooks; `src/auth/` — browser sign-in;
+  `src/lib/` — `deployment.ts` (runtime topology) and `download.ts` (client-generated files).
 
 ### Routes (all real, all wired)
 
@@ -56,6 +57,19 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 
 `src/api/queries.ts` / `mutations.ts` are TanStack Query hooks over a bearer-injecting client
 (`client.ts`), every response validated through a `@azx-pbc/shared` zod schema.
+
+### Onboarding (`src/modals/HelpModal.tsx`)
+
+A **How to develop** button in the sidebar footer opens a modal summarising the platform for a
+newcomer — what a Helix app is, the four steps from empty account to live app, and a tab pair for
+the two ways to build (browser builder via the dev gateway, or the `helix` CLI). Its **Copy** /
+**Download** buttons hand out `packages/deploy-skill/SKILL.md`, rendered with this deployment's
+hostnames, for a coding agent to load.
+
+The modal is the summary and `SKILL.md` is the reference — keep long-form content in the skill so
+the two can't tell different stories. The skill is imported with Vite's `?raw` (bundled, not
+fetched, because a static-asset miss returns `index.html` here). Full write-up:
+[onboarding.md](./onboarding.md).
 
 ### Browser sign-in (`src/auth/`)
 

@@ -33,15 +33,16 @@ Handler: `apps/edge/src/gateway/llm.ts` (`makeLlmHandler`). Route wiring:
 
 ### Quota (block-new, finish-in-flight)
 
-If `entry.llm.tokensPerDay` is set, the budget is checked **once at admission**:
-`usage.tokensUsedToday(appId) >= budget` → record a `quota_blocked` row and return `429`
-`quota_exceeded`. An admitted request always runs to completion even if it tips the app over —
+If `entry.llm.dollarsPerDay` is set, the budget is checked **once at admission** against the
+frozen `costMicroUsd` ledger column, over two windows: the calendar day (`429 quota_exceeded`)
+and a rolling hour at a fraction of it (`429 rate_limited`, the burst/availability control, so
+one actor can't drain the day in a spike). Either way a `quota_blocked` row is recorded. An admitted request always runs to completion even if it tips the app over —
 the **next** request is the one that gets blocked (`apps/edge/src/gateway/llm.ts`). The
 alternative (cutting an in-flight stream at the byte that crosses the line) buys nothing — the
 tokens are already spent upstream — and would corrupt the response mid-sentence. Block-new keeps
 the budget a coarse daily ceiling, not a hard per-token cap, and the blocked call **is** audited
 (a `quota_blocked` row, distinct from the calls that record nothing — see below). An **unset**
-`tokensPerDay` means unlimited: the edge only enforces a defined budget, so the most-permissive
+`dollarsPerDay` means unlimited: the edge only enforces a defined budget, so the most-permissive
 state is no number at all (this is why the approval classifier treats removing a cap as a
 privilege *increase* — see [capabilities-and-manifests.md](./capabilities-and-manifests.md)).
 
