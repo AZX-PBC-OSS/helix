@@ -120,6 +120,38 @@ function putUser(
   });
 }
 
+describe("dev-gateway /health", () => {
+  it("reports registry freshness on the same contract as the edge (ADR-0025)", async () => {
+    const app = build(new FakeDevTokenStore());
+    const res = await app.inject({ url: "/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      status: "ok",
+      checks: [{ name: "registry-projection", status: "ok" }],
+    });
+    await app.close();
+  });
+
+  it("degrades, still 200, when the dev tier's projection goes stale", async () => {
+    const registry = new FakeRegistry([registryEntry({ slug: "myapp", appId: APP_A })]);
+    registry.freshnessOverride = { staleForMs: 21 * 60_000, consecutiveLoadFailures: 21 };
+    const app: FastifyInstance = buildDevGateway({
+      config: testDevGatewayConfig(),
+      registry,
+      devTokens: new FakeDevTokenStore(),
+      appData: new FakeAppDataStore(),
+      usage: new FakeUsageStore(),
+      llmProvider: null,
+      egress: null,
+      instructionKey: null,
+    });
+    const res = await app.inject({ url: "/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("error");
+    await app.close();
+  });
+});
+
 describe("dev-gateway DevTokenResolver", () => {
   it("admits a valid token from a registered origin and routes to env=dev", async () => {
     const tokens = new FakeDevTokenStore();

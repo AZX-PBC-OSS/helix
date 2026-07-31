@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { RegistryProjection, type ProjectionQuerier } from "./projection.js";
+import {
+  RegistryProjection,
+  type ProjectionClock,
+  type ProjectionQuerier,
+  type RegistryLoadFailure,
+  type RegistryLoadRecovery,
+} from "./projection.js";
+
+/**
+ * Controllable clock so freshness assertions don't need fake timers. The two
+ * hands move independently on purpose — that's how the "wall clock went
+ * backwards" case is expressed.
+ */
+function fakeClock(startMs = 1_000): ProjectionClock & {
+  advance(ms: number): void;
+  setWallClock(iso: string): void;
+} {
+  let mono = startMs;
+  let iso = "2026-07-30T12:00:00.000Z";
+  return {
+    monotonicMs: () => mono,
+    wallClockIso: () => iso,
+    advance(ms) {
+      mono += ms;
+    },
+    setWallClock(next) {
+      iso = next;
+    },
+  };
+}
 
 function querierFor(rowSets: Array<Array<Record<string, unknown>> | Error>): ProjectionQuerier & {
   calls: number;
@@ -135,13 +164,14 @@ describe("RegistryProjection", () => {
   });
 
   it("keeps serving the previous map when a reload fails", async () => {
-    const errors: unknown[] = [];
+    const failures: RegistryLoadFailure[] = [];
     const projection = new RegistryProjection(querierFor([[ROW], new Error("db down")]), {
-      onLoadError: (err) => errors.push(err),
+      onLoadFailure: (info) => failures.push(info),
     });
     await projection.load();
     await projection.load(); // fails
-    expect(errors).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect((failures[0]?.err as Error).message).toBe("db down");
     expect(projection.isLoaded()).toBe(true);
     expect(projection.getApp("demo")).toBeDefined(); // stale, not gone
   });
@@ -172,5 +202,108 @@ describe("RegistryProjection", () => {
     await Promise.all([first, second, third]);
     await projection.load(); // let the dirty follow-up settle deterministically
     expect(calls).toBeLessThanOrEqual(3); // never one query per request
+  });
+});
+
+// ADR-0025 item 1: the state that makes "serves stale forever, silently"
+// impossible. Serving behaviour above is unchanged — this is purely the signal.
+describe("RegistryProjection freshness", () => {
+  it("reports nothing loaded before the first load", () => {
+    const projection = new RegistryProjection(querierFor([[ROW]]), { clock: fakeClock() });
+    expect(projection.freshness()).toEqual({
+      loaded: false,
+      lastSuccessfulLoadAt: null,
+      staleForMs: null,
+      consecutiveLoadFailures: 0,
+      lastLoadFailureAt: null,
+    });
+  });
+
+  it("stamps both clocks on a successful load and ages the copy monotonically", async () => {
+    const clock = fakeClock();
+    const projection = new RegistryProjection(querierFor([[ROW]]), { clock });
+    await projection.load();
+    expect(projection.freshness()).toMatchObject({
+      loaded: true,
+      lastSuccessfulLoadAt: "2026-07-30T12:00:00.000Z",
+      staleForMs: 0,
+      consecutiveLoadFailures: 0,
+    });
+    clock.advance(90_000);
+    expect(projection.freshness().staleForMs).toBe(90_000);
+  });
+
+  it("counts consecutive failures and resets the counter on the next success", async () => {
+    const clock = fakeClock();
+    const projection = new RegistryProjection(
+      querierFor([[ROW], new Error("down"), new Error("down"), [ROW]]),
+      { clock },
+    );
+    await projection.load();
+    clock.advance(60_000);
+    await projection.load();
+    expect(projection.freshness().consecutiveLoadFailures).toBe(1);
+    clock.advance(60_000);
+    await projection.load();
+    expect(projection.freshness()).toMatchObject({
+      consecutiveLoadFailures: 2,
+      staleForMs: 120_000, // still aging off the last SUCCESS, not the last attempt
+      lastSuccessfulLoadAt: "2026-07-30T12:00:00.000Z",
+    });
+    clock.advance(60_000);
+    await projection.load(); // recovers
+    expect(projection.freshness()).toMatchObject({
+      consecutiveLoadFailures: 0,
+      staleForMs: 0,
+    });
+    // The failure timestamp survives recovery — it's the "when did this last go
+    // wrong" an operator reads after the fact.
+    expect(projection.freshness().lastLoadFailureAt).not.toBeNull();
+  });
+
+  it("hands onLoadFailure the counter and the last-good stamp, for the log event", async () => {
+    const clock = fakeClock();
+    const failures: RegistryLoadFailure[] = [];
+    const projection = new RegistryProjection(
+      querierFor([[ROW], new Error("db down"), new Error("db down")]),
+      { clock, onLoadFailure: (info) => failures.push(info) },
+    );
+    await projection.load();
+    clock.advance(61_000);
+    await projection.load();
+    await projection.load();
+    expect(failures.map((f) => f.consecutiveLoadFailures)).toEqual([1, 2]);
+    expect(failures[0]).toMatchObject({
+      staleForMs: 61_000,
+      lastSuccessfulLoadAt: "2026-07-30T12:00:00.000Z",
+    });
+  });
+
+  it("fires onLoadRecovered once, with the failure count and how long it was stale", async () => {
+    const clock = fakeClock();
+    const recoveries: RegistryLoadRecovery[] = [];
+    const projection = new RegistryProjection(
+      querierFor([[ROW], new Error("down"), new Error("down"), [ROW], [ROW]]),
+      { clock, onLoadRecovered: (info) => recoveries.push(info) },
+    );
+    await projection.load(); // first load: not a "recovery", nothing preceded it
+    expect(recoveries).toHaveLength(0);
+    await projection.load();
+    await projection.load();
+    clock.advance(300_000);
+    await projection.load(); // recovers
+    await projection.load(); // a second clean load must NOT re-announce
+    expect(recoveries).toEqual([{ failures: 2, staleForMs: 300_000 }]);
+  });
+
+  it("ages the copy off the monotonic clock even when the wall clock jumps back", async () => {
+    const clock = fakeClock();
+    const projection = new RegistryProjection(querierFor([[ROW]]), { clock });
+    await projection.load();
+    // An NTP step drags wall-clock time backwards while real time moves forward.
+    clock.advance(120_000);
+    clock.setWallClock("2026-07-30T09:00:00.000Z");
+    // Staleness must not be negative, zero, or otherwise flattered by the jump.
+    expect(projection.freshness().staleForMs).toBe(120_000);
   });
 });

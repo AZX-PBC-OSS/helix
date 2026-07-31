@@ -72,7 +72,7 @@ The system is **three deployable containers plus managed storage**, split along 
 
 ### App boot pattern
 
-Both apps follow the same shape: `src/app.ts` exports `buildApp(): FastifyInstance` (pure, testable, no listen), and `src/server.ts` imports it and calls `app.listen()`. Tests build the app and inject requests rather than binding a port. The `/health` endpoint validates its own response through `HealthStatusSchema` so the contract is identical across services.
+Both apps follow the same shape: `src/app.ts` exports `buildApp(): FastifyInstance` (pure, testable, no listen), and `src/server.ts` imports it and calls `app.listen()`. Tests build the app and inject requests rather than binding a port. The `/health` endpoint validates its own response through `HealthStatusSchema` so the contract is identical across services. That contract is a three-state roll-up (`ok`/`degraded`/`error`) plus an optional generic `checks[]` array, not a liveness boolean — the edge reports its registry projection's freshness there (ADR-0025). **It always answers HTTP 200**, in every state: the body carries the degradation, because a non-200 would let a liveness probe restart a replica that is serving correctly from a stale copy. Portal and egress report liveness only (no `checks`).
 
 ## Conventions
 

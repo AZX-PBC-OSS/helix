@@ -1,7 +1,12 @@
 import { Readable } from "node:stream";
 import type { LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
 import type { BlobGetOptions, BlobGetResult, BlobReader } from "../blob/client.js";
-import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
+import type {
+  RegistryEntry,
+  RegistryFreshness,
+  RegistryFreshnessReader,
+  RegistryReader,
+} from "../registry/projection.js";
 import type { LlmProvider, LlmStreamEvent } from "../gateway/provider.js";
 import type { GatewayCallRecord, LlmSpend, UsageStore } from "../gateway/usage.js";
 import type { AppDataStore, CollectionMeta, UserKeyMeta } from "../gateway/data.js";
@@ -33,13 +38,23 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
 }
 
 /** In-memory registry for unit tests. */
-export class FakeRegistry implements RegistryReader {
+export class FakeRegistry implements RegistryReader, RegistryFreshnessReader {
   #entries = new Map<string, RegistryEntry>();
   #loaded: boolean;
+  /**
+   * Mutable so a test can age a loaded registry mid-flight (`/health` degrades
+   * off this). Defaults to "loaded just now", which keeps every existing
+   * buildApp test reporting `ok`.
+   */
+  freshnessOverride: Partial<RegistryFreshness>;
 
-  constructor(entries: RegistryEntry[] = [], opts: { loaded?: boolean } = {}) {
+  constructor(
+    entries: RegistryEntry[] = [],
+    opts: { loaded?: boolean; freshness?: Partial<RegistryFreshness> } = {},
+  ) {
     for (const entry of entries) this.#entries.set(entry.slug, entry);
     this.#loaded = opts.loaded ?? true;
+    this.freshnessOverride = opts.freshness ?? {};
   }
 
   getApp(slug: string): RegistryEntry | undefined {
@@ -48,6 +63,18 @@ export class FakeRegistry implements RegistryReader {
 
   isLoaded(): boolean {
     return this.#loaded;
+  }
+
+  freshness(): RegistryFreshness {
+    const loaded = this.#loaded;
+    return {
+      loaded,
+      lastSuccessfulLoadAt: loaded ? "2026-07-30T12:00:00.000Z" : null,
+      staleForMs: loaded ? 0 : null,
+      consecutiveLoadFailures: 0,
+      lastLoadFailureAt: null,
+      ...this.freshnessOverride,
+    };
   }
 }
 

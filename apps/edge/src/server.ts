@@ -79,17 +79,20 @@ if (config.tls) {
 }
 
 // The registry logs through the app's logger, but buildApp needs the registry
-// — bridge the cycle with a late-bound reference.
+// — bridge the cycle with a late-bound reference. Safe for the ADR-0025
+// first-failure `error` line: buildApp and the rebind below both run before
+// `registry.start()` triggers the first load, so no failure hits the no-op stub.
 const logRef: { current: RegistryLogger } = {
-  current: { info: () => {}, warn: () => {} },
+  current: { info: () => {}, warn: () => {}, error: () => {} },
 };
 const registry = new LiveRegistry({
   databaseUrl: config.databaseUrl,
   reconcileIntervalMs: config.reconcileIntervalMs,
   statementTimeoutMs: config.statementTimeoutMs,
   log: {
-    info: (msg) => logRef.current.info(msg),
+    info: (obj, msg) => logRef.current.info(obj, msg),
     warn: (obj, msg) => logRef.current.warn(obj, msg),
+    error: (obj, msg) => logRef.current.error(obj, msg),
   },
 });
 
@@ -99,8 +102,10 @@ const sessions = config.auth
   : null;
 const oidc = config.auth
   ? new OpenIdConnectClient(config.auth, `${publicOrigin(config, "auth")}/callback`, {
-      info: (msg) => logRef.current.info(msg),
-      warn: (obj, msg) => logRef.current.warn(obj, msg),
+      // The OIDC client's logger seam is narrower (a bare message on info); the
+      // late-bound ref underneath is the registry's, so adapt rather than widen.
+      info: (msg) => logRef.current.info({}, msg),
+      warn: (obj, msg) => logRef.current.warn({ ...obj }, msg),
     })
   : null;
 
@@ -180,8 +185,9 @@ const app = buildApp({
   https,
 });
 logRef.current = {
-  info: (msg) => app.log.info(msg),
+  info: (obj, msg) => app.log.info(obj, msg),
   warn: (obj, msg) => app.log.warn(obj, msg),
+  error: (obj, msg) => app.log.error(obj, msg),
 };
 const sweeper = sessions
   ? startSessionSweeper(sessions, {

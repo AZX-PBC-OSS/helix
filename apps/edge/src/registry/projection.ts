@@ -5,7 +5,10 @@
  *
  * Failure stance: serve stale. A load error keeps the previous map, so the
  * data path doesn't depend on the portal or a healthy DB connection — only
- * the very first load gates serving (isLoaded()).
+ * the very first load gates serving (isLoaded()). Because that means a
+ * sustained failure would otherwise serve an out-of-date access rule silently
+ * and indefinitely, every load also updates `freshness()` — the state `/health`
+ * degrades on and the load-failure log event reports (ADR-0025 item 1).
  */
 import {
   CapabilitiesSchema,
@@ -132,6 +135,67 @@ export interface RegistryReader {
   isLoaded(): boolean;
 }
 
+/**
+ * Load freshness, for `/health` and the staleness-alerting path (ADR-0025 item
+ * 1). Serving stale is the deliberate failure stance, so the *only* thing that
+ * makes a sustained DB failure visible is this state — without it the edge
+ * serves an out-of-date access rule forever and reads green.
+ *
+ * Deliberately a **separate seam** from `RegistryReader`: the ~15 modules that
+ * consume the registry route on `getApp`/`isLoaded` and have no business
+ * knowing about freshness. Only `/health` reads this.
+ */
+export interface RegistryFreshness {
+  /** Mirrors `isLoaded()`: false until the first success, and never cleared. */
+  loaded: boolean;
+  /** Wall-clock ISO of the last success; null when never loaded. Report-only. */
+  lastSuccessfulLoadAt: string | null;
+  /**
+   * Age of the served copy in ms, measured **monotonically** — a wall-clock
+   * jump (NTP step, VM migration) must not fake freshness or fake a staleness
+   * alert. Null when never loaded.
+   */
+  staleForMs: number | null;
+  /** Failures since the last success; 0 when the last load succeeded. */
+  consecutiveLoadFailures: number;
+  /** Wall-clock ISO of the most recent failure; null if none since boot. */
+  lastLoadFailureAt: string | null;
+}
+
+export interface RegistryFreshnessReader {
+  freshness(): RegistryFreshness;
+}
+
+/** Passed to `onLoadFailure` — the error plus what the operator needs with it. */
+export interface RegistryLoadFailure {
+  err: unknown;
+  /** 1 on the first failure since the last success (the escalation trigger). */
+  consecutiveLoadFailures: number;
+  staleForMs: number | null;
+  lastSuccessfulLoadAt: string | null;
+}
+
+/** Passed to `onLoadRecovered` — only fires when failures preceded the success. */
+export interface RegistryLoadRecovery {
+  failures: number;
+  /** Monotonic ms the served copy was stale; null when this was the first load. */
+  staleForMs: number | null;
+}
+
+/**
+ * Clock seam: monotonic for age, wall-clock for the operator-facing timestamp.
+ * Injected so freshness is deterministic in tests without fake timers.
+ */
+export interface ProjectionClock {
+  monotonicMs(): number;
+  wallClockIso(): string;
+}
+
+const SYSTEM_CLOCK: ProjectionClock = {
+  monotonicMs: () => performance.now(),
+  wallClockIso: () => new Date().toISOString(),
+};
+
 interface ProjectionRow {
   id: string;
   slug: string;
@@ -177,24 +241,41 @@ const PROJECTION_SQL_NO_PASSWORD = `
   LEFT JOIN versions v ON v.id = a."currentVersionId"
 `;
 
-export class RegistryProjection implements RegistryReader {
+export class RegistryProjection implements RegistryReader, RegistryFreshnessReader {
   #querier: ProjectionQuerier;
   #sql: string;
   #map = new Map<string, RegistryEntry>();
   #loaded = false;
   #inFlight: Promise<void> | null = null;
   #dirty = false;
-  #onLoadError: (err: unknown) => void;
+  #onLoadFailure: (info: RegistryLoadFailure) => void;
+  #onLoadRecovered: (info: RegistryLoadRecovery) => void;
+  #clock: ProjectionClock;
+
+  // Freshness (ADR-0025). Two clocks on purpose: the monotonic one decides
+  // staleness, the wall-clock one is what an operator reads.
+  #lastSuccessMonoMs: number | null = null;
+  #lastSuccessIso: string | null = null;
+  #consecutiveLoadFailures = 0;
+  #lastFailureIso: string | null = null;
 
   constructor(
     querier: ProjectionQuerier,
-    opts: { onLoadError?: (err: unknown) => void; includePasswords?: boolean } = {},
+    opts: {
+      onLoadFailure?: (info: RegistryLoadFailure) => void;
+      onLoadRecovered?: (info: RegistryLoadRecovery) => void;
+      includePasswords?: boolean;
+      /** Test seam; defaults to `performance.now()` + `Date`. */
+      clock?: ProjectionClock;
+    } = {},
   ) {
     this.#querier = querier;
     // Default includes the password columns (the edge, which serves the password
     // login). The dev-gateway passes false — it has no column grant for them.
     this.#sql = opts.includePasswords === false ? PROJECTION_SQL_NO_PASSWORD : PROJECTION_SQL;
-    this.#onLoadError = opts.onLoadError ?? (() => {});
+    this.#onLoadFailure = opts.onLoadFailure ?? (() => {});
+    this.#onLoadRecovered = opts.onLoadRecovered ?? (() => {});
+    this.#clock = opts.clock ?? SYSTEM_CLOCK;
   }
 
   getApp(slug: string): RegistryEntry | undefined {
@@ -203,6 +284,22 @@ export class RegistryProjection implements RegistryReader {
 
   isLoaded(): boolean {
     return this.#loaded;
+  }
+
+  freshness(): RegistryFreshness {
+    return {
+      loaded: this.#loaded,
+      lastSuccessfulLoadAt: this.#lastSuccessIso,
+      staleForMs: this.#staleForMs(),
+      consecutiveLoadFailures: this.#consecutiveLoadFailures,
+      lastLoadFailureAt: this.#lastFailureIso,
+    };
+  }
+
+  #staleForMs(): number | null {
+    if (this.#lastSuccessMonoMs === null) return null;
+    // Monotonic, so a backwards wall clock can't report the copy as fresh.
+    return Math.max(0, Math.round(this.#clock.monotonicMs() - this.#lastSuccessMonoMs));
   }
 
   /**
@@ -248,9 +345,27 @@ export class RegistryProjection implements RegistryReader {
       }
       this.#map = next;
       this.#loaded = true;
+      // Freshness bookkeeping: capture the pre-swap state before restamping, so
+      // a recovery can report how long the stale copy was served.
+      const failures = this.#consecutiveLoadFailures;
+      const staleForMs = this.#staleForMs();
+      this.#lastSuccessMonoMs = this.#clock.monotonicMs();
+      this.#lastSuccessIso = this.#clock.wallClockIso();
+      this.#consecutiveLoadFailures = 0;
+      if (failures > 0) this.#onLoadRecovered({ failures, staleForMs });
     } catch (err) {
       // Keep serving the previous map (stale beats down — architecture §7).
-      this.#onLoadError(err);
+      // `#loaded` deliberately stays true: flipping it back would 503 every app
+      // host on a transient DB blip, the opposite of the serve-stale stance.
+      // The counter + timestamps are what make the failure visible instead.
+      this.#consecutiveLoadFailures += 1;
+      this.#lastFailureIso = this.#clock.wallClockIso();
+      this.#onLoadFailure({
+        err,
+        consecutiveLoadFailures: this.#consecutiveLoadFailures,
+        staleForMs: this.#staleForMs(),
+        lastSuccessfulLoadAt: this.#lastSuccessIso,
+      });
     }
   }
 }

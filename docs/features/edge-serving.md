@@ -30,22 +30,34 @@ endpoints on the auth/app hosts but just asset paths an app may ship on its own.
 
 The edge never queries the registry per request. It holds an **in-memory slug → entry map**
 loaded with hand-written SQL from `apps` + `versions`, and refreshes it on Postgres
-`LISTEN/NOTIFY` (debounced ~100 ms) with a reconcile reload every ~60 s as a safety net.
+`LISTEN/NOTIFY` (debounced ~100 ms) with a reconcile reload every ~60 s (±20% jitter, so replicas
+don't herd the DB on one tick) as a safety net.
 
 - `apps/edge/src/registry/projection.ts` — the map + loader. Parses `capabilities` JSONB
   fail-closed (`llm`/`data` → null on bad data). Serves the previous copy on a load error
-  (fail-static, never fail-open).
+  (fail-static, never fail-open), and tracks load freshness (`freshness()`).
 - `apps/edge/src/registry/listener.ts` — the LISTEN connection with exponential-backoff
-  reconnect.
+  reconnect, the jittered reconcile chain, and the load-failure log escalation.
+- `apps/edge/src/registry/health.ts` — the staleness thresholds that turn `freshness()` into the
+  `/health` sub-check.
 
 The projection is read-only by DB grant (see [authentication.md](./authentication.md) and the
 role split below) — the edge cannot write the registry.
 
 > **Staleness caveat (ADR-0025).** Fail-static is not free: on a *sustained* DB failure the
-> projection can keep serving its last-loaded copy **silently and indefinitely**, so a
-> reduce-visibility or archive change may not take effect. Staleness observability is a must-do
-> hardening — surface `lastSuccessfulLoadAt` / `consecutiveLoadFailures` and degrade `/health`
-> once the projection is too old.
+> projection keeps serving its last-loaded copy, so a reduce-visibility or archive change may not
+> take effect. That behaviour is deliberate; what is closed is the **silently** part. Every load
+> updates `RegistryProjection.freshness()` (monotonic age + a consecutive-failure counter), and
+> `/health` on platform/auth hosts now carries a `registry-projection` sub-check that reports
+> `degraded` past 5× the reconcile interval or 3 consecutive failures, and `error` past 20× or when
+> the projection has never loaded. The first failure logs at `error` level with a stable
+> `event: "registry.load_failed"` field (the counter rides along; recovery logs
+> `registry.load_recovered`), which is what a Log Analytics alert rule keys on — see
+> [`apps/edge/README.md`](../../apps/edge/README.md#health-and-staleness).
+>
+> **`/health` still answers 200 in every state.** The body carries the degradation, never the
+> status code: a non-200 would let a liveness probe restart a replica that is serving correctly
+> from a stale copy — fail-static turned into the outage it exists to prevent.
 
 ### Blob asset streaming
 

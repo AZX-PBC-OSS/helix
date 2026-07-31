@@ -49,8 +49,17 @@ export class PgSecretResolver implements SecretResolver {
   readonly #pool: Pool;
   readonly #store: SecretStore;
 
-  constructor(databaseUrl: string, store: SecretStore, opts: { max?: number } = {}) {
+  constructor(
+    databaseUrl: string,
+    store: SecretStore,
+    opts: { max?: number; onIdleError?: (err: unknown) => void } = {},
+  ) {
     this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 5 });
+    // Without this listener an idle client dropping (DB restart/failover) is an
+    // unhandled 'error' event on the Pool and kills the process — taking the
+    // whole fetch-proxy down over a connection that would have been discarded
+    // and reconnected on next use. In-flight queries reject on their own.
+    this.#pool.on("error", (err) => opts.onIdleError?.(err));
     this.#store = store;
   }
 

@@ -80,7 +80,7 @@ if (config.tls) {
 }
 
 const logRef: { current: RegistryLogger } = {
-  current: { info: () => {}, warn: () => {} },
+  current: { info: () => {}, warn: () => {}, error: () => {} },
 };
 const registry = new LiveRegistry({
   databaseUrl: devDatabaseUrl,
@@ -90,8 +90,9 @@ const registry = new LiveRegistry({
   // tier never serves the password login and must not read a prod credential.
   includePasswords: false,
   log: {
-    info: (msg) => logRef.current.info(msg),
+    info: (obj, msg) => logRef.current.info(obj, msg),
     warn: (obj, msg) => logRef.current.warn(obj, msg),
+    error: (obj, msg) => logRef.current.error(obj, msg),
   },
 });
 
@@ -136,8 +137,9 @@ const app = buildDevGateway({
   https,
 });
 logRef.current = {
-  info: (msg) => app.log.info(msg),
+  info: (obj, msg) => app.log.info(obj, msg),
   warn: (obj, msg) => app.log.warn(obj, msg),
+  error: (obj, msg) => app.log.error(obj, msg),
 };
 app.addHook("onClose", async () => {
   await registry.stop();

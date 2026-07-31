@@ -1,12 +1,24 @@
 import pg from "pg";
 import { createEdgePool, DEFAULT_STATEMENT_TIMEOUT_MS } from "../db/pool.js";
-import { RegistryProjection, type RegistryEntry, type RegistryReader } from "./projection.js";
+import { STALE_ERROR_INTERVALS } from "./health.js";
+import {
+  RegistryProjection,
+  type RegistryEntry,
+  type RegistryFreshness,
+  type RegistryFreshnessReader,
+  type RegistryLoadFailure,
+  type RegistryReader,
+} from "./projection.js";
 
 /**
  * Keeps the registry projection fresh (architecture §7: refresh on change,
  * sub-second): a dedicated LISTEN connection reloads on every NOTIFY from the
- * portal-owned trigger, a periodic reconcile reload covers anything a dropped
+ * portal-owned trigger, a jittered reconcile reload covers anything a dropped
  * connection missed, and reconnects back off exponentially.
+ *
+ * It also owns the *reporting* half of the serve-stale stance (ADR-0025): the
+ * projection tracks freshness, and this class decides how loudly to say so —
+ * see `#onLoadFailure`.
  *
  * Must match the channel in the portal migration
  * `20260612183907_registry_notify_trigger` — keep the two in sync.
@@ -19,12 +31,30 @@ const NOTIFY_DEBOUNCE_MS = 100;
 const BACKOFF_INITIAL_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
 
-export interface RegistryLogger {
-  info(msg: string): void;
-  warn(obj: { err?: unknown }, msg: string): void;
+/** ±20% spread applied to every scheduled delay (see `jitteredDelayMs`). */
+const JITTER_SPREAD = 0.2;
+
+/**
+ * Spread a scheduled delay by ±20%. Both schedulers here use it, for the same
+ * reason: N replicas started together would otherwise hit the DB on exactly the
+ * same tick — a synchronized herd on the reconcile poll (ADR-0025 item 2) and a
+ * synchronized reconnect storm after a DB restart.
+ *
+ * Exported for its own test: `LiveRegistry`'s constructor opens a real pg pool,
+ * so the arithmetic has to be reachable without one.
+ */
+export function jitteredDelayMs(baseMs: number, random: () => number = Math.random): number {
+  const factor = 1 - JITTER_SPREAD + random() * (2 * JITTER_SPREAD);
+  return Math.max(0, Math.round(baseMs * factor));
 }
 
-export class LiveRegistry implements RegistryReader {
+export interface RegistryLogger {
+  info(obj: Record<string, unknown>, msg: string): void;
+  warn(obj: Record<string, unknown>, msg: string): void;
+  error(obj: Record<string, unknown>, msg: string): void;
+}
+
+export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
   #databaseUrl: string;
   #reconcileIntervalMs: number;
   #statementTimeoutMs: number;
@@ -38,6 +68,8 @@ export class LiveRegistry implements RegistryReader {
   #notifyTimer: NodeJS.Timeout | null = null;
   #backoffMs = BACKOFF_INITIAL_MS;
   #stopped = false;
+  /** Whether the "crossed the /health error line" escalation has already fired. */
+  #staleErrorLogged = false;
 
   constructor(opts: {
     databaseUrl: string;
@@ -60,11 +92,23 @@ export class LiveRegistry implements RegistryReader {
     this.#pool = createEdgePool(opts.databaseUrl, {
       max: 2,
       statementTimeoutMs: this.#statementTimeoutMs,
+      // An idle projection connection dropping is the normal shape of a DB
+      // restart. It is not itself a load failure — the next reload reconnects,
+      // and if that fails too, `#onLoadFailure` is what escalates.
+      onIdleError: (err) =>
+        this.#log.warn({ event: "registry.pool_idle_error", err }, "registry pool client dropped"),
     });
     this.#projection = new RegistryProjection(this.#pool, {
       includePasswords: opts.includePasswords,
-      onLoadError: (err) =>
-        this.#log.warn({ err }, "registry projection load failed; serving stale"),
+      onLoadFailure: (info) => this.#onLoadFailure(info),
+      onLoadRecovered: ({ failures, staleForMs }) => {
+        this.#staleErrorLogged = false;
+        // The line that closes an alert. Nothing else says "it's fine now".
+        this.#log.info(
+          { event: "registry.load_recovered", failures, staleForMs },
+          `registry projection reloaded after ${failures} failed attempt(s)`,
+        );
+      },
     });
   }
 
@@ -76,6 +120,45 @@ export class LiveRegistry implements RegistryReader {
     return this.#projection.isLoaded();
   }
 
+  freshness(): RegistryFreshness {
+    return this.#projection.freshness();
+  }
+
+  /**
+   * Load-failure logging (ADR-0025 item 1). The level ladder matters because
+   * serve-stale means nothing else surfaces the fault:
+   *  - **first** failure → `error`: the only line that is genuinely news;
+   *  - crossing the `/health` error threshold → `error`, exactly once, so a long
+   *    outage re-announces itself when it stops being merely degraded;
+   *  - everything between → `warn` (~1 per reconcile interval; bounded).
+   *
+   * `event` is the stable field a log-based metric / alert rule keys on — the
+   * platform has no metrics pipeline, so the log IS the metric channel.
+   */
+  #onLoadFailure(info: RegistryLoadFailure): void {
+    const fields = {
+      event: "registry.load_failed",
+      err: info.err,
+      consecutiveLoadFailures: info.consecutiveLoadFailures,
+      staleForMs: info.staleForMs,
+      lastSuccessfulLoadAt: info.lastSuccessfulLoadAt,
+      reconcileIntervalMs: this.#reconcileIntervalMs,
+    };
+    const msg = "registry projection load failed; serving stale";
+
+    if (info.consecutiveLoadFailures === 1) {
+      this.#log.error(fields, msg);
+      return;
+    }
+    const errorAfterMs = STALE_ERROR_INTERVALS * this.#reconcileIntervalMs;
+    if (!this.#staleErrorLogged && info.staleForMs !== null && info.staleForMs > errorAfterMs) {
+      this.#staleErrorLogged = true;
+      this.#log.error(fields, `${msg} (past ${STALE_ERROR_INTERVALS}× the reconcile interval)`);
+      return;
+    }
+    this.#log.warn(fields, msg);
+  }
+
   /**
    * Begin loading and listening. Resolves after the first load *attempt* —
    * boot must not hang on a down DB; the retry machinery takes over from here.
@@ -83,10 +166,21 @@ export class LiveRegistry implements RegistryReader {
   async start(): Promise<void> {
     await this.#projection.load();
     await this.#connectListener();
+    this.#scheduleReconcile();
+  }
 
-    this.#reconcileTimer = setInterval(() => {
-      void this.#projection.load();
-    }, this.#reconcileIntervalMs);
+  /**
+   * The reconcile poll: a self-rescheduling jittered `setTimeout` chain rather
+   * than a fixed `setInterval`, so replicas don't query in a synchronized herd
+   * (ADR-0025 item 2). Rescheduling happens *after* the load settles, so a slow
+   * load can't stack overlapping reconciles.
+   */
+  #scheduleReconcile(): void {
+    if (this.#stopped || this.#reconcileTimer) return;
+    this.#reconcileTimer = setTimeout(() => {
+      this.#reconcileTimer = null;
+      void this.#projection.load().finally(() => this.#scheduleReconcile());
+    }, jitteredDelayMs(this.#reconcileIntervalMs));
     this.#reconcileTimer.unref(); // never hold the process open
   }
 
@@ -144,8 +238,7 @@ export class LiveRegistry implements RegistryReader {
 
   #scheduleReconnect(err?: unknown): void {
     if (this.#stopped || this.#reconnectTimer) return;
-    const jitter = 0.8 + Math.random() * 0.4; // ±20%
-    const delay = Math.round(this.#backoffMs * jitter);
+    const delay = jitteredDelayMs(this.#backoffMs);
     this.#log.warn({ err }, `registry LISTEN connection down; reconnecting in ${delay}ms`);
     this.#backoffMs = Math.min(this.#backoffMs * 2, BACKOFF_MAX_MS);
     this.#reconnectTimer = setTimeout(() => {

@@ -52,6 +52,76 @@ Two rules:
 
 **Ops note — the hops we don't own.** This closes the container's own logs, which in Azure is the retention surface that matters: Container Apps ships container stdout to the environment's Log Analytics workspace (`appLogsConfiguration` in `infra/azure/modules/aca-environment.bicep`, 30-day retention). As configured today the ACA ingress emits no access log we can see — but note that is an Azure platform default, not something this repo sets: no ingress access-log setting appears anywhere in `infra/azure`, and it has not been verified against the live ingress (same caveat as `EDGE_TRUST_PROXY` — ingress properties are per-deployment and can change underneath you). **Anything added in front of the edge — Front Door, App Gateway/WAF, a CDN, an nginx sidecar — logs full request URIs by default and must have query-string logging disabled or the same parameters masked.** The handoff token stays bounded regardless (single-use, 30 s TTL, audience-bound to one app + one session row), and both legs of the redirect that carries it — the callback's 302 and `/_auth/complete`'s own response — send `Referrer-Policy: no-referrer` + `Cache-Control: no-store`, so it doesn't leak via Referer or an intermediary cache. Browser history is the residual we can't erase — see issue #20.
 
+## Health and staleness
+
+`GET /health` on platform/auth hosts returns the shared `HealthStatusSchema` — and on app hosts it
+is just an asset path (an app may ship its own `/health` file). Beyond liveness it reports one
+sub-check, the registry projection's freshness (ADR-0025):
+
+```json
+{
+  "status": "degraded",
+  "service": "azx-edge",
+  "uptime": 812,
+  "checks": [
+    {
+      "name": "registry-projection",
+      "status": "degraded",
+      "detail": "projection last loaded 412s ago (> 5× the 60s reconcile interval); serving stale",
+      "lastSuccessAt": "2026-07-30T12:00:00.000Z",
+      "metrics": { "consecutiveLoadFailures": 7, "staleForSeconds": 412 }
+    }
+  ]
+}
+```
+
+Why it exists: the projection **serves stale on a load failure** by design (architecture §7), which
+without a signal means a sustained DB failure serves an out-of-date access rule forever and reads
+green. Thresholds (`src/registry/health.ts`, ratios to `EDGE_RECONCILE_INTERVAL_MS`):
+
+| State      | When                                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------------- |
+| `degraded` | staleness > 5× the reconcile interval, **or** ≥ 3 consecutive load failures                     |
+| `error`    | staleness > 20× the interval, **or** the projection has never loaded (every app host is 503ing) |
+
+Staleness is measured on a **monotonic** clock, so an NTP step can't flatter it; `lastSuccessAt` is
+report-only.
+
+> **`/health` answers 200 in every state, deliberately.** The body carries the degradation, never
+> the status code. If you add a Container Apps liveness probe, do **not** point it at `/health`
+> expecting a non-200 — a 503 here would restart replicas that are serving correctly from a stale
+> copy, turning the serve-stale stance into the outage it exists to prevent. Nothing in
+> `infra/azure` probes `/health` today.
+
+**The log is the metric channel.** The platform has no metrics pipeline (no `/metrics`, no
+OTel/App Insights — `gateway_calls` is a metering primitive, not an observability sink), and adding
+a client library would be a new runtime dependency in the trusted path (ADR-0003). So load failures
+carry a stable `event` field for a log-based metric — the first failure at `error` level, one more
+`error` when the copy crosses the 20× line, `warn` in between (~1 per reconcile interval), and one
+`info` on recovery:
+
+```jsonc
+{ "level": 50, "event": "registry.load_failed", "consecutiveLoadFailures": 1, "staleForMs": 61234,
+  "lastSuccessfulLoadAt": "2026-07-30T12:00:00.000Z", "reconcileIntervalMs": 60000,
+  "msg": "registry projection load failed; serving stale" }
+{ "level": 30, "event": "registry.load_recovered", "failures": 4, "staleForMs": 245678,
+  "msg": "registry projection reloaded after 4 failed attempt(s)" }
+```
+
+An alert rule over the Log Analytics workspace the environment already ships stdout to:
+
+```kql
+ContainerAppConsoleLogs_CL
+| extend p = parse_json(Log_s)
+| where tostring(p.event) == "registry.load_failed"
+| summarize maxStreak   = max(toint(p.consecutiveLoadFailures)),
+            maxStaleSec = max(tolong(p.staleForMs)) / 1000
+          by bin(TimeGenerated, 5m), ContainerAppName_s
+```
+
+No such rule exists yet — until one is created the degradation is only visible to a human polling
+`/health`. `event` is a new field convention in this repo; follow it for the next log-based metric.
+
 ## Dev workflow (in the dev container)
 
 ```bash

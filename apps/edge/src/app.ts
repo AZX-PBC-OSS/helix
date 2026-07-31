@@ -1,9 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { HealthStatusSchema } from "@azx-pbc/shared";
+import { HealthStatusSchema, worstHealthState } from "@azx-pbc/shared";
 import { loggerOption } from "@azx-pbc/shared/logging";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
-import type { RegistryReader } from "./registry/projection.js";
+import type { RegistryFreshnessReader, RegistryReader } from "./registry/projection.js";
+import { registryFreshnessCheck } from "./registry/health.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { makeAssetHandler } from "./serving/assets.js";
 import { sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
@@ -50,7 +51,8 @@ const SERVICE_NAME = "azx-edge";
 
 export interface EdgeDeps {
   config: EdgeConfig;
-  registry: RegistryReader;
+  /** `/health` reads `freshness()`; every other consumer only routes on `getApp`. */
+  registry: RegistryReader & RegistryFreshnessReader;
   blob: BlobReader;
   /** Session persistence; required for the auth routes to exist. */
   sessions?: SessionStore | null;
@@ -296,10 +298,19 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         await serveAsset(req, reply, req.hostClass.slug);
         return;
       }
+      // Registry freshness is reported, never fatal: the response stays 200 in
+      // every state. A non-200 here would let a liveness probe restart a replica
+      // that is serving correctly from a stale copy — the serve-stale stance
+      // (architecture §7) turned into the outage it exists to prevent (ADR-0025).
+      const checks = [
+        registryFreshnessCheck(deps.registry.freshness(), config.reconcileIntervalMs),
+      ];
+      reply.header("cache-control", "no-store"); // a degraded body must not be cached
       return HealthStatusSchema.parse({
-        status: "ok",
+        status: worstHealthState(checks.map((c) => c.status)),
         service: SERVICE_NAME,
         uptime: process.uptime(),
+        checks,
       });
     },
   });

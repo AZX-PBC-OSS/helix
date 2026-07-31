@@ -38,8 +38,14 @@ export interface InstructionBurnStore {
 export class PgBurnStore implements InstructionBurnStore {
   readonly #pool: Pool;
 
-  constructor(databaseUrl: string, opts: { max?: number } = {}) {
+  constructor(
+    databaseUrl: string,
+    opts: { max?: number; onIdleError?: (err: unknown) => void } = {},
+  ) {
     this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 5 });
+    // See the note in `secrets.ts`: no listener here means a dropped idle client
+    // is an unhandled 'error' event that kills the egress process.
+    this.#pool.on("error", (err) => opts.onIdleError?.(err));
   }
 
   async burn(jti: string): Promise<boolean> {

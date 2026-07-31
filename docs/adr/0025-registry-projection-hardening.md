@@ -1,6 +1,6 @@
 # 0025. Registry projection hardening (observability, jitter, cold-start)
 
-**Status:** Proposed (2026-06-26)
+**Status:** Accepted (2026-06-26) — items 1–2 implemented 2026-07-31; 3–5 open
 **Related:** ADR [0017](0017-registry-listen-notify-projection.md) (the pattern this hardens), [0011](0011-in-memory-rate-limiting.md) (sibling in-memory-state concern)
 **Code:** `apps/edge/src/registry/projection.ts`, `apps/edge/src/registry/listener.ts`, `apps/portal/prisma/migrations/20260612183907_registry_notify_trigger/migration.sql`
 
@@ -27,6 +27,28 @@ Keep the pattern (0017). Land the following hardening, in priority order. None r
 - Quote the LISTEN identifier (`` LISTEN "helix_registry_changed" ``) or assert the channel pattern — constant today, latent injection if ever made dynamic; also ADR [0003](0003-dependency-minimal-edge.md) `[4/5]`.
 - Export `REGISTRY_CHANNEL` as a shared constant referenced by both the edge and the migration, instead of two copies kept in sync by comment `[1/5]`.
 - Use `clearInterval` (not `clearTimeout`) on the reconcile handle `[1/5]`; freeze `RegistryEntry`'s inner `Map`/arrays to stop consumer mutation of shared projection state `[1/5]`.
+
+## Implementation notes (items 1–2, landed 2026-07-31)
+
+Items 1 and 2 are implemented; 3–5 remain open. Four places where the code deviates from, or has to pin down, what the decision above left open:
+
+1. **The state landed on a separate `RegistryFreshnessReader` seam, not on `RegistryReader`.** `getApp`/`isLoaded` has ~15 consumer modules that route requests and have no business knowing about freshness; only `/health` reads the new state. A second interface in the same module (`projection.ts`) satisfies the intent at the cost of two implementor edits (`LiveRegistry`, the test `FakeRegistry`) and zero consumer churn. `EdgeDeps.registry` is typed `RegistryReader & RegistryFreshnessReader`.
+2. **Two clocks, not one.** `staleForMs` is measured off `performance.now()` so a wall-clock jump (NTP step, VM migration) can neither flatter freshness nor manufacture a staleness alert; `lastSuccessfulLoadAt` is a wall-clock ISO string that is **report-only** and never the basis of a decision. Injected as a `ProjectionClock` seam so the tests need no fake timers.
+3. **Thresholds** (`registry/health.ts`, derived constants — not new env, since they are ratios to the already-configurable `EDGE_RECONCILE_INTERVAL_MS`): `degraded` at `> 5 ×` the interval **or** `>= 3` consecutive failures; `error` at `> 20 ×` the interval **or** never-loaded. Both dimensions are needed: the counter catches "loads are failing", the age catches "loads stopped being attempted at all" — a stalled reconcile timer produces zero failures forever, so the age rule is the authority for `error`. A non-finite or non-positive configured interval falls back to 60 s rather than silently disabling the age rule (every comparison against `NaN` is false).
+4. **`/health` always answers HTTP 200**, in every state; the body carries the degradation (`status` plus a `checks[]` array on the shared `HealthStatusSchema`, `Cache-Control: no-store`). A non-200 would let a liveness probe restart a replica that is serving correctly from a stale copy — the serve-stale stance turned into the outage it exists to prevent. Nothing in `infra/azure` probes `/health` today; if that changes, it must not expect a non-200.
+5. **The "load-failure metric" is a structured log event**, because the platform has no metrics channel (no `/metrics`, no OTel/App Insights; `gateway_calls` is a metering primitive, not an observability sink) and a client library would be a new runtime dependency in the trusted path (ADR [0003](0003-dependency-minimal-edge.md)). The de-facto channel is pino stdout → Log Analytics, so the deliverable is a stable `event` field — `registry.load_failed` (carrying `consecutiveLoadFailures`, `staleForMs`, `lastSuccessfulLoadAt`) and `registry.load_recovered` — that a KQL log-based metric and alert rule can count. **`event` is a new field convention in this repo**; the next log-based metric should follow it. Level ladder: first failure `error`, one further `error` when the copy crosses the 20× line, `warn` in between (~1/interval), `info` once on recovery.
+
+### Found while verifying: the serve-stale stance didn't actually hold
+
+Exercising the above end to end (a severable TCP proxy in front of Postgres, so a real DB path could be cut without touching the container) surfaced a defect **older than this ADR and not in its review**: no `pg.Pool` in the repo had an `'error'` listener. When an *idle* pooled connection drops — a DB restart or failover, a severed path, a pooler reaping the session — `pg-pool` re-emits the error on the Pool, and with no listener Node treats it as an unhandled `'error'` event and **kills the process.**
+
+So the very first fault this ADR's observability exists to report did not produce stale serving at all; it produced a dead edge, taking the sessions, metering, app-data, CSP-report and counter pools down with it. Fail-static was asserted, never exercised. Fixed in `createEdgePool` (one listener, attached centrally so no store can forget it, with an optional `onIdleError` for callers that have a logger) plus egress's two hand-built pools (`burn.ts`, `secrets.ts`) — a crash there is a fetch-proxy outage. Regression coverage in `apps/edge/src/db/pool.test.ts`.
+
+Verified after the fix, at `EDGE_RECONCILE_INTERVAL_MS=500`: the process survived the cut, `/health` went `ok → degraded → error`, exactly **2** `error`-level lines were emitted across 100 consecutive failures (first failure + the one 20×-crossing re-escalation, the rest `warn`), and healing the path produced one `registry.load_recovered` at `info` and `/health` back to `ok`.
+
+**Item 3 is now half-closed:** a never-loaded projection reports `error` with an explicit "app hosts are serving 503" detail, so the cold-start blind spot is visible. The durable-snapshot bootstrap (letting a cold replica serve last-known-good) is untouched and still open, as is the question of a separate `/ready`.
+
+**Residuals:** no metrics pipeline and no alert rule yet exist to consume any of this — until one is created in Log Analytics, the degradation is only visible to a human. `consecutiveLoadFailures` counts *attempts*, not time, since NOTIFY-driven loads can inflate it faster than the reconcile interval.
 
 ## Consequences
 

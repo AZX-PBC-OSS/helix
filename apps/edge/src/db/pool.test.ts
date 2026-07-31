@@ -37,4 +37,28 @@ describe("createEdgePool", () => {
     const pool = track(createEdgePool("postgresql://unused", { statementTimeoutMs: 0 }));
     expect(options(pool).statement_timeout).toBe(0);
   });
+
+  // Regression: with no 'error' listener on the Pool, an idle pooled client
+  // dropping (DB restart/failover, severed path, a pooler reaping the session)
+  // is an unhandled 'error' event and Node kills the process — turning the fault
+  // the edge is built to ride out (serve stale, architecture §7) into a crash.
+  // Reproduced against a live DB by severing the connection: pre-fix the process
+  // died, post-fix it degraded /health and recovered.
+  it("survives an idle-client error instead of crashing the process", () => {
+    const seen: unknown[] = [];
+    const pool = track(createEdgePool("postgresql://unused", { onIdleError: (e) => seen.push(e) }));
+    const boom = new Error("connection terminated unexpectedly");
+    // `emit` returns false when nothing is listening — which is exactly the
+    // state that makes Node rethrow. Assert a handler is attached.
+    expect(pool.emit("error", boom)).toBe(true);
+    expect(seen).toEqual([boom]);
+  });
+
+  it("attaches the handler even when the caller passes no onIdleError", () => {
+    const pool = track(createEdgePool("postgresql://unused"));
+    // No callback, but the listener must still exist — otherwise a store that
+    // forgets to pass one reintroduces the crash.
+    expect(() => pool.emit("error", new Error("boom"))).not.toThrow();
+    expect(pool.listenerCount("error")).toBe(1);
+  });
 });

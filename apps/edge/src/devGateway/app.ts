@@ -1,8 +1,9 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { HealthStatusSchema } from "@azx-pbc/shared";
+import { HealthStatusSchema, worstHealthState } from "@azx-pbc/shared";
 import { loggerOption } from "@azx-pbc/shared/logging";
 import type { GatewayConfig } from "../config.js";
-import type { RegistryReader } from "../registry/projection.js";
+import type { RegistryFreshnessReader, RegistryReader } from "../registry/projection.js";
+import { registryFreshnessCheck } from "../registry/health.js";
 import { makeLlmHandler } from "../gateway/llm.js";
 import { makeDataHandlers } from "../gateway/data-handler.js";
 import { makeFetchHandler } from "../gateway/fetch.js";
@@ -62,7 +63,7 @@ function addVaryOrigin(reply: {
 
 export interface DevGatewayDeps {
   config: GatewayConfig;
-  registry: RegistryReader;
+  registry: RegistryReader & RegistryFreshnessReader;
   devTokens: DevTokenStore;
   appData: AppDataStore | null;
   usage: UsageStore | null;
@@ -149,8 +150,19 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
   app.route({
     method: ["GET", "HEAD"],
     url: "/health",
-    handler: async () =>
-      HealthStatusSchema.parse({ status: "ok", service: SERVICE_NAME, uptime: process.uptime() }),
+    handler: async (_req, reply) => {
+      // Same contract as the edge (ADR-0025): freshness is reported, always 200.
+      const checks = [
+        registryFreshnessCheck(deps.registry.freshness(), deps.config.reconcileIntervalMs),
+      ];
+      reply.header("cache-control", "no-store");
+      return HealthStatusSchema.parse({
+        status: worstHealthState(checks.map((c) => c.status)),
+        service: SERVICE_NAME,
+        uptime: process.uptime(),
+        checks,
+      });
+    },
   });
 
   // CORS preflight: a preflight carries no Authorization, so authorize by the

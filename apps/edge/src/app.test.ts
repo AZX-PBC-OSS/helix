@@ -99,6 +99,9 @@ describe("platform hosts", () => {
     const res = await edge.app.inject({ url: "/health", headers: { host: "localhost:8080" } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ status: "ok", service: "azx-edge" });
+    // The registry-freshness sub-check is part of the contract an alert keys on.
+    expect(res.json().checks?.[0]?.name).toBe("registry-projection");
+    expect(res.json().checks?.[0]?.status).toBe("ok");
   });
 
   it("404s everything else", async () => {
@@ -269,9 +272,46 @@ describe("app hosts: registry states", () => {
     const res = await app.inject({ url: "/", headers: HOST });
     expect(res.statusCode).toBe(503);
     expect(res.headers["retry-after"]).toBe("5");
-    // Platform health is independent of the registry.
+    // Platform health *reports* the registry but never fails the request: a
+    // non-200 would let a liveness probe kill a replica that is serving
+    // correctly from a stale copy (ADR-0025). A cold projection is `error`
+    // because every app host is 503ing — this state used to read green.
     const health = await app.inject({ url: "/health", headers: { host: "localhost" } });
     expect(health.statusCode).toBe(200);
+    expect(health.json().status).toBe("error");
+    expect(health.json().checks[0].detail).toContain("never loaded");
+    await app.close();
+  });
+
+  it("degrades /health on a stale projection, still 200, while apps keep serving", async () => {
+    const registry = new FakeRegistry([
+      registryEntry({ appId: APP_ID, slug: "demo", blobPrefix: PREFIX }),
+    ]);
+    const { app, blob } = buildTestEdge({ registry });
+    blob.set(`${PREFIX}index.html`, { body: "<h1>stale but served</h1>" });
+
+    // 6× the 60s reconcile interval: past the degrade line, short of the error one.
+    registry.freshnessOverride = { staleForMs: 6 * 60_000, consecutiveLoadFailures: 6 };
+    let health = await app.inject({ url: "/health", headers: { host: "localhost" } });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({
+      status: "degraded",
+      checks: [{ name: "registry-projection", status: "degraded" }],
+    });
+    expect(health.headers["cache-control"]).toBe("no-store");
+    // The whole point of degrading rather than failing: apps still serve.
+    const page = await app.inject({ url: "/", headers: HOST });
+    expect(page.statusCode).toBe(200);
+
+    // Past 20× the interval it's an error, and the counters ride along.
+    registry.freshnessOverride = { staleForMs: 21 * 60_000, consecutiveLoadFailures: 21 };
+    health = await app.inject({ url: "/health", headers: { host: "localhost" } });
+    expect(health.statusCode).toBe(200);
+    expect(health.json().status).toBe("error");
+    expect(health.json().checks[0].metrics).toEqual({
+      consecutiveLoadFailures: 21,
+      staleForSeconds: 1260,
+    });
     await app.close();
   });
 });

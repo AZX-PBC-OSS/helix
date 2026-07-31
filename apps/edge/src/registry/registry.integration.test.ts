@@ -7,7 +7,7 @@ import { TEST_DATABASE_URL, deleteApp, seedApp, type SeededApp } from "../test/s
 // portal's NOTIFY trigger is present): proves SQL → projection and the full
 // trigger → NOTIFY → LISTEN → reload loop.
 
-const QUIET = { info() {}, warn() {} };
+const QUIET = { info() {}, warn() {}, error() {} };
 
 let pool: pg.Pool;
 let registry: LiveRegistry;
