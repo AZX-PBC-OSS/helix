@@ -24,8 +24,23 @@ export const FAILURES_DEGRADED = 3;
 /** Stable check name — this is what an alert rule keys on; don't rename lightly. */
 export const REGISTRY_CHECK_NAME = "registry-projection";
 
-/** Fallback when the configured interval is unusable (see the guard below). */
+/** Fallback when the configured interval is unusable (see {@link safeInterval}). */
 const FALLBACK_RECONCILE_INTERVAL_MS = 60_000;
+
+/**
+ * Defence in depth on the reconcile interval. `config.ts` now rejects a
+ * non-finite or non-positive `EDGE_RECONCILE_INTERVAL_MS` outright, so this is
+ * unreachable through the normal boot path — but it is **shared** by the health
+ * grading and the log-escalation threshold specifically so those two can't
+ * disagree about the same input if the value ever arrives by another route (a
+ * test harness, a future config source). Every comparison against `NaN` is
+ * false, which would silently disable the age rule rather than fail loudly.
+ */
+export function safeInterval(reconcileIntervalMs: number): number {
+  return Number.isFinite(reconcileIntervalMs) && reconcileIntervalMs > 0
+    ? reconcileIntervalMs
+    : FALLBACK_RECONCILE_INTERVAL_MS;
+}
 
 function seconds(ms: number): number {
   return Math.round(ms / 1000);
@@ -39,13 +54,7 @@ export function registryFreshnessCheck(
   freshness: RegistryFreshness,
   reconcileIntervalMs: number,
 ): HealthCheck {
-  // `EDGE_RECONCILE_INTERVAL_MS` goes through a bare `Number()` (config.ts), so
-  // NaN/0/negative are all reachable — and each would silently disable the age
-  // rule (every comparison against NaN is false). Fall back instead.
-  const interval =
-    Number.isFinite(reconcileIntervalMs) && reconcileIntervalMs > 0
-      ? reconcileIntervalMs
-      : FALLBACK_RECONCILE_INTERVAL_MS;
+  const interval = safeInterval(reconcileIntervalMs);
 
   const { loaded, staleForMs, consecutiveLoadFailures, lastSuccessfulLoadAt } = freshness;
   const metrics: Record<string, number> = { consecutiveLoadFailures };

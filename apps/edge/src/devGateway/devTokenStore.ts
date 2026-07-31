@@ -35,9 +35,11 @@ export class PgDevTokenStore implements DevTokenStore {
   #pool: Pool;
 
   constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
+    // Spread, don't re-list — see the note in auth/sessions.ts.
     this.#pool = createEdgePool(databaseUrl, {
+      ...opts,
       max: opts.max ?? 5,
-      statementTimeoutMs: opts.statementTimeoutMs,
+      label: opts.label ?? "dev-tokens",
     });
   }
 

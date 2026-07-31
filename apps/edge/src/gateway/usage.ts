@@ -94,9 +94,11 @@ export class PgUsageStore implements UsageStore {
   #pool: Pool;
 
   constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
+    // Spread, don't re-list — see the note in auth/sessions.ts.
     this.#pool = createEdgePool(databaseUrl, {
+      ...opts,
       max: opts.max ?? 10,
-      statementTimeoutMs: opts.statementTimeoutMs,
+      label: opts.label ?? "usage",
     });
   }
 

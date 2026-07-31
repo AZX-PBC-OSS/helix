@@ -79,9 +79,12 @@ export class PgSessionStore implements SessionStore {
   #pool: Pool;
 
   constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
+    // Spread, don't re-list: enumerating fields silently drops any hook the
+    // caller passed (this is how `onClientError` went unreported for five stores).
     this.#pool = createEdgePool(databaseUrl, {
+      ...opts,
       max: opts.max ?? 10,
-      statementTimeoutMs: opts.statementTimeoutMs,
+      label: opts.label ?? "sessions",
     });
   }
 

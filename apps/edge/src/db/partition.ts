@@ -1,6 +1,7 @@
 import { type Pool, type PoolClient } from "pg";
 
 import { type Env } from "@azx-pbc/shared";
+import { withPooledClient } from "./pool.js";
 
 /**
  * Run `fn` in a transaction with the RLS partition GUCs set from the VERIFIED
@@ -35,27 +36,32 @@ export async function withPartition<T>(
   env: Env,
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    if (userOid === null) {
-      await client.query(
-        "SELECT set_config('app.app_id', $1, true), set_config('app.env', $2, true)",
-        [appId, env],
-      );
-    } else {
-      await client.query(
-        "SELECT set_config('app.app_id', $1, true), set_config('app.env', $2, true), set_config('app.user_oid', $3, true)",
-        [appId, env, userOid],
-      );
+  // Checkout, the `'error'`-listener window and the release all live in
+  // `withPooledClient` (db/pool.ts) — a mid-transaction socket death would
+  // otherwise be an unhandled `'error'` event that kills the process. This
+  // function owns only the transaction and the GUCs.
+  return withPooledClient(pool, async (client) => {
+    try {
+      await client.query("BEGIN");
+      if (userOid === null) {
+        await client.query(
+          "SELECT set_config('app.app_id', $1, true), set_config('app.env', $2, true)",
+          [appId, env],
+        );
+      } else {
+        await client.query(
+          "SELECT set_config('app.app_id', $1, true), set_config('app.env', $2, true), set_config('app.user_oid', $3, true)",
+          [appId, env, userOid],
+        );
+      }
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      // On a dead socket this rejects through pg's `handleError` and does NOT
+      // re-emit `'error'`, so it can't double-report through the listener above.
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
     }
-    const result = await fn(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }

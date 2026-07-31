@@ -128,6 +128,26 @@ function parseFetchGrant(capabilities: unknown): FetchProxyGrant {
   };
 }
 
+/**
+ * Invoke a reporting observer without letting it affect the load. A load's
+ * outcome must depend on the query alone — see the note at the end of
+ * `#loadOnce`.
+ *
+ * Silent by design: the only plausible thrower is the log sink itself, so
+ * reporting a logging failure through the logger is circular, and the platform
+ * has no second channel (no metrics pipeline — ADR-0003). The safety net is that
+ * `freshness()` now stays truthful, so `/health` still reflects reality even
+ * with the sink dead. (A sink that returns a *rejected promise* is out of reach
+ * here, but the `=> void` return type already forbids one.)
+ */
+function notify<T>(observer: (info: T) => void, info: T): void {
+  try {
+    observer(info);
+  } catch {
+    // Deliberately swallowed — see above.
+  }
+}
+
 export interface RegistryReader {
   /** undefined = unknown slug. */
   getApp(slug: string): RegistryEntry | undefined;
@@ -306,6 +326,12 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
    * Reload the projection. Loads are serialized: a call during an in-flight
    * load marks it dirty and piggybacks on exactly one follow-up load, so a
    * burst of NOTIFYs collapses instead of stampeding the DB.
+   *
+   * **Never rejects.** A DB failure is absorbed into the freshness state (serve
+   * stale — architecture §7) and a throwing observer is contained by `notify`.
+   * That is what makes the `void load()` calls on the listener's NOTIFY and
+   * reconcile paths safe, and `LiveRegistry.start()` unable to fail on a down
+   * DB — an invariant to preserve, not an accident.
    */
   load(): Promise<void> {
     if (this.#inFlight) {
@@ -323,6 +349,10 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
   }
 
   async #loadOnce(): Promise<void> {
+    // Decided inside the try, REPORTED after it — see the note below the catch.
+    // At most one of these is ever set.
+    let recovery: RegistryLoadRecovery | null = null;
+    let failure: RegistryLoadFailure | null = null;
     try {
       const { rows } = await this.#querier.query(this.#sql);
       // Build fresh, swap atomically (single assignment — no torn reads).
@@ -352,7 +382,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
       this.#lastSuccessMonoMs = this.#clock.monotonicMs();
       this.#lastSuccessIso = this.#clock.wallClockIso();
       this.#consecutiveLoadFailures = 0;
-      if (failures > 0) this.#onLoadRecovered({ failures, staleForMs });
+      if (failures > 0) recovery = { failures, staleForMs };
     } catch (err) {
       // Keep serving the previous map (stale beats down — architecture §7).
       // `#loaded` deliberately stays true: flipping it back would 503 every app
@@ -360,12 +390,25 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
       // The counter + timestamps are what make the failure visible instead.
       this.#consecutiveLoadFailures += 1;
       this.#lastFailureIso = this.#clock.wallClockIso();
-      this.#onLoadFailure({
+      failure = {
         err,
         consecutiveLoadFailures: this.#consecutiveLoadFailures,
         staleForMs: this.#staleForMs(),
         lastSuccessfulLoadAt: this.#lastSuccessIso,
-      });
+      };
     }
+    // Observers run OUTSIDE the try, through a non-throwing boundary, so they
+    // can never change the load's outcome. They used to run inside it, where a
+    // throwing sink (a dead log destination) would drop a **successful** load
+    // into the catch — incrementing the failure counter and reporting a failure
+    // for a load that worked, i.e. corrupting the one state `/health` and the
+    // alert ladder read. It reported `consecutiveLoadFailures: 1` with
+    // `staleForMs: ~0`, which the listener routes to the `error`-level
+    // first-failure line: a page for a perfectly fresh projection. A throwing
+    // observer could also reject `load()`, which rejects `LiveRegistry.start()`
+    // and becomes an unhandled rejection on the `void`-ed timer paths.
+    if (recovery !== null)
+      notify((info: RegistryLoadRecovery) => this.#onLoadRecovered(info), recovery);
+    if (failure !== null) notify((info: RegistryLoadFailure) => this.#onLoadFailure(info), failure);
   }
 }

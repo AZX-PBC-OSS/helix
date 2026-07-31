@@ -15,6 +15,7 @@ import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { LoginThrottle } from "./auth/loginThrottle.js";
 import { PgCounterStore } from "./gateway/counterStore.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
+import type { PoolClientErrorPhase } from "./db/pool.js";
 
 /**
  * Dev convenience: load `apps/edge/.env.local` (gitignored) into process.env
@@ -85,6 +86,19 @@ if (config.tls) {
 const logRef: { current: RegistryLogger } = {
   current: { info: () => {}, warn: () => {}, error: () => {} },
 };
+/**
+ * One reporting sink for every pool the edge builds. Stores are constructed
+ * before `buildApp` creates the Fastify logger, so this rides the same
+ * late-bound `logRef`. `warn`, not `error`: a checked-out drop already fails its
+ * own request through that request's error log, and an `error` per pool on every
+ * DB restart would drown the ADR-0025 staleness ladder.
+ */
+const onClientError = (err: unknown, ctx: { phase: PoolClientErrorPhase; label: string }): void => {
+  logRef.current.warn(
+    { event: "db.pool_client_error", pool: ctx.label, phase: ctx.phase, err },
+    `pooled DB client dropped (${ctx.label}, ${ctx.phase})`,
+  );
+};
 const registry = new LiveRegistry({
   databaseUrl: config.databaseUrl,
   reconcileIntervalMs: config.reconcileIntervalMs,
@@ -98,7 +112,10 @@ const registry = new LiveRegistry({
 
 // Auth stack — only when the config block is present (fail-closed otherwise).
 const sessions = config.auth
-  ? new PgSessionStore(config.databaseUrl, { statementTimeoutMs: config.statementTimeoutMs })
+  ? new PgSessionStore(config.databaseUrl, {
+      statementTimeoutMs: config.statementTimeoutMs,
+      onClientError,
+    })
   : null;
 const oidc = config.auth
   ? new OpenIdConnectClient(config.auth, `${publicOrigin(config, "auth")}/callback`, {
@@ -113,17 +130,24 @@ const oidc = config.auth
 // (the capability requires a session); the vendor provider only when a key is
 // configured (otherwise the capability 503s — fail-closed, like auth).
 const usage: UsageStore | null = config.auth
-  ? new PgUsageStore(config.databaseUrl, { statementTimeoutMs: config.statementTimeoutMs })
+  ? new PgUsageStore(config.databaseUrl, {
+      statementTimeoutMs: config.statementTimeoutMs,
+      onClientError,
+    })
   : null;
 // App-data capability (app-data design §3): comes up with the auth stack, like
 // the meter — every data verb is gated and caller-scoped.
 const appData: AppDataStore | null = config.auth
-  ? new PgAppDataStore(config.databaseUrl, { statementTimeoutMs: config.statementTimeoutMs })
+  ? new PgAppDataStore(config.databaseUrl, {
+      statementTimeoutMs: config.statementTimeoutMs,
+      onClientError,
+    })
   : null;
 // CSP report sink (§6.2) — append-only, no auth needed; always on (the edge
 // always has a DB connection for the registry).
 const cspReports = new PgCspReportStore(config.databaseUrl, {
   statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
 });
 // Shared, PG-backed counter behind both abuse controls (issue #13): the anon
 // per-IP gateway limiter and the shared-password login throttle. One store +
@@ -132,6 +156,7 @@ const cspReports = new PgCspReportStore(config.databaseUrl, {
 // closed; passed into the app.
 const counterStore = new PgCounterStore(config.databaseUrl, {
   statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
 });
 const anonRateLimiter = new IpRateLimiter(config.anonRateLimit, counterStore);
 const loginThrottle = new LoginThrottle(counterStore);

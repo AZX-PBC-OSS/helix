@@ -33,7 +33,7 @@ Every app response carries the §4.4 baseline CSP (not just HTML — SVG/XML doc
 | `EDGE_DEV_ALLOW_UNAUTHENTICATED`                  | unset                                    | **Dev only** (refused in production): skip the session gate. Does **not** relax TLS                                                                                                                                                          |
 | `EDGE_ALLOW_PUBLIC_APPS`                          | `false`                                  | Set `true` to permit `public` (anonymous) apps; otherwise assets 403 and `/_api/*` refuses the anon caller, even for an already-public app. "Allow" polarity, opt-in (parse → `=== "true"`). Set the matching `PORTAL_ALLOW_PUBLIC_APPS` too |
 | `EDGE_ALLOW_PASSWORD_APPS`                        | `false`                                  | Set `true` to permit `password` (shared-passphrase) apps; otherwise assets 403, `/_api/*` refused, and the `/_auth/login` challenge 404s. Pair with `PORTAL_ALLOW_PASSWORD_APPS`                                                             |
-| `EDGE_RECONCILE_INTERVAL_MS`                      | `60000`                                  | Projection full-reload safety net                                                                                                                                                                                                            |
+| `EDGE_RECONCILE_INTERVAL_MS`                      | `60000`                                  | Projection full-reload safety net (±20% jitter). Must be a positive number — the edge **refuses to boot** otherwise, because `NaN` would reach `setTimeout` as ~0 ms and hot-loop the DB                                                     |
 | `EDGE_STATEMENT_TIMEOUT_MS`                       | `10000`                                  | Per-query `statement_timeout` on every edge Postgres pool (pool-exhaustion DoS guard, ADR-0002); `0` disables                                                                                                                                |
 | `EDGE_PORT` / `PORT`                              | `8080`                                   | Listen port                                                                                                                                                                                                                                  |
 
@@ -108,19 +108,66 @@ carry a stable `event` field for a log-based metric — the first failure at `er
   "msg": "registry projection reloaded after 4 failed attempt(s)" }
 ```
 
+A projection that has **never** loaded reports under its own event instead, because there is no age
+to grade — `staleForMs` stays null forever, so the escalation is keyed on the failure count (which
+tracks elapsed intervals when nothing succeeds). Every app host is 503ing in this state:
+
+```jsonc
+{
+  "level": 50,
+  "event": "registry.never_loaded",
+  "consecutiveLoadFailures": 1,
+  "staleForMs": null,
+  "msg": "registry projection has never loaded; app hosts are serving 503",
+}
+```
+
+Separately, **every** Postgres pool the edge builds reports a dropped client under one shared event,
+so a single rule covers the fleet rather than one per pool. `phase` distinguishes a client that was
+sitting in the pool from one a request had checked out (see "The two `'error'` windows" below):
+
+```jsonc
+{
+  "level": 40,
+  "event": "db.pool_client_error",
+  "pool": "sessions",
+  "phase": "checked-out",
+  "msg": "pooled DB client dropped (sessions, checked-out)",
+}
+```
+
 An alert rule over the Log Analytics workspace the environment already ships stdout to:
 
 ```kql
 ContainerAppConsoleLogs_CL
 | extend p = parse_json(Log_s)
-| where tostring(p.event) == "registry.load_failed"
+| where tostring(p.event) in ("registry.load_failed", "registry.never_loaded")
 | summarize maxStreak   = max(toint(p.consecutiveLoadFailures)),
             maxStaleSec = max(tolong(p.staleForMs)) / 1000
-          by bin(TimeGenerated, 5m), ContainerAppName_s
+          by bin(TimeGenerated, 5m), tostring(p.event), ContainerAppName_s
 ```
 
 No such rule exists yet — until one is created the degradation is only visible to a human polling
 `/health`. `event` is a new field convention in this repo; follow it for the next log-based metric.
+
+**Note the verbose body is unauthenticated.** Any unrecognised `Host` classifies as `platform`, and
+the auth host is internet-facing, so `lastSuccessAt` / `staleForSeconds` / `consecutiveLoadFailures`
+are readable by anyone who can reach the edge. Accepted deliberately (ADR-0025): it is operational
+metadata, not credentials, and gating it would break this polling workflow. Adding a field that
+names apps or users would change that calculus.
+
+### The two `'error'` windows on a Postgres pool
+
+Worth knowing before touching `src/db/`: `pg-pool` gives a pooled client an `'error'` listener only
+while it is **idle**, and strips it for the duration of a checkout. `pool.query()` covers its own
+window; `pool.connect()` does not. Since `pg` emits `'error'` synchronously on a socket death but
+defers the query rejection to `nextTick`, an unguarded checkout means a mid-transaction connection
+drop kills the process before the awaited query ever rejects.
+
+So `src/db/pool.ts` owns both halves — `createEdgePool` attaches the idle listener, and
+`withPooledClient` is the **only** sanctioned `pool.connect()` (a `no-restricted-syntax` rule in
+`eslint.config.mjs` enforces that). `withPartition` composes it, so every RLS-partitioned
+transaction is covered. Reach for `withPooledClient` rather than checking a client out by hand.
 
 ## Dev workflow (in the dev container)
 

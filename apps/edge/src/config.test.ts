@@ -95,6 +95,40 @@ describe("loadConfig", () => {
     expect(config.statementTimeoutMs).toBe(3000);
   });
 
+  // A bare Number() let NaN through, and NaN reaches setTimeout, which coerces it
+  // to ~0 ms — a DB hot loop from every replica, with /health reading `ok`
+  // throughout because the loads keep succeeding. Fail the boot instead.
+  it("refuses an unusable EDGE_RECONCILE_INTERVAL_MS instead of hot-looping", () => {
+    for (const bad of ["abc", "0", "-1", "NaN", "Infinity"]) {
+      expect(() => loadConfig({ ...ENV, EDGE_RECONCILE_INTERVAL_MS: bad })).toThrow(
+        /EDGE_RECONCILE_INTERVAL_MS must be a positive number/,
+      );
+    }
+    // Unset falls back to the documented default; an explicit value is honored.
+    expect(loadConfig({ ...ENV }).reconcileIntervalMs).toBe(60_000);
+    // Empty/whitespace counts as unset, not as a bad value: compose and CI pass
+    // empty strings for vars that are declared but not set, and `??` wouldn't
+    // catch those (`Number("")` is 0).
+    for (const blank of ["", "   "]) {
+      expect(loadConfig({ ...ENV, EDGE_RECONCILE_INTERVAL_MS: blank }).reconcileIntervalMs).toBe(
+        60_000,
+      );
+    }
+    expect(loadConfig({ ...ENV, EDGE_RECONCILE_INTERVAL_MS: "2500" }).reconcileIntervalMs).toBe(
+      2500,
+    );
+  });
+
+  it("applies the same validation to the dev-gateway, which shares the parse", () => {
+    expect(() =>
+      loadDevGatewayConfig({
+        ...ENV,
+        EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+        EDGE_RECONCILE_INTERVAL_MS: "abc",
+      }),
+    ).toThrow(/EDGE_RECONCILE_INTERVAL_MS must be a positive number/);
+  });
+
   it("throws a clear error on missing requirements", () => {
     expect(() => loadConfig({})).toThrow(/DATABASE_URL/);
     expect(() => loadConfig({ DATABASE_URL: "x" })).toThrow(/AZURE_STORAGE_CONNECTION_STRING/);

@@ -84,15 +84,34 @@ if (config.keyVaultUrl) {
   store = createSecretStore({ devMasterKey: readDevKey(config.devKeyPath) });
   custody = "dev";
 }
+// Both pools are built before `buildApp`, so their reporting rides a late-bound
+// ref (the same shape the edge uses). Without the `'error'` listener underneath
+// this hook, an idle client dropping on a DB restart would be an unhandled
+// `'error'` event and would kill the whole mechanism plane — a fetch-proxy outage.
+const logRef: { current: (obj: Record<string, unknown>, msg: string) => void } = {
+  current: () => {},
+};
+const onClientError = (err: unknown, label: string): void => {
+  logRef.current(
+    { event: "db.pool_client_error", pool: label, phase: "idle", err },
+    `pooled DB client dropped (${label}, idle)`,
+  );
+};
+
 const resolver: SecretResolver | null = store
-  ? new PgSecretResolver(config.databaseUrl, store)
+  ? new PgSecretResolver(config.databaseUrl, store, {
+      onIdleError: (err) => onClientError(err, "secrets"),
+    })
   : null;
 
 // The replay burn always runs — it needs only the DB (helix_egress), not the
 // secret store, and protects keyless calls too (issue #3).
-const burnStore = new PgBurnStore(config.databaseUrl);
+const burnStore = new PgBurnStore(config.databaseUrl, {
+  onIdleError: (err) => onClientError(err, "instruction-jti"),
+});
 
 const app = buildApp({ config, resolver, instructionKey, burnStore });
+logRef.current = (obj, msg) => app.log.warn(obj, msg);
 
 // GC expired burn rows on an interval; unref so it never holds the process open.
 const burnSweep = setInterval(() => {

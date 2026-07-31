@@ -9,6 +9,7 @@ import { PgUsageStore } from "../gateway/usage.js";
 import { PgAppDataStore } from "../gateway/data.js";
 import type { LlmProvider } from "../gateway/provider.js";
 import { PgDevTokenStore } from "./devTokenStore.js";
+import type { PoolClientErrorPhase } from "../db/pool.js";
 
 /**
  * azx-dev-gateway entrypoint (dev-mode design §3, §11 step 3). A SEPARATE process
@@ -82,6 +83,13 @@ if (config.tls) {
 const logRef: { current: RegistryLogger } = {
   current: { info: () => {}, warn: () => {}, error: () => {} },
 };
+/** One reporting sink for every pool — see the note in `../server.ts`. */
+const onClientError = (err: unknown, ctx: { phase: PoolClientErrorPhase; label: string }): void => {
+  logRef.current.warn(
+    { event: "db.pool_client_error", pool: ctx.label, phase: ctx.phase, err },
+    `pooled DB client dropped (${ctx.label}, ${ctx.phase})`,
+  );
+};
 const registry = new LiveRegistry({
   databaseUrl: devDatabaseUrl,
   reconcileIntervalMs: config.reconcileIntervalMs,
@@ -96,12 +104,17 @@ const registry = new LiveRegistry({
   },
 });
 
-const usage = new PgUsageStore(devDatabaseUrl, { statementTimeoutMs: config.statementTimeoutMs });
+const usage = new PgUsageStore(devDatabaseUrl, {
+  statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
+});
 const appData = new PgAppDataStore(devDatabaseUrl, {
   statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
 });
 const devTokens = new PgDevTokenStore(devDatabaseUrl, {
   statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
 });
 
 // Fetch-proxy + LLM ride the same EgressProvider seam as the edge; env=dev is

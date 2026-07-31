@@ -478,6 +478,29 @@ function parseTrustProxy(raw: string | undefined): boolean | number | string {
 }
 
 /**
+ * Parse a millisecond duration that must be a positive, finite number, throwing
+ * rather than letting a typo through.
+ *
+ * A bare `Number()` here is not harmless: `Number("abc")` is `NaN`, and every
+ * comparison against `NaN` is false, so a mistyped value silently disables
+ * whatever the duration gates. For the reconcile interval specifically, `NaN`
+ * reaches `setTimeout`, which coerces it to ~0 ms — a DB hot loop from every
+ * replica, with `/health` reading green throughout because the loads keep
+ * succeeding. Note `??` only catches `undefined`/`null`, so an empty-string env
+ * var (`Number("") === 0`) needs the same guard.
+ */
+function requirePositiveMs(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      `${name} must be a positive number of milliseconds (got ${JSON.stringify(raw)})`,
+    );
+  }
+  return value;
+}
+
+/**
  * Parse the config the gateway machinery shares across the edge and the
  * dev-gateway (see {@link GatewayConfig}). Neither the helix_edge DSN nor blob
  * custody appears here — those are edge-only and live in {@link loadConfig} — so
@@ -509,7 +532,11 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
   return {
     baseDomain: (env.EDGE_BASE_DOMAIN ?? "local.helix.azxlabs.io").toLowerCase(),
     tls,
-    reconcileIntervalMs: Number(env.EDGE_RECONCILE_INTERVAL_MS ?? 60_000),
+    reconcileIntervalMs: requirePositiveMs(
+      env.EDGE_RECONCILE_INTERVAL_MS,
+      60_000,
+      "EDGE_RECONCILE_INTERVAL_MS",
+    ),
     statementTimeoutMs: Number(env.EDGE_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),
     trustProxy: parseTrustProxy(env.EDGE_TRUST_PROXY),
     llm: {

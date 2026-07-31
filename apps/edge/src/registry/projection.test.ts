@@ -296,6 +296,63 @@ describe("RegistryProjection freshness", () => {
     expect(recoveries).toEqual([{ failures: 2, staleForMs: 300_000 }]);
   });
 
+  // A reporting hook must never be able to change the load's outcome — it is the
+  // freshness state that /health and the whole alert ladder grade against.
+  it("does not turn a successful load into a reported failure when the log sink throws", async () => {
+    const failures: RegistryLoadFailure[] = [];
+    const projection = new RegistryProjection(querierFor([[ROW], new Error("db down"), [ROW]]), {
+      clock: fakeClock(),
+      onLoadFailure: (info) => failures.push(info),
+      onLoadRecovered: () => {
+        throw new Error("logger destination failed");
+      },
+    });
+    await projection.load(); // succeeds
+    await projection.load(); // fails
+    await expect(projection.load()).resolves.toBeUndefined(); // recovers; sink throws
+
+    // The recovery genuinely happened, so the counters must say so.
+    expect(projection.freshness()).toMatchObject({
+      loaded: true,
+      consecutiveLoadFailures: 0,
+      staleForMs: 0,
+    });
+    // Pre-fix this was [1, 2]: the throw fell into the catch and reported a
+    // second failure for a load that had already swapped the map successfully.
+    expect(failures.map((f) => f.consecutiveLoadFailures)).toEqual([1]);
+    expect(projection.getApp("demo")).toBeDefined();
+  });
+
+  it("does not reject load() when the failure sink throws", async () => {
+    const projection = new RegistryProjection(querierFor([[ROW], new Error("db down")]), {
+      clock: fakeClock(),
+      onLoadFailure: () => {
+        throw new Error("logger destination failed");
+      },
+    });
+    await projection.load();
+    // Pre-fix this rejected — which rejects LiveRegistry.start() on the boot
+    // path and becomes an unhandled rejection on the timer paths.
+    await expect(projection.load()).resolves.toBeUndefined();
+    expect(projection.freshness().consecutiveLoadFailures).toBe(1);
+    expect(projection.getApp("demo")).toBeDefined(); // still serving the stale copy
+  });
+
+  it("does not wedge the in-flight latch when an observer throws", async () => {
+    const querier = querierFor([[ROW], new Error("db down"), [ROW]]);
+    const projection = new RegistryProjection(querier, {
+      clock: fakeClock(),
+      onLoadFailure: () => {
+        throw new Error("logger destination failed");
+      },
+    });
+    await projection.load();
+    await projection.load(); // fails, observer throws
+    const before = querier.calls;
+    await projection.load(); // must still issue a query
+    expect(querier.calls).toBeGreaterThan(before);
+  });
+
   it("ages the copy off the monotonic clock even when the wall clock jumps back", async () => {
     const clock = fakeClock();
     const projection = new RegistryProjection(querierFor([[ROW]]), { clock });

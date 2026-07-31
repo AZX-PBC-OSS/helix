@@ -41,7 +41,7 @@ export class PgCounterStore implements CounterStore {
   readonly #pool: Pool;
 
   constructor(databaseUrl: string, opts: EdgePoolOpts = {}) {
-    this.#pool = createEdgePool(databaseUrl, opts);
+    this.#pool = createEdgePool(databaseUrl, { ...opts, label: opts.label ?? "rate-counters" });
   }
 
   async bump(key: string, windowMs: number): Promise<number> {
