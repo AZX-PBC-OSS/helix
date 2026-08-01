@@ -90,7 +90,7 @@ describe("HelpModal", () => {
     expect(await screen.findByText(/dev gateway isn't enabled on this deployment/i)).toBeDefined();
     // No invented host, and the CLI half is what's offered instead.
     expect(screen.queryByText(/dev-api\./)).toBeNull();
-    expect(screen.getByText(/npm link \.\/packages\/cli/)).toBeDefined();
+    expect(screen.getByText(/npm i -g @azx-pbc\/helix-cli/)).toBeDefined();
   });
 
   it("downloads a skill rendered for this deployment, with no placeholders left", async () => {

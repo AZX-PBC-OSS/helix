@@ -264,13 +264,10 @@ helix rollback                       # back to the previous live version
 `helix deploy --promote` does the last two steps in one. Deploys always land as
 **preview** first — promotion is deliberately separate, and versions are immutable.
 
-The CLI is not published to npm yet. Install it from the repo:
+Install the CLI from npm (needs Node 24+):
 
 ```bash
-git clone https://github.com/AZX-PBC-OSS/helix.git
-cd helix && pnpm install
-pnpm --filter @azx-pbc/helix-cli build
-npm link ./packages/cli              # puts `helix` on your PATH
+npm i -g @azx-pbc/helix-cli          # puts `helix` on your PATH
 ```
 
 For CI, set `HELIX_TOKEN` and `HELIX_PORTAL_URL` instead of running `helix login`.

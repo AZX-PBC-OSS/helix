@@ -54,6 +54,18 @@ headless; the error tells you to run `helix login`.
 Tests: `deviceFlow.integration.test.ts`, `tokenStore.test.ts`, `session.test.ts`, driven against
 an ephemeral dev-idp (see [dev-idp.md](./dev-idp.md)).
 
+### Distribution (`.github/workflows/release-cli.yml`)
+
+Published to public npm as `@azx-pbc/helix-cli` — `npm i -g @azx-pbc/helix-cli`, Node 24+.
+Releases are cut by a **`cli-v*`** tag (not `v*`, which is the platform's version and drives the
+image builds), and published from CI by **npm trusted publishing** (OIDC, `id-token: write`) with
+provenance — there is no `NPM_TOKEN` in the repo. The workflow packs with `pnpm` (the only client
+that rewrites `catalog:`/`workspace:*` into real ranges), asserts the tarball, globally installs it
+with `tsx` off `PATH`, and only then publishes those exact bytes with `npm`. Version `0.0.0` is a
+deprecated placeholder: npm requires a package to exist before a trusted publisher can be attached
+to it. Details in [`packages/cli/README.md`](../../packages/cli/README.md#releasing);
+rationale in [ADR-0032](../adr/0032-cli-naming-and-distribution.md).
+
 ## Design notes (why)
 
 - **Per-app, not a monolithic dashboard tool** — `helix` reads the app's own `helix.json` from the
@@ -68,6 +80,6 @@ an ephemeral dev-idp (see [dev-idp.md](./dev-idp.md)).
 
 ## Planned / not yet built
 
-- **Not published yet** — run via `tsx`: `node --import tsx <repo>/packages/cli/src/bin.ts <cmd>`
-  from the app directory, or alias it. `npm i -g @azx-pbc/helix-cli` is a later milestone.
 - Production login points `helix login` at Entra instead of the local issuer (config-only).
+- **Drop the `AZX_*` / `azx.json` dual-read.** ADR-0032 calls it transition scaffolding to remove
+  at the first minor version after publishing; publishing is what started that clock.

@@ -1,0 +1,158 @@
+name: Release CLI
+
+# Publishes @azx-pbc/helix-cli to public npm on a `cli-v*` tag, authenticated by
+# npm trusted publishing (OIDC). There is no NPM_TOKEN in this repo and there
+# should never be one — the trust relationship is registered against this
+# workflow file, not against a long-lived credential (ADR-0032).
+#
+# Two deliberate separations from ci.yml:
+#
+#   - **Its own file.** npm matches the OIDC `workflow_ref` claim against the
+#     exact filename registered as the package's trusted publisher. Keeping the
+#     publish here means the registration is narrow: no other workflow in the
+#     repo can mint a publish, and editing CI can't silently widen that. (It is
+#     also why this is not a reusable workflow called from ci.yml — that would
+#     move the claim to `job_workflow_ref` and complicate the match.)
+#
+#   - **Its own tag prefix.** ci.yml already builds container images on `v*`,
+#     which is the *platform's* version. The CLI's version is not the
+#     platform's; `cli-v*` releases it independently, and `v*` does not match it.
+#
+# The build → pack → assert → install steps mirror ci.yml's `package` job on
+# purpose. This workflow proves the exact bytes it is about to publish rather
+# than trusting that an earlier run proved something similar.
+
+on:
+  push:
+    tags: ["cli-v*"]
+
+permissions:
+  contents: read
+  id-token: write # mint the OIDC token npm exchanges for publish rights
+
+jobs:
+  publish:
+    name: publish @azx-pbc/helix-cli
+    runs-on: ubuntu-latest
+    # If you add an `environment:` here, the same name must be selected in the
+    # trusted-publisher config on npmjs.com or the OIDC claim won't match.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          # No `registry-url:` on purpose. It writes an .npmrc containing
+          # `_authToken=${NODE_AUTH_TOKEN}`, which with no token set is an empty
+          # credential that can shadow the OIDC exchange. registry.npmjs.org is
+          # the default anyway.
+
+      - name: Ensure npm supports OIDC publishing
+        # Trusted publishing needs npm >= 11.5.1. Node 24 already bundles an
+        # 11.x, but pinning the requirement to whatever the toolcache happens
+        # to ship is how this breaks silently a year from now.
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tag must match packages/cli/package.json
+        # The tag is what a human types; package.json is what ends up on the
+        # registry under that name forever. A mismatch means the published
+        # version and the git tag disagree, which is unfixable after the fact.
+        run: |
+          TAG="${GITHUB_REF_NAME#cli-v}"
+          PKG="$(node -p "require('./packages/cli/package.json').version")"
+          echo "tag=$TAG package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag cli-v$TAG does not match packages/cli/package.json ($PKG)"
+            exit 1
+          fi
+
+      - name: Build the bundle
+        run: pnpm --filter @azx-pbc/helix-cli build
+
+      - name: Pack
+        working-directory: packages/cli
+        # `pnpm pack`, never `npm pack`: only pnpm rewrites the `catalog:` (and
+        # `workspace:*`) specifiers to real semver ranges. An npm-packed tarball
+        # ships `"archiver": "catalog:"`, which no npm client can resolve.
+        run: |
+          pnpm pack --out "$RUNNER_TEMP/helix-cli.tgz"
+          echo "TARBALL=$RUNNER_TEMP/helix-cli.tgz" >> "$GITHUB_ENV"
+          tar -tzf "$RUNNER_TEMP/helix-cli.tgz"
+
+      - name: Assert tarball contents
+        # dist/helix.js is the bin target; src/ must not ship (it would drag in
+        # the raw-TS @azx-pbc/shared imports that the bundle exists to inline).
+        run: |
+          tar -tzf "$TARBALL" | grep -qx 'package/dist/helix.js'
+          if tar -tzf "$TARBALL" | grep -q 'package/src/'; then
+            echo "::error::tarball ships src/ — check the \"files\" allowlist"
+            exit 1
+          fi
+
+      - name: Assert the packed manifest has no workspace-only specifiers
+        # The failure this catches is registry-visible and permanent: a manifest
+        # published with `"zod": "catalog:"` (or a `workspace:*` dep) installs
+        # for nobody, and that version number can never be reused.
+        run: |
+          tar -xzOf "$TARBALL" package/package.json > "$RUNNER_TEMP/manifest.json"
+          cat "$RUNNER_TEMP/manifest.json"
+          if grep -qE '"(catalog|workspace):' "$RUNNER_TEMP/manifest.json"; then
+            echo "::error::packed manifest still has catalog:/workspace: specifiers — was this packed with npm instead of pnpm?"
+            exit 1
+          fi
+
+      - name: Smoke-test the installed binary
+        # The load-bearing step: a clean global prefix, and tsx removed from
+        # PATH entirely, so this passes only if the artifact really runs on
+        # plain node. Node's own bin dir has to stay on PATH — the bundle's
+        # `#!/usr/bin/env node` shebang needs an interpreter, and setup-node's
+        # is in the toolcache, not /usr/bin — but that dir holds only
+        # node/npm/npx/corepack, so keeping it smuggles nothing back in.
+        run: |
+          NODE_BIN="$(dirname "$(command -v node)")"
+          npm config set prefix "$RUNNER_TEMP/npm-global"
+          npm i -g "$TARBALL"
+          rm -rf node_modules packages/cli/node_modules
+          export PATH="$RUNNER_TEMP/npm-global/bin:$NODE_BIN:/usr/bin:/bin"
+          command -v node || { echo "::error::node not on the stripped PATH"; exit 1; }
+          command -v tsx && { echo "::error::tsx still on PATH — test is not proving anything"; exit 1; }
+          helix --help | tee /tmp/help.txt
+          grep -q 'helix deploy' /tmp/help.txt
+
+      - name: Publish to npm
+        # Publishing the pnpm-packed tarball rather than running `pnpm publish`:
+        # pnpm is what rewrites the catalog specifiers, but its OIDC support has
+        # been unreliable on the 11.x line (pnpm#11513 — trusted publishing
+        # 404s), while `npm publish` is the path npm documents and tests. So:
+        # pack with pnpm, publish those exact asserted bytes with npm.
+        #
+        # `--provenance` is explicit even though trusted publishing is
+        # documented to imply it; several reports have it silently skipped
+        # otherwise. It is *not* set in publishConfig, so an emergency manual
+        # publish from a laptop doesn't fail on "provenance requires CI".
+        run: npm publish "$TARBALL" --provenance
+
+      - name: Summary
+        run: |
+          VERSION="${GITHUB_REF_NAME#cli-v}"
+          {
+            echo "### Published \`@azx-pbc/helix-cli@$VERSION\`"
+            echo
+            echo "- https://www.npmjs.com/package/@azx-pbc/helix-cli/v/$VERSION"
+            echo "- \`npm i -g @azx-pbc/helix-cli\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helix-cli-tarball
+          path: ${{ env.TARBALL }}

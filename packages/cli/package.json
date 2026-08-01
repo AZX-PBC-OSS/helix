@@ -16,12 +16,16 @@
     "dist",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "helix": "tsx src/bin.ts",
     "build": "node scripts/build.mjs",
+    "prepublishOnly": "node scripts/build.mjs",
     "typecheck": "tsc"
   },
   "dependencies": {

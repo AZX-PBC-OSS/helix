@@ -1,6 +1,6 @@
 # Onboarding — the in-app guide and the agent skill
 
-> **Related ADRs:** [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — why hostnames can't be baked in) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps — the first thing anyone must be told) · [ADR-0032](../adr/0032-cli-naming-and-distribution.md) (CLI naming + distribution — why there's no `npm i -g` line yet).
+> **Related ADRs:** [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — why hostnames can't be baked in) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps — the first thing anyone must be told) · [ADR-0032](../adr/0032-cli-naming-and-distribution.md) (CLI naming + distribution — where the `npm i -g` line comes from).
 
 **What it is.** The path from "I have a portal account" to "I have a deployed app", surfaced
 where people actually are. Two pieces:
@@ -66,10 +66,11 @@ succeed with a 200 and download the app shell. Nothing to get wrong if there's n
   leftover `{{`, so adding a token without wiring it fails the suite.
 - **No external links.** Every reference is in-app (the Capabilities tab, the Dev mode tab) or a
   plain-text repo path. A customer deployment shouldn't render dead links to somewhere else.
-- **The install instructions are honest.** The CLI is a workspace package with `catalog:`
-  specifiers and no prepack step, so `npm i -g git+…` cannot resolve it (ADR-0032). The modal
-  shows the clone/build/`npm link` sequence that actually works and says `npm i -g` is coming,
-  rather than a one-liner that fails on first contact.
+- **The install instructions are honest.** They are now the real one-liner —
+  `npm i -g @azx-pbc/helix-cli`, published from CI with provenance (ADR-0032). Before that landed
+  the modal showed a clone/build/`npm link` sequence rather than a one-liner that fails on first
+  contact; note that `npm i -g git+…` still cannot resolve this package (workspace `catalog:`
+  specifiers, no prepack step), so it is not a fallback to reintroduce.
 - **The skill promises nothing unbuilt.** No `@azx-pbc/app-sdk`, no `helix dev`, no MCP transport
   — an agent told those exist will write code against them.
 
@@ -79,7 +80,5 @@ succeed with a 200 and download the app shell. Nothing to get wrong if there's n
   find-and-replace the skill could carry, per [fetch-proxy design §3.1](../design/fetch-proxy.md).
 - **Serving the skill over HTTP** — an agent can't `curl` it today; it comes out of the browser.
   A `GET /api/v1/skill` reusing `renderSkill()` is the obvious addition if that's wanted.
-- **An `npm i -g @azx-pbc/helix-cli` line** — blocked on publishing the CLI (ADR-0032). When that
-  lands, the modal's install block and `SKILL.md` §4 both change.
 - **A first-run nudge** — the guide is discoverable but passive; an empty **My Apps** list is the
   natural place to point at it.

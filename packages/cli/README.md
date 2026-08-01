@@ -72,7 +72,7 @@ Two paths, in precedence order:
 
 ## Running it
 
-### Once published (M5)
+### Installed from npm
 
 ```bash
 npm i -g @azx-pbc/helix-cli
@@ -81,8 +81,12 @@ export HELIX_TOKEN="…"
 helix deploy --promote
 ```
 
-The package is **publishable but not yet published** — see
-[Packaging](#packaging) below for why, and what CI already verifies.
+Needs **Node 24+** — the bundle is emitted at that target, so older runtimes
+may not merely warn, they may fail to parse it.
+
+`0.0.0` is a deprecated placeholder that exists only because npm requires a
+package to exist before a trusted publisher can be attached to it. Every real
+version is `0.1.0` or later and carries a provenance attestation.
 
 ### From this monorepo today
 
@@ -144,13 +148,40 @@ the right shape rather than a `tsc --outDir`:
 `archiver`, `openid-client`, and `zod` stay external and install from the
 registry — bundling archiver's transitive tree buys nothing.
 
-CI's `package` job builds, runs `npm pack`, asserts the tarball ships `dist/`
+CI's `package` job builds, runs `pnpm pack`, asserts the tarball ships `dist/`
 and no `src/`, then globally installs the tarball in a clean prefix **with tsx
 off `PATH`** and runs `helix --help`. That last step is what actually proves
-publishability; the unit tests never touch the bundle.
+publishability; the unit tests never touch the bundle. It runs on every PR, so
+a broken artifact fails before a release is ever cut.
 
-The publish step itself is deliberately absent until M5. When it lands it's a
-`release.yml` on the existing `tags: ["v*"]` trigger using npm trusted
-publishing (OIDC, `id-token: write`) — no `NPM_TOKEN` secret. See
-[ADR-0032](../../docs/adr/0032-cli-naming-and-distribution.md) for why public
-npm rather than GitHub Packages.
+## Releasing
+
+Releases are cut by tag and published by
+[`.github/workflows/release-cli.yml`](../../.github/workflows/release-cli.yml):
+
+```bash
+cd packages/cli
+npm version patch                       # or minor — edits package.json only
+cd ../.. && git commit -am "release(cli): v0.1.1"
+git tag cli-v0.1.1 && git push && git push --tags
+```
+
+The workflow re-runs the whole build → pack → assert → global-install sequence
+against the tag, refuses to publish if the tag and `package.json` disagree, and
+then publishes with provenance.
+
+Three things to know before touching it:
+
+- **The tag prefix is `cli-v`, not `v`.** `v*` is the platform's version and
+  already drives the container-image builds in `ci.yml`. The CLI versions
+  independently.
+- **There is no `NPM_TOKEN`.** Auth is npm trusted publishing (OIDC): npmjs.com
+  has a registered trust relationship with `AZX-PBC-OSS/helix` +
+  `release-cli.yml`. Renaming or moving that workflow file breaks publishing
+  until the registration is updated — that narrowness is the point.
+- **It packs with pnpm and publishes with npm.** Only pnpm rewrites `catalog:`
+  and `workspace:*` into real ranges; npm is the client whose OIDC support is
+  documented and reliable. Each does the half it's good at.
+
+See [ADR-0032](../../docs/adr/0032-cli-naming-and-distribution.md) for why
+public npm rather than GitHub Packages.

@@ -185,6 +185,18 @@ jobs:
             exit 1
           fi
 
+      - name: Assert the packed manifest has no workspace-only specifiers
+        # Same guard release-cli.yml runs before publishing, here so a PR
+        # catches it: a manifest published with `"zod": "catalog:"` installs for
+        # nobody, and that version number can never be reused.
+        run: |
+          tar -xzOf "$TARBALL" package/package.json > "$RUNNER_TEMP/manifest.json"
+          cat "$RUNNER_TEMP/manifest.json"
+          if grep -qE '"(catalog|workspace):' "$RUNNER_TEMP/manifest.json"; then
+            echo "::error::packed manifest still has catalog:/workspace: specifiers"
+            exit 1
+          fi
+
       - name: Smoke-test the installed binary
         # The load-bearing step: a clean global prefix, and tsx removed from
         # PATH entirely, so this passes only if the published artifact really

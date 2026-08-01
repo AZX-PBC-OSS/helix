@@ -214,8 +214,8 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
             <Tabs.Panel value="cli" pt="md">
               <Stack gap={12}>
                 <Text size="sm" c="dark.2" lh={1.6}>
-                  The <Code>helix</Code> CLI deploys any build directory. It isn&apos;t published to
-                  npm yet, so install it from the repo:
+                  The <Code>helix</Code> CLI deploys any build directory. Install it with npm (needs
+                  Node 24+):
                 </Text>
                 <CliBlock>{INSTALL_CMD}</CliBlock>
                 <Text size="sm" c="dark.2" lh={1.6}>
@@ -230,8 +230,7 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
                 </Group>
                 <Text size="xs" c="dark.3">
                   <Code>helix deploy --promote</Code> does both in one step. For CI, set{" "}
-                  <Code>HELIX_TOKEN</Code> instead of running <Code>helix login</Code>. Once the CLI
-                  is published, this becomes <Code>npm i -g @azx-pbc/helix-cli</Code>.
+                  <Code>HELIX_TOKEN</Code> instead of running <Code>helix login</Code>.
                 </Text>
               </Stack>
             </Tabs.Panel>
@@ -269,14 +268,12 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
 }
 
 /**
- * The install path that actually works today. The CLI is a workspace package
- * with `catalog:` specifiers and no prepack step, so `npm i -g git+…` cannot
- * resolve it — clone, build, link is the honest sequence until it's published.
+ * Published to public npm from CI with provenance (ADR-0032), so the install is
+ * the one-liner it should be. Node 24+ — the bundle is emitted at that target.
+ * `npm i -g git+…` still cannot resolve this package (workspace `catalog:`
+ * specifiers, no prepack step), so don't "helpfully" offer that as a fallback.
  */
-const INSTALL_CMD = `git clone https://github.com/AZX-PBC-OSS/helix.git
-cd helix && pnpm install
-pnpm --filter @azx-pbc/helix-cli build
-npm link ./packages/cli`;
+const INSTALL_CMD = `npm i -g @azx-pbc/helix-cli`;
 
 const DEPLOY_CMD = `helix login
 helix create --display-name "My App"
