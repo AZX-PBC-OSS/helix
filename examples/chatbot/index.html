@@ -12,10 +12,26 @@
       <header>
         <h1>Chatbot</h1>
         <p class="tagline">
-          A static AZX app that talks to Claude through the platform gateway
-          (<code>/_api/llm/chat</code>). The app never sees a vendor key.
+          A static AZX app that talks to an LLM through the platform gateway. Pick the
+          <strong>surface</strong> (our neutral shape vs OpenAI-compatible) and the
+          <strong>model</strong> — the app never sees a vendor key.
         </p>
         <p id="whoami" class="whoami" aria-live="polite"></p>
+        <div class="toolbar">
+          <label>
+            Surface
+            <select id="endpoint">
+              <option value="native">Agnostic — /_api/llm/chat</option>
+              <option value="openai">OpenAI — /_api/openai/v1</option>
+            </select>
+          </label>
+          <label>
+            Model
+            <select id="model" disabled>
+              <option value="">(loading…)</option>
+            </select>
+          </label>
+        </div>
       </header>
       <ul id="messages" aria-live="polite"></ul>
       <form id="chat-form" autocomplete="off">
@@ -23,7 +39,7 @@
           id="chat-input"
           name="message"
           type="text"
-          placeholder="Ask Claude something and press Enter…"
+          placeholder="Ask something and press Enter…"
           autofocus
         />
         <button id="send" type="submit">Send</button>

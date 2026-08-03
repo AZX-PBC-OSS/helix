@@ -59,6 +59,42 @@ header h1 {
   color: var(--accent);
 }
 
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0 0 0.75rem;
+}
+
+.toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.toolbar select {
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid #243049;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.toolbar select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.toolbar select:disabled {
+  opacity: 0.5;
+}
+
 #messages {
   list-style: none;
   margin: 0;

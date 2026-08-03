@@ -1,14 +1,27 @@
 import "./style.css";
 
 /**
- * A static chatbot that calls Claude through the AZX gateway. There is no API
- * key in this code: the app POSTs the platform's neutral chat shape to the
- * same-origin path `/_api/llm/chat`, and the edge injects the vendor key,
- * enforces the app's model allowlist + token budget, and streams the reply
- * back as Server-Sent Events. The session cookie rides along automatically.
+ * A static chatbot that calls an LLM through the AZX gateway. There is no API
+ * key in this code: the app POSTs to a same-origin gateway path, and the edge
+ * injects the vendor key, enforces the app's model allowlist + budget, and
+ * streams the reply back. The session cookie rides along automatically.
+ *
+ * It exercises BOTH gateway surfaces to show they are the same policy/metering
+ * spine with a different wire format:
+ *   - **Agnostic** — `POST /_api/llm/chat`, the platform's neutral shape, named-
+ *     event SSE (`event: delta`).
+ *   - **OpenAI** — `POST /_api/openai/v1/chat/completions`, the OpenAI wire, with
+ *     `chat.completion.chunk` frames + `[DONE]`.
+ * The model (a `claude-*` or `gpt-*`/`o*` id) routes to its vendor independently
+ * of which surface you pick — the model list comes from the app's own allowlist
+ * via `GET /_api/openai/v1/models`.
  */
 
-const MODEL = "claude-opus-4-8";
+const ENDPOINTS = {
+  native: { label: "Agnostic — /_api/llm/chat", url: "/_api/llm/chat" },
+  openai: { label: "OpenAI — /_api/openai/v1", url: "/_api/openai/v1/chat/completions" },
+} as const;
+type EndpointKey = keyof typeof ENDPOINTS;
 
 type Role = "user" | "assistant";
 interface Message {
@@ -21,8 +34,15 @@ const form = document.querySelector<HTMLFormElement>("#chat-form")!;
 const input = document.querySelector<HTMLInputElement>("#chat-input")!;
 const sendBtn = document.querySelector<HTMLButtonElement>("#send")!;
 const whoamiEl = document.querySelector<HTMLParagraphElement>("#whoami")!;
+const endpointSel = document.querySelector<HTMLSelectElement>("#endpoint")!;
+const modelSel = document.querySelector<HTMLSelectElement>("#model")!;
 
 const history: Message[] = [];
+
+let endpoint: EndpointKey = "native";
+endpointSel.addEventListener("change", () => {
+  endpoint = endpointSel.value as EndpointKey;
+});
 
 /** Append a bubble and return its content node so streaming can grow it. */
 function addBubble(role: Role | "error", text = ""): HTMLElement {
@@ -53,10 +73,44 @@ async function loadWhoami(): Promise<void> {
   }
 }
 
-/** Parse the gateway's SSE stream, invoking `onDelta` for each text chunk. */
-async function streamChat(
+/**
+ * Populate the model picker from the app's own allowlist. The OpenAI-compatible
+ * `GET /_api/openai/v1/models` returns exactly `capabilities.llm.models` (a mix
+ * of `claude-*` and `gpt-*`/`o*`), so the dropdown mirrors what the app is
+ * actually granted — nothing is hardcoded here.
+ */
+async function loadModels(): Promise<void> {
+  try {
+    const res = await fetch("/_api/openai/v1/models", { headers: { accept: "application/json" } });
+    if (!res.ok) {
+      modelSel.innerHTML = `<option value="">(sign in to load models)</option>`;
+      modelSel.disabled = true;
+      return;
+    }
+    const list = (await res.json()) as { data: Array<{ id: string }> };
+    if (list.data.length === 0) {
+      modelSel.innerHTML = `<option value="">(no models granted)</option>`;
+      modelSel.disabled = true;
+      return;
+    }
+    modelSel.innerHTML = "";
+    for (const m of list.data) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.id;
+      modelSel.append(opt);
+    }
+    modelSel.disabled = false;
+  } catch {
+    modelSel.innerHTML = `<option value="">(models unavailable)</option>`;
+    modelSel.disabled = true;
+  }
+}
+
+/** Split an SSE body into records (blank-line separated) and hand each to `onRecord`. */
+async function readSse(
   body: ReadableStream<Uint8Array>,
-  onDelta: (text: string) => void,
+  onRecord: (record: string) => void,
 ): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -67,58 +121,91 @@ async function streamChat(
     buf += decoder.decode(value, { stream: true });
     let sep: number;
     while ((sep = buf.indexOf("\n\n")) !== -1) {
-      const record = buf.slice(0, sep);
+      onRecord(buf.slice(0, sep));
       buf = buf.slice(sep + 2);
-      handleRecord(record, onDelta);
     }
   }
 }
 
-function handleRecord(record: string, onDelta: (text: string) => void): void {
+/** `data:` payload of an SSE record (concatenated `data:` lines). */
+function dataOf(record: string): string {
+  const lines: string[] = [];
+  for (const line of record.split("\n")) {
+    if (line.startsWith("data:")) lines.push(line.slice(5).trimStart());
+  }
+  return lines.join("\n");
+}
+
+/** Native surface: `event: delta` records carry `{ text }`; `event: error` throws. */
+function nativeRecord(record: string, onDelta: (text: string) => void): void {
   let event = "message";
-  const dataLines: string[] = [];
   for (const line of record.split("\n")) {
     if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
   }
-  if (dataLines.length === 0) return;
-  const data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
-  if (event === "delta") onDelta(String(data.text ?? ""));
-  else if (event === "error") throw new Error(String(data.message ?? "stream error"));
+  const data = dataOf(record);
+  if (!data) return;
+  const parsed = JSON.parse(data) as Record<string, unknown>;
+  if (event === "delta") onDelta(String(parsed.text ?? ""));
+  else if (event === "error") throw new Error(String(parsed.message ?? "stream error"));
+}
+
+/** OpenAI surface: `data: {chunk}` frames; `[DONE]` ends; an `error` object throws. */
+function openAiRecord(record: string, onDelta: (text: string) => void): void {
+  const data = dataOf(record);
+  if (!data || data === "[DONE]") return;
+  const parsed = JSON.parse(data) as {
+    choices?: Array<{ delta?: { content?: string } }>;
+    error?: { message?: string };
+  };
+  if (parsed.error) throw new Error(parsed.error.message ?? "stream error");
+  for (const choice of parsed.choices ?? []) {
+    if (choice.delta?.content) onDelta(choice.delta.content);
+  }
 }
 
 async function send(text: string): Promise<void> {
+  const model = modelSel.value;
+  if (!model) {
+    addBubble("error", "No model selected — sign in so the model list can load.");
+    return;
+  }
+
   history.push({ role: "user", content: text });
   addBubble("user", text);
 
   const reply = addBubble("assistant");
   let accumulated = "";
+  const ep = ENDPOINTS[endpoint];
+  const parseRecord = endpoint === "openai" ? openAiRecord : nativeRecord;
 
   try {
-    const res = await fetch("/_api/llm/chat", {
+    const res = await fetch(ep.url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: MODEL, messages: history, stream: true }),
+      body: JSON.stringify({ model, messages: history, stream: true }),
     });
 
     if (!res.ok || !res.body) {
+      // Both surfaces put a human message at `error.message`; a 401 is the
+      // session gate (same on either surface), regardless of body shape.
       const err = (await res.json().catch(() => null)) as
         | { error?: { code?: string; message?: string } }
         | null;
-      const code = err?.error?.code;
       reply.parentElement?.classList.replace("assistant", "error");
       reply.textContent =
-        code === "unauthorized"
+        res.status === 401
           ? "Your session expired — reload to sign in again."
-          : `Request failed${code ? ` (${code})` : ""}: ${err?.error?.message ?? res.statusText}`;
+          : `Request failed (${res.status}): ${err?.error?.message ?? res.statusText}`;
       return;
     }
 
-    await streamChat(res.body, (delta) => {
-      accumulated += delta;
-      reply.textContent = accumulated;
-      reply.parentElement?.scrollIntoView({ block: "end" });
-    });
+    await readSse(res.body, (record) =>
+      parseRecord(record, (delta) => {
+        accumulated += delta;
+        reply.textContent = accumulated;
+        reply.parentElement?.scrollIntoView({ block: "end" });
+      }),
+    );
     history.push({ role: "assistant", content: accumulated });
   } catch (err) {
     reply.parentElement?.classList.replace("assistant", "error");
@@ -141,3 +228,4 @@ form.addEventListener("submit", (event) => {
 });
 
 void loadWhoami();
+void loadModels();
