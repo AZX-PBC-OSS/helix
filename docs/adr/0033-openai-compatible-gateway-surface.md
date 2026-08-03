@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted. §3's scope clause is amended by
+[ADR-0034](0034-structured-output-on-the-llm-gateway.md): `response_format`
+(structured output) is now served on both surfaces. Tool calling remains deferred.
 
 ## Context
 
@@ -39,13 +41,15 @@ upstream **multi-provider**, without disturbing the security/metering spine.
 
 3. **Scope: text chat only (v1).** Affirmative tool use, `role:"tool"`, multimodal
    (array) content, and behaviour-changing sampling/output params
-   (`response_format`, `seed`, `n`, `logit_bias`, `presence_penalty`,
+   (`seed`, `n`, `logit_bias`, `presence_penalty`,
    `frequency_penalty`, `logprobs`, `top_logprobs`) are rejected with a clear `400`
    naming the field (`error.param`), never silently dropped — the neutral seam and
    `mapAnthropicStream`/`mapOpenAiStream` carry text deltas only. `temperature`,
    `top_p`, and `stop` **are** forwarded (both vendors accept them). Opting out of
    tools (`tool_choice:"none"`, empty `tools:[]`) is served. Tool-calling
-   translation is deferred.
+   translation is deferred. (`response_format` was originally in this list;
+   ADR-0034 now serves it — structured output returns JSON as ordinary text
+   deltas, so it needs none of the seam changes tool calling does.)
 
    **`max_tokens`** follows OpenAI convention: it is optional on the neutral shape;
    the OpenAI builder omits the upstream cap when unset (→ model max) rather than

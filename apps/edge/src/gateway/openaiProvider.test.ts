@@ -35,6 +35,39 @@ async function collect(events: AsyncIterable<LlmStreamEvent>): Promise<LlmStream
   return out;
 }
 
+describe("openAiRequestBody — structured output (ADR-0034)", () => {
+  const SCHEMA = { type: "object", properties: { a: { type: "string" } } };
+
+  it("emits response_format.json_schema, defaulting the name OpenAI requires", () => {
+    const body = JSON.parse(
+      openAiRequestBody(req({ responseFormat: { type: "json_schema", schema: SCHEMA } })),
+    );
+    expect(body.response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "response", schema: SCHEMA, strict: true },
+    });
+  });
+
+  it("forwards an explicit name and always requests strict enforcement", () => {
+    const body = JSON.parse(
+      openAiRequestBody(
+        req({ responseFormat: { type: "json_schema", name: "place", schema: SCHEMA } }),
+      ),
+    );
+    // strict is unconditionally true: Anthropic can only enforce, so best-effort
+    // here would make the same request behave differently per vendor (ADR-0034).
+    expect(body.response_format.json_schema).toEqual({
+      name: "place",
+      schema: SCHEMA,
+      strict: true,
+    });
+  });
+
+  it("omits response_format entirely when the app didn't ask for one", () => {
+    expect(JSON.parse(openAiRequestBody(req()))).not.toHaveProperty("response_format");
+  });
+});
+
 describe("openAiRequestBody", () => {
   it("hoists system into a leading system message and uses max_tokens for chat models", () => {
     const body = JSON.parse(openAiRequestBody(req({ system: "be terse" })));

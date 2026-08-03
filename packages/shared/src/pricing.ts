@@ -43,6 +43,13 @@ export interface ModelPrice {
    * Only meaningful with `reasoning: true`.
    */
   minCompletionTokens?: number;
+  /**
+   * Server-enforced JSON-schema output (ADR-0034). Absent ⇒ the gateway refuses a
+   * `responseFormat` request for this model with a 400 rather than letting the
+   * upstream reject it. Not uniform across either vendor's line-up, so it is a
+   * per-model fact rather than a per-provider one.
+   */
+  structuredOutputs?: boolean;
 }
 
 /**
@@ -67,25 +74,60 @@ export interface ModelPrice {
  * apply to `gpt-*`/`o*`.
  */
 export const MODEL_PRICING: Record<string, ModelPrice> = {
-  // Anthropic
-  "claude-fable-5": { inputPerMTok: 10, outputPerMTok: 50, provider: "anthropic" },
-  "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
+  // Anthropic. NB `structuredOutputs` is deliberately absent on 4-7/4-6/sonnet-4-6:
+  // structured outputs are supported on Fable 5, Opus 4.8 and Haiku 4.5 but not on
+  // those three, so the flag is opt-in per model rather than per provider.
+  "claude-fable-5": {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    provider: "anthropic",
+    structuredOutputs: true,
+  },
+  "claude-opus-4-8": {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    provider: "anthropic",
+    structuredOutputs: true,
+  },
   "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
   "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
   "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, provider: "anthropic" },
-  "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5, provider: "anthropic" },
+  "claude-haiku-4-5": {
+    inputPerMTok: 1,
+    outputPerMTok: 5,
+    provider: "anthropic",
+    structuredOutputs: true,
+  },
   // OpenAI — VERIFY against current published rates before production billing.
-  "gpt-4o": { inputPerMTok: 2.5, outputPerMTok: 10, provider: "openai" },
-  "gpt-4o-mini": { inputPerMTok: 0.15, outputPerMTok: 0.6, provider: "openai" },
-  "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8, provider: "openai" },
-  "gpt-4.1-mini": { inputPerMTok: 0.4, outputPerMTok: 1.6, provider: "openai" },
-  "gpt-4.1-nano": { inputPerMTok: 0.1, outputPerMTok: 0.4, provider: "openai" },
+  // Every model here resolves to a snapshot new enough for `response_format`
+  // json_schema, so `structuredOutputs` is set across the board.
+  "gpt-4o": { inputPerMTok: 2.5, outputPerMTok: 10, provider: "openai", structuredOutputs: true },
+  "gpt-4o-mini": {
+    inputPerMTok: 0.15,
+    outputPerMTok: 0.6,
+    provider: "openai",
+    structuredOutputs: true,
+  },
+  "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8, provider: "openai", structuredOutputs: true },
+  "gpt-4.1-mini": {
+    inputPerMTok: 0.4,
+    outputPerMTok: 1.6,
+    provider: "openai",
+    structuredOutputs: true,
+  },
+  "gpt-4.1-nano": {
+    inputPerMTok: 0.1,
+    outputPerMTok: 0.4,
+    provider: "openai",
+    structuredOutputs: true,
+  },
   o3: {
     inputPerMTok: 2,
     outputPerMTok: 8,
     provider: "openai",
     reasoning: true,
     minCompletionTokens: 25_000,
+    structuredOutputs: true,
   },
   "o4-mini": {
     inputPerMTok: 1.1,
@@ -93,6 +135,7 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
     provider: "openai",
     reasoning: true,
     minCompletionTokens: 25_000,
+    structuredOutputs: true,
   },
 };
 
@@ -113,6 +156,15 @@ export function priceForModel(model: string): ModelPrice | undefined {
  */
 export function providerForModel(model: string): ModelProvider | undefined {
   return MODEL_PRICING[model]?.provider;
+}
+
+/**
+ * Whether `model` can enforce a JSON-schema response (ADR-0034). False for an
+ * unknown model, so the gateway fails closed: an uncurated model is refused by
+ * the price lookup first, and never reaches an upstream with a `responseFormat`.
+ */
+export function supportsStructuredOutputs(model: string): boolean {
+  return MODEL_PRICING[model]?.structuredOutputs === true;
 }
 
 /**

@@ -34,6 +34,72 @@ export const LlmUsageSchema = z.object({
 export type LlmUsage = z.infer<typeof LlmUsageSchema>;
 
 /**
+ * Caps on an app-supplied response schema. The schema is untrusted input that
+ * reaches the *trusted* edge path, and it is walked before any quota check runs
+ * — an unbounded or deeply-nested one would be a cheap way to burn edge CPU. The
+ * size cap is in **characters, not bytes**: this module is re-exported from the
+ * browser-facing barrel, so `Buffer` is not available here (see `index.ts`).
+ */
+const MAX_SCHEMA_CHARS = 32_768;
+const MAX_SCHEMA_DEPTH = 12;
+
+/** Deepest nesting level in `value`, bailing out as soon as the cap is passed. */
+function schemaDepth(value: unknown, depth = 1): number {
+  if (value === null || typeof value !== "object") return depth;
+  let deepest = depth;
+  for (const child of Object.values(value)) {
+    const d = schemaDepth(child, depth + 1);
+    if (d > deepest) deepest = d;
+    if (deepest > MAX_SCHEMA_DEPTH) return deepest; // no need to walk further
+  }
+  return deepest;
+}
+
+function withinSchemaBudget(schema: Record<string, unknown>): boolean {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(schema);
+  } catch {
+    return false; // cyclic — could never be forwarded upstream anyway
+  }
+  return serialized.length <= MAX_SCHEMA_CHARS && schemaDepth(schema) <= MAX_SCHEMA_DEPTH;
+}
+
+/**
+ * Structured output: constrain the completion to a JSON schema (ADR-0034).
+ *
+ * `json_schema` is the only mode. OpenAI's looser `{type:"json_object"}` has no
+ * Anthropic equivalent, so serving it would make behaviour depend on which vendor
+ * backs the model — the OpenAI codec rejects it with a 400 instead.
+ *
+ * Beyond the root-type and budget guards below the schema is **forwarded as-is**
+ * and the vendor validates its own JSON Schema subset — the same division of
+ * labour as `temperature`. The edge deliberately does not reimplement either
+ * vendor's subset rules.
+ */
+export const LlmResponseFormatSchema = z.object({
+  type: z.literal("json_schema"),
+  /** Schema name. OpenAI requires one; defaulted at translation when omitted. */
+  name: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/, "must be 1-64 chars of [A-Za-z0-9_-]")
+    .optional(),
+  schema: z
+    .record(z.string(), z.unknown())
+    .refine((s) => s.type === "object", 'schema root must be `{"type":"object"}`')
+    .refine(
+      withinSchemaBudget,
+      `schema must serialize to <= ${MAX_SCHEMA_CHARS} characters and nest <= ${MAX_SCHEMA_DEPTH} levels`,
+    ),
+  // NB there is deliberately no `strict` knob. Anthropic's `output_config.format`
+  // always enforces and has no best-effort mode, so a `strict:false` could only be
+  // honored on one vendor — the same request would then yield schema-violating JSON
+  // on `gpt-*` but not `claude-*`, which is exactly the provider leak this seam
+  // exists to prevent. The platform always enforces; see ADR-0034.
+});
+export type LlmResponseFormat = z.infer<typeof LlmResponseFormatSchema>;
+
+/**
  * `POST /_api/llm/chat` request body. `model` is matched against the app's
  * per-app allowlist (manifest `capabilities.llm.models`) before anything is
  * sent upstream.
@@ -57,6 +123,13 @@ export const LlmChatRequestSchema = z.object({
   topP: z.number().optional(),
   /** Stop sequences; normalized to a list at the boundary. */
   stop: z.array(z.string()).optional(),
+  /**
+   * Constrain the completion to a JSON schema (ADR-0034). Refused up front when
+   * the requested model can't enforce it (`ModelPrice.structuredOutputs`). The
+   * JSON still arrives as ordinary text, so `content` and the SSE `delta` frames
+   * are unchanged — callers `JSON.parse` the result.
+   */
+  responseFormat: LlmResponseFormatSchema.optional(),
   /** SSE streaming (default) vs a single JSON body. */
   stream: z.boolean().default(true),
 });

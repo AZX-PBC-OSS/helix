@@ -5,6 +5,7 @@ import {
   OpenAiChatCompletionResponseSchema,
   OPENAI_UNSUPPORTED_PARAMS,
   type ApiErrorCode,
+  type LlmChatRequest,
   type LlmMessage,
   type LlmUsage,
   type OpenAiChatCompletionChunk,
@@ -48,9 +49,20 @@ function openAiErrorMeta(code: ApiErrorCode): { type: string; code: string | nul
   }
 }
 
+/**
+ * Neutral field name → the OpenAI field the app actually sent. `llm.ts` owns
+ * policy and speaks the neutral vocabulary, but an OpenAI client expects
+ * `error.param` to name *its* field. Translating here keeps the `LlmWireCodec`
+ * interface unchanged: policy stays in the handler, wire vocabulary in the codec.
+ */
+const NEUTRAL_TO_OPENAI_PARAM: Record<string, string> = {
+  responseFormat: "response_format",
+};
+
 function openAiError(code: ApiErrorCode, message: string, param?: string): OpenAiErrorBody {
   const meta = openAiErrorMeta(code);
-  return { error: { message, type: meta.type, param: param ?? null, code: meta.code } };
+  const wireParam = param === undefined ? null : (NEUTRAL_TO_OPENAI_PARAM[param] ?? param);
+  return { error: { message, type: meta.type, param: wireParam, code: meta.code } };
 }
 
 /** Neutral stop reason → OpenAI `finish_reason`. */
@@ -127,6 +139,29 @@ function parseOpenAi(body: unknown): LlmParseResult {
     return badRequest(`the "${p}" parameter is not supported`, p);
   }
 
+  // Structured output (ADR-0034). `text` is OpenAI's explicit default and is
+  // served as a no-op; `json_object` has no Anthropic equivalent, so serving it
+  // would make behaviour depend on which vendor backs the model.
+  let responseFormat: LlmChatRequest["responseFormat"];
+  if (req.response_format?.type === "json_object") {
+    return badRequest(
+      'the "json_object" response format is not supported; use "json_schema"',
+      "response_format.type",
+    );
+  }
+  if (req.response_format?.type === "json_schema") {
+    const js = req.response_format.json_schema;
+    // `json_schema.strict` is accepted and ignored (a no-op, like `n:1`): the
+    // platform always enforces, because Anthropic has no best-effort mode. Stock
+    // clients routinely omit it — OpenAI's default is `false` — so rejecting it
+    // would break them, and enforcement is strictly stronger than what it asks for.
+    responseFormat = {
+      type: "json_schema",
+      ...(js.name !== undefined ? { name: js.name } : {}),
+      schema: js.schema,
+    };
+  }
+
   const systemParts: string[] = [];
   const messages: LlmMessage[] = [];
   for (const m of req.messages) {
@@ -154,13 +189,19 @@ function parseOpenAi(body: unknown): LlmParseResult {
     temperature: req.temperature,
     topP: req.top_p,
     stop: req.stop === undefined ? undefined : typeof req.stop === "string" ? [req.stop] : req.stop,
+    responseFormat,
     // OpenAI is non-streaming unless the client sets stream:true (the neutral
     // default is the opposite — do not inherit it).
     stream: req.stream ?? false,
   });
   if (!chat.success) {
     const issue = chat.error.issues[0];
-    return badRequest(issue?.message ?? "invalid request", issue?.path.join(".") || undefined);
+    const path = issue?.path.join(".") || undefined;
+    // The neutral schema owns the response-schema guards, so its issue paths are
+    // neutral (`responseFormat.schema`). Report the containing OpenAI field rather
+    // than leaking a field name the client never sent.
+    const param = path?.startsWith("responseFormat") ? "response_format" : path;
+    return badRequest(issue?.message ?? "invalid request", param);
   }
   return { ok: true, chat: chat.data, includeUsage: req.stream_options?.include_usage ?? false };
 }

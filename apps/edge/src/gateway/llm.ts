@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { costUsd, priceForModel, type ApiErrorCode, type LlmUsage } from "@azx-pbc/shared";
+import {
+  costUsd,
+  priceForModel,
+  supportsStructuredOutputs,
+  type ApiErrorCode,
+  type LlmUsage,
+} from "@azx-pbc/shared";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
@@ -118,6 +124,19 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
     // (@azx-pbc/shared), so this only bites a model that slipped past curation.
     if (priceForModel(chat.model) === undefined) {
       codec.error(reply, 403, "model_not_allowed", `model "${chat.model}" has no price configured`);
+      return;
+    }
+    // Structured output is a per-model capability, not a per-vendor one (ADR-0034).
+    // Refuse here rather than let the upstream reject it, so the app gets a clear
+    // 400 naming the field instead of an opaque 502 after a round trip.
+    if (chat.responseFormat && !supportsStructuredOutputs(chat.model)) {
+      codec.error(
+        reply,
+        400,
+        "validation_failed",
+        `model "${chat.model}" does not support structured output`,
+        "responseFormat",
+      );
       return;
     }
     // The model is priced/allowed, but its upstream family may not be wired on

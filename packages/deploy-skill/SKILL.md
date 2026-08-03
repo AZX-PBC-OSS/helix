@@ -163,6 +163,37 @@ Read it with a `fetch` body reader — `EventSource` cannot POST. With
 Every call is priced and metered against the app's daily budget, and the owner can
 see it in the portal.
 
+**Structured output.** Add `responseFormat` to get JSON that matches a schema
+instead of prompt-begging for it and parsing defensively:
+
+```js
+body: JSON.stringify({
+  model: "claude-haiku-4-5",
+  messages: [{ role: "user", content: "Rome, 3 days" }],
+  stream: false,
+  responseFormat: {
+    type: "json_schema", // the only mode
+    name: "itinerary", // optional, [A-Za-z0-9_-]{1,64}
+    schema: {
+      type: "object", // the root must be an object
+      properties: { days: { type: "array", items: { type: "string" } } },
+      required: ["days"],
+      additionalProperties: false, // required — the schema is always enforced
+    },
+  },
+});
+```
+
+The JSON comes back as ordinary `content` (or ordinary `delta` frames when
+streaming) — `JSON.parse` it yourself. The schema is always **enforced** (there is
+no best-effort mode), so write to the strict subset: every key in `required`,
+`additionalProperties: false`, no recursion, and no `minLength`/`minimum`-style
+constraints. Keep schemas under 32 KB and 12 levels deep.
+
+Not every model can enforce a schema. `claude-haiku-4-5`, `claude-opus-4-8` and
+`claude-fable-5` can; `claude-opus-4-7`, `claude-opus-4-6` and `claude-sonnet-4-6`
+cannot, and asking gets a `400` — they still work fine for plain text chat.
+
 ### 3.2 App data — `/_api/data/*`
 
 Three named access patterns, not a symmetric key-value store. Values are opaque
@@ -225,6 +256,7 @@ yourself in new code — it is explicit and it works without the shim.
 | Status | Code                     | Meaning                                                              |
 | ------ | ------------------------ | -------------------------------------------------------------------- |
 | 401    | —                        | Not signed in (a fetch after the session expired; reload to re-auth) |
+| 400    | `validation_failed`      | Bad request body — or a `responseFormat` this model can't enforce    |
 | 403    | `forbidden`              | The capability isn't in the manifest                                 |
 | 403    | `model_not_allowed`      | Model isn't in `capabilities.llm.models`                             |
 | 429    | `quota_exceeded`         | Daily budget spent — in-flight calls finish, new ones are refused    |

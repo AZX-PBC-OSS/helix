@@ -42,6 +42,33 @@ export const OpenAiStreamOptionsSchema = z.object({
 });
 
 /**
+ * `response_format`, as a real union so the codec can branch instead of guessing
+ * (ADR-0034). `json_schema` maps to the neutral `responseFormat`; `text` is
+ * OpenAI's explicit default and is served as a no-op (same as `tool_choice:"none"`);
+ * `json_object` is rejected with a 400 — it has no Anthropic equivalent, and
+ * serving it would make behaviour depend on which vendor backs the model.
+ *
+ * `schema` is left loose here: the neutral `LlmResponseFormatSchema` owns the
+ * root-type and size/depth guards, so validation lives in exactly one place.
+ * `strict` is accepted and **ignored** — the platform always enforces (Anthropic has
+ * no best-effort mode), and stock clients routinely omit it, so rejecting it would
+ * break them while enforcing is strictly stronger than what a `false` asks for.
+ */
+export const OpenAiResponseFormatSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("json_schema"),
+    json_schema: z.object({
+      name: z.string().optional(),
+      schema: z.record(z.string(), z.unknown()),
+      strict: z.boolean().nullish(),
+    }),
+  }),
+  z.object({ type: z.literal("json_object") }),
+  z.object({ type: z.literal("text") }),
+]);
+export type OpenAiResponseFormat = z.infer<typeof OpenAiResponseFormatSchema>;
+
+/**
  * `POST /_api/openai/v1/chat/completions` request. Unknown fields are stripped
  * by zod (OpenAI clients send many we ignore); `tools`/`tool_choice` are declared
  * so the codec can 400 on them. Either `max_tokens` or `max_completion_tokens`
@@ -60,10 +87,11 @@ export const OpenAiChatCompletionRequestSchema = z.object({
   /** Declared so the codec can reject tool use in v1 (not supported). */
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
+  /** Structured output (ADR-0034). Parsed, not rejected — see the union above. */
+  response_format: OpenAiResponseFormatSchema.optional(),
   // Behaviour-changing params the platform does not honor in v1. Declared (not
   // stripped) so the codec can reject them with a 400 rather than silently drop
   // them — the same "reject, never silently drop" contract as `tools`.
-  response_format: z.unknown().optional(),
   n: z.unknown().optional(),
   seed: z.unknown().optional(),
   logit_bias: z.unknown().optional(),
@@ -75,7 +103,6 @@ export const OpenAiChatCompletionRequestSchema = z.object({
 
 /** The behaviour-changing OpenAI params the codec rejects with a 400 (see above). */
 export const OPENAI_UNSUPPORTED_PARAMS = [
-  "response_format",
   "n",
   "seed",
   "logit_bias",

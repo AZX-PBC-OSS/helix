@@ -95,6 +95,15 @@ header h1 {
   opacity: 0.5;
 }
 
+/* The checkbox reads as a row, not a stacked label-over-control like the selects. */
+.toolbar label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  align-self: flex-end;
+  padding-bottom: 0.4rem;
+}
+
 #messages {
   list-style: none;
   margin: 0;
@@ -112,6 +121,13 @@ header h1 {
   border-radius: 14px;
   white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+/* A schema-constrained reply, pretty-printed (see ADR-0034 / JSON mode). */
+.bubble.json {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  max-width: 100%;
 }
 
 .bubble.user {

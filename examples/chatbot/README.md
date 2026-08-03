@@ -14,7 +14,13 @@ browser ──POST /_api/llm/chat──▶ edge ──(injects key, checks allow
 - **Session-gated.** `/_api/llm/chat` is behind the same session as the rest of
   the app; an unauthenticated fetch gets a 401 (the app prompts to sign in).
 - **Metered + allowlisted.** The model must be in the app's manifest
-  `capabilities.llm.models`, and calls count against `tokensPerDay`.
+  `capabilities.llm.models`, and calls count against `dollarsPerDay`.
+- **JSON mode.** The "JSON mode" toggle sends a `responseFormat` (neutral surface)
+  / `response_format` (OpenAI surface) so the reply is schema-constrained JSON,
+  pretty-printed on arrival — see
+  [structured output](../../docs/features/llm-gateway.md#structured-output). Needs a
+  model that can enforce a schema (`claude-haiku-4-5`, `claude-opus-4-8`,
+  `claude-fable-5`, any `gpt-*`/`o*`); others `400`.
 
 ## Grant the LLM capability
 
@@ -26,7 +32,7 @@ manifest command is a later addition):
 curl -fsS -X PUT "http://localhost:3001/api/v1/apps/chatbot/manifest" \
   -H "authorization: Bearer $HELIX_TOKEN" \
   -H "content-type: application/json" \
-  -d '{"capabilities":{"llm":{"models":["claude-opus-4-8"],"tokensPerDay":200000}}}'
+  -d '{"capabilities":{"llm":{"models":["claude-haiku-4-5"],"dollarsPerDay":5}}}'
 ```
 
 You can also pass `capabilities` in the `POST /api/v1/apps` create body.

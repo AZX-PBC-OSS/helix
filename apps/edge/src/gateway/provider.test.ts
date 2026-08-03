@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MockAgent } from "undici";
 import {
   AnthropicProvider,
+  anthropicRequestBody,
   LlmProviderError,
   mapAnthropicStream,
   type LlmStreamEvent,
@@ -32,6 +33,35 @@ async function collect(events: AsyncIterable<LlmStreamEvent>): Promise<LlmStream
   for await (const ev of events) out.push(ev);
   return out;
 }
+
+describe("anthropicRequestBody — structured output (ADR-0034)", () => {
+  const SCHEMA = { type: "object", properties: { a: { type: "string" } } };
+  const base = {
+    model: "claude-opus-4-8",
+    messages: [{ role: "user" as const, content: "hi" }],
+    stream: true,
+  };
+
+  it("emits output_config.format with the schema only", () => {
+    const body = JSON.parse(
+      anthropicRequestBody({
+        ...base,
+        responseFormat: { type: "json_schema", name: "place", schema: SCHEMA },
+      }),
+    );
+    // `name` is OpenAI-shaped — Anthropic's format takes type + schema, so it
+    // must not leak into the vendor body (and there is no `strict` to send).
+    expect(body.output_config).toEqual({
+      format: { type: "json_schema", schema: SCHEMA },
+    });
+    expect(JSON.stringify(body.output_config)).not.toContain("place");
+    expect(JSON.stringify(body.output_config)).not.toContain("strict");
+  });
+
+  it("omits output_config entirely when the app didn't ask for one", () => {
+    expect(JSON.parse(anthropicRequestBody(base))).not.toHaveProperty("output_config");
+  });
+});
 
 describe("AnthropicProvider (mocked upstream)", () => {
   it("translates the request and parses the SSE into neutral events", async () => {

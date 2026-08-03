@@ -238,12 +238,9 @@ describe("rejects unsupported features with an OpenAI error", () => {
   it("400s a behaviour-changing param and names it in `param`", async () => {
     const edge = buildEdge();
     const token = await seedSession(edge.sessions);
-    const res = await completions(edge, token, {
-      ...ASK,
-      response_format: { type: "json_object" },
-    });
+    const res = await completions(edge, token, { ...ASK, seed: 7 });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error.param).toBe("response_format");
+    expect(res.json().error.param).toBe("seed");
     expect(edge.provider.calls).toHaveLength(0);
   });
 
@@ -278,6 +275,110 @@ describe("opting out of tools is allowed", () => {
     const res = await completions(edge, token, { ...ASK, tool_choice: "none", tools: [] });
     expect(res.statusCode).toBe(200);
     expect(edge.provider.calls).toHaveLength(1);
+  });
+});
+
+describe("structured output (ADR-0034)", () => {
+  const SCHEMA = {
+    type: "object",
+    properties: { city: { type: "string" } },
+    required: ["city"],
+    additionalProperties: false,
+  };
+  const JSON_SCHEMA = {
+    type: "json_schema",
+    json_schema: { name: "place", schema: SCHEMA, strict: true },
+  };
+
+  it("maps response_format.json_schema into the neutral responseFormat", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, { ...ASK, response_format: JSON_SCHEMA });
+    expect(res.statusCode).toBe(200);
+    expect(edge.provider.calls[0]?.responseFormat).toEqual({
+      type: "json_schema",
+      name: "place",
+      schema: SCHEMA,
+    });
+  });
+
+  it("accepts json_schema.strict:false as a no-op — the platform always enforces", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    // Stock OpenAI clients routinely omit `strict` (its default is false).
+    // Rejecting that would break them, and enforcement is strictly stronger.
+    const res = await completions(edge, token, {
+      ...ASK,
+      response_format: { type: "json_schema", json_schema: { name: "place", schema: SCHEMA } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(edge.provider.calls[0]?.responseFormat).not.toHaveProperty("strict");
+  });
+
+  it("streams normally with a schema — the JSON arrives as ordinary content deltas", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    edge.provider.deltas = ['{"city":', '"Paris"}'];
+    const res = await completions(edge, token, {
+      ...ASK,
+      stream: true,
+      response_format: JSON_SCHEMA,
+    });
+    expect(res.statusCode).toBe(200);
+    const content = sseChunks(res.body)
+      .map((c) => c.choices[0]?.delta?.content ?? "")
+      .join("");
+    expect(JSON.parse(content)).toEqual({ city: "Paris" });
+  });
+
+  it('serves {type:"text"} as a no-op without a neutral responseFormat', async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, { ...ASK, response_format: { type: "text" } });
+    expect(res.statusCode).toBe(200);
+    expect(edge.provider.calls[0]?.responseFormat).toBeUndefined();
+  });
+
+  it('400s {type:"json_object"} and names response_format.type', async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, {
+      ...ASK,
+      response_format: { type: "json_object" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.param).toBe("response_format.type");
+    expect(edge.provider.calls).toHaveLength(0);
+  });
+
+  it("400s a model that cannot enforce a schema, named as the OpenAI field", async () => {
+    const unsupported = "claude-sonnet-4-6";
+    const edge = buildEdge({ models: [unsupported] });
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, {
+      model: unsupported,
+      messages: [{ role: "user", content: "hi" }],
+      response_format: JSON_SCHEMA,
+    });
+    expect(res.statusCode).toBe(400);
+    // The handler speaks the neutral `responseFormat`; the codec renames it.
+    expect(res.json().error.param).toBe("response_format");
+    expect(edge.provider.calls).toHaveLength(0);
+  });
+
+  it("400s a non-object schema root, reported against the OpenAI field", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, {
+      ...ASK,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "bad", schema: { type: "string" } },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.param).toBe("response_format");
+    expect(edge.provider.calls).toHaveLength(0);
   });
 });
 

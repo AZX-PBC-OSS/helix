@@ -36,6 +36,7 @@ const sendBtn = document.querySelector<HTMLButtonElement>("#send")!;
 const whoamiEl = document.querySelector<HTMLParagraphElement>("#whoami")!;
 const endpointSel = document.querySelector<HTMLSelectElement>("#endpoint")!;
 const modelSel = document.querySelector<HTMLSelectElement>("#model")!;
+const jsonModeEl = document.querySelector<HTMLInputElement>("#json-mode")!;
 
 const history: Message[] = [];
 
@@ -167,6 +168,44 @@ function openAiRecord(record: string, onDelta: (text: string) => void): void {
   }
 }
 
+/**
+ * "JSON mode" (ADR-0034): constrain the reply to a schema. The same intent is
+ * spelled differently on each surface — neutral `responseFormat` vs OpenAI's
+ * `response_format` — and either way the JSON arrives through the ordinary delta
+ * frames, so the SSE readers above need no special case.
+ */
+const ANSWER_SCHEMA = {
+  type: "object",
+  properties: {
+    answer: { type: "string" },
+    followUps: { type: "array", items: { type: "string" } },
+  },
+  required: ["answer", "followUps"],
+  additionalProperties: false,
+} as const;
+
+function jsonModeBody(surface: EndpointKey): Record<string, unknown> {
+  if (!jsonModeEl.checked) return {};
+  // The gateway always enforces, so neither shape carries a `strict` flag.
+  return surface === "openai"
+    ? {
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "answer", schema: ANSWER_SCHEMA },
+        },
+      }
+    : { responseFormat: { type: "json_schema", name: "answer", schema: ANSWER_SCHEMA } };
+}
+
+/** Pretty-print a JSON-mode reply; fall back to the raw text if it isn't JSON. */
+function prettify(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 async function send(text: string): Promise<void> {
   const model = modelSel.value;
   if (!model) {
@@ -190,7 +229,12 @@ async function send(text: string): Promise<void> {
     const res = await fetch(ep.url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, messages: outgoing, stream: true }),
+      body: JSON.stringify({
+        model,
+        messages: outgoing,
+        stream: true,
+        ...jsonModeBody(endpoint),
+      }),
     });
 
     if (!res.ok || !res.body) {
@@ -215,6 +259,12 @@ async function send(text: string): Promise<void> {
       }),
     );
     if (accumulated) {
+      // Re-render prettified once complete (partial JSON can't be parsed mid-stream).
+      // History keeps the model's raw text — prettifying is display-only.
+      if (jsonModeEl.checked) {
+        reply.textContent = prettify(accumulated);
+        reply.parentElement?.classList.add("json"); // the `li.bubble`, not the inner span
+      }
       history.push({ role: "user", content: text }, { role: "assistant", content: accumulated });
     }
   } catch (err) {

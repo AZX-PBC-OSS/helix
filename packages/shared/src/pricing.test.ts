@@ -3,7 +3,9 @@ import {
   CACHE_READ_MULTIPLIER,
   CACHE_WRITE_MULTIPLIER,
   costUsd,
+  MODEL_PRICING,
   priceForModel,
+  supportsStructuredOutputs,
 } from "./pricing.js";
 
 describe("pricing", () => {
@@ -56,6 +58,30 @@ describe("pricing", () => {
       inputPerMTok: 5,
       outputPerMTok: 25,
       provider: "anthropic",
+      structuredOutputs: true,
     });
+  });
+});
+
+describe("supportsStructuredOutputs (ADR-0034)", () => {
+  // Pinned explicitly, negatives included: structured output is a per-model fact,
+  // and a catalog edit must not silently flip a model on or off.
+  const UNSUPPORTED = ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"];
+
+  it("is false for models that cannot enforce a schema", () => {
+    for (const model of UNSUPPORTED) {
+      expect(priceForModel(model)).toBeDefined(); // still curated & callable
+      expect(supportsStructuredOutputs(model)).toBe(false);
+    }
+  });
+
+  it("is true for every other curated model", () => {
+    const rest = Object.keys(MODEL_PRICING).filter((m) => !UNSUPPORTED.includes(m));
+    expect(rest.length).toBeGreaterThan(0);
+    for (const model of rest) expect(supportsStructuredOutputs(model)).toBe(true);
+  });
+
+  it("fails closed for an uncurated model", () => {
+    expect(supportsStructuredOutputs("some-future-model")).toBe(false);
   });
 });

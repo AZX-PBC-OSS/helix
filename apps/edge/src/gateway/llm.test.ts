@@ -153,6 +153,92 @@ describe("happy paths", () => {
   });
 });
 
+describe("structured output (ADR-0034)", () => {
+  const SCHEMA = {
+    type: "object",
+    properties: { city: { type: "string" } },
+    required: ["city"],
+    additionalProperties: false,
+  };
+
+  it("passes responseFormat through to the provider and streams normally", async () => {
+    const edge = buildLlmEdge();
+    const token = await seedSession(edge.sessions);
+    edge.provider.deltas = ['{"city":', '"Paris"}'];
+    const res = await chat(edge, token, {
+      ...ASK,
+      stream: true,
+      responseFormat: { type: "json_schema", name: "place", schema: SCHEMA },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(edge.provider.calls[0]?.responseFormat).toEqual({
+      type: "json_schema",
+      name: "place",
+      schema: SCHEMA,
+    });
+    // The JSON rides the ordinary delta frames — no new event type.
+    expect(res.body).toContain("event: delta");
+    expect(res.body).toContain("event: done");
+  });
+
+  it("returns the JSON as content on the non-streaming path", async () => {
+    const edge = buildLlmEdge();
+    const token = await seedSession(edge.sessions);
+    edge.provider.deltas = ['{"city":', '"Paris"}'];
+    const res = await chat(edge, token, {
+      ...ASK,
+      stream: false,
+      responseFormat: { type: "json_schema", schema: SCHEMA },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.json().content)).toEqual({ city: "Paris" });
+  });
+
+  it("400s a model that cannot enforce a schema, before any upstream call", async () => {
+    const unsupported = "claude-sonnet-4-6";
+    const edge = buildLlmEdge({ llm: { models: [unsupported], dollarsPerDay: 1 } });
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, {
+      model: unsupported,
+      messages: [{ role: "user", content: "hi" }],
+      responseFormat: { type: "json_schema", schema: SCHEMA },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
+    expect(edge.provider.calls).toHaveLength(0);
+    expect(edge.usage.records).toHaveLength(0);
+  });
+
+  it("still serves that model for plain text chat", async () => {
+    const unsupported = "claude-sonnet-4-6";
+    const edge = buildLlmEdge({ llm: { models: [unsupported], dollarsPerDay: 1 } });
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, {
+      model: unsupported,
+      messages: [{ role: "user", content: "hi" }],
+      stream: false,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("400s an oversized schema", async () => {
+    const edge = buildLlmEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, {
+      ...ASK,
+      responseFormat: {
+        type: "json_schema",
+        schema: { type: "object", properties: { a: { description: "x".repeat(40_000) } } },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(edge.provider.calls).toHaveLength(0);
+  });
+});
+
 describe("authorization", () => {
   it("401s an unauthenticated request and never calls the provider", async () => {
     const edge = buildLlmEdge();

@@ -66,6 +66,12 @@ export function anthropicRequestBody(req: LlmChatRequest): string {
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(req.topP !== undefined ? { top_p: req.topP } : {}),
     ...(req.stop && req.stop.length > 0 ? { stop_sequences: req.stop } : {}),
+    // Structured output (ADR-0034). Anthropic's format takes `type` + `schema` only
+    // — the neutral `name` is OpenAI-shaped and is not forwarded. Anthropic always
+    // enforces, which is why the neutral shape has no best-effort knob to translate.
+    ...(req.responseFormat
+      ? { output_config: { format: { type: "json_schema", schema: req.responseFormat.schema } } }
+      : {}),
     stream: true,
   });
 }
@@ -163,6 +169,20 @@ export function openAiRequestBody(req: LlmChatRequest): string {
   if (req.temperature !== undefined) body.temperature = req.temperature;
   if (req.topP !== undefined) body.top_p = req.topP;
   if (req.stop && req.stop.length > 0) body.stop = req.stop;
+  // Structured output (ADR-0034). OpenAI requires a schema `name`, so the neutral
+  // field's optional one is defaulted here rather than forced on the app.
+  if (req.responseFormat) {
+    body.response_format = {
+      type: "json_schema",
+      json_schema: {
+        name: req.responseFormat.name ?? "response",
+        schema: req.responseFormat.schema,
+        // Always strict: Anthropic can only enforce, so requesting best-effort here
+        // would make the same request behave differently per vendor (ADR-0034).
+        strict: true,
+      },
+    };
+  }
   return JSON.stringify(body);
 }
 

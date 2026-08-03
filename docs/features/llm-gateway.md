@@ -1,6 +1,6 @@
 # LLM gateway
 
-> **Related ADRs:** [ADR-0008](../adr/0008-llm-key-via-egress.md) (LLM key via egress) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway) · [ADR-0033](../adr/0033-openai-compatible-gateway-surface.md) (OpenAI-compatible surface + multi-provider routing).
+> **Related ADRs:** [ADR-0008](../adr/0008-llm-key-via-egress.md) (LLM key via egress) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway) · [ADR-0033](../adr/0033-openai-compatible-gateway-surface.md) (OpenAI-compatible surface + multi-provider routing) · [ADR-0034](../adr/0034-structured-output-on-the-llm-gateway.md) (structured output).
 
 **What it is.** `POST /_api/llm/chat` — the gateway's first capability (architecture §6.1,
 project plan §4 M4). It is the choke point that makes per-app blast radius real: an untrusted
@@ -134,18 +134,68 @@ await client.chat.completions.create({ model: "claude-opus-4-8", messages, strea
   is `/_api/llm/chat` (byte-identical); `openAiCodec` (`gateway/openaiCodec.ts`) parses the OpenAI
   body into the neutral shape and frames the neutral stream back as `chat.completion.chunk` +
   `[DONE]` (or a single `chat.completion`). Errors are OpenAI-shaped (`{error:{message,type,...}}`).
-- **Scope (v1): text chat only.** `tools` (a non-empty list), an affirmative `tool_choice`,
-  `role:"tool"`, multimodal (array) content, and the behaviour-changing sampling/output params
-  (`response_format`, `seed`, `n`, `logit_bias`, `presence_penalty`, `frequency_penalty`, `logprobs`,
+- **Scope: text chat + structured output.** `tools` (a non-empty list), an affirmative `tool_choice`,
+  `role:"tool"`, multimodal (array) content, and the behaviour-changing sampling params
+  (`seed`, `n`, `logit_bias`, `presence_penalty`, `frequency_penalty`, `logprobs`,
   `top_logprobs`) are rejected with a clear `400` (naming the field in `error.param`) — never silently
   dropped. Opting *out* of tools (`tool_choice:"none"`, empty `tools:[]`) is served. `system`/
   `developer` messages are hoisted into the neutral top-level `system`; `temperature`, `top_p`, and
-  `stop` are forwarded to the vendor.
+  `stop` are forwarded to the vendor. `response_format` **is** served — see
+  [Structured output](#structured-output) below.
 - **`max_tokens` follows OpenAI convention.** Omit it and the model's own maximum applies (not a
   forced default) — `max_tokens`/`max_completion_tokens` → the neutral optional `maxTokens`, and the
   OpenAI body builder omits the upstream cap when it's unset. o-series reasoning models instead take
   `max_completion_tokens`, **floored** (catalog `minCompletionTokens`, ~25k) so reasoning tokens can't
   starve visible output and leave a billed-empty answer.
+
+### Structured output
+
+Constrain a completion to a JSON schema, on **both** surfaces (ADR-0034). This is the one
+"behaviour-changing output param" the gateway serves, and the reason it can is that both vendors
+return schema-constrained JSON as **ordinary text** — Anthropic in `text_delta` blocks, OpenAI in
+`delta.content`. So it rides the existing delta path: no new `LlmStreamEvent` variant, no codec
+framing change, no change to `mapAnthropicStream`/`mapOpenAiStream`. (Tool calling is a non-text
+content block, which is exactly why it is still deferred.)
+
+The neutral field is `responseFormat` on `LlmChatRequestSchema`, and each side translates:
+
+| | Shape |
+| --- | --- |
+| Neutral (`/_api/llm/chat`) | `responseFormat: {type:"json_schema", name?, schema}` |
+| OpenAI surface | `response_format: {type:"json_schema", json_schema:{name, schema}}` |
+| → Anthropic upstream | `output_config: {format:{type:"json_schema", schema}}` (`name` is not forwarded) |
+| → OpenAI upstream | `response_format` as above; `name` defaults to `"response"` (OpenAI requires one) |
+
+**Enforcement is unconditional — there is no `strict` knob.** Anthropic's
+`output_config.format` has no best-effort mode, so honouring a `strict:false` would mean the
+same request yields schema-violating JSON on `gpt-*` and conforming JSON on `claude-*` — the
+provider leak this seam exists to prevent. The OpenAI upstream is always sent `strict: true`,
+and an incoming `json_schema.strict` on the OpenAI surface is **accepted and ignored** rather
+than rejected (stock clients routinely omit it, and OpenAI's own default is `false`, so
+refusing would break them — while enforcing is strictly stronger than what a `false` asks for).
+
+The response envelope is unchanged: the JSON arrives as `content` (native) or
+`choices[].message.content` (OpenAI), and the caller `JSON.parse`s it.
+
+Three refusals, all `400` and all before any upstream call:
+
+- **`json_schema` only.** OpenAI's looser `{type:"json_object"}` has no Anthropic equivalent, so
+  serving it would make behaviour depend on which vendor backs the model — rejected, naming
+  `response_format.type`. `{type:"text"}` is OpenAI's explicit default and is served as a no-op
+  (same principle as `tool_choice:"none"`).
+- **Per-model.** Support is not uniform within either vendor's line-up, so it's a catalog bit
+  (`ModelPrice.structuredOutputs`, alongside `reasoning`). Today: `claude-fable-5`,
+  `claude-opus-4-8`, `claude-haiku-4-5` and all `gpt-*`/`o*` can; `claude-opus-4-7`,
+  `claude-opus-4-6`, `claude-sonnet-4-6` cannot. Those three stay fully usable for text chat.
+- **Schema budget.** The schema is app-supplied input on the trusted path, walked before the quota
+  check, so it must have an object root and stay within ≤ 32,768 characters serialized and ≤ 12
+  levels deep. Beyond those guards it is forwarded as-is and the **vendor** validates its own JSON
+  Schema subset — the same division of labour as `temperature`. Practically that means writing to
+  the stricter of the two subsets (`additionalProperties: false`, every key in `required`, no
+  recursion, no `minLength`/`minimum`-style constraints).
+
+**No manifest grant.** Structured output adds no egress path, no secret, and no new cost class —
+spend is already bounded by `dollarsPerDay` — so any app holding an `llm` grant can use it.
 
 ### Multiple upstreams (Anthropic + OpenAI)
 
@@ -178,9 +228,16 @@ holds an API key. See [examples.md](./examples.md).
 
 ## Planned / not yet built
 
-- **Tool calling** over the OpenAI surface — v1 is text only; `tools`/`tool_calls` translation
-  (and the neutral-seam changes it needs) is deferred (ADR-0033). Other modalities
+- **Tool calling** on both surfaces — `tools`/`tool_calls` translation needs the neutral-seam
+  changes structured output did *not* (a tool call is a non-text content block, so it needs new
+  `LlmStreamEvent` variants and new codec framing); deferred (ADR-0033/0034). Other modalities
   (`/v1/embeddings`, audio) are likewise additive behind the same seams.
+- **`response_format: {type:"json_object"}`** — the loose JSON mode is refused rather than
+  emulated, since Anthropic has no equivalent (ADR-0034). Revisit only if a permissive
+  open-object schema turns out to be a faithful translation rather than a fake.
+- **OpenAI `refusal` passthrough** — a model declining under a schema is already mapped to the
+  neutral `refusal` stop reason and metered as `outcome:"refusal"`, but the refusal *string* isn't
+  surfaced on the response envelope; doing so needs the seam widening ADR-0034 avoids.
 - **Cost display / pricing source** — each call already records a frozen `costMicroUsd` from a
   code-resident rate table (ADR-0021); surfacing spend in the dashboards and maintaining the rate
   table are the remaining work (`packages/shared/src/{usage,pricing}.ts`).
