@@ -46,10 +46,29 @@ describe("openAiRequestBody", () => {
     expect(body.stream_options).toEqual({ include_usage: true });
   });
 
-  it("uses max_completion_tokens for o-series reasoning models", () => {
-    const body = JSON.parse(openAiRequestBody(req({ model: "o4-mini" })));
-    expect(body.max_completion_tokens).toBe(256);
+  it("omits the upstream cap when maxTokens is unset (→ model max)", () => {
+    const body = JSON.parse(openAiRequestBody(req({ maxTokens: undefined })));
     expect(body.max_tokens).toBeUndefined();
+    expect(body.max_completion_tokens).toBeUndefined();
+  });
+
+  it("floors max_completion_tokens for o-series reasoning models", () => {
+    // requested 256 is below the o4-mini floor (25k) → floored so reasoning has room.
+    const floored = JSON.parse(openAiRequestBody(req({ model: "o4-mini", maxTokens: 256 })));
+    expect(floored.max_completion_tokens).toBe(25_000);
+    expect(floored.max_tokens).toBeUndefined();
+    // unset also gets the floor, never an unbounded/omitted budget.
+    const unset = JSON.parse(openAiRequestBody(req({ model: "o4-mini", maxTokens: undefined })));
+    expect(unset.max_completion_tokens).toBe(25_000);
+  });
+
+  it("forwards temperature, top_p and stop when present", () => {
+    const body = JSON.parse(
+      openAiRequestBody(req({ temperature: 0.2, topP: 0.5, stop: ["\n\n"] })),
+    );
+    expect(body.temperature).toBe(0.2);
+    expect(body.top_p).toBe(0.5);
+    expect(body.stop).toEqual(["\n\n"]);
   });
 });
 
@@ -90,6 +109,11 @@ describe("mapOpenAiStream", () => {
     ]);
   });
 
+  const usageChunk = chunk({
+    choices: [],
+    usage: { prompt_tokens: 1, completion_tokens: 1 },
+  });
+
   it("maps finish_reason length -> max_tokens and content_filter -> refusal", async () => {
     for (const [finish, stopReason] of [
       ["length", "max_tokens"],
@@ -98,11 +122,46 @@ describe("mapOpenAiStream", () => {
       const sse =
         chunk({ choices: [{ index: 0, delta: { content: "x" }, finish_reason: null }] }) +
         chunk({ choices: [{ index: 0, delta: {}, finish_reason: finish }] }) +
+        usageChunk +
         "data: [DONE]\n\n";
       const events = await collect(mapOpenAiStream(Readable.from([Buffer.from(sse)])));
       const done = events.at(-1);
       expect(done?.type === "done" && done.stopReason).toBe(stopReason);
     }
+  });
+
+  it("maps a structured-output refusal (delta.refusal) to a refusal stop reason", async () => {
+    const sse =
+      chunk({
+        choices: [
+          { index: 0, delta: { refusal: "I can't help with that" }, finish_reason: "stop" },
+        ],
+      }) +
+      usageChunk +
+      "data: [DONE]\n\n";
+    const events = await collect(mapOpenAiStream(Readable.from([Buffer.from(sse)])));
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.stopReason).toBe("refusal");
+  });
+
+  it("throws (records as error) when the stream ends without a usage block", async () => {
+    // Content deltas but the trailing usage chunk never arrives (truncated). An
+    // all-zero $0 `ok` would silently under-bill, so this must surface an error.
+    const sse =
+      chunk({ choices: [{ index: 0, delta: { content: "Hello" }, finish_reason: null }] }) +
+      chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) +
+      "data: [DONE]\n\n";
+    await expect(
+      collect(mapOpenAiStream(Readable.from([Buffer.from(sse)]))),
+    ).rejects.toBeInstanceOf(LlmProviderError);
+  });
+
+  it("completes normally when usage arrives even without a trailing [DONE]", async () => {
+    const sse =
+      chunk({ choices: [{ index: 0, delta: { content: "hi" }, finish_reason: "stop" }] }) +
+      usageChunk; // no [DONE] — the stream just ends
+    const events = await collect(mapOpenAiStream(Readable.from([Buffer.from(sse)])));
+    expect(events.at(-1)?.type).toBe("done");
   });
 
   it("throws on an in-band error object", async () => {

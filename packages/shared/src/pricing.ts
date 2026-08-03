@@ -35,6 +35,14 @@ export interface ModelPrice {
    * builder branches on this. Absent ⇒ a normal chat model.
    */
   reasoning?: boolean;
+  /**
+   * Floor for a reasoning model's `max_completion_tokens`. That budget covers
+   * reasoning **and** visible output combined, so a small value can be spent
+   * entirely on thinking and return empty (billed) content. The OpenAI builder
+   * applies `max(requested ?? floor, floor)` so visible output always has room.
+   * Only meaningful with `reasoning: true`.
+   */
+  minCompletionTokens?: number;
 }
 
 /**
@@ -72,8 +80,20 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8, provider: "openai" },
   "gpt-4.1-mini": { inputPerMTok: 0.4, outputPerMTok: 1.6, provider: "openai" },
   "gpt-4.1-nano": { inputPerMTok: 0.1, outputPerMTok: 0.4, provider: "openai" },
-  o3: { inputPerMTok: 2, outputPerMTok: 8, provider: "openai", reasoning: true },
-  "o4-mini": { inputPerMTok: 1.1, outputPerMTok: 4.4, provider: "openai", reasoning: true },
+  o3: {
+    inputPerMTok: 2,
+    outputPerMTok: 8,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+  },
+  "o4-mini": {
+    inputPerMTok: 1.1,
+    outputPerMTok: 4.4,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+  },
 };
 
 /** Cache-read tokens bill at ~0.1x the base input rate. */

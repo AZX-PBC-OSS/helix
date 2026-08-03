@@ -23,8 +23,12 @@ import {
 
 /** Per-request context handed to every codec framing call. Native ignores most of it. */
 export interface LlmWireContext {
-  /** Correlates the egress call; the OpenAI codec builds `chatcmpl-<requestId>`. */
-  requestId: string;
+  /**
+   * App-visible completion id (the OpenAI codec builds `chatcmpl-<completionId>`).
+   * Deliberately distinct from the internal egress `requestId`/`jti`, which must
+   * not be published to app code.
+   */
+  completionId: string;
   /** The requested model id (echoed back in the response envelope). */
   model: string;
   /** `created` unix seconds, stamped once so all chunks of one response agree. */
@@ -38,13 +42,23 @@ export interface LlmWireContext {
 /** Outcome of parsing the request envelope into the neutral shape. */
 export type LlmParseResult =
   | { ok: true; chat: LlmChatRequest; includeUsage?: boolean }
-  | { ok: false; status: number; code: ApiErrorCode; message: string };
+  | { ok: false; status: number; code: ApiErrorCode; message: string; param?: string };
 
 export interface LlmWireCodec {
   /** Envelope body → neutral request, or a typed 4xx. */
   parse(body: unknown): LlmParseResult;
-  /** A pre-stream (or non-stream) error response, in this wire's shape. */
-  error(reply: FastifyReply, status: number, code: ApiErrorCode, message: string): void;
+  /**
+   * A pre-stream (or non-stream) error response, in this wire's shape. `param`
+   * names the offending field when known (OpenAI puts it in the envelope; the
+   * native codec ignores it).
+   */
+  error(
+    reply: FastifyReply,
+    status: number,
+    code: ApiErrorCode,
+    message: string,
+    param?: string,
+  ): void;
   /** Begin the streaming response (hijacks the socket + writes the head). */
   startStream(reply: FastifyReply, ctx: LlmWireContext): void;
   /** One text delta frame. */

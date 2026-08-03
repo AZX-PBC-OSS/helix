@@ -134,9 +134,18 @@ await client.chat.completions.create({ model: "claude-opus-4-8", messages, strea
   is `/_api/llm/chat` (byte-identical); `openAiCodec` (`gateway/openaiCodec.ts`) parses the OpenAI
   body into the neutral shape and frames the neutral stream back as `chat.completion.chunk` +
   `[DONE]` (or a single `chat.completion`). Errors are OpenAI-shaped (`{error:{message,type,...}}`).
-- **Scope (v1): text chat only.** `tools`/`tool_choice`, `role:"tool"`, and multimodal (array)
-  content are rejected with a clear `400` — never silently dropped. `system`/`developer` messages are
-  hoisted into the neutral top-level `system`; `max_tokens`/`max_completion_tokens` → `maxTokens`.
+- **Scope (v1): text chat only.** `tools` (a non-empty list), an affirmative `tool_choice`,
+  `role:"tool"`, multimodal (array) content, and the behaviour-changing sampling/output params
+  (`response_format`, `seed`, `n`, `logit_bias`, `presence_penalty`, `frequency_penalty`, `logprobs`,
+  `top_logprobs`) are rejected with a clear `400` (naming the field in `error.param`) — never silently
+  dropped. Opting *out* of tools (`tool_choice:"none"`, empty `tools:[]`) is served. `system`/
+  `developer` messages are hoisted into the neutral top-level `system`; `temperature`, `top_p`, and
+  `stop` are forwarded to the vendor.
+- **`max_tokens` follows OpenAI convention.** Omit it and the model's own maximum applies (not a
+  forced default) — `max_tokens`/`max_completion_tokens` → the neutral optional `maxTokens`, and the
+  OpenAI body builder omits the upstream cap when it's unset. o-series reasoning models instead take
+  `max_completion_tokens`, **floored** (catalog `minCompletionTokens`, ~25k) so reasoning tokens can't
+  starve visible output and leave a billed-empty answer.
 
 ### Multiple upstreams (Anthropic + OpenAI)
 

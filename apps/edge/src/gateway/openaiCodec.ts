@@ -3,6 +3,7 @@ import {
   LlmChatRequestSchema,
   OpenAiChatCompletionRequestSchema,
   OpenAiChatCompletionResponseSchema,
+  OPENAI_UNSUPPORTED_PARAMS,
   type ApiErrorCode,
   type LlmMessage,
   type LlmUsage,
@@ -47,9 +48,9 @@ function openAiErrorMeta(code: ApiErrorCode): { type: string; code: string | nul
   }
 }
 
-function openAiError(code: ApiErrorCode, message: string): OpenAiErrorBody {
+function openAiError(code: ApiErrorCode, message: string, param?: string): OpenAiErrorBody {
   const meta = openAiErrorMeta(code);
-  return { error: { message, type: meta.type, param: null, code: meta.code } };
+  return { error: { message, type: meta.type, param: param ?? null, code: meta.code } };
 }
 
 /** Neutral stop reason → OpenAI `finish_reason`. */
@@ -79,7 +80,7 @@ function writeChunk(reply: FastifyReply, chunk: OpenAiChatCompletionChunk): void
 
 function baseChunk(ctx: LlmWireContext): Omit<OpenAiChatCompletionChunk, "choices"> {
   return {
-    id: `chatcmpl-${ctx.requestId}`,
+    id: `chatcmpl-${ctx.completionId}`,
     object: "chat.completion.chunk",
     created: ctx.created,
     model: ctx.model,
@@ -92,40 +93,48 @@ function baseChunk(ctx: LlmWireContext): Omit<OpenAiChatCompletionChunk, "choice
  * neutral turns. Anything the platform doesn't support in v1 — tools, tool_choice,
  * `role:"tool"`, or non-string (multimodal) content — is a 400, never a silent drop.
  */
+/** A 400 that names the offending field (OpenAI surfaces `param` to the developer). */
+function badRequest(message: string, param?: string): LlmParseResult {
+  return { ok: false, status: 400, code: "validation_failed", message, param };
+}
+
 function parseOpenAi(body: unknown): LlmParseResult {
   const parsed = OpenAiChatCompletionRequestSchema.safeParse(body);
   if (!parsed.success) {
-    return { ok: false, status: 400, code: "validation_failed", message: "invalid request" };
+    // Surface the first zod issue + its path so the client can locate the field.
+    const issue = parsed.error.issues[0];
+    return badRequest(issue?.message ?? "invalid request", issue?.path.join(".") || undefined);
   }
   const req = parsed.data;
 
-  if ((req.tools && req.tools.length > 0) || req.tool_choice !== undefined) {
-    return {
-      ok: false,
-      status: 400,
-      code: "validation_failed",
-      message: "tool use is not supported",
-    };
+  // Reject affirmative tool use, but allow opting *out* (`tool_choice:"none"`,
+  // empty `tools:[]`) — those are requests this surface can serve exactly.
+  if (
+    (req.tools && req.tools.length > 0) ||
+    (req.tool_choice !== undefined && req.tool_choice !== "none")
+  ) {
+    return badRequest("tool use is not supported", "tools");
+  }
+
+  // Behaviour-changing params are rejected loudly, never silently dropped. `n:1`
+  // is exempt: it's the no-op default many wrappers (LangChain, LiteLLM) always
+  // send and matches the single choice we return — rejecting it would break stock
+  // clients for nothing. `n > 1` genuinely changes behaviour and is rejected.
+  for (const p of OPENAI_UNSUPPORTED_PARAMS) {
+    const value = (req as Record<string, unknown>)[p];
+    if (value === undefined) continue;
+    if (p === "n" && value === 1) continue;
+    return badRequest(`the "${p}" parameter is not supported`, p);
   }
 
   const systemParts: string[] = [];
   const messages: LlmMessage[] = [];
   for (const m of req.messages) {
     if (m.role === "tool" || m.tool_calls) {
-      return {
-        ok: false,
-        status: 400,
-        code: "validation_failed",
-        message: "tool messages are not supported",
-      };
+      return badRequest("tool messages are not supported", "messages");
     }
     if (typeof m.content !== "string") {
-      return {
-        ok: false,
-        status: 400,
-        code: "validation_failed",
-        message: "only string message content is supported",
-      };
+      return badRequest("only string message content is supported", "messages");
     }
     if (m.role === "system" || m.role === "developer") {
       systemParts.push(m.content);
@@ -135,18 +144,23 @@ function parseOpenAi(body: unknown): LlmParseResult {
   }
 
   // Validate against the neutral contract (catches e.g. a system-only request →
-  // no user/assistant turns) and normalize defaults.
+  // no user/assistant turns) and normalize. `maxTokens` stays optional — the
+  // OpenAI body builder omits the upstream cap when it's unset (model max).
   const chat = LlmChatRequestSchema.safeParse({
     model: req.model,
     messages,
     system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
     maxTokens: req.max_completion_tokens ?? req.max_tokens,
+    temperature: req.temperature,
+    topP: req.top_p,
+    stop: req.stop === undefined ? undefined : typeof req.stop === "string" ? [req.stop] : req.stop,
     // OpenAI is non-streaming unless the client sets stream:true (the neutral
     // default is the opposite — do not inherit it).
     stream: req.stream ?? false,
   });
   if (!chat.success) {
-    return { ok: false, status: 400, code: "validation_failed", message: "invalid request" };
+    const issue = chat.error.issues[0];
+    return badRequest(issue?.message ?? "invalid request", issue?.path.join(".") || undefined);
   }
   return { ok: true, chat: chat.data, includeUsage: req.stream_options?.include_usage ?? false };
 }
@@ -154,12 +168,12 @@ function parseOpenAi(body: unknown): LlmParseResult {
 export const openAiCodec: LlmWireCodec = {
   parse: parseOpenAi,
 
-  error(reply, status, code, message) {
+  error(reply, status, code, message, param) {
     reply
       .status(status)
       .header("cache-control", "no-store")
       .type("application/json; charset=utf-8")
-      .send(openAiError(code, message));
+      .send(openAiError(code, message, param));
   },
 
   startStream(reply, ctx) {
@@ -203,7 +217,7 @@ export const openAiCodec: LlmWireCodec = {
   sendResponse(reply, ctx, res) {
     reply.header("cache-control", "no-store").send(
       OpenAiChatCompletionResponseSchema.parse({
-        id: `chatcmpl-${ctx.requestId}`,
+        id: `chatcmpl-${ctx.completionId}`,
         object: "chat.completion",
         created: ctx.created,
         model: ctx.model,

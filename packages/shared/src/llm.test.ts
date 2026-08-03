@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { LlmChatRequestSchema, LlmChatResponseSchema, LlmStreamDoneSchema } from "./llm.js";
 
 describe("LlmChatRequestSchema", () => {
-  it("defaults maxTokens and stream so the minimal call parses", () => {
+  it("leaves maxTokens unset (each surface defaults it) and defaults stream", () => {
     const parsed = LlmChatRequestSchema.parse({
       model: "claude-opus-4-8",
       messages: [{ role: "user", content: "hi" }],
     });
-    expect(parsed.maxTokens).toBe(1024);
+    // maxTokens is optional: Anthropic defaults it in its body builder, the
+    // OpenAI surface omits the upstream cap (model max).
+    expect(parsed.maxTokens).toBeUndefined();
     expect(parsed.stream).toBe(true);
     expect(parsed.system).toBeUndefined();
   });

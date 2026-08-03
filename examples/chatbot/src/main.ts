@@ -73,37 +73,41 @@ async function loadWhoami(): Promise<void> {
   }
 }
 
+/** A known-good default so the app can still chat when the model list can't load. */
+const FALLBACK_MODEL = "claude-opus-4-8";
+
+function setModels(ids: string[], disabled = false): void {
+  modelSel.innerHTML = "";
+  for (const id of ids) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = id;
+    modelSel.append(opt);
+  }
+  modelSel.disabled = disabled;
+}
+
 /**
  * Populate the model picker from the app's own allowlist. The OpenAI-compatible
  * `GET /_api/openai/v1/models` returns exactly `capabilities.llm.models` (a mix
  * of `claude-*` and `gpt-*`/`o*`), so the dropdown mirrors what the app is
  * actually granted — nothing is hardcoded here.
+ *
+ * On any failure it falls back to a single known-good model rather than
+ * hard-blocking, so a send still reaches the gateway and surfaces the *real*
+ * error (`model_not_allowed`, 401, …) instead of a guess about the cause.
  */
 async function loadModels(): Promise<void> {
   try {
     const res = await fetch("/_api/openai/v1/models", { headers: { accept: "application/json" } });
     if (!res.ok) {
-      modelSel.innerHTML = `<option value="">(sign in to load models)</option>`;
-      modelSel.disabled = true;
+      setModels([FALLBACK_MODEL]);
       return;
     }
     const list = (await res.json()) as { data: Array<{ id: string }> };
-    if (list.data.length === 0) {
-      modelSel.innerHTML = `<option value="">(no models granted)</option>`;
-      modelSel.disabled = true;
-      return;
-    }
-    modelSel.innerHTML = "";
-    for (const m of list.data) {
-      const opt = document.createElement("option");
-      opt.value = m.id;
-      opt.textContent = m.id;
-      modelSel.append(opt);
-    }
-    modelSel.disabled = false;
+    setModels(list.data.length > 0 ? list.data.map((m) => m.id) : [FALLBACK_MODEL]);
   } catch {
-    modelSel.innerHTML = `<option value="">(models unavailable)</option>`;
-    modelSel.disabled = true;
+    setModels([FALLBACK_MODEL]);
   }
 }
 
@@ -170,8 +174,12 @@ async function send(text: string): Promise<void> {
     return;
   }
 
-  history.push({ role: "user", content: text });
   addBubble("user", text);
+  // Send with the pending turn, but don't commit to `history` until we have a
+  // real answer — an empty assistant turn (a refusal, an aborted stream, an
+  // o-series empty completion) would poison every later request, since message
+  // content is validated non-empty upstream.
+  const outgoing: Message[] = [...history, { role: "user", content: text }];
 
   const reply = addBubble("assistant");
   let accumulated = "";
@@ -182,7 +190,7 @@ async function send(text: string): Promise<void> {
     const res = await fetch(ep.url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, messages: history, stream: true }),
+      body: JSON.stringify({ model, messages: outgoing, stream: true }),
     });
 
     if (!res.ok || !res.body) {
@@ -206,7 +214,9 @@ async function send(text: string): Promise<void> {
         reply.parentElement?.scrollIntoView({ block: "end" });
       }),
     );
-    history.push({ role: "assistant", content: accumulated });
+    if (accumulated) {
+      history.push({ role: "user", content: text }, { role: "assistant", content: accumulated });
+    }
   } catch (err) {
     reply.parentElement?.classList.replace("assistant", "error");
     reply.textContent = `Stream error: ${err instanceof Error ? err.message : String(err)}`;

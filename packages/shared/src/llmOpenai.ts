@@ -60,7 +60,30 @@ export const OpenAiChatCompletionRequestSchema = z.object({
   /** Declared so the codec can reject tool use in v1 (not supported). */
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
+  // Behaviour-changing params the platform does not honor in v1. Declared (not
+  // stripped) so the codec can reject them with a 400 rather than silently drop
+  // them — the same "reject, never silently drop" contract as `tools`.
+  response_format: z.unknown().optional(),
+  n: z.unknown().optional(),
+  seed: z.unknown().optional(),
+  logit_bias: z.unknown().optional(),
+  presence_penalty: z.unknown().optional(),
+  frequency_penalty: z.unknown().optional(),
+  logprobs: z.unknown().optional(),
+  top_logprobs: z.unknown().optional(),
 });
+
+/** The behaviour-changing OpenAI params the codec rejects with a 400 (see above). */
+export const OPENAI_UNSUPPORTED_PARAMS = [
+  "response_format",
+  "n",
+  "seed",
+  "logit_bias",
+  "presence_penalty",
+  "frequency_penalty",
+  "logprobs",
+  "top_logprobs",
+] as const;
 export type OpenAiChatCompletionRequest = z.infer<typeof OpenAiChatCompletionRequestSchema>;
 
 /** OpenAI usage block. `prompt_tokens` folds all input classes; reasoning tokens count as completion. */
@@ -128,10 +151,11 @@ export interface OpenAiErrorBody {
   };
 }
 
-/** OpenAI `GET /v1/models` list item. */
+/** OpenAI `GET /v1/models` list item. `created` is required by the OpenAI Model object. */
 export const OpenAiModelSchema = z.object({
   id: z.string(),
   object: z.literal("model"),
+  created: z.int(),
   owned_by: z.string(),
 });
 export type OpenAiModel = z.infer<typeof OpenAiModelSchema>;

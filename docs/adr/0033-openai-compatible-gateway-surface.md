@@ -37,10 +37,27 @@ upstream **multi-provider**, without disturbing the security/metering spine.
    cookie authenticates same-origin; the SDK `apiKey` is ignored. `GET
    …/v1/models` lists the app's allowlisted models. Mirrored on the dev-gateway.
 
-3. **Scope: text chat only (v1).** Tools, `tool_choice`, `role:"tool"`, and
-   multimodal (array) content are rejected with a clear `400`, never silently
-   dropped — the neutral seam and `mapAnthropicStream`/`mapOpenAiStream` carry text
-   deltas only. Tool-calling translation is deferred.
+3. **Scope: text chat only (v1).** Affirmative tool use, `role:"tool"`, multimodal
+   (array) content, and behaviour-changing sampling/output params
+   (`response_format`, `seed`, `n`, `logit_bias`, `presence_penalty`,
+   `frequency_penalty`, `logprobs`, `top_logprobs`) are rejected with a clear `400`
+   naming the field (`error.param`), never silently dropped — the neutral seam and
+   `mapAnthropicStream`/`mapOpenAiStream` carry text deltas only. `temperature`,
+   `top_p`, and `stop` **are** forwarded (both vendors accept them). Opting out of
+   tools (`tool_choice:"none"`, empty `tools:[]`) is served. Tool-calling
+   translation is deferred.
+
+   **`max_tokens`** follows OpenAI convention: it is optional on the neutral shape;
+   the OpenAI builder omits the upstream cap when unset (→ model max) rather than
+   forcing a default (Anthropic requires the field, so its builder defaults it,
+   preserving native behaviour). o-series reasoning models take
+   `max_completion_tokens`, floored (`ModelPrice.minCompletionTokens`) so reasoning
+   can't consume the whole budget and return billed-empty output.
+
+   **Metering integrity:** OpenAI reports usage only in a trailing chunk, so a
+   truncated stream must not record a silent $0 `ok` — `mapOpenAiStream` surfaces an
+   error when a stream ends without a usage block. The app-visible `chatcmpl-` id is
+   a UUID distinct from the internal egress `requestId`/`jti`.
 
 4. **Model→upstream routing is a catalog fact.** `MODEL_PRICING` gains a `provider`
    field; `RoutingLlmProvider` dispatches on `providerForModel(model)`. Pricing and

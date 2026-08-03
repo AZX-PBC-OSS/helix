@@ -39,7 +39,9 @@ interface Edge {
   usage: FakeUsageStore;
 }
 
-function buildEdge(opts: { models?: string[]; provider?: LlmProvider } = {}): Edge {
+function buildEdge(
+  opts: { models?: string[]; provider?: LlmProvider; noGrant?: boolean } = {},
+): Edge {
   const sessions = new FakeSessionStore();
   const provider = new FakeLlmProvider();
   const usage = new FakeUsageStore();
@@ -50,7 +52,7 @@ function buildEdge(opts: { models?: string[]; provider?: LlmProvider } = {}): Ed
         appId: APP_ID,
         slug: "demo",
         blobPrefix: PREFIX,
-        llm: { models: opts.models ?? [MODEL], dollarsPerDay: 1 },
+        llm: opts.noGrant ? null : { models: opts.models ?? [MODEL], dollarsPerDay: 1 },
       }),
     ]),
     blob: new FakeBlobReader(),
@@ -232,6 +234,69 @@ describe("rejects unsupported features with an OpenAI error", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it("400s a behaviour-changing param and names it in `param`", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, {
+      ...ASK,
+      response_format: { type: "json_object" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.param).toBe("response_format");
+    expect(edge.provider.calls).toHaveLength(0);
+  });
+
+  it("accepts n:1 (no-op default) but 400s n>1", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const ok = await completions(edge, token, { ...ASK, n: 1 });
+    expect(ok.statusCode).toBe(200);
+    const bad = await completions(edge, token, { ...ASK, n: 2 });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error.param).toBe("n");
+  });
+
+  it("surfaces the zod field path in `param` on a schema failure", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    // content:"" is legal in OpenAI but fails the neutral min(1) → a 400 that
+    // points at the field rather than an opaque "invalid request".
+    const res = await completions(edge, token, {
+      model: MODEL,
+      messages: [{ role: "user", content: "" }],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.param).toBeTruthy();
+  });
+});
+
+describe("opting out of tools is allowed", () => {
+  it('serves tool_choice:"none" with an empty tools list', async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, { ...ASK, tool_choice: "none", tools: [] });
+    expect(res.statusCode).toBe(200);
+    expect(edge.provider.calls).toHaveLength(1);
+  });
+});
+
+describe("sampling params reach the provider", () => {
+  it("forwards temperature/top_p/stop into the neutral request", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    await completions(edge, token, {
+      ...ASK,
+      temperature: 0.2,
+      top_p: 0.5,
+      stop: "\n\n",
+    });
+    expect(edge.provider.calls[0]).toMatchObject({
+      temperature: 0.2,
+      topP: 0.5,
+      stop: ["\n\n"], // a string `stop` is normalized to a list
+    });
+  });
 });
 
 describe("authz maps to OpenAI errors", () => {
@@ -309,12 +374,21 @@ describe("GET /_api/openai/v1/models", () => {
     const body = res.json();
     expect(body.object).toBe("list");
     expect(body.data.map((m: { id: string }) => m.id)).toEqual([MODEL, "gpt-4o-mini"]);
-    expect(body.data[0]).toMatchObject({ object: "model", owned_by: "helix" });
+    // `created` is required on the OpenAI Model object.
+    expect(body.data[0]).toMatchObject({ object: "model", owned_by: "helix", created: 0 });
   });
 
   it("401s without a session", async () => {
     const edge = buildEdge();
     const res = await models(edge, null);
     expect(res.statusCode).toBe(401);
+  });
+
+  it("403s (not an empty list) when the app has no LLM grant", async () => {
+    const edge = buildEdge({ noGrant: true });
+    const token = await seedSession(edge.sessions);
+    const res = await models(edge, token);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.type).toBe("invalid_request_error");
   });
 });

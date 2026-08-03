@@ -91,7 +91,7 @@ SPA's pre-submit warning never drift:
 
 | Area | Baseline (applies now) | Elevated (needs approval) | Risk |
 |---|---|---|---|
-| LLM models | `CURATED_LLM_MODELS` (fable-5 / opus-4-8 / sonnet-4-6 / haiku-4-5) | any other model | med |
+| LLM models | `CURATED_LLM_MODELS` (= every model in `MODEL_PRICING`: the `claude-*` family plus the OpenAI `gpt-*`/`o*` models) | any other model | med |
 | LLM budget | `dollarsPerDay ≤ BASELINE_DOLLARS_PER_DAY` ($50) | above threshold | med |
 | data scopes | user store, collections, shared keys | — | low |
 | data budgets | writes/bytes ≤ thresholds | above threshold | med |

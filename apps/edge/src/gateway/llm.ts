@@ -98,7 +98,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
 
     const parsed = codec.parse(req.body);
     if (!parsed.ok) {
-      codec.error(reply, parsed.status, parsed.code, parsed.message);
+      codec.error(reply, parsed.status, parsed.code, parsed.message, parsed.param);
       return;
     }
     const chat = parsed.chat;
@@ -211,13 +211,13 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
         .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
     };
 
-    // Attribution for a routing provider's attested instruction (egress path);
-    // the direct provider ignores it. requestId correlates the egress call and
-    // seeds the OpenAI codec's `chatcmpl-<id>`; `created` is stamped once so all
-    // chunks of one response agree.
+    // Two distinct ids: `requestId` is internal — it correlates the egress call
+    // and becomes the attested instruction's `jti` (burned for replay
+    // protection), so it must never reach app code. `completionId` is the
+    // app-visible `chatcmpl-<id>`. `created` is stamped once so all chunks agree.
     const requestId = randomUUID();
     const ctx: LlmWireContext = {
-      requestId,
+      completionId: randomUUID(),
       model: chat.model,
       created: Math.floor(Date.now() / 1000),
       corsOrigin: req.devCorsOrigin,

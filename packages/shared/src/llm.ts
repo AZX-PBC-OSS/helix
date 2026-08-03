@@ -36,15 +36,27 @@ export type LlmUsage = z.infer<typeof LlmUsageSchema>;
 /**
  * `POST /_api/llm/chat` request body. `model` is matched against the app's
  * per-app allowlist (manifest `capabilities.llm.models`) before anything is
- * sent upstream. `maxTokens` is required by Anthropic Messages; we default it so
- * the simplest client call works.
+ * sent upstream.
+ *
+ * `maxTokens` is **optional**: each vendor body builder decides what an unset
+ * value means — Anthropic Messages requires the field so it defaults there
+ * (`anthropicRequestBody`), while the OpenAI surface omits the upstream cap so
+ * the model's own maximum applies (matching every other OpenAI-compatible
+ * endpoint). `temperature`/`topP`/`stop` are optional sampling controls forwarded
+ * to whichever vendor serves the model.
  */
 export const LlmChatRequestSchema = z.object({
   model: z.string().min(1),
   messages: z.array(LlmMessageSchema).min(1),
   /** Optional system prompt; maps to the vendor's system channel. */
   system: z.string().optional(),
-  maxTokens: z.int().positive().max(128_000).default(1024),
+  maxTokens: z.int().positive().max(128_000).optional(),
+  /** Sampling temperature; forwarded as-is (the vendor validates its own range). */
+  temperature: z.number().optional(),
+  /** Nucleus sampling; forwarded as-is. */
+  topP: z.number().optional(),
+  /** Stop sequences; normalized to a list at the boundary. */
+  stop: z.array(z.string()).optional(),
   /** SSE streaming (default) vs a single JSON body. */
   stream: z.boolean().default(true),
 });

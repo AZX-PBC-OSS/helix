@@ -49,13 +49,23 @@ export interface LlmProvider {
   close(): Promise<void>;
 }
 
+/**
+ * Default output cap when the client omits `maxTokens`. Anthropic Messages
+ * *requires* `max_tokens`, so the neutral shape's optional field is defaulted
+ * here — this keeps the native `/_api/llm/chat` behaviour unchanged for Claude.
+ */
+const DEFAULT_MAX_TOKENS = 1024;
+
 /** The Anthropic Messages request body (always streamed). Shared by both providers. */
 export function anthropicRequestBody(req: LlmChatRequest): string {
   return JSON.stringify({
     model: req.model,
-    max_tokens: req.maxTokens,
+    max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
     messages: req.messages,
     ...(req.system ? { system: req.system } : {}),
+    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    ...(req.topP !== undefined ? { top_p: req.topP } : {}),
+    ...(req.stop && req.stop.length > 0 ? { stop_sequences: req.stop } : {}),
     stream: true,
   });
 }
@@ -116,13 +126,19 @@ export async function* mapAnthropicStream(body: Readable): AsyncIterable<LlmStre
   };
 }
 
+/** Floor for a reasoning model's `max_completion_tokens` when the catalog gives none. */
+const DEFAULT_REASONING_FLOOR = 25_000;
+
 /**
  * The OpenAI **chat/completions** request body (always streamed). The neutral
- * top-level `system` is hoisted back into a leading `system` message. o-series
- * reasoning models take `max_completion_tokens` (not `max_tokens`) and reject a
- * non-default `temperature`, so this branches on the catalog `reasoning` flag.
- * `stream_options.include_usage` is always requested so metering has token
- * counts regardless of what the app asked for.
+ * top-level `system` is hoisted back into a leading `system` message.
+ *
+ * `max_tokens` is **omitted when the client didn't set one**, so the model's own
+ * maximum applies — matching every other OpenAI-compatible endpoint (a forced
+ * default would silently chop output). o-series reasoning models instead take
+ * `max_completion_tokens` (which budgets reasoning + output together), floored so
+ * reasoning can't starve visible output. `stream_options.include_usage` is always
+ * requested so metering has token counts regardless of what the app asked for.
  */
 export function openAiRequestBody(req: LlmChatRequest): string {
   const messages: Array<{ role: string; content: string }> = [];
@@ -135,8 +151,18 @@ export function openAiRequestBody(req: LlmChatRequest): string {
     stream: true,
     stream_options: { include_usage: true },
   };
-  if (priceForModel(req.model)?.reasoning) body.max_completion_tokens = req.maxTokens;
-  else body.max_tokens = req.maxTokens;
+  const price = priceForModel(req.model);
+  if (price?.reasoning) {
+    const floor = price.minCompletionTokens ?? DEFAULT_REASONING_FLOOR;
+    body.max_completion_tokens = Math.max(req.maxTokens ?? floor, floor);
+  } else if (req.maxTokens !== undefined) {
+    body.max_tokens = req.maxTokens;
+  }
+  // OpenAI's temperature range (0–2) is wider than Anthropic's (0–1); forwarded
+  // as-is, the vendor validates and a bad value surfaces as an upstream error.
+  if (req.temperature !== undefined) body.temperature = req.temperature;
+  if (req.topP !== undefined) body.top_p = req.topP;
+  if (req.stop && req.stop.length > 0) body.stop = req.stop;
   return JSON.stringify(body);
 }
 
@@ -147,11 +173,11 @@ function neutralStopReason(finish: string | null): string {
       return "max_tokens";
     case "content_filter":
       return "refusal";
-    case "tool_calls":
-    case "function_call":
-      return "tool_use";
     default:
-      return "end_turn"; // "stop" and anything unrecognized
+      // "stop" and anything unrecognized. Tool-call finishes aren't mapped: the
+      // codec rejects tool use, so they can't occur, and the downstream
+      // (`finishReason`/`outcomeFor`) has no `tool_use` case to carry it to.
+      return "end_turn";
   }
 }
 
@@ -166,6 +192,8 @@ export async function* mapOpenAiStream(body: Readable): AsyncIterable<LlmStreamE
   let inputTokens = 0;
   let outputTokens = 0;
   let finish: string | null = null;
+  let sawUsage = false;
+  let refused = false;
 
   for await (const { data } of parseSse(body)) {
     if (data === "[DONE]") break; // OpenAI's terminal sentinel
@@ -180,17 +208,32 @@ export async function* mapOpenAiStream(body: Readable): AsyncIterable<LlmStreamE
     }
     for (const choice of event.choices ?? []) {
       if (choice.delta?.content) yield { type: "delta", text: choice.delta.content };
+      // A structured-output refusal (`delta.refusal`) is a refusal, not content —
+      // meter it as such rather than an empty `ok`.
+      if (choice.delta?.refusal) refused = true;
       if (choice.finish_reason) finish = choice.finish_reason;
     }
     if (event.usage) {
+      sawUsage = true;
       inputTokens = event.usage.prompt_tokens ?? 0;
       outputTokens = event.usage.completion_tokens ?? 0;
     }
   }
 
+  // No usage block means the stream was truncated (or a non-conforming upstream):
+  // we can't bill it, so surface an error rather than record a silent $0 `ok`.
+  // Unlike Anthropic — which sends prompt tokens up front — OpenAI reports usage
+  // only at the end, so an all-zero `done` here would under-bill every time. We
+  // always request `stream_options.include_usage`, so real OpenAI always sends it;
+  // a future OpenAI-compatible upstream that doesn't (e.g. some Warden config)
+  // would need this revisited.
+  if (!sawUsage) {
+    throw new LlmProviderError("openai stream ended without a usage block");
+  }
+
   yield {
     type: "done",
-    stopReason: neutralStopReason(finish),
+    stopReason: refused ? "refusal" : neutralStopReason(finish),
     usage: { inputTokens, outputTokens, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
   };
 }
@@ -198,7 +241,7 @@ export async function* mapOpenAiStream(body: Readable): AsyncIterable<LlmStreamE
 /** The OpenAI chat/completions chunk fields we read (others ignored). */
 interface OpenAiChunk {
   choices?: Array<{
-    delta?: { content?: string };
+    delta?: { content?: string; refusal?: string };
     finish_reason?: string | null;
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
