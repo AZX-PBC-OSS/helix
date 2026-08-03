@@ -5,8 +5,9 @@ import { createBlobReader } from "./blob/client.js";
 import { LiveRegistry, type RegistryLogger } from "./registry/listener.js";
 import { OpenIdConnectClient } from "./auth/oidc.js";
 import { PgSessionStore, startSessionSweeper } from "./auth/sessions.js";
-import type { LlmProvider } from "./gateway/provider.js";
+import { anthropicVendor, openAiVendor, type LlmProvider } from "./gateway/provider.js";
 import { EgressLlmProvider } from "./gateway/egressLlmProvider.js";
+import { RoutingLlmProvider } from "./gateway/routingLlmProvider.js";
 import { HttpEgressProvider, type EgressProvider } from "./gateway/egressProvider.js";
 import { deriveInstructionKey } from "./gateway/instruction.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
@@ -180,17 +181,25 @@ const instructionKey = config.fetch.instructionSecret
 // There is deliberately no direct edge→Anthropic path: the edge holding the key
 // would violate the containment model (ADR-0008, issue #10). Local dev runs the
 // canonical path via `pnpm dev:egress`.
+// Both vendors route through egress behind the RoutingLlmProvider, which picks
+// the upstream per request from the model's catalog `provider` field. Both are
+// wired whenever egress is up; a vendor is "enabled" by seeding its `platform`
+// key secret. The OpenAI-compatible upstream points at api.openai.com today or a
+// Warden URL later (config only).
 const llmProvider: LlmProvider | null =
   egress && instructionKey
-    ? new EgressLlmProvider(
-        {
-          endpoint: config.llm.endpoint,
-          anthropicVersion: config.llm.anthropicVersion,
-          connection: config.llm.connection,
-        },
-        egress,
-        instructionKey,
-      )
+    ? new RoutingLlmProvider({
+        anthropic: new EgressLlmProvider(
+          anthropicVendor({
+            endpoint: config.llm.endpoint,
+            anthropicVersion: config.llm.anthropicVersion,
+            connection: config.llm.connection,
+          }),
+          egress,
+          instructionKey,
+        ),
+        openai: new EgressLlmProvider(openAiVendor(config.llm.openai), egress, instructionKey),
+      })
     : null;
 
 const app = buildApp({

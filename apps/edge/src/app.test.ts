@@ -34,6 +34,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
       endpoint: "https://api.anthropic.com",
       anthropicVersion: "2023-06-01",
       connection: "anthropic",
+      openai: { endpoint: "https://api.openai.com", connection: "openai" },
     },
     anonRateLimit: { max: 0, windowMs: 60_000 },
     trustProxy: false,

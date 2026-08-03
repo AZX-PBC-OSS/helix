@@ -1,7 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { Pool, type Dispatcher } from "undici";
-import type { Env, LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
+import { priceForModel, type Env, type LlmChatRequest, type LlmUsage } from "@azx-pbc/shared";
 
 /**
  * The `LlmProvider` seam (architecture §6.1, project plan §4 M4). The gateway
@@ -39,6 +39,13 @@ export interface LlmStreamOpts {
 
 export interface LlmProvider {
   stream(req: LlmChatRequest, opts: LlmStreamOpts): AsyncIterable<LlmStreamEvent>;
+  /**
+   * Whether this provider can serve `model`. Optional — a single-vendor provider
+   * serves whatever the handler already allowed and omits it. A routing provider
+   * implements it so the handler can 503 a curated model whose upstream isn't
+   * wired on this edge, *before* opening a stream. Absent ⇒ assume yes.
+   */
+  supports?(model: string): boolean;
   close(): Promise<void>;
 }
 
@@ -107,6 +114,95 @@ export async function* mapAnthropicStream(body: Readable): AsyncIterable<LlmStre
     stopReason,
     usage: { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens },
   };
+}
+
+/**
+ * The OpenAI **chat/completions** request body (always streamed). The neutral
+ * top-level `system` is hoisted back into a leading `system` message. o-series
+ * reasoning models take `max_completion_tokens` (not `max_tokens`) and reject a
+ * non-default `temperature`, so this branches on the catalog `reasoning` flag.
+ * `stream_options.include_usage` is always requested so metering has token
+ * counts regardless of what the app asked for.
+ */
+export function openAiRequestBody(req: LlmChatRequest): string {
+  const messages: Array<{ role: string; content: string }> = [];
+  if (req.system) messages.push({ role: "system", content: req.system });
+  for (const m of req.messages) messages.push({ role: m.role, content: m.content });
+
+  const body: Record<string, unknown> = {
+    model: req.model,
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  if (priceForModel(req.model)?.reasoning) body.max_completion_tokens = req.maxTokens;
+  else body.max_tokens = req.maxTokens;
+  return JSON.stringify(body);
+}
+
+/** Map an OpenAI upstream `finish_reason` to the platform-neutral stop reason. */
+function neutralStopReason(finish: string | null): string {
+  switch (finish) {
+    case "length":
+      return "max_tokens";
+    case "content_filter":
+      return "refusal";
+    case "tool_calls":
+    case "function_call":
+      return "tool_use";
+    default:
+      return "end_turn"; // "stop" and anything unrecognized
+  }
+}
+
+/**
+ * Map an OpenAI chat/completions SSE body to the neutral `delta`/`done` stream.
+ * Shared by any OpenAI-compatible upstream (`api.openai.com` today, a Warden URL
+ * later). OpenAI's `completion_tokens` already folds reasoning tokens in, so it
+ * is used verbatim as the neutral `outputTokens`; OpenAI cache tokens aren't
+ * mapped (0 — the Anthropic-shaped cache classes don't apply here).
+ */
+export async function* mapOpenAiStream(body: Readable): AsyncIterable<LlmStreamEvent> {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let finish: string | null = null;
+
+  for await (const { data } of parseSse(body)) {
+    if (data === "[DONE]") break; // OpenAI's terminal sentinel
+    let event: OpenAiChunk;
+    try {
+      event = JSON.parse(data) as OpenAiChunk;
+    } catch {
+      continue; // ignore non-JSON keepalives/comments
+    }
+    if (event.error) {
+      throw new LlmProviderError(`openai stream error: ${event.error.message ?? "unknown"}`);
+    }
+    for (const choice of event.choices ?? []) {
+      if (choice.delta?.content) yield { type: "delta", text: choice.delta.content };
+      if (choice.finish_reason) finish = choice.finish_reason;
+    }
+    if (event.usage) {
+      inputTokens = event.usage.prompt_tokens ?? 0;
+      outputTokens = event.usage.completion_tokens ?? 0;
+    }
+  }
+
+  yield {
+    type: "done",
+    stopReason: neutralStopReason(finish),
+    usage: { inputTokens, outputTokens, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+  };
+}
+
+/** The OpenAI chat/completions chunk fields we read (others ignored). */
+interface OpenAiChunk {
+  choices?: Array<{
+    delta?: { content?: string };
+    finish_reason?: string | null;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+  error?: { message?: string };
 }
 
 /** A provider call that failed upstream — the handler maps it to an error response. */
@@ -228,7 +324,7 @@ const SSE_LINE_SEP = /\r\n|\r|\n/;
  * across a chunk boundary is not corrupted, and the record buffer is byte-capped
  * so a separator-less upstream cannot grow it without bound.
  */
-async function* parseSse(body: Readable): AsyncGenerator<{ event: string; data: string }> {
+export async function* parseSse(body: Readable): AsyncGenerator<{ event: string; data: string }> {
   const decoder = new StringDecoder("utf8");
   let buf = "";
   for await (const chunk of body) {
@@ -258,4 +354,55 @@ function parseRecord(record: string): { event: string; data: string } {
     else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
   }
   return { event, data: dataLines.join("\n") };
+}
+
+/**
+ * A vendor descriptor for the egress-routed provider ({@link EgressLlmProvider}).
+ * It captures everything vendor-specific — the upstream path, the static headers,
+ * the neutral→wire body builder, and the wire→neutral stream mapper — so one
+ * provider class serves both Anthropic and any OpenAI-compatible upstream. The
+ * attested-instruction mint (jti/aud, ADR-0013) is identical across vendors;
+ * only `origin`/`path`/`connection` vary.
+ */
+export interface EgressLlmVendor {
+  /** Vendor origin (no path), e.g. `https://api.anthropic.com`. */
+  endpoint: string;
+  /** Upstream path, e.g. `/v1/messages` or `/v1/chat/completions`. */
+  path: string;
+  /** Name of the `platform`-scoped secret egress resolves + injects. */
+  connection: string;
+  /** Static headers sent upstream (content-type/accept are added by the provider). */
+  headers: Record<string, string>;
+  /** Neutral request → upstream request body. */
+  buildBody(req: LlmChatRequest): string;
+  /** Upstream SSE → neutral event stream. */
+  mapStream(body: Readable): AsyncIterable<LlmStreamEvent>;
+}
+
+/** Anthropic Messages vendor descriptor. */
+export function anthropicVendor(cfg: {
+  endpoint: string;
+  anthropicVersion: string;
+  connection: string;
+}): EgressLlmVendor {
+  return {
+    endpoint: cfg.endpoint,
+    path: "/v1/messages",
+    connection: cfg.connection,
+    headers: { "anthropic-version": cfg.anthropicVersion },
+    buildBody: anthropicRequestBody,
+    mapStream: mapAnthropicStream,
+  };
+}
+
+/** OpenAI-compatible chat/completions vendor descriptor (OpenAI direct, or Warden). */
+export function openAiVendor(cfg: { endpoint: string; connection: string }): EgressLlmVendor {
+  return {
+    endpoint: cfg.endpoint,
+    path: "/v1/chat/completions",
+    connection: cfg.connection,
+    headers: {},
+    buildBody: openAiRequestBody,
+    mapStream: mapOpenAiStream,
+  };
 }

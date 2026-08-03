@@ -147,6 +147,21 @@ export interface GatewayConfig {
      * lives in the secret store, never in edge config.
      */
     connection: string;
+    /**
+     * OpenAI-compatible upstream for the `gpt-*`/`o*` model families (M4.5+). An
+     * **OpenAI-compatible base URL**: `https://api.openai.com` for OpenAI direct
+     * today, a Warden URL later — same code path. Symmetric with Anthropic above:
+     * always named (defaults `connection` `openai`, `endpoint` api.openai.com) and
+     * wired whenever egress is up. Enabling it is just seeding that `platform`
+     * secret — no dedicated toggle. Absent the secret, a `gpt-*` call 502s at
+     * egress, exactly as an unseeded Anthropic key would.
+     */
+    openai: {
+      /** OpenAI-compatible origin (no path), e.g. `https://api.openai.com`. */
+      endpoint: string;
+      /** Name of the `platform`-scoped secret holding the OpenAI key. */
+      connection: string;
+    };
   };
   /**
    * Fetch-proxy wiring (M4.5). The policy plane authorizes a `/_api/fetch` call
@@ -543,6 +558,10 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
       endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
       anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
       connection: env.EDGE_LLM_ANTHROPIC_CONNECTION ?? "anthropic",
+      openai: {
+        endpoint: (env.EDGE_LLM_OPENAI_ENDPOINT ?? "https://api.openai.com").replace(/\/+$/, ""),
+        connection: env.EDGE_LLM_OPENAI_CONNECTION ?? "openai",
+      },
     },
     fetch: {
       egressUrl: env.EDGE_EGRESS_URL || null,

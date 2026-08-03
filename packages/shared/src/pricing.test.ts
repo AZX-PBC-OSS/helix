@@ -52,6 +52,10 @@ describe("pricing", () => {
       costUsd({ model: "some-future-model", inputTokens: 1_000_000, outputTokens: 1_000_000 }),
     ).toBe(0);
     expect(priceForModel("some-future-model")).toBeUndefined();
-    expect(priceForModel("claude-opus-4-8")).toEqual({ inputPerMTok: 5, outputPerMTok: 25 });
+    expect(priceForModel("claude-opus-4-8")).toEqual({
+      inputPerMTok: 5,
+      outputPerMTok: 25,
+      provider: "anthropic",
+    });
   });
 });

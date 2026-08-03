@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { jwtVerify } from "jose";
 import type { LlmChatRequest } from "@azx-pbc/shared";
 import { EgressLlmProvider } from "./egressLlmProvider.js";
-import { LlmProviderError, type LlmStreamEvent } from "./provider.js";
+import { LlmProviderError, anthropicVendor, type LlmStreamEvent } from "./provider.js";
 import type { EgressProvider, EgressRequest, EgressResponse } from "./egressProvider.js";
 import { deriveInstructionKey } from "./instruction.js";
 
@@ -54,11 +54,11 @@ function stubEgress(
 
 function provider(egress: EgressProvider): EgressLlmProvider {
   return new EgressLlmProvider(
-    {
+    anthropicVendor({
       endpoint: "https://api.anthropic.com",
       anthropicVersion: "2023-06-01",
       connection: "anthropic",
-    },
+    }),
     egress,
     KEY,
   );

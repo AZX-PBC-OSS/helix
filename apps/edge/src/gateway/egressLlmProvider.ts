@@ -1,12 +1,11 @@
 import { Readable } from "node:stream";
 import type { LlmChatRequest } from "@azx-pbc/shared";
 import {
+  type EgressLlmVendor,
   type LlmProvider,
   type LlmStreamEvent,
   type LlmStreamOpts,
   LlmProviderError,
-  anthropicRequestBody,
-  mapAnthropicStream,
 } from "./provider.js";
 import type { EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
@@ -19,59 +18,52 @@ import { mintInstruction } from "./instruction.js";
  *
  * The division of labour mirrors the fetch-proxy. All LLM *policy* — session
  * gate, model allowlist, USD budget, metering — stays in the handler
- * (`llm.ts`); this provider only builds the Anthropic request, mints an attested
+ * (`llm.ts`); this provider only builds the upstream request, mints an attested
  * `llm` instruction, and hands the call to egress, then parses the SSE that
- * streams back exactly as the direct provider does (shared `mapAnthropicStream`).
+ * streams back. It is vendor-agnostic: an {@link EgressLlmVendor} descriptor
+ * supplies the path, headers, body builder, and stream mapper, so the same class
+ * serves Anthropic and any OpenAI-compatible upstream.
  */
-export interface EgressLlmProviderConfig {
-  /** Vendor origin (no path), e.g. `https://api.anthropic.com`. */
-  endpoint: string;
-  /** `anthropic-version` header value. */
-  anthropicVersion: string;
-  /** Name of the `platform`-scoped secret holding the vendor key. */
-  connection: string;
-}
-
 export class EgressLlmProvider implements LlmProvider {
-  readonly #config: EgressLlmProviderConfig;
+  readonly #vendor: EgressLlmVendor;
   readonly #egress: EgressProvider;
   readonly #instructionKey: Buffer;
 
-  constructor(config: EgressLlmProviderConfig, egress: EgressProvider, instructionKey: Buffer) {
-    this.#config = config;
+  constructor(vendor: EgressLlmVendor, egress: EgressProvider, instructionKey: Buffer) {
+    this.#vendor = vendor;
     this.#egress = egress;
     this.#instructionKey = instructionKey;
   }
 
   async *stream(req: LlmChatRequest, opts: LlmStreamOpts): AsyncIterable<LlmStreamEvent> {
-    const origin = new URL(this.#config.endpoint).origin;
+    const origin = new URL(this.#vendor.endpoint).origin;
     const instruction = await mintInstruction(
       {
         appId: opts.appId,
         userOid: opts.userOid,
         capability: "llm",
         origin,
-        connection: this.#config.connection,
+        connection: this.#vendor.connection,
         requestId: opts.requestId,
         env: opts.env,
         method: "POST",
-        path: "/v1/messages",
+        path: this.#vendor.path,
       },
       this.#instructionKey,
     );
 
     const res = await this.#egress.proxy({
       instruction,
-      target: `${origin}/v1/messages`,
+      target: `${origin}${this.#vendor.path}`,
       method: "POST",
       headers: {
-        "anthropic-version": this.#config.anthropicVersion,
+        ...this.#vendor.headers,
         "content-type": "application/json",
         accept: "text/event-stream",
       },
       // Send the JSON body whole (string → undici sets content-length). NOT
       // Readable.from(string): that is an object-mode char stream → empty body.
-      body: anthropicRequestBody(req),
+      body: this.#vendor.buildBody(req),
       signal: opts.signal,
     });
 
@@ -82,7 +74,7 @@ export class EgressLlmProvider implements LlmProvider {
       throw new LlmProviderError(`egress llm call failed (${res.status}): ${text}`, res.status);
     }
 
-    yield* mapAnthropicStream(res.body);
+    yield* this.#vendor.mapStream(res.body);
   }
 
   // The egress provider is shared with the fetch path and owned by the server

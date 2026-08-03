@@ -1,6 +1,6 @@
 # LLM gateway
 
-> **Related ADRs:** [ADR-0008](../adr/0008-llm-key-via-egress.md) (LLM key via egress) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway).
+> **Related ADRs:** [ADR-0008](../adr/0008-llm-key-via-egress.md) (LLM key via egress) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway) · [ADR-0033](../adr/0033-openai-compatible-gateway-surface.md) (OpenAI-compatible surface + multi-provider routing).
 
 **What it is.** `POST /_api/llm/chat` — the gateway's first capability (architecture §6.1,
 project plan §4 M4). It is the choke point that makes per-app blast radius real: an untrusted
@@ -113,6 +113,55 @@ call records nothing — those are policy refusals at the door, not metered usag
 throttled by the per-IP limiter on public apps are also **not** metered (a ledger row per throttled
 request is its own write-amplification vector under flood).
 
+## OpenAI-compatible surface
+
+The same runtime is exposed a second way, in the **OpenAI `chat/completions` wire format**, so an
+app can use a stock OpenAI client with only a `baseURL` change (ADR-0033):
+
+```js
+const client = new OpenAI({
+  baseURL: location.origin + "/_api/openai/v1",
+  apiKey: "unused",              // the __Host-session cookie authenticates same-origin
+  dangerouslyAllowBrowser: true, // Helix apps run in the browser
+});
+await client.chat.completions.create({ model: "claude-opus-4-8", messages, stream: true });
+```
+
+- **Routes:** `POST /_api/openai/v1/chat/completions` and `GET /_api/openai/v1/models` (the app's
+  allowlisted models, OpenAI list shape). App hosts only; mirrored on the dev-gateway.
+- **One spine, one difference.** Every policy/metering step above is identical — only the envelope
+  changes. `makeLlmHandler(rt, codec)` takes an `LlmWireCodec` (`gateway/llmCodec.ts`): `nativeCodec`
+  is `/_api/llm/chat` (byte-identical); `openAiCodec` (`gateway/openaiCodec.ts`) parses the OpenAI
+  body into the neutral shape and frames the neutral stream back as `chat.completion.chunk` +
+  `[DONE]` (or a single `chat.completion`). Errors are OpenAI-shaped (`{error:{message,type,...}}`).
+- **Scope (v1): text chat only.** `tools`/`tool_choice`, `role:"tool"`, and multimodal (array)
+  content are rejected with a clear `400` — never silently dropped. `system`/`developer` messages are
+  hoisted into the neutral top-level `system`; `max_tokens`/`max_completion_tokens` → `maxTokens`.
+
+### Multiple upstreams (Anthropic + OpenAI)
+
+Models route to a vendor by the catalog's `provider` field (`packages/shared/src/pricing.ts`) —
+`providerForModel` — so pricing and routing share one source of truth (no id-space overlap between
+`claude-*` and `gpt-*`/`o*`). `RoutingLlmProvider` holds one `EgressLlmProvider` per vendor; a curated
+model whose upstream isn't wired on this edge 503s before a stream opens.
+
+The OpenAI upstream is an **OpenAI-compatible base URL** — `api.openai.com` today, a Warden URL later
+(same code path). It is wired **symmetrically with Anthropic**: the connection name defaults to
+`openai` (`EDGE_LLM_OPENAI_CONNECTION`, like Anthropic's default `anthropic`) and the endpoint to
+`https://api.openai.com` (`EDGE_LLM_OPENAI_ENDPOINT`). So **enabling OpenAI is just seeding its key** —
+no dedicated toggle:
+
+- Create a `platform`-scoped secret named `openai` with the OpenAI key via `POST /api/v1/secrets`
+  (`scope:"platform"`); the default `header-bearer` injection makes egress send
+  `Authorization: Bearer <key>`. The edge never holds the key (ADR-0008). Override the name/host only
+  to point at a non-default upstream (e.g. Warden).
+
+A deployment that doesn't want OpenAI simply doesn't seed that secret and doesn't allowlist `gpt-*`
+models; an app that allowlists one without the secret present gets a `502` at call time — exactly as
+an unseeded Anthropic key would. Seeded OpenAI models: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1{,-mini,-nano}`,
+`o3`, `o4-mini` — **their prices in `pricing.ts` must be verified against OpenAI's current published
+rates** (they drive the cost gate).
+
 ## Try it
 
 `examples/chatbot` streams Claude through this gateway — the app ships only a frontend and never
@@ -120,8 +169,9 @@ holds an API key. See [examples.md](./examples.md).
 
 ## Planned / not yet built
 
-- **More providers** behind the `LlmProvider` seam (the interface is vendor-neutral; only
-  Anthropic is implemented).
+- **Tool calling** over the OpenAI surface — v1 is text only; `tools`/`tool_calls` translation
+  (and the neutral-seam changes it needs) is deferred (ADR-0033). Other modalities
+  (`/v1/embeddings`, audio) are likewise additive behind the same seams.
 - **Cost display / pricing source** — each call already records a frozen `costMicroUsd` from a
   code-resident rate table (ADR-0021); surfacing spend in the dashboards and maintaining the rate
   table are the remaining work (`packages/shared/src/{usage,pricing}.ts`).

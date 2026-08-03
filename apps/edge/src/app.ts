@@ -28,6 +28,8 @@ import { InMemoryCounterStore } from "./gateway/counterStore.js";
 import { makeCallerResolver, makeSessionGate } from "./auth/gate.js";
 import { makeSameOriginCheck } from "./auth/validate.js";
 import { makeLlmHandler } from "./gateway/llm.js";
+import { openAiCodec } from "./gateway/openaiCodec.js";
+import { makeOpenAiModelsHandler } from "./gateway/openaiModels.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
@@ -197,9 +199,11 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     : null;
   // The LLM gateway needs a session (gate) to attribute calls; provider/usage
   // may still be null (no vendor key), in which case the handler returns 503.
-  const handleLlmChat =
+  // The same runtime backs the native (`/_api/llm/chat`) and OpenAI-compatible
+  // (`/_api/openai/v1/*`) surfaces — only the wire codec differs.
+  const llmRuntime =
     appApiRuntime && resolveCaller
-      ? makeLlmHandler({
+      ? {
           config,
           registry: deps.registry,
           resolveCaller,
@@ -207,8 +211,11 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           anonLimiter: anonRateLimiter,
           provider: deps.llmProvider ?? null,
           usage: deps.usage ?? null,
-        })
+        }
       : null;
+  const handleLlmChat = llmRuntime ? makeLlmHandler(llmRuntime) : null;
+  const handleOpenAiChat = llmRuntime ? makeLlmHandler(llmRuntime, openAiCodec) : null;
+  const handleOpenAiModels = llmRuntime ? makeOpenAiModelsHandler(llmRuntime) : null;
   // The data gateway needs a caller (session, or anon on public apps); the
   // store may be null (capability 503s), like the LLM provider.
   const dataHandlers =
@@ -414,6 +421,32 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleLlmChat) {
         await handleLlmChat(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // OpenAI-compatible surface (same runtime + policy, OpenAI wire). An app points
+  // its OpenAI client at `baseURL = <origin>/_api/openai/v1`; the `__Host-session`
+  // cookie authenticates same-origin, so the SDK `apiKey` is ignored. App hosts only.
+  app.route({
+    method: "POST",
+    url: "/_api/openai/v1/chat/completions",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleOpenAiChat) {
+        await handleOpenAiChat(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+  app.route({
+    method: "GET",
+    url: "/_api/openai/v1/models",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app" && handleOpenAiModels) {
+        await handleOpenAiModels(req, reply, req.hostClass.slug);
         return;
       }
       sendNotFound(reply);

@@ -1,14 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import {
-  LlmChatRequestSchema,
-  LlmChatResponseSchema,
-  costUsd,
-  priceForModel,
-  type ApiErrorCode,
-  type LlmChatRequest,
-  type LlmUsage,
-} from "@azx-pbc/shared";
+import { costUsd, priceForModel, type ApiErrorCode, type LlmUsage } from "@azx-pbc/shared";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
@@ -16,6 +8,7 @@ import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
+import { nativeCodec, type LlmWireCodec, type LlmWireContext } from "./llmCodec.js";
 import type { GatewayOutcome, UsageStore } from "./usage.js";
 
 /**
@@ -60,40 +53,13 @@ export interface LlmGatewayRuntime {
   usage: UsageStore | null;
 }
 
-function sendApiError(
-  reply: FastifyReply,
-  status: number,
-  code: ApiErrorCode,
-  message: string,
-): void {
-  reply
-    .status(status)
-    .header("cache-control", "no-store")
-    .type("application/json; charset=utf-8")
-    .send({ error: { code, message } });
-}
-
-/** SSE framing — one record per event (data is JSON). */
-function writeSseEvent(reply: FastifyReply, event: string, data: unknown): void {
-  reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-function startSse(reply: FastifyReply, corsOrigin?: string): void {
-  reply.hijack();
-  reply.raw.writeHead(200, {
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-store",
-    connection: "keep-alive",
-    // Defeat proxy buffering so deltas reach the browser as they arrive.
-    "x-accel-buffering": "no",
-    // Dev-gateway CORS: hijacking the socket bypasses the onSend ACAO hook, so
-    // reflect the (resolver-validated) origin here. Absent on the edge (never set)
-    // → no header, production SSE unchanged (dev-mode §5.4).
-    ...(corsOrigin ? { "access-control-allow-origin": corsOrigin, vary: "Origin" } : {}),
-  });
-}
-
-export function makeLlmHandler(rt: LlmGatewayRuntime) {
+/**
+ * Build the LLM gateway handler for a given wire `codec`. The handler owns all
+ * policy + metering and speaks the neutral shape; the codec owns the request/
+ * response envelope. `nativeCodec` (default) is `POST /_api/llm/chat`; the OpenAI
+ * codec backs `/_api/openai/v1/chat/completions`. Same runtime, same guarantees.
+ */
+export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nativeCodec) {
   return async function handleLlmChat(
     req: FastifyRequest,
     reply: FastifyReply,
@@ -113,49 +79,56 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     // no per-user budget, so cap by IP (app-data design §7). Not metered — a
     // ledger row per throttled call is itself a write-amplification vector.
     if (await anonRateLimited(rt.anonLimiter, req, entry, caller)) {
-      sendApiError(reply, 429, "rate_limited", "per-IP request budget exhausted");
+      codec.error(reply, 429, "rate_limited", "per-IP request budget exhausted");
       return;
     }
 
     // CSRF: a sibling subdomain must not POST to this app's gateway on the
     // user's session. SameSite doesn't cover cross-subdomain; Origin does.
     if (!rt.checkOrigin(req, entry)) {
-      sendApiError(reply, 403, "forbidden", "Origin not allowed");
+      codec.error(reply, 403, "forbidden", "Origin not allowed");
       return;
     }
 
     // Capability must be configured on this edge (a vendor key is present).
     if (!rt.provider || !rt.usage) {
-      sendApiError(reply, 503, "capability_unavailable", "LLM capability is not configured");
+      codec.error(reply, 503, "capability_unavailable", "LLM capability is not configured");
       return;
     }
 
-    const parsed = LlmChatRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      sendApiError(reply, 400, "validation_failed", "invalid chat request");
+    const parsed = codec.parse(req.body);
+    if (!parsed.ok) {
+      codec.error(reply, parsed.status, parsed.code, parsed.message);
       return;
     }
-    const chat: LlmChatRequest = parsed.data;
+    const chat = parsed.chat;
 
     // Authz: the app must hold an LLM grant and the model must be allowlisted
     // (manifest capabilities.llm — §6.3).
     if (!entry.llm) {
-      sendApiError(reply, 403, "forbidden", "this app has no LLM capability");
+      codec.error(reply, 403, "forbidden", "this app has no LLM capability");
       return;
     }
     if (!entry.llm.models.includes(chat.model)) {
-      sendApiError(reply, 403, "model_not_allowed", `model "${chat.model}" is not allowed`);
+      codec.error(reply, 403, "model_not_allowed", `model "${chat.model}" is not allowed`);
       return;
     }
     // Fail-safe: a model with no price can't be cost-gated, so refuse it rather
     // than serve it for free. The curated catalog == the priced catalog
     // (@azx-pbc/shared), so this only bites a model that slipped past curation.
     if (priceForModel(chat.model) === undefined) {
-      sendApiError(
+      codec.error(reply, 403, "model_not_allowed", `model "${chat.model}" has no price configured`);
+      return;
+    }
+    // The model is priced/allowed, but its upstream family may not be wired on
+    // this edge (a routing provider with only one vendor configured). 503 before
+    // opening a stream rather than failing mid-flight.
+    if (rt.provider.supports && !rt.provider.supports(chat.model)) {
+      codec.error(
         reply,
-        403,
-        "model_not_allowed",
-        `model "${chat.model}" has no price configured`,
+        503,
+        "capability_unavailable",
+        `model "${chat.model}" has no configured upstream`,
       );
       return;
     }
@@ -186,9 +159,9 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
           .catch(() => {});
         // Day cap is the harder stop ("done for the day"); prefer its message.
         if (overDay) {
-          sendApiError(reply, 429, "quota_exceeded", "daily spend budget exhausted");
+          codec.error(reply, 429, "quota_exceeded", "daily spend budget exhausted");
         } else {
-          sendApiError(reply, 429, "rate_limited", "burst spend budget exhausted — retry shortly");
+          codec.error(reply, 429, "rate_limited", "burst spend budget exhausted — retry shortly");
         }
         return;
       }
@@ -239,40 +212,53 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
     };
 
     // Attribution for a routing provider's attested instruction (egress path);
-    // the direct provider ignores it. requestId correlates the egress call.
+    // the direct provider ignores it. requestId correlates the egress call and
+    // seeds the OpenAI codec's `chatcmpl-<id>`; `created` is stamped once so all
+    // chunks of one response agree.
+    const requestId = randomUUID();
+    const ctx: LlmWireContext = {
+      requestId,
+      model: chat.model,
+      created: Math.floor(Date.now() / 1000),
+      corsOrigin: req.devCorsOrigin,
+      includeUsage: parsed.includeUsage,
+    };
     const events = rt.provider.stream(chat, {
       signal: abort.signal,
       appId: entry.appId,
       userOid,
-      requestId: randomUUID(),
+      requestId,
       env: caller.env,
     });
 
     if (chat.stream) {
       let started = false;
+      const start = (): void => {
+        if (!started) {
+          codec.startStream(reply, ctx);
+          started = true;
+        }
+      };
       try {
         for await (const ev of events) {
           if (ev.type === "delta") {
-            if (!started) {
-              startSse(reply, req.devCorsOrigin);
-              started = true;
-            }
-            writeSseEvent(reply, "delta", { text: ev.text });
+            start();
+            codec.writeDelta(reply, ctx, ev.text);
           } else {
             Object.assign(finalUsage, ev.usage);
             finalStopReason = ev.stopReason;
           }
         }
-        if (!started) startSse(reply, req.devCorsOrigin);
-        writeSseEvent(reply, "done", { stopReason: finalStopReason, usage: finalUsage });
-        reply.raw.end();
+        start();
+        codec.writeDone(reply, ctx, { stopReason: finalStopReason, usage: finalUsage });
+        codec.endStream(reply);
         await recordOnce(outcomeFor(finalStopReason));
       } catch (err) {
         await recordOnce("error", { errorDetail: errorDetailOf(err) });
         const { code, message } = describeError(err);
-        if (!started) startSse(reply, req.devCorsOrigin);
-        writeSseEvent(reply, "error", { code, message });
-        reply.raw.end();
+        start();
+        codec.writeStreamError(reply, ctx, { code, message });
+        codec.endStream(reply);
       }
       return;
     }
@@ -288,19 +274,16 @@ export function makeLlmHandler(rt: LlmGatewayRuntime) {
         }
       }
       await recordOnce(outcomeFor(finalStopReason));
-      await reply.header("cache-control", "no-store").send(
-        LlmChatResponseSchema.parse({
-          model: chat.model,
-          content,
-          stopReason: finalStopReason,
-          usage: finalUsage,
-        }),
-      );
+      codec.sendResponse(reply, ctx, {
+        content,
+        stopReason: finalStopReason,
+        usage: finalUsage,
+      });
     } catch (err) {
       await recordOnce("error", { errorDetail: errorDetailOf(err) });
       const { code, message } = describeError(err);
       // 502 for upstream failures; the code stays within the shared set.
-      sendApiError(reply, 502, code, message);
+      codec.error(reply, 502, code, message);
     }
   };
 }

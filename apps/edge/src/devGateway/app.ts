@@ -5,6 +5,8 @@ import type { GatewayConfig } from "../config.js";
 import type { RegistryFreshnessReader, RegistryReader } from "../registry/projection.js";
 import { registryFreshnessCheck } from "../registry/health.js";
 import { makeLlmHandler } from "../gateway/llm.js";
+import { openAiCodec } from "../gateway/openaiCodec.js";
+import { makeOpenAiModelsHandler } from "../gateway/openaiModels.js";
 import { makeDataHandlers } from "../gateway/data-handler.js";
 import { makeFetchHandler } from "../gateway/fetch.js";
 import type { LlmProvider } from "../gateway/provider.js";
@@ -106,7 +108,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
   // the production exact-origin check).
   const checkOrigin = (): boolean => true;
 
-  const handleLlmChat = makeLlmHandler({
+  const llmRuntime = {
     config,
     registry: deps.registry,
     resolveCaller,
@@ -114,7 +116,10 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     anonLimiter: null,
     provider: deps.llmProvider,
     usage: deps.usage,
-  });
+  };
+  const handleLlmChat = makeLlmHandler(llmRuntime);
+  const handleOpenAiChat = makeLlmHandler(llmRuntime, openAiCodec);
+  const handleOpenAiModels = makeOpenAiModelsHandler(llmRuntime);
   const dataHandlers = makeDataHandlers({
     config,
     registry: deps.registry,
@@ -208,6 +213,16 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     method: "POST",
     url: "/:slug/_api/llm/chat",
     handler: (req, reply) => handleLlmChat(req, reply, slugOf(req)),
+  });
+  app.route({
+    method: "POST",
+    url: "/:slug/_api/openai/v1/chat/completions",
+    handler: (req, reply) => handleOpenAiChat(req, reply, slugOf(req)),
+  });
+  app.route({
+    method: "GET",
+    url: "/:slug/_api/openai/v1/models",
+    handler: (req, reply) => handleOpenAiModels(req, reply, slugOf(req)),
   });
 
   for (const [method, url, name] of DATA_ROUTES) {

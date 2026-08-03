@@ -74,6 +74,7 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
       endpoint: "https://api.anthropic.com",
       anthropicVersion: "2023-06-01",
       connection: "anthropic",
+      openai: { endpoint: "https://api.openai.com", connection: "openai" },
     },
     // Off by default in unit tests; suites that exercise it pass a low `max`.
     anonRateLimit: { max: 0, windowMs: 60_000 },
@@ -109,6 +110,7 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
       endpoint: "https://api.anthropic.com",
       anthropicVersion: "2023-06-01",
       connection: "anthropic",
+      openai: { endpoint: "https://api.openai.com", connection: "openai" },
     },
     fetch: {
       egressUrl: null,

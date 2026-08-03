@@ -3,6 +3,8 @@ import { buildDevGateway } from "./app.js";
 import { loadDevGatewayConfig, type DevGatewayConfig } from "../config.js";
 import { LiveRegistry, type RegistryLogger } from "../registry/listener.js";
 import { EgressLlmProvider } from "../gateway/egressLlmProvider.js";
+import { RoutingLlmProvider } from "../gateway/routingLlmProvider.js";
+import { anthropicVendor, openAiVendor } from "../gateway/provider.js";
 import { HttpEgressProvider, type EgressProvider } from "../gateway/egressProvider.js";
 import { deriveInstructionKey } from "../gateway/instruction.js";
 import { PgUsageStore } from "../gateway/usage.js";
@@ -127,15 +129,18 @@ const instructionKey = config.fetch.instructionSecret
   : null;
 const llmProvider: LlmProvider | null =
   egress && instructionKey
-    ? new EgressLlmProvider(
-        {
-          endpoint: config.llm.endpoint,
-          anthropicVersion: config.llm.anthropicVersion,
-          connection: config.llm.connection,
-        },
-        egress,
-        instructionKey,
-      )
+    ? new RoutingLlmProvider({
+        anthropic: new EgressLlmProvider(
+          anthropicVendor({
+            endpoint: config.llm.endpoint,
+            anthropicVersion: config.llm.anthropicVersion,
+            connection: config.llm.connection,
+          }),
+          egress,
+          instructionKey,
+        ),
+        openai: new EgressLlmProvider(openAiVendor(config.llm.openai), egress, instructionKey),
+      })
     : null;
 
 const app = buildDevGateway({

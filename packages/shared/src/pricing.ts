@@ -14,12 +14,27 @@
  * 0 until prompt caching is enabled — see apps/edge/src/gateway/provider.ts.)
  */
 
+/**
+ * Which upstream serves a model. This is the single source of truth for
+ * **routing** as well as pricing: the edge's `RoutingLlmProvider` picks the
+ * vendor from this field (`providerForModel`), so the two can never disagree.
+ */
+export type ModelProvider = "anthropic" | "openai";
+
 /** Per-model base rates in USD per million tokens. */
 export interface ModelPrice {
   /** USD per 1M uncached input tokens. */
   inputPerMTok: number;
   /** USD per 1M output tokens. */
   outputPerMTok: number;
+  /** Upstream that serves this model (routing + pricing share this fact). */
+  provider: ModelProvider;
+  /**
+   * OpenAI "reasoning" models (o-series): they take `max_completion_tokens`
+   * (not `max_tokens`) and reject a non-default `temperature`. The OpenAI request
+   * builder branches on this. Absent ⇒ a normal chat model.
+   */
+  reasoning?: boolean;
 }
 
 /**
@@ -31,14 +46,34 @@ export interface ModelPrice {
  * one set and can't drift. Adding a model to the platform = adding it here with
  * a price; an unpriced model is, by construction, neither curated nor callable
  * (the edge refuses it — see `apps/edge/src/gateway/llm.ts`).
+ *
+ * The `provider` field also drives model→upstream routing. There is no id-space
+ * overlap between the `claude-*` and `gpt-*`/`o*` families, so a flat table is
+ * unambiguous.
+ *
+ * NOTE (OpenAI rates): the numbers below are seeded from OpenAI's published
+ * per-1M-token list prices and **must be re-verified against OpenAI's current
+ * pricing before relying on them for billing** — OpenAI reprices periodically
+ * (o-series especially). The `costUsd` cache multipliers below are Anthropic
+ * cache semantics; the OpenAI path reports 0 cache tokens today, so they don't
+ * apply to `gpt-*`/`o*`.
  */
 export const MODEL_PRICING: Record<string, ModelPrice> = {
-  "claude-fable-5": { inputPerMTok: 10, outputPerMTok: 50 },
-  "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25 },
-  "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25 },
-  "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25 },
-  "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15 },
-  "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5 },
+  // Anthropic
+  "claude-fable-5": { inputPerMTok: 10, outputPerMTok: 50, provider: "anthropic" },
+  "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
+  "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
+  "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
+  "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, provider: "anthropic" },
+  "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5, provider: "anthropic" },
+  // OpenAI — VERIFY against current published rates before production billing.
+  "gpt-4o": { inputPerMTok: 2.5, outputPerMTok: 10, provider: "openai" },
+  "gpt-4o-mini": { inputPerMTok: 0.15, outputPerMTok: 0.6, provider: "openai" },
+  "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8, provider: "openai" },
+  "gpt-4.1-mini": { inputPerMTok: 0.4, outputPerMTok: 1.6, provider: "openai" },
+  "gpt-4.1-nano": { inputPerMTok: 0.1, outputPerMTok: 0.4, provider: "openai" },
+  o3: { inputPerMTok: 2, outputPerMTok: 8, provider: "openai", reasoning: true },
+  "o4-mini": { inputPerMTok: 1.1, outputPerMTok: 4.4, provider: "openai", reasoning: true },
 };
 
 /** Cache-read tokens bill at ~0.1x the base input rate. */
@@ -49,6 +84,15 @@ export const CACHE_WRITE_MULTIPLIER = 1.25;
 /** Look up the rate for a model; undefined when unpriced (UI flags rather than showing $0). */
 export function priceForModel(model: string): ModelPrice | undefined {
   return MODEL_PRICING[model];
+}
+
+/**
+ * The upstream that serves a model, or undefined when the model is not in the
+ * catalog. The edge routes on this (`RoutingLlmProvider`); an unknown model has
+ * no provider and is refused before it can reach any upstream.
+ */
+export function providerForModel(model: string): ModelProvider | undefined {
+  return MODEL_PRICING[model]?.provider;
 }
 
 /**
