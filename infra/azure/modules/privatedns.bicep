@@ -7,8 +7,11 @@
 //   - Blob / Key Vault use *private endpoints*, which resolve through the
 //     standard `privatelink.*` zones.
 //
-// ACA managed environments create and link their OWN private DNS zone for the
-// internal ingress default domain, so those are not managed here.
+// The zone for an internal ACA environment's ingress default domain is NOT here
+// — see `acadns.bicep`, which is called with the environment's outputs (this
+// module runs before the environments exist). Note that it is ours to create:
+// the auto-created zone is Consumption-only-environment behaviour and does not
+// happen for a workload-profiles environment.
 
 @description('Resource name prefix.')
 param namePrefix string

@@ -353,6 +353,24 @@ module egressEnv 'modules/aca-environment.bicep' = {
   ]
 }
 
+// The egress environment is internal, and a workload-profiles environment does
+// not get an auto-created private DNS zone — without this, its apps' internal
+// FQDNs resolve nowhere in the VNet and the edge→egress hop dies at DNS. See
+// modules/acadns.bicep. Unconditional (not gated on `deployApps`): the zone
+// belongs to the environment, and the record is the environment's static IP, so
+// it is correct before any app exists and stays correct across app redeploys.
+//
+// The apps environment needs no equivalent — it is external, so its default
+// domain resolves through public DNS.
+module egressDns 'modules/acadns.bicep' = {
+  name: 'aca-egress-dns'
+  params: {
+    environmentDefaultDomain: egressEnv.outputs.defaultDomain
+    environmentStaticIp: egressEnv.outputs.staticIp
+    vnetId: network.outputs.vnetId
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Container apps (phase 2)
 // ---------------------------------------------------------------------------
@@ -366,7 +384,19 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
     userAssignedIdentityId: identity.outputs.egressIdentityId
     image: '${imageRegistry}/helix-egress:${imageTag}'
     targetPort: 8081
-    external: false
+    // VNet-scope, NOT internet-scope. `external` is relative to the environment:
+    // in an `internal: true` environment (which this is) it means "published on
+    // the environment's internal load balancer, reachable from the VNet". The
+    // environment has no public LB at all, so this cannot become publicly
+    // routable — that guarantee lives on the environment, not here.
+    //
+    // `external: false` is the *narrower* environment-scope ingress: reachable
+    // only from inside the egress environment. That reads like the safer value
+    // and was the original setting, but the edge lives in a different
+    // environment, so it left the egress app unreachable by its only caller —
+    // envoy 404s at the ILB while the app answers 200 from inside its own
+    // environment. It also renames the FQDN to `<app>.internal.<domain>`.
+    external: true
     secretValues: {
       'egress-database-url': egressDbConn
       'helix-instruction-secret': instructionSecret
