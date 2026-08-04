@@ -594,7 +594,25 @@ describe("attack: the /_api/llm/chat gateway", () => {
     edge.provider.error = new Error("401 unauthorized: x-api-key sk-ant-SECRET-LEAK");
     const token = await seed(edge.sessions, APP_A);
     const res = await call(edge, token, { host: "appa.local.helix.azxlabs.io" });
-    // The app sees a generic in-band SSE error, not the upstream detail.
+    // The failure lands before the first byte, so the app gets a generic 502 body
+    // (ADR-0034) — either way it must never carry the upstream detail.
+    expect(res.statusCode).toBe(502);
+    expect(res.body).not.toContain("sk-ant-SECRET-LEAK");
+    expect(res.body).not.toContain("x-api-key");
+    expect(edge.usage.records[0]?.outcome).toBe("error");
+  });
+
+  it("never relays upstream error detail in the SSE error frame either", async () => {
+    const edge = buildGatewayEdge();
+    // Throw after the first delta so the SSE head is committed and the failure has
+    // to travel in-band — the other of the two channels a leak could escape through.
+    edge.provider.onDelta = (i) => {
+      if (i === 1) throw new Error("401 unauthorized: x-api-key sk-ant-SECRET-LEAK");
+    };
+    const token = await seed(edge.sessions, APP_A);
+    const res = await call(edge, token, { host: "appa.local.helix.azxlabs.io" });
+
+    expect(res.statusCode).toBe(200);
     expect(res.body).toContain("event: error");
     expect(res.body).not.toContain("sk-ant-SECRET-LEAK");
     expect(res.body).not.toContain("x-api-key");

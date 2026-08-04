@@ -61,6 +61,13 @@ export const OpenAiResponseFormatSchema = z.discriminatedUnion("type", [
       name: z.string().optional(),
       schema: z.record(z.string(), z.unknown()),
       strict: z.boolean().nullish(),
+      /**
+       * Declared so the codec can reject it rather than zod silently stripping it.
+       * It is honorable on the OpenAI path but has no Anthropic equivalent, so
+       * forwarding it would make behaviour depend on the backing vendor — the same
+       * provider leak that got `json_object` rejected (ADR-0034).
+       */
+      description: z.string().optional(),
     }),
   }),
   z.object({ type: z.literal("json_object") }),
@@ -87,8 +94,13 @@ export const OpenAiChatCompletionRequestSchema = z.object({
   /** Declared so the codec can reject tool use in v1 (not supported). */
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
-  /** Structured output (ADR-0034). Parsed, not rejected — see the union above. */
-  response_format: OpenAiResponseFormatSchema.optional(),
+  /**
+   * Structured output (ADR-0034). Parsed, not rejected — see the union above.
+   * `.nullish()` because clients and proxies that serialize every field send
+   * `"response_format": null` to mean "no structured output", which is a request
+   * this surface can serve; refusing it at the envelope would be gratuitous.
+   */
+  response_format: OpenAiResponseFormatSchema.nullish(),
   // Behaviour-changing params the platform does not honor in v1. Declared (not
   // stripped) so the codec can reject them with a 400 rather than silently drop
   // them — the same "reject, never silently drop" contract as `tools`.

@@ -14,6 +14,7 @@ import {
   FakeUsageStore,
   registryEntry,
 } from "../test/fakes.js";
+import { LlmProviderError } from "./provider.js";
 
 /**
  * The `/_api/llm/chat` gateway (architecture §6.1, project plan §4 M4): authn,
@@ -373,14 +374,32 @@ describe("quota: block-new, finish-in-flight (USD)", () => {
 });
 
 describe("upstream failure", () => {
-  it("emits an SSE error event and records outcome=error", async () => {
+  it("502s a streaming failure that happens before the first byte", async () => {
     const edge = buildLlmEdge();
+    // `FakeLlmProvider.error` throws before yielding anything, so `start()` has not
+    // run and the SSE head is not out — a real status is still possible (ADR-0034).
     edge.provider.error = new Error("boom");
     const token = await seedSession(edge.sessions);
     const res = await chat(edge, token, { ...ASK, stream: true });
 
-    // SSE was opened (200) and the failure is in-band.
+    expect(res.statusCode).toBe(502);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.json().error.code).toBe("internal");
+    expect(edge.usage.records[0]?.outcome).toBe("error");
+  });
+
+  it("falls back to an in-band SSE error frame once the head is out", async () => {
+    const edge = buildLlmEdge();
+    // Throw *after* the first delta, so the 200 + SSE head is already committed and
+    // an error frame is the only channel left.
+    edge.provider.onDelta = (i) => {
+      if (i === 1) throw new Error("boom mid-stream");
+    };
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, { ...ASK, stream: true });
+
     expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("event: delta");
     expect(res.body).toContain("event: error");
     expect(edge.usage.records[0]?.outcome).toBe("error");
   });
@@ -392,5 +411,86 @@ describe("upstream failure", () => {
     const res = await chat(edge, token, { ...ASK, stream: false });
     expect(res.statusCode).toBe(502);
     expect(edge.usage.records[0]?.outcome).toBe("error");
+  });
+});
+
+describe("a vendor 400 is the app's fault, not the upstream's (ADR-0034)", () => {
+  const SCHEMA = { type: "object", properties: { a: { type: "string" } } };
+  /** What EgressLlmProvider throws when the vendor rejects the request body. */
+  const vendor400 = (): LlmProviderError =>
+    new LlmProviderError(
+      'egress llm call failed (400): {"error":{"message":"Invalid schema"}}',
+      400,
+    );
+
+  it("400s with validation_failed and names the field, non-streaming", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor400();
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, {
+      ...ASK,
+      stream: false,
+      responseFormat: { type: "json_schema", schema: SCHEMA },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
+    expect(res.json().error.message).toContain("responseFormat.schema");
+  });
+
+  it("400s on the streaming path too, since nothing has been written yet", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor400();
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, {
+      ...ASK,
+      stream: true,
+      responseFormat: { type: "json_schema", schema: SCHEMA },
+    });
+
+    // Without the pre-first-byte status this degraded to 200 + an SSE frame, which
+    // would have left the native default path with no actionable signal.
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
+  });
+
+  it("does not blame a schema the app never sent", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor400();
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, { ...ASK, stream: false });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).not.toContain("responseFormat");
+  });
+
+  it("never echoes the vendor's message, which can quote request content", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor400();
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, {
+      ...ASK,
+      stream: false,
+      responseFormat: { type: "json_schema", schema: SCHEMA },
+    });
+
+    expect(res.body).not.toContain("Invalid schema");
+    expect(res.body).not.toContain("egress llm call failed");
+    // ...but the ledger keeps it for the owner (main's cause-walking errorDetailOf).
+    expect(edge.usage.records[0]?.errorDetail).toContain("400");
+  });
+
+  it("leaves a non-400 upstream failure as 502 internal", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = new LlmProviderError("egress llm call failed (500): boom", 500);
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, {
+      ...ASK,
+      stream: false,
+      responseFormat: { type: "json_schema", schema: SCHEMA },
+    });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error.code).toBe("internal");
   });
 });

@@ -84,4 +84,17 @@ describe("supportsStructuredOutputs (ADR-0034)", () => {
   it("fails closed for an uncurated model", () => {
     expect(supportsStructuredOutputs("some-future-model")).toBe(false);
   });
+
+  it("curates the current flagship models, which were missing entirely", () => {
+    // Without these two, the newest schema-capable Anthropic models weren't
+    // priced — so not curated, and not callable at all.
+    for (const model of ["claude-opus-5", "claude-sonnet-5"]) {
+      expect(priceForModel(model)).toBeDefined();
+      expect(supportsStructuredOutputs(model)).toBe(true);
+      // Not o-series: `reasoning` means "takes max_completion_tokens" here.
+      expect(priceForModel(model)?.reasoning).toBeUndefined();
+    }
+    // List rates, not Sonnet 5's promotional $2/$10 — this table gates spend.
+    expect(priceForModel("claude-sonnet-5")).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 });
+  });
 });

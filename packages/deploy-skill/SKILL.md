@@ -170,6 +170,7 @@ instead of prompt-begging for it and parsing defensively:
 body: JSON.stringify({
   model: "claude-haiku-4-5",
   messages: [{ role: "user", content: "Rome, 3 days" }],
+  maxTokens: 4096, // give the JSON room — see the truncation note below
   stream: false,
   responseFormat: {
     type: "json_schema", // the only mode
@@ -190,9 +191,21 @@ no best-effort mode), so write to the strict subset: every key in `required`,
 `additionalProperties: false`, no recursion, and no `minLength`/`minimum`-style
 constraints. Keep schemas under 32 KB and 12 levels deep.
 
-Not every model can enforce a schema. `claude-haiku-4-5`, `claude-opus-4-8` and
-`claude-fable-5` can; `claude-opus-4-7`, `claude-opus-4-6` and `claude-sonnet-4-6`
-cannot, and asking gets a `400` — they still work fine for plain text chat.
+**Set `maxTokens` generously, and check `stopReason` before parsing.** Prose degrades
+gracefully when it hits the cap; JSON does not — you get a truncated, unparseable
+fragment and a `JSON.parse` throw. Omitting `maxTokens` on a `claude-*` model means
+`1024`, which a nested schema will blow through. Check
+`stopReason !== "max_tokens"` (non-streaming) or the `done` frame's `stopReason`
+(streaming) first.
+
+If the platform returns `400 validation_failed` mentioning `responseFormat.schema`,
+the vendor rejected your schema for being outside the strict subset above — fix the
+schema; retrying unchanged will not help.
+
+Not every model can enforce a schema. `claude-haiku-4-5`, `claude-opus-4-8`,
+`claude-opus-5`, `claude-sonnet-5` and `claude-fable-5` can; `claude-opus-4-7`,
+`claude-opus-4-6` and `claude-sonnet-4-6` cannot, and asking gets a `400` — they
+still work fine for plain text chat.
 
 ### 3.2 App data — `/_api/data/*`
 

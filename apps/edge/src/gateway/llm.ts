@@ -250,6 +250,10 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
       env: caller.env,
     });
 
+    // Whether a schema was requested, so an upstream 400 can name the likely cause
+    // (ADR-0034) without blaming a schema the app never sent.
+    const structured = chat.responseFormat !== undefined;
+
     if (chat.stream) {
       let started = false;
       const start = (): void => {
@@ -274,8 +278,15 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
         await recordOnce(outcomeFor(finalStopReason));
       } catch (err) {
         await recordOnce("error", { errorDetail: errorDetailOf(err) });
-        const { code, message } = describeError(err);
-        start();
+        const { status, code, message, param } = describeError(err, { structured });
+        if (!started) {
+          // `start()` is lazy, so a failure before the first delta has written
+          // nothing — a real status is still possible, and matches how every other
+          // pre-stream refusal on this route (authz, quota, validation) answers.
+          codec.error(reply, status, code, message, param);
+          return;
+        }
+        // The head is already out; an in-band error frame is the only channel left.
         codec.writeStreamError(reply, ctx, { code, message });
         codec.endStream(reply);
       }
@@ -300,9 +311,10 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
       });
     } catch (err) {
       await recordOnce("error", { errorDetail: errorDetailOf(err) });
-      const { code, message } = describeError(err);
-      // 502 for upstream failures; the code stays within the shared set.
-      codec.error(reply, 502, code, message);
+      const { status, code, message, param } = describeError(err, { structured });
+      // 502 for upstream failures, 400 when the vendor rejected the app's request;
+      // the code stays within the shared set.
+      codec.error(reply, status, code, message, param);
     }
   };
 }
@@ -312,10 +324,42 @@ function outcomeFor(stopReason: string): GatewayOutcome {
   return stopReason === "refusal" ? "refusal" : "ok";
 }
 
-/** Map a provider/abort failure to a stable code + safe message. */
-function describeError(err: unknown): { code: ApiErrorCode; message: string } {
+/**
+ * Map a provider/abort failure to a stable status + code + safe message.
+ *
+ * A **400 from the vendor means the app's request was invalid**, not that the
+ * upstream flaked — under a schema, almost always one outside the strict JSON
+ * Schema subset (ADR-0034). Reporting that as `502 internal` told the app to retry
+ * something that can never succeed, and attributed an app bug to the platform.
+ * `LlmProviderError` already carries the status, so this needs no new plumbing.
+ *
+ * The vendor's own message is **never echoed** — it can quote request content, and
+ * on an auth failure it can quote the key. `errorDetailOf` keeps the full text in
+ * the ledger (internal-only) for the owner instead.
+ */
+function describeError(
+  err: unknown,
+  opts: { structured: boolean },
+): { status: number; code: ApiErrorCode; message: string; param?: string } {
   if (err instanceof LlmProviderError) {
-    return { code: "internal", message: "upstream LLM request failed" };
+    if (err.upstreamStatus === 400) {
+      // Only blame the schema when one was actually sent; a 400 can also be a bad
+      // sampling param or an over-long prompt.
+      return opts.structured
+        ? {
+            status: 400,
+            code: "validation_failed",
+            message:
+              "the upstream rejected this request — check `responseFormat.schema` against the strict JSON Schema subset (every property in `required`, `additionalProperties: false`, no recursion)",
+            param: "responseFormat",
+          }
+        : {
+            status: 400,
+            code: "validation_failed",
+            message: "the upstream rejected this request as invalid",
+          };
+    }
+    return { status: 502, code: "internal", message: "upstream LLM request failed" };
   }
-  return { code: "internal", message: "LLM request failed" };
+  return { status: 502, code: "internal", message: "LLM request failed" };
 }

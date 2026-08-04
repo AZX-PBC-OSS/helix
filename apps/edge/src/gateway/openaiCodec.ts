@@ -57,6 +57,9 @@ function openAiErrorMeta(code: ApiErrorCode): { type: string; code: string | nul
  */
 const NEUTRAL_TO_OPENAI_PARAM: Record<string, string> = {
   responseFormat: "response_format",
+  "responseFormat.type": "response_format.type",
+  "responseFormat.name": "response_format.json_schema.name",
+  "responseFormat.schema": "response_format.json_schema.schema",
 };
 
 function openAiError(code: ApiErrorCode, message: string, param?: string): OpenAiErrorBody {
@@ -151,6 +154,15 @@ function parseOpenAi(body: unknown): LlmParseResult {
   }
   if (req.response_format?.type === "json_schema") {
     const js = req.response_format.json_schema;
+    // Honorable on the OpenAI path, but Anthropic has no equivalent — forwarding it
+    // would make behaviour depend on the backing vendor, so it is refused rather
+    // than silently dropped (this surface's reject-or-honor contract).
+    if (js.description !== undefined) {
+      return badRequest(
+        'the "description" field of json_schema is not supported',
+        "response_format.json_schema.description",
+      );
+    }
     // `json_schema.strict` is accepted and ignored (a no-op, like `n:1`): the
     // platform always enforces, because Anthropic has no best-effort mode. Stock
     // clients routinely omit it — OpenAI's default is `false` — so rejecting it
@@ -198,9 +210,13 @@ function parseOpenAi(body: unknown): LlmParseResult {
     const issue = chat.error.issues[0];
     const path = issue?.path.join(".") || undefined;
     // The neutral schema owns the response-schema guards, so its issue paths are
-    // neutral (`responseFormat.schema`). Report the containing OpenAI field rather
-    // than leaking a field name the client never sent.
-    const param = path?.startsWith("responseFormat") ? "response_format" : path;
+    // neutral (`responseFormat.schema`). Translate to the OpenAI field the client
+    // actually sent — falling back to the containing field rather than leaking an
+    // unmapped neutral path.
+    const param =
+      path && path.startsWith("responseFormat")
+        ? (NEUTRAL_TO_OPENAI_PARAM[path] ?? "response_format")
+        : path;
     return badRequest(issue?.message ?? "invalid request", param);
   }
   return { ok: true, chat: chat.data, includeUsage: req.stream_options?.include_usage ?? false };

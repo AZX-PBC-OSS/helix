@@ -83,6 +83,21 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
     provider: "anthropic",
     structuredOutputs: true,
   },
+  "claude-opus-5": {
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    provider: "anthropic",
+    structuredOutputs: true,
+  },
+  // NB list rates. Sonnet 5 has promotional $2/$10 pricing through 2026-08-31; this
+  // table drives the **cost gate**, so the list price is the safe number — it
+  // over-estimates spend during the promo rather than under-billing once it lapses.
+  "claude-sonnet-5": {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    provider: "anthropic",
+    structuredOutputs: true,
+  },
   "claude-opus-4-8": {
     inputPerMTok: 5,
     outputPerMTok: 25,

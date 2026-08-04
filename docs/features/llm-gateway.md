@@ -177,22 +177,45 @@ refusing would break them — while enforcing is strictly stronger than what a `
 The response envelope is unchanged: the JSON arrives as `content` (native) or
 `choices[].message.content` (OpenAI), and the caller `JSON.parse`s it.
 
-Three refusals, all `400` and all before any upstream call:
+Four refusals, all `400` and all before any upstream call:
 
 - **`json_schema` only.** OpenAI's looser `{type:"json_object"}` has no Anthropic equivalent, so
   serving it would make behaviour depend on which vendor backs the model — rejected, naming
   `response_format.type`. `{type:"text"}` is OpenAI's explicit default and is served as a no-op
-  (same principle as `tool_choice:"none"`).
+  (same principle as `tool_choice:"none"`), as is `response_format: null` — clients that
+  serialize every field send null to mean "no structured output".
+- **`json_schema.description` is rejected**, not silently dropped. It is honorable on the OpenAI
+  path but has no Anthropic equivalent, so forwarding it would leak the backing vendor the same
+  way `json_object` would.
 - **Per-model.** Support is not uniform within either vendor's line-up, so it's a catalog bit
   (`ModelPrice.structuredOutputs`, alongside `reasoning`). Today: `claude-fable-5`,
-  `claude-opus-4-8`, `claude-haiku-4-5` and all `gpt-*`/`o*` can; `claude-opus-4-7`,
-  `claude-opus-4-6`, `claude-sonnet-4-6` cannot. Those three stay fully usable for text chat.
+  `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5` and all `gpt-*`/`o*`
+  can; `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6` cannot. Those three stay fully
+  usable for text chat.
 - **Schema budget.** The schema is app-supplied input on the trusted path, walked before the quota
   check, so it must have an object root and stay within ≤ 32,768 characters serialized and ≤ 12
   levels deep. Beyond those guards it is forwarded as-is and the **vendor** validates its own JSON
   Schema subset — the same division of labour as `temperature`. Practically that means writing to
   the stricter of the two subsets (`additionalProperties: false`, every key in `required`, no
   recursion, no `minLength`/`minimum`-style constraints).
+
+**A vendor-rejected schema is the app's fault, and says so.** A schema that passes the boundary
+guards but falls outside the vendor's strict subset draws a `400` from the vendor. That used to
+flatten to `502 internal` — telling the app to retry something that could never succeed, and
+attributing an app bug to the platform. `describeError` now branches on the `upstreamStatus` that
+`LlmProviderError` already carried: an upstream `400` becomes `400 validation_failed`, naming
+`responseFormat` when a schema was in play. The vendor's own message is **never echoed** (it can
+quote request content, and on an auth failure the key); it goes to the ledger's internal
+`errorDetail` instead, which walks the `cause` chain so the wire-level code survives.
+
+**Truncation.** A schema-constrained reply that hits `maxTokens` comes back as unparseable JSON —
+prose degrades gracefully, JSON does not. Check `stopReason !== "max_tokens"` before parsing, and
+note that omitting `maxTokens` on a `claude-*` model means `1024`.
+
+**Streaming error framing.** `startStream` is lazy, so a failure *before the first delta* has
+written nothing and answers with a real HTTP status — the same as every other pre-stream refusal
+on this route. Only once the head is out does a failure travel in-band as an `error` frame. This
+applies to all provider failures, not just structured output.
 
 **No manifest grant.** Structured output adds no egress path, no secret, and no new cost class —
 spend is already bounded by `dollarsPerDay` — so any app holding an `llm` grant can use it.

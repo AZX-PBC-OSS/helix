@@ -16,7 +16,7 @@ import {
   registryEntry,
 } from "../test/fakes.js";
 import { RoutingLlmProvider } from "./routingLlmProvider.js";
-import type { LlmProvider } from "./provider.js";
+import { LlmProviderError, type LlmProvider } from "./provider.js";
 
 /**
  * The OpenAI-compatible surface (`/_api/openai/v1/*`). It rides the exact same
@@ -160,12 +160,30 @@ describe("streaming", () => {
     expect(sseChunks(without.body).some((c) => c.usage != null)).toBe(false);
   });
 
-  it("surfaces a mid-stream error as an error frame with no [DONE]", async () => {
+  it("502s a failure that happens before the first chunk", async () => {
     const edge = buildEdge();
+    // `error` throws before yielding, so no chunk is out and a real status is still
+    // possible (ADR-0034). Previously this degraded to 200 + an error chunk.
     edge.provider.error = new Error("boom");
     const token = await seedSession(edge.sessions);
     const res = await completions(edge, token, { ...ASK, stream: true });
 
+    expect(res.statusCode).toBe(502);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.json().error.type).toBe("api_error");
+    expect(edge.usage.records[0]).toMatchObject({ outcome: "error" });
+  });
+
+  it("surfaces a genuinely mid-stream error as an error chunk with no [DONE]", async () => {
+    const edge = buildEdge();
+    // Throw after the first delta so the chunk stream is already committed.
+    edge.provider.onDelta = (i) => {
+      if (i === 1) throw new Error("boom mid-stream");
+    };
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, { ...ASK, stream: true });
+
+    expect(res.statusCode).toBe(200);
     expect(res.body).toContain('"error"');
     expect(res.body).not.toContain("[DONE]");
     expect(edge.usage.records[0]).toMatchObject({ outcome: "error" });
@@ -366,7 +384,7 @@ describe("structured output (ADR-0034)", () => {
     expect(edge.provider.calls).toHaveLength(0);
   });
 
-  it("400s a non-object schema root, reported against the OpenAI field", async () => {
+  it("400s a non-object schema root, naming the exact OpenAI subfield", async () => {
     const edge = buildEdge();
     const token = await seedSession(edge.sessions);
     const res = await completions(edge, token, {
@@ -377,8 +395,71 @@ describe("structured output (ADR-0034)", () => {
       },
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error.param).toBe("response_format");
+    // The neutral path is `responseFormat.schema`; the client sent it nested inside
+    // json_schema, so that is what `param` must name.
+    expect(res.json().error.param).toBe("response_format.json_schema.schema");
     expect(edge.provider.calls).toHaveLength(0);
+  });
+
+  it("names the exact subfield for a bad schema name too", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, {
+      ...ASK,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "bad name!", schema: { type: "object" } },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.param).toBe("response_format.json_schema.name");
+  });
+
+  it("accepts response_format: null as “no structured output”", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    // Clients and proxies that serialize every field send null rather than omitting.
+    const res = await completions(edge, token, { ...ASK, response_format: null });
+    expect(res.statusCode).toBe(200);
+    expect(edge.provider.calls[0]?.responseFormat).toBeUndefined();
+  });
+
+  it("400s json_schema.description rather than silently dropping it", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, {
+      ...ASK,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "place",
+          description: "a place",
+          schema: { type: "object", additionalProperties: false },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.param).toBe("response_format.json_schema.description");
+    expect(edge.provider.calls).toHaveLength(0);
+  });
+
+  it("400s a vendor-rejected schema as validation_failed, naming the OpenAI field", async () => {
+    const edge = buildEdge();
+    edge.provider.error = new LlmProviderError("egress llm call failed (400): nope", 400);
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, {
+      ...ASK,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "place", schema: { type: "object" } },
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.type).toBe("invalid_request_error");
+    // The handler passes the neutral `responseFormat`; the codec renames it.
+    expect(res.json().error.param).toBe("response_format");
+    expect(res.body).not.toContain("egress llm call failed");
   });
 });
 

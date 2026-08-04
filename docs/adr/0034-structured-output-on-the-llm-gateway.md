@@ -64,7 +64,14 @@ and `claude-sonnet-4-6` cannot.
    happens to back the model — a provider leak through a seam whose whole purpose is
    to prevent one. It is rejected with a `400` naming `response_format.type`.
    `{type:"text"}` is OpenAI's explicit default and **is** served, as a no-op, on the
-   same principle that already serves `tool_choice:"none"` and `n:1`.
+   same principle that already serves `tool_choice:"none"` and `n:1` — as is
+   `response_format: null`, which clients and proxies that serialize every field send
+   to mean "no structured output".
+
+   `json_schema.description` is rejected on the same grounds as `json_object`: it is
+   honorable on the OpenAI path but has no Anthropic equivalent, so forwarding it
+   would leak the backing vendor. It is declared on the request schema rather than
+   left for zod to strip, so the codec can refuse it instead of dropping it silently.
 
 4. **Per-model, refused up front.** `ModelPrice` gains a `structuredOutputs?` bit
    (alongside `reasoning?`), so the curated catalog stays the single source of truth
@@ -105,13 +112,49 @@ and `claude-sonnet-4-6` cannot.
   there should be none, since it was a refusal — see a `200`.
 - **`error.param` needed a neutral→wire mapping.** The handler owns policy and speaks
   the neutral vocabulary (`responseFormat`), but an OpenAI client expects `param` to
-  name its own field. A small `NEUTRAL_TO_OPENAI_PARAM` record inside the OpenAI
-  codec's `error` does the rename, keeping policy in the handler and wire vocabulary
-  in the codec without widening `LlmWireCodec`.
+  name its own field. A `NEUTRAL_TO_OPENAI_PARAM` record inside the OpenAI codec does
+  the rename — including the nested paths, so `responseFormat.schema` surfaces as
+  `response_format.json_schema.schema` rather than collapsing to the containing field
+  — keeping policy in the handler and wire vocabulary in the codec without widening
+  `LlmWireCodec`. An unmapped neutral path still falls back to `response_format`, so
+  a neutral field name can never leak.
+- **An upstream `400` is now a client error, not a `502`.** A schema that clears the
+  boundary guards but falls outside the vendor's strict subset draws a `400` from the
+  vendor. Flattening that to `502 internal` told the app to retry something that could
+  never succeed and blamed the platform for an app bug, so `describeError` branches on
+  the `upstreamStatus` `LlmProviderError` already carried: an upstream `400` becomes
+  `400 validation_failed`, naming `responseFormat` only when a schema was actually
+  sent. The vendor's message is still never echoed — it can quote request content, and
+  on an auth failure the key — so it goes to the ledger's internal `errorDetail`,
+  which walks the `cause` chain and keeps the wire-level status.
+
+  Metering deliberately stays `outcome: "error"`. A dedicated outcome would attribute
+  it better, but the admin audit page indexes a record by outcome
+  (`AuditPage.tsx`, `OUT_META[r.outcome]`), so an unmapped value would throw — a poor
+  trade for an attribution nicety now that `errorDetail` carries the cause.
+- **Pre-first-byte streaming failures now return a real status.** `startStream` is
+  lazy, so a failure before the first delta has written nothing; it answers with the
+  real HTTP status instead of a `200` head plus an in-band `error` frame, matching how
+  every other pre-stream refusal on this route behaves. Without this, `stream: true` —
+  the native default — would never see the `400` above. Once the head is out, an error
+  frame remains the only channel. **This applies to every provider failure, not just
+  structured output**, so pre-first-byte `502`s are now real `502`s too. It also
+  revealed that three tests named "mid-stream" were not: `FakeLlmProvider.error`
+  throws before yielding, so they exercised the pre-first-byte path. Each gained a
+  genuine mid-stream twin that throws from `onDelta`, including the vendor-key-leak
+  adversarial test — both channels are now verified non-leaking, where only one was.
 - **The catalog carries a third kind of fact.** `MODEL_PRICING` now drives pricing,
   routing, and structured-output capability. That keeps them from drifting, but means
   adding a model requires deciding the bit — the tests pin the three unsupported
   models explicitly so a future edit can't flip one on silently.
+- **`claude-opus-5` and `claude-sonnet-5` were curated in passing.** Neither was in
+  `MODEL_PRICING` at all, so the two newest schema-capable Anthropic models were not
+  callable — a pre-existing gap this decision made material. Added at **list** rates
+  ($5/$25 and $3/$15); Sonnet 5's promotional $2/$10 runs to 2026-08-31 and is
+  deliberately not used, because this table gates spend and over-estimating during a
+  promo is safer than under-billing after it lapses. `CURATED_LLM_MODELS` derives from
+  the table, so both are baseline grants and appear in the portal picker with no
+  further change.
 - **Refusals already work.** A model can decline under a schema; OpenAI's
   `delta.refusal` was already mapped to the neutral `refusal` stop reason and metered
   as `outcome:"refusal"`, and Anthropic's arrives via `message_delta`. No change.
