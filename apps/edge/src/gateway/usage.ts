@@ -53,6 +53,50 @@ export interface GatewayCallRecord {
   errorDetail?: string | null;
 }
 
+/** Max length of the `errorDetail` ledger string, before the ellipsis. */
+const ERROR_DETAIL_MAX = 300;
+
+/** How far up the `cause` chain to walk. Deep enough for undici's wrapping. */
+const ERROR_CAUSE_DEPTH = 4;
+
+/**
+ * Render a thrown value for the `errorDetail` ledger column (internal-only, not
+ * app-facing), following the `cause` chain.
+ *
+ * Recording `err.message` alone loses the only part that says *what went wrong
+ * at the wire*. `EgressProviderError` is thrown as
+ * `new EgressProviderError("egress request failed", { cause: err })`
+ * (`egressProvider.ts`), so a DNS failure and a refused connection both land in
+ * the ledger as the identical, undiagnosable string "egress request failed" —
+ * the `ENOTFOUND` / `ECONNREFUSED` that distinguishes them sits one level down
+ * in the cause and used to be dropped here. That cost a live incident four
+ * diagnostic steps (an `az containerapp exec` into the running edge replica) to
+ * recover a code the ledger already had in hand.
+ *
+ * So: walk the chain, and append each level's `code` when it carries one. A
+ * transport failure now records as
+ * `egress request failed: getaddrinfo ENOTFOUND <host> [ENOTFOUND]`.
+ */
+export function errorDetailOf(err: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = err;
+
+  for (let depth = 0; depth < ERROR_CAUSE_DEPTH && cur != null; depth += 1) {
+    if (!(cur instanceof Error)) {
+      parts.push(String(cur));
+      break;
+    }
+    // `code` is the Node/undici system-error discriminator (ENOTFOUND,
+    // ECONNREFUSED, UND_ERR_*). Not on the Error type, hence the narrowing.
+    const code = (cur as Error & { code?: unknown }).code;
+    parts.push(typeof code === "string" ? `${cur.message} [${code}]` : cur.message);
+    cur = cur.cause;
+  }
+
+  const detail = parts.join(": ");
+  return detail.length > ERROR_DETAIL_MAX ? `${detail.slice(0, ERROR_DETAIL_MAX)}…` : detail;
+}
+
 /** The two LLM spend windows the gate checks, in micro-USD (1e-6 USD). */
 export interface LlmSpend {
   /** Spend since local-midnight — the daily cost cap. */

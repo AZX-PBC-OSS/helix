@@ -9,7 +9,7 @@ import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
 import { nativeCodec, type LlmWireCodec, type LlmWireContext } from "./llmCodec.js";
-import type { GatewayOutcome, UsageStore } from "./usage.js";
+import { errorDetailOf, type GatewayOutcome, type UsageStore } from "./usage.js";
 
 /**
  * `POST /_api/llm/chat` — the gateway's LLM capability (architecture §6.1,
@@ -291,12 +291,6 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
 /** A clean completion whose stop reason is a refusal meters as `refusal`, not `ok`. */
 function outcomeFor(stopReason: string): GatewayOutcome {
   return stopReason === "refusal" ? "refusal" : "ok";
-}
-
-/** Truncated upstream error string for the audit ledger (internal-only, not app-facing). */
-function errorDetailOf(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg;
 }
 
 /** Map a provider/abort failure to a stable code + safe message. */

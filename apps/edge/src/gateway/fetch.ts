@@ -16,7 +16,7 @@ import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { EgressProviderError, type EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
-import type { GatewayOutcome, UsageStore } from "./usage.js";
+import { errorDetailOf, type GatewayOutcome, type UsageStore } from "./usage.js";
 
 /**
  * `/_api/fetch/<url>` — the fetch-proxy policy plane (fetch-proxy design §7).
@@ -236,10 +236,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         sendFetchError(reply, 413, "too_large", "request body exceeds the size cap");
         return;
       }
-      const detail = err instanceof Error ? err.message : String(err);
-      await record("error", {
-        errorDetail: detail.length > 300 ? `${detail.slice(0, 300)}…` : detail,
-      });
+      await record("error", { errorDetail: errorDetailOf(err) });
       if (err instanceof EgressProviderError) {
         sendFetchError(reply, 502, "upstream_error", "egress request failed");
         return;
