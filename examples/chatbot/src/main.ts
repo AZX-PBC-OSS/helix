@@ -37,6 +37,9 @@ const whoamiEl = document.querySelector<HTMLParagraphElement>("#whoami")!;
 const endpointSel = document.querySelector<HTMLSelectElement>("#endpoint")!;
 const modelSel = document.querySelector<HTMLSelectElement>("#model")!;
 const jsonModeEl = document.querySelector<HTMLInputElement>("#json-mode")!;
+const schemaBoxEl = document.querySelector<HTMLDivElement>("#schema-box")!;
+const schemaEl = document.querySelector<HTMLTextAreaElement>("#schema")!;
+const schemaStatusEl = document.querySelector<HTMLParagraphElement>("#schema-status")!;
 
 const history: Message[] = [];
 
@@ -174,7 +177,7 @@ function openAiRecord(record: string, onDelta: (text: string) => void): void {
  * `response_format` — and either way the JSON arrives through the ordinary delta
  * frames, so the SSE readers above need no special case.
  */
-const ANSWER_SCHEMA = {
+const DEFAULT_SCHEMA = {
   type: "object",
   properties: {
     answer: { type: "string" },
@@ -182,20 +185,44 @@ const ANSWER_SCHEMA = {
   },
   required: ["answer", "followUps"],
   additionalProperties: false,
-} as const;
+};
 
-function jsonModeBody(surface: EndpointKey): Record<string, unknown> {
+/** The schema in the box, or null when it isn't valid JSON (reported inline). */
+function currentSchema(): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(schemaEl.value) as Record<string, unknown>;
+    schemaStatusEl.textContent = "";
+    schemaStatusEl.classList.remove("bad");
+    return parsed;
+  } catch (err) {
+    schemaStatusEl.textContent = `Not valid JSON: ${err instanceof Error ? err.message : String(err)}`;
+    schemaStatusEl.classList.add("bad");
+    return null;
+  }
+}
+
+function jsonModeBody(surface: EndpointKey): Record<string, unknown> | null {
   if (!jsonModeEl.checked) return {};
+  const schema = currentSchema();
+  if (!schema) return null; // don't spend a call on a body we know is malformed
   // The gateway always enforces, so neither shape carries a `strict` flag.
   return surface === "openai"
     ? {
         response_format: {
           type: "json_schema",
-          json_schema: { name: "answer", schema: ANSWER_SCHEMA },
+          json_schema: { name: "answer", schema },
         },
       }
-    : { responseFormat: { type: "json_schema", name: "answer", schema: ANSWER_SCHEMA } };
+    : { responseFormat: { type: "json_schema", name: "answer", schema } };
 }
+
+schemaEl.value = JSON.stringify(DEFAULT_SCHEMA, null, 2);
+jsonModeEl.addEventListener("change", () => {
+  schemaBoxEl.hidden = !jsonModeEl.checked;
+});
+schemaEl.addEventListener("input", () => {
+  if (jsonModeEl.checked) currentSchema();
+});
 
 /** Pretty-print a JSON-mode reply; fall back to the raw text if it isn't JSON. */
 function prettify(raw: string): string {
@@ -210,6 +237,12 @@ async function send(text: string): Promise<void> {
   const model = modelSel.value;
   if (!model) {
     addBubble("error", "No model selected — sign in so the model list can load.");
+    return;
+  }
+
+  const jsonBody = jsonModeBody(endpoint);
+  if (jsonBody === null) {
+    addBubble("error", "Fix the response schema — it isn't valid JSON.");
     return;
   }
 
@@ -233,7 +266,7 @@ async function send(text: string): Promise<void> {
         model,
         messages: outgoing,
         stream: true,
-        ...jsonModeBody(endpoint),
+        ...jsonBody,
       }),
     });
 

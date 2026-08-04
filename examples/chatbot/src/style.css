@@ -123,6 +123,48 @@ header h1 {
   word-wrap: break-word;
 }
 
+/* The editable response schema, revealed by the JSON-mode toggle. */
+.schema-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0 0 0.75rem;
+}
+
+.schema-box label {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.schema-box code {
+  font-size: 0.72rem;
+}
+
+.schema-box textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  background: color-mix(in srgb, var(--bg) 88%, var(--muted));
+  color: inherit;
+}
+
+.schema-status {
+  margin: 0;
+  min-height: 1em;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.schema-status.bad {
+  color: #d64545;
+}
+
 /* A schema-constrained reply, pretty-printed (see ADR-0034 / JSON mode). */
 .bubble.json {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;

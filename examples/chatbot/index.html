@@ -36,6 +36,14 @@
             JSON mode
           </label>
         </div>
+        <div id="schema-box" class="schema-box" hidden>
+          <label for="schema">
+            Response schema (JSON Schema — object root, all keys in
+            <code>required</code>, <code>additionalProperties: false</code>)
+          </label>
+          <textarea id="schema" rows="12" spellcheck="false"></textarea>
+          <p id="schema-status" class="schema-status" aria-live="polite"></p>
+        </div>
       </header>
       <ul id="messages" aria-live="polite"></ul>
       <form id="chat-form" autocomplete="off">
