@@ -22,7 +22,7 @@ This is the custom-backends §4 **policy-plane / mechanism-plane** split, made c
 
 Three nouns, kept deliberately distinct:
 
-- **Secret** — opaque credential material (a string: an API key, a PAT, a bearer token). Stored encrypted; never returned to anyone after it's set (§4). Has a **scope**: `app` (usable by one app), `global` (usable by many, via grants), or `platform` (a platform-held vendor key — the LLM key — usable by no app's fetch path, resolved by egress only on the `llm` capability; see below). Carries an **injection recipe** — how this credential is applied to a request (`header-bearer` → `Authorization: Bearer {}`; `header` → arbitrary `{name}: {template}`; `query` → `?{param}={}`). The recipe is a property of the *credential*, because how a key is presented is intrinsic to that key, not to the app using it.
+- **Secret** — opaque credential material (a string: an API key, a PAT, a bearer token). Stored encrypted; never returned to anyone after it's set (§4). Has a **scope**: `app` (usable by one app), `global` (usable by many, via grants), or `platform` (a platform-held vendor key — the LLM key — usable by no app's fetch path, resolved by egress only on the `llm` capability; see below). Carries an **injection recipe** — how this credential is applied to a request (`header-bearer` → `Authorization: Bearer {}`; `header` → arbitrary `{name}: {template}`; `query` → `?{param}={}`; `hmac-timestamp` → a per-request signature over a timestamp, §2.1). The recipe is a property of the *credential*, because how a key is presented is intrinsic to that key, not to the app using it.
 - **Connection** — the binding "outbound calls from *this app* to *this origin* inject *this secret*." This is exactly the `connection` field `docs/design/fetch-proxy.md` §5 gestures at; this doc defines what it points to. A connection lives in the app's manifest (`capabilities.fetch.origins[].connection` → a secret name) and is the unit the fetch-proxy reads.
 - **Grant** — for a `global` secret only: a row saying "app X may use secret S." App-scoped secrets need no grant (the owning app may use them); global secrets need an explicit, approval-gated grant per consuming app (§7), so "shared across apps" never means "ambiently available to every app."
 
@@ -34,11 +34,28 @@ export const InjectionRecipeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('header-bearer') }),                 // Authorization: Bearer <secret>
   z.object({ kind: z.literal('header'), name: z.string(), template: z.string().default('{}') }),
   z.object({ kind: z.literal('query'), param: z.string() }),
+  z.object({ kind: z.literal('hmac-timestamp'),                   // §2.1 — a derived credential
+    timestampHeader: z.string(), authHeader: z.string().default('authorization'),
+    template: z.string() }),                                      // {credential} / {signature}
 ]);
 export const SecretScopeSchema = z.enum(['app', 'global', 'platform']);
 // The manifest side (fetch-proxy §4/§5 — `connection` names a secret by name):
 //   capabilities.fetch.origins: [{ origin: 'https://api.stripe.com', connection: 'stripe-live' }]
 ```
+
+### 2.1 Derived credentials (`hmac-timestamp`)
+
+Three of the four recipes are **static**: the stored value is presented verbatim. `hmac-timestamp` is the first **derived** one — egress computes the credential per request as `hex(HMAC-SHA256(privateKey, isoTimestamp))` and writes two headers: the timestamp, and a template-rendered header carrying the public credential id plus the signature.
+
+Three properties make this cheap to support and worth understanding before adding a sibling:
+
+- **The signed input is the timestamp alone** — not the method, path, query, or body. So injection is a pure function of (private key, now), needs no request context, and does not interact with body re-streaming or header ordering. This is what distinguishes it from a full canonical-request scheme like SigV4; the resemblance is superficial.
+- **The canonical form lives in the kind name, deliberately.** There is no `signed:` field and no canonical-string template. A scheme that signs method+path+body is a *sibling kind* (`hmac-request`) — a code change with tests, reviewed. Canonicalization is where implementations of this family go wrong, and it does not belong in an admin-editable text box.
+- **The value is a JSON blob holding both halves** — `{"credential": "<public>", "key": "<private>"}`. Regenerating the pair changes both, and the recipe is immutable after create while the material is rotatable, so packing them means a rotation is one atomic write through the existing route. The cost, worth stating: metadata can therefore never show *which* key pair is installed, only that the recipe is `hmac-timestamp`.
+
+Two consequences for the threat model. On the **upside**, a reflected credential is a per-timestamp signature rather than a durable key, so the §8 body-echo residual leaks something that expires — strictly better than a static bearer. On the **downside**, that signature is a working credential for the upstream's whole clock-skew window against *any* path on the origin, and an app can re-harvest a fresh one on every call, so "short-lived" buys less than it sounds like. Both injected headers are therefore added to the dynamic reflection strip (issue #7). Because the signature also binds nothing about the request, the vendor cannot scope it — implement this only for vendors whose *own* scheme is timestamp-only, never as a downgrade from a stronger one they offer.
+
+Operationally: since the signed input is `now`, clock skew on the egress container surfaces as the vendor's own 401 passed through verbatim. Egress warns on the log when the upstream's `Date` header disagrees with local time by more than a minute, which is the only in-band signal that the cause is us rather than the credential.
 
 ## 3. Storage & crypto
 
@@ -154,7 +171,11 @@ Milestone **M4.5**, interleaved with the fetch-proxy rungs (its only consumer at
 ## 10. Open questions / deliberately deferred
 
 1. **Prod custody: vault-as-store now, or KEK-wrap at scale?** The recommendation is **vault-as-store** — Key Vault holds the value, the DB holds a reference, no app-held key (§3). At Helix's "tens of apps" scale the one-vault-entry-per-secret and per-cold-resolve round-trip are non-issues. *If* volume ever made per-secret vault calls painful, the graduation (not a rewrite — a second `SecretStore` impl) is **KEK-wrap**: Key Vault holds one root KEK fetched via managed identity, per-secret ciphertext lives in the DB, decryption happens at memory speed. Still no env var, still per-environment by identity. This is the real shape of the old "which KEK env var" question — a custody/lifecycle axis, decided per impl behind the seam, not a config knob to pin now.
-2. **Injection recipes beyond the three.** OAuth client-credentials (the platform refreshes a token server-side and injects it — stateful, needs a token cache), mTLS client certs, AWS SigV4. v1 ships the static-credential recipes (`header-bearer`/`header`/`query`); the dynamic ones are their own design and defer to fetch-proxy §10 q2.
+2. **~~Injection recipes beyond the three.~~ Partly answered — the line is *stateful*, not *dynamic*.** The original framing split recipes into static (shipped) and dynamic (deferred), and that turned out to be the wrong axis: `hmac-timestamp` (§2.1) is computed per request, yet needs no token cache, no network call, and no request context, so it costs a pure function and a schema variant. What actually makes a recipe expensive is **state or a second network hop**. So:
+   - **In scope — stateless derivations.** Added as sibling kinds in code, with tests, each encoding its canonical form in the kind name rather than in configuration. `hmac-timestamp` shipped; `hmac-request` (signing method+path+body) is the obvious next one and is a code change, not a config field.
+   - **Still deferred — stateful or networked.** OAuth client-credentials (the platform refreshes a token server-side — needs a cache, single-flight, and rotation-safe storage), AWS SigV4 with session tokens, mTLS client certs. These are their own design; the per-user delegated half is [ADR-0031](../adr/0031-connection-providers-delegated-auth.md).
+
+   Also settled by shipping the first derived recipe: the algorithm, digest encoding, and timestamp format are **fixed by the kind**, not configurable. Each would carry a default and `app_secrets.injection` is schemaless JSON, so adding a knob later is purely additive with no migration — while fixing them removes the weak-algorithm and unencodable-digest failure classes outright. Add a knob when a second vendor actually needs it.
 3. **~~Two roles in one process?~~ Resolved — `helix-egress` is its own service from day one.** Earlier drafts weighed running injection in-edge under a `helix_egress` role and extracting later. Decided against: the egress mechanism ships as its own container in M4.5 (architecture §3), so the §8 row-2 claim ("compromised policy edge dumps all keys → cannot, no grant/key/identity") is true by architecture, not discipline, from the first deploy. The cost of building in-process first was shipping precisely the blast radius the split removes.
 4. **Per-secret rotation policy / expiry.** Should the platform nag or force-rotate on an interval, and refuse a connection whose secret is past TTL? Hooks cleanly off `rotated_at`; deferred until there's a real key with a real rotation requirement.
 5. **Owner vs. admin boundary on app-scoped secrets.** Is storing an app-scoped secret an owner-only act, or does it also want admin sign-off when the app is `public`? Leaning owner-only (it's their app, their key), but a public app spending a secret on anonymous traffic is exactly the shape that might warrant the approval gate even for app scope. Revisit with the public-tier abuse data.

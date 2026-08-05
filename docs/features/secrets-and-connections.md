@@ -34,8 +34,31 @@ A secret carries an `InjectionRecipe` chosen at create time, applied by egress o
 the outbound hop (`packages/shared/src/secrets.ts`):
 
 - `header-bearer` — `Authorization: Bearer <value>` (the default).
-- `header` — an arbitrary header from a `{}` template (e.g. `X-Api-Key: {}`).
+- `header` — an arbitrary header from a `{}` template (e.g. `x-api-key: {}`).
 - `query` — a query-string parameter (e.g. `?api_key=<value>`).
+- `hmac-timestamp` — a **derived** credential for APIs that want a signature
+  rather than a static key. Egress reads the clock once per request, writes it to
+  `timestampHeader`, and renders `template` into `authHeader` with `{credential}`
+  (the public half) and `{signature}` = `hex(HMAC-SHA256(privateKey, timestamp))`.
+  The signed input is the timestamp alone — no method, path, or body. SHA-256,
+  lowercase hex, and ISO-8601-with-milliseconds are fixed by the kind.
+
+Header names are normalised to lowercase and must be RFC 7230 tokens; `host`,
+the framing headers, and the `x-helix-` prefix are refused. (`host` in particular
+would move TLS SNI off the allowlisted origin.)
+
+The value for `hmac-timestamp` is a JSON blob holding **both halves** —
+`{"credential": "…", "key": "…"}`. The portal validates that shape before sealing,
+on create *and* rotate, and refuses a blob stored under a static recipe (which
+would present it verbatim and put the private half in the vendor's access log).
+Packing both halves is what makes a regenerated key pair rotate atomically through
+the ordinary rotate route; the trade is that metadata can never show *which* pair
+is installed, only that the recipe is `hmac-timestamp`.
+
+Operationally, because the signature is over `now`, egress clock drift shows up as
+the vendor's own 401 passed through. Egress logs a warning when the upstream's
+`Date` header disagrees with local time by more than a minute — the only in-band
+hint that the cause is the platform rather than the credential.
 
 ### Write-only / rotate-only
 

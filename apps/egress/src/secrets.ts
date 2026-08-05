@@ -4,6 +4,7 @@ import {
   type InjectionRecipe,
   InjectionRecipeSchema,
   type InstructionCapability,
+  validateMaterialForRecipe,
 } from "@azx-pbc/shared";
 import type { SecretStore } from "@azx-pbc/secret-store";
 
@@ -105,6 +106,14 @@ export class PgSecretResolver implements SecretResolver {
 
     const injection = InjectionRecipeSchema.parse(row.injection);
     const value = await this.#store.open(row.material);
+    // Defence in depth against recipe⇄material drift. The portal validates this
+    // before sealing, but the recipe is fixed at create while the material is
+    // rotatable, and rows written before that check existed are still out there.
+    // Failing closed here matters most in the quiet direction: an hmac credential
+    // blob under a *static* recipe would present verbatim, sending the private
+    // half of the key pair to the third-party upstream in cleartext. The throw
+    // carries no material and is contained by the proxy's injection guard.
+    validateMaterialForRecipe(injection, value);
     // Stamp last-used (the only column egress may UPDATE). Fail-soft: a metering
     // hiccup must not break a working credential.
     await this.#pool

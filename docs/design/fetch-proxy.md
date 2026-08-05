@@ -123,7 +123,7 @@ The app calls `fetch('/_api/fetch/https://api.github.com/...')` with **no `Autho
 
 The deliberate-config caveat from §2 lands here and is *correct*: a secret connection cannot be zero-touch — someone has to store the secret and approve the grant (it's a privileged write through the approval spine). The adoption work is to make that the obvious, well-lit path for the apps that need it, not to make it disappear. The keyless majority gets §3's frictionless path; the secret minority gets a clear, audited ceremony.
 
-How a connection injects (header template, query param, OAuth client-credentials refresh) is its own small schema; v1 ships the header-bearer case and defers the rest (§11).
+How a connection injects is its own small schema (`InjectionRecipeSchema`, secrets design §2). Four kinds ship: `header-bearer`, `header`, `query`, and `hmac-timestamp` — the last a *derived* credential, signed per request from the key and the clock (secrets design §2.1). Stateful ones (OAuth client-credentials refresh, mTLS) remain deferred — see §10 item 2.
 
 ## 6. SSRF hardening (the part that must be right)
 
@@ -179,7 +179,7 @@ Milestone **M4.5** (project plan), after the approval spine and CSP loop it buil
 ## 10. Open questions / deliberately deferred
 
 1. **Shim injection cost.** Shipped as **buffer-the-one-HTML-doc + inject** (bounded to opt-in apps), not a streaming transform. Open: is buffering opt-in HTML cheap enough to ever default it on, or does it stay strictly opt-in? Needs a serve-path benchmark. (Alternative still on the table: the deploy skill *adds* the shim reference to the bundle, trading zero-touch for zero serve-cost — viable for platform-first, useless for vibe-coded-first.)
-2. **Connection injection beyond header-bearer.** OAuth client-credentials (refresh server-side), query-param keys, mTLS. v1 ships header-bearer; the rest is connection-schema work, deferred.
+2. **~~Connection injection beyond header-bearer.~~ Shipped, except the stateful ones.** `header-bearer`, `header`, `query`, and the derived `hmac-timestamp` are all live. What remains deferred is anything needing **state or a second network hop** — OAuth client-credentials refresh, SigV4 with session tokens, mTLS. The reasoning and the line are in secrets design §10 q2 (which this item previously deferred *to*, and which now answers it).
 3. **Byte metering vs. token metering.** Reuse `inputTokens`/`outputTokens` as request/response byte counts, or add `gateway_calls` columns? Leaning reuse (no migration, the columns are already nullable) but it muddies the semantics — decide before rung 1.
 4. **Stronger egress isolation, later.** `helix-egress` is its own SSRF-isolated container from day one (architecture §3), so the original "when do we extract it" question is moot. The remaining question is when egress needs a *heavier* posture — per-tenant egress IPs, or microVM/gVisor isolation once *untrusted code* runs in the egress path (custom backends, the rung ladder of custom-backends §3). Tie that to the §11 "third real app" line; the shared egress service is the right shape until then.
 5. **WebSocket / SSE upstream.** The proxy is request/response. Long-lived upstream connections (a third-party stream) are a different shape — defer to the custom-backends "long-lived connections" gap (memo §3, rung 0/1), don't bolt onto the fetch-proxy.

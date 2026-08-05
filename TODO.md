@@ -65,6 +65,14 @@ Legend for gating conditions:
 
 ---
 
+## Connection injection recipes
+
+- [ ] **Per-binding `(method, path)` allowlist on a proxied origin.** Today `capabilities.fetch.origins` is origin-granular, so binding an app to an origin grants it **every** endpoint there — for a typical CRUD API that includes the destructive verbs. This is the honest, unblocked subset of [ADR-0031](docs/adr/0031-connection-providers-delegated-auth.md) decision 12: dropping the `groups` dimension drops the dependency on per-app RBAC (ADR-0007), which is what actually blocks that decision. Both enforcement points already exist — the edge binds `method` + `path` into the attested instruction and egress re-checks them (ADR-0013 step 2) — so the missing piece is only the list to check against. First thing to revisit after the first tenant-key integration ships.
+- [ ] **Deferred `hmac-timestamp` knobs.** Algorithm, digest encoding, and timestamp format are fixed (SHA-256 / lowercase hex / ISO-8601-with-ms). Each would carry a default and the column is schemaless JSON, so adding one is purely additive with no migration — add when a second vendor actually needs it, and keep the algorithm enum closed (never sha1 without a review). — secrets design §10 q2
+- [ ] **Rotate panel takes the raw JSON blob for `hmac-timestamp`.** Create splits the credential pair into two inputs; rotate is still a single `PasswordInput` with a hint, because the two secret cards model rotation state differently. The portal's write-time validation is what catches a malformed paste (400, not a silently broken credential) — so this is ergonomics, not correctness.
+
+---
+
 ## Threat-model & open questions to document/decide
 
 - [ ] **CSP supply-chain hardening.** Consider SRI or versioned-script pinning for the CDN allowlist; add `object-src 'none'`; decide whether the CDN list should be per-app / opt-in rather than global. Record the third-party stored-XSS exposure on public / shared-write apps in the threat model. — ADR-0009 (DEC-03)

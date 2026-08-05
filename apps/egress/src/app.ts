@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { HealthStatusSchema } from "@azx-pbc/shared";
+import { HealthStatusSchema, OUTCOME_HEADER } from "@azx-pbc/shared";
 import { loggerOption } from "@azx-pbc/shared/logging";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
@@ -40,6 +40,21 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
   // `req.raw` readable for undici for every content type.
   app.removeAllContentTypeParsers();
   app.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+
+  // Fastify's default error handler puts `error.message` in the response body,
+  // and the edge forwards an egress body to the untrusted app verbatim
+  // (`apps/edge/src/gateway/fetch.ts`). In the one process that holds plaintext
+  // secrets that is a leak channel, not just noise: V8 embeds a ~10-character
+  // prefix of its input in a `JSON.parse` message, so a throw anywhere near
+  // credential material would hand the app a fragment of a live key. Answer with
+  // a fixed opaque body and keep the detail on the log, where it belongs. Every
+  // deliberate refusal already returns through the proxy's own `fail()`, so
+  // reaching here at all means an unhandled throw.
+  app.setErrorHandler((err, req, reply) => {
+    req.log.error({ err }, "unhandled error in egress");
+    reply.header(OUTCOME_HEADER, "error");
+    reply.code(500).send({ code: "upstream_error", message: "egress request failed" });
+  });
 
   app.route({
     method: ["GET", "HEAD"],

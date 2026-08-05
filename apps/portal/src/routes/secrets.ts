@@ -2,12 +2,14 @@ import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import {
   EnvSchema,
+  type InjectionRecipe,
   InjectionRecipeSchema,
   SecretCreateRequestSchema,
   SecretGrantRequestSchema,
   SecretRotateRequestSchema,
   type SecretMetadata,
   type SecretScope,
+  validateMaterialForRecipe,
 } from "@azx-pbc/shared";
 import type { SecretStore } from "@azx-pbc/secret-store";
 import { authenticate, ownsApp, requireActor, requireAdmin } from "../plugins/auth.js";
@@ -36,6 +38,30 @@ const ADMIN_SCOPES = ["global", "platform"] as const;
 const AdminSecretCreateSchema = SecretCreateRequestSchema.extend({
   scope: z.enum(ADMIN_SCOPES).default("global"),
 });
+
+/**
+ * Refuse material that does not fit its recipe, **before** sealing — so a bad
+ * value never reaches the vault and no `release()` rollback is involved.
+ *
+ * Called on create *and* rotate: the recipe is immutable but the material is not,
+ * so rotation is where the two can drift, and the dangerous direction is silent
+ * (an hmac credential blob under a static recipe presents verbatim, putting the
+ * private half of the key pair in a third party's access log in cleartext).
+ *
+ * The rethrown message is fixed and never interpolates the value: this is a
+ * credential, and the underlying `JSON.parse` failure carries a prefix of its
+ * input.
+ */
+function assertMaterialFits(recipe: InjectionRecipe, value: string): void {
+  try {
+    validateMaterialForRecipe(recipe, value);
+  } catch {
+    throw new AppError(
+      "validation_failed",
+      `value does not match this secret's ${recipe.kind} injection recipe`,
+    );
+  }
+}
 
 interface SecretRow {
   id: string;
@@ -186,6 +212,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       const actor = requireActor(req);
       const appRow = await findApp(req.params.slug);
       const body = SecretCreateRequestSchema.parse(req.body);
+      assertMaterialFits(body.injection, body.value);
       const material = await store().seal(body.value);
       let row;
       try {
@@ -241,6 +268,10 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         where: { scope: "app", appId: appRow.id, env, name: req.params.name },
       });
       if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
+      // The recipe is immutable, so a rotation is where the material can drift away
+      // from it. The row is already in hand for the not-found check and the CAS, so
+      // this needs no extra query and no change to the rotate request schema.
+      assertMaterialFits(InjectionRecipeSchema.parse(row.injection), value);
       const material = await store().seal(value);
       const updated = await rotateOrRelease(row, material, {
         appId: appRow.id,
@@ -310,6 +341,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     if (existing) {
       throw new AppError("conflict", `${body.scope} secret "${body.name}" already exists`);
     }
+    assertMaterialFits(body.injection, body.value);
     const material = await store().seal(body.value);
     let row;
     try {
@@ -356,6 +388,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         where: { id: req.params.id, scope: { in: [...ADMIN_SCOPES] } },
       });
       if (!row) throw new AppError("not_found", "secret not found");
+      assertMaterialFits(InjectionRecipeSchema.parse(row.injection), value);
       const material = await store().seal(value);
       const updated = await rotateOrRelease(row, material, {
         appId: null,

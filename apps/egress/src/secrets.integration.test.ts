@@ -51,14 +51,30 @@ async function seed(): Promise<void> {
        VALUES ($1, $2, 'Egress Resolver Test', 'private', now())`,
       [appId, `egress-res-${appId.slice(0, 8)}`],
     );
-    const rows: Array<[string, string | null, string, { kind: string; name?: string }]> = [
+    const rows: Array<[string, string | null, string, Record<string, unknown>]> = [
       ["platform", null, "anthropic", { kind: "header", name: "x-api-key" }],
       ["app", appId, "stripe", { kind: "header-bearer" }],
+      // An hmac-timestamp row whose stored recipe OMITS `authHeader`. That is the
+      // regression guard for shipping this kind without a migration: the column is
+      // schemaless JSON, so the safety argument rests entirely on the zod default
+      // materialising on the read path for rows written before the field existed.
+      [
+        "app",
+        appId,
+        "signed",
+        { kind: "hmac-timestamp", timestampHeader: "x-date", template: "Sig={signature}" },
+      ],
     ];
     for (const [scope, owningApp, name, injection] of rows) {
       const id = randomUUID();
       ids.push(id);
-      const material = await store.seal(`secret-for-${scope}-${name}`);
+      // An hmac recipe requires a credential blob; egress validates the pairing on
+      // read, so the seeded material has to be well-formed for that row.
+      const material = await store.seal(
+        injection["kind"] === "hmac-timestamp"
+          ? JSON.stringify({ credential: "pub-abc", key: `secret-for-${scope}-${name}` })
+          : `secret-for-${scope}-${name}`,
+      );
       await owner.query(
         `INSERT INTO app_secrets (id, scope, "appId", name, material, injection, "createdBy")
          VALUES ($1, $2, $3, $4, $5, $6, 'test')`,
@@ -103,6 +119,35 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   if (provisioned) await cleanup();
+});
+
+describe("PgSecretResolver recipe round-trip", () => {
+  /**
+   * The no-migration safety argument, exercised against the real column under the
+   * real `helix_egress` role: a row stored without `authHeader` (as every row
+   * written before this kind existed would be) must come back with the zod default
+   * applied, not fail to parse.
+   */
+  it("materialises the authHeader default for a row that omits it", async () => {
+    if (!provisioned) return;
+    const resolver = new PgSecretResolver(egressUrl(), store, { max: 1 });
+    try {
+      const resolved = await resolver.resolve(appId, "signed", "fetch", "prod");
+      expect(resolved?.injection).toEqual({
+        kind: "hmac-timestamp",
+        timestampHeader: "x-date",
+        authHeader: "authorization",
+        template: "Sig={signature}",
+      });
+      // The blob comes back verbatim; egress parses it at injection time.
+      expect(JSON.parse(resolved?.value ?? "{}")).toEqual({
+        credential: "pub-abc",
+        key: "secret-for-app-signed",
+      });
+    } finally {
+      await resolver.close();
+    }
+  });
 });
 
 describe("PgSecretResolver capability gate", () => {

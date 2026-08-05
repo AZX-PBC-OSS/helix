@@ -13,6 +13,7 @@ import {
 } from "@azx-pbc/shared";
 import { buildApp } from "./app.js";
 import type { EgressConfig } from "./config.js";
+import { signTimestamp } from "./hmac.js";
 import { deriveInstructionKey } from "./instruction.js";
 import type { ResolvedConnection, SecretResolver } from "./secrets.js";
 
@@ -35,6 +36,7 @@ beforeAll(async () => {
           authorization: req.headers["authorization"] ?? null,
           host: req.headers["host"] ?? null,
           cookie: req.headers["cookie"] ?? null,
+          xDate: req.headers["x-date"] ?? null,
           // Echo the received body so tests can assert it transited intact.
           received: Buffer.concat(chunks).toString("utf8"),
         }),
@@ -46,9 +48,32 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
 
+/** The private half of the hmac fixture pair — also the needle for leak assertions. */
+const HMAC_PRIVATE = "ghp_LIVEPRIVATEKEY_abcdefghijklmnop";
+const HMAC_BLOB = JSON.stringify({ credential: "pub-abc", key: HMAC_PRIVATE });
+const HMAC_RECIPE = {
+  kind: "hmac-timestamp",
+  timestampHeader: "x-date",
+  authHeader: "authorization",
+  template: "Credential={credential},Signature={signature}",
+} as const;
+
 const fakeResolver: SecretResolver = {
-  resolve: async (_appId, connection): Promise<ResolvedConnection | null> =>
-    connection === "gh" ? { value: "ghp_secret", injection: { kind: "header-bearer" } } : null,
+  resolve: async (_appId, connection): Promise<ResolvedConnection | null> => {
+    switch (connection) {
+      case "gh":
+        return { value: "ghp_secret", injection: { kind: "header-bearer" } };
+      case "hmac":
+        return { value: HMAC_BLOB, injection: HMAC_RECIPE };
+      // A recipe⇄material mismatch: the recipe wants a blob, the material is a
+      // bare token. The portal now refuses this at write time, but rows predating
+      // that check exist, so the read path must fail closed and opaquely.
+      case "hmac-bad":
+        return { value: HMAC_PRIVATE, injection: HMAC_RECIPE };
+      default:
+        return null;
+    }
+  },
   close: async () => {},
 };
 
@@ -127,6 +152,82 @@ describe("egress /proxy", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().authorization).toBe("Bearer ghp_secret");
+    await app.close();
+  });
+
+  it("derives an hmac-timestamp credential the app never computed", async () => {
+    const app = makeApp(true);
+    const token = await mint({ origin, connection: "hmac" });
+    const before = Date.now();
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        [TARGET_HEADER]: `${origin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.authorization).toMatch(/^Credential=pub-abc,Signature=[0-9a-f]{64}$/);
+    // The timestamp went out as a real, current ISO instant.
+    const sent = Date.parse(body.xDate);
+    expect(sent).toBeGreaterThanOrEqual(before - 1000);
+    expect(sent).toBeLessThanOrEqual(Date.now() + 1000);
+    // Neither the private key nor the raw blob transited to the upstream.
+    expect(res.payload).not.toContain(HMAC_PRIVATE);
+    expect(res.payload).not.toContain('"key"');
+    await app.close();
+  });
+
+  /**
+   * The end-to-end binding test: recompute the signature over the timestamp the
+   * upstream actually received. It fails if the two headers ever come from
+   * different clock readings, or if the transmitted timestamp format diverges from
+   * the signed one — a class of bug that authenticates locally and 401s in prod.
+   */
+  it("signs exactly the timestamp it transmits", async () => {
+    const app = makeApp(true);
+    const token = await mint({ origin, connection: "hmac" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        [TARGET_HEADER]: `${origin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    const body = res.json();
+    const signature = /Signature=([0-9a-f]{64})$/.exec(body.authorization)?.[1];
+    expect(signature).toBe(signTimestamp(HMAC_PRIVATE, body.xDate));
+    await app.close();
+  });
+
+  it("refuses material that does not fit its recipe, opaquely", async () => {
+    const app = makeApp(true);
+    const token = await mint({ origin, connection: "hmac-bad" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        [TARGET_HEADER]: `${origin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    // Indistinguishable from a vault failure: an app must not learn *why*.
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({
+      code: "upstream_error",
+      message: "connection secret unavailable",
+    });
+    // V8 embeds a ~10-character prefix of its input in a JSON.parse message. That
+    // input is the private key here, so pin its absence explicitly rather than
+    // trusting the full-string check alone.
+    expect(res.payload).not.toContain(HMAC_PRIVATE);
+    expect(res.payload).not.toContain(HMAC_PRIVATE.slice(0, 10));
     await app.close();
   });
 

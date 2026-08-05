@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { Button, Card, Group, PasswordInput, Select, Stack, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { INJECTION_KINDS, type App, type InjectionRecipe } from "@azx-pbc/shared";
+import { INJECTION_KINDS, type App } from "@azx-pbc/shared";
+import {
+  EMPTY_INJECTION_FORM,
+  INJECTION_DEFAULTS,
+  INJECTION_LABELS,
+  buildInjection,
+  describeInjection,
+  packHmacValue,
+  usesCredentialPair,
+} from "../../lib/injection";
 import { appSecretsQuery } from "../../api/queries";
 import { useCreateSecret, useDeleteSecret, useRotateSecret } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
@@ -15,18 +24,6 @@ import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
  * create/rotate and never shown again — there is no reveal, unlike the password.
  */
 
-function buildInjection(kind: string, headerName: string, queryParam: string): InjectionRecipe {
-  if (kind === "header") return { kind: "header", name: headerName || "X-Api-Key", template: "{}" };
-  if (kind === "query") return { kind: "query", param: queryParam || "api_key" };
-  return { kind: "header-bearer" };
-}
-
-function describeInjection(r: InjectionRecipe): string {
-  if (r.kind === "header-bearer") return "Authorization: Bearer …";
-  if (r.kind === "header") return `${r.name}: ${r.template}`;
-  return `?${r.param}=…`;
-}
-
 export function SecretsCard({ app }: { app: App }) {
   const { authenticated, login, loginAvailable } = useAuth();
   const secrets = useQuery({ ...appSecretsQuery(app.slug), enabled: authenticated });
@@ -38,8 +35,13 @@ export function SecretsCard({ app }: { app: App }) {
   const [value, setValue] = useState("");
   const [env, setEnv] = useState<"prod" | "dev">("prod");
   const [kind, setKind] = useState<string>("header-bearer");
-  const [headerName, setHeaderName] = useState("");
-  const [queryParam, setQueryParam] = useState("");
+  const [form, setForm] = useState({ ...EMPTY_INJECTION_FORM });
+  // `hmac-timestamp` needs both halves of a key pair; the public half is not a
+  // secret, so it gets a plain input and only the private half is masked.
+  const [credential, setCredential] = useState("");
+  const setField = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const pair = usesCredentialPair(kind);
+  const valueReady = pair ? credential.length > 0 && value.length > 0 : value.length > 0;
   // Keyed by secret id — a name is no longer unique (it can exist per tier).
   const [rotating, setRotating] = useState<{ id: string; value: string } | null>(null);
 
@@ -128,6 +130,11 @@ export function SecretsCard({ app }: { app: App }) {
               <Group gap={8} mt={10} align="flex-end" wrap="nowrap">
                 <PasswordInput
                   label="New value"
+                  description={
+                    s.injection.kind === "hmac-timestamp"
+                      ? 'both halves as JSON: {"credential":"…","key":"…"}'
+                      : undefined
+                  }
                   value={rotating.value}
                   onChange={(e) => setRotating({ id: s.id, value: e.currentTarget.value })}
                   style={{ flex: 1 }}
@@ -166,7 +173,7 @@ export function SecretsCard({ app }: { app: App }) {
           />
           <Select
             label="Injection"
-            data={INJECTION_KINDS.map((k) => ({ value: k, label: k }))}
+            data={INJECTION_KINDS.map((k) => ({ value: k, label: INJECTION_LABELS[k] ?? k }))}
             value={kind}
             onChange={(v) => setKind(v ?? "header-bearer")}
             size="xs"
@@ -188,23 +195,60 @@ export function SecretsCard({ app }: { app: App }) {
         {kind === "header" && (
           <TextInput
             label="Header name"
-            placeholder="X-Api-Key"
-            value={headerName}
-            onChange={(e) => setHeaderName(e.currentTarget.value)}
+            placeholder={INJECTION_DEFAULTS.headerName}
+            value={form.headerName}
+            onChange={(e) => setField("headerName", e.currentTarget.value)}
             size="xs"
           />
         )}
         {kind === "query" && (
           <TextInput
             label="Query parameter"
-            placeholder="api_key"
-            value={queryParam}
-            onChange={(e) => setQueryParam(e.currentTarget.value)}
+            placeholder={INJECTION_DEFAULTS.queryParam}
+            value={form.queryParam}
+            onChange={(e) => setField("queryParam", e.currentTarget.value)}
             size="xs"
           />
         )}
+        {kind === "hmac-timestamp" && (
+          <>
+            <Group grow align="flex-start">
+              <TextInput
+                label="Timestamp header"
+                placeholder={INJECTION_DEFAULTS.timestampHeader}
+                value={form.timestampHeader}
+                onChange={(e) => setField("timestampHeader", e.currentTarget.value)}
+                size="xs"
+              />
+              <TextInput
+                label="Authorization template"
+                placeholder={INJECTION_DEFAULTS.template}
+                value={form.template}
+                onChange={(e) => setField("template", e.currentTarget.value)}
+                size="xs"
+                classNames={{ input: "az-mono" }}
+              />
+            </Group>
+            <Hint icon="key" tone="neutral">
+              Egress signs the timestamp with the private key on every request and injects both
+              headers — the app never sees either. Use{" "}
+              <span className="az-mono">{"{credential}"}</span> and{" "}
+              <span className="az-mono">{"{signature}"}</span> in the template.
+            </Hint>
+          </>
+        )}
+        {pair && (
+          <TextInput
+            label="Public key"
+            placeholder="the public / credential half — sent in the clear on every request"
+            value={credential}
+            onChange={(e) => setCredential(e.currentTarget.value)}
+            size="xs"
+            classNames={{ input: "az-mono" }}
+          />
+        )}
         <PasswordInput
-          label="Value"
+          label={pair ? "Private key" : "Value"}
           placeholder="paste the credential — stored sealed, never shown again"
           value={value}
           onChange={(e) => setValue(e.currentTarget.value)}
@@ -214,23 +258,23 @@ export function SecretsCard({ app }: { app: App }) {
           <Button
             size="xs"
             leftSection={<Icon name="key" size={12} />}
-            disabled={!nameValid || !value}
+            disabled={!nameValid || !valueReady}
             loading={create.isPending}
             onClick={() =>
               create.mutate(
                 {
                   slug: app.slug,
                   name,
-                  value,
+                  value: pair ? packHmacValue(credential, value) : value,
                   env,
-                  injection: buildInjection(kind, headerName, queryParam),
+                  injection: buildInjection(kind, form),
                 },
                 {
                   onSuccess: () => {
                     setName("");
                     setValue("");
-                    setHeaderName("");
-                    setQueryParam("");
+                    setCredential("");
+                    setForm({ ...EMPTY_INJECTION_FORM });
                     setKind("header-bearer");
                     setEnv("prod");
                   },

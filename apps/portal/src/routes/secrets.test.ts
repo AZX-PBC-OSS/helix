@@ -414,3 +414,120 @@ describe("no path strands an unreferenced vault entry", () => {
     expect([...refs].filter((m) => !vault.live.has(m))).toEqual([]);
   });
 });
+
+describe("recipe⇄material validation", () => {
+  const PRIVATE = "ghp_LIVEPRIVATEKEY_abcdefghijklmnop";
+  const BLOB = JSON.stringify({ credential: "pub-abc", key: PRIVATE });
+  const HMAC = {
+    kind: "hmac-timestamp",
+    timestampHeader: "x-date",
+    template: "Credential={credential},Signature={signature}",
+  };
+
+  async function post(slug: string, payload: Record<string, unknown>) {
+    return await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+      payload,
+    });
+  }
+
+  it("creates an hmac-timestamp secret, defaulting authHeader and leaking neither half", async () => {
+    const slug = await createApp();
+    const res = await post(slug, { name: "signed", value: BLOB, injection: HMAC });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().injection).toEqual({ ...HMAC, authHeader: "authorization" });
+    // Write-only applies to both halves — the public credential is inside the
+    // sealed value, so metadata can show neither.
+    expect(res.payload).not.toContain(PRIVATE);
+    expect(res.payload).not.toContain("pub-abc");
+  });
+
+  it.each([
+    ["a bare token where a blob is required", PRIVATE],
+    ["JSON missing the key half", JSON.stringify({ credential: "pub" })],
+    ["JSON missing the credential half", JSON.stringify({ key: "priv" })],
+  ])("rejects %s with a 400 and creates nothing", async (_label, value) => {
+    const slug = await createApp();
+    const res = await post(slug, { name: "signed", value, injection: HMAC });
+    expect(res.statusCode).toBe(400);
+    // The 400 must not echo the credential it refused.
+    expect(res.payload).not.toContain(value.slice(0, 10));
+    const list = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+    });
+    expect(list.json()).toEqual([]);
+  });
+
+  // The quiet, dangerous direction: a static recipe presents the material
+  // verbatim, so a blob would send the PRIVATE half to the vendor in cleartext.
+  it("refuses an hmac blob stored under a header-bearer recipe", async () => {
+    const slug = await createApp();
+    const res = await post(slug, { name: "confused", value: BLOB });
+    expect(res.statusCode).toBe(400);
+  });
+
+  /**
+   * The one behaviour with no compile-time guard. The recipe is immutable but the
+   * material is not, so rotation is where they drift — and without the rotate-side
+   * check this returns 200 and silently installs a credential that can never
+   * authenticate (or, in the reverse direction, leaks the private half upstream).
+   */
+  it("validates on rotate too, leaving the old material in place on refusal", async () => {
+    const slug = await createApp();
+    expect((await post(slug, { name: "signed", value: BLOB, injection: HMAC })).statusCode).toBe(
+      201,
+    );
+
+    const bad = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets/signed/rotate`,
+      headers: authHeader(),
+      payload: { value: "plain-token-not-a-blob" },
+    });
+    expect(bad.statusCode).toBe(400);
+
+    const list = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+    });
+    expect(list.json()[0].rotatedAt).toBeNull();
+
+    const good = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets/signed/rotate`,
+      headers: authHeader(),
+      payload: { value: JSON.stringify({ credential: "pub-2", key: "priv-2" }) },
+    });
+    expect(good.statusCode).toBe(200);
+    expect(good.json().rotatedAt).not.toBeNull();
+  });
+
+  // Recipe-scoped, not a new global constraint: a static recipe still takes any
+  // opaque string, including JSON that isn't a credential blob.
+  it("leaves a header-bearer rotation to an arbitrary string alone", async () => {
+    const slug = await createApp();
+    expect((await post(slug, { name: "plain", value: "sk_live_1" })).statusCode).toBe(201);
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets/plain/rotate`,
+      headers: authHeader(),
+      payload: { value: '{"note":"still just a string to us"}' },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("applies the same validation on the admin create path", async () => {
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/secrets",
+      headers: authHeader(),
+      payload: { name: uniqueSlug(), value: PRIVATE, scope: "global", injection: HMAC },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});

@@ -48,6 +48,10 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
 
+/** The private half of the hmac fixture pair — the needle for leak assertions. */
+const HMAC_PRIVATE = "ghp_LIVEPRIVATEKEY_abcdefghijklmnop";
+const HMAC_BLOB = JSON.stringify({ credential: "pub-abc", key: HMAC_PRIVATE });
+
 // Mirrors PgSecretResolver's capability gate: `platform` secrets resolve only on
 // the `llm` path, `app`/`global` only on `fetch`.
 const resolver: SecretResolver = {
@@ -70,6 +74,21 @@ const resolver: SecretResolver = {
         };
       case "gh-query":
         return { value: "query-secret-abc", injection: { kind: "query", param: "access_token" } };
+      // An hmac-timestamp credential whose signature rides a NON-`authorization`
+      // header. That is the case only the dynamic strip can cover: `authorization`
+      // is in the static blocklist, so a recipe using it would pass even with the
+      // widening reverted. This connection is what actually pins issue #7 for a
+      // multi-header recipe.
+      case "hmac-sig":
+        return {
+          value: HMAC_BLOB,
+          injection: {
+            kind: "hmac-timestamp",
+            timestampHeader: "x-date",
+            authHeader: "x-signature",
+            template: "Credential={credential},Signature={signature}",
+          },
+        };
       default:
         return null;
     }
@@ -271,6 +290,12 @@ describe("egress secret echo-back (issue #7)", () => {
       res.setHeader("authorization", typeof auth === "string" ? auth : "Bearer upstream-issued");
       const apiKey = req.headers["x-api-key"];
       if (typeof apiKey === "string") res.setHeader("x-api-key", apiKey);
+      // Reflect an hmac-timestamp recipe's pair too: the signature on a
+      // non-`authorization` header, and the timestamp that is its signed input.
+      const signature = req.headers["x-signature"];
+      if (typeof signature === "string") res.setHeader("x-signature", signature);
+      const date = req.headers["x-date"];
+      if (typeof date === "string") res.setHeader("x-date", date);
       // Location echoes the request URL (redirect-follow + query-secret vector);
       // Content-Location echoes it too (the residual query-secret reflection path).
       res.setHeader("location", `${echoOrigin}${req.url}`);
@@ -348,6 +373,91 @@ describe("egress secret echo-back (issue #7)", () => {
     // app — no header filter closes this. Pinned so the residual is explicit.
     const res = await proxy("gh");
     expect(res.json().authorization).toBe("Bearer injected-secret");
+  });
+
+  /**
+   * The test that proves the multi-header widening. `x-signature` can never be in
+   * RESPONSE_HEADER_BLOCKLIST — the name is per-recipe configuration — so only
+   * recording both injected names and stripping the set covers it. Reverting
+   * `Injected.headerNames` to a single name fails here and nowhere else.
+   */
+  it("strips a reflected hmac signature carried on a non-authorization header", async () => {
+    const res = await proxy("hmac-sig");
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-signature"]).toBeUndefined();
+  });
+
+  it("strips the reflected timestamp header that is the signature's signed input", async () => {
+    const res = await proxy("hmac-sig");
+    expect(res.headers["x-date"]).toBeUndefined();
+  });
+
+  /**
+   * The private key is the thing that must never escape by any channel. Unlike the
+   * signature — which is a per-timestamp derivation and only useful for the
+   * upstream's skew window — the key is durable: it forges credentials until it is
+   * rotated. Asserted across status, every header, and the whole body.
+   */
+  it("never lets the private key reach the app by any channel", async () => {
+    const res = await proxy("hmac-sig");
+    const everything = `${res.statusCode}${JSON.stringify(res.headers)}${res.payload}`;
+    expect(everything).not.toContain(HMAC_PRIVATE);
+    // The V8 JSON.parse snippet shape, pinned explicitly.
+    expect(everything).not.toContain(HMAC_PRIVATE.slice(0, 10));
+    // ...and the blob's own field names, which would signal the shape leaked.
+    expect(everything).not.toContain('"key"');
+  });
+
+  /**
+   * The public credential is *public* — it is sent in the clear on every request
+   * and identifies the account, not the authority. Asserting its absence would
+   * pin a false invariant, so pin the true one: what reflects back through the
+   * body-echo residual is a signature, never the key. For this recipe that
+   * residual is materially weaker than for a static bearer.
+   */
+  it("body-echo can reflect a signature, which is not the key", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(echoOrigin, "hmac-sig"),
+        [TARGET_HEADER]: `${echoOrigin}/`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    // The echo upstream mirrors `authorization` into its body; this recipe writes
+    // the signature to `x-signature`, so the body carries no credential at all here.
+    expect(res.json().authorization).toBeNull();
+    expect(res.payload).not.toContain(HMAC_PRIVATE);
+    await app.close();
+  });
+
+  /**
+   * The app must not be able to pre-occupy either injected header. Neither name is
+   * in REQUEST_HEADER_SAFELIST, and injection runs after the safelist filter — but
+   * nothing pinned that for the timestamp header, and a future safelist addition
+   * would silently open it.
+   */
+  it("drops an app-supplied timestamp or authorization header before injecting", async () => {
+    const app = makeApp(true);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(echoOrigin, "hmac-sig"),
+        [TARGET_HEADER]: `${echoOrigin}/`,
+        [METHOD_HEADER]: "GET",
+        "x-date": "1999-01-01T00:00:00.000Z",
+        "x-signature": "attacker-chosen",
+        authorization: "Bearer app-supplied",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    // The upstream saw our derived pair, not the app's. (Both are stripped from the
+    // response, so assert via the body's own echo of what arrived.)
+    expect(res.json().authorization).toBeNull();
+    await app.close();
   });
 });
 

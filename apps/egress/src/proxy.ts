@@ -10,8 +10,10 @@ import {
   REQUEST_HEADER_SAFELIST,
   RESPONSE_HEADER_BLOCKLIST,
   TARGET_HEADER,
+  parseHmacCredential,
 } from "@azx-pbc/shared";
 import { capBody } from "@azx-pbc/shared/bodyCap";
+import { hmacTimestampNow, renderHmacAuth, signTimestamp } from "./hmac.js";
 import { verifyInstruction } from "./instruction.js";
 import { type SecretResolver } from "./secrets.js";
 import { type InstructionBurnStore } from "./burn.js";
@@ -58,17 +60,40 @@ function safeRequestHeaders(headers: IncomingHttpHeaders): Record<string, string
 
 /**
  * What `applyInjection` wrote into the outbound request, so the response loop can
- * strip exactly that back out (issue #7). The `header` recipe takes an arbitrary
- * app-defined name, so a static blocklist can never enumerate every credential
- * header — only recording what we injected covers it.
+ * strip exactly that back out (issue #7). The `header` and `hmac-timestamp`
+ * recipes take arbitrary configured names, so a static blocklist can never
+ * enumerate every credential header — only recording what we injected covers it.
+ *
+ * `headerNames` is a list because `hmac-timestamp` writes two (the timestamp and
+ * the signature). The strip set is built from exactly this list, so the property
+ * holds by construction: whatever we wrote, we strip.
  */
 interface Injected {
-  headerName: string | null;
+  headerNames: readonly string[];
   queryParam: string | null;
 }
 
-const NOTHING_INJECTED: Injected = { headerName: null, queryParam: null };
+const NOTHING_INJECTED: Injected = { headerNames: [], queryParam: null };
 
+/**
+ * Substitute without `String.replace`'s replacement-pattern semantics — see the
+ * note on `renderHmacAuth`. A secret containing `$&` would otherwise be mangled.
+ */
+function fill(template: string, placeholder: string, value: string): string {
+  return template.split(placeholder).join(value);
+}
+
+/**
+ * Apply the resolved credential to the outbound request.
+ *
+ * Recipe header names are normalised to lowercase by the schema, so the names
+ * recorded here always match the lowercased keys of an upstream response — which
+ * is what makes the reflection strip below able to find them.
+ *
+ * May throw (a malformed `hmac-timestamp` blob). The caller contains that: the
+ * message can carry credential material, so it must reach neither the app nor the
+ * log.
+ */
 function applyInjection(
   target: URL,
   headers: Record<string, string>,
@@ -78,15 +103,30 @@ function applyInjection(
   switch (recipe.kind) {
     case "header-bearer":
       headers["authorization"] = `Bearer ${value}`;
-      return { headerName: "authorization", queryParam: null };
+      return { headerNames: ["authorization"], queryParam: null };
     case "header": {
-      const name = recipe.name.toLowerCase();
-      headers[name] = recipe.template.replace("{}", value);
-      return { headerName: name, queryParam: null };
+      headers[recipe.name] = fill(recipe.template, "{}", value);
+      return { headerNames: [recipe.name], queryParam: null };
     }
     case "query":
       target.searchParams.set(recipe.param, value);
-      return { headerName: null, queryParam: recipe.param };
+      return { headerNames: [], queryParam: recipe.param };
+    case "hmac-timestamp": {
+      const { credential, key } = parseHmacCredential(value);
+      // One clock reading, used for both the signature and the header: two reads
+      // would sign a timestamp that was never transmitted.
+      const timestamp = hmacTimestampNow();
+      headers[recipe.timestampHeader] = timestamp;
+      headers[recipe.authHeader] = renderHmacAuth(
+        recipe.template,
+        credential,
+        signTimestamp(key, timestamp),
+      );
+      return {
+        headerNames: [recipe.timestampHeader, recipe.authHeader],
+        queryParam: null,
+      };
+    }
   }
 }
 
@@ -244,6 +284,9 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
 
     // Resolve + inject the connection secret, if this call is secret-backed.
     let injected = NOTHING_INJECTED;
+    // Set for a recipe whose credential is derived from the local clock, so the
+    // response can be checked for skew (see below).
+    let clockDerived = false;
     if (instruction.connection) {
       // A connection secret must never cross the wire in cleartext. Egress is the
       // credential broker, so it enforces this independently of the edge's origin
@@ -290,7 +333,31 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       if (!resolved) {
         return fail(reply, 403, "forbidden", "connection not found or not granted");
       }
-      injected = applyInjection(target, headers, resolved.injection, resolved.value);
+      clockDerived = resolved.injection.kind === "hmac-timestamp";
+      try {
+        injected = applyInjection(target, headers, resolved.injection, resolved.value);
+      } catch {
+        // Deliberately binds nothing. A throw here means the material did not fit
+        // its recipe (an `hmac-timestamp` blob that isn't one), and the message
+        // can carry credential material — V8 embeds a ~10-character prefix of its
+        // input in a `JSON.parse` error, which for this value is the start of a
+        // private key. A `reason` code is the whole diagnostic value; the message
+        // would add only leak surface, to the log as well as the response. This is
+        // the opposite call from the resolve `catch` above, where the Key Vault
+        // status/code genuinely carry operator signal and carry no secret.
+        req.log.error(
+          {
+            appId: instruction.appId,
+            connection: instruction.connection,
+            recipe: resolved.injection.kind,
+            reason: "injection_failed",
+          },
+          "connection secret could not be applied to the outbound request",
+        );
+        // The same opaque 502 as a resolution failure: an app must not be able to
+        // probe *why* a credential did not work.
+        return fail(reply, 502, "upstream_error", "connection secret unavailable");
+      }
     }
 
     // SSRF: the shared dispatcher's connector resolves + validates every address
@@ -327,14 +394,36 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         return fail(reply, 502, "upstream_error", "upstream response too large");
       }
 
+      // A clock-derived credential signs `now`, so egress clock drift past the
+      // upstream's tolerance makes *every* call to that origin fail — and it
+      // presents as the vendor's own 401 passed through, with no reason to suspect
+      // us. Nothing in-process can detect that; the upstream's own `Date` header
+      // can. This turns a silent total outage into a one-line diagnosis.
+      if (clockDerived) {
+        const upstreamDate = Date.parse(String(upstream.headers["date"] ?? ""));
+        const skewMs = Number.isNaN(upstreamDate) ? 0 : Math.abs(Date.now() - upstreamDate);
+        if (skewMs > 60_000) {
+          req.log.warn(
+            { origin: instruction.origin, appId: instruction.appId, skewMs },
+            "egress clock differs from the upstream by more than a minute — " +
+              "a timestamp-signed credential will be rejected",
+          );
+        }
+      }
+
       reply.header(OUTCOME_HEADER, "ok");
       reply.code(upstream.statusCode);
-      // Dynamically strip the exact header we injected so an upstream that
-      // reflects it (echo/debug endpoints, CORS reflection) can't leak the
-      // credential back to the app (issue #7). This covers arbitrary `header`
-      // recipe names that no static blocklist could enumerate.
-      const stripped = injected.headerName
-        ? new Set([...RESPONSE_BLOCKED, injected.headerName])
+      // Dynamically strip the exact headers we injected so an upstream that
+      // reflects them (echo/debug endpoints, CORS reflection) can't leak the
+      // credential back to the app (issue #7). This covers the arbitrary
+      // configured names — the `header` recipe's, and `hmac-timestamp`'s
+      // timestamp and signature headers — that no static blocklist could
+      // enumerate. For `hmac-timestamp` the reflected pair is not the private key,
+      // but it *is* a working credential for the upstream's whole clock-skew
+      // window against any path on that origin, re-harvestable on every call —
+      // outside the manifest allowlist, the budget, and `gateway_calls`.
+      const stripped = injected.headerNames.length
+        ? new Set([...RESPONSE_BLOCKED, ...injected.headerNames])
         : RESPONSE_BLOCKED;
       for (const [k, v] of Object.entries(upstream.headers)) {
         // content-length is dropped: we re-stream, so Fastify frames the body.
@@ -369,6 +458,20 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       if (err instanceof SsrfBlockedError) {
         return fail(reply, 403, "blocked", err.message);
       }
+      // Everything else — a transport failure, a timeout, or undici refusing a
+      // header it considers invalid — reaches the app as an opaque 502, which
+      // previously left no trace at all on the one service that can't be debugged
+      // by reproducing locally. undici's message names only the offending header
+      // *key*, never its value, so logging the error here carries no secret.
+      req.log.warn(
+        {
+          err,
+          appId: instruction.appId,
+          connection: instruction.connection,
+          origin: target.origin,
+        },
+        "upstream request failed",
+      );
       return fail(reply, 502, "upstream_error", "upstream request failed");
     }
   }

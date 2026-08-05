@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { SecretMetadata } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { SecretsPage } from "../pages/admin/SecretsPage";
@@ -61,6 +62,46 @@ describe("SecretsPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Create secret" })).toBeDefined(),
     );
+  });
+
+  it("describes an hmac-timestamp recipe without touching a key half", async () => {
+    const signed: SecretMetadata = {
+      ...SECRET,
+      id: "sec-3",
+      name: "signed-api",
+      injection: {
+        kind: "hmac-timestamp",
+        timestampHeader: "x-date",
+        authHeader: "authorization",
+        template: "Credential={credential},Signature={signature}",
+      },
+      boundApps: [],
+    };
+    stubSecrets([signed]);
+    setToken("test-token");
+    render();
+    expect(await screen.findByText("signed-api")).toBeDefined();
+    // The badge describes the recipe. Before the switch conversion this branch fell
+    // through to the query-recipe string and rendered "?undefined=…".
+    expect(screen.getByText("authorization: HMAC-SHA256 over x-date")).toBeDefined();
+  });
+
+  it("collects the credential pair separately for an hmac-timestamp secret", async () => {
+    stubSecrets([]);
+    setToken("test-token");
+    const user = userEvent.setup();
+    render();
+    await screen.findByRole("button", { name: "Create secret" });
+
+    await user.click(screen.getByRole("combobox", { name: "Injection" }));
+    await user.click(await screen.findByText("HMAC over timestamp"));
+
+    // The public half gets a plain input; only the private half is masked. Nobody
+    // should be hand-typing JSON into a password box.
+    expect(await screen.findByLabelText("Public key")).toBeDefined();
+    expect(screen.getByLabelText("Private key")).toBeDefined();
+    expect(screen.getByLabelText("Timestamp header")).toBeDefined();
+    expect(screen.getByLabelText("Authorization template")).toBeDefined();
   });
 
   it("shows a platform vendor secret without a grant control", async () => {
