@@ -3,10 +3,10 @@ import type { FastifyInstance } from "fastify";
 import {
   EnvSchema,
   type InjectionRecipe,
-  InjectionRecipeSchema,
   SecretCreateRequestSchema,
   SecretGrantRequestSchema,
   SecretRotateRequestSchema,
+  StoredInjectionRecipeSchema,
   type SecretMetadata,
   type SecretScope,
   validateMaterialForRecipe,
@@ -75,22 +75,58 @@ interface SecretRow {
   lastUsedAt: Date | null;
 }
 
-function toMetadata(row: SecretRow, boundApps: string[] = []): SecretMetadata {
-  return {
+export async function secretRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * Read a stored recipe, degrading to `null` rather than throwing.
+   *
+   * `injection` is a schemaless JSON column re-parsed on every read, so a row
+   * that predates a tightened constraint can fail to parse — and an unguarded
+   * `.parse` here failed the *whole response*, not the row. The admin list
+   * queries `global` and `platform` together, so one bad platform row hid every
+   * global secret, reported as a 400 no 5xx alerting would ever see.
+   *
+   * `StoredInjectionRecipeSchema` already tolerates hygiene violations; reaching
+   * `null` means a *security* violation (a reserved header name) or a value that
+   * is not a recipe at all. Both must stay visible so an operator can delete
+   * them, which is why this degrades instead of hiding the row.
+   */
+  const readRecipe = (row: SecretRow): InjectionRecipe | null => {
+    const parsed = StoredInjectionRecipeSchema.safeParse(row.injection);
+    if (parsed.success) return parsed.data;
+    app.log.warn(
+      { secretId: row.id, scope: row.scope, env: row.env, name: row.name },
+      "stored injection recipe is unreadable — this secret must be recreated",
+    );
+    return null;
+  };
+
+  /** For a route that must *act* on the recipe. Refuses rather than degrades. */
+  const requireRecipe = (row: SecretRow): InjectionRecipe => {
+    const recipe = readRecipe(row);
+    if (!recipe) {
+      // 409, not 400: the request body is fine — the resource state is what has
+      // to change, and recipes are immutable, so that means delete-and-recreate.
+      throw new AppError(
+        "conflict",
+        `secret "${row.name}" has an unreadable injection recipe — delete and recreate it`,
+      );
+    }
+    return recipe;
+  };
+
+  const toMetadata = (row: SecretRow, boundApps: string[] = []): SecretMetadata => ({
     id: row.id,
     name: row.name,
     scope: row.scope as SecretScope,
     env: row.env === "dev" ? "dev" : "prod",
-    injection: InjectionRecipeSchema.parse(row.injection),
+    injection: readRecipe(row),
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
     rotatedAt: row.rotatedAt ? row.rotatedAt.toISOString() : null,
     lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
     boundApps,
-  };
-}
+  });
 
-export async function secretRoutes(app: FastifyInstance): Promise<void> {
   // Custody must be configured (a KEK in dev / Key Vault in prod) to seal.
   const store = (): SecretStore => {
     if (!app.secretStore) {
@@ -271,7 +307,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       // The recipe is immutable, so a rotation is where the material can drift away
       // from it. The row is already in hand for the not-found check and the CAS, so
       // this needs no extra query and no change to the rotate request schema.
-      assertMaterialFits(InjectionRecipeSchema.parse(row.injection), value);
+      assertMaterialFits(requireRecipe(row), value);
       const material = await store().seal(value);
       const updated = await rotateOrRelease(row, material, {
         appId: appRow.id,
@@ -388,7 +424,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         where: { id: req.params.id, scope: { in: [...ADMIN_SCOPES] } },
       });
       if (!row) throw new AppError("not_found", "secret not found");
-      assertMaterialFits(InjectionRecipeSchema.parse(row.injection), value);
+      assertMaterialFits(requireRecipe(row), value);
       const material = await store().seal(value);
       const updated = await rotateOrRelease(row, material, {
         appId: null,

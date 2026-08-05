@@ -19,8 +19,11 @@ const SIGNATURE = "{signature}";
  * as substitution patterns and only replaces the first match. A credential
  * containing `$&` would be silently mangled into an authentication failure with
  * no diagnosable cause.
+ *
+ * Exported because the proxy's `header`-recipe injection needs the identical
+ * guarantee for its `{}` placeholder — one implementation, not two.
  */
-function substitute(input: string, placeholder: string, value: string): string {
+export function substitute(input: string, placeholder: string, value: string): string {
   return input.split(placeholder).join(value);
 }
 

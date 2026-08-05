@@ -28,7 +28,11 @@ describe("signTimestamp", () => {
     expect(signTimestamp(key, "2017-06-19T13:22:19.701Z")).toBe(
       "7d1752a91fd9e507c11a4111fa096059edf11bf6401581642d48f96955466f0d",
     );
-    expect(signTimestamp(Buffer.from(key, "hex").toString("binary"), "x")).not.toBe(
+    // The control has to hash the decoded *bytes*, not a latin1 string of them —
+    // `createHmac` re-encodes a string as UTF-8, so the string form is neither
+    // construction and the assertion would still pass if `signTimestamp` started
+    // decoding. Passing the Buffer is what makes this bite.
+    expect(createHmac("sha256", Buffer.from(key, "hex")).update("x").digest("hex")).not.toBe(
       signTimestamp(key, "x"),
     );
   });
@@ -71,7 +75,15 @@ describe("renderHmacAuth", () => {
     );
   });
 
-  it("handles a template that omits {credential}", () => {
+  /**
+   * `renderHmacAuth` is a pure substituter and stays total — a template with no
+   * `{credential}` renders fine here. What changed is that the *schema* now
+   * refuses to store one, because this recipe writes only two headers and the
+   * upstream would have no way to identify the key. Kept as a renderer-level
+   * case, with the rejection asserted where it is enforced
+   * (`packages/shared/src/secrets.test.ts`).
+   */
+  it("still renders a template that omits {credential} (the schema is what refuses it)", () => {
     expect(renderHmacAuth("Signature={signature}", "pub", "sig")).toBe("Signature=sig");
   });
 

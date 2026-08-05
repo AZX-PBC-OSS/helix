@@ -104,6 +104,39 @@ describe("SecretsPage", () => {
     expect(screen.getByLabelText("Authorization template")).toBeDefined();
   });
 
+  /**
+   * A row whose stored recipe is unreadable must still list — it used to fail the
+   * whole response. It is badged as broken, and Rotate is disabled because the
+   * server 409s; Delete stays available as the documented recovery.
+   */
+  it("renders an unreadable recipe as a warning instead of failing the page", async () => {
+    stubSecrets([
+      { ...SECRET, id: "sec-4", name: "broken", injection: null, boundApps: [] },
+      SECRET,
+    ]);
+    setToken("test-token");
+    render();
+    expect(await screen.findByText("broken")).toBeDefined();
+    // The healthy row is still there — the whole point.
+    expect(screen.getByText("stripe-live")).toBeDefined();
+    expect(screen.getByText("recipe unreadable — recreate this secret")).toBeDefined();
+    const rotate = screen.getAllByRole("button", { name: "Rotate" });
+    expect(rotate.some((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.getAllByRole("button", { name: "Delete" }).length).toBe(2);
+  });
+
+  // A hygiene-violating name is readable, just normalised. If SecretMetadata used
+  // the strict schema this would throw inside fetchJson and blank the page.
+  it("renders a legacy hygiene-violating recipe rather than rejecting the response", async () => {
+    stubSecrets([
+      { ...SECRET, id: "sec-5", injection: { kind: "header", name: "x api key", template: "{}" } },
+    ]);
+    setToken("test-token");
+    render();
+    expect(await screen.findByText("stripe-live")).toBeDefined();
+    expect(screen.getByText("x api key: {}")).toBeDefined();
+  });
+
   it("shows a platform vendor secret without a grant control", async () => {
     const platform: SecretMetadata = {
       ...SECRET,

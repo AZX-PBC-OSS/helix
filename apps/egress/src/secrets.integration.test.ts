@@ -62,8 +62,20 @@ async function seed(): Promise<void> {
         "app",
         appId,
         "signed",
-        { kind: "hmac-timestamp", timestampHeader: "x-date", template: "Sig={signature}" },
+        {
+          kind: "hmac-timestamp",
+          timestampHeader: "x-date",
+          template: "C={credential},Sig={signature}",
+        },
       ],
+      // A row whose header name violates the *hygiene* rules the write schema now
+      // enforces. It was legal when written and is already dead on the wire
+      // (undici rejects the name), so the read must tolerate it — failing here
+      // would turn a contained per-call 502 into an unreadable secret.
+      ["app", appId, "legacy-hygiene", { kind: "header", name: "X Api Key" }],
+      // …and one that violates a *security* rule. `host` is the SNI-override bug,
+      // so this one must fail closed on read, not merely on write.
+      ["app", appId, "legacy-reserved", { kind: "header", name: "host" }],
     ];
     for (const [scope, owningApp, name, injection] of rows) {
       const id = randomUUID();
@@ -137,13 +149,31 @@ describe("PgSecretResolver recipe round-trip", () => {
         kind: "hmac-timestamp",
         timestampHeader: "x-date",
         authHeader: "authorization",
-        template: "Sig={signature}",
+        template: "C={credential},Sig={signature}",
       });
       // The blob comes back verbatim; egress parses it at injection time.
       expect(JSON.parse(resolved?.value ?? "{}")).toEqual({
         credential: "pub-abc",
         key: "secret-for-app-signed",
       });
+    } finally {
+      await resolver.close();
+    }
+  });
+
+  /**
+   * The read path is lenient about hygiene and strict about security — asserted
+   * here against the real column under the real `helix_egress` role, because this
+   * is the boundary that actually reaches the wire.
+   */
+  it("tolerates a legacy hygiene-violating name but fails closed on a reserved one", async () => {
+    if (!provisioned) return;
+    const resolver = new PgSecretResolver(egressUrl(), store, { max: 1 });
+    try {
+      const legacy = await resolver.resolve(appId, "legacy-hygiene", "fetch", "prod");
+      expect(legacy?.injection).toEqual({ kind: "header", name: "x api key", template: "{}" });
+
+      await expect(resolver.resolve(appId, "legacy-reserved", "fetch", "prod")).rejects.toThrow();
     } finally {
       await resolver.close();
     }

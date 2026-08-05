@@ -43,9 +43,44 @@ the outbound hop (`packages/shared/src/secrets.ts`):
   The signed input is the timestamp alone — no method, path, or body. SHA-256,
   lowercase hex, and ISO-8601-with-milliseconds are fixed by the kind.
 
-Header names are normalised to lowercase and must be RFC 7230 tokens; `host`,
-the framing headers, and the `x-helix-` prefix are refused. (`host` in particular
-would move TLS SNI off the allowlisted origin.)
+Header names are normalised to lowercase (and trimmed) and must be RFC 7230
+tokens; `host`, the framing headers, and the `x-helix-` prefix are refused.
+(`host` in particular would move TLS SNI off the allowlisted origin.) For
+`hmac-timestamp`, `timestampHeader` and `authHeader` must differ — both are
+written into one header set, timestamp first, so equal names make the auth value
+overwrite the timestamp and the upstream verifies a signature over a timestamp it
+never received.
+
+A `header` template substitutes **every** `{}`, not just the first. A stored
+template with two `{}` therefore embeds the credential twice; that changed with
+the switch away from `String.replace`, which also stopped a credential containing
+`$&` being silently mangled into an unexplainable auth failure.
+
+### Reading a stored recipe
+
+`app_secrets.injection` is schemaless JSON that both the portal and egress
+re-parse on **every read**, so writes are validated strictly and reads leniently.
+The line is drawn at who a violation hurts:
+
+- *Hygiene* (the token charset, the length caps, the ASCII-only template) is
+  **request-only**. A stored row that violates one was already dead on the wire —
+  undici rejects it when constructing the request — so enforcing it on read would
+  convert a contained per-call 502 into an unreadable secret.
+- *Security* (the reserved names above) fails closed on **both** sides.
+
+A secret badged **"recipe unreadable"** has a stored recipe that trips a security
+rule. It still exists, still holds its credential, and can still be deleted — but
+it cannot be rotated (409) and egress fails its hop closed (502). Recipes are
+immutable, so the fix is delete-and-recreate. To look for such rows before a
+deploy:
+
+```sql
+SELECT id, scope, env, name, injection FROM app_secrets
+ WHERE injection->>'kind' IN ('header', 'hmac-timestamp');
+```
+
+Note rotation replaces the credential, not the recipe — a row with a broken
+recipe stays broken on the wire after rotating.
 
 The value for `hmac-timestamp` is a JSON blob holding **both halves** —
 `{"credential": "…", "key": "…"}`. The portal validates that shape before sealing,

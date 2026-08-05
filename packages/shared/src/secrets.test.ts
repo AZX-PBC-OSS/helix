@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   INJECTION_KINDS,
+  type InjectionRecipe,
   InjectionRecipeSchema,
+  StoredInjectionRecipeSchema,
   SecretCreateRequestSchema,
   SecretMetadataSchema,
   parseHmacCredential,
@@ -61,7 +63,7 @@ describe("InjectionRecipeSchema", () => {
         kind: "hmac-timestamp",
         timestampHeader: "X-Date",
         authHeader: "Authorization",
-        template: "{signature}",
+        template: "C={credential},S={signature}",
       }),
     ).toMatchObject({ timestampHeader: "x-date", authHeader: "authorization" });
   });
@@ -76,7 +78,7 @@ describe("InjectionRecipeSchema", () => {
         InjectionRecipeSchema.parse({
           kind: "hmac-timestamp",
           timestampHeader: name,
-          template: "{signature}",
+          template: "C={credential},S={signature}",
         }),
       ).toThrow();
     },
@@ -97,6 +99,54 @@ describe("InjectionRecipeSchema", () => {
     ).toThrow();
   });
 
+  // This recipe writes exactly two headers, one of them the timestamp, so there
+  // is nowhere else the public credential id could travel — omitting it means the
+  // upstream can never identify the key.
+  it("rejects a template missing {credential} — the upstream can't identify the key", () => {
+    expect(() =>
+      InjectionRecipeSchema.parse({
+        kind: "hmac-timestamp",
+        timestampHeader: "x-date",
+        template: "Signature={signature}",
+      }),
+    ).toThrow();
+  });
+
+  /**
+   * Both headers are written into one record, timestamp first, so equal names
+   * make the auth value overwrite the timestamp — the upstream then verifies a
+   * signature over a timestamp it never received. Nothing else flags it: the
+   * strip set de-dupes harmlessly and the skew warning never fires.
+   */
+  it("rejects timestampHeader === authHeader — the second write clobbers the first", () => {
+    expect(() =>
+      InjectionRecipeSchema.parse({
+        kind: "hmac-timestamp",
+        timestampHeader: "x-date",
+        authHeader: "x-date",
+        template: "C={credential},S={signature}",
+      }),
+    ).toThrow();
+    // The easy-to-hit shape: authHeader is defaulted, so naming the timestamp
+    // header `authorization` collides without the author ever writing it twice.
+    expect(() =>
+      InjectionRecipeSchema.parse({
+        kind: "hmac-timestamp",
+        timestampHeader: "authorization",
+        template: "C={credential},S={signature}",
+      }),
+    ).toThrow();
+    // …and the collision is on the *normalised* names, not the raw ones.
+    expect(() =>
+      InjectionRecipeSchema.parse({
+        kind: "hmac-timestamp",
+        timestampHeader: "X-Date",
+        authHeader: "x-date",
+        template: "C={credential},S={signature}",
+      }),
+    ).toThrow();
+  });
+
   // undici rejects CR/LF in header values at Request construction, so this is an
   // availability fix, not a smuggling one — but a 400 at write time beats a 502 later.
   it("rejects a template carrying CR/LF", () => {
@@ -104,9 +154,80 @@ describe("InjectionRecipeSchema", () => {
       InjectionRecipeSchema.parse({
         kind: "hmac-timestamp",
         timestampHeader: "x-date",
-        template: "Signature={signature}\r\nX-Evil: 1",
+        template: "C={credential},S={signature}\r\nX-Evil: 1",
       }),
     ).toThrow();
+  });
+});
+
+/**
+ * The read half of the split. These rows were legal when written, and the schema
+ * re-parses on every read in both planes — so tightening the *write* schema must
+ * not retroactively make them unreadable unless the violation is a security one.
+ */
+describe("StoredInjectionRecipeSchema", () => {
+  it("accepts a legacy name the strict schema now rejects, normalised", () => {
+    const legacy = { kind: "header", name: "X Api Key" };
+    expect(StoredInjectionRecipeSchema.parse(legacy)).toEqual({
+      kind: "header",
+      name: "x api key",
+      template: "{}",
+    });
+    // …and the two genuinely differ, so the factory can't silently collapse.
+    expect(() => InjectionRecipeSchema.parse(legacy)).toThrow();
+  });
+
+  // latin-1 (\x80-\xff) is inside undici's `headerCharRegex`, so such a template
+  // was legal to write AND works on the wire; strict ASCII refuses it. Over-long
+  // is the same story — the 512 cap is a write-time bound, not a wire limit.
+  it("accepts wire-legal templates the strict ASCII rule refuses", () => {
+    for (const template of ["Token café {}", "x".repeat(600) + "{}"]) {
+      expect(
+        StoredInjectionRecipeSchema.parse({ kind: "header", name: "x-k", template }),
+      ).toMatchObject({ template });
+      expect(() =>
+        InjectionRecipeSchema.parse({ kind: "header", name: "x-k", template }),
+      ).toThrow();
+    }
+  });
+
+  // Above \xff is outside undici's class too, so it was never wire-legal — the
+  // lenient parser tracks what the transport accepts, not "anything stored".
+  it("still refuses CR/LF and beyond-latin1 in a stored template", () => {
+    for (const template of ["a\r\nb: c", "Token “{}”"]) {
+      expect(
+        StoredInjectionRecipeSchema.safeParse({ kind: "header", name: "x-k", template }).success,
+      ).toBe(false);
+    }
+  });
+
+  // Security constraints are identical on both sides — a stored `host` is the
+  // SNI-override bug, so it must fail closed on read, not merely on write.
+  it.each(["host", "Host", "host ", "content-length", "x-helix-method"])(
+    "fails closed on the reserved header %s",
+    (name) => {
+      expect(StoredInjectionRecipeSchema.safeParse({ kind: "header", name }).success).toBe(false);
+      expect(
+        StoredInjectionRecipeSchema.safeParse({
+          kind: "hmac-timestamp",
+          timestampHeader: name,
+          template: "C={credential},S={signature}",
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it("stays in step with INJECTION_KINDS too", () => {
+    expect(StoredInjectionRecipeSchema.options.map((o) => o.shape.kind.value)).toEqual([
+      ...INJECTION_KINDS,
+    ]);
+  });
+
+  // Compile-time proof the two parsers infer to one type: if they diverged, this
+  // assignment would fail `pnpm typecheck` rather than any assertion here.
+  it("produces the same TypeScript type as the strict schema", () => {
+    const r: InjectionRecipe = StoredInjectionRecipeSchema.parse({ kind: "header-bearer" });
+    expect(r).toEqual({ kind: "header-bearer" });
   });
 });
 
@@ -148,7 +269,7 @@ describe("validateMaterialForRecipe", () => {
     const recipe = InjectionRecipeSchema.parse({
       kind: "hmac-timestamp",
       timestampHeader: "x-date",
-      template: "{signature}",
+      template: "C={credential},S={signature}",
     });
     expect(() => validateMaterialForRecipe(recipe, BLOB)).not.toThrow();
     expect(() => validateMaterialForRecipe(recipe, PRIVATE)).toThrow();
@@ -207,5 +328,24 @@ describe("SecretMetadataSchema", () => {
     });
     expect(m.boundApps).toEqual([]);
     expect(m).not.toHaveProperty("value");
+  });
+
+  // A row whose stored recipe could not be read degrades to null rather than
+  // failing the whole response. The SPA parses this schema too, so it has to
+  // accept both that and a hygiene-violating name the strict schema refuses.
+  it("carries a null injection for an unreadable stored recipe", () => {
+    const base = {
+      id: "sec_2",
+      name: "legacy",
+      scope: "global" as const,
+      env: "prod" as const,
+      createdBy: "alice",
+      createdAt: "2026-06-19T00:00:00.000Z",
+    };
+    expect(SecretMetadataSchema.parse({ ...base, injection: null }).injection).toBeNull();
+    expect(
+      SecretMetadataSchema.parse({ ...base, injection: { kind: "header", name: "X Api Key" } })
+        .injection,
+    ).toMatchObject({ name: "x api key" });
   });
 });

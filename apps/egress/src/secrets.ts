@@ -2,7 +2,7 @@ import { Pool } from "pg";
 import {
   type Env,
   type InjectionRecipe,
-  InjectionRecipeSchema,
+  StoredInjectionRecipeSchema,
   type InstructionCapability,
   validateMaterialForRecipe,
 } from "@azx-pbc/shared";
@@ -34,6 +34,22 @@ import type { SecretStore } from "@azx-pbc/secret-store";
 export interface ResolvedConnection {
   value: string;
   injection: InjectionRecipe;
+}
+
+/**
+ * The stored material does not fit its stored recipe (see the drift check in
+ * `resolve`). Typed so the proxy can tell it apart from a genuine custody
+ * failure: it is not a vault problem, and logging it beside `vaultStatus` /
+ * `vaultCode` probes would point an operator at the wrong subsystem.
+ *
+ * The message is a fixed string and must stay one — the value that failed is a
+ * credential.
+ */
+export class RecipeDriftError extends Error {
+  constructor() {
+    super("stored material does not fit its injection recipe");
+    this.name = "RecipeDriftError";
+  }
 }
 
 export interface SecretResolver {
@@ -104,16 +120,23 @@ export class PgSecretResolver implements SecretResolver {
 
     if (!row) return null;
 
-    const injection = InjectionRecipeSchema.parse(row.injection);
+    const injection = StoredInjectionRecipeSchema.parse(row.injection);
     const value = await this.#store.open(row.material);
     // Defence in depth against recipe⇄material drift. The portal validates this
     // before sealing, but the recipe is fixed at create while the material is
     // rotatable, and rows written before that check existed are still out there.
     // Failing closed here matters most in the quiet direction: an hmac credential
     // blob under a *static* recipe would present verbatim, sending the private
-    // half of the key pair to the third-party upstream in cleartext. The throw
-    // carries no material and is contained by the proxy's injection guard.
-    validateMaterialForRecipe(injection, value);
+    // half of the key pair to the third-party upstream in cleartext.
+    //
+    // This runs inside `resolve`, so the throw is caught by the proxy's *resolve*
+    // guard — not the nothing-binding injection guard downstream. That guard logs
+    // vault probes, so it is handed a typed error to branch on instead.
+    try {
+      validateMaterialForRecipe(injection, value);
+    } catch {
+      throw new RecipeDriftError();
+    }
     // Stamp last-used (the only column egress may UPDATE). Fail-soft: a metering
     // hiccup must not break a working credential.
     await this.#pool

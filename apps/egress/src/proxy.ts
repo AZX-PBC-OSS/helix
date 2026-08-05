@@ -13,9 +13,9 @@ import {
   parseHmacCredential,
 } from "@azx-pbc/shared";
 import { capBody } from "@azx-pbc/shared/bodyCap";
-import { hmacTimestampNow, renderHmacAuth, signTimestamp } from "./hmac.js";
+import { hmacTimestampNow, renderHmacAuth, signTimestamp, substitute } from "./hmac.js";
 import { verifyInstruction } from "./instruction.js";
-import { type SecretResolver } from "./secrets.js";
+import { RecipeDriftError, type SecretResolver } from "./secrets.js";
 import { type InstructionBurnStore } from "./burn.js";
 import { SsrfBlockedError, resolveAndValidate } from "./ssrf.js";
 
@@ -76,14 +76,6 @@ interface Injected {
 const NOTHING_INJECTED: Injected = { headerNames: [], queryParam: null };
 
 /**
- * Substitute without `String.replace`'s replacement-pattern semantics — see the
- * note on `renderHmacAuth`. A secret containing `$&` would otherwise be mangled.
- */
-function fill(template: string, placeholder: string, value: string): string {
-  return template.split(placeholder).join(value);
-}
-
-/**
  * Apply the resolved credential to the outbound request.
  *
  * Recipe header names are normalised to lowercase by the schema, so the names
@@ -105,7 +97,7 @@ function applyInjection(
       headers["authorization"] = `Bearer ${value}`;
       return { headerNames: ["authorization"], queryParam: null };
     case "header": {
-      headers[recipe.name] = fill(recipe.template, "{}", value);
+      headers[recipe.name] = substitute(recipe.template, "{}", value);
       return { headerNames: [recipe.name], queryParam: null };
     }
     case "query":
@@ -313,6 +305,21 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
           instruction.env,
         );
       } catch (err) {
+        if (err instanceof RecipeDriftError) {
+          // Not a custody failure. Logging it beside the vault probes below would
+          // point an operator at Key Vault for a bad row, so it gets the same
+          // `reason` code the injection guard uses — the two are the same class of
+          // fault, caught at different depths.
+          req.log.error(
+            {
+              appId: instruction.appId,
+              connection: instruction.connection,
+              reason: "injection_failed",
+            },
+            "stored connection secret does not fit its injection recipe",
+          );
+          return fail(reply, 502, "upstream_error", "connection secret unavailable");
+        }
         // Surface the vault's own status/code explicitly. `KeyVaultError` carries them
         // precisely so an operator can tell 403-RBAC from 403-SecretDisabled, and
         // 404-integrity (a row referencing a deleted entry) from a transport failure —

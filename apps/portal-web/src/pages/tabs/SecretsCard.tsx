@@ -77,6 +77,14 @@ export function SecretsCard({ app }: { app: App }) {
       </Text>
 
       <Stack gap={10} mb={16}>
+        {/* Without this the card renders nothing at all on a load failure —
+            `data` is undefined, so both branches below are falsy and even the
+            empty state disappears. Mirrors SecretsPage. */}
+        {secrets.isError && (
+          <Hint icon="alert" tone="bad">
+            Couldn&apos;t load secrets: {secrets.error.message}
+          </Hint>
+        )}
         {secrets.data?.length === 0 && (
           <Text size="xs" c="dark.2">
             No secrets yet.
@@ -95,7 +103,10 @@ export function SecretsCard({ app }: { app: App }) {
                       dev
                     </ToneBadge>
                   )}
-                  <ToneBadge tone="neutral" icon="key">
+                  <ToneBadge
+                    tone={s.injection ? "neutral" : "bad"}
+                    icon={s.injection ? "key" : "alert"}
+                  >
                     {describeInjection(s.injection)}
                   </ToneBadge>
                 </Group>
@@ -106,9 +117,12 @@ export function SecretsCard({ app }: { app: App }) {
                 </Text>
               </div>
               <Group gap={6} wrap="nowrap">
+                {/* An unreadable recipe can't be rotated — the server 409s — so
+                    don't offer it. Delete stays enabled: it is the recovery. */}
                 <Button
                   variant="default"
                   size="compact-xs"
+                  disabled={!s.injection}
                   onClick={() =>
                     setRotating((r) => (r?.id === s.id ? null : { id: s.id, value: "" }))
                   }
@@ -131,7 +145,7 @@ export function SecretsCard({ app }: { app: App }) {
                 <PasswordInput
                   label="New value"
                   description={
-                    s.injection.kind === "hmac-timestamp"
+                    s.injection?.kind === "hmac-timestamp"
                       ? 'both halves as JSON: {"credential":"…","key":"…"}'
                       : undefined
                   }

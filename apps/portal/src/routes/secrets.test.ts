@@ -531,3 +531,148 @@ describe("recipe⇄material validation", () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+describe("an unreadable stored recipe degrades one row, not the response", () => {
+  /**
+   * `app_secrets.injection` is schemaless JSON re-parsed on every read, so a row
+   * written before a constraint existed can fail to parse. It used to throw out of
+   * `toMetadata` and fail the *whole list* — and the admin query returns `global`
+   * and `platform` together, so one bad platform row (the LLM vendor key) hid
+   * every global secret, reported as a 400 no 5xx alerting would see.
+   *
+   * `host` is the poison here on purpose: it is a *security* violation, so even
+   * the lenient stored parser refuses it. Hygiene violations are tolerated and
+   * come back parsed (asserted separately below).
+   */
+  async function poison(id: string, injection: unknown): Promise<void> {
+    await t.prisma.appSecret.update({
+      where: { id },
+      data: { injection: injection as never },
+    });
+  }
+
+  it("lists healthy admin secrets alongside a poisoned one", async () => {
+    const good = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/secrets",
+      headers: authHeader(),
+      payload: { name: uniqueSlug(), value: "sk_good", scope: "global" },
+    });
+    expect(good.statusCode).toBe(201);
+    const bad = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/secrets",
+      headers: authHeader(),
+      payload: { name: uniqueSlug(), value: "sk_bad", scope: "platform" },
+    });
+    expect(bad.statusCode).toBe(201);
+    await poison(bad.json().id, { kind: "header", name: "host" });
+
+    const list = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/secrets",
+      headers: authHeader(),
+    });
+    expect(list.statusCode).toBe(200);
+    const rows = list.json() as Array<{ id: string; injection: unknown }>;
+    expect(rows.find((r) => r.id === bad.json().id)?.injection).toBeNull();
+    expect(rows.find((r) => r.id === good.json().id)?.injection).toEqual({
+      kind: "header-bearer",
+    });
+  });
+
+  it("lists app-scoped secrets the same way", async () => {
+    const slug = await createApp();
+    const created = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+      payload: { name: "poisoned", value: "sk_1" },
+    });
+    await poison(created.json().id, { kind: "header", name: "host" });
+    const list = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()[0].injection).toBeNull();
+  });
+
+  // A hygiene violation is *not* an unreadable row — it parses, normalised. Such
+  // a row was already dead on the wire (undici rejects the header name), so
+  // failing the read would have converted a contained 502 into a broken page.
+  it("keeps a legacy hygiene-violating row readable and rotatable", async () => {
+    const slug = await createApp();
+    const created = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+      payload: { name: "legacy", value: "sk_1" },
+    });
+    await poison(created.json().id, { kind: "header", name: "X Api Key", template: "{}" });
+
+    const list = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/secrets`,
+      headers: authHeader(),
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()[0].injection).toEqual({ kind: "header", name: "x api key", template: "{}" });
+
+    // Rotation restores control of the *credential*. It does not repair the
+    // recipe — that is immutable, so the row stays broken on the wire.
+    const rot = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/secrets/legacy/rotate`,
+      headers: authHeader(),
+      payload: { value: "sk_2" },
+    });
+    expect(rot.statusCode).toBe(200);
+    expect(rot.json().injection).toEqual({ kind: "header", name: "x api key", template: "{}" });
+  });
+
+  it.each([
+    ["app-scoped", true],
+    ["admin", false],
+  ])(
+    "refuses to rotate a security-violating row (%s), but allows delete",
+    async (_l, appScoped) => {
+      const slug = await createApp();
+      const created = appScoped
+        ? await t.app.inject({
+            method: "POST",
+            url: `/api/v1/apps/${slug}/secrets`,
+            headers: authHeader(),
+            payload: { name: "poisoned", value: "sk_1" },
+          })
+        : await t.app.inject({
+            method: "POST",
+            url: "/api/v1/secrets",
+            headers: authHeader(),
+            payload: { name: uniqueSlug(), value: "sk_1", scope: "global" },
+          });
+      const id = created.json().id as string;
+      await poison(id, { kind: "header", name: "host" });
+
+      const rotateUrl = appScoped
+        ? `/api/v1/apps/${slug}/secrets/poisoned/rotate`
+        : `/api/v1/secrets/${id}/rotate`;
+      const rot = await t.app.inject({
+        method: "POST",
+        url: rotateUrl,
+        headers: authHeader(),
+        payload: { value: "sk_2" },
+      });
+      expect(rot.statusCode).toBe(409);
+
+      // Delete is the documented recovery and must still work.
+      const del = await t.app.inject({
+        method: "DELETE",
+        url: appScoped ? `/api/v1/apps/${slug}/secrets/poisoned` : `/api/v1/secrets/${id}`,
+        headers: authHeader(),
+      });
+      expect(del.statusCode).toBe(204);
+    },
+  );
+});

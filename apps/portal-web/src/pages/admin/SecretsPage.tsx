@@ -299,7 +299,7 @@ function SecretCard({
             <Text className="az-mono" fz={14} fw={600}>
               {s.name}
             </Text>
-            <ToneBadge tone="neutral" icon="key">
+            <ToneBadge tone={s.injection ? "neutral" : "bad"} icon={s.injection ? "key" : "alert"}>
               {describeInjection(s.injection)}
             </ToneBadge>
           </Group>
@@ -343,9 +343,12 @@ function SecretCard({
               Grant
             </Button>
           )}
+          {/* An unreadable recipe can't be rotated — the server 409s — so don't
+              offer it. Delete stays enabled: it is the documented recovery. */}
           <Button
             variant="default"
             size="compact-xs"
+            disabled={!s.injection}
             onClick={() => setRotating((r) => (r === null ? "" : null))}
           >
             Rotate
@@ -391,7 +394,7 @@ function SecretCard({
           <PasswordInput
             label="New value"
             description={
-              s.injection.kind === "hmac-timestamp"
+              s.injection?.kind === "hmac-timestamp"
                 ? 'both halves as JSON: {"credential":"…","key":"…"}'
                 : undefined
             }

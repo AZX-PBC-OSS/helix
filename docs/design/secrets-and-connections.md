@@ -38,6 +38,12 @@ export const InjectionRecipeSchema = z.discriminatedUnion('kind', [
     timestampHeader: z.string(), authHeader: z.string().default('authorization'),
     template: z.string() }),                                      // {credential} / {signature}
 ]);
+// …built by one factory and exported twice. `InjectionRecipeSchema` parses request
+// bodies; `StoredInjectionRecipeSchema` parses the `app_secrets.injection` column,
+// relaxing the *hygiene* constraints (charset, length caps) while keeping the
+// *security* ones. That column is re-parsed on every read in both planes, so
+// tightening the write schema must never make an older row unreadable — unless the
+// violation is a security one, which fails closed on both sides.
 export const SecretScopeSchema = z.enum(['app', 'global', 'platform']);
 // The manifest side (fetch-proxy §4/§5 — `connection` names a secret by name):
 //   capabilities.fetch.origins: [{ origin: 'https://api.stripe.com', connection: 'stripe-live' }]
@@ -180,3 +186,5 @@ Milestone **M4.5**, interleaved with the fetch-proxy rungs (its only consumer at
 4. **Per-secret rotation policy / expiry.** Should the platform nag or force-rotate on an interval, and refuse a connection whose secret is past TTL? Hooks cleanly off `rotated_at`; deferred until there's a real key with a real rotation requirement.
 5. **Owner vs. admin boundary on app-scoped secrets.** Is storing an app-scoped secret an owner-only act, or does it also want admin sign-off when the app is `public`? Leaning owner-only (it's their app, their key), but a public app spending a secret on anonymous traffic is exactly the shape that might warrant the approval gate even for app scope. Revisit with the public-tier abuse data.
 6. **Global-secret grant through the approval queue.** Shipped v1 makes the grant an admin-direct write (§7); the binding that spends it is still approval-gated, so two admin acts are required either way. Routing the grant itself as a queued `secret-grant` `ApprovalRequest` (separation-of-duty between granting and approving admins) needs a non-capabilities delta type the spine doesn't model yet — deferred.
+
+7. **Tightening a recipe constraint: read-time tolerance, not a migration.** Recorded as precedent, because the next person tightening `InjectionRecipeSchema` will face it. The constraints added with `hmac-timestamp` (RFC 7230 charset, length caps) ran on the *read* path too, and one unparseable row failed the whole secrets list — the admin query returns `global` and `platform` together, so a single bad platform row hid every global secret, reported as a 400 no 5xx alerting would see. The fix is the strict/lenient split in §2 plus a per-row `safeParse` degrading to `injection: null`, **not** a DML backfill: the lenient parser *is* the repair, applied on every read, and for the residual security case a migration must not silently rewrite the header a credential is presented under. Rule of thumb: a new constraint belongs in the strict half unless a row violating it could hurt something other than itself.

@@ -69,9 +69,16 @@ export function buildInjection(kind: string, form: InjectionFormState): Injectio
  *
  * A `switch` with an annotated return rather than an if-chain: an unhandled kind
  * then fails typecheck ("function lacks ending return statement") instead of
- * falling through to another kind's branch and rendering nonsense.
+ * falling through to another kind's branch and rendering nonsense. The `null`
+ * guard is deliberately *outside* the switch and must stay there — folding it in
+ * as a `default` would give the switch an exhaustiveness escape hatch and lose
+ * that property.
+ *
+ * `null` means the stored recipe could not be parsed (it names a reserved header,
+ * or is not a recipe at all). The secret still exists and is still deletable.
  */
-export function describeInjection(r: InjectionRecipe): string {
+export function describeInjection(r: InjectionRecipe | null): string {
+  if (!r) return "recipe unreadable — recreate this secret";
   switch (r.kind) {
     case "header-bearer":
       return "Authorization: Bearer …";

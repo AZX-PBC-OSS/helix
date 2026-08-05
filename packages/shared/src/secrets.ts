@@ -41,33 +41,56 @@ const FORBIDDEN_HEADER_NAMES = new Set([
 const HEADER_TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 
 /**
- * Every header name a recipe writes goes through this. It **normalises to
- * lowercase** rather than requiring it: `name` was free text before this (and the
- * portal SPA takes it as such), so stored rows may carry any case and the schema
- * re-parses on every read in both the portal and egress — rejecting would fail
- * those reads. Normalising is also the stronger guarantee, since egress compares
- * the names it injected against lowercased upstream response keys to strip them
- * (issue #7): a name that cannot round-trip that comparison cannot be stripped,
- * and after this it always can. The reserved-name check runs post-normalisation.
- */
-const headerName = () =>
-  z
-    .string()
-    .min(1)
-    .max(64)
-    .regex(HEADER_TOKEN, "must be an RFC 7230 token")
-    .transform((n) => n.toLowerCase())
-    .refine((n) => !FORBIDDEN_HEADER_NAMES.has(n), "reserved header name")
-    .refine((n) => !n.startsWith("x-helix-"), "reserved header prefix");
-
-/**
- * Printable ASCII + tab — exactly the subset undici will put on the wire
- * (`headerCharRegex = /[^\t\x20-\x7e\x80-\xff]/`, rejected at Request
- * construction). CR and LF fall outside it, so request splitting via a template
- * is not achievable at the transport either; validating here turns a 502 at 3am
- * into a 400 at write time.
+ * Printable ASCII + tab. A deliberately narrow subset of what the wire accepts,
+ * applied to values arriving in a request body: it turns a 502 at 3am into a 400
+ * at write time.
  */
 const HEADER_VALUE_SAFE = /^[\t\x20-\x7e]*$/;
+
+/**
+ * `headerCharRegex` from `undici/lib/core/util.js`, inverted — exactly what
+ * undici will put on the wire. Used for values read back out of storage: a
+ * latin-1 template is wire-legal and was legal to write, so it must keep
+ * parsing, while CR/LF stay out without that depending on a dependency.
+ */
+const HEADER_VALUE_WIRE = /^[\t\x20-\x7e\x80-\xff]*$/;
+
+/**
+ * Where a recipe came from. This is the only axis the two parsers differ on —
+ * see the note above {@link StoredInjectionRecipeSchema}.
+ */
+type RecipeSource = "request" | "stored";
+
+/**
+ * Every header name a recipe writes goes through this.
+ *
+ * It **normalises to lowercase and trims** rather than requiring either. `name`
+ * was free text before this (and the portal SPA still takes it as such), so
+ * stored rows carry any case. Normalising is also the stronger guarantee: egress
+ * compares the names it injected against lowercased upstream response keys to
+ * strip them (issue #7), so a name that cannot round-trip that comparison cannot
+ * be stripped, and after this it always can. The trim matters on the stored path
+ * specifically — without it `"Host "` walks straight past the reserved set.
+ *
+ * The charset and length bound are **request-only**: a stored name violating
+ * them was already dead on the wire (undici's `isValidHTTPToken` rejects it at
+ * Request construction), so enforcing them on read converts a contained per-call
+ * 502 into an unreadable row. The reserved-name checks run on both, always after
+ * normalisation.
+ */
+const headerName = (from: RecipeSource) => {
+  const base = z.string().min(1);
+  return (from === "request" ? base.max(64).regex(HEADER_TOKEN, "must be an RFC 7230 token") : base)
+    .transform((n) => n.trim().toLowerCase())
+    .refine((n) => !FORBIDDEN_HEADER_NAMES.has(n), "reserved header name")
+    .refine((n) => !n.startsWith("x-helix-"), "reserved header prefix");
+};
+
+/** The `header` recipe's template — strict ASCII on write, wire-legal on read. */
+const headerTemplate = (from: RecipeSource) =>
+  from === "request"
+    ? z.string().max(512).regex(HEADER_VALUE_SAFE)
+    : z.string().regex(HEADER_VALUE_WIRE);
 
 /**
  * How a resolved secret is applied to the outbound request (§2). The recipe is a
@@ -81,60 +104,115 @@ const HEADER_VALUE_SAFE = /^[\t\x20-\x7e]*$/;
  * client-credentials, SigV4 with session tokens, mTLS) remain deferred — see
  * design §10 q2.
  */
-export const InjectionRecipeSchema = z.discriminatedUnion("kind", [
-  /** `Authorization: Bearer <secret>` — the common case. */
-  z.object({ kind: z.literal("header-bearer") }),
-  /** Arbitrary header; `{}` in `template` is replaced with the secret. */
-  z.object({
-    kind: z.literal("header"),
-    name: headerName(),
-    template: z.string().max(512).regex(HEADER_VALUE_SAFE).default("{}"),
-  }),
-  /** Query parameter `?<param>=<secret>`. */
-  z.object({ kind: z.literal("query"), param: z.string().min(1) }),
-  /**
-   * HMAC over a timestamp. The signed input is the timestamp string **alone** —
-   * not the method, path, query, or body — so injection is a pure function of
-   * (private key, now) and needs no request context.
-   *
-   * The canonical form lives in the KIND NAME, deliberately. A scheme that signs
-   * method+path+body is a *sibling kind* (`hmac-request`) — a code change with
-   * tests, reviewed — never an admin-editable canonical-string template.
-   * Canonicalization is where implementations of this family go wrong, and it
-   * does not belong in a text box.
-   *
-   * SHA-256, lowercase-hex, and ISO-8601-with-milliseconds are fixed rather than
-   * configurable. Each would carry a default, and `app_secrets.injection` is a
-   * schemaless JSON column, so adding a knob later is purely additive with no
-   * migration — while fixing them now removes the weak-algorithm and
-   * unencodable-digest failure classes outright.
-   *
-   * The stored value is a JSON blob carrying both halves of the key pair
-   * ({@link HmacCredentialSchema}): regenerating the pair changes both, and a
-   * blob rotates atomically through the existing rotate route.
-   */
-  z.object({
-    kind: z.literal("hmac-timestamp"),
-    /** Header carrying the timestamp that is also the entire signed input. */
-    timestampHeader: headerName(),
-    /** Header carrying the rendered credential + signature. */
-    authHeader: headerName().default("authorization"),
+const injectionRecipe = (from: RecipeSource) =>
+  z.discriminatedUnion("kind", [
+    /** `Authorization: Bearer <secret>` — the common case. */
+    z.object({ kind: z.literal("header-bearer") }),
+    /** Arbitrary header; `{}` in `template` is replaced with the secret. */
+    z.object({
+      kind: z.literal("header"),
+      name: headerName(from),
+      template: headerTemplate(from).default("{}"),
+    }),
+    /** Query parameter `?<param>=<secret>`. */
+    z.object({ kind: z.literal("query"), param: z.string().min(1) }),
     /**
-     * Value written to `authHeader`. `{credential}` and `{signature}` are
-     * substituted. Named rather than the `header` kind's bare `{}` because there
-     * are two substitutions: the convention is one value ⇒ `{}`, more than one ⇒
-     * named placeholders. Positional `{}` here would let a swapped template
-     * produce a well-formed header that silently fails to authenticate.
+     * HMAC over a timestamp. The signed input is the timestamp string **alone** —
+     * not the method, path, query, or body — so injection is a pure function of
+     * (private key, now) and needs no request context.
+     *
+     * The canonical form lives in the KIND NAME, deliberately. A scheme that signs
+     * method+path+body is a *sibling kind* (`hmac-request`) — a code change with
+     * tests, reviewed — never an admin-editable canonical-string template.
+     * Canonicalization is where implementations of this family go wrong, and it
+     * does not belong in a text box.
+     *
+     * SHA-256, lowercase-hex, and ISO-8601-with-milliseconds are fixed rather than
+     * configurable. Each would carry a default, and `app_secrets.injection` is a
+     * schemaless JSON column, so adding a knob later is purely additive with no
+     * migration — while fixing them now removes the weak-algorithm and
+     * unencodable-digest failure classes outright.
+     *
+     * The stored value is a JSON blob carrying both halves of the key pair
+     * ({@link HmacCredentialSchema}): regenerating the pair changes both, and a
+     * blob rotates atomically through the existing rotate route.
      */
-    template: z
-      .string()
-      .min(1)
-      .max(512)
-      .regex(HEADER_VALUE_SAFE)
-      .refine((t) => t.includes("{signature}"), "template must contain {signature}"),
-  }),
-]);
+    z
+      .object({
+        kind: z.literal("hmac-timestamp"),
+        /** Header carrying the timestamp that is also the entire signed input. */
+        timestampHeader: headerName(from),
+        /** Header carrying the rendered credential + signature. */
+        authHeader: headerName(from).default("authorization"),
+        /**
+         * Value written to `authHeader`. `{credential}` and `{signature}` are
+         * substituted. Named rather than the `header` kind's bare `{}` because there
+         * are two substitutions: the convention is one value ⇒ `{}`, more than one ⇒
+         * named placeholders. Positional `{}` here would let a swapped template
+         * produce a well-formed header that silently fails to authenticate.
+         *
+         * Both placeholders are required. This recipe writes exactly two headers,
+         * one of them the timestamp, so there is no configuration where the public
+         * credential id travels elsewhere — omitting `{credential}` means the
+         * upstream can never identify the key and every call 401s.
+         */
+        template: headerTemplate(from)
+          .refine((t) => t.includes("{signature}"), "template must contain {signature}")
+          .refine((t) => t.includes("{credential}"), "template must contain {credential}"),
+      })
+      // Both headers are written into one record, timestamp first — so naming them
+      // the same makes the auth value overwrite the timestamp, and the upstream gets
+      // a signature over a timestamp it was never sent. Every call then fails auth
+      // with nothing to point at: the schema accepted it, the strip set de-dupes
+      // harmlessly, and the skew warning never fires. Same silent-misconfiguration
+      // class the named placeholders above exist to prevent, arriving via the header
+      // names instead of the template. Easy to hit, since `authHeader` defaults.
+      .refine(
+        (r) => r.timestampHeader !== r.authHeader,
+        "timestampHeader and authHeader must differ — the second write overwrites the first",
+      ),
+  ]);
+
+/**
+ * A recipe arriving in a **request body**. Strict: everything it refuses, it
+ * refuses at write time, as a 400 the author can act on.
+ */
+export const InjectionRecipeSchema = injectionRecipe("request");
 export type InjectionRecipe = z.infer<typeof InjectionRecipeSchema>;
+
+/**
+ * A recipe read back out of the `app_secrets.injection` column. Lenient about
+ * *hygiene*, identical about *security*, and the same TypeScript type.
+ *
+ * **Two parsers, one type — which you want depends on where the value came
+ * from, not on how careful you feel.** The split exists because that column is
+ * schemaless JSON that both the portal and egress re-parse on *every read*, so
+ * tightening the write schema retroactively makes older rows unreadable — and a
+ * read that throws is an outage, not a validation error. One bad `platform` row
+ * used to fail the entire admin list, reported as a 400 that no 5xx alerting
+ * would ever see.
+ *
+ * The line is drawn at **who gets hurt**:
+ *
+ * - *Hygiene* (the RFC 7230 token charset, the 64/512 caps, the ASCII-only
+ *   template) protects the request the platform is about to make. A row that
+ *   violates one was already dead on the wire — undici rejects it at Request
+ *   construction — so it 502'd long before this schema existed. Relaxing it on
+ *   read costs nothing and lets an operator *see* the broken row instead of a
+ *   blank page.
+ * - *Security* (`FORBIDDEN_HEADER_NAMES`, the `x-helix-` prefix, and the
+ *   trim+lowercase normalisation those checks depend on) protects the
+ *   **upstream**. A stored `host` is the SNI-override bug. These fail closed on
+ *   both sides: such a row is unreadable *on purpose*, surfacing as
+ *   `injection: null`, refusing to rotate, and failing the egress hop closed.
+ *
+ * Adding a constraint? It belongs in the strict half unless a row violating it
+ * could hurt something other than itself.
+ *
+ * **Never use this on a request body** — it accepts header names undici will
+ * refuse, turning a 400 into a 502 at 3am.
+ */
+export const StoredInjectionRecipeSchema = injectionRecipe("stored");
 
 /**
  * Injection recipe kinds, for UI selects / tests without restating strings. Hand
@@ -243,7 +321,18 @@ export const SecretMetadataSchema = z.object({
   scope: SecretScopeSchema,
   /** Partition tier (dev-mode §6): a dev fetch injects only `dev` connection secrets. */
   env: EnvSchema,
-  injection: InjectionRecipeSchema,
+  /**
+   * The **stored** parser, not the strict one — this field describes a row, and
+   * the SPA re-parses this schema on every response. Using the strict parser here
+   * would let the portal return a name the browser then refuses, moving the read
+   * failure from the server to the client, where it presents as a dead page.
+   *
+   * `null` = the stored recipe is unreadable (it names a reserved header, or is
+   * not a recipe at all). The credential still exists and is still deletable; it
+   * cannot be rotated, and egress fails its hop closed. Recipes are immutable by
+   * design, so recovery is delete-and-recreate.
+   */
+  injection: StoredInjectionRecipeSchema.nullable(),
   createdBy: z.string(),
   createdAt: z.string(),
   rotatedAt: z.string().nullable().optional(),
