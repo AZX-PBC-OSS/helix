@@ -233,6 +233,43 @@ describe("/_api/fetch", () => {
       });
     });
 
+    /**
+     * `none` means *no initiator* — a link opened from an email client, Slack, or
+     * a native app, not just the address bar. `__Host-session` is `SameSite=Lax`,
+     * so the session rides that navigation; accepting `none` would let an attacker
+     * spend the app's connection credential against the victim's session, outside
+     * the manifest allowlist and the budget.
+     */
+    it("refuses `none` — no initiator is a phishing channel, not a user typing", async () => {
+      expect(await call({ "sec-fetch-site": "none" })).toEqual({ status: 403, egressCalls: 0 });
+    });
+
+    /**
+     * Second, independent lock on the same attack. A proxied response is returned
+     * on the app's own origin with an upstream-controlled `content-type`, no CSP
+     * and no `nosniff`, so a `text/html` body reached by *navigation* would execute
+     * script in the app's origin. No legitimate `/_api/*` caller navigates.
+     */
+    it.each([
+      ["sec-fetch-mode: navigate", { "sec-fetch-mode": "navigate" }],
+      ["sec-fetch-dest: document", { "sec-fetch-dest": "document" }],
+      ["sec-fetch-dest: iframe", { "sec-fetch-dest": "iframe" }],
+    ])("refuses a navigation even when same-origin (%s)", async (_label, extra) => {
+      expect(await call({ "sec-fetch-site": "same-origin", ...extra })).toEqual({
+        status: 403,
+        egressCalls: 0,
+      });
+    });
+
+    // The `accept` header is on the request safelist, so an app proxying an HTML
+    // resource legitimately sends `text/html`. Unlike gate.ts's isNavigation, this
+    // check must not sniff it — that would fail closed on a valid call.
+    it("does not mistake an app fetching HTML for a navigation", async () => {
+      expect(
+        await call({ "sec-fetch-site": "same-origin", accept: "text/html,*/*" }),
+      ).toMatchObject({ status: 200 });
+    });
+
     // Sec-Fetch-Site is a forbidden header name, so page script cannot forge it;
     // a lying value beats the check only for a client that already holds the
     // session cookie — which is what CSRF exists to exploit *without* holding.
