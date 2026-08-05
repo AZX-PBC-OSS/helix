@@ -191,6 +191,89 @@ describe("/_api/fetch", () => {
     await app.close();
   });
 
+  /**
+   * CSRF on the proxy must hold for **GET**, because a proxied GET spends a
+   * connection credential and returns third-party data — so the reads-are-exempt
+   * shortcut `data-handler` takes is not available here. But a same-origin
+   * `fetch()` GET carries no `Origin` header at all (the Fetch standard appends
+   * one only for CORS-tainted requests or non-GET/HEAD methods), so an
+   * Origin-only check refused every legitimate browser read through the proxy.
+   * `Sec-Fetch-Site` is the signal that covers both; these pin the matrix.
+   */
+  describe("CSRF: Sec-Fetch-Site as the GET-capable signal", () => {
+    async function call(headers: Record<string, string>) {
+      const { app, egress } = buildFetchEdge();
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/fetch/https://api.github.com/x",
+        headers: { ...HOST, ...headers },
+      });
+      await app.close();
+      return { status: res.statusCode, egressCalls: egress.calls.length };
+    }
+
+    // The regression this fixes: the real browser shape for an app's own GET.
+    it("allows a same-origin GET that carries no Origin header", async () => {
+      expect(await call({ "sec-fetch-site": "same-origin" })).toMatchObject({ status: 200 });
+    });
+
+    // A sibling subdomain is same-*site*, so SameSite cookies do not stop it —
+    // this is precisely the threat the origin check exists for.
+    it("refuses a sibling subdomain (same-site) even with no Origin", async () => {
+      expect(await call({ "sec-fetch-site": "same-site" })).toEqual({
+        status: 403,
+        egressCalls: 0,
+      });
+    });
+
+    it("refuses a cross-site caller", async () => {
+      expect(await call({ "sec-fetch-site": "cross-site" })).toEqual({
+        status: 403,
+        egressCalls: 0,
+      });
+    });
+
+    // Sec-Fetch-Site is a forbidden header name, so page script cannot forge it;
+    // a lying value beats the check only for a client that already holds the
+    // session cookie — which is what CSRF exists to exploit *without* holding.
+    it("lets Sec-Fetch-Site override a mismatched Origin", async () => {
+      expect(
+        await call({
+          "sec-fetch-site": "same-origin",
+          origin: "https://evil.local.helix.azxlabs.io:8080",
+        }),
+      ).toMatchObject({ status: 200 });
+    });
+
+    it("still refuses a cross-origin POST when Sec-Fetch-Site says cross-site", async () => {
+      const { app, egress } = buildFetchEdge();
+      const res = await app.inject({
+        method: "POST",
+        url: "/_api/fetch/https://api.github.com/x",
+        headers: {
+          ...HOST,
+          "sec-fetch-site": "cross-site",
+          origin: "https://evil.local.helix.azxlabs.io:8080",
+        },
+        payload: { a: 1 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(egress.calls).toHaveLength(0);
+      await app.close();
+    });
+
+    // Older clients that send no Fetch Metadata fall back to the exact Origin
+    // match, and an absent Origin still fails closed — curl is refused.
+    it("falls back to Origin when Sec-Fetch-Site is absent", async () => {
+      expect(await call({ origin: ORIGIN })).toMatchObject({ status: 200 });
+      expect(await call({ origin: "https://evil.local.helix.azxlabs.io:8080" })).toEqual({
+        status: 403,
+        egressCalls: 0,
+      });
+      expect(await call({})).toEqual({ status: 403, egressCalls: 0 });
+    });
+  });
+
   it("blocks when the daily request budget is exhausted", async () => {
     const { app, egress, usage } = buildFetchEdge({ requestsPerDay: 1 });
     usage.fetchToday = 1;

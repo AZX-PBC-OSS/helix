@@ -77,18 +77,58 @@ export function isSameOrigin(
 }
 
 /**
+ * `Sec-Fetch-Site`, where the browser sent one, as a same-origin verdict.
+ * Returns `undefined` when the header is absent so the caller can fall back.
+ *
+ * Fetch Metadata is the right signal for a CSRF guard that must also cover
+ * **GET**: it rides every request from every current browser, whereas `Origin`
+ * is appended only for CORS-tainted requests or non-GET/HEAD methods. It is also
+ * a forbidden header name, so page script cannot set or spoof it, and it
+ * distinguishes `same-site` (a sibling subdomain — the exact threat the Origin
+ * check exists for, and the one `SameSite` cookies do not cover) from
+ * `same-origin`.
+ *
+ * `none` is a user-initiated request (address bar, bookmark) — not attacker
+ * reachable, so it is accepted, matching {@link isSameOriginFormPost}.
+ */
+function fetchMetadataSameOrigin(secFetchSite: string | string[] | undefined): boolean | undefined {
+  if (typeof secFetchSite !== "string" || secFetchSite === "") return undefined;
+  return secFetchSite === "same-origin" || secFetchSite === "none";
+}
+
+/**
  * The gateway's CSRF seam (dev-mode §5.4). The `/_api/*` handlers call this to
- * decide whether a request's Origin is allowed. On the edge it is the exact
- * same-origin check above; the dev-gateway swaps in an allowlist check (the
+ * decide whether a request's Origin is allowed. On the edge it is the
+ * same-origin check below; the dev-gateway swaps in an allowlist check (the
  * `DevTokenResolver` has already matched the Origin against the token's
  * registered origins, so its `checkOrigin` returns true). Injected into the
  * handler runtimes alongside `resolveCaller`.
  */
 export type OriginCheck = (req: FastifyRequest, entry: RegistryEntry) => boolean;
 
-/** The production origin check: exact match against the app's own public origin. */
+/**
+ * The production origin check for `/_api/*`.
+ *
+ * `Sec-Fetch-Site` is authoritative when present; otherwise the `Origin` must
+ * match exactly, and an absent one still fails closed.
+ *
+ * The two-signal form is required, not belt-and-braces. This seam guards **GET**
+ * as well as mutations — `/_api/fetch/*` spends a connection credential and
+ * returns third-party data on a GET, so a cross-origin GET riding the victim's
+ * session is a real exfiltration path and cannot be exempted the way
+ * `data-handler`'s reads are. But a same-origin `fetch()` GET carries **no**
+ * `Origin` header at all, so an Origin-only check rejected every legitimate
+ * browser read through the proxy. Fetch Metadata is the signal that covers both.
+ *
+ * Note a non-browser client (curl) sends neither header and is still refused;
+ * one that sets `Sec-Fetch-Site: same-origin` by hand is not a CSRF vector — it
+ * already holds the session cookie, which is the thing CSRF exists to exploit
+ * *without* holding.
+ */
 export function makeSameOriginCheck(config: EdgeConfig): OriginCheck {
-  return (req, entry) => isSameOrigin(req.headers.origin, config, entry.slug);
+  return (req, entry) =>
+    fetchMetadataSameOrigin(req.headers["sec-fetch-site"]) ??
+    isSameOrigin(req.headers.origin, config, entry.slug);
 }
 
 /**
