@@ -33,6 +33,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     data: null,
     externalOrigins: [],
     fetch: { connections: new Map(), requestsPerDay: null, shim: false },
+    offline: null,
     ...overrides,
   };
 }

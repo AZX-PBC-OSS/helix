@@ -87,6 +87,7 @@ describe("RegistryProjection", () => {
       data: null,
       externalOrigins: [],
       fetch: { connections: new Map(), requestsPerDay: null, shim: false },
+      offline: null,
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();
@@ -161,6 +162,46 @@ describe("RegistryProjection", () => {
     expect(projection.getApp("granted")?.externalOrigins).toEqual(["https://api.foo.com"]);
     expect(projection.getApp("none")?.externalOrigins).toEqual([]);
     expect(projection.getApp("bad-json")?.externalOrigins).toEqual([]);
+  });
+
+  it("parses capabilities.offline, and fails closed to null on anything illegal", async () => {
+    // The portal already refuses these on write. This asserts the edge refuses
+    // them again on read (ADR-0035): a row written by an older build, a
+    // migration, or a direct UPDATE must never hand the worker root scope or a
+    // platform namespace, because this value becomes a response header.
+    const projection = new RegistryProjection(
+      querierFor([
+        [
+          { ...ROW, slug: "granted", capabilities: { offline: { scope: "/app/" } } },
+          { ...ROW, slug: "none", capabilities: {} },
+          { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
+          { ...ROW, slug: "root", capabilities: { offline: { scope: "/" } } },
+          { ...ROW, slug: "auth-ns", capabilities: { offline: { scope: "/_auth/" } } },
+          { ...ROW, slug: "api-ns", capabilities: { offline: { scope: "/_api/" } } },
+          { ...ROW, slug: "traversal", capabilities: { offline: { scope: "/app/../" } } },
+          { ...ROW, slug: "encoded", capabilities: { offline: { scope: "/app%2f/" } } },
+          { ...ROW, slug: "no-slash", capabilities: { offline: { scope: "/app" } } },
+          { ...ROW, slug: "wrong-type", capabilities: { offline: { scope: 42 } } },
+          { ...ROW, slug: "empty", capabilities: { offline: {} } },
+        ],
+      ]),
+    );
+    await projection.load();
+    expect(projection.getApp("granted")?.offline).toEqual({ scope: "/app/" });
+    for (const slug of [
+      "none",
+      "bad-json",
+      "root",
+      "auth-ns",
+      "api-ns",
+      "traversal",
+      "encoded",
+      "no-slash",
+      "wrong-type",
+      "empty",
+    ]) {
+      expect(projection.getApp(slug)?.offline, slug).toBeNull();
+    }
   });
 
   it("keeps serving the previous map when a reload fails", async () => {

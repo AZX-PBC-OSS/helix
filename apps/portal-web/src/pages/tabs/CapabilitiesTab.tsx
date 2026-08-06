@@ -18,6 +18,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import {
   BASELINE_DOLLARS_PER_DAY,
+  isValidServiceWorkerScope,
   type App,
   type Capabilities,
   type FetchConnection,
@@ -102,7 +103,12 @@ interface Draft {
   fetchOrigins: FetchConnection[];
   fetchShim: boolean;
   fetchRequestsPerDay: number | undefined;
+  /** Offline (ADR-0035): the worker's scope prefix; undefined = no grant. */
+  offlineScope: string | undefined;
 }
+
+/** Default offered when the offline toggle is switched on. */
+const DEFAULT_OFFLINE_SCOPE = "/app/";
 
 function toDraft(c: Capabilities): Draft {
   return {
@@ -117,6 +123,7 @@ function toDraft(c: Capabilities): Draft {
     fetchOrigins: c.fetch?.origins ?? [],
     fetchShim: c.fetch?.shim ?? false,
     fetchRequestsPerDay: c.fetch?.requestsPerDay,
+    offlineScope: c.offline?.scope,
   };
 }
 
@@ -161,6 +168,7 @@ function fromDraft(d: Draft): Capabilities {
           }
         : {};
     })(),
+    ...(d.offlineScope !== undefined ? { offline: { scope: d.offlineScope } } : {}),
     mcp: d.mcp,
     externalOrigins: d.externalOrigins,
   };
@@ -200,6 +208,10 @@ function renderYaml(app: App, d: Draft): string {
         );
       }
     }
+  }
+  if (d.offlineScope !== undefined) {
+    lines.push(`  offline:`);
+    lines.push(`    scope: ${d.offlineScope}`);
   }
   return lines.join("\n");
 }
@@ -260,6 +272,10 @@ export function CapabilitiesTab({ app }: { app: App }) {
   const capMissing = capRequired && draft.dollarsPerDay === undefined;
   const overBaseline =
     draft.dollarsPerDay !== undefined && draft.dollarsPerDay > BASELINE_DOLLARS_PER_DAY;
+  // The same rule the server enforces, run here so a typo is a field error
+  // rather than a 400 on save.
+  const scopeInvalid =
+    draft.offlineScope !== undefined && !isValidServiceWorkerScope(draft.offlineScope);
 
   return (
     <Stack gap={18}>
@@ -488,6 +504,51 @@ export function CapabilitiesTab({ app }: { app: App }) {
               </Stack>
             </CapBlock>
 
+            <CapBlock
+              icon="download"
+              title="Offline"
+              desc="Serve a platform-owned service worker so the app cold-boots with no network. The app ships no worker code — declaring a scope is the whole adoption cost."
+            >
+              <Stack gap={12}>
+                <Switch
+                  checked={draft.offlineScope !== undefined}
+                  onChange={(e) =>
+                    patch({
+                      offlineScope: e.currentTarget.checked ? DEFAULT_OFFLINE_SCOPE : undefined,
+                    })
+                  }
+                  label="Offline cold boot"
+                  description="The document and its static assets answer with no network. Everything else an offline app needs — durable state, caching large payloads, draining queued work — is ordinary app code and needs no grant."
+                />
+                {draft.offlineScope !== undefined && (
+                  <>
+                    <TextInput
+                      label="Worker scope"
+                      description="Path prefix the worker controls. Never the domain root, and never a reserved /_ namespace — a root-scoped worker could observe the sign-in handoff."
+                      value={draft.offlineScope}
+                      onChange={(e) => patch({ offlineScope: e.currentTarget.value })}
+                      placeholder={DEFAULT_OFFLINE_SCOPE}
+                      w={260}
+                      size="xs"
+                      classNames={{ input: "az-mono" }}
+                      error={
+                        isValidServiceWorkerScope(draft.offlineScope)
+                          ? undefined
+                          : "Needs a leading and trailing slash, e.g. /app/"
+                      }
+                    />
+                    <Hint icon="shield" tone="info">
+                      The app must be served from <code>{draft.offlineScope}</code> — its bundle has
+                      to contain that directory, since a URL path maps directly onto a stored file.
+                    </Hint>
+                    <ToneBadge tone="violet" icon="shield">
+                      offline needs admin approval
+                    </ToneBadge>
+                  </>
+                )}
+              </Stack>
+            </CapBlock>
+
             <SecretsCard app={app} />
           </Stack>
         </Grid.Col>
@@ -527,14 +588,20 @@ export function CapabilitiesTab({ app }: { app: App }) {
               <Button
                 fullWidth
                 mt={14}
-                disabled={!dirty || capMissing}
+                disabled={!dirty || capMissing || scopeInvalid}
                 loading={setManifest.isPending}
                 leftSection={<Icon name="check" size={14} />}
                 onClick={() =>
                   setManifest.mutate({ slug: app.slug, capabilities: fromDraft(draft) })
                 }
               >
-                {capMissing ? "Set a spend cap to save" : dirty ? "Save manifest" : "Saved"}
+                {capMissing
+                  ? "Set a spend cap to save"
+                  : scopeInvalid
+                    ? "Fix the worker scope to save"
+                    : dirty
+                      ? "Save manifest"
+                      : "Saved"}
               </Button>
             )}
             {setManifest.isError && (

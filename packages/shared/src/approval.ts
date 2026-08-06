@@ -287,6 +287,19 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     );
   }
 
+  // ── offline (ADR-0035) ──
+  // One scalar path carries grant, revoke and rescope. Taking the grant or
+  // moving the scope elevates; giving it up is a privilege reduction, so it is
+  // baseline like every other removal. `med`, not `high`: the marginal exposure
+  // is the shell *rendering* after deauthorization — IndexedDB and the Cache API
+  // already persist without any grant — and network-first documents mean an
+  // online client always gets the live version.
+  const effScope = eff.offline?.scope;
+  const reqScope = req.offline?.scope;
+  if (effScope !== reqScope) {
+    push({ path: "offline.scope", from: effScope, to: reqScope }, reqScope !== undefined, "med");
+  }
+
   return { baselineDeltas: baseline, elevatedDeltas: elevated, risk: maxRisk(elevatedRisks) };
 }
 
@@ -394,6 +407,12 @@ function applyScalar(caps: Capabilities, d: Delta): void {
     case "fetch.requestsPerDay":
       caps.fetch = { ...ensureFetch(caps), requestsPerDay: d.to as number | undefined };
       return;
+    case "offline.scope":
+      // `to` absent ⇒ the grant was given up; drop the block entirely rather
+      // than leaving an `offline: {}` that would fail the schema's refinement.
+      if (typeof d.to === "string") caps.offline = { scope: d.to };
+      else delete caps.offline;
+      return;
     default:
       return;
   }
@@ -409,7 +428,7 @@ function ensureFetch(caps: Capabilities) {
 
 // ── Conflict detection (optimistic concurrency, §5) ──────────────────────────
 
-const AREAS = ["llm", "data", "mcp", "externalOrigins", "fetch", "visibility"] as const;
+const AREAS = ["llm", "data", "mcp", "externalOrigins", "fetch", "offline", "visibility"] as const;
 type Area = (typeof AREAS)[number];
 
 function deltaArea(path: string): Area {
@@ -418,6 +437,7 @@ function deltaArea(path: string): Area {
   if (path.startsWith("data")) return "data";
   if (path.startsWith("mcp")) return "mcp";
   if (path.startsWith("fetch")) return "fetch";
+  if (path.startsWith("offline")) return "offline";
   return "externalOrigins";
 }
 

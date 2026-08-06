@@ -2,13 +2,14 @@ import type { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { EdgeConfig } from "../config.js";
 import type { BlobReader, BlobGetResult } from "../blob/client.js";
-import type { RegistryReader } from "../registry/projection.js";
+import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 import type { SessionGate } from "../auth/gate.js";
 import { visibilityModeAllowed } from "../auth/validate.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../errors.js";
 import { normalizeRequestPath } from "./paths.js";
 import { buildAppCsp } from "./csp.js";
-import { injectShimTag } from "./shim.js";
+import { SHIM_PATH, injectHeadScripts } from "./shim.js";
+import { SW_REGISTER_PATH } from "./serviceWorker.js";
 
 /**
  * The app-host request path (architecture §4.3): resolve slug → live version
@@ -33,13 +34,17 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     reply: FastifyReply,
     slug: string,
   ): Promise<void> {
-    // Service workers are banned platform-wide: a root-scoped worker sees
-    // every same-origin navigation — including the one-time handoff token on
+    // App-supplied service workers are refused: a root-scoped worker sees every
+    // same-origin navigation — including the one-time handoff token on
     // `/_auth/complete?token=…` — before the edge does, and could convert a
     // user's in-browser login into a durable headless session. Browsers send
-    // `Service-Worker: script` on every registration fetch, so refusing it
-    // here kills registration while ordinary web workers keep working.
-    // Revisit as a per-app declared capability if a real PWA need appears.
+    // `Service-Worker: script` on every registration fetch, so refusing it here
+    // kills registration while ordinary web workers keep working.
+    //
+    // The offline capability (ADR-0035) is the one exception, and it does not
+    // widen this check: the worker it registers is **platform code** served from
+    // a reserved `/_helix/` route that never reaches this handler, confined to a
+    // validated non-root scope. No app bytes are ever registrable.
     if (req.headers["service-worker"] !== undefined) {
       sendForbidden(reply);
       return;
@@ -103,13 +108,20 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // Per-app CSP: baseline widened with this app's approved external origins.
     const csp = buildAppCsp(entry.externalOrigins);
 
-    // Shim injection (fetch-proxy §3.2): for opt-in apps, we rewrite the HTML
-    // document, so force the full body for the doc we'll inject into (a 304
-    // would skip injection) and serve it without an etag below. Only the GET of
-    // an HTML-ish path is affected; other assets keep their conditional path.
-    const wantsShim = entry.fetch.shim && method === "GET";
+    // Serve-time HTML rewrites: the fetch-proxy shim (§3.2) and/or the offline
+    // capability's service-worker registration (ADR-0035). Either one means we
+    // rewrite the document, so force the full body for the doc we'll inject into
+    // (a 304 would skip injection) and serve it without an etag below. Only the
+    // GET of an HTML-ish path is affected; other assets keep their conditional
+    // path. An app may hold both grants, so the tags compose.
+    const injectSrcs: string[] = [];
+    if (method === "GET") {
+      if (entry.fetch.shim) injectSrcs.push(SHIM_PATH);
+      if (entry.offline) injectSrcs.push(SW_REGISTER_PATH);
+    }
+    const wantsInjection = injectSrcs.length > 0;
     const likelyHtml = relPath === "index.html" || (req.headers.accept ?? "").includes("text/html");
-    const effectiveInm = wantsShim && likelyHtml ? undefined : ifNoneMatch;
+    const effectiveInm = wantsInjection && likelyHtml ? undefined : ifNoneMatch;
 
     let result = await getUnderPrefix(blob, entry.blobPrefix, relPath, {
       method,
@@ -118,12 +130,18 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
 
     // SPA fallback: an HTML-navigation miss serves the app shell so deep
     // links into client-side routes work. Asset misses stay hard 404s.
+    //
+    // Scope-aware for an offline app (ADR-0035 §10): such an app is served from
+    // a prefix and its bundle has no *root* `index.html`, so falling back to the
+    // bundle root would 404 every deep link. A miss under the granted scope
+    // falls back to that scope's own shell instead.
+    const shellPath = shellFor(entry, path);
     if (
       result.kind === "not-found" &&
-      relPath !== "index.html" &&
+      relPath !== shellPath &&
       (req.headers.accept ?? "").includes("text/html")
     ) {
-      result = await getUnderPrefix(blob, entry.blobPrefix, "index.html", {
+      result = await getUnderPrefix(blob, entry.blobPrefix, shellPath, {
         method,
         ifNoneMatch: effectiveInm,
       });
@@ -149,12 +167,12 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
       return;
     }
 
-    // Shim injection: buffer this one HTML doc, inject the shim `<script>`, and
-    // send it as a string. No etag/last-modified — the injected bytes differ
+    // Injection: buffer this one HTML doc, insert the platform `<script>` tags,
+    // and send it as a string. No etag/last-modified — the injected bytes differ
     // from the Blob's, so a conditional 304 must never short-circuit injection.
     // Bounded to opt-in HTML (small); every other asset keeps streaming.
-    if (wantsShim && isHtml) {
-      const injected = injectShimTag(await streamToString(result.body));
+    if (wantsInjection && isHtml) {
+      const injected = injectHeadScripts(await streamToString(result.body), injectSrcs);
       reply
         .status(200)
         .header("content-type", result.contentType ?? "text/html; charset=utf-8")
@@ -186,6 +204,24 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // Fastify pipes the stream — assets are never buffered (project plan §1).
     await reply.send(result.body);
   };
+}
+
+/**
+ * The bundle-relative shell an HTML miss falls back to (ADR-0035 §10).
+ *
+ * Normally the bundle root's `index.html`. For an app holding the offline grant,
+ * a miss *inside* its scope falls back to that scope's own shell instead —
+ * because such an app is served from a prefix, its zip nests under that prefix
+ * (URL path maps literally to blob key), and there is no root `index.html` to
+ * find. A miss outside the scope keeps the root behaviour, so an app that also
+ * ships a landing page at `/` is unaffected.
+ */
+function shellFor(entry: RegistryEntry, path: string): string {
+  const scope = entry.offline?.scope;
+  if (scope !== undefined && `${path}/`.startsWith(scope)) {
+    return `${scope.slice(1)}index.html`;
+  }
+  return "index.html";
 }
 
 async function getUnderPrefix(

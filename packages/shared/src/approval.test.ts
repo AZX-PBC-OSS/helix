@@ -201,6 +201,51 @@ describe("classifyChange — fetch proxy", () => {
   });
 });
 
+describe("classifyChange — offline (ADR-0035)", () => {
+  const withScope = (scope: string): Capabilities => ({
+    mcp: [],
+    externalOrigins: [],
+    offline: { scope },
+  });
+
+  it("gates taking the grant as med", () => {
+    const r = classifyChange(EMPTY, withScope("/app/"));
+    expect(paths(r.elevatedDeltas)).toEqual(["offline.scope"]);
+    expect(r.risk).toBe("med");
+    expect(applyDeltas(EMPTY, r.elevatedDeltas).offline).toEqual({ scope: "/app/" });
+  });
+
+  it("gates moving the scope — a rescope is not a reduction", () => {
+    const r = classifyChange(withScope("/app/"), withScope("/shell/"));
+    expect(paths(r.elevatedDeltas)).toEqual(["offline.scope"]);
+    expect(r.elevatedDeltas[0]).toMatchObject({ from: "/app/", to: "/shell/" });
+  });
+
+  it("giving up the grant is baseline, and applyDeltas drops the block", () => {
+    const eff = withScope("/app/");
+    const r = classifyChange(eff, EMPTY);
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["offline.scope"]);
+    expect(applyDeltas(eff, r.baselineDeltas).offline).toBeUndefined();
+  });
+
+  it("an unchanged scope produces no delta", () => {
+    const r = classifyChange(withScope("/app/"), withScope("/app/"));
+    expect(r.baselineDeltas).toHaveLength(0);
+    expect(r.elevatedDeltas).toHaveLength(0);
+  });
+
+  it("is its own conflict area, so a concurrent LLM edit does not stale it", () => {
+    const eff = withScope("/app/");
+    const snap = captureSnapshot(eff, "private", touchedAreas([{ path: "offline.scope" }]));
+    expect(Object.keys(snap)).toEqual(["offline"]);
+    expect(
+      snapshotConflicts(snap, { ...eff, llm: { models: ["claude-fable-5"] } }, "private"),
+    ).toBe(false);
+    expect(snapshotConflicts(snap, withScope("/other/"), "private")).toBe(true);
+  });
+});
+
 describe("classifyChange — reductions are always baseline", () => {
   it("removing grants never elevates", () => {
     const eff: Capabilities = {

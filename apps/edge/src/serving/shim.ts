@@ -66,20 +66,29 @@ export function buildShimScript(origins: string[]): string {
 `;
 }
 
-const SHIM_TAG = `<script src="${SHIM_PATH}"></script>`;
-
 /**
- * Insert the shim `<script src>` immediately after the first `<head …>` so it
- * runs before any app script captures `fetch`/`XMLHttpRequest`. Falls back to
- * prepending when there is no `<head>` (browsers hoist it into a synthesized
- * head). A plain (non-async/defer) external script blocks parsing until it has
- * executed — exactly the ordering the patch needs.
+ * Insert platform `<script src>` tags immediately after the first `<head …>`, in
+ * the order given, so they run before any app script. Falls back to prepending
+ * when there is no `<head>` (browsers hoist the tag into a synthesized head). A
+ * plain (non-async/defer) external script blocks parsing until it has executed —
+ * exactly the ordering the shim's `fetch`/`XMLHttpRequest` patch needs.
+ *
+ * Shared by the fetch shim and the offline capability's service-worker
+ * registration (ADR-0035); an app may hold both grants, so this composes rather
+ * than assuming a single tag.
  */
-export function injectShimTag(html: string): string {
+export function injectHeadScripts(html: string, srcs: readonly string[]): string {
+  if (srcs.length === 0) return html;
+  const tags = srcs.map((src) => `<script src="${src}"></script>`).join("");
   const head = /<head[^>]*>/i.exec(html);
   if (head) {
     const at = head.index + head[0].length;
-    return html.slice(0, at) + SHIM_TAG + html.slice(at);
+    return html.slice(0, at) + tags + html.slice(at);
   }
-  return SHIM_TAG + html;
+  return tags + html;
+}
+
+/** Convenience for the fetch shim alone. */
+export function injectShimTag(html: string): string {
+  return injectHeadScripts(html, [SHIM_PATH]);
 }

@@ -7,7 +7,7 @@ import type { RegistryFreshnessReader, RegistryReader } from "./registry/project
 import { registryFreshnessCheck } from "./registry/health.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { makeAssetHandler } from "./serving/assets.js";
-import { sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
+import { sendForbidden, sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
 import { normalizeRequestPath } from "./serving/paths.js";
 import { deriveAuthKeys } from "./auth/secrets.js";
 import type { OidcClient } from "./auth/oidc.js";
@@ -34,8 +34,15 @@ import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
-import { CSP_REPORT_PATH } from "./serving/csp.js";
+import { CSP_REPORT_PATH, buildAppCsp } from "./serving/csp.js";
 import { SHIM_PATH, buildShimScript } from "./serving/shim.js";
+import {
+  SW_PATH,
+  SW_REGISTER_PATH,
+  buildRegistrationSnippet,
+  buildServiceWorkerScript,
+  buildTombstoneScript,
+} from "./serving/serviceWorker.js";
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
@@ -527,6 +534,16 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         sendNotFound(reply);
         return;
       }
+      // The service-worker ban is enforced per-handler, and this is a reserved
+      // *script* path — so without this check an app could register the shim
+      // itself as a worker. Its scope would default to `/_helix/` and nothing
+      // sensitive lives there, but the offline capability makes this the second
+      // script route on the platform, so the refusal is stated rather than
+      // left to be inferred. Only SW_PATH below may answer a registration.
+      if (req.headers["service-worker"] !== undefined) {
+        sendForbidden(reply);
+        return;
+      }
       const entry = deps.registry.getApp(req.hostClass.slug);
       if (!entry || entry.archived) {
         sendNotFound(reply);
@@ -538,6 +555,79 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         .header("cache-control", "private, max-age=300")
         .header("x-content-type-options", "nosniff")
         .send(buildShimScript([...entry.fetch.connections.keys()]));
+    },
+  });
+
+  // ADR-0035: the offline capability's platform-owned service worker, plus its
+  // page-side registration. Both are **ungated** — a session gate here would
+  // 302 an expired-session update check to the auth host, and a redirect during
+  // a worker script fetch is a spec-level error, so the update would fail
+  // silently and a revoked worker would stay installed. Neither script carries
+  // app content.
+  app.route({
+    method: ["GET", "HEAD"],
+    url: SW_PATH,
+    handler: async (req, reply) => {
+      if (req.hostClass.kind !== "app") {
+        sendNotFound(reply);
+        return;
+      }
+      const entry = deps.registry.getApp(req.hostClass.slug);
+      const scope = entry && !entry.archived ? entry.offline?.scope : undefined;
+
+      reply
+        .status(200)
+        .header("content-type", "text/javascript; charset=utf-8")
+        // Always revalidated, so a withdrawn grant converges on the next check.
+        .header("cache-control", "no-cache")
+        .header("x-content-type-options", "nosniff");
+
+      // No grant / archived / unknown slug ⇒ the tombstone, never a 404:
+      // browsers differ on whether a 404 during an update check unregisters or
+      // just fails the update, and the latter would make revocation a no-op.
+      if (!entry || scope === undefined || !entry.blobPrefix) {
+        await reply.send(buildTombstoneScript());
+        return;
+      }
+
+      // For a worker, the CSP delivered *with the script* governs the worker's
+      // own execution context — served bare, its fetch() would be unbounded by
+      // `connect-src 'self'`. This keeps the worker inside the same data-flow
+      // containment as the page it serves.
+      reply.header("content-security-policy", buildAppCsp(entry.externalOrigins));
+      // The one route on the platform that emits this. The script lives at
+      // `/_helix/`, so its default max scope is `/_helix/` — controlling the
+      // app's prefix requires widening it explicitly, to a value the projection
+      // already re-validated (never root, never a `_` namespace).
+      reply.header("service-worker-allowed", scope);
+      await reply.send(buildServiceWorkerScript({ scope, cacheVersion: entry.blobPrefix }));
+    },
+  });
+
+  app.route({
+    method: ["GET", "HEAD"],
+    url: SW_REGISTER_PATH,
+    handler: async (req, reply) => {
+      if (req.hostClass.kind !== "app") {
+        sendNotFound(reply);
+        return;
+      }
+      if (req.headers["service-worker"] !== undefined) {
+        sendForbidden(reply);
+        return;
+      }
+      const entry = deps.registry.getApp(req.hostClass.slug);
+      const scope = entry && !entry.archived ? entry.offline?.scope : undefined;
+      if (scope === undefined) {
+        sendNotFound(reply);
+        return;
+      }
+      reply
+        .status(200)
+        .header("content-type", "text/javascript; charset=utf-8")
+        .header("cache-control", "no-cache")
+        .header("x-content-type-options", "nosniff")
+        .send(buildRegistrationSnippet(scope));
     },
   });
 

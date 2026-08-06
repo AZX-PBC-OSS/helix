@@ -76,6 +76,60 @@ export const FetchCapabilitySchema = z.object({
 });
 export type FetchCapability = z.infer<typeof FetchCapabilitySchema>;
 
+/**
+ * Is `scope` a legal service-worker scope prefix (ADR-0035 §3)? Exported so the
+ * edge can re-run the identical rule when it re-parses the grant fail-closed.
+ *
+ * Deny-by-default: each segment must be **unreserved URL characters only**
+ * (RFC 3986 `A-Za-z0-9-._~`). A positive allowlist rather than a blocklist
+ * because this value is used twice in the trusted path — as a path prefix
+ * matched against request URLs, and as the `Service-Worker-Allowed` *response
+ * header value*, where a stray CR/LF would be header injection. Percent-escapes
+ * are refused outright, mirroring `normalizeRequestPath`'s posture: a scope that
+ * needs encoding could never match a servable path anyway.
+ *
+ * Two rules carry the security weight:
+ *  - **Root is refused.** A root-scoped worker would see the handoff token on
+ *    `/_auth/complete`, which is why service workers were banned at all
+ *    (architecture Appendix A.3).
+ *  - **Any `_`-leading first segment is refused** — a rule, not an enumeration
+ *    of `_auth`/`_api`/`_helix`/`_csp-report`, so it stays correct when a
+ *    platform namespace is added.
+ */
+const SCOPE_SEGMENT = /^[A-Za-z0-9\-._~]+$/;
+
+export function isValidServiceWorkerScope(scope: string): boolean {
+  if (!scope.startsWith("/") || !scope.endsWith("/")) return false;
+  const segments = scope.split("/").filter((s) => s !== "");
+  // Root (`/`) yields no segments; that is the refusal that matters most.
+  const first = segments[0];
+  if (first === undefined) return false;
+  if (segments.some((s) => s === "." || s === ".." || !SCOPE_SEGMENT.test(s))) return false;
+  return !first.startsWith("_");
+}
+
+/**
+ * The offline capability (ADR-0035): the app opts into a **platform-authored**
+ * service worker, confined to `scope`. The app ships no worker code — the edge
+ * serves the worker and injects its registration — so this grant is a scope
+ * declaration, not a pointer at app-supplied bytes.
+ *
+ * It buys **cold boot** (the document and its static assets answer with no
+ * network) and nothing else: durable state, large-asset caching and queued-work
+ * drain are ordinary page JS that every app already has without a grant.
+ */
+export const OfflineCapabilitySchema = z.object({
+  /**
+   * URL path prefix the worker controls, e.g. `/app/`. Leading and trailing
+   * slash required; never root, never a `_`-prefixed platform namespace.
+   */
+  scope: z.string().refine(isValidServiceWorkerScope, {
+    message:
+      "scope must be a non-root path prefix with a leading and trailing slash, and must not start with a reserved `_` segment (e.g. `/app/`)",
+  }),
+});
+export type OfflineCapability = z.infer<typeof OfflineCapabilitySchema>;
+
 export const CapabilitiesSchema = z.object({
   llm: LlmCapabilitySchema.optional(),
   data: DataCapabilitySchema.optional(),
@@ -85,6 +139,8 @@ export const CapabilitiesSchema = z.object({
   externalOrigins: z.array(z.url()).default([]),
   /** Governed outbound HTTP via the fetch-proxy / egress plane (in build, M4.5). */
   fetch: FetchCapabilitySchema.optional(),
+  /** Platform-owned, scope-confined service worker for offline cold boot (ADR-0035). */
+  offline: OfflineCapabilitySchema.optional(),
 });
 export type Capabilities = z.infer<typeof CapabilitiesSchema>;
 

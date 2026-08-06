@@ -15,10 +15,13 @@ import {
   DataCapabilitySchema,
   FetchCapabilitySchema,
   LlmCapabilitySchema,
+  OfflineCapabilitySchema,
+  isValidServiceWorkerScope,
   type DataCapability,
   type LlmCapability,
   type VisibilityMode,
 } from "@azx-pbc/shared";
+import { normalizeRequestPath } from "../serving/paths.js";
 
 /** The edge's per-app view of the fetch-proxy grant (fetch-proxy design §7). */
 export interface FetchProxyGrant {
@@ -78,6 +81,13 @@ export interface RegistryEntry {
    * allowlist when the app has no fetch capability). Parsed fail-closed.
    */
   fetch: FetchProxyGrant;
+  /**
+   * The offline grant (manifest `capabilities.offline`, ADR-0035): the path
+   * prefix the platform-owned service worker is confined to, or null when the
+   * app has no grant — the worker route then serves the tombstone instead.
+   * Parsed fail-closed, and the scope is **re-validated here** (below).
+   */
+  offline: { scope: string } | null;
 }
 
 /** Extract `capabilities.llm` from the raw JSON column, fail-closed to null. */
@@ -126,6 +136,33 @@ function parseFetchGrant(capabilities: unknown): FetchProxyGrant {
     requestsPerDay: parsed.data.requestsPerDay ?? null,
     shim: parsed.data.shim,
   };
+}
+
+/**
+ * Extract `capabilities.offline` (ADR-0035), fail-closed to null.
+ *
+ * The scope is validated **twice on purpose**. The portal already refused an
+ * illegal one on write, but this value is about to become a
+ * `Service-Worker-Allowed` response header and a serving-path prefix, and the
+ * edge trusts nothing it reads out of a JSON column — a row written by an older
+ * build, a migration, or a direct `UPDATE` must not be able to hand the worker
+ * root scope or a platform namespace. Re-running the shared rule costs nothing;
+ * `normalizeRequestPath` on top of it re-applies the edge's own traversal
+ * defense to the same string, so the header and the blob key agree.
+ */
+function parseOfflineGrant(capabilities: unknown): { scope: string } | null {
+  if (typeof capabilities !== "object" || capabilities === null) return null;
+  const raw = (capabilities as Record<string, unknown>).offline;
+  if (raw === undefined) return null;
+  const parsed = OfflineCapabilitySchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const { scope } = parsed.data;
+  if (!isValidServiceWorkerScope(scope)) return null;
+  // A scope is a directory prefix; `normalizeRequestPath` returns it without
+  // the trailing slash, so compare on the normalized form and re-add it.
+  const normalized = normalizeRequestPath(scope);
+  if (normalized === null || `${normalized}/` !== scope) return null;
+  return { scope };
 }
 
 /**
@@ -371,6 +408,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           data: parseDataCapability(row.capabilities),
           externalOrigins: parseExternalOrigins(row.capabilities),
           fetch: parseFetchGrant(row.capabilities),
+          offline: parseOfflineGrant(row.capabilities),
         });
       }
       this.#map = next;

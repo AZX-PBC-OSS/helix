@@ -19,10 +19,16 @@
  * allowlist are permitted; `img-src https:` stays open (navigation exfil
  * exists regardless — §4.4's honest trade-off).
  *
- * `worker-src 'self'` is safe only because SERVICE-worker registration is
- * refused at the asset handler (the `Service-Worker` request header check in
- * assets.ts): a root-scoped service worker would observe the handoff token
- * on `/_auth/complete` navigations. Plain web workers remain available.
+ * `worker-src 'self' blob:` covers dedicated and shared workers only — a `blob:`
+ * URL can never register a SERVICE worker, which requires a same-origin http(s)
+ * script URL. (An earlier version of this note claimed the relaxation was safe
+ * *because* service workers were banned; that reasoning was wrong, and the two
+ * are independent.) App-supplied service workers are refused at the asset
+ * handler regardless, because a root-scoped one would observe the handoff token
+ * on `/_auth/complete`; the offline capability (ADR-0035) registers a
+ * platform-owned worker from a reserved route instead, and that worker is served
+ * carrying this same policy — for a worker, the CSP on the script governs the
+ * worker's own `fetch()`.
  *
  * The policy is attached to EVERY app response, not just HTML — any
  * browser-active document type (SVG, XHTML, XML) can carry script, and CSP

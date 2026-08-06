@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AppManifestSchema } from "./manifest.js";
+import { AppManifestSchema, isValidServiceWorkerScope } from "./manifest.js";
 import { VisibilitySchema } from "./visibility.js";
 
 describe("AppManifestSchema", () => {
@@ -67,6 +67,65 @@ describe("AppManifestSchema", () => {
   it("requires a groupId for group visibility", () => {
     expect(VisibilitySchema.safeParse({ mode: "group" }).success).toBe(false);
     expect(VisibilitySchema.safeParse({ mode: "group", groupId: "eng-team" }).success).toBe(true);
+  });
+});
+
+describe("offline capability scope (ADR-0035 §3)", () => {
+  it("accepts an ordinary non-root prefix, nested included", () => {
+    for (const scope of ["/app/", "/shell/", "/a/b/", "/App-2/"]) {
+      expect(isValidServiceWorkerScope(scope)).toBe(true);
+      expect(CapabilitiesParse({ offline: { scope } }).success).toBe(true);
+    }
+  });
+
+  it("refuses root — the whole point of confinement", () => {
+    expect(isValidServiceWorkerScope("/")).toBe(false);
+    expect(CapabilitiesParse({ offline: { scope: "/" } }).success).toBe(false);
+  });
+
+  it("refuses any `_`-leading first segment, not just today's namespaces", () => {
+    // The reserved namespaces...
+    for (const scope of ["/_auth/", "/_api/", "/_helix/"]) {
+      expect(isValidServiceWorkerScope(scope)).toBe(false);
+    }
+    // ...and one that does not exist yet, which is the point of the rule.
+    expect(isValidServiceWorkerScope("/_future/")).toBe(false);
+    // Only the FIRST segment is reserved; `_` deeper is an ordinary directory.
+    expect(isValidServiceWorkerScope("/app/_next/")).toBe(true);
+  });
+
+  it("requires both a leading and a trailing slash", () => {
+    expect(isValidServiceWorkerScope("/app")).toBe(false);
+    expect(isValidServiceWorkerScope("app/")).toBe(false);
+    expect(isValidServiceWorkerScope("")).toBe(false);
+  });
+
+  it("refuses traversal, encoding, whitespace and control characters", () => {
+    const CR = String.fromCharCode(13);
+    const LF = String.fromCharCode(10);
+    const NUL = String.fromCharCode(0);
+    for (const scope of [
+      "/app/../",
+      "/../app/",
+      "/./app/",
+      "/app/%2e%2e/",
+      "/app%2f/",
+      "/app" + String.fromCharCode(92) + "/",
+      "/app /",
+      "/app" + NUL + "/",
+      // A CR/LF would be header injection — the scope is emitted verbatim as
+      // the `Service-Worker-Allowed` response header value.
+      "/app" + CR + LF + "/",
+      "/app" + LF + "X-Evil: 1/",
+    ]) {
+      expect(isValidServiceWorkerScope(scope)).toBe(false);
+      expect(CapabilitiesParse({ offline: { scope } }).success).toBe(false);
+    }
+  });
+
+  it("is absent unless declared — no default grant", () => {
+    const parsed = AppManifestSchema.parse({ app: "x", visibility: { mode: "private" } });
+    expect(parsed.capabilities.offline).toBeUndefined();
   });
 });
 
