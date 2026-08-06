@@ -177,25 +177,60 @@ describe("GET /_helix/sw.js", () => {
     expect(res.headers["content-security-policy"]).toBeUndefined();
   });
 
+  const ILLEGAL_CLAIMS = ["%2F", "%2F_auth%2F", "%2Fapp", "%2Fapp%2F%2E%2E%2F", "%2Fapp%2F%2F"];
+
   it("never echoes an illegal claimed scope into the header", async () => {
-    for (const claimed of ["%2F", "%2F_auth%2F", "%2Fapp", "%2Fapp%2F%2E%2E%2F"]) {
+    // On a granted app an illegal claim falls back to the *granted* scope,
+    // which is safe — that value came from the manifest. What must never
+    // happen is the claim itself reaching the header.
+    for (const claimed of ILLEGAL_CLAIMS) {
       const res = await app.inject({
         url: `/_helix/sw.js?scope=${claimed}`,
         headers: H("offline"),
       });
       expect(res.statusCode, claimed).toBe(200);
+      expect(res.headers["service-worker-allowed"], claimed).toBe("/app/");
+      expect(res.body, claimed).toContain("self.registration.unregister()");
+    }
+  });
+
+  it("emits no header at all for an illegal claim with no grant to fall back to", async () => {
+    for (const claimed of ILLEGAL_CLAIMS) {
+      const res = await app.inject({
+        url: `/_helix/sw.js?scope=${claimed}`,
+        headers: H("plain"),
+      });
       expect(res.headers["service-worker-allowed"], claimed).toBeUndefined();
       expect(res.body, claimed).toContain("self.registration.unregister()");
     }
   });
 
+  it("kills a legacy registration that predates the scope param", async () => {
+    // No `?scope=` — a worker registered before the scope moved into the URL.
+    // It still gets a header (from the grant), so the tombstone can install and
+    // the stale worker dies; the injected snippet then re-registers at the
+    // current URL. Without the fallback such a registration is unkillable.
+    const res = await app.inject({ url: "/_helix/sw.js", headers: H("offline") });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("self.registration.unregister()");
+    expect(res.headers["service-worker-allowed"]).toBe("/app/");
+  });
+
   it("refuses a repeated scope param rather than picking an arm", async () => {
-    const res = await app.inject({
+    // `?scope=/app/&scope=/` is someone probing; resolving to either arm is a
+    // worse answer than none. With no usable claim it falls back to the grant.
+    const granted = await app.inject({
       url: "/_helix/sw.js?scope=%2Fapp%2F&scope=%2F",
       headers: H("offline"),
     });
-    expect(res.headers["service-worker-allowed"]).toBeUndefined();
-    expect(res.body).toContain("self.registration.unregister()");
+    expect(granted.headers["service-worker-allowed"]).toBe("/app/");
+    expect(granted.body).toContain("self.registration.unregister()");
+
+    const none = await app.inject({
+      url: "/_helix/sw.js?scope=%2Fapp%2F&scope=%2F",
+      headers: H("plain"),
+    });
+    expect(none.headers["service-worker-allowed"]).toBeUndefined();
   });
 
   it("404s on a platform host", async () => {

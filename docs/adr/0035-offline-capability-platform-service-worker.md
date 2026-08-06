@@ -77,20 +77,41 @@ worth letting an app author write.
    `/_helix/` — so controlling `/app/` *requires* the header. The prior invariant
    ("the edge never emits `Service-Worker-Allowed`") is replaced by:
 
-   > The edge emits `Service-Worker-Allowed` on exactly one route, only for apps
-   > holding the offline grant, with a value equal to the validated manifest scope
-   > prefix — never on a response carrying app-controlled bytes. Service-worker
-   > registration remains refused by default everywhere else.
+   > The edge emits `Service-Worker-Allowed` on exactly one route, with a value
+   > that has passed `isValidServiceWorkerScope` — never on a response carrying
+   > app-controlled bytes. Service-worker registration remains refused by default
+   > everywhere else.
+
+   **Amended after implementation (dual review finding #1).** The scope travels in
+   the *script URL* (`/_helix/sw.js?scope=/app/`), not only in the manifest, and
+   the header is emitted on the tombstone too. The max-scope check turns out to run
+   on every **Update** check, not just at registration: the browser re-reads the
+   header from each script response, and absent it the maximum reverts to
+   `/_helix/`, which a `/app/` registration fails with a `SecurityError`. A
+   tombstone served without the header is therefore never installed — so as
+   originally specified, this decision shipped with **no working kill switch at
+   all**, since the tombstone is by definition served when the grant is gone and
+   there is no manifest scope left to read.
+
+   The URL is self-describing so revocation needs no stored state. The claimed
+   value is not trusted: it reaches the header only after passing the same
+   validator the manifest field does, and the *real* worker is served only when it
+   matches the granted scope — so the parameter cannot buy a working worker at an
+   arbitrary prefix without passing the approval gate. Where there is no usable
+   claim it falls back to the granted scope, which makes the fix self-healing for
+   registrations created before it.
 
    This is not a weakening. Under an app-owned worker the *app* picks its scope by
    where it places a file and the platform can only veto after the fact; here the
    platform computes the scope from a validated manifest field, and emits it from a
    route where `isReservedAppPath` guarantees no app content is ever served.
 
-   Rejected alternative: serve the platform worker *inside* the app's prefix
-   (`{scope}_helix-sw.js`) so the default scope suffices and no header is needed.
-   That preserves the old invariant, but makes reserved-path checking dynamic and
-   per-app instead of a static root-level prefix test — more logic in the trusted
+   Rejected alternative, and note the amendment above strengthens the case for it:
+   serve the platform worker *inside* the app's prefix (`{scope}_helix-sw.js`) so
+   the default scope suffices and no header is needed. It is the other way to make
+   the URL self-describing, and it would have avoided finding #1 entirely. It was
+   still not taken, because it makes reserved-path checking dynamic and per-app
+   instead of a static root-level prefix test — more logic in the trusted
    path — introduces a filename-collision class with app bundles, and gives every
    app a different worker URL, which the revocation path (8) would then have to
    special-case per app.
@@ -143,6 +164,17 @@ worth letting an app author write.
    410 + `Clear-Site-Data: "cache", "storage"` on app paths stays and is
    complementary — it fires when a request reaches the edge, the tombstone fires on
    the worker's own update check.
+
+   Two amendments from the dual review. The tombstone must carry
+   `Service-Worker-Allowed` or it cannot install at all — see (4). And the route
+   must **503 rather than tombstone** whenever the registry projection has not
+   loaded, or when a granted app has no live version yet: the edge accepts traffic
+   before the projection's first load succeeds, so a fleet restart during a brief
+   Postgres outage would otherwise answer every slug with a tombstone and destroy
+   offline support across every device — irreversibly, client-side, exactly when
+   the platform is least healthy. A failed update check is strictly better than a
+   destructive one, which generalizes: **every uncertain answer on this route must
+   fail toward leaving the existing worker alone.**
 
 9. **Registration is injected at serve time, not written by the app.** The existing
    `injectShimTag` path in `apps/edge/src/serving/shim.ts` already rewrites `<head>`

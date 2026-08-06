@@ -611,8 +611,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       // the manifest field does, so it can be neither root, nor a `_` platform
       // namespace, nor a header-injection payload.
       const claimed = firstQueryValue(req.query, SW_SCOPE_PARAM);
+      // Falling back to the granted scope makes this self-healing for a
+      // registration created before the scope moved into the URL: the request
+      // arrives with no claim, so it gets a tombstone (below) — but *with* a
+      // header, so the tombstone can actually install and the stale worker
+      // dies. The injected snippet then re-registers at the current URL.
       const echoScope =
-        claimed !== undefined && isValidServiceWorkerScope(claimed) ? claimed : undefined;
+        claimed !== undefined && isValidServiceWorkerScope(claimed) ? claimed : grantedScope;
 
       reply
         .status(200)

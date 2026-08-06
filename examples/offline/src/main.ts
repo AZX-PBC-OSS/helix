@@ -143,7 +143,7 @@ async function renderAppCache(): Promise<void> {
       allCachesOnThisOrigin: names,
       thisAppsCache: APP_CACHE,
       entries: keys.map((r) => new URL(r.url).pathname),
-      note: "the helix:* cache is the platform's; this one is the app's, and neither touches the other",
+      note: "the helix:* cache is the platform's; this one is the app's. The worker reads only its own versioned cache, so an entry you write here is never served in its place — which is what keeps a promote or rollback able to un-ship an asset.",
     }),
   );
 }

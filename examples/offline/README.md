@@ -92,7 +92,9 @@ certificate is publicly trusted.
 
 1. Open `https://offline.<base>/app/`. **Probe 1** should show the worker
    registered at scope `/app/`. On the very first load it is still installing and
-   does not control the page — reload once, and **probe 2** starts answering.
+   does not control the page, so **probe 2** only answers after one reload — but
+   the cache is primed on that first visit regardless, which is what makes step 2
+   work without one.
 2. DevTools → Network → **Offline**, then hard-reload. The page still loads. In
    **probe 3** the asset succeeds and `/_api/me` fails — that asymmetry is the
    whole point, and it is why `/_api/me` works as a connectivity probe.

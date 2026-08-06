@@ -107,6 +107,16 @@ handling `/_api/*` failures, IndexedDB or `localStorage` for durable state,
 returns. `GET /_api/me` is the reachability probe: it is root-level, so it can
 never be answered from cache. See the `offline` example app.
 
+**If you also use the transparent fetch shim, it is unavailable offline.** The
+shim is served from `/_helix/*`, which the worker deliberately never caches (the
+same rule that keeps `/_api/*` unprecachable), so on an offline cold boot it
+fails to load and `fetch`/`XMLHttpRequest` stay unpatched. Calls that would have
+been rewritten to `/_api/fetch/<url>` go direct and die on CSP instead of failing
+as a proxy error. Two consequences: write your proxied calls against the explicit
+`/_api/fetch/<url>` path rather than relying on the shim if they must behave
+predictably offline, and expect the shim's failed load to delay first paint by a
+network timeout on every offline load.
+
 **You get an identity for free.** Unless the app is `public`, the edge only serves
 signed-in users; `GET /_api/me` returns the current actor. Don't build a login
 screen.
