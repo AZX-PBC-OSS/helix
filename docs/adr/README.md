@@ -2,13 +2,14 @@
 
 This directory records the significant architecture decisions for Helix (the AZX App Platform), using a lightweight [Nygard-style](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions) format: **Context → Decision → Consequences**, with a status.
 
-0001–0013 were scaffolded from the 2026-06-25 multi-model architecture review ([`docs/reviews/2026-06-25-architecture-review.md`](../reviews/2026-06-25-architecture-review.md)); `ISSUE-xx` / `DEC-xx` references point into that review. **0014–0024 were added 2026-06-26 from a multi-model ADR-coverage audit** — they record decisions that had already shipped but lacked an ADR (their bodies are retroactive). **0025–0026 (also 2026-06-26) are `Proposed` hardening records** spun out of the same review pass — registry-projection hardening (extends 0017) and hosted-build isolation prerequisites (gates the deferred build service in 0018). ADR numbers do **not** imply chronological order of when the decision was first made.
+0001–0013 were scaffolded from the 2026-06-25 multi-model architecture review ([`docs/reviews/2026-06-25-architecture-review.md`](../reviews/2026-06-25-architecture-review.md)); `ISSUE-xx` / `DEC-xx` references point into that review. **0014–0024 were added 2026-06-26 from a multi-model ADR-coverage audit** — they record decisions that had already shipped but lacked an ADR (their bodies are retroactive). **0025–0026 (also 2026-06-26) were spun out of the same review pass** as hardening/prerequisite records — registry-projection hardening (extends 0017) and hosted-build isolation prerequisites (gates the deferred build service in 0018). ADR numbers do **not** imply chronological order of when the decision was first made.
 
 ## Status legend
 
 - **Accepted** — decided and in force; the review found the decision sound.
 - **Accepted (revisit before multi-tenant / M5)** — a deliberate v0 choice that must be reconsidered before the platform serves more than one trusted operator.
-- **Proposed** — a direction chosen but not yet fully decided or implemented; needs sign-off.
+- **Proposed** — a direction chosen but not yet fully decided or implemented; needs sign-off. An ADR whose decision is in force leaves this status even if nothing is built yet — "deferred" is a decision, not a proposal.
+- **Superseded** — the decision was replaced; the record stays, with a Resolution naming what replaced it.
 
 ## Index
 
@@ -21,12 +22,12 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0005](0005-ssrf-egress-controls.md) | Egress SSRF + secret-injection mechanism | Accepted |
 | [0006](0006-secret-custody-seam.md) | `SecretStore` custody seam (dev envelope / prod Key Vault) | Accepted |
 | [0007](0007-portal-authz-v0.md) | Portal authorization v0: authenticated == authorized | Accepted (revisit before multi-tenant) |
-| [0008](0008-llm-key-via-egress.md) | LLM vendor key resolved by egress + legacy fallback | Accepted (revisit) |
+| [0008](0008-llm-key-via-egress.md) | LLM vendor key resolved by egress (legacy fallback removed) | Accepted |
 | [0009](0009-relaxed-csp.md) | Relaxed CSP posture for hostile app code | Accepted (revisit) |
 | [0010](0010-anonymous-shared-writes.md) | Anonymous writes to `shared` keys on public apps | Accepted (revisit) |
-| [0011](0011-in-memory-rate-limiting.md) | In-memory rate-limit / throttle state (single-replica) | Accepted (revisit before multi-replica) |
+| [0011](0011-in-memory-rate-limiting.md) | In-memory rate-limit / throttle state (single-replica) | Superseded (PG-backed counters) |
 | [0012](0012-edge-portal-codeploy.md) | Edge and portal may co-deploy as one binary in v0 | Accepted |
-| [0013](0013-egress-trust-model.md) | Egress trust model: harden the attested-instruction seam | Proposed |
+| [0013](0013-egress-trust-model.md) | Egress trust model: harden the attested-instruction seam | Accepted (steps 1–2 landed; 3 open) |
 | [0014](0014-same-origin-api-gateway.md) | Same-origin `/_api/*` gateway as the single choke point | Accepted |
 | [0015](0015-app-data-three-scope-model.md) | App-data: three scopes (user/collection/shared), writer ≠ reader | Accepted |
 | [0016](0016-capability-manifest-approval-classifier.md) | Capability manifest + baseline/elevated approval classifier | Accepted |
@@ -39,7 +40,7 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0023](0023-one-org-app-id-partitioning.md) | One org now, app-id partitioning everywhere | Accepted |
 | [0024](0024-portal-cli-bearer-jwt-jwks.md) | Portal/CLI authentication: bearer JWT over JWKS | Accepted |
 | [0025](0025-registry-projection-hardening.md) | Registry projection hardening (observability, jitter, cold-start) | Accepted (items 1–2 landed) |
-| [0026](0026-hosted-build-isolation-prerequisites.md) | Hosted-build isolation prerequisites (the build-step boundary shift) | Proposed |
+| [0026](0026-hosted-build-isolation-prerequisites.md) | Hosted-build isolation prerequisites (the build-step boundary shift) | Accepted (gates in force; hosted builds deferred) |
 | [0027](0027-blob-auth-managed-identity.md) | Blob authentication: managed identity, not the storage account key | Accepted |
 | [0028](0028-deployment-model-customer-deployed.md) | Deployment model: single-tenant, customer-deployed into the customer's cloud | Accepted |
 | [0029](0029-platform-secret-delivery.md) | Platform secret delivery: deployment-injected env vars, not ACA Key Vault references | Accepted |
@@ -48,4 +49,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0032](0032-cli-naming-and-distribution.md) | CLI naming (`helix`) and distribution (public npm, bundled) | Accepted |
 | [0033](0033-openai-compatible-gateway-surface.md) | OpenAI-compatible gateway surface and multi-provider routing | Accepted |
 | [0034](0034-structured-output-on-the-llm-gateway.md) | Structured output on the LLM gateway (both surfaces) | Accepted |
-| [0035](0035-offline-capability-platform-service-worker.md) | Offline capability: platform-owned, scope-confined service worker | Proposed |
+| [0035](0035-offline-capability-platform-service-worker.md) | Offline capability: platform-owned, scope-confined service worker | Accepted |

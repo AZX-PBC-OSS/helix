@@ -54,7 +54,7 @@ Legend for gating conditions:
 
 ---
 
-## Egress trust model (ADR-0013, Proposed)
+## Egress trust model (ADR-0013, Accepted — steps 1–2 landed)
 
 - [ ] **Step 2 residual — make `method` + `path` required claims on the instruction.** Both are stamped by the edge and re-checked by egress, but the check is **assert-when-present**: an instruction arriving without them passes. That was deliberate for rolling-deploy safety (edge and egress ship together, instructions live 30 s), so it should become a hard requirement once a fleet is reliably past deploy — otherwise the weaker path stays reachable indefinitely. — ADR-0013, issue #6
 - [ ] **Step 3 — post-M5:** Move from the shared symmetric secret to asymmetric (Ed25519) signing modeled on IETF Transaction Tokens. Larger change (key management, rotation); deferred until after prod cutover. — ADR-0013

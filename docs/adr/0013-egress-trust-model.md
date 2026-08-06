@@ -1,6 +1,6 @@
 # 0013. Egress trust model: harden the attested-instruction seam
 
-**Status:** Proposed (direction chosen 2026-06-26; long-tail key strategy still open)
+**Status:** Accepted (direction chosen 2026-06-26) — step 1 shipped 2026-07-21; step 2 shipped assert-when-present; step 3 and the long-tail key strategy still open. See Resolution.
 **Related:** ADR [0001](0001-three-runtime-split.md), [0005](0005-ssrf-egress-controls.md), [0006](0006-secret-custody-seam.md); review ADR-candidate, ISSUE-04
 
 ## Context
@@ -52,4 +52,10 @@ What actually helps — and what it does *not*: **asymmetric** signing (edge pri
 
 Shipped. The edge stamps `aud: "azx-egress"` (`INSTRUCTION_AUDIENCE`) and `jti` = the per-call `requestId` on mint (`apps/edge/src/gateway/instruction.ts`); egress asserts `aud` in `jwtVerify`, requires `jti === requestId`, and **burns the jti** before resolving any secret or dialing out (`apps/egress/src/burn.ts`; `proxy.ts` returns 409 `replay` on re-use). The burn is a shared Postgres `instruction_jti` table (migration `20260721215912`; `helix_egress` gets SELECT+INSERT+DELETE — its first write grants) with an interval sweep in the egress `server.ts`, so the one-time guarantee holds across replicas rather than a per-process seen-set (same "keep the mechanism plane's shared state in Postgres, not Redis" reasoning as ADR [0011](0011-in-memory-rate-limiting.md)'s resolution). One `/proxy` choke point covers both `fetch` and `llm`. Coverage: replay + audience + jti-mismatch in `apps/egress/src/adversarial.test.ts`, the store in `burn.integration.test.ts`, the grant boundary in `role-split.integration.test.ts`.
 
-Steps 2 (bind method+path / per-action `llm` authz, issue #6) and 3 (asymmetric signing) remain open as described above.
+## Resolution — Step 2, partial (issue #6)
+
+**`method` + `path` are bound.** The edge stamps both into the instruction (`apps/edge/src/gateway/instruction.ts:41-42`) and egress re-checks them — but **assert-when-present**: an instruction arriving without the claims still verifies. That was deliberate for rolling-deploy safety (edge and egress ship together and instructions live 30 s), so the residual is to make them *required* claims once a fleet is reliably past deploy; until then the weaker path stays reachable. Tracked in [`TODO.md`](../../TODO.md).
+
+**Per-action authorization on the `llm` path is not built, and is narrower than it was written.** `apps/egress/src/secrets.ts` gates scope by the instruction's capability: `llm` resolves a `platform` secret by name and `fetch` provably cannot reach `platform` scope at all, so the "an app injects the platform vendor key via a manifest binding" case is closed by construction rather than by a per-action check. What remains open is a genuine per-action allowlist for platform-scoped calls — which is the same machinery as [ADR-0031](0031-connection-providers-delegated-auth.md) decision 12, and should be built once rather than twice.
+
+Step 3 (asymmetric signing) remains open as described above, and the open question above still needs sign-off.

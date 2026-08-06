@@ -321,14 +321,16 @@ trust is the whole design, so the attestation must be airtight:
   resolves it to plaintext under the `helix_egress` role. The edge has **no grant** on
   `app_secrets` at all, so it can never *read* a key directly. Verify the egress secret
   resolver scopes by `appId` (app-scoped first, then granted-global).
-  > **Correction — [ADR-0013](adr/0013-egress-trust-model.md) (Proposed).** Do **not** treat
+  > **Correction — [ADR-0013](adr/0013-egress-trust-model.md).** Do **not** treat
   > this seam as containing an edge compromise. The instruction is signed with a **shared
   > symmetric secret** that *both* planes hold, so a compromised edge can **forge** an
   > instruction for any `appId` and have egress *use* any app's connection — the `appId` claim
-  > is not an isolation boundary today. There is also no `jti` replay-burn or `aud` check, and
-  > `method`/`path` are unbound. This is a known gap being hardened (jti/aud burn now — issue
-  > #3; per-action authz + method/path binding before multi-tenant — issue #6; asymmetric
-  > signing post-M5). Flag regressions against that plan; the seam is *not* airtight yet.
+  > is not an isolation boundary today. The hardening plan is partly landed: the `jti`
+  > replay-burn and the `aud` check ship (issue #3, 2026-07-21), and `method`/`path` are bound
+  > and re-checked — but **assert-when-present**, so an instruction omitting them still
+  > verifies (issue #6 residual). Asymmetric signing is post-M5, and it shrinks the
+  > *shared-secret leak surface* rather than containing a compromised edge, which no key
+  > scheme can. Flag regressions against that plan; the seam is *not* airtight yet.
 - **SSRF is egress-side** (`apps/egress/src/ssrf.ts`): resolve the host, validate **every**
   returned address (block private/loopback/link-local/IMDS), pin the validated IP against
   rebind, no redirect-follow, a request-header safelist and a response-header **blocklist**

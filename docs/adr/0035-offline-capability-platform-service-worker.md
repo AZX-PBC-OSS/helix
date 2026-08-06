@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed. Reverses the platform-wide service-worker ban recorded in
+Accepted — implemented 2026-08-04/05 (`a69ea2a`), then amended twice after dual
+review: the tombstone could never install (`9ab7553`, amendment in decision 4) and
+the platform snippets were unloadable on an offline cold boot (`a7ed6a3`, amendment
+in decision 9). Both amendments are folded into the decisions below, which describe
+what shipped. Reverses the platform-wide service-worker ban recorded in
 `docs/platform-architecture.md` §4.4 and Appendix A.3, replacing it with a narrow,
 approval-gated exception. Relates to [ADR-0004](0004-auth-model.md) (the handoff
 token the ban protects), [ADR-0009](0009-relaxed-csp.md),
