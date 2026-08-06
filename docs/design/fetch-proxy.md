@@ -56,13 +56,17 @@ Why path-prefix beats the envelope on every axis we care about: it preserves str
 
 ### 3.2 The transparent shim: zero edits for the vibe-coded-first case
 
-The path-prefix is one edit per call site. For the vibe-coded-first author we can get to **zero** edits with an opt-in shim. The edge already owns the response on the way out (it sets the CSP header on every app response — §4.4). On `text/html` responses for apps that have opted in, it additionally injects, as the first child of `<head>`, a one-line reference to a platform-served script:
+The path-prefix is one edit per call site. For the vibe-coded-first author we can get to **zero** edits with an opt-in shim. The edge already owns the response on the way out (it sets the CSP header on every app response — §4.4). On `text/html` responses for apps that have opted in, it additionally injects, as the first child of `<head>`, a platform-authored script:
 
 ```html
-<script src="/_helix/fetch-shim.js"></script>
+<script>
+  /* the shim, inlined */
+</script>
 ```
 
-`fetch-shim.js` is **our** code, served from a reserved edge path (`/_helix/fetch-shim.js`, same family as `/_api`, `/_auth`) with this app's proxied origins baked in. It monkeypatches **both `window.fetch` and `XMLHttpRequest.prototype.open`**: a call whose URL is absolute and whose origin is in the app's granted **proxy** set is transparently rewritten to `/_api/fetch/…` before it goes out. The vibe-coded `fetch('https://api.github.com/users/octocat')` — *and* the `axios.get(...)` next to it — then *just work* after deploy, unedited, and land in the audit log. Covering XHR is what makes axios work: its browser default is the XHR adapter (patching `open` catches it), and newer axios's fetch adapter is caught by the `fetch` patch.
+> **Amended (ADR-0035, amendment to §9).** As built, this was a `<script src="/_helix/fetch-shim.js"></script>` referencing a per-app route. `/_helix/*` is deliberately unprecachable by the offline capability's service worker, so an app holding both grants lost the shim on every offline cold boot. The snippet is now inlined into the document and the route is deleted; everything below about *what* the shim does is unchanged.
+
+The shim is **our** code, built per-app with this app's proxied origins baked in. It monkeypatches **both `window.fetch` and `XMLHttpRequest.prototype.open`**: a call whose URL is absolute and whose origin is in the app's granted **proxy** set is transparently rewritten to `/_api/fetch/…` before it goes out. The vibe-coded `fetch('https://api.github.com/users/octocat')` — *and* the `axios.get(...)` next to it — then *just work* after deploy, unedited, and land in the audit log. Covering XHR is what makes axios work: its browser default is the XHR adapter (patching `open` catches it), and newer axios's fetch adapter is caught by the `fetch` patch.
 
 The honest boundaries, stated plainly so nobody mistakes this for a security control:
 
@@ -174,7 +178,7 @@ Milestone **M4.5** (project plan), after the approval spine and CSP loop it buil
 1. **Stand up `helix-egress` + keyless proxy + path-prefix contract + allowlist + SSRF hardening.** The service, the `EgressProvider`/attested-instruction seam, and `fetch.origins` with no secrets. Audited and metered the day it ships. This alone replaces the "had to grant a CORS-broken origin direct" failures. The adversarial egress suite lands *with* it.
 2. **The deploy-lint / Violations "route through proxy" offer.** The adoption surface (§3.3) — turns the existing one-click origin grant into a direct-or-proxy choice. Pure portal work on top of rung 1.
 3. **Secret-backed connections (header-bearer).** The `SecretStore` (`packages/secret-store` — dev envelope now, Key Vault for prod) + `connection` injection in egress (§5). The unique-value rung. (Designed in full in `docs/design/secrets-and-connections.md`.)
-4. **The transparent shim — *built*.** Opt-in serve-time injection (§3.2), covering `fetch` **and** `XMLHttpRequest` (so axios works). `/_helix/fetch-shim.js` is served per-app with the proxied origins baked in; the edge buffers opt-in HTML and injects the tag after `<head>`. Last because it's the most serve-path-invasive and the least security-load-bearing.
+4. **The transparent shim — *built*.** Opt-in serve-time injection (§3.2), covering `fetch` **and** `XMLHttpRequest` (so axios works). The script is built per-app with the proxied origins baked in; the edge buffers opt-in HTML and inlines it after `<head>` (originally a `<script src="/_helix/fetch-shim.js">` — see the §3.2 amendment). Last because it's the most serve-path-invasive and the least security-load-bearing.
 
 ## 10. Open questions / deliberately deferred
 

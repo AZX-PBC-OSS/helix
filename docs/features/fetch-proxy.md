@@ -95,16 +95,20 @@ const user = await r.json(); // proxied, audited; no CSP exception needed
 
 ## Transparent shim (zero-edit adoption)
 
-For apps that set `capabilities.fetch.shim`, the edge serves a per-app script at
-`/_helix/fetch-shim.js` (proxied origins baked in) and injects a `<script>` for
-it at the top of the document's `<head>` at serve time
-(`apps/edge/src/serving/shim.ts`, wired from `assets.ts`). It monkeypatches
-**both `window.fetch` and `XMLHttpRequest.prototype.open`** — XHR too because
-`axios` defaults to the XHR adapter — so an unmodified
-`fetch('https://api.github.com/…')` to a *granted* origin is transparently
-rewritten to `/_api/fetch/…` with no code change. A plain (non-async) external
-`<script>` blocks parsing until it runs, so the patch lands before any app code
-captures `fetch`.
+For apps that set `capabilities.fetch.shim`, the edge builds a per-app script
+(proxied origins baked in) and **inlines** it at the top of the document's
+`<head>` at serve time (`apps/edge/src/serving/shim.ts`, wired from
+`assets.ts`). It monkeypatches **both `window.fetch` and
+`XMLHttpRequest.prototype.open`** — XHR too because `axios` defaults to the XHR
+adapter — so an unmodified `fetch('https://api.github.com/…')` to a *granted*
+origin is transparently rewritten to `/_api/fetch/…` with no code change. Inline
+at the top of `<head>`, the patch lands before any app code captures `fetch`.
+
+It used to be served from `/_helix/fetch-shim.js` and referenced with a
+`<script src>`. That path is deliberately unprecachable by the offline
+capability's service worker, so an app holding both grants lost the shim on
+every offline cold boot — proxied calls then went direct and died on CSP rather
+than failing as a proxy error (ADR-0035, amendment to §9). The route is gone.
 
 It is **ergonomics, not a boundary**: it only ever adds reach the manifest
 already granted (a rewrite to a non-allowlisted origin still 403s at the edge),

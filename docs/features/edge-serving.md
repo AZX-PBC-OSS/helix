@@ -103,14 +103,16 @@ Behaviors to know:
     echoed into the header only after passing the same validator the manifest field does, and the
     real worker is served only when it matches the granted scope — so the parameter cannot buy a
     working worker at an arbitrary prefix without passing the approval gate.
-  - `GET /_helix/sw-register.js` — the registration, injected into `<head>` at serve time like the
-    fetch shim, so adopting the capability is a manifest change and nothing else. This one **404s**
-    when there is no grant: it is a page script, not a worker script, so the update-check argument
-    below does not apply to it.
+  - The page-side registration, **inlined into `<head>`** at serve time like the fetch shim, so
+    adopting the capability is a manifest change and nothing else. It is not a route: it used to be
+    served from `/_helix/sw-register.js`, but `/_helix/*` is exactly what the worker never caches,
+    so a `<script src>` there could not load on an offline cold boot. `/_helix/sw.js` is the only
+    script route left under the prefix — a worker script has to be a URL — and every other
+    `/_helix/` path 404s.
   - No grant, archived, or unknown slug ⇒ `/_helix/sw.js` answers with a **self-unregistering
     tombstone** rather than a 404, because browsers differ on whether a 404 during an update check
     unregisters or merely fails the update.
-  - Both routes **503 when the registry projection has not loaded**, and a granted app mid-promote
+  - The worker route **503s when the registry projection has not loaded**, and a granted app mid-promote
     (no live version yet) 503s too. Serving a tombstone is destructive and irreversible
     client-side, so a DB blip during a fleet restart must not be allowed to wipe offline support
     across every device; a failed update check leaves the working worker installed.
@@ -139,27 +141,36 @@ write-gate) extend both `connect-src` and `img-src`. Origins are reduced to bare
 (`new URL().origin` — scheme+host+port, path stripped) and invalid entries are dropped
 fail-closed. A same-origin `report-uri /_csp-report` funnels violations to the edge sink.
 
-### Transparent fetch shim (serve-time HTML injection)
+### Transparent fetch shim (serve-time HTML inlining)
 
 The fetch-proxy contract is a path prefix: app code calls `fetch('/_api/fetch/https://…')`,
 a same-origin call the CSP permits, which the edge authorizes and forwards to helix-egress (see
 [fetch-proxy.md](./fetch-proxy.md)). The shim is the **zero-edit adoption path** on top of that
-contract — for apps that opt in via `capabilities.fetch.shim`, the edge serves a tiny per-app
-script that monkeypatches `window.fetch` **and** `XMLHttpRequest.prototype.open` (both, because
+contract — for apps that opt in via `capabilities.fetch.shim`, the edge inlines a tiny per-app
+script into the document that monkeypatches `window.fetch` **and** `XMLHttpRequest.prototype.open` (both, because
 axios defaults to XHR) so a call to a granted proxied origin is transparently rewritten to the
 same-origin `/_api/fetch/…` path. No app code changes.
 
 - `apps/edge/src/serving/shim.ts` — `buildShimScript(origins)` bakes this app's proxied origins
   into the script (only granted origins are rewritten; a non-granted rewrite would 403 anyway);
-  `injectShimTag(html)` inserts `<script src="/_helix/fetch-shim.js">` right after the first
-  `<head>` so it runs before any app script captures `fetch`. A plain (non-async/defer) external
-  script blocks parsing until it executes — exactly the ordering the patch needs.
-- The script is served at the reserved path **`/_helix/fetch-shim.js`** (`apps/edge/src/app.ts`;
-  `/_helix/*` is reserved by `isReservedAppPath` alongside `/_auth/*` and `/_api/*`).
+  `injectHeadScripts(html, scripts)` inserts each one **inline**, right after the first `<head>`,
+  so they run before any app script captures `fetch`. It composes: an app holding both
+  `fetch.shim` and `offline` gets the shim first, then the worker registration.
+- **Inline, not `<script src>`.** The shim used to be served from `/_helix/fetch-shim.js`, but
+  `/_helix/*` is deliberately unprecachable (the same rule that keeps `/_api/*` usable as a
+  reachability probe), so on an offline cold boot the tag could not load: `fetch` stayed
+  unpatched, proxied calls went direct and died on CSP, and the parser-blocking tag cost a network
+  timeout before first paint. That route and `/_helix/sw-register.js` are both gone — those paths
+  404 through `isReservedAppPath`, which still reserves `/_helix/*` alongside `/_auth/*` and
+  `/_api/*`. Two consequences worth knowing: `'unsafe-inline'` in `script-src` is now load-bearing
+  for the platform (never add a hash or nonce — under CSP3 either one *disables*
+  `'unsafe-inline'`), and every interpolation into an inlined snippet goes through `jsonInline` so
+  a manifest-derived origin cannot close the `<script>` block. A `//# sourceURL=helix/…` comment
+  keeps each snippet a named file in devtools.
 - **Injection forces a full body and drops the etag.** For an opt-in app's HTML, `assets.ts`
-  suppresses the `If-None-Match` (a `304` would skip injection), buffers the one HTML doc, injects
-  the tag, and sends it with no `etag`/`last-modified` — the injected bytes differ from Blob's, so
-  a conditional `304` must never short-circuit injection. Every other asset keeps streaming.
+  suppresses the `If-None-Match` (a `304` would skip injection), buffers the one HTML doc, inlines
+  the scripts, and sends it with no `etag`/`last-modified` — the injected bytes differ from Blob's,
+  so a conditional `304` must never short-circuit injection. Every other asset keeps streaming.
 
 It is **ergonomics, not a boundary**: delete or bypass it and you gain nothing — a direct call
 to a non-granted origin still dies on `connect-src 'self'`. It fails safe. Out of scope (it is an

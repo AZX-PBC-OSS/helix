@@ -48,8 +48,8 @@ worth letting an app author write.
    like the others. No schema migration — capabilities are a JSON column.
 
 2. **The worker is platform-authored, never app-authored.** The edge serves a
-   platform worker from a reserved path (`/_helix/sw.js`, alongside the existing
-   fetch shim); apps ship no worker code and no registration code. The
+   platform worker from a reserved path (`/_helix/sw.js`, the same namespace the
+   fetch shim then used); apps ship no worker code and no registration code. The
    `Service-Worker: script` → 403 in `assets.ts` stays exactly as it is for every
    other path and every app without the grant — the ban remains the default and
    this is a named exception to it.
@@ -147,14 +147,18 @@ worth letting an app author write.
    gate, an update check with an expired session receives a 302 to the auth host,
    and a redirect during a service-worker script fetch is a spec-level error. The
    update would fail silently and the old worker would stay installed — breaking the
-   kill switch precisely when it is needed. The existing `/_helix/fetch-shim.js`
-   route is already ungated; this follows it. The script contains no app content.
+   kill switch precisely when it is needed. The then-existing `/_helix/fetch-shim.js`
+   route was already ungated and this followed it. The script contains no app content.
 
    *Carrying the CSP* matters because for a worker the policy delivered with the
-   script governs the worker's own execution context. The shim route sets no CSP
-   header today; a worker served the same way would run with no CSP at all — its
+   script governs the worker's own execution context. The shim route set no CSP
+   header; a worker served the same way would run with no CSP at all — its
    `fetch()` unbounded by `connect-src 'self'`. Combined with (6), attaching the app
    CSP keeps the worker inside the same data-flow containment as the page.
+
+   (Both references to the shim *route* are historical — it was deleted when the
+   snippets moved inline; see the amendment in (9). `/_helix/sw.js` is the only
+   script route under the prefix now, and it remains ungated for the reason above.)
 
 8. **Revocation serves a tombstone, not a 404.** When the app is archived, the grant
    is withdrawn, or an operator kills it, the worker route serves a platform-authored
@@ -188,6 +192,48 @@ worth letting an app author write.
    injected snippet posts `performance.getEntriesByType('resource')` to the worker on
    load, which caches those URLs — restoring "cold-boots offline after one online
    visit" with no deploy-time file list and no app input.
+
+   **Amended after implementation (dual review finding #10).** The injected snippets
+   are **inlined into the document**, not referenced as `<script src="/_helix/…">`.
+
+   As originally shipped, both platform snippets were served from `/_helix/*` — the
+   one prefix (6) guarantees the worker never caches, which is the same rule that
+   keeps `/_api/*` usable as a reachability probe. So an app holding both
+   `capabilities.offline` and `capabilities.fetch.shim` was broken on every offline
+   cold boot: the document came from cache, the shim's tag could not load,
+   `fetch`/`XMLHttpRequest` stayed unpatched, and calls that should have been
+   rewritten to `/_api/fetch/<url>` went direct and died on `connect-src 'self'` — a
+   CSP error where the app expected a proxy error. Because the tag is parser-blocking,
+   the failed load also cost a network timeout before first paint. The two features
+   were designed independently and composed into a defect; the composition is the
+   thing worth remembering, not either feature.
+
+   Inlining removes the dependency by construction: the bytes are *in* the cached
+   document, so they are present exactly when it is. `/_helix/fetch-shim.js` and
+   `/_helix/sw-register.js` are deleted — `/_helix/sw.js` is the only script route
+   left, and a worker script must be a URL by construction. The old paths now 404
+   through `isReservedAppPath`, so a document cached before this change loses its
+   shim until the device next boots online, which is strictly the state it was
+   already in.
+
+   Three things this makes true, in decreasing order of importance:
+
+   - **`'unsafe-inline'` becomes load-bearing for the platform**, not only for apps
+     (ADR-0009). And it must not be "hardened": under CSP3 the presence of any hash
+     or nonce source makes browsers *ignore* `'unsafe-inline'`, which would break
+     every app's own inline script. Recorded in `csp.ts` next to the directive.
+   - **A manifest-derived value is now interpolated into a `<script>` block.** The
+     shim bakes in the app's proxied origins, so a value carrying `</script>` would
+     close the platform script and inject app-controlled markup into it. Every
+     interpolation goes through `jsonInline` (`JSON.stringify` with `<` → `<`),
+     with a bug trap in the injector that throws if a terminating sequence survives.
+     Notably *not* the usual `<\/script` rewrite: escaping a slash is only legal
+     inside a string literal, so a blanket pass over an assembled script body is a
+     latent syntax error. Escaping at the interpolation point cannot fail that way.
+   - **The snippets stop being separately cacheable and separately debuggable.** The
+     first is immaterial — they only ride on HTML, which is already `no-cache`, and
+     they are ~2 KB. The second is recovered with a `//# sourceURL=helix/…` comment,
+     which keeps them named files in devtools.
 
 10. **The SPA fallback becomes scope-aware.** `assets.ts` currently falls back to
     `{blobPrefix}index.html` — the *bundle* root. An app whose content lives under
@@ -246,10 +292,13 @@ worth letting an app author write.
   service worker (registration requires a same-origin http(s) script URL), so the
   relaxation was never propped up by the ban and lifting the ban does not endanger
   it. Second, "banned platform-wide" is not literally true — the check lives in
-  `assetHandler`, not globally, so `/_helix/fetch-shim.js` serves today with a
+  `assetHandler`, not globally, so `/_helix/fetch-shim.js` served with a
   `Service-Worker` header present. Harmless in practice (default scope `/_helix/`,
-  no header widening it, nothing sensitive under that prefix), but the check should
-  become explicit per-route now that a second reserved script path exists.
+  no header widening it, nothing sensitive under that prefix), and each reserved
+  script route was given an explicit refusal. Moot since the (9) amendment: the
+  shim and the registration are inlined, so `/_helix/sw.js` — the one route that
+  *should* answer a registration — is the only script under the prefix, and every
+  other `/_helix/` path is a reserved-namespace 404.
 
 - **Six places assert the ban** and change with this: `apps/edge/src/serving/assets.ts`,
   `apps/edge/src/serving/csp.ts`, `docs/platform-architecture.md` (§4.4 and

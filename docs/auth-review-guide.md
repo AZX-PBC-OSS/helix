@@ -53,9 +53,10 @@ cosmetic routing slip.
 
 Dispatch is explicit per-kind in `apps/edge/src/app.ts` (no Fastify host constraints — the
 fallback semantics are too subtle to trust). When reviewing `app.ts`, check the host-kind
-guard on **every** route, and that `/_auth/*`, `/_api/*`, and the shim path
-`/_helix/fetch-shim.js` are reserved from the asset fallthrough (`isReservedAppPath`) so an
-app can never ship a file that shadows them.
+guard on **every** route, and that `/_auth/*`, `/_api/*`, and the whole `/_helix/*` namespace
+(the platform service worker at `/_helix/sw.js`, plus the paths the fetch shim and the worker
+registration used before they were inlined into the document) are reserved from the asset
+fallthrough (`isReservedAppPath`) so an app can never ship a file that shadows them.
 
 ---
 

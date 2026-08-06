@@ -14,6 +14,7 @@ Inject a per-app CSP that permits `'unsafe-inline'`, `'unsafe-eval'`, `'wasm-uns
 ## Consequences
 
 - Apps can use inline scripts, eval, and wasm — necessary for vibe-coded bundles.
+- **`'unsafe-inline'` is load-bearing for the platform too, since ADR-0035.** The fetch shim and the offline capability's worker registration are inlined into the document at serve time rather than served from `/_helix/*` (which the platform service worker deliberately never caches, so a `<script src>` there cannot load on an offline cold boot). Consequence to keep in view: **never add a hash or nonce source to `script-src`** as "hardening" — under CSP3 the presence of either makes browsers *ignore* `'unsafe-inline'`, breaking every app's own inline script. Noted at the directive in `apps/edge/src/serving/csp.ts`.
 - The XSS-prevention value of CSP is intentionally given up (it would be moot anyway).
 - **The CDN allowlist is a supply-chain trust dependency**: a compromise of any listed CDN yields script execution in every app. No Subresource Integrity is enforced.
 
