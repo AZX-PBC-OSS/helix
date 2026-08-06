@@ -48,3 +48,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0032](0032-cli-naming-and-distribution.md) | CLI naming (`helix`) and distribution (public npm, bundled) | Accepted |
 | [0033](0033-openai-compatible-gateway-surface.md) | OpenAI-compatible gateway surface and multi-provider routing | Accepted |
 | [0034](0034-structured-output-on-the-llm-gateway.md) | Structured output on the LLM gateway (both surfaces) | Accepted |
+| [0035](0035-offline-capability-platform-service-worker.md) | Offline capability: platform-owned, scope-confined service worker | Proposed |
