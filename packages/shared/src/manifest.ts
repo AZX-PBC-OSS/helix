@@ -100,11 +100,20 @@ const SCOPE_SEGMENT = /^[A-Za-z0-9\-._~]+$/;
 
 export function isValidServiceWorkerScope(scope: string): boolean {
   if (!scope.startsWith("/") || !scope.endsWith("/")) return false;
-  const segments = scope.split("/").filter((s) => s !== "");
-  // Root (`/`) yields no segments; that is the refusal that matters most.
+  // Split the interior, WITHOUT filtering empties: an empty segment means a
+  // doubled slash, and `/app//` must be refused here rather than silently
+  // accepted. The edge rejects it anyway (`normalizeRequestPath` collapses the
+  // double slash, so the round-trip comparison in `parseOfflineGrant` fails),
+  // and two validators disagreeing on the accepted set is exactly the drift the
+  // double validation exists to avoid: the owner would get an approved,
+  // elevated grant that projects to nothing, with no diagnostic anywhere.
+  // `"/".slice(1, -1)` is `""` → one empty segment → root stays refused.
+  const segments = scope.slice(1, -1).split("/");
   const first = segments[0];
   if (first === undefined) return false;
-  if (segments.some((s) => s === "." || s === ".." || !SCOPE_SEGMENT.test(s))) return false;
+  if (segments.some((s) => s === "" || s === "." || s === ".." || !SCOPE_SEGMENT.test(s))) {
+    return false;
+  }
   return !first.startsWith("_");
 }
 

@@ -85,6 +85,17 @@ export function injectHeadScripts(html: string, srcs: readonly string[]): string
     const at = head.index + head[0].length;
     return html.slice(0, at) + tags + html.slice(at);
   }
+  // No `<head>`: browsers synthesize one and hoist the tag into it — but the
+  // tag must still go AFTER any doctype. A `<script>` before it takes the
+  // parser out of "initial" insertion mode, the doctype token is then ignored,
+  // and the document renders in **quirks mode** — a layout change we would be
+  // inflicting on an app for no reason. Single-file vibe-coded documents (the
+  // apps §4.4 is written for) routinely have a doctype and no `<head>`.
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html);
+  if (doctype) {
+    const at = doctype[0].length;
+    return html.slice(0, at) + tags + html.slice(at);
+  }
   return tags + html;
 }
 

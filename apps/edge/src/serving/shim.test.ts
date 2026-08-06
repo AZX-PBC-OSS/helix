@@ -35,6 +35,21 @@ describe("injectShimTag", () => {
       '<script src="/_helix/fetch-shim.js"></script><body>x</body>',
     );
   });
+
+  it("goes after a leading doctype, so the document does not fall into quirks mode", () => {
+    // A <script> before the doctype takes the parser out of "initial" insertion
+    // mode; the doctype token is then ignored and the page renders in quirks
+    // mode. Single-file apps with a doctype and no <head> are common enough
+    // that this is the realistic shape, not an edge case.
+    const out = injectShimTag('<!doctype html>\n<meta charset="utf-8" />\n<body>x</body>');
+    expect(out.startsWith("<!doctype html>")).toBe(true);
+    expect(out).toContain('<!doctype html><script src="/_helix/fetch-shim.js"></script>');
+  });
+
+  it("tolerates leading whitespace and an uppercase DOCTYPE", () => {
+    const out = injectShimTag("  <!DOCTYPE HTML>\n<body>x</body>");
+    expect(out).toContain('<!DOCTYPE HTML><script src="/_helix/fetch-shim.js"></script>');
+  });
 });
 
 const SHIMMED = "apps/shimmed/1/";

@@ -88,18 +88,32 @@ Behaviors to know:
 - **The offline capability** ([ADR-0035](../adr/0035-offline-capability-platform-service-worker.md))
   is the one exception, and it registers *platform* code, not the app's. An app declaring
   `capabilities.offline: { scope: /app/ }` gets:
-  - `GET /_helix/sw.js` — the platform worker, **ungated** (a gated update check would 302 an
-    expired session to the auth host, and a redirect during a worker script fetch is a spec error,
-    which would silently strand a revoked worker). Served `no-cache`, carrying the app's CSP (for a
-    worker, the policy on the script governs the worker's own `fetch()`), and with
-    `Service-Worker-Allowed: <scope>` — **the only response on the platform that carries that
+  - `GET /_helix/sw.js?scope=<scope>` — the platform worker, **ungated** (a gated update check
+    would 302 an expired session to the auth host, and a redirect during a worker script fetch is
+    a spec error, which would silently strand a revoked worker). Served `no-cache`, carrying the
+    app's CSP (for a worker, the policy on the script governs the worker's own `fetch()`), and
+    with `Service-Worker-Allowed: <scope>` — **the only response on the platform that carries that
     header**. The cache is keyed to the live version's `blobPrefix`, so a promote or rollback
     rotates it; documents are network-first, so an online client always gets the live version.
+  - **Why the scope is in the URL.** The max-scope check runs on every *update* check, not just at
+    registration: the browser re-reads `Service-Worker-Allowed` from each script response, and
+    absent it the maximum scope is the script's own directory (`/_helix/`), which a `/app/`
+    registration fails with a `SecurityError`. The tombstone below is served precisely when the
+    grant is gone and there is no scope left to look up, so the URL has to carry it. The value is
+    echoed into the header only after passing the same validator the manifest field does, and the
+    real worker is served only when it matches the granted scope — so the parameter cannot buy a
+    working worker at an arbitrary prefix without passing the approval gate.
   - `GET /_helix/sw-register.js` — the registration, injected into `<head>` at serve time like the
-    fetch shim, so adopting the capability is a manifest change and nothing else.
-  - No grant, archived, or unknown slug ⇒ both routes answer with a **self-unregistering
+    fetch shim, so adopting the capability is a manifest change and nothing else. This one **404s**
+    when there is no grant: it is a page script, not a worker script, so the update-check argument
+    below does not apply to it.
+  - No grant, archived, or unknown slug ⇒ `/_helix/sw.js` answers with a **self-unregistering
     tombstone** rather than a 404, because browsers differ on whether a 404 during an update check
     unregisters or merely fails the update.
+  - Both routes **503 when the registry projection has not loaded**, and a granted app mid-promote
+    (no live version yet) 503s too. Serving a tombstone is destructive and irreversible
+    client-side, so a DB blip during a fleet restart must not be allowed to wipe offline support
+    across every device; a failed update check leaves the working worker installed.
   - The scope is validated on write *and* re-validated in the projection: never root, never a
     `_`-prefixed namespace, so the worker provably cannot reach `/_auth/*` or `/_api/*`.
 - **Scope-aware SPA fallback** — an offline app is served from its scope prefix and its bundle

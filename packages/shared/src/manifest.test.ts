@@ -94,6 +94,16 @@ describe("offline capability scope (ADR-0035 §3)", () => {
     expect(isValidServiceWorkerScope("/app/_next/")).toBe(true);
   });
 
+  it("refuses doubled slashes, which the edge would reject anyway", () => {
+    // The drift this closes: these used to pass here and fail in the edge's
+    // projection, so an owner could get an approved elevated grant that
+    // projected to nothing, with no error surfaced anywhere.
+    for (const scope of ["/app//", "//app/", "/app//sub/", "///"]) {
+      expect(isValidServiceWorkerScope(scope), scope).toBe(false);
+      expect(CapabilitiesParse({ offline: { scope } }).success, scope).toBe(false);
+    }
+  });
+
   it("requires both a leading and a trailing slash", () => {
     expect(isValidServiceWorkerScope("/app")).toBe(false);
     expect(isValidServiceWorkerScope("app/")).toBe(false);
