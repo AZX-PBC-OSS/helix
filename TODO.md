@@ -90,6 +90,13 @@ Legend for gating conditions:
 
 ---
 
+## Offline capability (ADR-0035)
+
+- [ ] **Lint a web app manifest whose `<link>` omits `crossorigin="use-credentials"`.** Browsers fetch a manifest with credentials mode **omit**, so on any app that is not `public` the request reaches the edge with no `__Host-session` cookie and the gate answers `401` — correctly. The app looks completely fine and is silently not installable. That is worse here than on an ordinary host: PWA install is the _documented mitigation_ for the one gap confined scope accepts (`/` is outside the worker's scope, so an offline visit to the bare domain reaches neither the worker nor the edge), so the failure quietly removes the answer to a known hole. It cost a real debugging round on the first deployed offline app, which is the evidence that reading the docs isn't sufficient. Mechanically detectable in the uploaded HTML at deploy time, and it fits the existing **courtesy-warning** pattern exactly — the CSP lint (architecture §4.4, "the feedback loop is the real UX") already warns about runtime-only breakage rather than gating on it. Two caveats to design around: visibility can change _after_ deploy (a `public` app going private turns a clean bundle into a broken one, so the warning can't be a hard gate and ideally re-surfaces on the visibility change), and it must not fire for `public` apps. Docs already carry the rule (`packages/deploy-skill/SKILL.md`, `examples/offline/README.md`); this is about catching the ones who didn't read it. — ADR-0035, found deploying `examples/offline` (2026-08-06)
+- [ ] **Decide whether an operator kill switch needs its own projected flag.** The tombstone (ADR-0035 §8) fires on two triggers, both derived from state the registry already projects: the app is archived, or the offline grant is withdrawn. Withdrawing the grant in the portal is already a one-click kill, so a dedicated switch is _mostly_ redundant — deliberately deferred at planning time rather than overlooked. What it would buy is a break-glass that does not require editing an app's manifest (and so does not touch the approval trail, or race an owner re-adding the grant). Cost is a column on `apps`, a Prisma migration, a projection field and a portal admin control. Revisit if an incident ever wants to kill offline serving for an app the operator does not own. — ADR-0035 §8
+
+---
+
 ## Deferred / v2
 
 - [ ] **Metering ledger tamper-evidence (fast-follow before any external audit).** Hash chain + Merkle + external anchoring to a write-only sink — append-only-by-grant is not tamper-proof; `helix_portal` can rewrite history. Plus GDPR: crypto-shredding for content/PII rows and a documented Art. 17(3) retention basis for the metering tuple. — ADR-0021, issue #17

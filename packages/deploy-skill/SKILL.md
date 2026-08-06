@@ -58,12 +58,54 @@ report-uri /_csp-report
 `cdn.tailwindcss.com` — those load without a grant. Approved origins are appended
 to `img-src` and `connect-src`.
 
-**Other serving rules.** Service workers are refused (`403` on a
-`Service-Worker: script` request) — plain web workers are fine. A request that
+**Other serving rules.** Do not ship a service worker — one you register is
+refused (`403` on a `Service-Worker: script` request). Plain web workers are
+fine. If the app needs to work with no network, ask for the **offline**
+capability instead (below); the platform supplies the worker. A request that
 accepts HTML and matches no asset falls back to `index.html`, so client-side
 routing works. HTML is served `no-cache`; other assets get a short private cache
 with ETags. The path prefixes `/_api/*`, `/_auth/*`, and `/_helix/*` are reserved
 by the platform — do not route on them.
+
+**Offline (cold boot with no network).** Declare it in the manifest:
+
+```yaml
+offline:
+  scope: /app/
+```
+
+The platform then serves its own service worker confined to that prefix and
+injects the registration — **write no worker code and no `register()` call**. It
+must not be the domain root or a `/_…` path.
+
+Two things this changes about your build, and the second is where people trip:
+
+- Serve the app from the scope. Set your bundler's base path to `/app/`.
+- **Nest the output under that directory too.** A URL path maps directly onto a
+  stored file, so `/app/main.js` reads `app/main.js` from your bundle — with Vite
+  that is `base: "./"` plus `build.outDir: "dist/app"`. Setting the base alone
+  produces URLs that look correct and all 404.
+
+The bare domain then 404s unless you ship a root `index.html` redirecting into
+the scope — the platform will not do it for you. Also add a web app manifest with
+`start_url: /app/`, since offline entry from the bare domain is not possible:
+
+```html
+<link rel="manifest" href="./manifest.webmanifest" crossorigin="use-credentials" />
+```
+
+**`crossorigin="use-credentials"` is required on any app that is not `public`.**
+Browsers fetch a web app manifest with credentials omitted, so without it the
+request carries no session cookie, the edge answers `401`, and the app is
+silently not installable — everything else looks fine. This is the single most
+likely thing to go wrong when you add a manifest.
+
+What the grant buys is **cold boot only**: the document and its static assets
+answer with no network. Everything else is still yours and needs no grant —
+handling `/_api/*` failures, IndexedDB or `localStorage` for durable state,
+`caches.open()` for large payloads, and draining queued work when the connection
+returns. `GET /_api/me` is the reachability probe: it is root-level, so it can
+never be answered from cache. See the `offline` example app.
 
 **You get an identity for free.** Unless the app is `public`, the edge only serves
 signed-in users; `GET /_api/me` returns the current actor. Don't build a login

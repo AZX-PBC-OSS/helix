@@ -28,6 +28,7 @@ Capabilities = {
   fetch?: { origins: { origin: URL; connection?: string }[]  // proxied via /_api/fetch (egress)
             shim: boolean                                     // serve-time fetch/XHR shim
             requestsPerDay?: int }
+  offline?: { scope: string }          // platform-owned service worker, confined to this prefix
 }
 
 AppManifest = { app: slug; visibility: Visibility; capabilities: Capabilities }
@@ -37,6 +38,16 @@ AppManifest = { app: slug; visibility: Visibility; capabilities: Capabilities }
 `/_api/fetch` proxy + `helix-egress`, where a secret can be injected server-side) are the "one knob,
 two settings" — same mental model, different `mode`. See [edge-serving.md](./edge-serving.md) and
 [fetch-proxy.md](./fetch-proxy.md) and [secrets-and-connections.md](./secrets-and-connections.md).
+
+`offline` is the odd one out: every other capability names something the app may *reach*, while this
+one changes how the app is *served*. Declaring it makes the edge serve a platform-authored service
+worker confined to `scope` and inject its registration — the app ships no worker code, and no app
+bytes are ever registrable. `scope` must be a non-root path prefix with a leading and trailing
+slash, and its first segment may not begin with `_` (validated on write by
+`isValidServiceWorkerScope`, and re-validated in the edge's projection because the value becomes a
+response header). It buys cold boot and nothing more. See
+[ADR-0035](../adr/0035-offline-capability-platform-service-worker.md) and
+[edge-serving.md](./edge-serving.md).
 
 `Visibility` is a discriminated union — `private` | `group` (+ `groupId`) | `password` |
 `public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupId`) and reassembled
@@ -98,6 +109,7 @@ SPA's pre-submit warning never drift:
 | mcp | `CURATED_MCP_ALLOWLIST` (**empty** ⇒ *every* MCP grant elevates) | any MCP server | high |
 | externalOrigins | — | any origin added | med |
 | fetch.origins | — | any proxied origin (secret-bound = high) | med / high |
+| offline | giving up the grant | taking it, or moving the scope | med |
 | visibility | private / group / password | **→ public** | high |
 
 Two invariants keep it safe without being annoying (`docs/design/approvals.md` §3):

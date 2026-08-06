@@ -81,9 +81,32 @@ Behaviors to know:
   miss stays a hard 404.
 - **Cache headers** — HTML is `Cache-Control: no-cache` (pointer flips are visible immediately);
   other assets get `private, max-age=300` with ETag/304.
-- **Service-Worker ban** — a request with `Service-Worker: script` is refused `403`, so an app
-  can't register a SW that observes the handoff token on `/_auth/complete`. Plain web workers
-  are allowed (`worker-src 'self' blob:`).
+- **App-supplied service workers are refused** — a request with `Service-Worker: script` gets a
+  `403`, so an app can't register a SW that observes the handoff token on `/_auth/complete`.
+  Plain web workers are allowed (`worker-src 'self' blob:`), and a `blob:` URL can never register
+  a service worker in the first place.
+- **The offline capability** ([ADR-0035](../adr/0035-offline-capability-platform-service-worker.md))
+  is the one exception, and it registers *platform* code, not the app's. An app declaring
+  `capabilities.offline: { scope: /app/ }` gets:
+  - `GET /_helix/sw.js` — the platform worker, **ungated** (a gated update check would 302 an
+    expired session to the auth host, and a redirect during a worker script fetch is a spec error,
+    which would silently strand a revoked worker). Served `no-cache`, carrying the app's CSP (for a
+    worker, the policy on the script governs the worker's own `fetch()`), and with
+    `Service-Worker-Allowed: <scope>` — **the only response on the platform that carries that
+    header**. The cache is keyed to the live version's `blobPrefix`, so a promote or rollback
+    rotates it; documents are network-first, so an online client always gets the live version.
+  - `GET /_helix/sw-register.js` — the registration, injected into `<head>` at serve time like the
+    fetch shim, so adopting the capability is a manifest change and nothing else.
+  - No grant, archived, or unknown slug ⇒ both routes answer with a **self-unregistering
+    tombstone** rather than a 404, because browsers differ on whether a 404 during an update check
+    unregisters or merely fails the update.
+  - The scope is validated on write *and* re-validated in the projection: never root, never a
+    `_`-prefixed namespace, so the worker provably cannot reach `/_auth/*` or `/_api/*`.
+- **Scope-aware SPA fallback** — an offline app is served from its scope prefix and its bundle
+  nests under that prefix, so an HTML miss *inside* the scope falls back to `{scope}index.html`
+  rather than the bundle root. A miss outside the scope keeps the root behaviour. A scoped app's
+  bare `/` therefore 404s unless it ships its own root `index.html`; the platform deliberately does
+  not redirect (that would make the edge care about an app's internal layout).
 
 ### CSP injection (§4.4)
 
