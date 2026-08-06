@@ -6,10 +6,12 @@
 > production or third-party use. Use at your own risk.
 
 Secure hosting for vibe-coded AI apps. **New here? Start with [`TOUR.md`](./TOUR.md)** — the
-high-level map. Then: [`docs/features/`](./docs/features/) for per-feature docs (the _what &
-how, today_), [`docs/platform-architecture.md`](./docs/platform-architecture.md) (the _what &
-why_), and [`docs/platform-project-plan.md`](./docs/platform-project-plan.md) (the _with what &
-in what order_). The whole design rests on one stance — **every hosted app is untrusted code** —
+high-level map for someone about to read the code, or
+[`docs/OVERVIEW.md`](./docs/OVERVIEW.md) for the problem, architecture, and security model in
+one file without the repo. Then: [`docs/features/`](./docs/features/) for per-feature docs (the
+_what & how, today_), [`docs/platform-architecture.md`](./docs/platform-architecture.md) (the
+_what & why_), and [`docs/platform-project-plan.md`](./docs/platform-project-plan.md) (the _with
+what & in what order_) — [`docs/README.md`](./docs/README.md) maps the rest. The whole design rests on one stance — **every hosted app is untrusted code** —
 and contains the blast radius per app instead of trying to verify it.
 
 > **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Registry + deploys
@@ -40,11 +42,10 @@ packages/
   cli/           # helix — the deploy CLI (login / deploy / promote / …)
   deploy-skill/  # SKILL.md — the agent skill for building apps on Helix
 examples/      # reference apps to `helix deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy); built dist/ committed
-docs/          # TOUR is at repo root; here: platform-architecture, project-plan, phase-1-user-stories, features/, design/
+docs/          # TOUR is at repo root; here: OVERVIEW, platform-architecture, project-plan, adr/, features/, design/ (see docs/README.md)
+infra/azure/   # Bicep — the deployed Azure topology (source of truth; see its README)
 .devcontainer/ # VS Code dev container; also runs Postgres 18 + Azurite
 ```
-
-`infra/` is in the target layout (project plan §2) but lands in a later milestone.
 
 ## Prerequisites
 

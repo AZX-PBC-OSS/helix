@@ -5,10 +5,12 @@ security, or engineering — meeting the platform for the first time. Deeper det
 [`docs/platform-architecture.md`](platform-architecture.md), the per-decision records in
 [`docs/adr/`](adr/), and the per-feature docs in [`docs/features/`](features/).
 
-> **Status (2026-07):** **deployed and running on Azure** — the three planes on Container Apps,
+> **Status (2026-08):** **deployed and running on Azure** — the three planes on Container Apps,
 > real Entra OIDC, wildcard TLS, and Key Vault custody verified against a live vault (M5).
 > Outstanding: a real pilot app end to end. Where a capability isn't fully delivered yet, this
-> doc says so.
+> doc says so — but the authority on exact done/partial/deferred status is
+> [`platform-project-plan.md`](platform-project-plan.md), and on how a shipped feature works
+> today, [`features/`](features/). This doc is orientation, not a status tracker.
 
 ---
 
@@ -30,35 +32,24 @@ can harm only itself.
 
 ---
 
-## 2. Who it's for (from the Phase-1 user stories)
+## 2. Who it's for
 
 | Persona | What they need |
 |---|---|
 | **Business user** (non-IT prototype builder) | Upload a bundle → secure URL; pick SSO or password access; call AI/APIs without handling keys; roll back; see usage. |
-| **Platform administrator** (IT / security) | One vault for all keys + client tokens; embed a client's *own* licensed API contracts; restrict which models/capabilities each app can use; a tamper-evident audit log of every AI call; manage builders via Entra groups; spend alerts; warehouse export. |
+| **Platform administrator** (IT / security) | One vault for every key and third-party token; let an app spend an organisation's *own* licensed API contract without ever holding it; restrict which models and capabilities each app can use; an audit log of every AI call; manage builders via Entra groups; spend alerts; warehouse export. |
 | **End user** (uses a hosted app) | A working experience behind sign-in, with a useful fallback when the AI is down. |
 
-**First apps:** migrate the Trilliant demos onto the platform, then build new ones on it (e.g. the
-*Heatwave DR Simulation* — a compute-heavy, no-persistence energy model). These validate static
-frontend + governed LLM/compute access with no app-managed secrets.
+The first two personas are the reason the platform is shaped the way it is: the business user's
+needs are all *self-serve*, and the administrator's are all *centrally enforced*. Everything in §3
+and §4 follows from serving both at once — which is why the app is static and the **gateway** is
+where the power and the policy meet.
 
-### How the stories map to what's built
-
-| Story (priority) | How Helix delivers it | Status |
-|---|---|---|
-| Upload a bundle → secure hosted URL (P0) | Upload-only deploy → immutable version → served at `<slug>.azx.helix.azxlabs.io` | ✅ Shipped |
-| SSO (Entra) **or** password per deployment (P0) | Per-app *visibility*: `groups` (OIDC/Entra) · `password` (shared passphrase) · `public` | ✅ Shipped |
-| Use pre-provisioned APIs without handling keys (P0) | LLM gateway (key injected server-side) + fetch-proxy with secret-backed *connections* for other APIs | ✅ LLM + arbitrary HTTP APIs; ⚠️ only Anthropic is a first-class LLM today (Azure OpenAI/Gemini are config, not yet a catalog) |
-| Roll back a deployment (P1) | Live pointer flip to a prior immutable version (same op as promote) | ✅ Shipped |
-| Usage metrics — sessions, errors, latency (P1) | Per-app + per-gateway usage dashboards over the metering ledger | ⚠️ Tokens/requests/outcome shipped; **latency & error-detail are deliberately not recorded** |
-| One vault for all keys + client tokens (P0) | `SecretStore` custody seam (prod Key Vault / dev envelope); portal write-only secret management | ✅ Shipped |
-| Embed a client org's own licensed tokens (P0) | Secret *connections*: `app`-scoped and `global` (granted per app); the app's calls use the client's contract, never an AZX key | ✅ Shipped |
-| Restrict which models/capabilities each team can use (P0) | Capability manifest + approval classifier (model allowlist, budgets, origins) enforced at the gateway | ✅ Per-**app**; ⚠️ "per-team" grouping isn't a first-class concept (one org, app-id partitioning) |
-| Tamper-evident audit log of every AI call (P0) | Append-only `gateway_calls` ledger; `helix_edge` has INSERT-only | ⚠️ Append-only **by DB grant**, not cryptographically tamper-evident — an immutable sink is deferred |
-| Provision/deprovision builders via Entra groups (P0) | Group visibility re-checked per request; admin gated on a `platform-admin` group claim | ✅ Shipped and running against real Entra |
-| Alerts on spend/usage thresholds (P1) | Budgets *block* over-limit calls | ❌ Hard budget yes; proactive **alerting** not built |
-| Export audit/usage to a warehouse (P2) | — | ❌ Not built (P2) |
-| End-user fallback when AI is down (P1) | Gateway surfaces structured error/`event: error`; the app renders the fallback | ⚠️ Platform surfaces failures; the fallback UX is app-side |
+**Where each of those stands today** is the project plan's job, not this doc's — see
+[`platform-project-plan.md`](platform-project-plan.md) §5 for the per-milestone status and
+[`../TODO.md`](../TODO.md) for the open follow-ups. In one line: the mechanisms for the
+administrator's list exist and run in production; the depth (per-team policy, cryptographic
+tamper-evidence, spend alerting, warehouse export) is where the gaps are, and §6 names them.
 
 ---
 
@@ -106,7 +97,9 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
   authorization, quota, audit). Runs as a least-privilege Postgres role with **no app-connection-secret
   read** (no grant on `app_secrets`) and **no arbitrary outbound** — it can only ask egress to make
   calls it has already authorized. (It is not secretless: it holds its own operational keys — auth,
-  instruction, OIDC — and today an over-broad Blob key; see [ADR-0001](adr/0001-three-runtime-split.md).)
+  instruction, OIDC — but the over-broad Blob account key ADR-0001 flagged as a P0 is gone: Blob reads
+  go out under a **managed identity** in production, with the hand-signed key path confined to
+  dev/Azurite. See [ADR-0001](adr/0001-three-runtime-split.md), [ADR-0027](adr/0027-blob-auth-managed-identity.md).)
 - **`helix-portal` — control plane.** Privileged: portal UI/API, deploys, registry writes, capability
   approvals, secret writes. Owns the Postgres schema and migrations. Not routable from app subdomains.
 - **`helix-egress` — mechanism plane.** The only component holding plaintext connection secrets or a
@@ -161,41 +154,54 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 
 Honest residual: relaxed CSP (necessary for vibe-coded bundles) gives up XSS prevention by design, and
 granted channels (LLM prompts, approved origins, navigation) remain possible exfil paths — containment
-raises the bar, it does not eliminate every channel. Open hardening items are tracked as GitHub issues
-and in [`docs/reviews/`](reviews/).
+raises the bar, it does not eliminate every channel. Open hardening items live in
+[`TODO.md`](../TODO.md) (distilled from the ADRs, with the gating condition on each) and in the
+GitHub issue tracker; the review passes they came out of are in [`docs/reviews/`](reviews/).
 
 ---
 
 ## 5. Where the decisions live
 
-The **26 Architecture Decision Records** in [`docs/adr/`](adr/) are the canonical record of *why*.
-Foundational set:
+The **35 Architecture Decision Records** in [`docs/adr/`](adr/) are the canonical record of *why* —
+where an ADR and older prose disagree, the ADR wins. Foundational set:
 
 - **Trust boundary & isolation:** 0001 three-plane split · 0019 subdomain-per-app · 0020 static-only
   apps · 0014 same-origin gateway · 0002 Postgres role split + RLS.
 - **Secrets & egress:** 0006 custody seam · 0005 SSRF + injection · 0013 egress trust model · 0008 LLM
-  key via egress.
+  key via egress · 0027 Blob via managed identity · 0029 platform secret delivery · 0031 connection
+  providers / delegated auth.
 - **Governance & data:** 0016 capability manifest + approval classifier · 0015 app-data three scopes ·
   0021 metering ledger · 0007 portal authz (v0).
 - **Platform shape:** 0017 registry projection (· 0025 projection hardening) · 0018 deploy model (· 0026
-  hosted-build isolation prerequisites) · 0022 self-hosted edge · 0023 one-org + app-id partitioning ·
-  0012 edge/portal co-deploy · 0003 dependency-minimal edge.
+  hosted-build isolation prerequisites · 0030 repo-backed apps) · 0022 self-hosted edge · 0023 one-org +
+  app-id partitioning · 0012 edge/portal co-deploy · 0003 dependency-minimal edge · 0028 customer-deployed
+  model · 0032 CLI naming + distribution.
 - **Auth & access:** 0004 app-user auth · 0024 portal/CLI auth · 0009 relaxed CSP · 0010 anonymous
-  shared-writes · 0011 in-memory rate limiting.
+  shared-writes · 0011 rate limiting (now a shared Postgres counter).
+- **App-facing surface:** 0033 OpenAI-compatible gateway + multi-provider routing · 0034 structured
+  output · 0035 offline capability (a platform-owned, scope-confined service worker).
 
 Deeper design and feature docs: [`docs/design/`](design/) (app-data, approvals, fetch-proxy,
-secrets-and-connections) and [`docs/features/`](features/) (one per shipped capability).
+secrets-and-connections, custom backends) and [`docs/features/`](features/) (one per shipped
+capability). [`docs/README.md`](README.md) maps the whole tree.
 
 ---
 
 ## 6. What's next
 
-- **A real pilot app end to end** — the last outstanding M5 exit criterion. The Azure deploy itself
-  has landed: Container Apps, Key Vault custody verified against a live vault, real Entra, and the
-  production network zones that make the egress isolation physical.
-- **Known hardening:** the open security issues (instruction replay/scope, edge↔egress
-  TLS, portal per-app RBAC, rate-limit-across-replicas) — see the GitHub issue tracker and
-  [`TODO.md`](../TODO.md).
-- **Capability catalog:** additional first-class LLM providers (Azure OpenAI, Gemini) and curated API
-  endpoints (geocoding) behind the existing provider/connection seams.
-- **Admin depth:** spend/usage **alerting** (P1) and **warehouse export** (P2) of audit/usage data.
+- **A real pilot app end to end** — the last outstanding M5 exit criterion, and the only evidence
+  that isn't self-referential. The Azure deploy itself has landed: Container Apps, Key Vault custody
+  verified against a live vault, real Entra, and the production network zones that make the egress
+  isolation physical.
+- **Known hardening:** portal **per-app RBAC** (owner/editor/viewer — the BOLA half is closed, reads
+  are still authenticated-only), **channel-level defense on the edge→egress hop** (mTLS / workload
+  identity — the hop is authenticated by a signed, single-use, audience-bound instruction, not by the
+  channel), a **session-revocation / admin-kill path**, and moving untrusted apps onto their own
+  registrable domain before external URLs commit. Instruction replay and per-action scope are closed
+  (ADR-0013 steps 1–2), as is rate limiting across replicas (a shared Postgres counter, ADR-0011).
+  The full list is [`TODO.md`](../TODO.md).
+- **Capability catalog:** Anthropic and OpenAI-compatible upstreams are both wired today (ADR-0033) —
+  next is making additional vendors and curated endpoints (e.g. geocoding) *first-class catalog
+  entries* rather than per-deployment connection config.
+- **Admin depth:** spend/usage **alerting** (the dollar data it needs is now recorded) and
+  **warehouse export** of audit/usage data.

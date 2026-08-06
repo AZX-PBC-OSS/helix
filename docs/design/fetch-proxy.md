@@ -1,7 +1,7 @@
 # AZX App Platform — Fetch Proxy (design doc)
 
 **Status:** Design draft v1 · June 2026
-**Companion to:** `platform-architecture.md` (§3 the `helix-egress` plane, §6.1 names it, §12/M4.5 phase it), `platform-project-plan.md` (the M4.5 milestone), `docs/design/secrets-and-connections.md` (the secret store + `connection` it consumes), `docs/design/app-data-storage.md` and `docs/design/approvals.md` (the gateway patterns this reuses), and `docs/platform-custom-backends-and-apis.md` §4 (the policy/mechanism split + egress/SSRF lesson).
+**Companion to:** `platform-architecture.md` (§3 the `helix-egress` plane, §6.1 names it, §12/M4.5 phase it), `platform-project-plan.md` (the M4.5 milestone), `docs/design/secrets-and-connections.md` (the secret store + `connection` it consumes), `docs/design/app-data-storage.md` and `docs/design/approvals.md` (the gateway patterns this reuses), and `docs/design/custom-backends.md` §4 (the policy/mechanism split + egress/SSRF lesson).
 **Why this exists:** The fetch-proxy is the gateway's answer to "my app needs to call a third-party API." It is named everywhere and designed nowhere. The hard part is not the proxy — it is the **adoption story**: a vibe-coded app reaches us already written, with plain `fetch('https://…')` in it, and the proxy only earns its keep if integrating with it is closer to *zero edits* than *learn a new API*. This doc designs the mechanism in service of that.
 
 > **Related ADRs:** [ADR-0005](../adr/0005-ssrf-egress-controls.md) (SSRF + secret injection) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model).

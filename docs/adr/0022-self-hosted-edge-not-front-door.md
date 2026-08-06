@@ -1,7 +1,7 @@
 # 0022. Self-hosted edge/auth, not a cloud-vendor edge (Front Door / App Gateway)
 
 **Status:** Accepted _(recorded retroactively 2026-06-26 — coverage audit; founding build-vs-buy choice)_
-**Related:** `docs/platform-architecture.md` §3 (decision #6), §4.2; `docs/build-vs-buy-comparison.md`; ADR [0001](0001-three-runtime-split.md), [0003](0003-dependency-minimal-edge.md)
+**Related:** `docs/platform-architecture.md` §3 (decision #6), §4.2; `docs/reviews/2026-06-build-vs-buy.md`; ADR [0001](0001-three-runtime-split.md), [0003](0003-dependency-minimal-edge.md)
 
 ## Context
 

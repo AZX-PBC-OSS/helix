@@ -1,7 +1,7 @@
 # 0020. Static-only hosted apps in v1
 
 **Status:** Accepted _(recorded retroactively 2026-06-26 — coverage audit; founding constraint)_
-**Related:** `docs/platform-architecture.md` §2 (goals/non-goals), §3 (decision #1); `docs/platform-custom-backends-and-apis.md`; ADR [0001](0001-three-runtime-split.md), [0014](0014-same-origin-api-gateway.md)
+**Related:** `docs/platform-architecture.md` §2 (goals/non-goals), §3 (decision #1); `docs/design/custom-backends.md`; ADR [0001](0001-three-runtime-split.md), [0014](0014-same-origin-api-gateway.md)
 
 ## Context
 
@@ -9,7 +9,7 @@ Hosting untrusted code is the core risk. **Server-side** untrusted code (contain
 
 ## Decision
 
-v1 hosts **static frontends only**. Apps ship HTML/JS/CSS/wasm bundles; they run **no app-provided server code**. All dynamic capability — LLM, storage, third-party HTTP — flows through the platform's `/_api/*` gateway (ADR-0014). Arbitrary containers / custom backends are out of scope for v1 (a later isolation tier, see `platform-custom-backends-and-apis.md`).
+v1 hosts **static frontends only**. Apps ship HTML/JS/CSS/wasm bundles; they run **no app-provided server code**. All dynamic capability — LLM, storage, third-party HTTP — flows through the platform's `/_api/*` gateway (ADR-0014). Arbitrary containers / custom backends are out of scope for v1 (a later isolation tier, see `docs/design/custom-backends.md`).
 
 ## Consequences
 

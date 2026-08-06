@@ -279,7 +279,7 @@ Residual risk to name (consistent with architecture §residual-risk): a granted 
 
 ## 9. What's deferred / open questions
 
-- **Document queries beyond KV.** The architecture says JSONB; this doc keeps v1 to key-addressed values + append-only collections. Richer per-app queries ("filter my items by field") are the "richer app/user data queries" of the custom-backends rung 0 (`platform-custom-backends-and-apis.md` §3) and can layer on `app_data` later without changing the security model.
+- **Document queries beyond KV.** The architecture says JSONB; this doc keeps v1 to key-addressed values + append-only collections. Richer per-app queries ("filter my items by field") are the "richer app/user data queries" of the custom-backends rung 0 (`docs/design/custom-backends.md` §3) and can layer on `app_data` later without changing the security model.
 - **Schema/validation of stored items.** v1 stores opaque app-supplied JSON (size-capped). Owner-declared item schemas (so the portal export has typed columns) is a nice-to-have, not v1.
 - **Anon identity for public apps** (§6) — its own slice; pick "no identity" first.
 - **Shared-write conflict semantics** (last-write-wins vs optimistic concurrency on `updatedAt`) — only matters once `sharedWrite` has a real user; default LWW.

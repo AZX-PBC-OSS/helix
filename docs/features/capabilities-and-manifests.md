@@ -142,7 +142,7 @@ a "pending approval" banner on app detail. See [portal-web.md](./portal-web.md).
 
 - **MCP** — `mcp` is carried in the manifest and the classifier already treats any MCP server as
   high-risk-elevated, but there is **no gateway transport yet**: approving an MCP grant writes the
-  manifest; enforcement lands with the MCP-as-REST gateway (`docs/platform-custom-backends-and-apis.md`).
+  manifest; enforcement lands with the MCP-as-REST gateway (`docs/design/custom-backends.md`).
 - **`bytesPerDay`** is declared and classified but not yet enforced at the edge (app-data design §7).
 - **Per-delta partial approval** — v1 approves/denies the whole submission bundle; splitting a
   request is a deliberate future refinement (`docs/design/approvals.md` §9).

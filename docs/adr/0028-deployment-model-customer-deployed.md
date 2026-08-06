@@ -1,7 +1,7 @@
 # 0028. Deployment model: single-tenant, customer-deployed into the customer's cloud
 
 **Status:** Accepted _(2026-07-22 — parameterizes architecture decision 11 and reframes ADR-0019 / issue #16; obligated edits applied)_
-**Related:** `docs/platform-architecture.md` §3 (decisions #6, #8, #11), §9; ADR [0002](0002-postgres-role-split-rls.md) (role split — per instance), [0005](0005-ssrf-egress-controls.md) / [0013](0013-egress-trust-model.md) (egress — now guards the customer cloud), [0006](0006-secret-custody-seam.md) (secret custody — customer Key Vault), [0019](0019-subdomain-per-app-isolation.md) (subdomain/domain split — now per-deployment; issue #16), [0022](0022-self-hosted-edge-not-front-door.md) (portable self-hosted edge — this ADR's parent), [0023](0023-one-org-app-id-partitioning.md) (one-org, app-id partitioning); `docs/design/dev-mode.md`; `docs/build-vs-buy-comparison.md` (C8)
+**Related:** `docs/platform-architecture.md` §3 (decisions #6, #8, #11), §9; ADR [0002](0002-postgres-role-split-rls.md) (role split — per instance), [0005](0005-ssrf-egress-controls.md) / [0013](0013-egress-trust-model.md) (egress — now guards the customer cloud), [0006](0006-secret-custody-seam.md) (secret custody — customer Key Vault), [0019](0019-subdomain-per-app-isolation.md) (subdomain/domain split — now per-deployment; issue #16), [0022](0022-self-hosted-edge-not-front-door.md) (portable self-hosted edge — this ADR's parent), [0023](0023-one-org-app-id-partitioning.md) (one-org, app-id partitioning); `docs/design/dev-mode.md`; `docs/reviews/2026-06-build-vs-buy.md` (C8)
 
 ## Context
 

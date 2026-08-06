@@ -266,4 +266,4 @@ holds an API key. See [examples.md](./examples.md).
   table are the remaining work (`packages/shared/src/{usage,pricing}.ts`).
 - **MCP-as-REST** — `capabilities.mcp` exists in the manifest but has no gateway transport yet
   (see [capabilities-and-manifests.md](./capabilities-and-manifests.md) and
-  `docs/platform-custom-backends-and-apis.md`).
+  `docs/design/custom-backends.md`).
