@@ -192,7 +192,14 @@ To exercise the full login flow, unset the bypass for the edge process
 `https://hello-world.local.helix.azxlabs.io:8080/` in a browser, and pick a fixture user
 (`alice@azx.dev` / `bob@azx.dev` / `mallory@azx.dev`) on the dev IdP page. The
 mkcert CA lives at `.devcontainer/certs/caroot/rootCA.pem` — import it into the
-host trust store to silence browser warnings (optional).
+host trust store (`CAROOT=<repo>/.devcontainer/certs/caroot mkcert -install`,
+then fully quit the browser) to silence browser warnings.
+
+That import is optional for most work but **required to test the offline
+capability**: a service worker needs a secure context, and clicking through the
+certificate interstitial does not create one — the exception is per-tab UI state,
+not a trust decision, so registration fails with _"An SSL certificate error
+occurred when fetching the script."_
 
 Archive via the portal API to see the 410 path:
 

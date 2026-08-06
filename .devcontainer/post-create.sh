@@ -33,9 +33,17 @@ sudo env "PATH=$PATH" npx -y playwright@latest install-deps chromium
 echo "── Generating local TLS certs (mkcert) ──"
 # Wildcard cert for *.local.helix.azxlabs.io so the edge can terminate TLS in dev —
 # __Host- cookies demand Secure (project plan §3). Idempotent; gitignored.
-# NODE_EXTRA_CA_CERTS (compose) makes Node trust the CA in-container; to quiet
-# host-browser warnings, import certs/caroot/rootCA.pem into the host trust
-# store (optional — the warning is harmless for dev).
+# NODE_EXTRA_CA_CERTS (compose) makes Node trust the CA in-container. On the
+# HOST, import certs/caroot/rootCA.pem into the OS trust store:
+#
+#   CAROOT=<repo>/.devcontainer/certs/caroot mkcert -install
+#
+# This is optional for most work — clicking through the browser warning is fine.
+# It is NOT optional for the offline capability (ADR-0035): a service worker
+# needs a secure context, and a click-through exception does not create one
+# (Chromium: "An SSL certificate error occurred when fetching the script"). Fully
+# quit the browser afterwards; Chromium caches trust per-process. Regenerating
+# the CA (a container rebuild with certs/ cleared) means re-importing.
 CERT_DIR=/workspace/.devcontainer/certs
 export CAROOT="$CERT_DIR/caroot"
 if [ ! -f "$CERT_DIR/local-helix.pem" ] && command -v mkcert >/dev/null; then
