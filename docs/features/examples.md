@@ -15,6 +15,7 @@ only**; every dynamic capability flows through the edge gateway at `/_api/*`. Fu
 | `waitlist` | A **public** contact harvester: write-only collections + owner-seeded shared read. | `/_api/data/*` |
 | `github-stars` | Calls a public API **directly** — CSP-blocked until an admin grants the origin (approval loop). | — (CSP) |
 | `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the transparent shim. | `/_api/fetch/*` |
+| `offline` | Cold-boots with no network on the platform's scope-confined service worker; six probes separate what the platform caches from what the app still owns. | — (`/_helix/sw.js`) |
 
 ## How they fit the platform
 
@@ -64,6 +65,21 @@ API works both keyless (60 req/hr) and authenticated (5000), so the injected tok
 directly visible: probe 1 jumps `60 → 5000` and probe 2 flips `401 → your account`. No
 "trust-me-it-worked." Needs `pnpm dev:egress` running, or the proxy probes return 503. See
 [fetch-proxy.md](./fetch-proxy.md) and [secrets-and-connections.md](./secrets-and-connections.md).
+
+### `offline` — the offline capability in practice
+
+Ships **no service worker**: the platform serves a scope-confined one and injects its
+registration, so the app's whole adoption cost is a manifest grant. Six probes, and the split
+between them is the lesson — 1, 2 and 6 inspect something the app did not build (registration and
+scope, the `helix:status` cache inventory, the blob-prefix-keyed cache version), while 4 and 5 are
+ordinary `caches.open()` and IndexedDB that need no grant at all. Probe 3 puts a cached asset next
+to `/_api/me` to show why a root-level namespace the worker can never scope over is the one thing
+that can still measure reachability.
+
+It is also the reference for the **prefix layout** a scoped app needs: `base: "./"` plus
+`outDir: "dist/app"`, because the edge maps a URL path literally onto a blob key. Setting `base`
+alone produces URLs that look right and 404. See [edge-serving.md](./edge-serving.md) and
+[ADR-0035](../adr/0035-offline-capability-platform-service-worker.md).
 
 ## Planned / not yet built
 

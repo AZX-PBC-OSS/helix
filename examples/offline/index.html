@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <!--
+      `crossorigin="use-credentials"` is required, not decorative. A manifest is
+      fetched with credentials mode "omit" by default, so on any app that isn't
+      `public` the request arrives with no session cookie and the edge answers
+      401 — the app looks fine and is silently not installable. This forces the
+      cookie to be sent. Same-origin, so no CORS headers are involved.
+    -->
+    <link rel="manifest" href="./manifest.webmanifest" crossorigin="use-credentials" />
+    <title>Offline · AZX</title>
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>⬇ Offline</h1>
+        <p id="whoami" class="whoami">…</p>
+      </header>
+
+      <p class="lede">
+        This app holds the <strong>offline</strong> capability, so the platform serves a
+        scope-confined service worker at <code>/app/</code> and injects its registration. The
+        capability buys exactly one thing — <strong>cold boot</strong>, the document and its assets
+        answering with no network. Everything else below an app already has ungranted; the probes
+        exist to show you which half is which.
+      </p>
+
+      <div class="actions">
+        <button id="refresh-btn" type="button">Refresh all probes</button>
+        <span id="net" class="net"></span>
+      </div>
+
+      <section class="probes">
+        <article class="probe" id="probe-registration">
+          <h2>1 · Worker registration</h2>
+          <p class="desc">
+            Registered by the platform, not by app code — there is no service worker in this
+            bundle. The scope is the manifest's, and it can never be <code>/</code>.
+          </p>
+          <pre class="out">…</pre>
+        </article>
+
+        <article class="probe" id="probe-status">
+          <h2>2 · What the worker holds</h2>
+          <p class="desc">
+            Asked over the <code>helix:status</code> message, not by reading
+            <code>caches.keys()</code> — the cache name is a platform implementation detail and
+            apps are deliberately not invited to depend on its format.
+          </p>
+          <pre class="out">…</pre>
+        </article>
+
+        <article class="probe" id="probe-reachability">
+          <h2>3 · Asset vs <code>/_api/me</code></h2>
+          <p class="desc">
+            Go offline and re-run: the asset still answers from cache while
+            <code>/_api/me</code> fails. <code>/_api/*</code> is a root-level platform namespace and
+            the worker's scope can never contain it, so it is structurally unprecachable — which is
+            what makes it a usable reachability probe.
+          </p>
+          <pre class="out">…</pre>
+        </article>
+
+        <article class="probe" id="probe-appcache">
+          <h2>4 · The app's own cache</h2>
+          <p class="desc">
+            A cache this app opened itself, with no grant of any kind. This is how you hold a large
+            asset — a model file, a dataset — offline: the platform caches the shell, you cache
+            your payload. Note it is listed separately from the <code>helix:</code> cache and the
+            worker never touches it.
+          </p>
+          <div class="row">
+            <button id="appcache-btn" type="button">Cache a payload</button>
+            <button id="appcache-clear" type="button" class="ghost">Clear</button>
+          </div>
+          <pre class="out">…</pre>
+        </article>
+
+        <article class="probe" id="probe-idb">
+          <h2>5 · Durable state (IndexedDB)</h2>
+          <p class="desc">
+            Also ungranted. Append a few entries, go offline, and hard-reload: the shell cold-boots
+            and the entries are still here. That is the shape of a capture-now-sync-later outbox —
+            the app owns it, the platform never sees it.
+          </p>
+          <div class="row">
+            <button id="idb-btn" type="button">Append an entry</button>
+            <button id="idb-clear" type="button" class="ghost">Clear</button>
+          </div>
+          <pre class="out">…</pre>
+        </article>
+
+        <article class="probe" id="probe-version">
+          <h2>6 · Cache version</h2>
+          <p class="desc">
+            The cache is keyed to the live version's blob prefix. Promote a new version and reload
+            while online: this changes and the old cache is dropped. Documents are network-first, so
+            an online client always gets the live version — the pointer flip still means what it
+            meant before the worker existed.
+          </p>
+          <pre class="out">…</pre>
+        </article>
+      </section>
+
+      <footer>
+        <p>
+          Probes 3 and 5 only prove anything with the network actually off — use DevTools →
+          Network → <em>Offline</em>, then hard-reload. See this app's README.
+        </p>
+      </footer>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

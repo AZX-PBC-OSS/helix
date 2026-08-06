@@ -1,0 +1,5 @@
+{
+  "what": "A stand-in for the large asset an offline app actually cares about — a model file, a tile set, a reference dataset.",
+  "why": "It is cached by the APP, into the app's own cache, with no platform grant. The offline capability covers the shell; payloads like this were always the app's job.",
+  "sizeNote": "Deliberately tiny. The mechanism is identical at 200MB; only your storage quota changes."
+}

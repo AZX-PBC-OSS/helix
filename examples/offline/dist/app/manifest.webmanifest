@@ -1,0 +1,11 @@
+{
+  "name": "AZX Offline demo",
+  "short_name": "Offline",
+  "description": "Probes the platform's offline capability: cold boot, cache inventory, reachability, and app-owned storage.",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "icons": [{ "src": "/app/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
