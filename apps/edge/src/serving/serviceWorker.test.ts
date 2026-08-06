@@ -21,6 +21,9 @@ const SHELL = "<!doctype html><html><head></head><body>shell</body></html>";
 
 const H = (slug: string) => ({ host: `${slug}.local.helix.azxlabs.io` });
 
+/** The worker URL a registration actually uses — the scope rides in the query. */
+const SW_URL = "/_helix/sw.js?scope=%2Fapp%2F";
+
 let app: FastifyInstance;
 beforeAll(async () => {
   const blob = new FakeBlobReader();
@@ -90,23 +93,34 @@ describe("buildServiceWorkerScript", () => {
 });
 
 describe("buildRegistrationSnippet", () => {
-  it("registers at the declared scope, bypassing the HTTP cache for updates", () => {
+  it("bakes the scope into the script URL so the tombstone can install later", () => {
+    // The max-scope test runs on EVERY update check, so a response without
+    // `Service-Worker-Allowed` fails with SecurityError. When the grant is gone
+    // there is no scope left to look up — the URL has to carry it.
     const js = buildRegistrationSnippet("/app/");
-    expect(js).toContain('"/_helix/sw.js"');
+    expect(js).toContain('"/_helix/sw.js?scope=%2Fapp%2F"');
     expect(js).toContain("scope: SCOPE");
     expect(js).toContain('updateViaCache: "none"');
   });
 
-  it("hands the worker what the first visit already loaded", () => {
-    // Without this the registering page's own requests bypass the worker and
-    // offline boot needs a SECOND visit.
-    expect(buildRegistrationSnippet("/app/")).toContain('getEntriesByType("resource")');
+  it("hands the worker what the first visit already loaded, gated on load", () => {
+    // Without the backfill the registering page's own requests bypass the
+    // worker and offline boot needs a SECOND visit. Gating on `load` rather
+    // than `ready` matters: `ready` resolves after a purely local
+    // install→activate, routinely beating the page's own subresources, and
+    // resource timings only appear once a resource has finished.
+    const js = buildRegistrationSnippet("/app/");
+    expect(js).toContain('getEntriesByType("resource")');
+    expect(js).toContain('addEventListener("load"');
+    expect(js).toContain('readyState === "complete"');
+    // The document travels separately — it needs an HTML Accept downstream.
+    expect(js).toContain("document: location.href");
   });
 });
 
 describe("GET /_helix/sw.js", () => {
   it("serves the worker for a granted app, scoped and under the app CSP", async () => {
-    const res = await app.inject({ url: "/_helix/sw.js", headers: H("offline") });
+    const res = await app.inject({ url: SW_URL, headers: H("offline") });
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toContain("text/javascript");
     // The one route on the platform that widens worker scope.
@@ -119,31 +133,121 @@ describe("GET /_helix/sw.js", () => {
     expect(res.body).toContain("helix:apps/offline/1/");
   });
 
-  it("serves a self-unregistering tombstone — never a 404 — when there is no grant", async () => {
-    // A 404 is not reliable: browsers differ on whether one during an update
-    // check unregisters the worker or merely fails the update.
-    const res = await app.inject({ url: "/_helix/sw.js", headers: H("plain") });
+  it("tombstones an app with no grant — WITH the scope header, or it can't install", async () => {
+    // The header is the whole fix. A tombstone served without it fails the
+    // max-scope test on the update check and is never installed, leaving the
+    // worker it was meant to kill in place. An earlier version of this test
+    // asserted the header's ABSENCE and so pinned that bug.
+    const res = await app.inject({ url: SW_URL, headers: H("plain") });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("self.registration.unregister()");
-    expect(res.headers["service-worker-allowed"]).toBeUndefined();
+    expect(res.headers["service-worker-allowed"]).toBe("/app/");
   });
 
-  it("tombstones an archived app", async () => {
-    const res = await app.inject({ url: "/_helix/sw.js", headers: H("gone") });
+  it("tombstones an archived app, still scoped so the kill lands", async () => {
+    const res = await app.inject({ url: SW_URL, headers: H("gone") });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("self.registration.unregister()");
-    expect(res.headers["service-worker-allowed"]).toBeUndefined();
+    expect(res.headers["service-worker-allowed"]).toBe("/app/");
   });
 
   it("tombstones an unknown slug rather than leaking its absence", async () => {
-    const res = await app.inject({ url: "/_helix/sw.js", headers: H("nope") });
+    const res = await app.inject({ url: SW_URL, headers: H("nope") });
     expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("self.registration.unregister()");
+  });
+
+  it("tombstones — and does not widen — when the claimed scope is not the granted one", async () => {
+    // Otherwise the URL param would be a way to get a working worker at an
+    // arbitrary prefix without ever passing the approval gate.
+    const res = await app.inject({
+      url: "/_helix/sw.js?scope=%2Felsewhere%2F",
+      headers: H("offline"),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("self.registration.unregister()");
+    expect(res.headers["service-worker-allowed"]).toBe("/elsewhere/");
+    expect(res.headers["content-security-policy"]).toBeUndefined();
+  });
+
+  it("never echoes an illegal claimed scope into the header", async () => {
+    for (const claimed of ["%2F", "%2F_auth%2F", "%2Fapp", "%2Fapp%2F%2E%2E%2F"]) {
+      const res = await app.inject({
+        url: `/_helix/sw.js?scope=${claimed}`,
+        headers: H("offline"),
+      });
+      expect(res.statusCode, claimed).toBe(200);
+      expect(res.headers["service-worker-allowed"], claimed).toBeUndefined();
+      expect(res.body, claimed).toContain("self.registration.unregister()");
+    }
+  });
+
+  it("refuses a repeated scope param rather than picking an arm", async () => {
+    const res = await app.inject({
+      url: "/_helix/sw.js?scope=%2Fapp%2F&scope=%2F",
+      headers: H("offline"),
+    });
+    expect(res.headers["service-worker-allowed"]).toBeUndefined();
     expect(res.body).toContain("self.registration.unregister()");
   });
 
   it("404s on a platform host", async () => {
-    const res = await app.inject({ url: "/_helix/sw.js", headers: { host: "localhost:8080" } });
+    const res = await app.inject({ url: SW_URL, headers: { host: "localhost:8080" } });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("a registry blip must not destroy the fleet's offline support", () => {
+  // Serving a tombstone is irreversible client-side: it deletes every `helix:*`
+  // cache and unregisters. The edge accepts traffic before the projection's
+  // first load succeeds (`server.ts` — a down DB retries rather than blocking
+  // boot), so without this guard a fleet restart during a Postgres blip would
+  // wipe offline support on every device, exactly when the platform is least
+  // healthy. A failed update check leaves the working worker installed instead.
+  function coldEdge(): FastifyInstance {
+    return buildApp({
+      config: testEdgeConfig({ allowUnauthenticated: true }),
+      registry: new FakeRegistry([], { loaded: false }),
+      blob: new FakeBlobReader(),
+    });
+  }
+
+  it("503s the worker route instead of tombstoning when the projection is cold", async () => {
+    const cold = coldEdge();
+    await cold.ready();
+    const res = await cold.inject({ url: SW_URL, headers: H("offline") });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).not.toContain("unregister");
+    await cold.close();
+  });
+
+  it("503s the registration route too", async () => {
+    const cold = coldEdge();
+    await cold.ready();
+    const res = await cold.inject({ url: "/_helix/sw-register.js", headers: H("offline") });
+    expect(res.statusCode).toBe(503);
+    await cold.close();
+  });
+
+  it("503s a granted app mid-promote rather than unregistering over a race", async () => {
+    // Row present, grant intact, nothing live yet — transient, not a revocation.
+    const mid = buildApp({
+      config: testEdgeConfig({ allowUnauthenticated: true }),
+      registry: new FakeRegistry([
+        registryEntry({
+          appId: "a4",
+          slug: "offline",
+          blobPrefix: null,
+          offline: { scope: "/app/" },
+        }),
+      ]),
+      blob: new FakeBlobReader(),
+    });
+    await mid.ready();
+    const res = await mid.inject({ url: SW_URL, headers: H("offline") });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).not.toContain("unregister");
+    await mid.close();
   });
 });
 

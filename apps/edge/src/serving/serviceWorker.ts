@@ -24,6 +24,31 @@ import { CSP_REPORT_PATH } from "./csp.js";
 /** Reserved edge path the worker is served from (see app.ts `isReservedAppPath`). */
 export const SW_PATH = "/_helix/sw.js";
 
+/**
+ * Query parameter carrying the registration's scope on the worker script URL.
+ *
+ * The scope has to travel in the URL because of how the spec's **Update**
+ * algorithm works: `Service-Worker-Allowed` is re-read from the script response
+ * on *every* update check, not just at registration, and absent it the maximum
+ * scope falls back to the script's own directory — `/_helix/`. A registration
+ * scoped `/app/` then fails the max-scope test with a `SecurityError` and the
+ * response is never installed.
+ *
+ * That is fatal for the tombstone specifically ({@link buildTombstoneScript}),
+ * which by definition is served when the grant is *gone* and there is no scope
+ * left to read off the manifest. Without a self-describing URL, revocation and
+ * archive silently do nothing: the old worker stays installed and keeps serving
+ * its cache. So the registration bakes its scope into the script URL, and the
+ * route echoes it back — the tombstone needs no stored state at all.
+ *
+ * It is safe because the value is never trusted: the route runs it through
+ * `isValidServiceWorkerScope` before emitting it (so it can neither be root, a
+ * `_` platform namespace, nor carry a header-injection payload), and the *real*
+ * worker is served only when it matches the app's granted scope. A request
+ * naming any other scope gets the tombstone, which unregisters itself.
+ */
+export const SW_SCOPE_PARAM = "scope";
+
 /** Reserved path for the page-side registration, injected into `<head>`. */
 export const SW_REGISTER_PATH = "/_helix/sw-register.js";
 
@@ -323,27 +348,49 @@ export function buildTombstoneScript(): string {
  * converge promptly.
  */
 export function buildRegistrationSnippet(scope: string): string {
+  const scriptUrl = `${SW_PATH}?${SW_SCOPE_PARAM}=${encodeURIComponent(scope)}`;
   return `(function () {
   if (!("serviceWorker" in navigator)) return;
   var SCOPE = ${JSON.stringify(scope)};
-  navigator.serviceWorker.register(${JSON.stringify(SW_PATH)}, {
+
+  // The scope rides in the script URL — see SW_SCOPE_PARAM. The browser refetches
+  // this exact URL on every update check, which is what lets the route emit a
+  // correct \`Service-Worker-Allowed\` even after the grant is withdrawn and there
+  // is no scope left to look up. Without it the tombstone can never install.
+  var registered = navigator.serviceWorker.register(${JSON.stringify(scriptUrl)}, {
     scope: SCOPE,
     updateViaCache: "none",
   }).then(function () {
     return navigator.serviceWorker.ready;
-  }).then(function (registration) {
+  });
+
+  // Wait for \`load\`, not just \`ready\`. This snippet is a parser-blocking script
+  // in <head>, and on a fresh install \`ready\` resolves after a purely local
+  // install→activate with no network — so it routinely wins the race against the
+  // page's own subresources, and PerformanceResourceTiming only lists resources
+  // that have *finished*. Gating on \`ready\` alone would post a near-empty list,
+  // nondeterministically, with no visible symptom.
+  var loaded = new Promise(function (resolve) {
+    if (document.readyState === "complete") resolve();
+    else addEventListener("load", function () { resolve(); }, { once: true });
+  });
+
+  Promise.all([registered, loaded]).then(function (results) {
     // Hand the worker what this page already loaded. See the "helix:precache"
     // branch in the worker: the registering page's own requests bypassed it, so
     // without this the first visit primes nothing and offline boot needs two.
+    var registration = results[0];
     var target = registration.active || navigator.serviceWorker.controller;
     if (!target || typeof performance === "undefined") return;
-    var urls = [location.href];
+    var urls = [];
     try {
       performance.getEntriesByType("resource").forEach(function (e) {
         if (e.name) urls.push(e.name);
       });
     } catch (e) {}
-    target.postMessage({ type: "helix:precache", urls: urls });
+    // The document travels separately: it needs an HTML \`Accept\` to resolve
+    // through the edge's SPA fallback, which subresources must NOT have.
+    target.postMessage({ type: "helix:precache", urls: urls, document: location.href });
   }).catch(function () {
     // A failed registration must never break the app — it just means no
     // offline boot. Same posture as the shim: ergonomics, not a boundary.

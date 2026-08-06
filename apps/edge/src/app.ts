@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { HealthStatusSchema, worstHealthState } from "@azx-pbc/shared";
+import { HealthStatusSchema, isValidServiceWorkerScope, worstHealthState } from "@azx-pbc/shared";
 import { loggerOption } from "@azx-pbc/shared/logging";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
@@ -39,6 +39,7 @@ import { SHIM_PATH, buildShimScript } from "./serving/shim.js";
 import {
   SW_PATH,
   SW_REGISTER_PATH,
+  SW_SCOPE_PARAM,
   buildRegistrationSnippet,
   buildServiceWorkerScript,
   buildTombstoneScript,
@@ -110,6 +111,17 @@ function isReservedAppPath(rawUrl: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Read one query value, collapsing Fastify's `string | string[]` for a repeated
+ * key. A repeat is refused rather than resolved: `?scope=/app/&scope=/` is
+ * someone probing, and picking either arm is a worse answer than none.
+ */
+function firstQueryValue(query: unknown, key: string): string | undefined {
+  if (typeof query !== "object" || query === null) return undefined;
+  const value = (query as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 declare module "fastify" {
@@ -572,8 +584,35 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         sendNotFound(reply);
         return;
       }
+      // A registry blip must never reach the tombstone below. Serving one is
+      // destructive and irreversible client-side — it deletes every `helix:*`
+      // cache and unregisters — so a fleet restart while Postgres is briefly
+      // unreachable would wipe offline support across every device, exactly
+      // when the platform is least healthy. A failed update check is strictly
+      // better: it leaves the working worker installed. Same stance as
+      // `assetHandler`, which 503s before the first load succeeds.
+      if (!deps.registry.isLoaded()) {
+        sendUnavailable(reply, "Registry unavailable; try again shortly.");
+        return;
+      }
+
       const entry = deps.registry.getApp(req.hostClass.slug);
-      const scope = entry && !entry.archived ? entry.offline?.scope : undefined;
+      const grantedScope = entry && !entry.archived ? entry.offline?.scope : undefined;
+
+      // A promote in flight (row present, nothing live) is a transient state,
+      // not a revocation — 503 rather than unregister the fleet over a race.
+      if (entry && grantedScope !== undefined && !entry.blobPrefix) {
+        sendUnavailable(reply, "No live version; try again shortly.");
+        return;
+      }
+
+      // The scope the *registration* claims, echoed from the script URL. Never
+      // trusted: it only ever becomes a header after passing the same validator
+      // the manifest field does, so it can be neither root, nor a `_` platform
+      // namespace, nor a header-injection payload.
+      const claimed = firstQueryValue(req.query, SW_SCOPE_PARAM);
+      const echoScope =
+        claimed !== undefined && isValidServiceWorkerScope(claimed) ? claimed : undefined;
 
       reply
         .status(200)
@@ -582,10 +621,17 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         .header("cache-control", "no-cache")
         .header("x-content-type-options", "nosniff");
 
-      // No grant / archived / unknown slug ⇒ the tombstone, never a 404:
-      // browsers differ on whether a 404 during an update check unregisters or
-      // just fails the update, and the latter would make revocation a no-op.
-      if (!entry || scope === undefined || !entry.blobPrefix) {
+      // No grant / archived / unknown slug / a scope that isn't the granted one
+      // ⇒ the tombstone, never a 404: browsers differ on whether a 404 during an
+      // update check unregisters or just fails the update, and the latter would
+      // make revocation a no-op.
+      //
+      // The header goes out here too, and that is the whole point of echoing the
+      // claimed scope: the max-scope test runs on *every* update check, so a
+      // tombstone served without it fails with a SecurityError and never
+      // installs — leaving the worker it was meant to kill in place.
+      if (grantedScope === undefined || claimed !== grantedScope || !entry?.blobPrefix) {
+        if (echoScope !== undefined) reply.header("service-worker-allowed", echoScope);
         await reply.send(buildTombstoneScript());
         return;
       }
@@ -597,10 +643,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       reply.header("content-security-policy", buildAppCsp(entry.externalOrigins));
       // The one route on the platform that emits this. The script lives at
       // `/_helix/`, so its default max scope is `/_helix/` — controlling the
-      // app's prefix requires widening it explicitly, to a value the projection
-      // already re-validated (never root, never a `_` namespace).
-      reply.header("service-worker-allowed", scope);
-      await reply.send(buildServiceWorkerScript({ scope, cacheVersion: entry.blobPrefix }));
+      // app's prefix requires widening it explicitly. Here the value is the
+      // *granted* scope, which the projection already re-validated (never root,
+      // never a `_` namespace); the claimed scope only had to match it.
+      reply.header("service-worker-allowed", grantedScope);
+      await reply.send(
+        buildServiceWorkerScript({ scope: grantedScope, cacheVersion: entry.blobPrefix }),
+      );
     },
   });
 
@@ -614,6 +663,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       }
       if (req.headers["service-worker"] !== undefined) {
         sendForbidden(reply);
+        return;
+      }
+      // As on the worker route: never answer off an unloaded projection. Here a
+      // wrong answer is only a missing registration rather than a destroyed
+      // cache, but 503 is still the honest code for "we don't know yet".
+      if (!deps.registry.isLoaded()) {
+        sendUnavailable(reply, "Registry unavailable; try again shortly.");
         return;
       }
       const entry = deps.registry.getApp(req.hostClass.slug);
