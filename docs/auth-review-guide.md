@@ -15,6 +15,12 @@ hold, and what to attack.
 companion is `docs/features/authentication.md`. This guide assumes you've read Appendix A —
 it references its step numbers.
 
+> **Reconciled against the code 2026-08-06.** Everything below was re-verified against the
+> tree at that date, and the gaps this guide previously told reviewers to expect — the
+> egress `jti`/`aud` burn, the portal BOLA hole, the in-memory throttle, three SSRF
+> residuals — have since closed. A "known gap" note here is worth distrusting once it is a
+> few months old: check the ADR it cites, which is the durable record.
+
 ---
 
 ## 1. The one-paragraph model
@@ -53,10 +59,13 @@ cosmetic routing slip.
 
 Dispatch is explicit per-kind in `apps/edge/src/app.ts` (no Fastify host constraints — the
 fallback semantics are too subtle to trust). When reviewing `app.ts`, check the host-kind
-guard on **every** route, and that `/_auth/*`, `/_api/*`, and the whole `/_helix/*` namespace
-(the platform service worker at `/_helix/sw.js`, plus the paths the fetch shim and the worker
-registration used before they were inlined into the document) are reserved from the asset
-fallthrough (`isReservedAppPath`) so an app can never ship a file that shadows them.
+guard on **every** route, and that `/_auth/*`, `/_api/*`, `/_csp-report`, and the whole
+`/_helix/*` namespace (the platform service worker at `/_helix/sw.js`, plus the paths the
+fetch shim and the worker registration used before they were inlined into the document) are
+reserved from the asset fallthrough (`isReservedAppPath`) so an app can never ship a file
+that shadows them. Note `isReservedAppPath` tests **both** the raw URL and the
+percent-decoded path, because the asset handler resolves the decoded one — `/_api%2fme`
+must not fall through to a blob key named `_api/me`.
 
 ---
 
@@ -96,8 +105,9 @@ Read the primitives before the orchestration, then the enforcement, then the tes
     front of asset serving **and** the gateway; navigation-vs-fetch behavior, the
     per-request visibility re-check, and the `public`-app short-circuit (§7).
 13. **`apps/edge/src/gateway/`** — how the gateway consumes the `Caller`, the Origin/CSRF
-    check, and per-app capability/quota enforcement (§10); `apps/edge/src/gateway/ipRateLimiter.ts`
-    for the anonymous tier.
+    check, and per-app capability/quota enforcement (§10); `ipRateLimiter.ts` for the
+    anonymous tier and `counterStore.ts` for the shared Postgres counter both it and the
+    login throttle sit on.
 14. **The egress hop:** `packages/shared/src/instruction.ts`,
     `apps/edge/src/gateway/instruction.ts` (mint), `apps/egress/src/instruction.ts` (verify) (§11).
 15. **Portal side:** `apps/portal/src/auth/verifier.ts`, `apps/portal/src/plugins/auth.ts`,
@@ -166,6 +176,12 @@ Other things to confirm:
 - **The password path skips this dance** (`createActive`, §8): there is no handoff to burn,
   so the row is inserted already-active. Confirm that path can never mint a session for an
   app that isn't in `password` mode.
+- **The table is RLS-protected, and the hand-written `WHERE` is not the only boundary.**
+  The edge reaches `sessions` as the least-privilege `helix_edge` role through a SECURITY
+  DEFINER read/sweep pair (ADR-0002 ISSUE-12). `sessions.integration.test.ts` runs as the
+  superuser owner and therefore **bypasses RLS** — it covers store behavior;
+  `sessions.rls.integration.test.ts` is the isolation half and runs as the real role. A
+  change that only keeps the first one green has not been tested against the policy.
 
 ---
 
@@ -213,6 +229,20 @@ gateway. Per request:
   an anon caller on a non-public app, is a direct authorization break.
 - **The dev bypass** (`EDGE_DEV_ALLOW_UNAUTHENTICATED`) skips *only* this gate, is refused
   under `NODE_ENV=production`, and never relaxes TLS.
+- **`/_helix/sw.js` is deliberately ungated** (the offline capability's platform worker,
+  [ADR-0035](adr/0035-offline-capability-platform-service-worker.md)) — the only ungated
+  app-host route that serves executable code. (`/_auth/*` is ungated of necessity, being the
+  login path itself, and `/_csp-report` is a write-only 204 sink.) This is a
+  correctness requirement, not an oversight — behind the gate, an update check on an expired
+  session gets a 302 to the auth host, and a redirect during a service-worker script fetch is
+  a spec-level error, so the update would fail silently and leave the old worker installed,
+  breaking the kill switch exactly when it is needed. What makes it safe is that the route
+  serves platform bytes only, and the worker's scope is validated non-root and never a `_`
+  namespace, so it provably cannot observe `/_auth/complete`. What to check: the scope
+  validator (`isValidServiceWorkerScope`) is applied to *both* the manifest field and the
+  `?scope=` claim in the script URL; `Service-Worker-Allowed` is emitted on this route and
+  nowhere else; and the route answers 503 — never the destructive tombstone — whenever the
+  registry projection has not loaded or a granted app has no live version.
 
 ---
 
@@ -282,6 +312,18 @@ Tests: `password-login.test.ts`, `loginThrottle.test.ts`, plus the portal twins
 gateway is the platform's value-add and its authorization is built from three independent
 checks — verify each is present on **every** capability (`llm`, `data`, `fetch`):
 
+> **Two wire surfaces, one authorization path.** The LLM capability answers on the native
+> `/_api/llm/chat` **and** the OpenAI-compatible `/_api/openai/v1/chat/completions`
+> ([ADR-0033](adr/0033-openai-compatible-gateway-surface.md)). Both are
+> `makeLlmHandler(rt, codec)` with the codec swapped, so the checks can't drift by
+> construction — which is where to focus instead: the **codec's `parse`** is the part that
+> differs, and it is what decides which model string and which parameters reach a handler
+> that then applies the allowlist. `GET /_api/openai/v1/models` is a *separate* handler
+> (`openaiModels.ts`) and therefore the one place divergence is possible — confirm it still
+> resolves a `Caller`, applies the anon limiter, 403s without the grant, and reflects the
+> **per-app manifest allowlist rather than the platform catalog**. It skips the Origin check
+> deliberately (a read, same posture as `/_api/me`).
+
 - **Identity** comes from the §7 `Caller` (verified user, or the anon sentinel on public
   apps). Authorization is the pair *app X, on behalf of user Y, wants capability Z* — so a
   capability handler must never trust an app-supplied identity, only the `Caller`.
@@ -333,11 +375,23 @@ trust is the whole design, so the attestation must be airtight:
   > scheme can. Flag regressions against that plan; the seam is *not* airtight yet.
 - **SSRF is egress-side** (`apps/egress/src/ssrf.ts`): resolve the host, validate **every**
   returned address (block private/loopback/link-local/IMDS), pin the validated IP against
-  rebind, no redirect-follow, a request-header safelist and a response-header **blocklist**
-  (per [ADR-0005](adr/0005-ssrf-egress-controls.md) the blocklist has gaps — omits
-  `authorization`/`www-authenticate` (#7), body caps read only `content-length` (#8), and the
-  injection path still accepts `http://` (#11)). This is a network-layer boundary, not an auth
-  one, but it's part of the same trust hop — see the egress adversarial suite.
+  rebind, no redirect-follow, a request-header safelist and a response-header **blocklist**.
+  The three residuals [ADR-0005](adr/0005-ssrf-egress-controls.md) flagged have closed:
+  the injected credential is stripped from reflected response headers (#7); body caps are
+  a **byte counter** on both hops in both directions (`capBody`), so a chunked or lying
+  `content-length` is still counted (#8); and a secret-backed call over cleartext `http://`
+  is refused (#11, `proxy.ts:288`). `www-authenticate` stays off the blocklist on purpose
+  — it is a server challenge, not a reflection of our credential. This is a network-layer
+  boundary, not an auth one, but it's part of the same trust hop — see the egress adversarial
+  suite.
+- **Worth checking on a real deployment: egress's two dev seams are env-only.**
+  `EGRESS_ALLOW_INSECURE_CONNECTION` (open the cleartext-injection path) and
+  `EGRESS_ALLOW_PRIVATE` (permit private/loopback targets) are both documented in
+  `apps/egress/src/config.ts` as "false in prod", but unlike their siblings
+  (`EDGE_DEV_ALLOW_UNAUTHENTICATED`, `PORTAL_ALLOW_SELF_APPROVE`, the dev token verifier)
+  nothing **refuses to start** when they are true under `NODE_ENV=production`. Each disables
+  a control ADR-0005 is built on, and the failure is silent — everything works. Verify
+  against the deployed config rather than the code.
 
 This is service-to-service attestation, not user auth — but it earns a review pass because a
 weakness here converts an edge bug into secret disclosure or SSRF.
@@ -361,14 +415,18 @@ confirm:
   prod. The approval write-gate (elevated capability/visibility changes) depends on this —
   confirm a non-admin principal can't approve, and that `/api/v1/approvals` decisions are
   separation-of-duty enforced.
-- v0 *mutation* authorization is otherwise intentionally flat ([ADR-0007](adr/0007-portal-authz-v0.md),
-  "authenticated == authorized"): any authenticated portal-audience principal may mutate any
-  app and manage any app's secrets (same trust as the old shared token, now attributed).
-  Per-app RBAC (owner/editor/viewer) is a v1 item. **Reviewer note:** the *deliberate* flatness
-  is accepted for v0, but the app-scoped **secrets** and mutating routes doing no `ownsApp`
-  check is a live BOLA/IDOR — treat it as a tracked gap (issue #9, an M5 exit criterion), not
-  "nothing to see here." A second operator being able to write another's app *is* in scope to
-  flag until that check lands.
+- **Ownership is enforced on mutations** ([ADR-0007](adr/0007-portal-authz-v0.md)). The BOLA
+  gap this guide used to flag is **closed**: `ownsApp` (`apps/portal/src/plugins/auth.ts`) is
+  a preHandler on every app-scoped mutating route — including secrets — plus the
+  credential-returning password read, and it is owner-**or**-admin, fail-closed on a null
+  `ownerId`. `ownership.test.ts` is its adversarial sweep, with three principals through an
+  injected verifier chain; a new app-scoped route that mutates and is missing from that file
+  is the finding to look for. Don't re-file issue #9.
+- **What is still flat: reads, and roles.** Reads are authenticated-only — any signed-in
+  principal can list and read any app — and per-app RBAC (owner/editor/viewer) does not
+  exist, so there is no "editor may deploy but not rotate a secret." The SPA still renders
+  mutate controls for apps the caller doesn't own, with the server 403 as the only boundary.
+  That is the accepted v0 posture, not a finding; a *mutation* that escapes `ownsApp` is.
 
 ---
 
@@ -392,12 +450,20 @@ portal origin + issuer. Review points:
 The suite lands *with* the code (working agreement §6). Start here:
 
 ```bash
-pnpm test apps/edge/src/auth/adversarial.test.ts      # the named attacks, unit-level
+pnpm test apps/edge/src/auth/adversarial.test.ts       # the named attacks, unit-level
 pnpm test apps/edge/src/auth                           # + handoff/flow/validate/gate/cookies/secrets/password
-pnpm test apps/edge/src/auth/flow.integration.test.ts # full flow vs real oidc-provider + Postgres
-pnpm test apps/egress/src/adversarial.test.ts          # SSRF: rebind, redirect-to-IMDS, header smuggling
-pnpm test apps/portal/src/auth                          # JWT verifier + real device-flow e2e
+pnpm test apps/edge/src/auth/flow.integration.test.ts  # full flow vs real oidc-provider + Postgres
+pnpm test apps/edge/src/auth/sessions.rls.integration.test.ts  # sessions as the real helix_edge role
+pnpm test apps/egress/src/adversarial.test.ts          # instruction replay/audience + SSRF
+pnpm test apps/portal/src/auth                         # the JWT verifier chain
+pnpm test apps/portal/src/routes/ownership.test.ts     # the ownsApp gate, three principals
+pnpm test packages/cli/src/auth                        # device flow (real e2e) + token cache binding
 ```
+
+Two role-split suites are authorization tests even though they don't live under `auth/`:
+`apps/edge/src/registry/role-split.integration.test.ts` (the edge has no grant on
+`app_secrets` at all) and `apps/egress/src/burn.integration.test.ts` (the `jti` burn across
+replicas).
 
 `adversarial.test.ts` names each attack it kills: handoff replay (incl. a concurrent-redeem
 race in the integration twin), audience confusion (both the JWS-`aud` and row-`appId` layers,
@@ -416,11 +482,15 @@ failing test that demonstrates it.
 
 Call these out only if you disagree with the *decision*, not as bugs:
 
-- **HS256, not asymmetric.** Mint and verify are the same deployment (the auth host and
-  app-host proxy are one process answering on different hostnames, Appendix A.2), so a
-  keypair buys nothing. Same reasoning for the egress instruction (edge mints, egress
-  verifies — but both are platform-operated). If the auth/egress services ever split across
-  trust domains, swap to EdDSA inside the one mint/verify file.
+- **HS256 for the handoff, not asymmetric.** Mint and verify are the same deployment (the
+  auth host and app-host proxy are one process answering on different hostnames, Appendix
+  A.2), so a keypair buys nothing.
+  **The egress instruction is a different case and is not settled** — it is HS256 today for
+  the same "both planes are platform-operated" reason, but [ADR-0013](adr/0013-egress-trust-model.md)
+  step 3 plans Ed25519, and not because the planes might split: a shared symmetric secret
+  sits on both planes *and* in CI, config, and backups, so a leak from anywhere forges
+  everything, whereas a leaked verify-only key is useless. Deferred post-M5 for key
+  management, not rejected.
 - **Hand-rolled cookies, no `@fastify/cookie`.** The edge is dependency-minimal (project
   plan §1, §6); exactly two cookies exist. The parser is ~30 lines with its own corpus.
 - **Per-request DB lookup, no session cache.** Revocation correctness over micro-optimization
@@ -444,9 +514,9 @@ Call these out only if you disagree with the *decision*, not as bugs:
   no revoke route/UI yet (project plan §5.7). (Logout and app-disable already revoke; this is
   the admin-initiated kill of a *specific* live session.)
 - **Per-app RBAC** (owner/editor/viewer roles) on the portal side — a v1 feature, out of
-  scope here. But note ([ADR-0007](adr/0007-portal-authz-v0.md)) the flat v0 authz means
-  app-scoped **secrets** and mutating routes do no ownership check — the resulting BOLA/IDOR
-  (issue #9) *is* in scope to flag, and is an M5 exit criterion, even though full RBAC is not.
+  scope here, and the last `PreviewBadge` in the SPA. The BOLA half it used to carry is done
+  (`ownsApp`, §12); what remains out of scope is the roles model and owner-scoped read
+  filtering ([ADR-0007](adr/0007-portal-authz-v0.md)).
 - **Audit tamper-evidence.** `gateway_calls` is append-only *by DB grant* (the edge has
   INSERT, not UPDATE/DELETE) but is **not** cryptographically tamper-evident — no hash chain
   or signature. Audit shipping to an immutable sink is a planned hardening (project plan §5.8);
@@ -456,8 +526,8 @@ Call these out only if you disagree with the *decision*, not as bugs:
 
 ## 17. A reviewer's checklist
 
-- [ ] No route in `app.ts` answers on the wrong host class; `/_auth/*`, `/_api/*`, and the
-      shim path can't be shadowed by app assets.
+- [ ] No route in `app.ts` answers on the wrong host class; `/_auth/*`, `/_api/*`,
+      `/_csp-report` and `/_helix/*` can't be shadowed by app assets, raw or percent-encoded.
 - [ ] Handoff verify pins alg + typ, enforces `exp` **and** `iat`/`maxTokenAge`, and rejects
       missing temporal claims.
 - [ ] Audience is checked at both the JWS and the SQL layers; neither was weakened to "fix"
@@ -475,11 +545,17 @@ Call these out only if you disagree with the *decision*, not as bugs:
       pseudonyms with no groups, and can't be invoked for a non-`password` app.
 - [ ] Logout is Origin-checked and deletes the row; `/_api/me` leaks no email/groups.
 - [ ] Every gateway capability enforces identity + Origin/CSRF + per-app quota; the
-      anonymous tier is IP-rate-limited.
+      anonymous tier is IP-rate-limited; the native and OpenAI-compatible LLM routes carry
+      the identical checks, model allowlist included.
+- [ ] `/_helix/sw.js` is the only ungated app-host route serving code, and the only response
+      anywhere emitting `Service-Worker-Allowed`; its scope claim is validated; it 503s
+      rather than tombstones when the projection is cold.
 - [ ] The egress instruction pins alg/typ/TTL off its own secret; egress fails closed on bad
       instructions and resolves secrets scoped to the instruction's `appId`.
 - [ ] Portal JWT verify pins asymmetric algs and checks iss/aud/exp; `requireAdmin` gates
       approvals; the dev verifier refuses production.
+- [ ] Every app-scoped mutating portal route carries `ownsApp`, and appears in
+      `ownership.test.ts`.
 - [ ] The CLI token cache is bound to portal origin + issuer.
 - [ ] No secret, token, or PII is logged or placed in a URL that lands in history/referrers
       (`Referrer-Policy: no-referrer` + `Cache-Control: no-store` on the token-bearing
