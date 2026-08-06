@@ -7,7 +7,7 @@ import type { RegistryFreshnessReader, RegistryReader } from "./registry/project
 import { registryFreshnessCheck } from "./registry/health.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { makeAssetHandler } from "./serving/assets.js";
-import { sendForbidden, sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
+import { sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
 import { normalizeRequestPath } from "./serving/paths.js";
 import { deriveAuthKeys } from "./auth/secrets.js";
 import type { OidcClient } from "./auth/oidc.js";
@@ -35,12 +35,9 @@ import { makeFetchHandler } from "./gateway/fetch.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
 import { CSP_REPORT_PATH, buildAppCsp } from "./serving/csp.js";
-import { SHIM_PATH, buildShimScript } from "./serving/shim.js";
 import {
   SW_PATH,
-  SW_REGISTER_PATH,
   SW_SCOPE_PARAM,
-  buildRegistrationSnippet,
   buildServiceWorkerScript,
   buildTombstoneScript,
 } from "./serving/serviceWorker.js";
@@ -535,47 +532,18 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     },
   });
 
-  // M4.5: the transparent fetch shim (fetch-proxy §3.2). App hosts only; served
-  // per-app with this app's proxied origins baked in. Injected into HTML for
-  // opt-in apps (assets.ts) and also fetchable directly by the injected tag.
-  app.route({
-    method: ["GET", "HEAD"],
-    url: SHIM_PATH,
-    handler: async (req, reply) => {
-      if (req.hostClass.kind !== "app") {
-        sendNotFound(reply);
-        return;
-      }
-      // The service-worker ban is enforced per-handler, and this is a reserved
-      // *script* path — so without this check an app could register the shim
-      // itself as a worker. Its scope would default to `/_helix/` and nothing
-      // sensitive lives there, but the offline capability makes this the second
-      // script route on the platform, so the refusal is stated rather than
-      // left to be inferred. Only SW_PATH below may answer a registration.
-      if (req.headers["service-worker"] !== undefined) {
-        sendForbidden(reply);
-        return;
-      }
-      const entry = deps.registry.getApp(req.hostClass.slug);
-      if (!entry || entry.archived) {
-        sendNotFound(reply);
-        return;
-      }
-      reply
-        .status(200)
-        .header("content-type", "text/javascript; charset=utf-8")
-        .header("cache-control", "private, max-age=300")
-        .header("x-content-type-options", "nosniff")
-        .send(buildShimScript([...entry.fetch.connections.keys()]));
-    },
-  });
-
-  // ADR-0035: the offline capability's platform-owned service worker, plus its
-  // page-side registration. Both are **ungated** — a session gate here would
-  // 302 an expired-session update check to the auth host, and a redirect during
-  // a worker script fetch is a spec-level error, so the update would fail
-  // silently and a revoked worker would stay installed. Neither script carries
-  // app content.
+  // ADR-0035: the offline capability's platform-owned service worker. It is
+  // **ungated** — a session gate here would 302 an expired-session update check
+  // to the auth host, and a redirect during a worker script fetch is a
+  // spec-level error, so the update would fail silently and a revoked worker
+  // would stay installed. The script carries no app content.
+  //
+  // It is also the *only* `/_helix/` script route left. The fetch shim and the
+  // worker's page-side registration used to be served from here too; both are
+  // now inlined into the document at serve time (`serving/shim.ts`), because
+  // `/_helix/*` is deliberately unprecachable and a `<script src>` under it is
+  // exactly what an offline cold boot cannot load. A worker script has to be a
+  // URL, so this one stays.
   app.route({
     method: ["GET", "HEAD"],
     url: SW_PATH,
@@ -655,40 +623,6 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       await reply.send(
         buildServiceWorkerScript({ scope: grantedScope, cacheVersion: entry.blobPrefix }),
       );
-    },
-  });
-
-  app.route({
-    method: ["GET", "HEAD"],
-    url: SW_REGISTER_PATH,
-    handler: async (req, reply) => {
-      if (req.hostClass.kind !== "app") {
-        sendNotFound(reply);
-        return;
-      }
-      if (req.headers["service-worker"] !== undefined) {
-        sendForbidden(reply);
-        return;
-      }
-      // As on the worker route: never answer off an unloaded projection. Here a
-      // wrong answer is only a missing registration rather than a destroyed
-      // cache, but 503 is still the honest code for "we don't know yet".
-      if (!deps.registry.isLoaded()) {
-        sendUnavailable(reply, "Registry unavailable; try again shortly.");
-        return;
-      }
-      const entry = deps.registry.getApp(req.hostClass.slug);
-      const scope = entry && !entry.archived ? entry.offline?.scope : undefined;
-      if (scope === undefined) {
-        sendNotFound(reply);
-        return;
-      }
-      reply
-        .status(200)
-        .header("content-type", "text/javascript; charset=utf-8")
-        .header("cache-control", "no-cache")
-        .header("x-content-type-options", "nosniff")
-        .send(buildRegistrationSnippet(scope));
     },
   });
 

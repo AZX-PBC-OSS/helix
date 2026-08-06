@@ -177,7 +177,7 @@ const navReq = (path: string) =>
 describe("worker: what it will and will not handle", () => {
   it("ignores the platform namespaces even though they reach the fetch event", async () => {
     const h = runWorker(WORKER);
-    for (const path of ["/_api/me", "/_auth/complete?token=x", "/_helix/fetch-shim.js"]) {
+    for (const path of ["/_api/me", "/_auth/complete?token=x", "/_helix/sw.js"]) {
       expect(await h.fetchEvent(req(path)), path).toBeNull();
     }
   });

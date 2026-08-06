@@ -16,6 +16,7 @@ import { buildRegistrationSnippet, buildServiceWorkerScript } from "./serviceWor
 const OFFLINE = "apps/offline/1/";
 const PLAIN = "apps/plain/1/";
 const GONE = "apps/gone/1/";
+const BOTH = "apps/both/1/";
 const HTML = "<!doctype html><html><head></head><body>hi</body></html>";
 const SHELL = "<!doctype html><html><head></head><body>shell</body></html>";
 
@@ -40,6 +41,7 @@ beforeAll(async () => {
     contentType: "text/html; charset=utf-8",
     etag: '"h2"',
   });
+  blob.set(`${BOTH}app/index.html`, { body: SHELL, contentType: "text/html; charset=utf-8" });
 
   const registry = new FakeRegistry([
     registryEntry({
@@ -55,6 +57,18 @@ beforeAll(async () => {
       blobPrefix: GONE,
       archived: true,
       offline: { scope: "/app/" },
+    }),
+    // The pair that motivated inlining: offline + the fetch shim.
+    registryEntry({
+      appId: "a5",
+      slug: "both",
+      blobPrefix: BOTH,
+      offline: { scope: "/app/" },
+      fetch: {
+        shim: true,
+        connections: new Map([["https://api.github.com", null]]),
+        requestsPerDay: null,
+      },
     }),
   ]);
   app = buildApp({ config: testEdgeConfig({ allowUnauthenticated: true }), registry, blob });
@@ -122,6 +136,12 @@ describe("buildRegistrationSnippet", () => {
     expect(js).toContain('readyState === "complete"');
     // The document travels separately — it needs an HTML Accept downstream.
     expect(js).toContain("document: location.href");
+  });
+
+  it("stays inlinable and separately named in devtools", () => {
+    const js = buildRegistrationSnippet("/app/");
+    expect(js).not.toContain("</script");
+    expect(js).toContain("//# sourceURL=helix/sw-register.js");
   });
 });
 
@@ -263,10 +283,16 @@ describe("a registry blip must not destroy the fleet's offline support", () => {
     await cold.close();
   });
 
-  it("503s the registration route too", async () => {
+  it("503s the document too, so no page is served without its registration", async () => {
+    // The registration is inlined, so its "never answer off an unloaded
+    // projection" rule is the asset handler's 503 — there is no separate route
+    // left to get this wrong.
     const cold = coldEdge();
     await cold.ready();
-    const res = await cold.inject({ url: "/_helix/sw-register.js", headers: H("offline") });
+    const res = await cold.inject({
+      url: "/app/",
+      headers: { ...H("offline"), accept: "text/html" },
+    });
     expect(res.statusCode).toBe(503);
     await cold.close();
   });
@@ -302,22 +328,18 @@ describe("the ban survives, and Service-Worker-Allowed never leaks", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("403s a registration fetch aimed at the fetch shim", async () => {
-    // The ban lives in the asset handler, so a reserved *script* route had to
-    // state its own refusal — otherwise an app could register the shim itself.
-    const res = await app.inject({
-      url: "/_helix/fetch-shim.js",
-      headers: { ...H("offline"), "service-worker": "script" },
-    });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it("403s a registration fetch aimed at the registration snippet", async () => {
-    const res = await app.inject({
-      url: "/_helix/sw-register.js",
-      headers: { ...H("offline"), "service-worker": "script" },
-    });
-    expect(res.statusCode).toBe(403);
+  it("leaves no other registrable script under /_helix/", async () => {
+    // The shim and the registration snippet used to be served from here, and
+    // each had to refuse a registration fetch of its own. Both are inlined now,
+    // so `/_helix/sw.js` is the only script left under the prefix and the
+    // question answers itself: everything else is a reserved-namespace 404.
+    for (const url of ["/_helix/fetch-shim.js", "/_helix/sw-register.js", "/_helix/"]) {
+      const res = await app.inject({
+        url,
+        headers: { ...H("offline"), "service-worker": "script" },
+      });
+      expect(res.statusCode, url).toBe(404);
+    }
   });
 
   it("emits Service-Worker-Allowed on the worker route and nowhere else", async () => {
@@ -329,7 +351,7 @@ describe("the ban survives, and Service-Worker-Allowed never leaks", () => {
 });
 
 describe("registration injection", () => {
-  it("injects the registration into a granted app's HTML, without an etag", async () => {
+  it("inlines the registration into a granted app's HTML, without an etag", async () => {
     // A navigation to the scope root: `normalizeRequestPath` drops the trailing
     // slash, so `/app/` resolves through the HTML fallback below — which is why
     // the Accept header (which every real navigation sends) matters here.
@@ -338,23 +360,39 @@ describe("registration injection", () => {
       headers: { ...H("offline"), accept: "text/html" },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain('<script src="/_helix/sw-register.js"></script>');
+    expect(res.body).toContain("<head><script>(function () {");
+    expect(res.body).toContain("navigator.serviceWorker.register");
+    // The worker URL is the one `/_helix/` reference left, and it is a string
+    // inside the snippet rather than a resource the document has to fetch.
+    expect(res.body).toContain('"/_helix/sw.js?scope=%2Fapp%2F"');
+    expect(res.body).not.toContain("<script src=");
     expect(res.headers.etag).toBeUndefined(); // injected bytes ≠ blob etag
   });
 
   it("does not inject for an app without the grant (and keeps its etag)", async () => {
     const res = await app.inject({ url: "/", headers: H("plain") });
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain("/_helix/sw-register.js");
+    expect(res.body).toBe(HTML);
     expect(res.headers.etag).toBe('"h2"');
   });
 
-  it("serves the snippet only for a granted app", async () => {
-    const ok = await app.inject({ url: "/_helix/sw-register.js", headers: H("offline") });
-    expect(ok.statusCode).toBe(200);
-    expect(ok.body).toContain('"/app/"');
-    const no = await app.inject({ url: "/_helix/sw-register.js", headers: H("plain") });
-    expect(no.statusCode).toBe(404);
+  it("inlines BOTH snippets, shim first, for an app holding both grants", async () => {
+    // The regression test for the bug that motivated inlining: with the shim
+    // served from `/_helix/*` — which the worker deliberately never caches — an
+    // offline cold boot left `fetch` unpatched and proxied calls died on CSP.
+    // Inline, both snippets are inside the cached document.
+    const res = await app.inject({
+      url: "/app/",
+      headers: { ...H("both"), accept: "text/html" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain("<script src=");
+    const shimAt = res.body.indexOf("XMLHttpRequest.prototype.open");
+    const regAt = res.body.indexOf("navigator.serviceWorker.register");
+    expect(shimAt).toBeGreaterThan(-1);
+    expect(regAt).toBeGreaterThan(-1);
+    // Shim first: it has to patch `fetch` before anything else on the page runs.
+    expect(shimAt).toBeLessThan(regAt);
   });
 });
 

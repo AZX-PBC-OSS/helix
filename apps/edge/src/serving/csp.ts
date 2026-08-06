@@ -19,6 +19,15 @@
  * allowlist are permitted; `img-src https:` stays open (navigation exfil
  * exists regardless — §4.4's honest trade-off).
  *
+ * `'unsafe-inline'` in `script-src` is now **load-bearing for the platform**,
+ * not only for apps: the fetch shim and the offline capability's worker
+ * registration are inlined into the document (`serving/shim.ts`), because
+ * `/_helix/*` is unprecachable and a `<script src>` there cannot load on an
+ * offline cold boot. Do NOT "harden" that into a hash or nonce — under CSP3 the
+ * presence of any hash or nonce source makes browsers **ignore**
+ * `'unsafe-inline'`, which would break every app's own inline script. The
+ * relaxation is the decision (ADR-0009); a hash would quietly reverse it.
+ *
  * `worker-src 'self' blob:` covers dedicated and shared workers only — a `blob:`
  * URL can never register a SERVICE worker, which requires a same-origin http(s)
  * script URL. (An earlier version of this note claimed the relaxation was safe

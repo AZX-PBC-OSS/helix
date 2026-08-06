@@ -8,8 +8,8 @@ import { visibilityModeAllowed } from "../auth/validate.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../errors.js";
 import { normalizeRequestPath } from "./paths.js";
 import { buildAppCsp } from "./csp.js";
-import { SHIM_PATH, injectHeadScripts } from "./shim.js";
-import { SW_REGISTER_PATH } from "./serviceWorker.js";
+import { buildShimScript, injectHeadScripts } from "./shim.js";
+import { buildRegistrationSnippet } from "./serviceWorker.js";
 
 /**
  * The app-host request path (architecture §4.3): resolve slug → live version
@@ -113,13 +113,10 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // rewrite the document, so force the full body for the doc we'll inject into
     // (a 304 would skip injection) and serve it without an etag below. Only the
     // GET of an HTML-ish path is affected; other assets keep their conditional
-    // path. An app may hold both grants, so the tags compose.
-    const injectSrcs: string[] = [];
-    if (method === "GET") {
-      if (entry.fetch.shim) injectSrcs.push(SHIM_PATH);
-      if (entry.offline) injectSrcs.push(SW_REGISTER_PATH);
-    }
-    const wantsInjection = injectSrcs.length > 0;
+    // path. An app may hold both grants, so the scripts compose.
+    const wantsShim = method === "GET" && entry.fetch.shim;
+    const wantsRegistration = method === "GET" && entry.offline !== null;
+    const wantsInjection = wantsShim || wantsRegistration;
     const likelyHtml = relPath === "index.html" || (req.headers.accept ?? "").includes("text/html");
     const effectiveInm = wantsInjection && likelyHtml ? undefined : ifNoneMatch;
 
@@ -167,12 +164,21 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
       return;
     }
 
-    // Injection: buffer this one HTML doc, insert the platform `<script>` tags,
+    // Injection: buffer this one HTML doc, insert the platform `<script>` blocks,
     // and send it as a string. No etag/last-modified — the injected bytes differ
     // from the Blob's, so a conditional 304 must never short-circuit injection.
     // Bounded to opt-in HTML (small); every other asset keeps streaming.
+    //
+    // The snippets are built here rather than above so a non-HTML GET on an
+    // opt-in app doesn't pay for them, and inlined rather than referenced —
+    // `/_helix/*` is unprecachable, so a `<script src>` there is exactly what an
+    // offline cold boot cannot load (see `injectHeadScripts`). Shim first: it
+    // must patch `fetch` before anything else on the page runs.
     if (wantsInjection && isHtml) {
-      const injected = injectHeadScripts(await streamToString(result.body), injectSrcs);
+      const scripts: string[] = [];
+      if (wantsShim) scripts.push(buildShimScript([...entry.fetch.connections.keys()]));
+      if (entry.offline) scripts.push(buildRegistrationSnippet(entry.offline.scope));
+      const injected = injectHeadScripts(await streamToString(result.body), scripts);
       reply
         .status(200)
         .header("content-type", result.contentType ?? "text/html; charset=utf-8")

@@ -1,4 +1,5 @@
 import { CSP_REPORT_PATH } from "./csp.js";
+import { jsonInline } from "./shim.js";
 
 /**
  * The platform-owned service worker (ADR-0035) — the offline capability.
@@ -49,9 +50,6 @@ export const SW_PATH = "/_helix/sw.js";
  */
 export const SW_SCOPE_PARAM = "scope";
 
-/** Reserved path for the page-side registration, injected into `<head>`. */
-export const SW_REGISTER_PATH = "/_helix/sw-register.js";
-
 /**
  * Path prefixes the worker must never handle. `/_auth/*` is the reason the ban
  * exists; `/_api/*` must stay unprecachable so it can serve as an app's
@@ -62,6 +60,11 @@ export const SW_REGISTER_PATH = "/_helix/sw-register.js";
  * are root-level and the scope never is. The check stays because it is the
  * property we actually care about, and it must not depend on scope validation
  * being correct somewhere else.
+ *
+ * `/_helix/*` being unprecachable is why the registration snippet and the fetch
+ * shim are **inlined** into the document rather than served from here — see
+ * `injectHeadScripts` in `shim.ts`. `/_helix/sw.js` is the one thing left under
+ * the prefix, and a worker script is registered by URL by construction.
  */
 const RESERVED_PREFIXES = ["/_auth/", "/_api/", "/_helix/"];
 
@@ -384,9 +387,10 @@ export function buildTombstoneScript(): string {
 }
 
 /**
- * The page-side registration, injected into `<head>` at serve time so adopting
+ * The page-side registration, inlined into `<head>` at serve time so adopting
  * the capability is a manifest change and nothing else (the same mechanism the
- * fetch shim uses — see `shim.ts`).
+ * fetch shim uses — see `injectHeadScripts` in `shim.ts`, which also explains
+ * why these snippets are inline rather than `<script src="/_helix/…">`).
  *
  * `updateViaCache: "none"` keeps the browser from serving the worker script out
  * of the HTTP cache on update checks, which is what makes the tombstone
@@ -396,13 +400,13 @@ export function buildRegistrationSnippet(scope: string): string {
   const scriptUrl = `${SW_PATH}?${SW_SCOPE_PARAM}=${encodeURIComponent(scope)}`;
   return `(function () {
   if (!("serviceWorker" in navigator)) return;
-  var SCOPE = ${JSON.stringify(scope)};
+  var SCOPE = ${jsonInline(scope)};
 
   // The scope rides in the script URL — see SW_SCOPE_PARAM. The browser refetches
   // this exact URL on every update check, which is what lets the route emit a
   // correct \`Service-Worker-Allowed\` even after the grant is withdrawn and there
   // is no scope left to look up. Without it the tombstone can never install.
-  var registered = navigator.serviceWorker.register(${JSON.stringify(scriptUrl)}, {
+  var registered = navigator.serviceWorker.register(${jsonInline(scriptUrl)}, {
     scope: SCOPE,
     updateViaCache: "none",
   }).then(function () {
@@ -441,5 +445,6 @@ export function buildRegistrationSnippet(scope: string): string {
     // offline boot. Same posture as the shim: ergonomics, not a boundary.
   });
 })();
+//# sourceURL=helix/sw-register.js
 `;
 }
