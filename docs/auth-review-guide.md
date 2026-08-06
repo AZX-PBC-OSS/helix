@@ -384,15 +384,22 @@ trust is the whole design, so the attestation must be airtight:
   — it is a server challenge, not a reflection of our credential. This is a network-layer
   boundary, not an auth one, but it's part of the same trust hop — see the egress adversarial
   suite.
-- **Egress's two dev seams are env-only — check the deployed config, not the code.**
-  `EGRESS_ALLOW_INSECURE_CONNECTION` (open the cleartext-injection path) and
-  `EGRESS_ALLOW_PRIVATE` (permit private/loopback targets) are both documented in
-  `apps/egress/src/config.ts` as "false in prod", but unlike their siblings
-  (`EDGE_DEV_ALLOW_UNAUTHENTICATED`, `PORTAL_ALLOW_SELF_APPROVE`, the dev token verifier)
-  nothing **refuses to start** when they are true under `NODE_ENV=production`. Each disables
-  a control ADR-0005 is built on, on the plane that holds plaintext credentials, and the
-  failure is silent — everything works. Neither is set in the live deploys (confirmed
-  2026-08-06); the guard itself is open in [`TODO.md`](../TODO.md).
+- **Egress's two dev seams boot-fail in production.** `EGRESS_ALLOW_INSECURE_CONNECTION`
+  (open the cleartext-injection path) and `EGRESS_ALLOW_PRIVATE` (permit private/loopback
+  targets) each disable a control ADR-0005 is built on, on the plane that holds plaintext
+  credentials — and set wrongly they change nothing observable, so `loadConfig` refuses to
+  start under `NODE_ENV=production` rather than letting the silence stand (2026-08-06;
+  `config.test.ts`). What to check is the polarity: default-off, exact `"true"` to open, and
+  the refusal covering **both**, since a third flag added to this file will not inherit it
+  automatically.
+  **The `NODE_ENV` the guard keys off is real, not conventional** (verified 2026-08-06):
+  the deployed container gets it from two independent places — `infra/azure/main.bicep:405`
+  (first entry in the egress module's `envVars`) and `apps/egress/Dockerfile:20` (baked into
+  the runtime stage) — and `modules/containerapp.bicep:107` assigns `env: envVars` straight
+  through with no filtering. Both sources carry the same literal, so either one going missing
+  still leaves the guard armed. The residual is a hand-run `az containerapp update
+  --set-env-vars`, which sticks across image bumps — but that is the same trust boundary as
+  setting the flags directly, not a way around the guard.
 
 This is service-to-service attestation, not user auth — but it earns a review pass because a
 weakness here converts an edge bug into secret disclosure or SSRF.

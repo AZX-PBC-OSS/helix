@@ -137,6 +137,11 @@ try {
   if (config.allowPrivate) {
     app.log.warn("EGRESS_ALLOW_PRIVATE is set — private/loopback targets are NOT blocked");
   }
+  if (config.allowInsecureConnection) {
+    app.log.warn(
+      "EGRESS_ALLOW_INSECURE_CONNECTION is set — connection secrets may be injected over cleartext http://",
+    );
+  }
   // Say it once at boot rather than making the operator infer it from N identical 502s.
   // A row sealed under the dev envelope cannot be opened here, and there is no migration
   // path between backends — the values have to be re-entered.

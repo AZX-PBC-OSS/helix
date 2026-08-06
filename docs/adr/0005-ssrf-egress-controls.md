@@ -42,6 +42,25 @@ IP-pinning **verified to defeat DNS-rebind** (refuted a reviewer's "socket not p
 
 WEAKEN — ISSUE-01/02/09/10 above all re-confirmed; the SNI-preservation refutation holds (`servername: target.hostname`). One **new, undocumented** gap (filed **#11**): egress injects a connection secret over **cleartext `http://`** — `proxy.ts:97-99` accepts `http:`, and secret injection (`:108-121`, `applyInjection`) applies no `target.protocol` guard. Require `https://` on any secret-backed origin. (Response-header safelist → **#7**; body-size cap → **#8**; IPv6 ranges → **#2**.) Also reframe: the IP denylist is defense-in-depth — the network-zone egress allowlist (ADR-0001) is the primary control.
 
+## Hardening note (2026-08-06, the dev seams boot-fail)
+
+Two env flags open controls recorded above: `EGRESS_ALLOW_PRIVATE` (skip the
+private/loopback/IMDS denylist) and `EGRESS_ALLOW_INSECURE_CONNECTION` (permit
+injecting a connection secret into a cleartext `http://` target — the guard added
+for **#11**). Both were documented "false in prod" and neither was enforced, so a
+value leaking into a deployed config would have disabled the control **silently**:
+nothing fails, every call still works, and the difference surfaces nowhere. That
+is the same property the `deployFirewall` note below calls out, on the one plane
+that holds plaintext credentials.
+
+`loadConfig` now **refuses to start** when either is true under
+`NODE_ENV=production` (`apps/egress/src/config.ts`, covered in `config.test.ts`),
+matching the sibling dev seams on the other two planes —
+`EDGE_DEV_ALLOW_UNAUTHENTICATED`, `PORTAL_ALLOW_SELF_APPROVE`, and the dev-token
+verifier, which refuses to construct. Both flags keep their boot-time `warn` for
+the dev case. Neither was ever set in a deployment (checked 2026-08-06); this
+closes the way one could be.
+
 ## Deployment note (2026-07-23, `deployFirewall`)
 
 The network-zone egress allow-list named here as the **primary control** is

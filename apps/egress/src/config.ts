@@ -17,11 +17,11 @@ export interface EgressConfig {
   /** Dev custody: path to the locally-generated KEK file (post-create.sh). */
   devKeyPath?: string;
   limits: { maxBodyBytes: number; timeoutMs: number };
-  /** Permit private/loopback targets — dev/test only; false in prod. */
+  /** Permit private/loopback targets — dev/test only; refused in production. */
   allowPrivate: boolean;
   /**
    * Permit injecting a connection secret into a cleartext `http://` target —
-   * dev/test only (loopback echo upstreams); false in prod. Egress is the
+   * dev/test only (loopback echo upstreams); refused in production. Egress is the
    * credential broker and must not leak a secret over the wire in cleartext
    * (issue #11, ADR-0005), so the injection path requires `https://` unless this
    * seam is explicitly opened.
@@ -44,6 +44,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
   if (!databaseUrl) {
     throw new Error("EGRESS_DATABASE_URL or DATABASE_URL is required");
   }
+  // Both flags open an SSRF/credential control ADR-0005 rests on, on the one
+  // plane holding plaintext secrets — and with either set everything still
+  // works, so a leaked-in value surfaces nowhere. Boot-fail instead, matching
+  // the sibling dev seams on the other planes (EDGE_DEV_ALLOW_UNAUTHENTICATED,
+  // PORTAL_ALLOW_SELF_APPROVE, the dev-token verifier).
+  const allowPrivate = env.EGRESS_ALLOW_PRIVATE === "true";
+  const allowInsecureConnection = env.EGRESS_ALLOW_INSECURE_CONNECTION === "true";
+  if (env.NODE_ENV === "production") {
+    for (const [key, on] of [
+      ["EGRESS_ALLOW_PRIVATE", allowPrivate],
+      ["EGRESS_ALLOW_INSECURE_CONNECTION", allowInsecureConnection],
+    ] as const) {
+      if (on) throw new Error(`${key} is a dev seam and is refused in production`);
+    }
+  }
+
   return {
     port: Number(env.EGRESS_PORT ?? env.PORT ?? 8081),
     host: env.HOST ?? "0.0.0.0",
@@ -55,7 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
       maxBodyBytes: Number(env.EGRESS_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
       timeoutMs: Number(env.EGRESS_TIMEOUT_MS ?? 30_000),
     },
-    allowPrivate: env.EGRESS_ALLOW_PRIVATE === "true",
-    allowInsecureConnection: env.EGRESS_ALLOW_INSECURE_CONNECTION === "true",
+    allowPrivate,
+    allowInsecureConnection,
   };
 }
