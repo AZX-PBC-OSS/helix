@@ -384,14 +384,15 @@ trust is the whole design, so the attestation must be airtight:
   — it is a server challenge, not a reflection of our credential. This is a network-layer
   boundary, not an auth one, but it's part of the same trust hop — see the egress adversarial
   suite.
-- **Worth checking on a real deployment: egress's two dev seams are env-only.**
+- **Egress's two dev seams are env-only — check the deployed config, not the code.**
   `EGRESS_ALLOW_INSECURE_CONNECTION` (open the cleartext-injection path) and
   `EGRESS_ALLOW_PRIVATE` (permit private/loopback targets) are both documented in
   `apps/egress/src/config.ts` as "false in prod", but unlike their siblings
   (`EDGE_DEV_ALLOW_UNAUTHENTICATED`, `PORTAL_ALLOW_SELF_APPROVE`, the dev token verifier)
   nothing **refuses to start** when they are true under `NODE_ENV=production`. Each disables
-  a control ADR-0005 is built on, and the failure is silent — everything works. Verify
-  against the deployed config rather than the code.
+  a control ADR-0005 is built on, on the plane that holds plaintext credentials, and the
+  failure is silent — everything works. Neither is set in the live deploys (confirmed
+  2026-08-06); the guard itself is open in [`TODO.md`](../TODO.md).
 
 This is service-to-service attestation, not user auth — but it earns a review pass because a
 weakness here converts an edge bug into secret disclosure or SSRF.
