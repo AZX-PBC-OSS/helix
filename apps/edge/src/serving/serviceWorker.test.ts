@@ -81,9 +81,16 @@ describe("buildServiceWorkerScript", () => {
     expect(js).toContain('"/_helix/"');
   });
 
-  it("is network-first for navigations and cache-first otherwise", () => {
+  it("is network-first for navigations, and never reads the global cache index", () => {
     expect(js).toContain('request.mode === "navigate"');
-    expect(js).toContain("caches.match(request)");
+    // Reads go through `lookup()` → `caches.open(CACHE).match()`. The global
+    // `caches.match()` searches EVERY cache on the origin including the app's
+    // own, which would make an app-written entry unshippable. Behaviour is
+    // covered in serviceWorkerRuntime.test.ts; this pins the shape.
+    expect(js).toContain("lookup(request)");
+    // Comments stripped — the worker's own doc comment names the API it avoids.
+    const code = js.replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toContain("caches.match(");
   });
 
   it("answers helix:status so apps never depend on the cache-name format", () => {
@@ -343,6 +350,24 @@ describe("scope-aware SPA fallback", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("hi");
+  });
+
+  it("resolves the scope root only for an HTML-accepting request", async () => {
+    // This is why the backfill sends the document with an HTML `Accept` and
+    // subresources without one (review #4). `normalizeRequestPath` drops the
+    // trailing slash, so `/app/` looks for a blob named `app`, misses, and only
+    // the SPA fallback rescues it — and that fallback is gated on Accept. A
+    // precache request built with the default `*/*` therefore 404s, which is
+    // not storable, so the one URL cold boot depends on never gets cached.
+    const html = await app.inject({
+      url: "/app/",
+      headers: { ...H("offline"), accept: "text/html,application/xhtml+xml,*/*" },
+    });
+    expect(html.statusCode).toBe(200);
+    expect(html.body).toContain("shell");
+
+    const any = await app.inject({ url: "/app/", headers: { ...H("offline"), accept: "*/*" } });
+    expect(any.statusCode).toBe(404);
   });
 
   it("still hard-404s an asset miss inside the scope", async () => {

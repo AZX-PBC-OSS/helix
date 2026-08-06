@@ -68,8 +68,14 @@ const RESERVED_PREFIXES = ["/_auth/", "/_api/", "/_helix/"];
 /** Cache-name prefix, so `activate` can recognize and evict our own old caches. */
 const CACHE_NS = "helix";
 
-/** Bound on the page-supplied first-visit URL list (see the registration snippet). */
+/**
+ * Bounds on the page-supplied first-visit URL list (see the registration
+ * snippet). The count is paired with a once-per-worker-lifetime flag in the
+ * handler — on its own a per-message cap bounds nothing, since the page can
+ * post the message in a loop.
+ */
 const MAX_PRECACHE_URLS = 200;
+const MAX_PRECACHE_URL_LENGTH = 2048;
 
 /** Milliseconds a navigation waits on the network before falling back to cache. */
 const NAV_TIMEOUT_MS = 3000;
@@ -98,7 +104,10 @@ export function buildServiceWorkerScript(opts: ServiceWorkerOptions): string {
   var CACHE = ${JSON.stringify(`${CACHE_NS}:${opts.cacheVersion}`)};
   var RESERVED = ${JSON.stringify([...RESERVED_PREFIXES, CSP_REPORT_PATH])};
   var MAX_PRECACHE = ${MAX_PRECACHE_URLS};
+  var MAX_PRECACHE_URL = ${MAX_PRECACHE_URL_LENGTH};
   var NAV_TIMEOUT = ${NAV_TIMEOUT_MS};
+  // One backfill per worker lifetime — see the "helix:precache" handler.
+  var precached = false;
 
   // Only same-origin GETs inside the scope, and never a platform namespace.
   // Falling through (rather than proxying) for cross-origin is load-bearing,
@@ -139,6 +148,19 @@ export function buildServiceWorkerScript(opts: ServiceWorkerOptions): string {
     }).catch(function () {});
   }
 
+  // Always look up through THIS cache, never the global \`caches.match()\` —
+  // that one queries every cache on the origin in creation order, including the
+  // app's own. Since \`activate\` only evicts \`helix:*\`, an app-written entry for
+  // an in-scope URL would be invisible to eviction but visible to lookup, and
+  // so served cache-first forever, across promotes, rollbacks and grant
+  // changes. Un-shipping an asset would stop being possible on that device —
+  // and rollback is a containment mechanism here, not an ergonomic one.
+  function lookup(request) {
+    return caches.open(CACHE).then(function (c) {
+      return c.match(request);
+    });
+  }
+
   self.addEventListener("install", function () {
     self.skipWaiting();
   });
@@ -175,7 +197,7 @@ export function buildServiceWorkerScript(opts: ServiceWorkerOptions): string {
           var timer = setTimeout(function () {
             if (settled) return;
             settled = true;
-            caches.match(request).then(function (hit) {
+            lookup(request).then(function (hit) {
               resolve(hit || fetch(request));
             });
           }, NAV_TIMEOUT);
@@ -192,11 +214,11 @@ export function buildServiceWorkerScript(opts: ServiceWorkerOptions): string {
               clearTimeout(timer);
               if (settled) return;
               settled = true;
-              caches.match(request).then(function (hit) {
+              lookup(request).then(function (hit) {
                 // Fall back to the scope root: a deep link opened offline
                 // should still boot the shell (the edge does the same thing
                 // online with its SPA fallback).
-                resolve(hit || caches.match(SCOPE).then(function (root) {
+                resolve(hit || lookup(SCOPE).then(function (root) {
                   if (root) return root;
                   throw err;
                 }));
@@ -212,7 +234,7 @@ export function buildServiceWorkerScript(opts: ServiceWorkerOptions): string {
     // version prefix don't change, and the cache name already carries the
     // version, so a stale hit is impossible across a promote.
     event.respondWith(
-      caches.match(request).then(function (hit) {
+      lookup(request).then(function (hit) {
         if (hit) return hit;
         return fetch(request).then(function (response) {
           put(request, response);
@@ -233,15 +255,38 @@ export function buildServiceWorkerScript(opts: ServiceWorkerOptions): string {
     // what it loaded; we re-fetch and store it.
     //
     // The page is untrusted, so the list is filtered by the same \`handles\`
-    // rule as live traffic and capped. Worst case an app names its own
-    // in-scope assets, which is exactly what it is for.
-    if (data.type === "helix:precache" && Array.isArray(data.urls)) {
+    // rule as live traffic, each URL is length-bounded, and the whole backfill
+    // runs AT MOST ONCE per worker lifetime. That last part is what makes the
+    // cap mean anything: a per-message limit bounds nothing when the page can
+    // post in a loop. One round is all the backfill needs — after it, ordinary
+    // fetch interception does the caching.
+    if (data.type === "helix:precache" && !precached) {
+      precached = true;
       var requests = [];
-      for (var i = 0; i < data.urls.length && requests.length < MAX_PRECACHE; i++) {
-        if (typeof data.urls[i] !== "string") continue;
+      var urls = Array.isArray(data.urls) ? data.urls.slice(0, MAX_PRECACHE) : [];
+
+      // The document is carried separately because it needs an HTML \`Accept\`.
+      // A \`Request\` defaults to \`*/*\`, and for a scoped app the document URL is
+      // the scope root: the edge normalizes \`/app/\` to \`/app\`, misses the blob,
+      // and its SPA fallback only fires for an HTML-accepting request — so the
+      // one URL the backfill exists for was silently 404ing. Subresources must
+      // NOT get the HTML Accept, or an asset miss would fall back to the shell
+      // and cache HTML under an asset URL.
+      if (typeof data.document === "string" && data.document.length <= MAX_PRECACHE_URL) {
+        try {
+          var docReq = new Request(data.document, {
+            credentials: "same-origin",
+            headers: { accept: "text/html,application/xhtml+xml,*/*" },
+          });
+          if (handles(docReq)) requests.push(docReq);
+        } catch (e) {}
+      }
+
+      for (var i = 0; i < urls.length; i++) {
+        if (typeof urls[i] !== "string" || urls[i].length > MAX_PRECACHE_URL) continue;
         var req;
         try {
-          req = new Request(data.urls[i], { credentials: "same-origin" });
+          req = new Request(urls[i], { credentials: "same-origin" });
         } catch (e) {
           continue;
         }
