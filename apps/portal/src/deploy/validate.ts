@@ -7,10 +7,16 @@ import { lintForCsp } from "./csp-lint.js";
 import {
   MAX_COMPRESSION_RATIO,
   MAX_ENTRIES,
-  MAX_FILE_BYTES,
   MAX_LINT_BYTES,
-  MAX_TOTAL_BYTES,
+  resolveMaxFileBytes,
+  resolveMaxTotalBytes,
 } from "./limits.js";
+
+/** The size caps in force for one validation pass. */
+interface SizeCaps {
+  file: number;
+  total: number;
+}
 
 export interface ValidatedEntry {
   /** Normalized, bundle-relative posix path. */
@@ -52,8 +58,12 @@ export function normalizeEntryPath(name: string): string | null {
  * disallowed file types, and oversized/decompression-bomb archives. Reads each
  * entry's actual decompressed bytes (never trusting header sizes) and aborts a
  * stream the moment it exceeds the remaining budget.
+ *
+ * The size caps are resolved once here, not per entry, so a bundle is measured
+ * against one consistent pair even if the env changes mid-validation.
  */
 export function validateBundle(zipPath: string): Promise<ValidationResult> {
+  const caps: SizeCaps = { file: resolveMaxFileBytes(), total: resolveMaxTotalBytes() };
   return new Promise<ValidationResult>((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true, autoClose: true }, (openErr, zipfile) => {
       if (openErr || !zipfile) {
@@ -117,6 +127,7 @@ export function validateBundle(zipPath: string): Promise<ValidationResult> {
           zipfile,
           entry,
           totalBytes,
+          caps,
           isLintable(rel),
         );
         if (overflow) {
@@ -160,6 +171,7 @@ function drainEntry(
   zipfile: yauzl.ZipFile,
   entry: yauzl.Entry,
   totalSoFar: number,
+  caps: SizeCaps,
   capture: boolean,
 ): Promise<{ bytes: number; overflow: boolean; text?: string }> {
   return new Promise((resolve, reject) => {
@@ -170,7 +182,7 @@ function drainEntry(
       }
 
       // Abort at whichever bites first: this file's cap or the remaining total.
-      const limit = Math.min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - totalSoFar);
+      const limit = Math.min(caps.file, caps.total - totalSoFar);
       let bytes = 0;
       let overflow = false;
       let captured = 0;

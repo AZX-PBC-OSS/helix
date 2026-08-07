@@ -5,6 +5,9 @@ import {
   resolveDevApiBase,
   resolvePlatformMonthlyUsdCap,
 } from "../deployment.js";
+import { resolveMaxFileBytes, resolveMaxTotalBytes } from "../deploy/limits.js";
+
+const MB = 1024 * 1024;
 
 /**
  * The deployment-config bootstrap. Public, like `/api/v1/auth/config` — the
@@ -26,6 +29,11 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       appPublicBase: resolveAppPublicBase().origin,
       ...(devApiBase ? { devApiBase: devApiBase.origin } : {}),
       ...(cap !== null ? { platformMonthlyUsdCap: cap } : {}),
+      // Always present — the deploy caps are enforced unconditionally, so the SPA
+      // states this deployment's real numbers in the agent skill rather than
+      // baking in the defaults and going stale the first time one is retuned.
+      deployMaxFileMb: resolveMaxFileBytes() / MB,
+      deployMaxBundleMb: resolveMaxTotalBytes() / MB,
     });
   });
 }

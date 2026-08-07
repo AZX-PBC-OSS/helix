@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { buildZipFile } from "../test/zip.js";
+import { withEnv } from "../test/env.js";
 import { normalizeEntryPath, validateBundle } from "./validate.js";
 
 describe("normalizeEntryPath", () => {
@@ -59,10 +60,28 @@ describe("validateBundle", () => {
     await expect(validateBundle(zip)).rejects.toMatchObject({ code: "bundle_invalid" });
   });
 
-  it("rejects an oversized file", async () => {
-    // 26 MiB of incompressible data trips the per-file size cap (25 MiB).
-    const zip = await buildZipFile([{ name: "big.bin", content: randomBytes(26 * 1024 * 1024) }]);
-    await expect(validateBundle(zip)).rejects.toMatchObject({ code: "bundle_invalid" });
+  // `.wasm`, not `.bin` — an extension outside the mime allowlist is rejected
+  // before the size drain runs, so it would pass these tests without ever
+  // exercising a cap.
+  it("rejects a file over the per-file cap, and accepts it under the default", async () => {
+    // Drive the cap down rather than generating tens of MB of incompressible
+    // data: same code path, and the test stays fast as the default grows.
+    const zip = await buildZipFile([{ name: "big.wasm", content: randomBytes(2 * 1024 * 1024) }]);
+    await withEnv({ DEPLOY_MAX_FILE_MB: "1" }, async () => {
+      await expect(validateBundle(zip)).rejects.toMatchObject({ code: "bundle_invalid" });
+    });
+    const result = await validateBundle(zip);
+    expect(result.entries.map((e) => e.path)).toEqual(["big.wasm"]);
+  });
+
+  it("rejects a bundle over the whole-bundle cap", async () => {
+    const zip = await buildZipFile([
+      { name: "a.wasm", content: randomBytes(1024 * 1024) },
+      { name: "b.wasm", content: randomBytes(1024 * 1024) },
+    ]);
+    await withEnv({ DEPLOY_MAX_BUNDLE_MB: "1.5" }, async () => {
+      await expect(validateBundle(zip)).rejects.toMatchObject({ code: "bundle_invalid" });
+    });
   });
 
   it("warns (does not fail) on non-allowlisted external origins", async () => {

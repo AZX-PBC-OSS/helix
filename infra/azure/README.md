@@ -203,6 +203,34 @@ display-only — the rollup is exact (the gateway is the choke point) but nothin
 enforces it, so treat it as a watch line, not a kill-switch. Local dev leaves it
 unset (no ceiling); see `.env.example`.
 
+## Deploy bundle size caps
+
+Two more portal env vars, set from template params, size what `helix deploy` will
+accept. Both are in **megabytes**; unset falls back to the code default, and a
+value that is present but unparseable (or `0`/negative) is a **boot failure** —
+these are a security control, and a typo that silently restored the default would
+be worse than a failed start.
+
+| Env var                | Param / default               | Caps                                                                |
+| ---------------------- | ----------------------------- | ------------------------------------------------------------------- |
+| `DEPLOY_MAX_FILE_MB`   | `deployMaxFileMb` (**50**)    | Uncompressed bytes of any single file in the bundle                 |
+| `DEPLOY_MAX_BUNDLE_MB` | `deployMaxBundleMb` (**250**) | Uncompressed bytes across the bundle, **and** the compressed upload |
+
+Before raising `deployMaxBundleMb` much past this, note two things it interacts
+with:
+
+- **Portal temp disk.** `spoolUpload` streams the whole compressed zip to
+  `os.tmpdir()` on the replica before validating it, and the portal runs at the
+  `containerapp.bicep` default 0.5 CPU / 1 Gi — roughly 2 GiB of ephemeral storage,
+  shared across concurrent deploys. Raise `cpuCores`/`memory` alongside the cap.
+- **The CLI buffers the zip in memory.** `packages/cli/src/zip.ts` builds the
+  archive with `Buffer.concat`, so peak CLI memory is about 2× the zip. That, not
+  the server, is what a very large bundle hits first.
+
+Raising the per-file cap does **not** widen what _types_ are accepted —
+`apps/portal/src/deploy/mime.ts` is a static-asset allowlist with no video or
+audio types, so a large `.mp4` is rejected on type regardless of size.
+
 ## Layout
 
 ```

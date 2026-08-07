@@ -60,18 +60,22 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 }
 
 export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
-  const { appsHost, devApiBase, devModeAvailable } = useDeployment();
+  const { appsHost, devApiBase, devModeAvailable, deployMaxFileMb, deployMaxBundleMb } =
+    useDeployment();
 
   // Null until GET /api/v1/config lands — the buttons stay disabled rather than
-  // handing an agent a skill with a placeholder host still in it.
-  const skill = appsHost
-    ? renderSkill(skillTemplate, {
-        portalOrigin: window.location.origin,
-        appsHost,
-        devApiBase,
-        llmModels: Object.keys(MODEL_PRICING),
-      })
-    : null;
+  // handing an agent a skill with a placeholder host or size cap still in it.
+  const skill =
+    appsHost && deployMaxFileMb !== null && deployMaxBundleMb !== null
+      ? renderSkill(skillTemplate, {
+          portalOrigin: window.location.origin,
+          appsHost,
+          devApiBase,
+          llmModels: Object.keys(MODEL_PRICING),
+          maxFileMb: deployMaxFileMb,
+          maxBundleMb: deployMaxBundleMb,
+        })
+      : null;
 
   return (
     <Modal

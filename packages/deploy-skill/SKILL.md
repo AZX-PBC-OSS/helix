@@ -365,8 +365,8 @@ npm i -g @azx-pbc/helix-cli          # puts `helix` on your PATH
 
 For CI, set `HELIX_TOKEN` and `HELIX_PORTAL_URL` instead of running `helix login`.
 
-**Upload limits:** 25 MB per file, 100 MB per bundle, 5 000 entries, 200:1
-compression ratio. Only static asset types are accepted; symlinks and paths that
+**Upload limits:** {{MAX_FILE_MB}} MB per file, {{MAX_BUNDLE_MB}} MB per bundle,
+5 000 entries, 200:1 compression ratio. Only static asset types are accepted; symlinks and paths that
 escape the archive root are rejected. The upload also runs a **non-blocking CSP
 lint** and warns about third-party origins it will block at serve time — read those
 warnings, they are telling you about a `403` you are about to hit in production.

@@ -54,6 +54,12 @@ param appsDomain string = 'azx.helix.azxlabs.io'
 @description('Display-only month-to-date platform spend watch line in USD, surfaced on the admin Activity page via GET /api/v1/config. Defaults to 1000 so an install gets a budget signal without being configured for one; set 0 to show no ceiling. Nothing enforces this — per-app daily token budgets are the real limit.')
 param platformMonthlyUsdCap int = 1000
 
+@description('Max uncompressed size in MB of any single file in a deployed bundle.')
+param deployMaxFileMb int = 50
+
+@description('Max total size in MB of a deployed bundle — uncompressed across all files, and also the cap on the compressed upload. The portal spools that upload to its replica temp disk, so raising this past a few hundred MB wants a matching cpu/memory bump on the portal container app (ephemeral storage scales with them).')
+param deployMaxBundleMb int = 250
+
 @description('Blob container for app bundles.')
 param blobContainerName string = 'app-bundles'
 
@@ -534,6 +540,8 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
         value: deployDevGateway ? 'https://dev-api.${appsDomain}' : ''
       }
       { name: 'PLATFORM_MONTHLY_USD_CAP', value: string(platformMonthlyUsdCap) }
+      { name: 'DEPLOY_MAX_FILE_MB', value: string(deployMaxFileMb) }
+      { name: 'DEPLOY_MAX_BUNDLE_MB', value: string(deployMaxBundleMb) }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
       // helix_portal DSN. The portal runtime reads PORTAL_DATABASE_URL and (in
       // production) refuses the DATABASE_URL owner fallback (ADR-0002,

@@ -24,6 +24,9 @@ export interface Deployment {
   devApiBase: string | null;
   /** Display-only monthly spend watch line, or null for no ceiling. */
   platformMonthlyUsdCap: number | null;
+  /** Deploy size caps in MB — null only while the config query is in flight. */
+  deployMaxFileMb: number | null;
+  deployMaxBundleMb: number | null;
 }
 
 /**
@@ -62,6 +65,8 @@ export function useDeployment(): Deployment {
     appsHost: appBase?.host ?? null,
     devApiBase: data?.devApiBase ? data.devApiBase.replace(/\/+$/, "") : null,
     platformMonthlyUsdCap: data?.platformMonthlyUsdCap ?? null,
+    deployMaxFileMb: data?.deployMaxFileMb ?? null,
+    deployMaxBundleMb: data?.deployMaxBundleMb ?? null,
   };
 }
 

@@ -57,8 +57,14 @@ LISTEN/NOTIFY projection (see [edge-serving.md](./edge-serving.md)).
 - **`validate.ts`** — streams the zip, counting **real decompressed bytes** (never trusts zip
   headers). Rejects path traversal (zip-slip), symlinks, non-regular files, and non-static MIME
   types (`mime.ts`).
-- **`limits.ts`** — caps: 25 MB/file, 100 MB total, 5,000 entries, 200:1 compression ratio
-  (decompression-bomb defense), 512 KB buffered for the lint.
+- **`limits.ts`** — caps: 50 MB/file, 250 MB total, 5,000 entries, 200:1 compression ratio
+  (decompression-bomb defense), 512 KB buffered for the lint. The two size caps are the
+  capacity knobs and are env-overridable in megabytes (`DEPLOY_MAX_FILE_MB`,
+  `DEPLOY_MAX_BUNDLE_MB`, wired from Bicep params); the rest are security guards and stay
+  constants. Overrides are resolved per call but validated at boot by `assertBundleLimits`,
+  so a bad value fails the start rather than the first deploy. The bundle cap doubles as the
+  multipart cap on the *compressed* upload, which is what bounds the temp-disk spool in
+  `upload.ts` — see `infra/azure/README.md` for what to raise alongside it.
 - **`upload.ts`** — streams assets to Blob at `apps/<appId>/<number>/…`, allocates the next
   version number, inserts a `preview` row.
 - **`csp-lint.ts`** — a shallow, **non-blocking** advisory: scans HTML/JS for external origins

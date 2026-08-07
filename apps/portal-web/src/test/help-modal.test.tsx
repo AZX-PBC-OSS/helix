@@ -98,6 +98,10 @@ describe("HelpModal", () => {
     stubApi({
       appPublicBase: "https://apps.example.com",
       devApiBase: "https://dev-api.apps.example.com",
+      // Deliberately not the defaults (50/250): proves the caps in the rendered
+      // skill come from this deployment's config, not a constant in the bundle.
+      deployMaxFileMb: 80,
+      deployMaxBundleMb: 400,
     });
 
     // Patch the two statics only — `useDeployment` parses hosts with `new URL()`,
@@ -121,6 +125,21 @@ describe("HelpModal", () => {
     expect(text).toContain("https://dev-api.apps.example.com/<slug>");
     // The models come from the shared pricing table, not a hardcoded list.
     expect(text).toContain("claude-haiku-4-5");
+    expect(text).toContain("80 MB per file");
+    expect(text).toContain("400 MB per bundle");
+  });
+
+  it("holds the skill back when the portal states no deploy caps", async () => {
+    setToken("t");
+    // An older portal omits them. Rendering the defaults instead would tell an
+    // agent a cap this deployment does not enforce.
+    stubApi({ appPublicBase: "https://apps.example.com" });
+    renderModal();
+
+    await screen.findByText("https://<slug>.apps.example.com");
+    expect(
+      screen.getByRole("button", { name: /download SKILL\.md/i }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 
   it("holds the skill back until the deployment config lands", async () => {

@@ -35,5 +35,16 @@ export const DeploymentConfigResponseSchema = z.object({
    * nothing enforces this. Absent ⇒ no ceiling shown.
    */
   platformMonthlyUsdCap: z.number().positive().optional(),
+  /**
+   * Deploy bundle size caps in megabytes (`DEPLOY_MAX_FILE_MB` /
+   * `DEPLOY_MAX_BUNDLE_MB` on the portal) — `deployMaxFileMb` is per file,
+   * `deployMaxBundleMb` the whole-archive total. A current portal always sends
+   * both; optional only to tolerate one that predates the fields, same as `url`
+   * on {@link AppSchema}. Absent means "don't state a number" — a client must not
+   * substitute a default, because printing the wrong cap to an agent sends it
+   * chasing a rejection it can't see the cause of.
+   */
+  deployMaxFileMb: z.number().positive().optional(),
+  deployMaxBundleMb: z.number().positive().optional(),
 });
 export type DeploymentConfigResponse = z.infer<typeof DeploymentConfigResponseSchema>;

@@ -32,6 +32,9 @@ export interface SkillVars {
   devApiBase: string | null;
   /** Model ids this platform prices and will serve, for the manifest allowlist. */
   llmModels: readonly string[];
+  /** Deploy size caps in MB, as this deployment configures them (not the defaults). */
+  maxFileMb: number;
+  maxBundleMb: number;
 }
 
 /**
@@ -60,6 +63,8 @@ export function renderSkill(template: string, vars: SkillVars): string {
     APPS_HOST: vars.appsHost,
     DEV_API_BASE: vars.devApiBase ?? "",
     LLM_MODELS: vars.llmModels.join(", "),
+    MAX_FILE_MB: String(vars.maxFileMb),
+    MAX_BUNDLE_MB: String(vars.maxBundleMb),
   };
 
   const body = vars.devApiBase

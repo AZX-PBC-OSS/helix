@@ -10,7 +10,7 @@ import { blobPlugin } from "./plugins/blob.js";
 import { secretStorePlugin } from "./plugins/secretStore.js";
 import { errorsPlugin } from "./plugins/errors.js";
 import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
-import { MAX_TOTAL_BYTES } from "./deploy/limits.js";
+import { assertBundleLimits, resolveMaxTotalBytes } from "./deploy/limits.js";
 import { appRoutes } from "./routes/apps.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { devTokenRoutes } from "./routes/devTokens.js";
@@ -51,6 +51,9 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   // Fail the boot, not each request: a production portal without APP_PUBLIC_BASE
   // would hand every client — portal UI and `helix` alike — unreachable dev URLs.
   assertDeploymentConfig();
+  // Likewise for the deploy size caps: a bad DEPLOY_MAX_*_MB should fail the
+  // boot, not the first deploy that happens to hit the validator.
+  assertBundleLimits();
 
   const app = Fastify({
     // The SPA's OIDC redirect URI is `/auth/callback?code=…` on this very
@@ -65,8 +68,10 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(blobPlugin, { store: opts.blobStore });
   app.register(secretStorePlugin, { store: opts.secretStore });
   app.register(authPlugin, opts.auth ?? {});
-  // One bundle file per upload; cap the (compressed) upload size.
-  app.register(multipart, { limits: { files: 1, fileSize: MAX_TOTAL_BYTES } });
+  // One bundle file per upload; cap the (compressed) upload size. Resolved once
+  // at build time — this bounds what `spoolUpload` writes to the replica's temp
+  // disk, so it is a capacity decision, not a per-request one.
+  app.register(multipart, { limits: { files: 1, fileSize: resolveMaxTotalBytes() } });
 
   app.get("/health", async () => {
     return HealthStatusSchema.parse({

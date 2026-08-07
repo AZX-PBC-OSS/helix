@@ -10,6 +10,8 @@ const VARS: SkillVars = {
   appsHost: "apps.example.com",
   devApiBase: "https://dev-api.example.com",
   llmModels: ["claude-haiku-4-5", "claude-sonnet-4-6"],
+  maxFileMb: 50,
+  maxBundleMb: 250,
 };
 
 describe("renderSkill", () => {

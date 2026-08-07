@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DeploymentConfigResponseSchema } from "@azx-pbc/shared";
 import { buildTestApp, type TestApp } from "../test/harness.js";
+import { withEnv } from "../test/env.js";
 
 /**
  * GET /api/v1/config — the deployment bootstrap the prebuilt SPA reads its
@@ -18,26 +19,6 @@ afterAll(async () => {
   await t.close();
 });
 
-/** Run `fn` with env overrides applied, restoring the prior values after. */
-async function withEnv(
-  overrides: Record<string, string | undefined>,
-  fn: () => Promise<void>,
-): Promise<void> {
-  const prev = new Map(Object.keys(overrides).map((k) => [k, process.env[k]]));
-  for (const [k, v] of Object.entries(overrides)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  try {
-    await fn();
-  } finally {
-    for (const [k, v] of prev) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
-}
-
 describe("GET /api/v1/config", () => {
   it("is public — no bearer token required", async () => {
     const res = await t.app.inject({ url: "/api/v1/config" });
@@ -50,6 +31,33 @@ describe("GET /api/v1/config", () => {
     await withEnv({ APP_PUBLIC_BASE: "https://apps.example.com" }, async () => {
       const res = await t.app.inject({ url: "/api/v1/config" });
       expect(res.json<{ appPublicBase: string }>().appPublicBase).toBe("https://apps.example.com");
+    });
+  });
+
+  describe("deploy size caps", () => {
+    it("reports the defaults in megabytes", async () => {
+      await withEnv(
+        { DEPLOY_MAX_FILE_MB: undefined, DEPLOY_MAX_BUNDLE_MB: undefined },
+        async () => {
+          const body = DeploymentConfigResponseSchema.parse(
+            (await t.app.inject({ url: "/api/v1/config" })).json(),
+          );
+          expect(body.deployMaxFileMb).toBe(50);
+          expect(body.deployMaxBundleMb).toBe(250);
+        },
+      );
+    });
+
+    // The SPA renders these into the agent skill, so an override has to reach the
+    // client — a stale cap sends an agent chasing a rejection it can't explain.
+    it("follows the env overrides", async () => {
+      await withEnv({ DEPLOY_MAX_FILE_MB: "80", DEPLOY_MAX_BUNDLE_MB: "400" }, async () => {
+        const body = DeploymentConfigResponseSchema.parse(
+          (await t.app.inject({ url: "/api/v1/config" })).json(),
+        );
+        expect(body.deployMaxFileMb).toBe(80);
+        expect(body.deployMaxBundleMb).toBe(400);
+      });
     });
   });
 
