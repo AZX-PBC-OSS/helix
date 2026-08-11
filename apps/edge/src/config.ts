@@ -467,6 +467,12 @@ function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
     clientId: parsed.clientId,
     credential,
     groupsClaim: env.EDGE_OIDC_GROUPS_CLAIM ?? "groups",
+    // The default is DEV-IDP SHAPED, deliberately: apps/dev-idp serves `groups` as a
+    // real scope (see its ALL_SCOPES) and that is how group visibility is exercised
+    // locally and in CI, neither of which sets this var. Entra has no `groups`
+    // delegated permission — it emits group claims from the app registration — so an
+    // Entra install MUST override this to "openid profile email". infra/azure hardcodes
+    // that, so the mismatch only reaches a deployment that skips the template.
     scopes: env.EDGE_OIDC_SCOPES ?? "openid profile email groups",
     allowInsecureIdp,
     secret,
