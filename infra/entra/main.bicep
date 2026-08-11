@@ -46,9 +46,31 @@ param adminPrincipalId string = ''
 @description('Pre-grant admin consent for the CLI -> portal API scope (else each user consents at first login).')
 param grantAdminConsent bool = false
 
-// Stable GUIDs for the scope + role (deterministic so re-deploys don't churn them).
+@description('Object ids of the users/groups allowed to SIGN IN to this install\'s edge (its apps). Non-empty also flips appRoleAssignmentRequired on the edge SP — see the note below. Empty = the pre-2026-08 behaviour: any directory member, guests included.')
+param edgeAccessPrincipalIds array = []
+
+@description('Object ids of the users/groups allowed to SIGN IN to this install\'s portal (the control plane). Usually staff only — narrower than edgeAccessPrincipalIds, which may include customer guests. Confers NO admin rights; that is adminPrincipalId.')
+param portalAccessPrincipalIds array = []
+
+// Whether Entra refuses a token to an unassigned user. DERIVED from the lists
+// above rather than a separate flag, deliberately: the hazard with this switch is
+// enabling it before anyone is assigned, which locks out every user of the install
+// until you finish assigning. Deriving it makes that ordering unexpressible — the
+// requirement and the assignments land in the same deployment, or neither does.
+// Leaving both lists empty preserves the original open behaviour exactly.
+var edgeRequireAssignment = !empty(edgeAccessPrincipalIds)
+var portalRequireAssignment = !empty(portalAccessPrincipalIds)
+
+// Stable GUIDs for the scope + roles (deterministic so re-deploys don't churn them).
 var portalAccessScopeId = guid(namePrefix, 'portal', 'scope', 'access')
 var platformAdminRoleId = guid(namePrefix, 'portal', 'role', 'platform-admin')
+// The portal's non-admin sign-in role. Needed because Entra REJECTS the all-zeros
+// "default access" appRoleId on an app that declares any appRoles
+// (`Request_BadRequest: Permission being assigned was not found on application`),
+// and the portal declares platform-admin. The edge declares none, so its
+// assignments below use the zero GUID and need no role at all.
+var portalUserRoleId = guid(namePrefix, 'portal', 'role', 'user')
+var defaultAccessRoleId = '00000000-0000-0000-0000-000000000000'
 
 // ---------------------------------------------------------------------------
 // Reg 1 — helix-edge (app-user SSO; confidential web client, certificate auth)
@@ -85,7 +107,20 @@ resource edgeApp 'Microsoft.Graph/applications@v1.0' = {
 
 resource edgeSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: edgeApp.appId
+  // Restores the "install's IdP audience == install's user population" invariant:
+  // without this, `visibility: private` in the edge means *any* authenticated
+  // directory member, so a guest invited for one install can reach every private
+  // app on every install sharing the tenant.
+  appRoleAssignmentRequired: edgeRequireAssignment
 }
+
+// Who may sign in to the edge. The zero GUID is Entra's "default access" and is
+// valid here precisely because edgeApp declares no appRoles.
+resource edgeAccessAssignments 'Microsoft.Graph/appRoleAssignedTo@v1.0' = [for principalId in edgeAccessPrincipalIds: {
+  appRoleId: defaultAccessRoleId
+  principalId: principalId
+  resourceId: edgeSp.id
+}]
 
 // --- Alternative to the certificate: a federated identity credential ---------
 // Cleaner for prod (no key material anywhere) — the edge's ACA managed identity
@@ -145,6 +180,19 @@ resource portalApp 'Microsoft.Graph/applications@v1.0' = {
       displayName: 'Platform Admin'
       description: 'Helix platform administrators (approvals, secrets, admin pages).'
     }
+    // Plain sign-in access, no privileges. Exists only to carry the assignment
+    // when appRoleAssignmentRequired is on (see portalUserRoleId). Safe against
+    // privilege creep because admin gating is an exact-value match on the
+    // `platform-admin` string (actorIsAdmin, apps/portal/src/plugins/auth.ts) —
+    // a `user` role in the claim satisfies nothing.
+    {
+      id: portalUserRoleId
+      value: 'user'
+      allowedMemberTypes: [ 'User' ]
+      isEnabled: true
+      displayName: 'User'
+      description: 'Sign-in access to the Helix portal. Confers no admin rights.'
+    }
   ]
   optionalClaims: {
     idToken: [ { name: 'email', essential: false } ]
@@ -160,7 +208,17 @@ resource portalApp 'Microsoft.Graph/applications@v1.0' = {
 
 resource portalSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: portalApp.appId
+  appRoleAssignmentRequired: portalRequireAssignment
 }
+
+// Who may sign in to the portal. Uses the `user` role, not the zero GUID — see
+// portalUserRoleId. A principal in BOTH this list and adminPrincipalId ends up
+// with two assignments (user + platform-admin); that is fine and additive.
+resource portalAccessAssignments 'Microsoft.Graph/appRoleAssignedTo@v1.0' = [for principalId in portalAccessPrincipalIds: {
+  appRoleId: portalUserRoleId
+  principalId: principalId
+  resourceId: portalSp.id
+}]
 
 // Assign the admin principal (user or group) to the platform-admin role. This is
 // the least-generic part — it couples to a specific object id. Assign-by-group
