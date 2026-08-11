@@ -340,6 +340,29 @@ export function useDeleteSecret() {
 }
 
 /* ---------------------------------------------------------------------------
+ * Collected items (app-data design §3.2). The app can only append; the owner
+ * reads and erases here. Deletion is a subject-erasure primitive, not a tidy-up:
+ * the server audits it.
+ * ------------------------------------------------------------------------- */
+
+/** Erase one collected item. */
+export function useDeleteCollectionItem() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, collection, id }: { slug: string; collection: string; id: string }) =>
+      requestVoid(
+        `/api/v1/apps/${encodeURIComponent(slug)}/collections/${encodeURIComponent(
+          collection,
+        )}/items/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      ),
+    // Invalidates the rows AND the per-collection counts, which share this prefix.
+    onSuccess: (_res, { slug }) =>
+      void queryClient.invalidateQueries({ queryKey: ["apps", slug, "collections"] }),
+  });
+}
+
+/* ---------------------------------------------------------------------------
  * Dev-mode tokens. Scoped bearer credentials for developing an app against its
  * env=dev partition from a registered origin (dev-mode design §4). Write-only:
  * the plaintext token is returned once, on mint/rotate. Server gates every

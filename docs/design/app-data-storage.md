@@ -118,6 +118,18 @@ The right primitive for the CEO's app. The frontend may **insert** an item; **li
 - Use: contact harvest, feedback/suggestion box, waitlist signups, survey responses — anything collected *from* users *for* the owner.
 - An attacker hitting the endpoint can add junk rows (an abuse/quota problem — §7, rate-limited and audited) but **can never enumerate**.
 
+#### 3.2.1 The owner-facing drain, as built (2026-08-10)
+
+Three decisions were open when the read side shipped API-only; building the portal UI forced them.
+
+**The reads are `ownsApp`-gated, not merely sign-in-gated.** The original axis — gate mutations, let any signed-in principal read — is wrong for this scope specifically. The whole premise of §3.2 is that the writer and reader are different principals, which makes the read side *by construction* the most privileged thing in the feature. Leaving it open reopened the harvesting class one layer up: not in the app, but between operators in the control plane. Recorded as an amendment to ADR-0007, which now states the criterion as **"any route returning data the app itself cannot read carries `ownsApp`."** Aggregate metering may stay sign-in-gated; per-subject rows may not.
+
+**Both tiers are visible; the UI defaults to prod.** The API returns `prod` and `dev` rows together unless `?env=` narrows it, matching the deliberately cross-env portal RLS policy — an owner is not a different principal from themselves, and dev rows are still their data and their erasure obligation. But the *table* defaults to `prod`, because a developer's own test submissions must never read as real leads. The cost of that default is the "I tested in dev and my data vanished" failure, so the filter is required to announce what it is holding back ("340 more rows in the other tier"). **A tier is a presentation filter here, never a wall.** The alternative — hiding dev rows entirely — was rejected because it conceals the existence of data the owner is accountable for.
+
+**Columns are derived, and the derivation is adversarial input handling.** Owner-declared item schemas stay deferred (§9), so the table and CSV derive columns from the rows themselves. Because `item` is anonymous-visitor JSON, **the column set is attacker-influenced**, which makes these formatting-looking rules into security rules: frequency ranking (so one 60-key junk row cannot evict `email`), scalar-only with a whole-key disqualification (so no column ever silently drops values from an export), a hard cap, `item.` namespacing (which removes collision logic *and* neutralises header-row formula injection), and spreadsheet-formula neutralisation on the CSV path only. Full rules and rationale: `docs/features/app-data-gateway.md` → "Derived columns"; the executable spec is `packages/shared/src/collectionTable.test.ts`.
+
+No ADR for the derivation: it is display-only and fully reversible — the raw `item` column is always present, so nothing is lost by changing or removing it — and a future declared schema would supersede it rather than conflict. Deriving from the loaded rows also means the table (200 rows) and the export (up to 10,000) can legitimately disagree about columns; sharing the code buys one spec, not identical output.
+
 ### 3.3 `shared` — app-scoped, world-readable (rare, explicit, dangerous)
 Truly shared state every user of the app may read: a public leaderboard, a shared document, a poll tally. Its blast radius is "any visitor reads everything," so it is **never a default** — it is a distinct grant the owner must request, and the manifest copy should say so in plain language.
 
@@ -280,7 +292,7 @@ Residual risk to name (consistent with architecture §residual-risk): a granted 
 ## 9. What's deferred / open questions
 
 - **Document queries beyond KV.** The architecture says JSONB; this doc keeps v1 to key-addressed values + append-only collections. Richer per-app queries ("filter my items by field") are the "richer app/user data queries" of the custom-backends rung 0 (`docs/design/custom-backends.md` §3) and can layer on `app_data` later without changing the security model.
-- **Schema/validation of stored items.** v1 stores opaque app-supplied JSON (size-capped). Owner-declared item schemas (so the portal export has typed columns) is a nice-to-have, not v1.
+- **Schema/validation of stored items.** v1 stores opaque app-supplied JSON (size-capped). Owner-declared item schemas (so the portal export has typed columns) is a nice-to-have, not v1. **Partially answered by derivation** (§3.2.1): the drain infers columns from the data instead, which covers the homogeneous-form case without a schema. A declared schema would still be better — it would give the export stable columns regardless of which rows were sampled, and would let junk submissions be rejected on write rather than merely out-ranked at display time.
 - **Anon identity for public apps** (§6) — its own slice; pick "no identity" first.
 - **Shared-write conflict semantics** (last-write-wins vs optimistic concurrency on `updatedAt`) — only matters once `sharedWrite` has a real user; default LWW.
 - **Export/retention** for collections (GDPR-style deletion of a contact) — portal-side, owner-driven; the `meta` column and per-row `id` make it tractable.

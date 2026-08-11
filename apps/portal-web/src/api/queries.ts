@@ -5,6 +5,8 @@ import {
   AppSchema,
   ApprovalRequestSchema,
   AuthConfigResponseSchema,
+  CollectionItemsPageSchema,
+  CollectionSummarySchema,
   CspViolationsPageSchema,
   DeploymentConfigResponseSchema,
   DevTokenMetadataSchema,
@@ -133,6 +135,49 @@ export const gatewayAuditQuery = (
       if (params.limit) q.set("limit", String(params.limit));
       const qs = q.toString();
       return fetchJson(GatewayAuditPageSchema, `/api/v1/gateway/audit${qs ? `?${qs}` : ""}`);
+    },
+  });
+
+/**
+ * What an app has actually collected, per (collection, env) — drives the picker on
+ * the Data tab. Owner-gated server-side, so gate on `authenticated` via `enabled`.
+ *
+ * Union this with the manifest's declared `data.collections`: this route only
+ * knows about names that have rows, so a declared-but-empty collection is absent
+ * here, while a collection the manifest no longer declares appears only here.
+ */
+export const collectionsIndexQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["apps", slug, "collections"],
+    queryFn: () =>
+      fetchJson(
+        z.array(CollectionSummarySchema),
+        `/api/v1/apps/${encodeURIComponent(slug)}/collections`,
+      ),
+  });
+
+/**
+ * One collection's rows, newest-first. `env` is omitted for "both tiers".
+ *
+ * v0 shows the newest `limit` rows with no paging — the export covers the
+ * complete-data need, and a moving column set (columns are derived from the rows
+ * actually loaded) makes incremental paging worse than it looks.
+ */
+export const collectionItemsQuery = (
+  slug: string,
+  name: string,
+  params: { env?: string; limit?: number } = {},
+) =>
+  queryOptions({
+    queryKey: ["apps", slug, "collections", name, params],
+    queryFn: () => {
+      const q = new URLSearchParams();
+      if (params.env) q.set("env", params.env);
+      q.set("limit", String(params.limit ?? 200));
+      return fetchJson(
+        CollectionItemsPageSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/collections/${encodeURIComponent(name)}?${q}`,
+      );
     },
   });
 

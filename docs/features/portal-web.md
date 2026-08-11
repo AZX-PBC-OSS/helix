@@ -34,13 +34,23 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     models + budget, data flags/lists, external origins, fetch-proxy origins, MCP grants — see
     [capabilities-and-manifests.md](./capabilities-and-manifests.md)).
   - **Usage** — per-app metering off `GET /api/v1/apps/:slug/usage`.
-  - **Settings** — visibility switcher (`POST /apps/:slug/visibility`): reductions (→ private /
+  - **Data** — the owner's drain for write-only collections (`DataTab`): a collection picker with
+    row counts off `GET /api/v1/apps/:slug/collections`, the newest 200 rows, per-row raw-JSON
+    detail, single-item erasure, and CSV/JSON download. Columns are **derived** from the rows —
+    collected items have no declared schema — via the shared `deriveCollectionColumns`. Defaults to
+    the `prod` tier and states how many rows the filter is holding back. See
+    [app-data-gateway.md](./app-data-gateway.md).
+  - **Access** — visibility switcher (`POST /apps/:slug/visibility`): reductions (→ private /
     group) apply immediately, going public opens a confirm-with-reason approval request, and
     `password` mode defers to the shared-password card (`PasswordAccessCard`). Plus
-    archive/unarchive, the app-scoped **Secrets** card (`SecretsCard`), and the one preview
-    surface — the **Access (RBAC)** card carrying `<PreviewBadge milestone="v1" />` (per-app
-    owner/editor/viewer roles are a v1 feature; today any authenticated portal actor may mutate,
-    and every action is attributed in the audit trail).
+    archive/unarchive and the one preview surface — the **Access (RBAC)** card carrying
+    `<PreviewBadge milestone="v1" />` (per-app owner/editor/viewer roles are a v1 feature; today
+    `ownsApp` gates app-scoped mutations and any read returning per-subject data, and every action
+    is attributed in the audit trail). The app-scoped **Secrets** card (`SecretsCard`) lives under
+    _Capabilities_, next to the origins it is bound to.
+  - **Dev mode** — registers the foreign origins a dev token may be used from and mints the scoped
+    bearer for the `env=dev` partition (`DevModeTab`; the token is shown once). Says so plainly
+    when the deployment has no dev gateway.
 - **Usage** (`/usage`, `UsagePage`) — platform-wide metering off `GET /api/v1/gateway/usage`.
 - **Admin** (`src/pages/admin/`):
   - **Approvals** (`/admin/approvals`) — the capability-approval queue off `GET /api/v1/approvals`

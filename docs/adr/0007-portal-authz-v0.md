@@ -1,6 +1,6 @@
 # 0007. Portal authorization v0: authenticated == authorized
 
-**Status:** Accepted — the v0 "authenticated == authorized" gap (#9) is **closed** by the `ownsApp` owner-or-admin gate; see Resolution.
+**Status:** Accepted — the v0 "authenticated == authorized" gap (#9) is **closed** by the `ownsApp` owner-or-admin gate; see Resolution, and the 2026-08-10 amendment extending it to reads that return per-subject data.
 **Related:** `apps/portal/src/plugins/auth.ts`; ADR [0028](0028-deployment-model-customer-deployed.md); review DEC-01
 
 ## Context
@@ -35,11 +35,41 @@ The `ownsApp` gate landed (`dc2aacf`; extended to the secrets *list* route in
 `844a863`; #9 marked closed in `1701bdf`). `ownsApp` (`auth.ts:204`) allows the
 request only if the actor is the app's **owner** (`app.ownerId === actor.sub`)
 **or a platform-admin**, and it is enforced as a `preHandler` on every app-scoped
-mutating + secret route (`secrets.ts`, `data.ts`, `versions.ts`, `apps.ts`).
-Adversarial coverage in `ownership.test.ts` asserts a non-owner is rejected on
-each. So the model is **no longer "authenticated == authorized"** for app-scoped
-resources — it is owner-or-admin. The broad-mutation BOLA that #9 named is gone;
-full owner/editor/viewer RBAC remains the v1 item.
+mutating route (`secrets.ts`, `versions.ts`, `apps.ts`) plus the secret routes and
+the credential-returning `GET /:slug/access/password`. In `data.ts` it initially
+reached only the item **delete** — see the amendment below. Adversarial coverage in
+`ownership.test.ts` asserts a non-owner is rejected on each. So the model is **no
+longer "authenticated == authorized"** for app-scoped resources — it is
+owner-or-admin. The broad-mutation BOLA that #9 named is gone; full
+owner/editor/viewer RBAC remains the v1 item.
+
+## Amendment (2026-08-10): the gate follows the data, not the verb
+
+The original split — `ownsApp` on mutations, sign-in on reads — is the wrong axis
+for one class of route. Building the owner-facing collection drain surfaced it:
+`GET /apps/:slug/collections/:name` and its `/export` were `authenticate`-only,
+so **any** authenticated portal principal (including any `$PORTAL_DEV_TOKEN`
+holder) could paginate or CSV-export another operator's collected visitor
+contacts. Mutation-vs-read does not track how sensitive a route is.
+
+The criterion, superseding "Reads are sign-in-gated" in _Decision_:
+
+> **Any app-scoped route returning data the app itself cannot read carries
+> `ownsApp`** — collection items, secret metadata, the shared-password credential.
+> Reads that return only aggregates the owner could infer anyway (`usage.ts`,
+> `gateway/audit`) may stay sign-in-gated until v1 RBAC.
+
+Collection items are the clearest case: the whole point of the `collection` scope
+(ADR [0015](0015-app-data-three-scope-model.md)) is that the writer and the reader
+are different principals, so the read side is *by construction* more privileged
+than anything the app can do. Leaving it at "any authenticated principal" reopened
+the harvesting class one layer up — not in the app, but in the control plane.
+
+This is an application of this ADR's own precedent (the secrets *list* GET got the
+gate in `844a863`), not a new decision, so it is recorded here rather than as a
+separate ADR. Still not RBAC: owner-or-admin, with platform-admins passing. What
+makes an admin's cross-owner read reviewable is the new `collection.exported`
+audit row, not the gate.
 
 ## Access posture for customer-deployed installs (2026-07-24)
 

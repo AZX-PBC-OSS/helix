@@ -152,6 +152,16 @@ describe("ownsApp — every app-scoped mutating route rejects a non-owner", () =
       method: "DELETE",
       urlOf: (s) => `/api/v1/apps/${s}/collections/c/items/00000000-0000-0000-0000-000000000000`,
     },
+    // The collection READS are gated too, unlike the aggregate usage routes:
+    // these return per-row visitor PII that the collecting app cannot itself read
+    // (ADR-0007, amended 2026-08-10).
+    { name: "collection index", method: "GET", urlOf: (s) => `/api/v1/apps/${s}/collections` },
+    { name: "collection list", method: "GET", urlOf: (s) => `/api/v1/apps/${s}/collections/c` },
+    {
+      name: "collection export",
+      method: "GET",
+      urlOf: (s) => `/api/v1/apps/${s}/collections/c/export`,
+    },
   ];
 
   it.each(ROUTES)("rejects non-owner: $name", async (r) => {

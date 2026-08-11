@@ -11,6 +11,7 @@ import { OverviewTab } from "./tabs/OverviewTab";
 import { VersionsTab } from "./tabs/VersionsTab";
 import { CapabilitiesTab } from "./tabs/CapabilitiesTab";
 import { UsageTab } from "./tabs/UsageTab";
+import { DataTab } from "./tabs/DataTab";
 import { AccessTab } from "./tabs/AccessTab";
 import { DevModeTab } from "./tabs/DevModeTab";
 
@@ -156,6 +157,9 @@ export function AppDetailPage() {
           <Tabs.Tab value="usage" leftSection={<Icon name="gauge" size={15} />}>
             Usage
           </Tabs.Tab>
+          <Tabs.Tab value="data" leftSection={<Icon name="db" size={15} />}>
+            Data
+          </Tabs.Tab>
           <Tabs.Tab value="access" leftSection={<Icon name="lock" size={15} />}>
             Access
           </Tabs.Tab>
@@ -175,6 +179,9 @@ export function AppDetailPage() {
         </Tabs.Panel>
         <Tabs.Panel value="usage">
           <UsageTab app={a} />
+        </Tabs.Panel>
+        <Tabs.Panel value="data">
+          <DataTab app={a} />
         </Tabs.Panel>
         <Tabs.Panel value="access">
           <AccessTab app={a} />

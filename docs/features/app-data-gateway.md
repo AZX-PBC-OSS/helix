@@ -81,18 +81,65 @@ metered — a ledger row per throttled request would be its own write-amplificat
 ### The owner-facing read side (portal)
 
 Because the edge cannot read collections, the **portal** is the exclusive read/export/erase
-endpoint (`apps/portal/src/routes/data.ts`), running on the privileged `helix_portal` role and
-bearer-gated like the usage routes:
+endpoint (`apps/portal/src/routes/data.ts`), running on the privileged `helix_portal` role. Every
+route is `[authenticate, ownsApp]` — **including the reads**, unlike the aggregate usage routes,
+because these return per-subject PII the collecting app cannot itself see (ADR-0007, amended
+2026-08-10):
 
 ```
+GET    /api/v1/apps/:slug/collections                 what exists: [{name, env, count, lastAt}]
 GET    /api/v1/apps/:slug/collections/:name           paginate newest-first (?limit≤200, ?before=ISO)
 GET    /api/v1/apps/:slug/collections/:name/export    JSON or CSV, capped at 10,000 rows
 DELETE /api/v1/apps/:slug/collections/:name/items/:id GDPR-style single-item erasure → 204
 ```
 
+All three reads take `?env=prod|dev`; **absent means both tiers** (the portal policy on the table
+is cross-env by design — only the runtime roles are pinned). The index groups by `(collection, env)`
+so a prod-filtered UI can say how many rows it is holding back. It is a pure aggregate over the
+rows, deliberately not a manifest join: grants are owner-editable and nothing deletes rows, so a
+collection dropped from `data.collections` still holds PII the owner must be able to reach — the
+manifest alone cannot surface those orphans. Callers union the two.
+
 The export surfaces truncation via an `x-helix-export-truncated` header rather than silently
-capping (app-data design §7). Wire shapes: `CollectionItem` / `CollectionItemsPage` in
+capping (app-data design §7), and writes a `collection.exported` audit row; the item delete writes
+`collection.item_deleted`. The paginated list is deliberately not audited (too chatty). Since
+platform-admins pass `ownsApp`, the audit row — not the gate — is what makes a cross-owner read
+reviewable. Wire shapes: `CollectionItem` / `CollectionItemsPage` / `CollectionSummary` in
 `packages/shared/src/data.ts`.
+
+**The owner's view: `apps/portal-web` → app detail → Data tab** (`pages/tabs/DataTab.tsx`) — a
+collection picker with counts, the newest 200 rows, a per-row raw-JSON detail, per-item erasure, and
+CSV/JSON download. Because `item` has no declared schema, columns are **derived** from the rows:
+`deriveCollectionColumns` in `packages/shared/src/collectionTable.ts` is shared by the table and
+the CSV so both obey one spec (see "Derived columns" below). The download goes through `fetchText`
+rather than an `<a href>` — a browser navigation carries no `Authorization` header.
+
+### Derived columns (`packages/shared/src/collectionTable.ts`)
+
+`item` is opaque, unvalidated, **anonymous-visitor-supplied** JSON, so the rules that pick columns
+are security rules, not formatting preferences: the column set is attacker-influenced. The
+specification is `collectionTable.test.ts`; the rules are:
+
+- **Scalar only** (`string | number | boolean | null`), and a key qualifies only if *every*
+  occurrence is scalar. A sometimes-object key gets **no** column — better than a column that
+  silently drops the object-valued rows from an export.
+- **Frequency-ranked**, tie-broken by order of first encounter. Not first-seen-wins: one junk
+  submission carrying 60 keys would otherwise evict `email`. (Equal-frequency columns land in
+  `jsonb`'s canonical key order — Postgres normalises by key length then bytewise, so the order the
+  app posted its fields in is already lost on write. Deterministic, but not authored.)
+- **Capped at 12**, with a `truncated` flag so the UI can say keys are missing.
+- **`item.`-namespaced** — `id,createdAt,env,userOid,item.email,…,item,meta`. This removes all
+  collision logic (an app posting `{"env":…}` cannot shadow the platform column), survives adding
+  new platform columns, and neutralises formula injection in the header row for free.
+- **Null and missing both render empty** in CSV. CSV has no null and any sentinel re-imports as a
+  literal string; the raw `item` column keeps the distinction losslessly.
+- **Formula injection is neutralised on the CSV path only.** RFC-4180 quoting does *not* protect a
+  reader — Excel evaluates `=…` after unquoting — so a leading `=`/`+`/`-`/`@`/tab/CR gets an
+  apostrophe. Values that are genuinely numeric are exempt, so `-5` isn't corrupted into `'-5`.
+  Confined to CSV because it mutates data: never the JSON export, never the SPA.
+
+The SPA derives from the rows on screen and the export from up to 10,000, so **the two column sets
+can legitimately differ**. Sharing the code buys one spec and one test suite, not identical output.
 
 ### The role split is the real boundary
 
@@ -167,3 +214,12 @@ it via the portal export API. See [examples.md](./examples.md).
   beat the per-process / N×instances limit is future hardening.
 - **Tighter edge grants (Phase 5)** per the design doc — further narrowing of `helix_edge`.
 - Collections stay intentionally write-only from the app; no app-facing read is planned.
+- **Owner-declared item schemas** stay deferred (app-data design §9). The derived columns are a
+  *display convention*, not a schema: nothing is validated on write, the raw `item` column is always
+  present, and dropping the derivation would lose no data. A real declared schema would supersede
+  the derivation rather than conflict with it.
+- **Paging the drain.** The Data tab shows the newest 200 rows and points at the export for the
+  full set; the cursor (`?before=`) exists server-side and is unused by the SPA. Deliberate — the
+  column set is derived from the rows loaded, so incremental paging shifts columns underfoot.
+- **"Clear dev data"** (dev-mode design §7.3) is still unbuilt, and now visible: the drain shows
+  dev-tier rows, so bulk-clearing them is the obvious next affordance.

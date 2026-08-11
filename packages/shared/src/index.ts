@@ -15,6 +15,7 @@ export * from "./llmOpenai.js";
 export * from "./pricing.js";
 export * from "./usage.js";
 export * from "./data.js";
+export * from "./collectionTable.js";
 export * from "./secrets.js";
 export * from "./env.js";
 export * from "./devTokens.js";

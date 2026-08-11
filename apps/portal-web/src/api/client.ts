@@ -72,6 +72,21 @@ export async function requestVoid(
   if (!res.ok) await throwApiError(res);
 }
 
+/**
+ * A non-JSON GET (the CSV export), returning the body and the response headers.
+ *
+ * Not `<a href="…">`: a browser navigation carries no `Authorization` header, so
+ * the download has to go through fetch and be handed to the user as a Blob. The
+ * headers come back because the export signals truncation out-of-band, in
+ * `x-helix-export-truncated`, and silently dropping that would present a short
+ * file as a complete one.
+ */
+export async function fetchText(path: string): Promise<{ body: string; headers: Headers }> {
+  const res = await fetch(path, { headers: authHeaders() });
+  if (!res.ok) await throwApiError(res);
+  return { body: await res.text(), headers: res.headers };
+}
+
 /** Multipart upload (the deploy endpoint) — browser sets the boundary header. */
 export async function uploadFile<Schema extends z.ZodType>(
   schema: Schema,
