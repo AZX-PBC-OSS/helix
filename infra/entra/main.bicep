@@ -43,8 +43,11 @@ param edgeCertificateBase64 string = ''
 @description('Object id of the user OR group to grant the platform-admin app role. Empty = assign by hand later (the least-generic step).')
 param adminPrincipalId string = ''
 
-@description('Pre-grant admin consent for the CLI -> portal API scope (else each user consents at first login).')
+@description('Pre-grant tenant-wide admin consent for the sign-in scopes every client here requests. REQUIRED once edge/portal access is gated: appRoleAssignmentRequired disables user self-consent, so without this a user who has never signed in gets "admin approval required" and cannot proceed. Needs a deploy principal that can consent (Global Administrator / Privileged Role Administrator) — an app owner is NOT enough.')
 param grantAdminConsent bool = false
+
+@description('The OIDC scopes the edge requests at authorize time. MUST match EDGE_OIDC_SCOPES on the edge container in the sibling Azure stack — the consent grant below is keyed to this exact string, and a scope the grant does not cover still prompts. Note the edge code default adds `groups`, which is NOT a valid Microsoft Graph delegated permission; the deployed installs override it to these three.')
+param edgeOidcScopes string = 'openid profile email'
 
 @description('Object ids of the users/groups allowed to SIGN IN to this install\'s edge (its apps). Non-empty also flips appRoleAssignmentRequired on the edge SP — see the note below. Empty = the pre-2026-08 behaviour: any directory member, guests included.')
 param edgeAccessPrincipalIds array = []
@@ -260,6 +263,66 @@ resource cliSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
 // able to grant consent.
 resource cliConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (grantAdminConsent) {
   clientId: cliSp.id
+  consentType: 'AllPrincipals'
+  resourceId: portalSp.id
+  scope: 'access'
+}
+
+// ---------------------------------------------------------------------------
+// Tenant-wide consent for the OIDC sign-in scopes
+// ---------------------------------------------------------------------------
+// WHY THESE ARE NOT IN requiredResourceAccess, AND WHY THAT MATTERS
+// None of the three registrations declares a static permission on Microsoft Graph:
+// `openid`/`profile`/`email` are requested DYNAMICALLY in the authorize call. The
+// consequence is a trap — `az ad app permission admin-consent` consents to the
+// declared set, which is empty, so it reports success and grants nothing. The only
+// thing that actually works is an explicit AllPrincipals grant, which is what these
+// are.
+//
+// Before the install was gated, each user simply consented for themselves at first
+// sign-in. `appRoleAssignmentRequired` disables that, so from then on a user who has
+// never signed in is stopped with "admin approval required" — hit for real by the
+// first external tester on 2026-08-11.
+//
+// The scopes are the minimum an OIDC sign-in can ask for: authenticate, read basic
+// profile claims, read the email claim. No mailbox, no files, no directory read.
+
+resource graphSp 'Microsoft.Graph/servicePrincipals@v1.0' existing = {
+  appId: '00000003-0000-0000-c000-000000000000' // Microsoft Graph, same appId in every tenant
+}
+
+// The edge — the one every app user signs in through, including customer guests.
+resource edgeConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (grantAdminConsent) {
+  clientId: edgeSp.id
+  consentType: 'AllPrincipals'
+  resourceId: graphSp.id
+  scope: edgeOidcScopes
+}
+
+// The CLI needs offline_access on top: `helix login` is device-code and refreshes.
+resource cliGraphConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (grantAdminConsent) {
+  clientId: cliSp.id
+  consentType: 'AllPrincipals'
+  resourceId: graphSp.id
+  scope: 'openid profile email offline_access'
+}
+
+// The portal SPA. Pre-emptive rather than observed: no interactive portal-web
+// sign-in has happened on either install yet (staff reach the portal through the
+// CLI), so this is inferred from how the SPA is wired rather than from a grant we
+// have seen. Costs nothing if unused, and saves the same wall for whoever is first.
+resource portalGraphConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (grantAdminConsent) {
+  clientId: portalSp.id
+  consentType: 'AllPrincipals'
+  resourceId: graphSp.id
+  scope: 'openid profile email'
+}
+
+// …and the SPA calling its own API. client == resource is legitimate here: the SPA
+// and the API it calls are one registration (portalApp exposes `access`, and
+// AZX_WEB_CLIENT_ID is the portal's own client id).
+resource portalSelfConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (grantAdminConsent) {
+  clientId: portalSp.id
   consentType: 'AllPrincipals'
   resourceId: portalSp.id
   scope: 'access'
