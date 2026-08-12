@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BOM } from "@azx-pbc/shared";
 import type { Prisma } from "../db/client.js";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
+import { exportWindow, MAX_EXPORT_ROWS } from "./data.js";
 
 /**
  * The owner-facing collection drain/export (app-data design §3.2/§5). These are
@@ -198,6 +199,38 @@ describe("GET /api/v1/apps/:slug/collections (index)", () => {
   });
 });
 
+/**
+ * Which rows survive the export cap, isolated from the database — reaching the
+ * cap for real means seeding 10,001 rows, and the interesting behaviour is pure.
+ */
+describe("exportWindow", () => {
+  it("keeps the NEWEST rows when over the cap, and emits them oldest-first", () => {
+    // A drain that outgrows the cap must not drop the submissions that just
+    // arrived; those are the ones an owner cannot afford to lose.
+    const newestFirst = ["r5", "r4", "r3", "r2", "r1"];
+    expect(exportWindow(newestFirst, 3)).toEqual({ rows: ["r3", "r4", "r5"], truncated: true });
+  });
+
+  it("emits oldest-first when under the cap too", () => {
+    // The branch that catches reversing only the truncated side — a short export
+    // would silently come back newest-first.
+    expect(exportWindow(["r3", "r2", "r1"], 10)).toEqual({
+      rows: ["r1", "r2", "r3"],
+      truncated: false,
+    });
+  });
+
+  it("does not report truncation at exactly the cap", () => {
+    expect(exportWindow(["r3", "r2", "r1"], 3).truncated).toBe(false);
+  });
+
+  it("does not mutate its input", () => {
+    const rows = ["r2", "r1"];
+    exportWindow(rows, 10);
+    expect(rows).toEqual(["r2", "r1"]);
+  });
+});
+
 describe("export + delete", () => {
   it("exports JSON", async () => {
     const { slug } = await seedCollection(2);
@@ -208,6 +241,79 @@ describe("export + delete", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().items).toHaveLength(2);
+  });
+
+  it("emits rows oldest-first", async () => {
+    // The export reads as a log, unlike the list route (newest-first). Pins the
+    // reverse: dropping it flips every export to descending.
+    const { slug } = await seedCollection(3);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/contacts/export`,
+      headers: authHeader(),
+    });
+    expect(res.json().items.map((i: { item: { email: string } }) => i.item.email)).toEqual([
+      "lead0@example.com",
+      "lead1@example.com",
+      "lead2@example.com",
+    ]);
+  });
+
+  it("keeps the newest rows when the collection outgrows the export cap", async () => {
+    // The one case that separates "capped" from "capped at the wrong end". A
+    // single createMany makes the real boundary cheap enough to assert against
+    // the route (~0.5s) rather than trusting the unit test alone.
+    const { id, slug } = await seedCollection(0);
+    const base = Date.now() - 20_000_000;
+    await t.prisma.appCollectionItem.createMany({
+      data: Array.from({ length: MAX_EXPORT_ROWS + 1 }, (_, i) => ({
+        appId: id,
+        collection: "bulk",
+        item: { n: i },
+        createdAt: new Date(base + i * 1000),
+      })),
+    });
+
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/bulk/export`,
+      headers: authHeader(),
+    });
+    const items = res.json().items as { item: { n: number } }[];
+    expect(res.headers["x-helix-export-truncated"]).toBe(String(MAX_EXPORT_ROWS));
+    expect(items).toHaveLength(MAX_EXPORT_ROWS);
+    // n=0 is the oldest row and the one that must be dropped; n=10000 the newest
+    // and the one that must survive. Still emitted oldest-first within the window.
+    expect(items[0]!.item.n).toBe(1);
+    expect(items.at(-1)!.item.n).toBe(MAX_EXPORT_ROWS);
+  });
+
+  it("derives columns from the oldest row first", async () => {
+    // Column ties break on first appearance in scan order, so the scan direction
+    // is load-bearing: at the column cap it decides which key gets a column at
+    // all. Distinct key sets per row — jsonb canonicalises key order within a
+    // row, so `{b,a}` and `{a,b}` are indistinguishable once stored.
+    const { id, slug } = await seedCollection(0);
+    await t.prisma.appCollectionItem.create({
+      data: {
+        appId: id,
+        collection: "contacts",
+        item: { alpha: "older" },
+        createdAt: new Date(Date.now() - 60_000),
+      },
+    });
+    await t.prisma.appCollectionItem.create({
+      data: { appId: id, collection: "contacts", item: { beta: "newer" } },
+    });
+
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/contacts/export?format=csv`,
+      headers: authHeader(),
+    });
+    expect(res.body.slice(BOM.length).split("\n")[0]).toBe(
+      "id,createdAt,env,userOid,item.alpha,item.beta,item,meta",
+    );
   });
 
   it("exports CSV with derived columns and a download disposition", async () => {

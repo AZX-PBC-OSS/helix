@@ -89,7 +89,7 @@ because these return per-subject PII the collecting app cannot itself see (ADR-0
 ```
 GET    /api/v1/apps/:slug/collections                 what exists: [{name, env, count, lastAt}]
 GET    /api/v1/apps/:slug/collections/:name           paginate newest-first (?limit≤200, ?before=ISO)
-GET    /api/v1/apps/:slug/collections/:name/export    JSON or CSV, capped at 10,000 rows
+GET    /api/v1/apps/:slug/collections/:name/export    JSON or CSV, newest 10,000, emitted oldest-first
 DELETE /api/v1/apps/:slug/collections/:name/items/:id GDPR-style single-item erasure → 204
 ```
 
@@ -99,6 +99,13 @@ so a prod-filtered UI can say how many rows it is holding back. It is a pure agg
 rows, deliberately not a manifest join: grants are owner-editable and nothing deletes rows, so a
 collection dropped from `data.collections` still holds PII the owner must be able to reach — the
 manifest alone cannot surface those orphans. Callers union the two.
+
+**The export selects newest-first and emits oldest-first**, which are two separate decisions. When a
+collection outgrows the cap the rows that must survive are the ones that just arrived, so selection
+is descending; the kept window is then reversed so the file still reads as a chronological log.
+(The list route is newest-first in both senses — only the export reverses.) Conflating the two is
+what the first cut got wrong: it selected oldest-first and capped, dropping every recent submission
+from a drain while reporting the opposite.
 
 The export surfaces truncation via an `x-helix-export-truncated` header rather than silently
 capping (app-data design §7), and writes a `collection.exported` audit row; the item delete writes

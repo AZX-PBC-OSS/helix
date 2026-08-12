@@ -27,12 +27,43 @@ import { AppError } from "../plugins/errors.js";
  * edge cannot reach these rows at all, regardless of what the app declares.
  */
 
-const MAX_EXPORT_ROWS = 10_000;
+export const MAX_EXPORT_ROWS = 10_000;
 
 function clampLimit(raw: unknown, fallback: number, max: number): number {
   const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
   if (!Number.isFinite(n) || n < 1) return fallback;
   return Math.min(Math.trunc(n), max);
+}
+
+/**
+ * Pick the export window from a **newest-first** query result: keep the newest
+ * `max`, then emit them oldest-first.
+ *
+ * The order the rows are *selected* in and the order they are *emitted* in are
+ * two separate decisions, and conflating them is what made the first cut wrong —
+ * it selected oldest-first and capped, which silently dropped every recent
+ * submission from a drain while the UI reported the opposite. Selection has to be
+ * newest-first: if a collection outgrows the cap, the rows an owner cannot afford
+ * to lose are the ones that just arrived.
+ *
+ * Emission stays chronological for two reasons. A non-truncated export is then
+ * byte-identical to what this route produced before, so the change is provably
+ * "which rows" and not "what the file looks like". And `deriveCollectionColumns`
+ * breaks equal-frequency ties by first appearance in array order, so holding the
+ * scan oldest-first keeps the CSV's derived columns stable — not cosmetic, since
+ * with more than `MAX_DERIVED_COLUMNS` eligible keys a tie at the last slot
+ * decides which key gets a column at all.
+ *
+ * Note the whole window reverses, not just the truncated branch: reversing one
+ * side only would leave short exports descending.
+ */
+export function exportWindow<T>(
+  newestFirst: readonly T[],
+  max: number,
+): { rows: T[]; truncated: boolean } {
+  const truncated = newestFirst.length > max;
+  const kept = truncated ? newestFirst.slice(0, max) : newestFirst;
+  return { rows: kept.toReversed(), truncated };
 }
 
 interface ItemRow {
@@ -170,17 +201,20 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
       const appId = await appIdFor(req.params.slug);
       const format = req.query.format === "csv" ? "csv" : "json";
       const env = envFilter(req.query.env);
-      // One extra row distinguishes "exactly at the cap" from "over it", so a
-      // collection of precisely MAX_EXPORT_ROWS isn't reported as truncated.
+      // Newest-first so the cap drops the OLDEST rows; `exportWindow` reverses the
+      // kept slice back to chronological. One extra row distinguishes "exactly at
+      // the cap" from "over it", so a collection of precisely MAX_EXPORT_ROWS
+      // isn't reported as truncated.
       const rows = (await app.prisma.appCollectionItem.findMany({
         where: { appId, collection: req.params.name, ...env },
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: MAX_EXPORT_ROWS + 1,
       })) as ItemRow[];
-      const truncated = rows.length > MAX_EXPORT_ROWS;
+      const window = exportWindow(rows, MAX_EXPORT_ROWS);
       // Surface truncation rather than silently capping (app-data design §7).
+      const truncated = window.truncated;
       if (truncated) reply.header("x-helix-export-truncated", String(MAX_EXPORT_ROWS));
-      const items = (truncated ? rows.slice(0, MAX_EXPORT_ROWS) : rows).map(toCollectionItem);
+      const items = window.rows.map(toCollectionItem);
 
       // A bulk pull of visitor PII is at least as consequential as rotating a
       // secret, which is audited — and platform-admins pass `ownsApp`, so this row
