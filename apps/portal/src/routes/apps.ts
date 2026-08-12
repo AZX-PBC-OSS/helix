@@ -10,6 +10,7 @@ import {
   captureSnapshot,
   classifyVisibilityChange,
   touchedAreas,
+  visibilityModeFromDb,
   type ManifestUpdateResult,
   type VisibilityUpdateResult,
 } from "@azx-pbc/shared";
@@ -219,7 +220,11 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
 
-      const change = classifyVisibilityChange(row.visibilityMode, visibility.mode);
+      // Normalise before comparing: a row still carrying the pre-rename label
+      // must read as `internal`, or setting an app to internal would look like a
+      // real change (and, worse, a pending request's snapshot would not match).
+      const currentMode = visibilityModeFromDb(row.visibilityMode);
+      const change = classifyVisibilityChange(currentMode, visibility.mode);
       if (!change) {
         return { app: toApp(row), applied: [], pending: null }; // no-op
       }
@@ -234,7 +239,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         }
         const baseSnapshot = captureSnapshot(
           capabilitiesFromRow(row),
-          row.visibilityMode,
+          currentMode,
           touchedAreas([change.delta]),
         );
         const pending = await app.prisma.$transaction((tx) =>

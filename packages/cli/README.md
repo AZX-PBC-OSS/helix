@@ -54,6 +54,12 @@ helix rollback [number]                                      # revert the live p
 same step (architecture §5.1). `visibility` is `internal | group:<id> | password
 | public`.
 
+> **Breaking in 0.2.0:** the `private` visibility mode was renamed to `internal`.
+> It never checked _which_ user signed in, only that someone had. Passing the old
+> value now **errors** rather than mapping to the new one, deliberately: the name
+> is reserved for a future owner-only mode, so a silent alias would come to mean
+> the opposite of what it says. Update scripts to use `internal`.
+
 ## Authentication (M3)
 
 Two paths, in precedence order:

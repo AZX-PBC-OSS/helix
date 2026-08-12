@@ -32,6 +32,17 @@ export function parseVisibility(input?: string): Visibility | undefined {
   if (input === "internal" || input === "password" || input === "public") {
     return { mode: input };
   }
+  // Named explicitly rather than falling into the generic error below. This is a
+  // published CLI, so whoever hits it is on a stale global install or an old CI
+  // script, and "invalid visibility" alone is indistinguishable from a typo —
+  // leaving them to guess at a value that was valid last week.
+  if (input === "private") {
+    throw new CliError(
+      'visibility "private" was renamed to "internal" (the mode never checked which user ' +
+        'signed in, only that someone had). Use --visibility internal; the name "private" is ' +
+        "reserved for a future owner-only mode, so it is not accepted as an alias.",
+    );
+  }
   throw new CliError(`invalid visibility "${input}" (internal | group:<id> | password | public)`);
 }
 

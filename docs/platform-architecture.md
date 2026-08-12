@@ -105,7 +105,7 @@ All three containers run on Azure Container Apps for v1 (AKS if/when needed), ke
 
 The edge proxy terminates auth so apps never implement it:
 
-- **Private (default):** OIDC against Entra ID. Unauthenticated users are redirected to login; the proxy sets a session cookie **host-scoped to that app's subdomain only** (never a parent-domain cookie — a parent-domain cookie would let any hosted app steal sessions for all others).
+- **Internal (default):** OIDC against Entra ID. **Any** authenticated directory principal passes — the gate checks that a user signed in, never *which* one, and under Entra a B2B guest is a directory principal too, so `internal` admits guests. `group` below is the mode that narrows to a population. (This mode was called `private` until the rename; the name overpromised, and is being kept free for a genuine owner-plus-admins mode — see TODO.md.) Unauthenticated users are redirected to login; the proxy sets a session cookie **host-scoped to that app's subdomain only** (never a parent-domain cookie — a parent-domain cookie would let any hosted app steal sessions for all others).
 
   Host-only cookies are necessary but not sufficient, because sibling subdomains are *same-site* in browsers. Three additional controls are required:
   - **`__Host-` cookie prefix** on the session cookie — blocks cookie-tossing/session-fixation, where a malicious app sets a `Domain=.azx.helix.azxlabs.io` cookie that shadows the session cookie on every other app.

@@ -111,8 +111,8 @@ resource edgeApp 'Microsoft.Graph/applications@v1.0' = {
 resource edgeSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: edgeApp.appId
   // Restores the "install's IdP audience == install's user population" invariant:
-  // without this, `visibility: private` in the edge means *any* authenticated
-  // directory member, so a guest invited for one install can reach every private
+  // without this, `visibility: internal` in the edge means *any* authenticated
+  // directory member, so a guest invited for one install can reach every internal
   // app on every install sharing the tenant.
   appRoleAssignmentRequired: edgeRequireAssignment
 }

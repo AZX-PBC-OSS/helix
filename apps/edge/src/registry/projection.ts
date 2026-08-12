@@ -17,6 +17,7 @@ import {
   LlmCapabilitySchema,
   OfflineCapabilitySchema,
   isValidServiceWorkerScope,
+  visibilityModeFromDb,
   type DataCapability,
   type LlmCapability,
   type VisibilityMode,
@@ -258,7 +259,14 @@ interface ProjectionRow {
   slug: string;
   archived: boolean;
   blob_prefix: string | null;
-  visibility_mode: VisibilityMode;
+  /**
+   * Raw `::text` from the column, deliberately typed wider than `VisibilityMode`
+   * — the row may still carry the pre-rename `private` label, and during a
+   * version skew could carry one this build has never heard of. Narrowing it
+   * here would be a lie the compiler then helps you forget; leaving it `string`
+   * forces every read through `visibilityModeFromDb`.
+   */
+  visibility_mode: string;
   visibility_group_id: string | null;
   password_hash: string | null;
   password_salt: string | null;
@@ -400,7 +408,12 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           slug: row.slug,
           archived: row.archived,
           blobPrefix: row.blob_prefix,
-          visibilityMode: row.visibility_mode,
+          // The single edge-side normalisation point for the pre-rename
+          // `private` label: everything downstream (the gate, visibilityAllows,
+          // assets, makeCallerResolver) reads a current mode and needs no
+          // legacy branch. Unknown labels pass through unchanged so the gate's
+          // deny-by-default still catches them.
+          visibilityMode: visibilityModeFromDb(row.visibility_mode),
           visibilityGroupId: row.visibility_group_id,
           passwordHash: row.password_hash,
           passwordSalt: row.password_salt,

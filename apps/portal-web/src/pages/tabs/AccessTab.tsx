@@ -95,9 +95,10 @@ export function AccessTab({ app }: { app: App }) {
             <Eyebrow>Visibility</Eyebrow>
           </Group>
           <Text size="sm" c="dark.2" mb={16}>
-            Auth is terminated at the edge proxy — the app ships zero auth code. Moving between the
-            SSO-gated modes (→ internal / group) applies immediately; going public is an elevated
-            change that pauses for admin approval. Shared-password access is managed on the right.
+            Auth is terminated at the edge proxy — the app ships zero auth code. Switching to
+            internal or group applies immediately, including from public; only going public is an
+            elevated change that pauses for admin approval. Shared-password access is managed on the
+            right.
           </Text>
 
           {!authenticated && (

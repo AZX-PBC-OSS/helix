@@ -106,8 +106,9 @@ export function useSetManifest() {
 
 /**
  * Change how an app gates access, through the approvals write-gate
- * (docs/design/approvals.md §3, §6.3). Moving between SSO-gated modes
- * (→ internal/group) applies immediately; going **public** is elevated and opens a pending request
+ * (docs/design/approvals.md §3, §6.3). Switching to internal/group applies
+ * immediately — including from `public`, since only `to === "public"` is elevated
+ * — while going **public** opens a pending request
  * — the result reports which via `applied`/`pending`. Enabling `password` is a
  * separate flow (it mints a credential) — see `useEnablePassword`.
  */

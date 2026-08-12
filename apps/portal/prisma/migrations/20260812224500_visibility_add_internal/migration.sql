@@ -1,0 +1,38 @@
+-- Rename the visibility mode `private` → `internal`, step 1 of 3 (expand).
+--
+-- The old name overpromised. The whole per-session check was "is there a session
+-- at all" (`visibilityAllows`, apps/edge/src/auth/validate.ts) — it never looked
+-- at *which* principal signed in, so the mode has always meant "any authenticated
+-- directory user", i.e. internal. Under Entra it admits B2B guests too. This is a
+-- pure rename: no app's effective gate changes.
+--
+-- WHY EXPAND/CONTRACT AND NOT `ALTER TYPE ... RENAME VALUE`.
+-- An in-place rename is atomic in the database but *not* atomic with respect to
+-- the running fleet, and there is no ordering of migration-vs-image that avoids a
+-- window:
+--   * migration first → replicas still on the old image read `internal`, which
+--     their code does not know. The edge denies (fail-closed). The portal is
+--     worse: `toApp` runs every row through `AppSchema.parse`, whose
+--     `VisibilitySchema` is a discriminated union with no `internal` member, so a
+--     single unrecognised row fails the WHOLE response — GET /api/v1/apps, the
+--     dashboard and app-detail all 500. A control-plane outage, not a denial.
+--   * images first → new replicas read rows still labelled `private` and hit the
+--     same fall-through until the migration lands.
+-- Migrations here are applied by a Manual Container Apps Job an operator triggers
+-- by hand (infra/azure/main.bicep), and no CI workflow couples that to the image
+-- rollout — so "just run them together" is a hope, not a constraint.
+--
+-- Expanding removes the window instead of documenting it. After this migration
+-- the enum holds BOTH labels, so old code (reading `private`) and new code
+-- (reading either, writing only `internal`) are simultaneously correct. Rows are
+-- deliberately NOT backfilled here — that is release 2, once every replica can
+-- read `internal`.
+--
+-- Postgres has no DROP VALUE, so release 3 removes `private` by creating a fresh
+-- type and swapping the column (see TODO.md). That cost is the price of never
+-- denying or 500ing a request mid-deploy.
+--
+-- Safe inside Prisma's per-migration transaction: PG12+ permits ADD VALUE in a
+-- transaction block provided the new label is not *used* in that same
+-- transaction, and this migration only adds it. IF NOT EXISTS keeps it idempotent.
+ALTER TYPE "VisibilityMode" ADD VALUE IF NOT EXISTS 'internal';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VERSION_STATUSES, VISIBILITY_MODES } from "@azx-pbc/shared";
+import { LEGACY_VISIBILITY_MODE_NAMES, VERSION_STATUSES, VISIBILITY_MODES } from "@azx-pbc/shared";
 import { VersionStatus, VisibilityMode } from "./generated/enums.js";
 import {
   blobPrefixFor,
@@ -22,8 +22,22 @@ describe("enum drift guards", () => {
     expect(Object.values(VersionStatus).sort()).toEqual([...VERSION_STATUSES].sort());
   });
 
-  it("VisibilityMode matches VISIBILITY_MODES", () => {
-    expect(Object.values(VisibilityMode).sort()).toEqual([...VISIBILITY_MODES].sort());
+  // Strict equality is relaxed for exactly one reason, and only for the
+  // expand/contract window: the Postgres enum also carries the pre-rename
+  // `private` label until release 3 drops it. Asserting against the union of the
+  // contract modes and the declared legacy names keeps this a real drift guard —
+  // a *new* unexpected member on either side still fails — while release 3
+  // restores plain equality by emptying LEGACY_VISIBILITY_MODE_NAMES.
+  it("VisibilityMode matches VISIBILITY_MODES plus the retiring legacy labels", () => {
+    expect(Object.values(VisibilityMode).sort()).toEqual(
+      [...VISIBILITY_MODES, ...LEGACY_VISIBILITY_MODE_NAMES].sort(),
+    );
+  });
+
+  it("no legacy label leaks into the offered modes", () => {
+    for (const legacy of LEGACY_VISIBILITY_MODE_NAMES) {
+      expect(VISIBILITY_MODES).not.toContain(legacy);
+    }
   });
 });
 
@@ -81,6 +95,33 @@ describe("row mappers validate against the shared schema", () => {
       // Composed from the deployment's apps base so clients never template it.
       url: "https://cost-explorer.local.helix.azxlabs.io:8080",
     });
+  });
+
+  // The expand/contract window's load-bearing case: rows written before the
+  // rename still say `private`, and `toApp` validates through AppSchema — whose
+  // union has no such member. Without normalisation this throws, and because
+  // list routes map every row through here, one legacy row would fail the WHOLE
+  // response rather than just its own app.
+  it("normalises a pre-rename `private` row to internal", () => {
+    const row: AppRow = {
+      id: APP_ID,
+      slug: "legacy",
+      displayName: "Legacy",
+      visibilityMode: "private",
+      visibilityGroupId: null,
+      currentVersionId: null,
+      passwordHash: null,
+      passwordSalt: null,
+      passwordEnc: null,
+      passwordSetAt: null,
+      ownerId: null,
+      capabilities: {},
+      archivedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    expect(() => toApp(row)).not.toThrow();
+    expect(toApp(row).visibility).toEqual({ mode: "internal" });
   });
 
   it("maps an archived apps row with an ISO archivedAt", () => {

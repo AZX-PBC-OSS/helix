@@ -3,6 +3,7 @@ import {
   captureSnapshot,
   classifyChange,
   touchedAreas,
+  visibilityModeFromDb,
   type Capabilities,
   type Delta,
   type ManifestUpdateResult,
@@ -95,9 +96,12 @@ export async function applyCapabilityChange(
     if (elevatedDeltas.length > 0) {
       // Snapshot the post-baseline state of the touched areas so a later approve
       // can detect a value that moved underneath the request.
+      // Normalised, so a manifest request filed against a row that still carries
+      // the pre-rename label snapshots the same spelling the approve path will
+      // compare against — otherwise it would self-bounce as a stale snapshot.
       const baseSnapshot = captureSnapshot(
         applied,
-        opts.row.visibilityMode,
+        visibilityModeFromDb(opts.row.visibilityMode),
         touchedAreas(elevatedDeltas),
       );
       pending = await createApprovalRequest(tx, {

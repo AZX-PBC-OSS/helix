@@ -104,4 +104,12 @@ describe("parseVisibility", () => {
     expect(() => parseVisibility("nope")).toThrow();
     expect(() => parseVisibility("group:")).toThrow();
   });
+
+  // Refused, not aliased — mapping it to `internal` would mean the opposite of
+  // what the word says once the real owner-only mode ships. The error has to
+  // name the rename, or a stale script reads it as a typo.
+  it("refuses the renamed `private` and explains why", () => {
+    expect(() => parseVisibility("private")).toThrow(/renamed to "internal"/);
+    expect(() => parseVisibility("private")).toThrow(/--visibility internal/);
+  });
 });
