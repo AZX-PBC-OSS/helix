@@ -73,7 +73,7 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // Operator policy: `public`/`password` are open surfaces this deployment
     // may forbid (EDGE_ALLOW_*_APPS). A disallowed mode is refused outright —
     // even an app already set that way — 403, never served. The owner migrates
-    // it down to private/group in the portal to restore service.
+    // it down to internal/group in the portal to restore service.
     if (!visibilityModeAllowed(entry.visibilityMode, config)) {
       sendForbidden(reply);
       return;

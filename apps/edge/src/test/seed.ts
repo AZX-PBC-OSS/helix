@@ -51,7 +51,7 @@ export async function seedApp(
     slug?: string;
     live?: boolean;
     archived?: boolean;
-    visibilityMode?: "private" | "group" | "password" | "public";
+    visibilityMode?: "internal" | "group" | "password" | "public";
     visibilityGroupId?: string;
   } = {},
 ): Promise<SeededApp> {
@@ -66,7 +66,7 @@ export async function seedApp(
     [
       appId,
       slug,
-      opts.visibilityMode ?? "private",
+      opts.visibilityMode ?? "internal",
       opts.visibilityGroupId ?? null,
       opts.archived ? new Date() : null,
     ],

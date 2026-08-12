@@ -214,7 +214,7 @@ gateway. Per request:
   404/410 registry ladder answers *before* the gate, so unknown/archived apps don't reveal
   auth state.
 - **Visibility re-checked every request** against the live registry entry, not just at login
-  — tightening an app from `private` to `group` bites within the refresh interval. A
+  — tightening an app from `internal` to `group` bites within the refresh interval. A
   non-member navigation is sent through silent re-auth (which re-snapshots groups and ends
   on the callback's 403 if they truly lack access — confirm this can't loop).
 - **Silent refresh.** Past `refreshDueAt`, navigations take the `/start?silent=1` detour;
@@ -225,7 +225,7 @@ gateway. Per request:
   short-circuit: a `public` app yields an **unauthenticated caller** (`ANON_USER_OID =
   "anon"`) and skips the gate; every other mode goes through it. This one seam is the
   identity every gateway capability keys off (§10) — so its correctness is the gateway's
-  authz correctness. A bug that yields an authenticated-looking caller on a private app, or
+  authz correctness. A bug that yields an authenticated-looking caller on an internal app, or
   an anon caller on a non-public app, is a direct authorization break.
 - **The dev bypass** (`EDGE_DEV_ALLOW_UNAUTHENTICATED`) skips *only* this gate, is refused
   under `NODE_ENV=production`, and never relaxes TLS.

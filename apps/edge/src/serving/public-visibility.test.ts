@@ -18,7 +18,7 @@ import {
  * `/_api/*` gateway — with no session and no anonymous identity. Every other
  * visibility mode stays behind the session gate. These are the adversarial
  * twins for the "no anon identity" prerequisite: a public app must serve to
- * everyone, a private app must not, and a public gateway call must be
+ * everyone, an internal app must not, and a public gateway call must be
  * attributed to `anon`, never to a borrowed principal.
  */
 
@@ -91,8 +91,8 @@ describe("public-app serving (no session)", () => {
     expect(res.body).toContain("public");
   });
 
-  it("still gates a private app: a no-cookie navigation redirects to /start", async () => {
-    const { app } = buildEdge({ visibilityMode: "private", slug: "priv" });
+  it("still gates an internal app: a no-cookie navigation redirects to /start", async () => {
+    const { app } = buildEdge({ visibilityMode: "internal", slug: "priv" });
     const res = await app.inject({
       method: "GET",
       url: "/",

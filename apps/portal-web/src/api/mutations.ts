@@ -106,8 +106,8 @@ export function useSetManifest() {
 
 /**
  * Change how an app gates access, through the approvals write-gate
- * (docs/design/approvals.md §3, §6.3). Reducing exposure (→ private/group)
- * applies immediately; going **public** is elevated and opens a pending request
+ * (docs/design/approvals.md §3, §6.3). Moving between SSO-gated modes
+ * (→ internal/group) applies immediately; going **public** is elevated and opens a pending request
  * — the result reports which via `applied`/`pending`. Enabling `password` is a
  * separate flow (it mints a credential) — see `useEnablePassword`.
  */
@@ -236,7 +236,7 @@ export function useRotatePassword() {
   });
 }
 
-/** Disable password access — reverts the app to private. */
+/** Disable password access — reverts the app to internal. */
 export function useDisablePassword() {
   const queryClient = useQueryClient();
   return useMutation({

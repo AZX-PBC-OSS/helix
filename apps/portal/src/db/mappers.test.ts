@@ -38,8 +38,8 @@ describe("visibility column mapping", () => {
   });
 
   it("nulls the group id for payload-less modes", () => {
-    expect(visibilityToColumns({ mode: "private" })).toEqual({
-      visibilityMode: "private",
+    expect(visibilityToColumns({ mode: "internal" })).toEqual({
+      visibilityMode: "internal",
       visibilityGroupId: null,
     });
   });
@@ -56,7 +56,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "cost-explorer",
       displayName: "Cost Explorer",
-      visibilityMode: "private",
+      visibilityMode: "internal",
       visibilityGroupId: null,
       currentVersionId: null,
       passwordHash: null,
@@ -73,7 +73,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "cost-explorer",
       displayName: "Cost Explorer",
-      visibility: { mode: "private" },
+      visibility: { mode: "internal" },
       currentVersionId: null,
       archivedAt: null,
       createdAt: NOW.toISOString(),
@@ -88,7 +88,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "cost-explorer",
       displayName: "Cost Explorer",
-      visibilityMode: "private",
+      visibilityMode: "internal",
       visibilityGroupId: null,
       currentVersionId: null,
       passwordHash: null,
@@ -139,7 +139,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "x",
       displayName: "X",
-      visibilityMode: "private",
+      visibilityMode: "internal",
       visibilityGroupId: null,
       currentVersionId: null,
       passwordHash: null,

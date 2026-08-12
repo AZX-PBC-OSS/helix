@@ -32,7 +32,7 @@ const APP = {
   id: "11111111-1111-4111-8111-111111111111",
   slug: "demo",
   displayName: "Demo",
-  visibility: { mode: "private" as const },
+  visibility: { mode: "internal" as const },
   currentVersionId: null,
   archivedAt: null,
   createdAt: "2026-07-30T00:00:00.000Z",

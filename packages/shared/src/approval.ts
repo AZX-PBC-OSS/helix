@@ -312,7 +312,13 @@ export interface VisibilityChange {
 /**
  * Visibility lives in flat `apps` columns, not in `capabilities`, so it is
  * classified on its own. Only `→ public` elevates (high); every other move,
- * including `public → private`, is a baseline privilege reduction (§3).
+ * including `public → internal`, is baseline (§3).
+ *
+ * The operative rule is **"crossing the tenant boundary needs approval"**, not
+ * "any widening needs approval". `group → internal` genuinely widens access
+ * (one directory group → every authenticated principal) and is still baseline,
+ * because `internal` *is* the platform's baseline trust level and the default
+ * for a new app. What gates is exposure to people outside the directory.
  */
 export function classifyVisibilityChange(
   from: VisibilityMode,

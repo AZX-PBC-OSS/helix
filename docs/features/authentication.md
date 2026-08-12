@@ -54,7 +54,7 @@ behaviors:
   session → a navigation **302s** to `/start`; a fetch gets **401** `{code: "unauthorized"}`.
   Misclassification fails safe.
 - **Per-request visibility re-check.** `visibilityAllows(entry, session.groups)` runs against
-  the **live** registry entry, so tightening an app from private → group bites immediately
+  the **live** registry entry, so tightening an app from internal → group bites immediately
   (bounded by snapshot staleness). A silent refresh re-snapshots groups at the IdP.
 - **Silent refresh.** Past `refreshDueAt`, navigations take the `/start?silent=1` detour;
   `/_api/*` fetches get **401** `{code: "refresh_required"}` (the stale group snapshot is an
@@ -209,7 +209,7 @@ not merely a nice-to-have.
   owner/editor/viewer roles and owner-scoped **reads**, which are still authenticated-only
   (ADR-0007, issue #9).
 - Per-app **group visibility** (`visibility: group`) is built but deferred in practice until a
-  pilot app needs it; pilot apps use `private`/`password`.
+  pilot app needs it; pilot apps use `internal`/`password`.
 
 **Since shipped — real Entra registration.** Production now authenticates against a real Entra
 app registration; the swap was config-only (issuer/client), exactly as designed, and the local

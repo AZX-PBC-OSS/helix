@@ -51,7 +51,7 @@ helix rollback [number]                                      # revert the live p
 ```
 
 `deploy` uploads the bundle as a **preview**; `--promote` flips it live in the
-same step (architecture §5.1). `visibility` is `private | group:<id> | password
+same step (architecture §5.1). `visibility` is `internal | group:<id> | password
 | public`.
 
 ## Authentication (M3)

@@ -1,7 +1,7 @@
 /**
  * Operator policy for the two open-to-the-internet visibility modes. `public`
  * (anonymous, no gate) and `password` (shared passphrase) are surfaces a
- * deployment may forbid entirely; `private`/`group` are SSO-gated and always
+ * deployment may forbid entirely; `internal`/`group` are SSO-gated and always
  * permitted.
  *
  * Flag polarity is "allow", defaulting off (a mode is permitted only when the

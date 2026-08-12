@@ -26,10 +26,10 @@ const VISIBILITY_ROWS: Array<{
   desc: string;
 }> = [
   {
-    mode: "private",
+    mode: "internal",
     icon: "lock",
-    label: "Private",
-    desc: "SSO via the IdP. Unauthenticated users are redirected to login.",
+    label: "Internal",
+    desc: "SSO via the IdP — any signed-in directory user, guests included. Unauthenticated visitors are redirected to login.",
   },
   {
     mode: "group",
@@ -95,9 +95,9 @@ export function AccessTab({ app }: { app: App }) {
             <Eyebrow>Visibility</Eyebrow>
           </Group>
           <Text size="sm" c="dark.2" mb={16}>
-            Auth is terminated at the edge proxy — the app ships zero auth code. Reducing exposure
-            (→ private / group) applies immediately; going public is an elevated change that pauses
-            for admin approval. Shared-password access is managed on the right.
+            Auth is terminated at the edge proxy — the app ships zero auth code. Moving between the
+            SSO-gated modes (→ internal / group) applies immediately; going public is an elevated
+            change that pauses for admin approval. Shared-password access is managed on the right.
           </Text>
 
           {!authenticated && (
@@ -123,7 +123,7 @@ export function AccessTab({ app }: { app: App }) {
             <Box mb={12}>
               <Hint icon="shield" tone="bad">
                 {current === "public" ? "Public" : "Password"} apps are disabled on this deployment,
-                so the edge is refusing to serve this one. Switch to Private or a group to restore
+                so the edge is refusing to serve this one. Switch to Internal or a group to restore
                 serving.
               </Hint>
             </Box>
@@ -187,14 +187,14 @@ export function AccessTab({ app }: { app: App }) {
                         )}
                       </Text>
                     </div>
-                    {actionable && row.mode === "private" && (
+                    {actionable && row.mode === "internal" && (
                       <Button
                         variant="default"
                         size="xs"
                         loading={setVisibility.isPending}
-                        onClick={() => apply({ mode: "private" })}
+                        onClick={() => apply({ mode: "internal" })}
                       >
-                        Make private
+                        Make internal
                       </Button>
                     )}
                     {actionable && row.mode === "group" && (

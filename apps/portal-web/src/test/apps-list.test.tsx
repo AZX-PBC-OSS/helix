@@ -18,7 +18,7 @@ function makeApp(slug: string, displayName: string, live: boolean, url?: string)
     id: crypto.randomUUID(),
     slug,
     displayName,
-    visibility: { mode: "private" },
+    visibility: { mode: "internal" },
     currentVersionId: live ? crypto.randomUUID() : null,
     archivedAt: null,
     createdAt: new Date().toISOString(),

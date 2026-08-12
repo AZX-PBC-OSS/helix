@@ -25,7 +25,7 @@ const app: App = {
   id: APP_ID,
   slug: "demo",
   displayName: "Demo",
-  visibility: { mode: "private" },
+  visibility: { mode: "internal" },
   currentVersionId: LIVE_ID,
   archivedAt: null,
   createdAt: new Date().toISOString(),

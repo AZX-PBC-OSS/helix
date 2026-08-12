@@ -32,7 +32,7 @@ Usage:
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
 Env:  HELIX_PORTAL_URL, HELIX_TOKEN (static token — skips login; CI/scripts).
 Config file: helix.json { slug, portalUrl, dir }
-Visibility: private | group:<id> | password | public
+Visibility: internal | group:<id> | password | public
 `;
 
 async function main(): Promise<void> {

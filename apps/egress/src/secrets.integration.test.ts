@@ -48,7 +48,7 @@ async function seed(): Promise<void> {
     // The app-scoped secret needs a real owning app (FK on app_secrets.appId).
     await owner.query(
       `INSERT INTO apps (id, slug, "displayName", "visibilityMode", "updatedAt")
-       VALUES ($1, $2, 'Egress Resolver Test', 'private', now())`,
+       VALUES ($1, $2, 'Egress Resolver Test', 'internal', now())`,
       [appId, `egress-res-${appId.slice(0, 8)}`],
     );
     const rows: Array<[string, string | null, string, Record<string, unknown>]> = [

@@ -147,7 +147,7 @@ describe("GET .../password (re-display)", () => {
 });
 
 describe("DELETE .../password (disable)", () => {
-  it("reverts to private and wipes the credential", async () => {
+  it("reverts to internal and wipes the credential", async () => {
     const slug = await createApp();
     await enable(slug);
     const res = await disable(slug);
@@ -158,7 +158,7 @@ describe("DELETE .../password (disable)", () => {
       url: `/api/v1/apps/${slug}`,
       headers: authHeader(),
     });
-    expect(app.json().visibility).toEqual({ mode: "private" });
+    expect(app.json().visibility).toEqual({ mode: "internal" });
     expect((await getCredential(slug)).statusCode).toBe(404);
   });
 
@@ -191,7 +191,7 @@ describe("operator policy: PORTAL_ALLOW_PASSWORD_APPS=false", () => {
     });
   });
 
-  it("still allows disabling an existing password app so it can migrate to private", async () => {
+  it("still allows disabling an existing password app so it can migrate to internal", async () => {
     const slug = await createApp();
     await enable(slug); // enabled while still permitted
     await withPasswordDisallowed(async () => {
@@ -204,7 +204,7 @@ describe("operator policy: PORTAL_ALLOW_PASSWORD_APPS=false", () => {
       url: `/api/v1/apps/${slug}`,
       headers: authHeader(),
     });
-    expect(app.json().visibility).toEqual({ mode: "private" });
+    expect(app.json().visibility).toEqual({ mode: "internal" });
   });
 });
 

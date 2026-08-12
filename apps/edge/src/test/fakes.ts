@@ -19,13 +19,13 @@ import type {
   OidcIdentity,
 } from "../auth/oidc.js";
 
-/** A full RegistryEntry from a partial — private visibility by default. */
+/** A full RegistryEntry from a partial — internal visibility by default. */
 export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string }): RegistryEntry {
   return {
     appId: "00000000-0000-4000-8000-000000000000",
     archived: false,
     blobPrefix: null,
-    visibilityMode: "private",
+    visibilityMode: "internal",
     visibilityGroupId: null,
     passwordHash: null,
     passwordSalt: null,

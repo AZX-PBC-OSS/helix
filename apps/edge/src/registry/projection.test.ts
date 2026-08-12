@@ -51,7 +51,7 @@ const ROW = {
   slug: "demo",
   archived: false,
   blob_prefix: "apps/11111111-1111-4111-8111-111111111111/3/",
-  visibility_mode: "private",
+  visibility_mode: "internal",
   visibility_group_id: null,
   capabilities: {},
 };
@@ -81,7 +81,7 @@ describe("RegistryProjection", () => {
       slug: "demo",
       archived: false,
       blobPrefix: ROW.blob_prefix,
-      visibilityMode: "private",
+      visibilityMode: "internal",
       visibilityGroupId: null,
       llm: null,
       data: null,

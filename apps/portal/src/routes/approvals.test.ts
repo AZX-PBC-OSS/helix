@@ -263,7 +263,7 @@ describe("go-public via the visibility write-gate", () => {
     expect(
       (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}`, headers: owner })).json()
         .visibility.mode,
-    ).toBe("private");
+    ).toBe("internal");
 
     await t.app.inject({
       method: "POST",
@@ -276,7 +276,7 @@ describe("go-public via the visibility write-gate", () => {
     ).toBe("public");
   });
 
-  it("applies a reduction (→ private) immediately, no request", async () => {
+  it("applies a reduction (→ internal) immediately, no request", async () => {
     const slug = uniqueSlug();
     await t.app.inject({
       method: "POST",
@@ -288,11 +288,11 @@ describe("go-public via the visibility write-gate", () => {
       method: "POST",
       url: `/api/v1/apps/${slug}/visibility`,
       headers: owner,
-      payload: { visibility: { mode: "private" } },
+      payload: { visibility: { mode: "internal" } },
     });
     expect(vis.statusCode).toBe(200);
     expect(vis.json().pending).toBeNull();
-    expect(vis.json().app.visibility.mode).toBe("private");
+    expect(vis.json().app.visibility.mode).toBe("internal");
   });
 
   it("refuses to commit a pending → public if public is disabled before approval (403, no partial apply)", async () => {
@@ -331,6 +331,6 @@ describe("go-public via the visibility write-gate", () => {
     expect(
       (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}`, headers: owner })).json()
         .visibility.mode,
-    ).toBe("private");
+    ).toBe("internal");
   });
 });

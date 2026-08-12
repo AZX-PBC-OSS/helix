@@ -11,11 +11,11 @@ import { VisibilitySchema } from "./visibility.js";
  * validated on both ends.
  */
 
-/** `POST /api/v1/apps` body. Visibility defaults to private (architecture §4.2). */
+/** `POST /api/v1/apps` body. Visibility defaults to internal (architecture §4.2). */
 export const CreateAppRequestSchema = z.object({
   slug: AppSchema.shape.slug,
   displayName: AppSchema.shape.displayName,
-  visibility: VisibilitySchema.default({ mode: "private" }),
+  visibility: VisibilitySchema.default({ mode: "internal" }),
   /** Optional per-app capability grant set at create time (architecture §6.3). */
   capabilities: CapabilitiesSchema.optional(),
 });

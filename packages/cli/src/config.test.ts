@@ -95,7 +95,7 @@ describe("resolveConfig", () => {
 describe("parseVisibility", () => {
   it("parses each mode", () => {
     expect(parseVisibility(undefined)).toBeUndefined();
-    expect(parseVisibility("private")).toEqual({ mode: "private" });
+    expect(parseVisibility("internal")).toEqual({ mode: "internal" });
     expect(parseVisibility("public")).toEqual({ mode: "public" });
     expect(parseVisibility("group:eng")).toEqual({ mode: "group", groupId: "eng" });
   });

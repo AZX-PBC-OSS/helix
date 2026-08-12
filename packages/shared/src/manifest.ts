@@ -10,7 +10,7 @@ import { VisibilitySchema } from "./visibility.js";
  * Mirrors the YAML in §6.3:
  *
  *   app: cost-explorer
- *   visibility: private
+ *   visibility: internal
  *   capabilities:
  *     llm: { models: [claude-haiku-4-5, claude-fable-5], dollars_per_day: 5.00 }
  *     data: { user: true, collections: [contacts] }

@@ -75,21 +75,21 @@ afterEach(() => {
 
 describe("AccessTab visibility switcher", () => {
   it("hides switch actions and prompts sign-in when logged out", () => {
-    stubFetch({ app: makeApp({ mode: "private" }), applied: [], pending: null });
-    render(makeApp({ mode: "private" }));
+    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
+    render(makeApp({ mode: "internal" }));
     expect(screen.getByText(/Changing visibility needs a signed-in actor/)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Request public access" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Make private" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Make internal" })).toBeNull();
   });
 
   it("opens a confirm dialog and requests public access through the approval gate", async () => {
     const fetchMock = stubFetch({
-      app: makeApp({ mode: "private" }),
+      app: makeApp({ mode: "internal" }),
       applied: [],
       pending: "req-1", // elevated → pending approval id
     });
     setToken("test-token");
-    render(makeApp({ mode: "private" }));
+    render(makeApp({ mode: "internal" }));
     const user = userEvent.setup();
 
     // The public option appears once the auth-config policy resolves.
@@ -105,30 +105,30 @@ describe("AccessTab visibility switcher", () => {
     expect(await screen.findByText(/awaiting admin approval/)).toBeDefined();
   });
 
-  it("makes an app private immediately, without a confirm dialog", async () => {
+  it("makes an app internal immediately, without a confirm dialog", async () => {
     const fetchMock = stubFetch({
-      app: makeApp({ mode: "private" }),
-      applied: [{ path: "visibility", from: "public", to: "private" }],
+      app: makeApp({ mode: "internal" }),
+      applied: [{ path: "visibility", from: "public", to: "internal" }],
       pending: null,
     });
     setToken("test-token");
-    render(makeApp({ mode: "public" })); // currently public → "Make private" is offered
+    render(makeApp({ mode: "public" })); // currently public → "Make internal" is offered
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Make private" }));
+    await user.click(screen.getByRole("button", { name: "Make internal" }));
     await waitFor(() =>
-      expect(visibilityBody(fetchMock)).toEqual({ visibility: { mode: "private" } }),
+      expect(visibilityBody(fetchMock)).toEqual({ visibility: { mode: "internal" } }),
     );
     // No confirm modal for a baseline reduction.
     expect(screen.queryByText(/Request public access for/)).toBeNull();
   });
 
   it("steps aside for password-mode apps (managed by the password card)", () => {
-    stubFetch({ app: makeApp({ mode: "private" }), applied: [], pending: null });
+    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
     setToken("test-token");
     render(makeApp({ mode: "password" }));
     expect(screen.getByText(/Disable it on the right to switch/)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Request public access" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Make private" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Make internal" })).toBeNull();
   });
 });

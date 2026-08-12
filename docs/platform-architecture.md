@@ -125,7 +125,7 @@ Candidate implementation: Envoy or Caddy + an oauth2-proxy-style sidecar, or a t
 
 ### 4.3 Serving
 
-Static assets live in Azure Blob Storage, addressed as `apps/<app-id>/<version>/...`. The proxy serves them only after the auth check — no public blob endpoints, no CDN in front of private apps in v1 (tens of apps doesn't need one). Deploys are immutable versions; "deploy" = flip a pointer in the app registry; rollback = flip it back.
+Static assets live in Azure Blob Storage, addressed as `apps/<app-id>/<version>/...`. The proxy serves them only after the auth check — no public blob endpoints, no CDN in front of gated apps in v1 (tens of apps doesn't need one). Deploys are immutable versions; "deploy" = flip a pointer in the app registry; rollback = flip it back.
 
 ### 4.4 Browser-side containment (CSP)
 
@@ -200,7 +200,7 @@ Apps get capabilities by calling the platform gateway — same-origin path `/_ap
 
 Every gateway request carries two identities:
 
-- **User:** from the edge session (who is clicking) — a verified Entra identity for private/group apps; a pseudonymous session identity for password/public apps
+- **User:** from the edge session (who is clicking) — a verified Entra identity for internal/group apps; a pseudonymous session identity for password/public apps
 - **App:** from the app's registered ID bound to its subdomain (which code is calling)
 
 Authorization is evaluated against the pair: *app X, on behalf of user Y, wants capability Z*. This is what makes per-app blast-radius containment real — a malicious app can only abuse the capabilities it was granted, attributed to the users who actually used it.
@@ -211,7 +211,7 @@ Each app has a manifest (editable in the portal, versioned):
 
 ```yaml
 app: cost-explorer
-visibility: private            # private | group | password | public
+visibility: internal           # internal | group | password | public
 capabilities:
   llm: { models: [claude-fable-5, claude-opus-4-8], dollarsPerDay: 50 }
   data: { user: true, shared: true, collections: [contact] }

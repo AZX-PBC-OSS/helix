@@ -18,7 +18,11 @@ const VISIBILITY_OPTIONS: Array<{
   label: string;
   desc: string;
 }> = [
-  { mode: "private", label: "Private", desc: "SSO — any authenticated user. The default." },
+  {
+    mode: "internal",
+    label: "Internal",
+    desc: "SSO — any signed-in directory user, guests included. The default.",
+  },
   {
     mode: "group",
     label: "Group-restricted",
@@ -53,7 +57,7 @@ export function AppCreateForm({
   const create = useCreateApp();
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [mode, setMode] = useState<VisibilityMode>("private");
+  const [mode, setMode] = useState<VisibilityMode>("internal");
   const [groupId, setGroupId] = useState("");
 
   const slugValid = SLUG_PATTERN.test(slug);

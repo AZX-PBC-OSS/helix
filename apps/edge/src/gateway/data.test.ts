@@ -39,7 +39,7 @@ interface DataEdge {
 function buildDataEdge(
   opts: {
     data?: DataCapability | null;
-    visibilityMode?: "private" | "public";
+    visibilityMode?: "internal" | "public";
     withStore?: boolean;
   } = {},
 ): DataEdge {
@@ -57,7 +57,7 @@ function buildDataEdge(
         appId: APP_ID,
         slug: "notes",
         blobPrefix: PREFIX,
-        visibilityMode: opts.visibilityMode ?? "private",
+        visibilityMode: opts.visibilityMode ?? "internal",
         data,
       }),
     ]),
@@ -151,7 +151,7 @@ describe("user-scope happy path", () => {
 });
 
 describe("authz + validation", () => {
-  it("401s an unauthenticated fetch on a private app", async () => {
+  it("401s an unauthenticated fetch on an internal app", async () => {
     const edge = buildDataEdge();
     const res = await req(edge, "GET", "/_api/data/user/x", { token: null });
     expect(res.statusCode).toBe(401);

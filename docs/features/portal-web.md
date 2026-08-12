@@ -40,7 +40,7 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     collected items have no declared schema — via the shared `deriveCollectionColumns`. Defaults to
     the `prod` tier and states how many rows the filter is holding back. See
     [app-data-gateway.md](./app-data-gateway.md).
-  - **Access** — visibility switcher (`POST /apps/:slug/visibility`): reductions (→ private /
+  - **Access** — visibility switcher (`POST /apps/:slug/visibility`): the SSO-gated modes (→ internal /
     group) apply immediately, going public opens a confirm-with-reason approval request, and
     `password` mode defers to the shared-password card (`PasswordAccessCard`). Plus
     archive/unarchive and the one preview surface — the **Access (RBAC)** card carrying

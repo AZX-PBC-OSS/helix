@@ -21,7 +21,7 @@ function makeApp(slug: string, displayName: string): App {
     id: crypto.randomUUID(),
     slug,
     displayName,
-    visibility: { mode: "private" },
+    visibility: { mode: "internal" },
     currentVersionId: null,
     archivedAt: null,
     createdAt: new Date().toISOString(),
@@ -118,7 +118,7 @@ describe("DeployModal", () => {
 
     expect(await screen.findByText("helix deploy --slug standup")).toBeDefined();
     expect(created).toEqual([
-      { slug: "standup", displayName: "Standup", visibility: { mode: "private" } },
+      { slug: "standup", displayName: "Standup", visibility: { mode: "internal" } },
     ]);
   });
 

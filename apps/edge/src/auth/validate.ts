@@ -64,7 +64,7 @@ export function resolveAppForAuth(registry: RegistryReader, slug: string | undef
   // Archived apps answer like unknown ones here — no session minting, and no
   // distinguishing the two through the auth host.
   if (!entry || entry.archived) return { kind: "unknown" };
-  // SSO serves private, group, AND password apps: a `password` app is "the
+  // SSO serves internal, group, AND password apps: a `password` app is "the
   // shared password OR any SSO user" (the password login UI links here). Only
   // `public` has no session at all, so it can't use the OIDC flow.
   if (entry.visibilityMode === "public") {
@@ -220,7 +220,7 @@ export function isSameOriginFormPost(
 /**
  * Whether this deployment permits an app in the given visibility mode at all.
  * `public` and `password` are open-to-the-internet surfaces an operator can
- * forbid per deployment (`EDGE_ALLOW_*_APPS`); `private`/`group` are SSO-gated
+ * forbid per deployment (`EDGE_ALLOW_*_APPS`); `internal`/`group` are SSO-gated
  * and always permitted. This is an operator policy check, distinct from the
  * per-session {@link visibilityAllows} authorization check below.
  */
@@ -233,9 +233,19 @@ export function visibilityModeAllowed(
   return true;
 }
 
-/** Does this session's group snapshot satisfy the app's visibility rule? */
+/**
+ * Does this session's group snapshot satisfy the app's visibility rule?
+ *
+ * Deny-by-default: the fall-through refuses any mode not handled above, so a
+ * visibility label the projection carries but this gate does not understand —
+ * a newly added enum value, or a stale replica reading a renamed one — fails
+ * closed rather than serving the app. That property is what makes it safe to
+ * add modes to the enum (`private`, once it exists) ahead of the gate.
+ */
 export function visibilityAllows(entry: RegistryEntry, groups: string[]): boolean {
-  if (entry.visibilityMode === "private") return true;
+  // `internal` is "any authenticated principal in the directory" — a session is
+  // itself sufficient, and *which* user holds it is deliberately not consulted.
+  if (entry.visibilityMode === "internal") return true;
   if (entry.visibilityMode === "group") {
     return entry.visibilityGroupId !== null && groups.includes(entry.visibilityGroupId);
   }
@@ -243,5 +253,5 @@ export function visibilityAllows(entry: RegistryEntry, groups: string[]): boolea
   // been minted by the /_auth/login challenge (passwordLogin.ts). The OIDC
   // callback never resolves password apps, so this branch is gate-only.
   if (entry.visibilityMode === "password") return true;
-  return false; // public never passes the session gate
+  return false; // public never passes the session gate; unknown modes deny
 }

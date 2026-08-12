@@ -116,7 +116,7 @@ describe("GET /_auth/login (the challenge page)", () => {
   });
 
   it("404s on a non-password app (no signal that login even exists)", async () => {
-    const res = await buildEdge({ visibilityMode: "private" }).inject({
+    const res = await buildEdge({ visibilityMode: "internal" }).inject({
       method: "GET",
       url: "/_auth/login",
       headers: navHeaders,
@@ -214,7 +214,7 @@ describe("POST /_auth/login (verification)", () => {
   });
 
   it("404s a login POST on a non-password app", async () => {
-    const res = await submit(buildEdge({ visibilityMode: "private" }), { password: PASSWORD });
+    const res = await submit(buildEdge({ visibilityMode: "internal" }), { password: PASSWORD });
     expect(res.statusCode).toBe(404);
   });
 

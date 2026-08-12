@@ -363,7 +363,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     /**
      * `GET /_api/data/shared/:key` (§3.3) — app-shared, world-readable within the
      * app's visibility gate (the preamble already enforces it: anon on public
-     * apps, authenticated on private/group). The key must be declared in
+     * apps, authenticated on internal/group). The key must be declared in
      * `data.sharedRead`.
      */
     async getShared(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { ApiErrorSchema, CreateAppRequestSchema, UploadVersionResponseSchema } from "./api.js";
 
 describe("CreateAppRequestSchema", () => {
-  it("defaults visibility to private", () => {
+  it("defaults visibility to internal", () => {
     const parsed = CreateAppRequestSchema.parse({ slug: "my-app", displayName: "My App" });
-    expect(parsed.visibility).toEqual({ mode: "private" });
+    expect(parsed.visibility).toEqual({ mode: "internal" });
   });
 
   it("rejects a non-DNS-label slug", () => {

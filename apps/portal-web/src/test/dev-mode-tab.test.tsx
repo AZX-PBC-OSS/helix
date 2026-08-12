@@ -17,7 +17,7 @@ const APP: App = {
   id: crypto.randomUUID(),
   slug: "cost-explorer",
   displayName: "Cost Explorer",
-  visibility: { mode: "private" },
+  visibility: { mode: "internal" },
   currentVersionId: crypto.randomUUID(),
   archivedAt: null,
   createdAt: new Date().toISOString(),

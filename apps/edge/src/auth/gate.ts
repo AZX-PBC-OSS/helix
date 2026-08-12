@@ -37,7 +37,7 @@ export const ANON_USER_OID = "anon";
 
 /**
  * The principal a `/_api/*` gateway handler (or asset request) acts for.
- * Private/group apps always yield an authenticated caller; `public` apps yield
+ * Internal/group apps always yield an authenticated caller; `public` apps yield
  * an unauthenticated one with no `user`-scope access (app-data design §6, the
  * "no anon identity" starting point).
  *
@@ -202,7 +202,7 @@ export function makeSessionGate(deps: SessionGateDeps): SessionGate {
     }
 
     // Visibility is re-checked per request against the live registry entry —
-    // tightening an app from private to group bites immediately, bounded by
+    // tightening an app from internal to group bites immediately, bounded by
     // the snapshot's staleness (≤ refresh interval). The silent refresh
     // re-snapshots groups at the IdP; a user who truly lacks the group ends
     // on the callback's 403, so this cannot loop.

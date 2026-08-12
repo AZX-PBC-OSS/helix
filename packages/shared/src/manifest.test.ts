@@ -6,7 +6,7 @@ describe("AppManifestSchema", () => {
   it("parses the §6.3 example manifest and fills capability defaults", () => {
     const parsed = AppManifestSchema.parse({
       app: "cost-explorer",
-      visibility: { mode: "private" },
+      visibility: { mode: "internal" },
       capabilities: {
         llm: { models: ["gpt-5", "claude-fable-5"], dollarsPerDay: 20 },
         data: { user: true, collections: ["contacts"] },
@@ -42,7 +42,7 @@ describe("AppManifestSchema", () => {
   it("parses the fetch capability with defaults and keyless/bound origins", () => {
     const parsed = AppManifestSchema.parse({
       app: "stars",
-      visibility: { mode: "private" },
+      visibility: { mode: "internal" },
       capabilities: {
         fetch: {
           origins: [
@@ -134,7 +134,7 @@ describe("offline capability scope (ADR-0035 §3)", () => {
   });
 
   it("is absent unless declared — no default grant", () => {
-    const parsed = AppManifestSchema.parse({ app: "x", visibility: { mode: "private" } });
+    const parsed = AppManifestSchema.parse({ app: "x", visibility: { mode: "internal" } });
     expect(parsed.capabilities.offline).toBeUndefined();
   });
 });
@@ -143,7 +143,7 @@ describe("offline capability scope (ADR-0035 §3)", () => {
 function CapabilitiesParse(capabilities: unknown) {
   return AppManifestSchema.safeParse({
     app: "x",
-    visibility: { mode: "private" },
+    visibility: { mode: "internal" },
     capabilities,
   });
 }

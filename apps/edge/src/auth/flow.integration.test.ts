@@ -26,7 +26,7 @@ let pool: Pool;
 let sessions: PgSessionStore;
 let oidc: OpenIdConnectClient;
 let app: FastifyInstance;
-let privateApp: SeededApp;
+let internalApp: SeededApp;
 let groupApp: SeededApp;
 
 function cookieValue(res: LightMyRequestResponse, name: string): string | undefined {
@@ -105,7 +105,7 @@ async function loginAs(
 beforeAll(async () => {
   idp = await startDevIdp({ edgeRedirectUris: [REDIRECT_URI] });
   pool = new Pool({ connectionString: TEST_DATABASE_URL, max: 4 });
-  privateApp = await seedApp(pool, { live: true });
+  internalApp = await seedApp(pool, { live: true });
   groupApp = await seedApp(pool, {
     live: true,
     visibilityMode: "group",
@@ -125,9 +125,9 @@ beforeAll(async () => {
 
   const registry = new FakeRegistry([
     registryEntry({
-      appId: privateApp.appId,
-      slug: privateApp.slug,
-      blobPrefix: privateApp.blobPrefix,
+      appId: internalApp.appId,
+      slug: internalApp.slug,
+      blobPrefix: internalApp.blobPrefix,
     }),
     registryEntry({
       appId: groupApp.appId,
@@ -138,8 +138,8 @@ beforeAll(async () => {
     }),
   ]);
   const blob = new FakeBlobReader();
-  blob.set(`${privateApp.blobPrefix}index.html`, {
-    body: "<body>private app</body>",
+  blob.set(`${internalApp.blobPrefix}index.html`, {
+    body: "<body>internal app</body>",
     contentType: "text/html",
   });
   app = buildApp({
@@ -157,28 +157,28 @@ afterAll(async () => {
   await app.close();
   oidc.stop();
   await sessions.close();
-  await deleteApp(pool, privateApp.appId);
+  await deleteApp(pool, internalApp.appId);
   await deleteApp(pool, groupApp.appId);
   await pool.end();
   await idp.close();
 });
 
 describe("the full Appendix A flow against real oidc-provider + Postgres", () => {
-  it("logs alice into a private app and lands on rd", async () => {
+  it("logs alice into an internal app and lands on rd", async () => {
     const { redeemRes, sessionCookie, completeUrl } = await loginAs(
       "alice@azx.dev",
-      privateApp.slug,
+      internalApp.slug,
       "/deep/link?q=1",
     );
     expect(redeemRes?.statusCode).toBe(302);
     expect(redeemRes?.headers.location).toBe("/deep/link?q=1");
-    expect(completeUrl?.host).toBe(`${privateApp.slug}.local.helix.azxlabs.io:8080`);
+    expect(completeUrl?.host).toBe(`${internalApp.slug}.local.helix.azxlabs.io:8080`);
     expect(sessionCookie).toBeTruthy();
 
     // The session row is real: alice's identity + group snapshot, app-scoped.
     const session = await sessions.lookup(
       hashSessionToken(sessionCookie as string),
-      privateApp.appId,
+      internalApp.appId,
     );
     expect(session?.user.displayName).toBe("Alice Anders");
     expect(session?.user.groups).toEqual(["eng-team", "platform-admin"]);
@@ -198,7 +198,7 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
   });
 
   it("rejects a handoff replay (the atomic burn, on real Postgres)", async () => {
-    const { completeUrl, redeemRes } = await loginAs("alice@azx.dev", privateApp.slug);
+    const { completeUrl, redeemRes } = await loginAs("alice@azx.dev", internalApp.slug);
     expect(redeemRes?.statusCode).toBe(302);
     const replay = await app.inject({
       url: (completeUrl as URL).pathname + (completeUrl as URL).search,
@@ -210,7 +210,7 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
 
   it("rejects an authorization-code replay at the real token endpoint", async () => {
     const start = await app.inject({
-      url: `/start?app=${privateApp.slug}&rd=/`,
+      url: `/start?app=${internalApp.slug}&rd=/`,
       headers: AUTH_HOST,
     });
     const flowCookie = cookieValue(start, FLOW_COOKIE);
@@ -232,18 +232,18 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
   });
 
   it("serves gated assets and /_api/me with the minted session", async () => {
-    const host = { host: `${privateApp.slug}.local.helix.azxlabs.io` };
+    const host = { host: `${internalApp.slug}.local.helix.azxlabs.io` };
     // Before login: navigation → login redirect; fetch → 401.
     const anon = await app.inject({ url: "/", headers: { ...host, "sec-fetch-mode": "navigate" } });
     expect(anon.statusCode).toBe(302);
     expect(anon.headers.location).toContain("https://auth.local.helix.azxlabs.io:8080/start");
 
-    const { sessionCookie } = await loginAs("alice@azx.dev", privateApp.slug);
+    const { sessionCookie } = await loginAs("alice@azx.dev", internalApp.slug);
     const cookie = `${SESSION_COOKIE}=${sessionCookie}`;
 
     const page = await app.inject({ url: "/", headers: { ...host, cookie } });
     expect(page.statusCode).toBe(200);
-    expect(page.body).toContain("private app");
+    expect(page.body).toContain("internal app");
 
     const me = await app.inject({ url: "/_api/me", headers: { ...host, cookie } });
     expect(me.statusCode).toBe(200);
@@ -256,8 +256,8 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     // One browser for both round-trips — the IdP session cookie is what makes
     // prompt=none succeed without an interaction.
     const browser = new TestHttpSession();
-    const { sessionCookie } = await loginAs("alice@azx.dev", privateApp.slug, "/page", browser);
-    const host = { host: `${privateApp.slug}.local.helix.azxlabs.io` };
+    const { sessionCookie } = await loginAs("alice@azx.dev", internalApp.slug, "/page", browser);
+    const host = { host: `${internalApp.slug}.local.helix.azxlabs.io` };
 
     // Make the session refresh-due, then navigate: the gate detours to
     // /start?silent=1.
@@ -317,14 +317,14 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     expect(fresh).toBeTruthy();
     expect(fresh).not.toBe(sessionCookie);
 
-    const session = await sessions.lookup(hashSessionToken(fresh as string), privateApp.appId);
+    const session = await sessions.lookup(hashSessionToken(fresh as string), internalApp.appId);
     expect(session?.user.groups).toEqual(["eng-team", "platform-admin"]);
     expect(session?.refreshDueAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("rejects a callback whose state was swapped (real state validation)", async () => {
     const start = await app.inject({
-      url: `/start?app=${privateApp.slug}&rd=/`,
+      url: `/start?app=${internalApp.slug}&rd=/`,
       headers: AUTH_HOST,
     });
     const flowCookie = cookieValue(start, FLOW_COOKIE);

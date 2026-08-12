@@ -25,7 +25,7 @@ handled in `packages/cli/src/config.ts` / `args.ts`:
 
 ```
 helix login | logout | whoami
-helix create   [--display-name <name>] [--visibility <v>]   # v = private | group:<id> | password | public
+helix create   [--display-name <name>] [--visibility <v>]   # v = internal | group:<id> | password | public
 helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a preview; --promote flips it live
 helix versions | promote <number> | rollback [number]
 ```

@@ -20,7 +20,7 @@ function makeApp(): App {
     id: "11111111-1111-4111-8111-111111111111",
     slug: SLUG,
     displayName: "Demo",
-    visibility: { mode: "private" },
+    visibility: { mode: "internal" },
     currentVersionId: null,
     archivedAt: null,
     createdAt: new Date().toISOString(),

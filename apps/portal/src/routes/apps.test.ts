@@ -17,14 +17,14 @@ function createApp(payload: Record<string, unknown>) {
 }
 
 describe("POST /api/v1/apps", () => {
-  it("creates an app (201), defaulting visibility to private", async () => {
+  it("creates an app (201), defaulting visibility to internal", async () => {
     const slug = uniqueSlug();
     const res = await createApp({ slug, displayName: "My App" });
     expect(res.statusCode).toBe(201);
     const body = res.json();
     expect(body.slug).toBe(slug);
     expect(body.displayName).toBe("My App");
-    expect(body.visibility).toEqual({ mode: "private" });
+    expect(body.visibility).toEqual({ mode: "internal" });
     expect(body.currentVersionId).toBeNull();
   });
 
@@ -126,7 +126,7 @@ describe("manifest (capabilities) GET/PUT", () => {
     expect(got.statusCode).toBe(200);
     expect(got.json()).toEqual({
       app: slug,
-      visibility: { mode: "private" },
+      visibility: { mode: "internal" },
       capabilities: {
         llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 },
         mcp: [],

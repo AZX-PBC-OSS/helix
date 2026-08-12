@@ -30,7 +30,7 @@ enum VersionStatus {
 }
 
 enum VisibilityMode {
-  private
+  internal
   group
   password
   public

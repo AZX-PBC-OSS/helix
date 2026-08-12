@@ -93,11 +93,11 @@ A `Delta` is a typed, path-keyed change: `{ path: "llm.tokensPerDay", from, to }
 | **data** | user store, collections, shared keys; writes/bytes ≤ thresholds | budgets above thresholds | low / med |
 | **mcp** | empty (or a curated low-risk server allowlist) | any arbitrary MCP server | high |
 | **externalOrigins** | empty | any origin added | med |
-| **visibility** | private / group / password | **public** | **high** |
+| **visibility** | internal / group / password | **public** | **high** |
 
 Two invariants keep this safe *and* non-annoying:
 
-- **Reducing privilege is always baseline.** Removing a grant, shrinking a budget, public→private — never needs approval. Only *increases* gate.
+- **Reducing privilege is always baseline.** Removing a grant, shrinking a budget, public→internal — never needs approval. Only *increases* gate. For visibility specifically the operative line is **crossing the tenant boundary**, not widening as such: `group → internal` does widen access (one directory group → every authenticated principal) and stays baseline, because `internal` is the platform's baseline trust level and the default for a new app. What gates is exposure to people outside the directory — `password` and `public`.
 - **Disjoint application.** Because we chose split semantics, a single `PUT /manifest` can both commit baseline deltas *and* open a request for the elevated ones. The route response tells the owner exactly which: `{ applied: [...], pending: <requestId> }`. The SPA shows the applied part live and a "pending approval" banner for the rest.
 
 The threshold constants (`BASELINE_TOKENS`, write/byte ceilings, the default-model set, the low-risk MCP allowlist) are platform policy — they live beside the classifier in `@azx-pbc/shared` so portal-gating and SPA-preview read the identical numbers.

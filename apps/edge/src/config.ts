@@ -209,7 +209,7 @@ export interface EdgeConfig extends GatewayConfig {
    * Whether this deployment permits `public` (anonymous, no-gate) apps. When
    * false, the edge refuses to serve a public app — assets 403, `/_api/*`
    * refuses the anonymous caller — even one already set that way; the owner
-   * migrates it down to private/group in the portal to restore service. The
+   * migrates it down to internal/group in the portal to restore service. The
    * flag polarity is "allow", defaulting off: a deployment must set
    * `EDGE_ALLOW_PUBLIC_APPS=true` to opt this surface in (the parse below is
    * `=== "true"`).

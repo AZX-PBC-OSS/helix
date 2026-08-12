@@ -58,7 +58,7 @@ describe("helix_edge least-privilege grants", () => {
       await expect(
         pool.query(
           `INSERT INTO apps (id, slug, "displayName", "visibilityMode")
-           VALUES (gen_random_uuid(), 'rolesplit', 'x', 'private')`,
+           VALUES (gen_random_uuid(), 'rolesplit', 'x', 'internal')`,
         ),
       ).rejects.toThrow(/permission denied/i);
 
@@ -359,7 +359,7 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
       await expect(
         pool.query(
           `INSERT INTO apps (id, slug, "displayName", "visibilityMode")
-           VALUES (gen_random_uuid(), 'devrs', 'x', 'private')`,
+           VALUES (gen_random_uuid(), 'devrs', 'x', 'internal')`,
         ),
       ).rejects.toThrow(/permission denied/i);
       await expect(pool.query("SELECT count(*) FROM app_secrets")).rejects.toThrow(

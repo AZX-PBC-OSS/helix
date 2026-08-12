@@ -60,7 +60,7 @@ describe("LiveRegistry against the test database", () => {
       slug: live.slug,
       archived: false,
       blobPrefix: live.blobPrefix,
-      visibilityMode: "private",
+      visibilityMode: "internal",
       visibilityGroupId: null,
       passwordHash: null,
       passwordSalt: null,

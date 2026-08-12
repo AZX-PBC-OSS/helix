@@ -26,7 +26,7 @@ where the dev IdP had been doing Entra's job for us, and both already landed:
   identifiers stay readable, matching the dev-idp behavior.
 - **Single-tenant.** Only the org's own users sign in. Issuer is the **v2**
   endpoint: `https://login.microsoftonline.com/{tenantId}/v2.0`.
-- **Pilot apps use `private` or `password` visibility.** The only role plumbing
+- **Pilot apps use `internal` or `password` visibility.** The only role plumbing
   M5 needs is one `platform-admin` role for portal admin gating. Per-app
   **group visibility** (`visibility: group`) is deferred until a real app needs
   it (see [Deferred](#deferred-until-needed)).
@@ -313,7 +313,7 @@ local config of their own — they read everything from the portal's
    `curl https://login.microsoftonline.com/{tenantId}/v2.0/.well-known/openid-configuration`
    returns a doc advertising `device_authorization_endpoint`, `token_endpoint`,
    and `jwks_uri`.
-2. **App-user SSO (edge):** browse to a `private` pilot app → redirected to
+2. **App-user SSO (edge):** browse to an `internal` pilot app → redirected to
    `auth.azx.helix.azxlabs.io` → Entra login (MFA per policy) → handoff → app loads with
    a `__Host-session` cookie. Confirm the display name resolves.
 3. **Portal admin (web):** sign in at `portal.azx.helix.azxlabs.io`. A user assigned

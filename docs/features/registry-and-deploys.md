@@ -31,7 +31,7 @@ models, any MCP/external origin, visibility→public) opens an `ApprovalRequest`
 (see [docs/design/approvals.md](../design/approvals.md)). Enabling `password` is refused here — it
 needs a minted credential, so it has its own `/access/password` routes.
 
-Slugs are DNS labels (`[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`); visibility defaults to `private`.
+Slugs are DNS labels (`[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`); visibility defaults to `internal`.
 Every mutation writes an `audit_events` row (`app.create`, `app.archive`, `version.promote`, …).
 
 ### Version lifecycle (`apps/portal/src/routes/versions.ts`)

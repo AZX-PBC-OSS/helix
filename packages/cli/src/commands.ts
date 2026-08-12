@@ -13,7 +13,15 @@ function requireSlug(config: ResolvedConfig): string {
   return config.slug;
 }
 
-/** Parse a CLI visibility string: `private` | `group:<id>` | `password` | `public`. */
+/**
+ * Parse a CLI visibility string: `internal` | `group:<id>` | `password` | `public`.
+ *
+ * `private` was renamed to `internal` and is **not** accepted as an alias — it
+ * errors like any other unknown value. The name is being kept free for a real
+ * owner-only mode, so silently mapping it to `internal` would mean the opposite
+ * of what the word says the day that lands. A loud error on a stale script is
+ * the cheaper failure.
+ */
 export function parseVisibility(input?: string): Visibility | undefined {
   if (!input) return undefined;
   if (input.startsWith("group:")) {
@@ -21,10 +29,10 @@ export function parseVisibility(input?: string): Visibility | undefined {
     if (!groupId) throw new CliError("group visibility needs an id: group:<id>");
     return { mode: "group", groupId };
   }
-  if (input === "private" || input === "password" || input === "public") {
+  if (input === "internal" || input === "password" || input === "public") {
     return { mode: input };
   }
-  throw new CliError(`invalid visibility "${input}" (private | group:<id> | password | public)`);
+  throw new CliError(`invalid visibility "${input}" (internal | group:<id> | password | public)`);
 }
 
 function printVersion(v: Version): void {

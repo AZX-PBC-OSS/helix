@@ -198,7 +198,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // Change how an app gates access (architecture §4.2). Reducing exposure
-  // (→ private/group) commits immediately; going **public** is elevated and
+  // (→ internal/group) commits immediately; going **public** is elevated and
   // opens an approval request (docs/design/approvals.md §3, §6.3). Enabling
   // `password` visibility is NOT done here — it needs a minted credential, so
   // it keeps its dedicated /access/password routes below.
@@ -227,7 +227,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (change.elevated) {
         // The only elevated change is → public. When public is disabled we
         // refuse outright rather than opening an approval that could never be
-        // safely committed. Reductions (→ private/group) fall through below, so
+        // safely committed. Reductions (→ internal/group) fall through below, so
         // an already-public app can always be migrated down.
         if (!publicAppsAllowed()) {
           throw new AppError("forbidden", "public apps are disabled on this deployment");
@@ -294,7 +294,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const actor = requireActor(req);
       // Operator policy: enabling a password app is a move into an open surface;
-      // refuse when disabled. Disabling (DELETE, reverts to private) stays open
+      // refuse when disabled. Disabling (DELETE, reverts to internal) stays open
       // so an owner can always migrate an existing password app away.
       if (!passwordAppsAllowed()) {
         throw new AppError("forbidden", "password apps are disabled on this deployment");
@@ -393,7 +393,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // Disable password access: revert to private and wipe the credential. Mutating,
+  // Disable password access: revert to internal and wipe the credential. Mutating,
   // idempotent — a non-password app is already in the desired state.
   app.delete<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/access/password",
@@ -408,7 +408,10 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         await app.prisma.app.update({
           where: { id: row.id },
           data: {
-            visibilityMode: "private",
+            // Back to the baseline, deliberately: disabling a shared password
+            // must not tighten the app past where it started, or turning off a
+            // demo credential would silently lock out everyone who had access.
+            visibilityMode: "internal",
             passwordHash: null,
             passwordSalt: null,
             passwordEnc: null,

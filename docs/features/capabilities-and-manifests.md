@@ -49,7 +49,7 @@ response header). It buys cold boot and nothing more. See
 [ADR-0035](../adr/0035-offline-capability-platform-service-worker.md) and
 [edge-serving.md](./edge-serving.md).
 
-`Visibility` is a discriminated union — `private` | `group` (+ `groupId`) | `password` |
+`Visibility` is a discriminated union — `internal` | `group` (+ `groupId`) | `password` |
 `public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupId`) and reassembled
 by the mappers.
 
@@ -110,12 +110,14 @@ SPA's pre-submit warning never drift:
 | externalOrigins | — | any origin added | med |
 | fetch.origins | — | any proxied origin (secret-bound = high) | med / high |
 | offline | giving up the grant | taking it, or moving the scope | med |
-| visibility | private / group / password | **→ public** | high |
+| visibility | internal / group / password | **→ public** | high |
 
 Two invariants keep it safe without being annoying (`docs/design/approvals.md` §3):
 
-- **Reducing privilege is always baseline** — removing a grant, shrinking a budget, public→private
-  never needs approval; only increases gate. Subtle corollary: an **unset budget is unlimited**
+- **Reducing privilege is always baseline** — removing a grant, shrinking a budget, public→internal
+  never needs approval; only increases gate. For visibility the rule is really *crossing the tenant
+  boundary*: `group → internal` widens access and is still baseline, because `internal` is the
+  baseline trust level and the default. Subtle corollary: an **unset budget is unlimited**
   (the edge only enforces a defined cap), so *removing* a cap is a privilege increase and gates,
   while *adding* one is a reduction and commits.
 - **Any elevated part makes the whole submission one atomic request** (the reviewer sees the full

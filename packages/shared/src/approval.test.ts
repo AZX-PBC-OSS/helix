@@ -237,12 +237,12 @@ describe("classifyChange — offline (ADR-0035)", () => {
 
   it("is its own conflict area, so a concurrent LLM edit does not stale it", () => {
     const eff = withScope("/app/");
-    const snap = captureSnapshot(eff, "private", touchedAreas([{ path: "offline.scope" }]));
+    const snap = captureSnapshot(eff, "internal", touchedAreas([{ path: "offline.scope" }]));
     expect(Object.keys(snap)).toEqual(["offline"]);
     expect(
-      snapshotConflicts(snap, { ...eff, llm: { models: ["claude-fable-5"] } }, "private"),
+      snapshotConflicts(snap, { ...eff, llm: { models: ["claude-fable-5"] } }, "internal"),
     ).toBe(false);
-    expect(snapshotConflicts(snap, withScope("/other/"), "private")).toBe(true);
+    expect(snapshotConflicts(snap, withScope("/other/"), "internal")).toBe(true);
   });
 });
 
@@ -285,8 +285,8 @@ describe("classifyVisibilityChange", () => {
       elevated: true,
       risk: "high",
     });
-    expect(classifyVisibilityChange("public", "private")).toMatchObject({ elevated: false });
-    expect(classifyVisibilityChange("private", "private")).toBeNull();
+    expect(classifyVisibilityChange("public", "internal")).toMatchObject({ elevated: false });
+    expect(classifyVisibilityChange("internal", "internal")).toBeNull();
   });
 });
 
@@ -341,20 +341,20 @@ describe("snapshot + conflict (optimistic concurrency)", () => {
     });
     const areas = touchedAreas(r.elevatedDeltas);
     expect(areas).toEqual(["mcp"]);
-    const snap = captureSnapshot(eff, "private", areas);
+    const snap = captureSnapshot(eff, "internal", areas);
 
     // unchanged → no conflict
-    expect(snapshotConflicts(snap, eff, "private")).toBe(false);
+    expect(snapshotConflicts(snap, eff, "internal")).toBe(false);
 
     // someone else added an mcp server → conflict
     const moved: Capabilities = { ...eff, mcp: ["other"] };
-    expect(snapshotConflicts(snap, moved, "private")).toBe(true);
+    expect(snapshotConflicts(snap, moved, "internal")).toBe(true);
   });
 
   it("detects a visibility move", () => {
     const snap = captureSnapshot(EMPTY, "group", ["visibility"]);
     expect(snapshotConflicts(snap, EMPTY, "group")).toBe(false);
-    expect(snapshotConflicts(snap, EMPTY, "private")).toBe(true);
+    expect(snapshotConflicts(snap, EMPTY, "internal")).toBe(true);
   });
 });
 

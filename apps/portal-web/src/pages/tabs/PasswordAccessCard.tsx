@@ -109,7 +109,7 @@ export function PasswordAccessCard({ app }: { app: App }) {
           ) : (
             <Hint icon="shield" tone="bad">
               Password apps are disabled on this deployment — the edge is refusing to serve this
-              one. Disable password access to revert to private.
+              one. Disable password access to revert to internal.
             </Hint>
           )}
 

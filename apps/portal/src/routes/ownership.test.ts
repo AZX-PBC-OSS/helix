@@ -91,7 +91,7 @@ describe("ownsApp — every app-scoped mutating route rejects a non-owner", () =
       name: "visibility",
       method: "POST",
       urlOf: (s) => `/api/v1/apps/${s}/visibility`,
-      payload: { visibility: { mode: "private" } },
+      payload: { visibility: { mode: "internal" } },
     },
     {
       name: "access/password enable",

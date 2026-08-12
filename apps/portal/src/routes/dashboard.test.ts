@@ -18,7 +18,7 @@ afterAll(async () => {
 async function seedApp(displayName: string, { deploy }: { deploy: boolean }) {
   const slug = uniqueSlug();
   const appRow = await t.prisma.app.create({
-    data: { slug, displayName, visibilityMode: "private" },
+    data: { slug, displayName, visibilityMode: "internal" },
   });
   if (deploy) {
     const version = await t.prisma.version.create({

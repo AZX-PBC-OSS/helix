@@ -123,8 +123,8 @@ export function ToneBadge({
 
 export function VisibilityBadge({ visibility }: { visibility: Visibility }) {
   switch (visibility.mode) {
-    case "private":
-      return <ToneBadge icon="lock">Private</ToneBadge>;
+    case "internal":
+      return <ToneBadge icon="lock">Internal</ToneBadge>;
     case "group":
       return (
         <ToneBadge tone="info" icon="user">
