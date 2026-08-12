@@ -77,9 +77,10 @@ export async function requestVoid(
  *
  * Not `<a href="…">`: a browser navigation carries no `Authorization` header, so
  * the download has to go through fetch and be handed to the user as a Blob. The
- * headers come back because the export signals truncation out-of-band, in
- * `x-helix-export-truncated`, and silently dropping that would present a short
- * file as a complete one.
+ * headers come back because the export signals its caps out-of-band — rows via
+ * `x-helix-export-truncated`, derived columns via
+ * `x-helix-export-columns-truncated` — and silently dropping those would present
+ * a capped file as a complete one.
  */
 export async function fetchText(path: string): Promise<{ body: string; headers: Headers }> {
   const res = await fetch(path, { headers: authHeaders() });

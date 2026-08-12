@@ -4,6 +4,7 @@ import {
   CollectionSummarySchema,
   collectionCsv,
   EnvSchema,
+  MAX_DERIVED_COLUMNS,
   type CollectionItem,
   type Env,
 } from "@azx-pbc/shared";
@@ -96,9 +97,15 @@ function toCollectionItem(r: ItemRow): CollectionItem {
  * able to see everything they collected. The SPA narrows to `prod` by default so
  * dev-mode test rows don't masquerade as real leads; that is a presentation
  * choice, not an API one.
+ *
+ * An empty value counts as absent. A caller that builds its query string
+ * unconditionally sends `?env=`, and 400ing that would contradict the documented
+ * "absent means both tiers" — every other param on this route already treats
+ * empty as absent (`before` by a falsy check, `limit` by `clampLimit`'s fallback,
+ * `format` by not matching `csv`). An unrecognised *value* still 400s.
  */
 function envFilter(raw: unknown): { env?: Env } {
-  const env = EnvSchema.optional().parse(raw);
+  const env = EnvSchema.optional().parse(raw === "" ? undefined : raw);
   return env ? { env } : {};
 }
 
@@ -225,6 +232,10 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
       const truncated = window.truncated;
       if (truncated) reply.header("x-helix-export-truncated", String(MAX_EXPORT_ROWS));
       const items = window.rows.map(toCollectionItem);
+      // Rendered before the audit so the column cap can be recorded with the rest
+      // of the export, and only once — deriving columns twice over 10,000 rows to
+      // answer the same question would be pure waste.
+      const csvOut = format === "csv" ? collectionCsv(items) : null;
 
       // A bulk pull of visitor PII is at least as consequential as rotating a
       // secret, which is audited — and platform-admins pass `ownsApp`, so this row
@@ -236,10 +247,17 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
         format,
         rows: items.length,
         truncated,
+        // Only meaningful for CSV: the JSON export has no columns to cap.
+        ...(csvOut ? { columnsTruncated: csvOut.columns.truncated } : {}),
       });
 
-      if (format === "csv") {
-        const { csv } = collectionCsv(items);
+      if (csvOut) {
+        // Two independent caps, so two headers. Row truncation loses data; column
+        // truncation does not (the raw `item` column carries every key), but the
+        // owner still gets told rather than quietly handed a narrower file.
+        if (csvOut.columns.truncated) {
+          reply.header("x-helix-export-columns-truncated", String(MAX_DERIVED_COLUMNS));
+        }
         return reply
           .header("content-type", "text/csv; charset=utf-8")
           .header("cache-control", "no-store")
@@ -247,7 +265,7 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
             "content-disposition",
             `attachment; filename="${safeFilename(req.params.slug)}-${safeFilename(req.params.name)}.csv"`,
           )
-          .send(csv);
+          .send(csvOut.csv);
       }
       return reply.header("cache-control", "no-store").send({ items });
     },

@@ -93,9 +93,10 @@ GET    /api/v1/apps/:slug/collections/:name/export    JSON or CSV, newest 10,000
 DELETE /api/v1/apps/:slug/collections/:name/items/:id GDPR-style single-item erasure → 204
 ```
 
-All three reads take `?env=prod|dev`; **absent means both tiers** (the portal policy on the table
-is cross-env by design — only the runtime roles are pinned). The index groups by `(collection, env)`
-so a prod-filtered UI can say how many rows it is holding back. It is a pure aggregate over the
+Both per-collection reads take `?env=prod|dev`; **absent (or empty) means both tiers** (the portal
+policy on the table is cross-env by design — only the runtime roles are pinned). The index does not
+take it — it groups by `(collection, env)` instead, so a prod-filtered UI can say how many rows it
+is holding back. The index is a pure aggregate over the
 rows, deliberately not a manifest join: grants are owner-editable and nothing deletes rows, so a
 collection dropped from `data.collections` still holds PII the owner must be able to reach — the
 manifest alone cannot surface those orphans. Callers union the two.

@@ -145,6 +145,21 @@ describe("GET /api/v1/apps/:slug/collections/:name", () => {
     expect(prod.json().rows).toHaveLength(2);
   });
 
+  it("treats an empty ?env= as absent, not as a bad value", async () => {
+    // What `URLSearchParams.set("env","")` produces from a caller that builds its
+    // query string unconditionally. 400ing it would contradict the documented
+    // "absent means both tiers".
+    const { id, slug } = await seedCollection(2);
+    await seedInto(id, 3, { env: "dev" });
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/contacts?env=`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().rows).toHaveLength(5);
+  });
+
   it("400s an unknown env", async () => {
     const { slug } = await seedCollection(1);
     const res = await t.app.inject({
@@ -363,6 +378,47 @@ describe("export + delete", () => {
     expect(res.body.slice(BOM.length).split("\n")[0]).toBe("id,createdAt,env,userOid,item,meta");
   });
 
+  it("reports column truncation on CSV, but not on JSON", async () => {
+    // Two independent caps. Losing columns costs the owner nothing (the raw
+    // `item` column keeps every key) but they should still be told — and the
+    // claim must not be attached to a JSON export, which has no columns to cap.
+    const wide = () => Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`k${i}`, i]));
+    const { id, slug } = await seedCollection(1, { item: wide });
+
+    const csv = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/contacts/export?format=csv`,
+      headers: authHeader(),
+    });
+    expect(csv.headers["x-helix-export-columns-truncated"]).toBe("12");
+
+    const json = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/contacts/export`,
+      headers: authHeader(),
+    });
+    expect(json.headers["x-helix-export-columns-truncated"]).toBeUndefined();
+
+    const events = await t.prisma.auditEvent.findMany({ where: { appId: id } });
+    const byFormat = (f: string) =>
+      events.find(
+        (e) =>
+          e.action === "collection.exported" && (e.metadata as { format: string }).format === f,
+      );
+    expect(byFormat("csv")!.metadata).toMatchObject({ columnsTruncated: true });
+    expect(byFormat("json")!.metadata).not.toHaveProperty("columnsTruncated");
+  });
+
+  it("does not claim column truncation for a narrow collection", async () => {
+    const { slug } = await seedCollection(1);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/contacts/export?format=csv`,
+      headers: authHeader(),
+    });
+    expect(res.headers["x-helix-export-columns-truncated"]).toBeUndefined();
+  });
+
   it("does not claim truncation on a normal export", async () => {
     const { slug } = await seedCollection(2);
     const res = await t.app.inject({
@@ -382,6 +438,23 @@ describe("export + delete", () => {
       headers: authHeader(),
     });
     expect(res.json().items).toHaveLength(2);
+  });
+
+  it("treats an empty ?env= on the export as absent, and audits it as absent", async () => {
+    const { id, slug } = await seedCollection(2);
+    await seedInto(id, 3, { env: "dev" });
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/collections/contacts/export?env=`,
+      headers: authHeader(),
+    });
+    expect(res.json().items).toHaveLength(5);
+    // The audit row has to read the same as a request that omitted `env` — the
+    // spread must stay empty, not record `env: ""`.
+    const events = await t.prisma.auditEvent.findMany({ where: { appId: id } });
+    expect(events.find((e) => e.action === "collection.exported")!.metadata).not.toHaveProperty(
+      "env",
+    );
   });
 
   it("audits an export", async () => {
