@@ -71,6 +71,13 @@ Legend for gating conditions:
 
 ---
 
+## App-data drain / export
+
+- [ ] **Bound the export's memory, or stream it.** `Pre-GA`. `GET /apps/:slug/collections/:name/export` materialises the whole result set _and_ the whole CSV string before sending. With `MAX_EXPORT_ROWS = 10_000` and the edge's 64 KB per-item cap (`apps/edge/src/gateway/data-handler.ts`), worst case is a multi-hundred-MB allocation on a memory-limited Container App — set up by anonymous visitors stuffing a collection and triggered by the owner. The code shape predates the drain UI, but the UI is what put a button on it, so the path went from API-only to one click; that is a reachability change even though it is not a code regression. Cheap interim: accumulate a byte budget while rendering and stop early, reporting through the `x-helix-export-truncated` mechanism already in place. Real fix is a streamed reply over keyset-paged batches. — docs/design/app-data-storage.md §3.2, dual review of `feat/collection-drain-ui` (2026-08-12)
+- [ ] **Composite cursor for the collection drain.** `Deferred / v2`. `?before=` is `createdAt`-only while the sort is `[createdAt desc, id desc]`, so rows sharing a millisecond at a page boundary are skipped by the next page. Latent today: the SPA never pages (it caps at 200 and points at the export), so the complete-data path does not use the cursor. Fixing it changes a documented response shape (`nextBefore: ISO` → an opaque composite, or Prisma `cursor`/`skip: 1`), which is why it was not bundled with the review fixes. — docs/design/app-data-storage.md §3.2, dual review of `feat/collection-drain-ui` (2026-08-12)
+
+---
+
 ## Threat-model & open questions to document/decide
 
 - [ ] **CSP supply-chain hardening.** Consider SRI or versioned-script pinning for the CDN allowlist; add `object-src 'none'`; decide whether the CDN list should be per-app / opt-in rather than global. Record the third-party stored-XSS exposure on public / shared-write apps in the threat model. — ADR-0009 (DEC-03)

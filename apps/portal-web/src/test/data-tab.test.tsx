@@ -50,6 +50,12 @@ interface Stub {
   collections?: string[];
   exportHeaders?: Record<string, string>;
   onDelete?: (url: string) => void;
+  /** Hold the manifest in flight, or fail it, to exercise the loading gates. */
+  manifest?: "pending" | "error";
+  /** Make the export reject, e.g. an expired token mid-session. */
+  exportStatus?: number;
+  /** Hold the export until this resolves, to observe the in-flight button state. */
+  exportGate?: Promise<void>;
 }
 
 function stubApi(s: Stub = {}): ReturnType<typeof vi.fn> {
@@ -63,6 +69,14 @@ function stubApi(s: Stub = {}): ReturnType<typeof vi.fn> {
       return json({ sub: "alice@azx.dev", via: "oidc", isAdmin: false });
     }
     if (url.includes("/manifest")) {
+      if (s.manifest === "pending") return new Promise(() => {});
+      if (s.manifest === "error") {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { code: "internal", message: "manifest down" } }),
+        });
+      }
       return json({
         app: APP.slug,
         visibility: APP.visibility,
@@ -70,6 +84,21 @@ function stubApi(s: Stub = {}): ReturnType<typeof vi.fn> {
       });
     }
     if (url.includes("/export")) {
+      if (s.exportGate) {
+        return s.exportGate.then(() => ({
+          ok: true,
+          status: 200,
+          text: async () => "id,createdAt\nx,y",
+          headers: new Headers(s.exportHeaders ?? {}),
+        }));
+      }
+      if (s.exportStatus) {
+        return Promise.resolve({
+          ok: false,
+          status: s.exportStatus,
+          json: async () => ({ error: { code: "forbidden", message: "you do not own this app" } }),
+        });
+      }
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -109,21 +138,56 @@ afterEach(() => {
 
 describe("DataTab", () => {
   it("asks for sign-in before fetching anything", async () => {
-    stubApi();
+    const fetchMock = stubApi();
     render();
     expect(await screen.findByText(/sign in to view what this app has collected/i)).toBeDefined();
+    // Earn the name: every app-scoped route is bearer-gated, so an ungated query
+    // here is a background 401, not a free read. AuthProvider's own calls are
+    // expected, hence the filter.
+    const appScoped = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes("/api/v1/apps/"));
+    expect(appScoped).toEqual([]);
+  });
+
+  it("does not claim there are no collections while the manifest is loading", async () => {
+    // The index is the cheaper request, so it lands first. A declared-but-empty
+    // collection would otherwise be told to grant a capability it already has.
+    setToken("t");
+    stubApi({ index: [], collections: ["signups"], manifest: "pending" });
+    render();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/this app has no collections/i)).toBeNull();
+  });
+
+  it("still works off the index when the manifest fails", async () => {
+    // A manifest error must degrade, not spin — and must not accuse a perfectly
+    // normal collection of being undeclared.
+    setToken("t");
+    stubApi({
+      manifest: "error",
+      index: [{ name: "signups", env: "prod", count: 1, lastAt: new Date().toISOString() }],
+      rows: [item()],
+    });
+    render();
+    expect(await screen.findByRole("table")).toBeDefined();
+    expect(screen.queryByText(/no longer declared/i)).toBeNull();
   });
 
   it("renders a column per derived scalar key, namespaced", async () => {
     setToken("t");
+    // Values read off the fixture rather than reconstructed — `item()` numbers
+    // from a module-level counter, so a literal here breaks when tests are added.
+    const rows = [item(), item()];
     stubApi({
       index: [{ name: "signups", env: "prod", count: 2, lastAt: new Date().toISOString() }],
-      rows: [item(), item()],
+      rows,
     });
     render();
     expect(await screen.findByText("item.email")).toBeDefined();
     expect(screen.getByText("item.name")).toBeDefined();
-    expect(screen.getByText("lead1@example.com")).toBeDefined();
+    const first = rows[0]!.item as { email: string };
+    expect(screen.getByText(first.email)).toBeDefined();
   });
 
   it("survives an item that isn't an object", async () => {
@@ -175,6 +239,34 @@ describe("DataTab", () => {
     expect(screen.getByText("dev")).toBeDefined();
   });
 
+  it("spans the full table when a row is expanded, in either tier view", async () => {
+    // The Env column only exists in the All view, so a constant colSpan is short
+    // by one there — and All is exactly where the "Show all" CTA sends the owner.
+    // Asserted against the rendered header count so it survives a new column.
+    setToken("t");
+    stubApi({
+      index: [
+        { name: "signups", env: "prod", count: 1, lastAt: new Date().toISOString() },
+        { name: "signups", env: "dev", count: 1, lastAt: new Date().toISOString() },
+      ],
+      rows: [item()],
+    });
+    render();
+
+    const spanOfDetail = () =>
+      Number(document.querySelector("tbody tr:nth-child(2) td")?.getAttribute("colspan") ?? "0");
+    const headerCount = () => document.querySelectorAll("thead th").length;
+
+    await userEvent.click(await screen.findByLabelText("Show raw item"));
+    expect(spanOfDetail()).toBe(headerCount());
+
+    // The row stays expanded across the switch, so the detail cell is still there
+    // to measure — now against a header that has gained the Env column.
+    await userEvent.click(screen.getByRole("button", { name: /show all/i }));
+    expect(await screen.findByText("Env")).toBeDefined();
+    expect(spanOfDetail()).toBe(headerCount());
+  });
+
   it("flags a collection the manifest no longer declares", async () => {
     setToken("t");
     stubApi({
@@ -213,6 +305,90 @@ describe("DataTab", () => {
     render();
     await userEvent.click(await screen.findByRole("button", { name: /^csv$/i }));
     expect(await screen.findByText(/capped at 10,000 rows/i)).toBeDefined();
+  });
+
+  it("reports both caps when both fire", async () => {
+    // Row and column caps are independent; a single note slot would have made the
+    // later setter win and silently drop the row cap, which is the one that loses
+    // data.
+    setToken("t");
+    stubApi({
+      index: [{ name: "signups", env: "prod", count: 1, lastAt: new Date().toISOString() }],
+      rows: [item()],
+      exportHeaders: {
+        "x-helix-export-truncated": "10000",
+        "x-helix-export-columns-truncated": "12",
+      },
+    });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    render();
+    await userEvent.click(await screen.findByRole("button", { name: /^csv$/i }));
+    expect(await screen.findByText(/capped at 10,000 rows/i)).toBeDefined();
+    expect(screen.getByText(/12 most common fields/i)).toBeDefined();
+  });
+
+  it("presents a failed export as a failure, not as a truncation notice", async () => {
+    // The owner got no file at all here; a warn-toned footnote in the slot a
+    // truncation notice normally occupies reads like the download succeeded.
+    setToken("t");
+    stubApi({
+      index: [{ name: "signups", env: "prod", count: 1, lastAt: new Date().toISOString() }],
+      rows: [item()],
+      exportStatus: 403,
+    });
+    render();
+    await userEvent.click(await screen.findByRole("button", { name: /^csv$/i }));
+    expect(await screen.findByText(/export failed/i)).toBeDefined();
+    expect(screen.queryByText(/capped at/i)).toBeNull();
+  });
+
+  it("clears an export error when the collection changes", async () => {
+    setToken("t");
+    stubApi({
+      index: [
+        { name: "signups", env: "prod", count: 1, lastAt: new Date().toISOString() },
+        { name: "feedback", env: "prod", count: 1, lastAt: new Date().toISOString() },
+      ],
+      collections: ["signups", "feedback"],
+      rows: [item()],
+      exportStatus: 403,
+    });
+    render();
+    await userEvent.click(await screen.findByRole("button", { name: /^csv$/i }));
+    expect(await screen.findByText(/export failed/i)).toBeDefined();
+
+    // A stale "forbidden" pinned across a collection switch would misattribute the
+    // failure to the collection now on screen. `names` is sorted, so the tab opens
+    // on `feedback` and `signups` is the switch.
+    await userEvent.click(screen.getByRole("combobox", { name: /collection/i }));
+    await userEvent.click(await screen.findByText(/^signups ·/));
+    expect(screen.queryByText(/export failed/i)).toBeNull();
+  });
+
+  it("spins only the format being exported, and locks the other", async () => {
+    setToken("t");
+    let release!: () => void;
+    const exportGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    stubApi({
+      index: [{ name: "signups", env: "prod", count: 1, lastAt: new Date().toISOString() }],
+      rows: [item()],
+      exportGate,
+    });
+    render();
+
+    const csv = await screen.findByRole("button", { name: /^csv$/i });
+    const json = screen.getByRole("button", { name: /^json$/i });
+    await userEvent.click(csv);
+
+    expect(csv.hasAttribute("data-loading")).toBe(true);
+    // Not merely cosmetic: two concurrent exports would race the note state and
+    // double the server's peak memory for a 10,000-row pull.
+    expect(json.hasAttribute("data-loading")).toBe(false);
+    expect(json.hasAttribute("disabled")).toBe(true);
+    release();
   });
 
   it("erases an item only after the confirm", async () => {

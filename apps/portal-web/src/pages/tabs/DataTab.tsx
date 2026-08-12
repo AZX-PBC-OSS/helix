@@ -48,6 +48,7 @@ const ROW_LIMIT = 200;
 const CELL_CHARS = 200;
 
 type EnvView = "all" | "prod" | "dev";
+type ExportFormat = "csv" | "json";
 
 export function DataTab({ app }: { app: App }) {
   const { authenticated, login, loginAvailable } = useAuth();
@@ -58,11 +59,15 @@ export function DataTab({ app }: { app: App }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CollectionItem | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  // A capped export is a warning about a file the owner *did* get; a failed one
+  // means there is no file at all. Rendering both through one slot presented an
+  // outright failure as a footnote, so they are separate state and separate tone.
   const [exportNote, setExportNote] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const index = useQuery({ ...collectionsIndexQuery(app.slug), enabled: authenticated });
-  const manifest = useQuery(manifestQuery(app.slug));
+  const manifest = useQuery({ ...manifestQuery(app.slug), enabled: authenticated });
   const del = useDeleteCollectionItem();
 
   const summaries = index.data ?? [];
@@ -100,10 +105,15 @@ export function DataTab({ app }: { app: App }) {
   const countFor = (name: string) =>
     summaries.filter((s) => s.name === name).reduce((n, s) => n + s.count, 0);
 
-  async function onExport(format: "csv" | "json") {
-    if (!collection) return;
-    setExporting(true);
+  function clearExportState() {
     setExportNote(null);
+    setExportError(null);
+  }
+
+  async function onExport(format: ExportFormat) {
+    if (!collection) return;
+    setExporting(format);
+    clearExportState();
     try {
       const q = new URLSearchParams({ format });
       if (envView !== "all") q.set("env", envView);
@@ -117,18 +127,29 @@ export function DataTab({ app }: { app: App }) {
         body,
         format === "csv" ? "text/csv" : "application/json",
       );
-      // Never present a capped file as a complete one. Spelled out rather than
-      // abbreviated — "10.0k" is not a number you can reason about a cap with.
-      const cap = headers.get("x-helix-export-truncated");
-      if (cap) {
-        setExportNote(
-          `Export capped at ${Number(cap).toLocaleString()} rows — the oldest rows are omitted.`,
+      // Never present a capped file as a complete one. Both caps can fire at once,
+      // so they accumulate — two sequential setters would be last-writer-wins and
+      // the row cap (the one that actually loses data) is the likelier casualty.
+      // Spelled out rather than abbreviated: "10.0k" is not a number you can
+      // reason about a cap with.
+      const notes: string[] = [];
+      const rowCap = headers.get("x-helix-export-truncated");
+      if (rowCap) {
+        notes.push(
+          `Export capped at ${Number(rowCap).toLocaleString()} rows — the oldest rows are omitted.`,
         );
       }
+      const colCap = headers.get("x-helix-export-columns-truncated");
+      if (colCap) {
+        notes.push(
+          `Only the ${Number(colCap).toLocaleString()} most common fields got their own column — the rest are in the raw item column.`,
+        );
+      }
+      setExportNote(notes.length ? notes.join(" ") : null);
     } catch (e) {
-      setExportNote(e instanceof Error ? e.message : "export failed");
+      setExportError(e instanceof Error ? e.message : "export failed");
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   }
 
@@ -147,7 +168,14 @@ export function DataTab({ app }: { app: App }) {
       </Hint>
     );
   }
-  if (index.isPending) {
+  // Both, because `names` unions the index with the manifest's declared list: a
+  // brand-new app whose index resolves first would otherwise be told to grant a
+  // capability it already has, and then flip to the table. Costs the slower of two
+  // parallel requests, which is the right trade against showing wrong advice.
+  //
+  // MUST stay below the `!authenticated` return above — a disabled react-query
+  // query reports `pending`, so a signed-out visitor would spin here forever.
+  if (index.isPending || manifest.isPending) {
     return (
       <Center py={60}>
         <Loader size="sm" />
@@ -175,7 +203,8 @@ export function DataTab({ app }: { app: App }) {
   // query is in flight, and warning that a perfectly normal collection is
   // undeclared every time the tab opens would train the owner to ignore it.
   const undeclared = manifest.isSuccess && collection !== null && !declared.includes(collection);
-  const totalCols = columns.keys.length + 3; // env, when, app columns, actions
+  // chevron + when + [env, only in the All view] + derived keys + actions.
+  const totalCols = columns.keys.length + (envView === "all" ? 4 : 3);
 
   return (
     <Stack gap={18} className="az-stagger">
@@ -188,7 +217,7 @@ export function DataTab({ app }: { app: App }) {
             onChange={(v) => {
               setSelected(v);
               setExpanded(null);
-              setExportNote(null);
+              clearExportState();
             }}
             allowDeselect={false}
             w={260}
@@ -206,26 +235,30 @@ export function DataTab({ app }: { app: App }) {
           />
         </Group>
         <Group gap={8}>
-          <Button
-            variant="default"
-            size="xs"
-            leftSection={<Icon name="download" size={14} />}
-            loading={exporting}
-            onClick={() => void onExport("csv")}
-          >
-            CSV
-          </Button>
-          <Button
-            variant="default"
-            size="xs"
-            leftSection={<Icon name="download" size={14} />}
-            loading={exporting}
-            onClick={() => void onExport("json")}
-          >
-            JSON
-          </Button>
+          {/* Only the clicked format spins, but both are disabled while either is
+              in flight: concurrent exports would race the shared note state and
+              double the server's peak memory for a 10,000-row pull. */}
+          {(["csv", "json"] as const).map((format) => (
+            <Button
+              key={format}
+              variant="default"
+              size="xs"
+              leftSection={<Icon name="download" size={14} />}
+              loading={exporting === format}
+              disabled={exporting !== null}
+              onClick={() => void onExport(format)}
+            >
+              {format.toUpperCase()}
+            </Button>
+          ))}
         </Group>
       </Group>
+
+      {exportError && (
+        <Hint icon="alert" tone="bad">
+          Export failed: {exportError}
+        </Hint>
+      )}
 
       {exportNote && (
         <Hint icon="alert" tone="warn">

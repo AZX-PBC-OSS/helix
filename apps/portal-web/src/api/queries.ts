@@ -68,7 +68,11 @@ export const versionsQuery = (slug: string) =>
       fetchJson(z.array(VersionSchema), `/api/v1/apps/${encodeURIComponent(slug)}/versions`),
   });
 
-/** An app's capability manifest (M4 gateway grants). Open read. */
+/**
+ * An app's capability manifest (M4 gateway grants). Bearer-gated server-side like
+ * the rest of `/api/v1` — gate it on `authenticated` via `enabled`, or it 401s in
+ * the background for a signed-out visitor.
+ */
 export const manifestQuery = (slug: string) =>
   queryOptions({
     queryKey: ["apps", slug, "manifest"],

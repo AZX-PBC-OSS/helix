@@ -153,6 +153,11 @@ export function csvCell(rendered: string): string {
  * Leads with a UTF-8 BOM so Excel reads non-ASCII names (a contact list full of
  * mojibake is worse than the cost, which is that byte-oriented consumers should
  * decode as `utf-8-sig`).
+ *
+ * Rows are LF-separated, not RFC-4180's CRLF — every parser accepts LF, and the
+ * RFC conformance claimed above is about *cell quoting*, which is what actually
+ * decides whether a value survives a round trip. Recorded so the choice reads as
+ * deliberate.
  */
 export function collectionCsv(items: readonly CollectionItem[]): {
   csv: string;
