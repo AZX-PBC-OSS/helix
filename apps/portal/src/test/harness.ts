@@ -24,19 +24,29 @@ export interface TestApp {
   close(): Promise<void>;
 }
 
+/** A client on the test database — for tests that need to wrap it before injecting. */
+export function createTestPrisma(): PrismaClient {
+  return createPrismaClient(TEST_DATABASE_URL);
+}
+
 /**
  * Build a portal app wired to the test database and an in-memory blob store.
  * The injected PrismaClient is owned here (the prisma plugin won't disconnect
  * it), so `close()` disposes it.
+ *
+ * Pass `prisma` to inject a wrapped client — a `$extends` query extension is the
+ * only way to make a specific write fail, which is what proves a route's
+ * multi-statement work actually rolls back. `close()` disposes it either way.
  */
 export function buildTestApp(
-  opts: Pick<BuildAppOptions, "auth" | "spaDist" | "secretStore"> = {},
+  opts: Pick<BuildAppOptions, "auth" | "spaDist" | "secretStore"> & { prisma?: PrismaClient } = {},
 ): TestApp {
-  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  const prisma = opts.prisma ?? createPrismaClient(TEST_DATABASE_URL);
   const blob = new InMemoryBlobStore();
   // spaDist: null pins tests to the stopgap dashboard regardless of whether
   // the developer has built apps/portal-web (spa.test.ts opts back in).
-  const app = buildApp({ prisma, blobStore: blob, spaDist: null, ...opts });
+  // `prisma` last: the resolved client wins even if opts carries the key as undefined.
+  const app = buildApp({ blobStore: blob, spaDist: null, ...opts, prisma });
   return {
     app,
     prisma,

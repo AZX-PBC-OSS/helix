@@ -7,6 +7,7 @@ import {
   type CollectionItem,
   type Env,
 } from "@azx-pbc/shared";
+import type { Prisma, PrismaClient } from "../db/client.js";
 import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 
@@ -118,8 +119,17 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
     return row.id;
   }
 
-  const audit = (appId: string, actor: string, action: string, metadata: object) =>
-    app.prisma.auditEvent.create({ data: { appId, actor, action, metadata } });
+  /**
+   * Takes its client so it can run inside a transaction — the erasure audits
+   * atomically with the delete, while the export audits on the plain client.
+   */
+  const audit = (
+    db: Pick<PrismaClient, "auditEvent"> | Prisma.TransactionClient,
+    appId: string,
+    actor: string,
+    action: string,
+    metadata: object,
+  ) => db.auditEvent.create({ data: { appId, actor, action, metadata } });
 
   /**
    * What this app has actually collected, per (collection, env).
@@ -220,7 +230,7 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
       // secret, which is audited — and platform-admins pass `ownsApp`, so this row
       // is what makes a cross-owner read reviewable after the fact. The paginated
       // list is deliberately not audited: too chatty to be worth reading.
-      await audit(appId, actor.sub, "collection.exported", {
+      await audit(app.prisma, appId, actor.sub, "collection.exported", {
         collection: req.params.name,
         ...env,
         format,
@@ -249,18 +259,28 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const actor = requireActor(req);
+      // Resolved before the transaction so the interactive-transaction budget
+      // covers only the two writes.
       const appId = await appIdFor(req.params.slug);
-      const result = await app.prisma.appCollectionItem.deleteMany({
-        where: { id: req.params.id, appId, collection: req.params.name },
-      });
-      if (result.count === 0) {
-        throw new AppError("not_found", "item not found");
-      }
-      // An erasure that leaves no trace is indistinguishable from data loss —
-      // and this is the route a subject-access request is answered with.
-      await audit(appId, actor.sub, "collection.item_deleted", {
-        collection: req.params.name,
-        id: req.params.id,
+
+      // One transaction, because an erasure that leaves no trace is
+      // indistinguishable from data loss — and this is the route a
+      // subject-access request is answered with, where "we erased it" has to be
+      // provable afterwards. Interactive rather than batched: the 404 has to be
+      // able to roll the delete back, and a batched `$transaction([...])` would
+      // commit both statements before the count check could throw, leaving a
+      // `collection.item_deleted` row asserting an erasure that never happened.
+      await app.prisma.$transaction(async (tx) => {
+        const result = await tx.appCollectionItem.deleteMany({
+          where: { id: req.params.id, appId, collection: req.params.name },
+        });
+        if (result.count === 0) {
+          throw new AppError("not_found", "item not found");
+        }
+        await audit(tx, appId, actor.sub, "collection.item_deleted", {
+          collection: req.params.name,
+          id: req.params.id,
+        });
       });
       return reply.status(204).send();
     },

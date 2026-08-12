@@ -1,7 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BOM } from "@azx-pbc/shared";
 import type { Prisma } from "../db/client.js";
-import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
+import type { PrismaClient } from "../db/client.js";
+import {
+  authHeader,
+  buildTestApp,
+  createTestPrisma,
+  uniqueSlug,
+  type TestApp,
+} from "../test/harness.js";
 import { exportWindow, MAX_EXPORT_ROWS } from "./data.js";
 
 /**
@@ -393,6 +400,74 @@ describe("export + delete", () => {
       rows: 2,
       truncated: false,
     });
+  });
+
+  it("rolls the erasure back when the audit write fails", async () => {
+    // The property the transaction exists for, and the only test that fails if it
+    // is removed. A deletion that commits while its audit row does not is
+    // indistinguishable from data loss — on the route a subject-access request is
+    // answered with, where "we erased it" has to be provable afterwards.
+    const failing = createTestPrisma().$extends({
+      query: {
+        auditEvent: {
+          create() {
+            throw new Error("audit unavailable");
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    // Seed through the healthy app — creating an app audits too, so the failing
+    // client cannot be used to set the fixture up.
+    const { id, slug } = await seedCollection(1);
+    const item = await t.prisma.appCollectionItem.findFirstOrThrow({ where: { appId: id } });
+
+    const bad = buildTestApp({ prisma: failing });
+    await bad.app.ready();
+    try {
+      const res = await bad.app.inject({
+        method: "DELETE",
+        url: `/api/v1/apps/${slug}/collections/contacts/items/${item.id}`,
+        headers: authHeader(),
+      });
+      expect(res.statusCode).toBe(500);
+      // Read back on the healthy client: the row must still be there.
+      expect(await t.prisma.appCollectionItem.count({ where: { id: item.id } })).toBe(1);
+    } finally {
+      await bad.close();
+    }
+  });
+
+  it("404s an unknown item without writing an audit row", async () => {
+    // The erasure and its audit row commit together, so a delete that matched
+    // nothing must leave nothing behind. Batching the two statements and throwing
+    // afterwards would commit first and leave a `collection.item_deleted` row
+    // asserting an erasure that never happened — a lie in the ledger a
+    // subject-access request is answered from, and owner-triggerable at will.
+    const { id, slug } = await seedCollection(1);
+    const res = await t.app.inject({
+      method: "DELETE",
+      url: `/api/v1/apps/${slug}/collections/contacts/items/00000000-0000-0000-0000-000000000000`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(404);
+    const events = await t.prisma.auditEvent.findMany({ where: { appId: id } });
+    expect(events.filter((e) => e.action === "collection.item_deleted")).toEqual([]);
+    // And the real row is untouched.
+    expect(await t.prisma.appCollectionItem.count({ where: { appId: id } })).toBe(1);
+  });
+
+  it("404s an item addressed under the wrong collection, without auditing", async () => {
+    const { id, slug } = await seedCollection(1);
+    const item = await t.prisma.appCollectionItem.findFirst({ where: { appId: id } });
+    const res = await t.app.inject({
+      method: "DELETE",
+      url: `/api/v1/apps/${slug}/collections/feedback/items/${item!.id}`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(404);
+    const events = await t.prisma.auditEvent.findMany({ where: { appId: id } });
+    expect(events.filter((e) => e.action === "collection.item_deleted")).toEqual([]);
+    expect(await t.prisma.appCollectionItem.count({ where: { appId: id } })).toBe(1);
   });
 
   it("deletes one item (owner erasure) and audits it", async () => {
