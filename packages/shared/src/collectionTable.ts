@@ -150,6 +150,18 @@ export function csvCell(rendered: string): string {
  * The owner's CSV: platform columns, the derived app columns, then the raw
  * `item`/`meta` JSON as a lossless fallback for copy-paste and scripting.
  *
+ * **The layout is anchored from both ends.** `id, createdAt, env, userOid` are
+ * always the first four columns and `item, meta` are always the last two; only
+ * the derived block in between varies in width, so the raw columns sit at a
+ * different absolute index for every collection. That is deliberate rather than
+ * incidental: this file is meant to be *read*, and derivation exists so the owner
+ * opens it to `email` and `name` rather than to JSON. Moving the raw blob left to
+ * win a fixed index would put a cell that can hold 64 KB
+ * (`MAX_VALUE_BYTES` at the edge) ahead of the columns they opened the file for.
+ *
+ * Anything that needs stable offsets should use the JSON export instead — the
+ * `?format=json` shape is fixed and does not depend on what was collected.
+ *
  * Leads with a UTF-8 BOM so Excel reads non-ASCII names (a contact list full of
  * mojibake is worse than the cost, which is that byte-oriented consumers should
  * decode as `utf-8-sig`).

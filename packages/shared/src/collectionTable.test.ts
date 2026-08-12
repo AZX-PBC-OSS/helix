@@ -203,6 +203,26 @@ describe("collectionCsv", () => {
     expect(header).toBe("id,createdAt,env,userOid,item.email,item.name,item,meta");
   });
 
+  it("anchors the platform columns to both ends, whatever the derived width", () => {
+    // The raw columns sit at a different absolute index per collection — only the
+    // derived block in between varies. Asserted as a property across two very
+    // different shapes, so a reorder trips here rather than in someone's
+    // spreadsheet. Anything needing fixed offsets should read the JSON export.
+    const headerOf = (item: unknown) =>
+      collectionCsv([row(item)])
+        .csv.slice(BOM.length)
+        .split("\n")[0]!
+        .split(",");
+
+    for (const shape of [{ email: "a@b.c" }, { a: 1, b: 2, c: 3, d: 4, e: 5 }, "not an object"]) {
+      const cols = headerOf(shape);
+      expect(cols.slice(0, 4)).toEqual(["id", "createdAt", "env", "userOid"]);
+      expect(cols.slice(-2)).toEqual(["item", "meta"]);
+      // Everything between the two anchors is derived, and nothing else is.
+      expect(cols.slice(4, -2).every((c) => c.startsWith("item."))).toBe(true);
+    }
+  });
+
   it("namespaces app keys so they can never collide with a platform column", () => {
     // An app that posts {"env": "..."} must not shadow the platform's env column.
     const { csv } = collectionCsv([row({ env: "spoofed", id: "spoofed" })]);
