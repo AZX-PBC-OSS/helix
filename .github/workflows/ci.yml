@@ -72,7 +72,10 @@ jobs:
       PORTAL_OIDC_ALLOW_INSECURE: "true"
       AZX_CLI_CLIENT_ID: azx-cli
       PORTAL_ADMIN_GROUP_ID: platform-admin
-      PORTAL_ALLOW_SELF_APPROVE: "true"
+      # PORTAL_ALLOW_SELF_APPROVE is deliberately NOT set here. It is a dev-only
+      # escape hatch for a solo operator (the devcontainer sets it), and running
+      # CI with separation of duty waived hid an order-dependence in the
+      # approvals suite. The suite pins the flag itself in vitest.config.ts.
       PORTAL_DEV_ACTOR_GROUPS: platform-admin
       EDGE_DEV_ALLOW_UNAUTHENTICATED: "false"
       EDGE_ALLOW_PUBLIC_APPS: "true"
