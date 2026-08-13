@@ -79,7 +79,7 @@ describe("DeployModal", () => {
 
     await userEvent.click(await screen.findByRole("radio", { name: "New app" }));
     // The registration form itself, not a link off to somewhere else.
-    expect(await screen.findByRole("textbox", { name: /slug/i })).toBeDefined();
+    expect(await screen.findByRole("textbox", { name: /subdomain/i })).toBeDefined();
     expect(screen.getByRole("button", { name: /create & continue/i })).toBeDefined();
   });
 
@@ -112,7 +112,7 @@ describe("DeployModal", () => {
     render();
 
     await userEvent.click(await screen.findByRole("radio", { name: "New app" }));
-    await userEvent.type(await screen.findByRole("textbox", { name: /slug/i }), "standup");
+    await userEvent.type(await screen.findByRole("textbox", { name: /subdomain/i }), "standup");
     await userEvent.type(screen.getByRole("textbox", { name: /display name/i }), "Standup");
     await userEvent.click(screen.getByRole("button", { name: /create & continue/i }));
 

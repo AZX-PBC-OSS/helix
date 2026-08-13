@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Button, Group, Radio, Stack, Text, TextInput } from "@mantine/core";
+import { Alert, Box, Button, Group, Radio, Stack, Text, TextInput } from "@mantine/core";
 import { SLUG_PATTERN, type App, type Visibility, type VisibilityMode } from "@azx-pbc/shared";
 import { useCreateApp } from "../api/mutations";
 import { useAuth } from "../auth/AuthProvider";
@@ -53,7 +53,7 @@ export function AppCreateForm({
     if (o.mode === "password" && !allowPasswordApps) return false;
     return true;
   });
-  const { appHost } = useDeployment();
+  const { appsHost } = useDeployment();
   const create = useCreateApp();
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -70,20 +70,35 @@ export function AppCreateForm({
 
   return (
     <Stack gap="md">
-      <TextInput
-        label="Slug"
-        description={
-          // Falls back to the generic description until the deployment config
-          // arrives — we don't preview a host we can't name yet.
-          (slug && slugValid && appHost(slug) ? `Will serve at ${appHost(slug)}` : null) ??
-          "Lowercase DNS label — it becomes the subdomain and the isolation boundary"
-        }
-        placeholder="cost-explorer"
-        value={slug}
-        onChange={(e) => setSlug(e.currentTarget.value.toLowerCase())}
-        error={slug && !slugValid ? "a-z, 0-9, hyphens; must start/end alphanumeric" : undefined}
-        classNames={{ input: "az-mono" }}
-      />
+      <Stack gap={6}>
+        <TextInput
+          label="Subdomain"
+          description="Pick the web address for your app. Lowercase letters, numbers, and hyphens."
+          placeholder="cost-explorer"
+          value={slug}
+          onChange={(e) => setSlug(e.currentTarget.value.toLowerCase())}
+          error={
+            slug && !slugValid ? "a-z, 0-9, hyphens; must start and end with a letter or number" : undefined
+          }
+          classNames={{ input: "az-mono" }}
+        />
+        {/* Live preview of the address they're building. The suffix is fixed by
+            the deployment; only the leading label is theirs to choose — showing
+            it assembled makes the subdomain concept legible without the word. */}
+        {appsHost && (
+          <Box className="az-mono" style={{ fontSize: "0.8rem", wordBreak: "break-all" }}>
+            <Text span c="dark.2" inherit>
+              https://
+            </Text>
+            <Text span c={slug && !slugValid ? "red.4" : slug ? "teal.4" : "dark.2"} fw={600} inherit>
+              {slug || "cost-explorer"}
+            </Text>
+            <Text span c="dark.2" inherit>
+              .{appsHost}
+            </Text>
+          </Box>
+        )}
+      </Stack>
       <TextInput
         label="Display name"
         placeholder="Cost Explorer"
