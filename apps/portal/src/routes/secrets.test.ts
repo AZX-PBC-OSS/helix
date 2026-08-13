@@ -1,6 +1,7 @@
-import { randomBytes } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomBytes, randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { DevEnvelopeSecretStore } from "@azx-pbc/secret-store";
+import type { TokenVerifier } from "../plugins/auth.js";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
@@ -675,4 +676,73 @@ describe("an unreadable stored recipe degrades one row, not the response", () =>
       expect(del.statusCode).toBe(204);
     },
   );
+});
+
+/**
+ * The admin gate on the global/platform secret routes.
+ *
+ * The suite above drives these with the dev token, which carries the admin group
+ * from `PORTAL_DEV_ACTOR_GROUPS` — so every one of them was only ever exercised
+ * from the allowed side. These routes are the ones that read and write
+ * connection secrets, which makes an unwired `requireAdmin` the worst gate to
+ * lose silently; this is the `ownership.test.ts` treatment for it.
+ *
+ * Its own app instance with an injected verifier chain, so the shared `t` and
+ * its dev-token callers above stay untouched.
+ */
+describe("global + platform secret routes refuse a non-admin", () => {
+  const ADMIN_GROUP = "platform-admin";
+  const verifiers: TokenVerifier[] = [
+    {
+      verify: async (token) => {
+        if (token === "admin") return { sub: "admin@azx.io", via: "oidc", groups: [ADMIN_GROUP] };
+        if (token === "plain") return { sub: "plain@azx.io", via: "oidc", groups: [] };
+        return null;
+      },
+    },
+  ];
+  const admin = { authorization: "Bearer admin" };
+  const plain = { authorization: "Bearer plain" };
+
+  // Every route behind `requireAdmin` in this file. The gate is the first
+  // statement of each handler, ahead of any zod parse or DB read, so a random
+  // id and an empty body still reach it — and nothing is mutated on the way.
+  const ADMIN_ROUTES: [
+    method: "GET" | "POST" | "DELETE",
+    name: string,
+    urlOf: (id: string) => string,
+  ][] = [
+    ["GET", "list", () => "/api/v1/secrets"],
+    ["POST", "create", () => "/api/v1/secrets"],
+    ["POST", "rotate", (id) => `/api/v1/secrets/${id}/rotate`],
+    ["DELETE", "delete", (id) => `/api/v1/secrets/${id}`],
+    ["POST", "grant", (id) => `/api/v1/secrets/${id}/grants`],
+    ["DELETE", "revoke", (id) => `/api/v1/secrets/${id}/grants/some-app`],
+  ];
+
+  let g: TestApp;
+
+  beforeAll(async () => {
+    vi.stubEnv("PORTAL_ADMIN_GROUP_ID", ADMIN_GROUP);
+    g = buildTestApp({ secretStore: store, auth: { verifiers, publicConfig: null } });
+    await g.app.ready();
+  });
+
+  afterAll(async () => {
+    await g.close();
+    vi.unstubAllEnvs();
+  });
+
+  it.each(ADMIN_ROUTES)("refuses %s (%s)", async (method, _name, urlOf) => {
+    const res = await g.app.inject({ method, url: urlOf(randomUUID()), headers: plain });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("forbidden");
+  });
+
+  it.each(ADMIN_ROUTES)("admits an admin to %s (%s)", async (method, _name, urlOf) => {
+    // Positive control: these ids don't exist, so the routes land on a 400/404/
+    // 201 downstream — the point is only that the gate is not what stopped them.
+    const res = await g.app.inject({ method, url: urlOf(randomUUID()), headers: admin });
+    expect(res.statusCode).not.toBe(403);
+  });
 });
