@@ -132,6 +132,8 @@ membership in `PORTAL_ADMIN_GROUP_ID` carried as a **group claim in the verified
 operator drive the loop. A sharp edge of the split model — baseline writes commit freely while a
 request is open — is handled by a `baseSnapshot` taken at request time and an optimistic-concurrency
 check at approve time that auto-bounces a stale request to `needs_changes` rather than clobbering.
+A pending request **never expires** — it waits for a human decision, by design ([ADR-0039](../adr/0039-no-approval-request-expiry.md)) — so the
+queue instead shows how long each request has been pending and sorts oldest-first.
 
 ## Where it shows up in the UI
 

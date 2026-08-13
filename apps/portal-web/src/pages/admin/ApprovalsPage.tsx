@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Card,
@@ -17,7 +17,7 @@ import { approvalsQuery } from "../../api/queries";
 import { useApproveRequest, useDenyRequest, useRequestChanges } from "../../api/mutations";
 import { Icon, type IconName } from "../../components/Icon";
 import { Hint, PageHead, ToneBadge, type Tone } from "../../components/primitives";
-import { timeAgo } from "../../lib/format";
+import { daysSince } from "../../lib/format";
 
 /** The approvals queue for above-baseline capability grants (real, M4+). */
 
@@ -26,6 +26,16 @@ const RISK_META: Record<ApprovalRequest["risk"], [Tone, string]> = {
   med: ["warn", "ELEVATED"],
   low: ["info", "ROUTINE"],
 };
+
+/**
+ * Staleness signal. Pending requests never expire (ADR-0038) — nothing sweeps
+ * them, so the queue's job is to make an un-reviewed request harder to ignore
+ * the longer it sits, not to hide it.
+ */
+const ageTone = (days: number): Tone => (days >= 30 ? "bad" : days >= 7 ? "warn" : "neutral");
+
+/** Uppercase to sit alongside the risk badges (`HIGH RISK` / `ELEVATED`). */
+const ageLabel = (days: number) => (days === 0 ? "PENDING <1D" : `PENDING ${days}D`);
 
 /** Derive a human label + icon for a request from the kinds of deltas it carries. */
 function kindMeta(deltas: Delta[]): [IconName, string] {
@@ -66,7 +76,14 @@ export function ApprovalsPage() {
     setNote("");
   };
 
-  const requests = queue.data ?? [];
+  // Oldest first. The API sorts `createdAt desc` (it also serves the app-detail
+  // banner, where newest-first is right), but a review queue is FIFO work — and
+  // newest-first is exactly what lets an old request drift off the bottom.
+  const requests = useMemo(
+    () => [...(queue.data ?? [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    [queue.data],
+  );
+  const oldestDays = requests[0] ? daysSince(requests[0].createdAt) : null;
 
   return (
     <div className="az-stagger">
@@ -75,9 +92,16 @@ export function ApprovalsPage() {
         title="Approvals"
         sub="Capability change requests."
         actions={
-          <ToneBadge tone="violet" icon="shield">
-            {requests.length} pending
-          </ToneBadge>
+          <>
+            <ToneBadge tone="violet" icon="shield">
+              {requests.length} pending
+            </ToneBadge>
+            {oldestDays !== null && (
+              <ToneBadge tone={ageTone(oldestDays)} icon="clock">
+                oldest {oldestDays}d
+              </ToneBadge>
+            )}
+          </>
         }
       />
 
@@ -111,6 +135,7 @@ export function ApprovalsPage() {
         {requests.map((a) => {
           const [icon, label] = kindMeta(a.deltas);
           const [riskTone, riskLabel] = RISK_META[a.risk];
+          const days = daysSince(a.createdAt);
           const busy =
             (approve.isPending && approve.variables?.id === a.id) ||
             (deny.isPending && deny.variables?.id === a.id) ||
@@ -122,9 +147,9 @@ export function ApprovalsPage() {
                   <Group gap={10} mb={10} wrap="wrap">
                     <ToneBadge icon={icon}>{label}</ToneBadge>
                     <ToneBadge tone={riskTone}>{riskLabel}</ToneBadge>
-                    <Text className="az-mono" fz={12} c="dark.2">
-                      {timeAgo(a.createdAt)}
-                    </Text>
+                    <ToneBadge tone={ageTone(days)} icon="clock">
+                      {ageLabel(days)}
+                    </ToneBadge>
                   </Group>
                   {a.reason && (
                     <Text size="sm" c="dark.2" maw={560} lh={1.5}>
