@@ -1,4 +1,5 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { TokenVerifier } from "../plugins/auth.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
@@ -28,8 +29,13 @@ beforeAll(async () => {
   await t.app.ready();
 });
 
+// Every env override in this file goes through `vi.stubEnv`, so one hook undoes
+// them all — including on a failing assertion, which an inline restore misses.
+// `PORTAL_ALLOW_SELF_APPROVE` is pinned "false" for the suite in vitest.config.ts;
+// before that, this file only cleared it *after* the first test, so the
+// separation-of-duty assertions below passed on file order alone.
 afterEach(() => {
-  delete process.env.PORTAL_ALLOW_SELF_APPROVE;
+  vi.unstubAllEnvs();
 });
 
 afterAll(async () => {
@@ -39,19 +45,39 @@ afterAll(async () => {
 /** Create an app owned by OWNER and file an elevated (mcp) request on it. */
 async function appWithPendingRequest() {
   const slug = uniqueSlug();
-  await t.app.inject({
+  const created = await t.app.inject({
     method: "POST",
     url: "/api/v1/apps",
     headers: owner,
     payload: { slug, displayName: "Gated" },
   });
+  expect(created.statusCode).toBe(201);
   const put = await t.app.inject({
     method: "PUT",
     url: `/api/v1/apps/${slug}/manifest`,
     headers: owner,
     payload: { capabilities: { mcp: ["pagerduty"] }, reason: "need paging" },
   });
-  return { slug, requestId: put.json().pending as string };
+  expect(put.statusCode).toBe(200);
+  return {
+    slug,
+    appId: created.json().id as string,
+    requestId: put.json().pending as string,
+  };
+}
+
+/**
+ * The audit `action` strings written for one app, sorted.
+ *
+ * Sorted, not chronological: `createdAt` defaults to CURRENT_TIMESTAMP, which in
+ * Postgres is *transaction start* time — so the effective-mutation event and the
+ * `approval.approve` written in the same approve txn carry identical timestamps
+ * and have no stable order. Every app here comes from `uniqueSlug()`, so this is
+ * scoped to one test and safe to compare exactly.
+ */
+async function auditActions(appId: string): Promise<string[]> {
+  const events = await t.prisma.auditEvent.findMany({ where: { appId } });
+  return events.map((e) => e.action).sort();
 }
 
 describe("GET /api/v1/approvals", () => {
@@ -89,10 +115,43 @@ describe("GET /api/v1/approvals", () => {
     });
     expect(forbidden.statusCode).toBe(403);
   });
+});
 
-  it("refuses the global queue to non-admins", async () => {
-    const res = await t.app.inject({ method: "GET", url: "/api/v1/approvals", headers: owner });
+describe("admin gate", () => {
+  // Every route behind `requireAdmin`. On each, the gate is the first statement
+  // of the handler — ahead of any zod parse or DB read — so one shared pending
+  // request and an empty body are enough to reach it, and it 403s before the
+  // request is ever touched, which is why the fixture is reusable.
+  const ADMIN_ROUTES: [method: "GET" | "POST", name: string, urlOf: (id: string) => string][] = [
+    ["GET", "the global queue", () => "/api/v1/approvals"],
+    ["POST", "approve", (id) => `/api/v1/approvals/${id}/approve`],
+    ["POST", "deny", (id) => `/api/v1/approvals/${id}/deny`],
+    ["POST", "needs_changes", (id) => `/api/v1/approvals/${id}/needs_changes`],
+  ];
+
+  let requestId: string;
+  beforeAll(async () => {
+    ({ requestId } = await appWithPendingRequest());
+  });
+
+  it.each(ADMIN_ROUTES)("refuses %s (%s) to a non-admin", async (method, _name, urlOf) => {
+    const res = await t.app.inject({ method, url: urlOf(requestId), headers: owner });
     expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("forbidden");
+  });
+
+  it("refuses a decision when no admin group is configured", async () => {
+    vi.stubEnv("PORTAL_ADMIN_GROUP_ID", undefined);
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+    expect(res.statusCode).toBe(403);
+    // The actor here IS in the admin group, so the message is what separates
+    // "not configured" from the ordinary role denial — without it this passes
+    // for the wrong reason.
+    expect(res.json().error.message).toMatch(/PORTAL_ADMIN_GROUP_ID/);
   });
 });
 
@@ -116,13 +175,37 @@ describe("approve", () => {
     expect(manifest.json().capabilities.mcp).toEqual(["pagerduty"]);
   });
 
-  it("is idempotent — a second approve is a no-op", async () => {
-    const { requestId } = await appWithPendingRequest();
+  it("writes both the effective mutation and the decision as separate audit rows", async () => {
+    // docs/design/approvals.md §2 step 5: an approve writes TWO events — the
+    // effective-mutation action AND an `approval.approve`. The audit page relies
+    // on that to show a capability change and the decision authorising it as
+    // separate rows. Exact-equal, not `toContain`: a dropped or duplicated row
+    // is exactly the regression this is here to catch.
+    const { appId, requestId } = await appWithPendingRequest();
     await t.app.inject({
       method: "POST",
       url: `/api/v1/approvals/${requestId}/approve`,
       headers: admin,
     });
+    // No `app.manifest.set` at request time: `{ mcp: [...] }` is wholly
+    // elevated, so the write-gate committed no baseline deltas.
+    expect(await auditActions(appId)).toEqual([
+      "app.create",
+      "app.manifest.set",
+      "approval.approve",
+      "approval.request",
+    ]);
+  });
+
+  it("is idempotent — a second approve is a no-op", async () => {
+    const { appId, requestId } = await appWithPendingRequest();
+    await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+    const afterFirst = await auditActions(appId);
+
     const second = await t.app.inject({
       method: "POST",
       url: `/api/v1/approvals/${requestId}/approve`,
@@ -130,16 +213,9 @@ describe("approve", () => {
     });
     expect(second.statusCode).toBe(200);
     expect(second.json().status).toBe("approved");
-  });
-
-  it("refuses a non-admin approver", async () => {
-    const { requestId } = await appWithPendingRequest();
-    const res = await t.app.inject({
-      method: "POST",
-      url: `/api/v1/approvals/${requestId}/approve`,
-      headers: owner,
-    });
-    expect(res.statusCode).toBe(403);
+    // The status alone would survive a refactor that re-applied the deltas and
+    // re-emitted the events; an unchanged audit trail is what pins the no-op.
+    expect(await auditActions(appId)).toEqual(afterFirst);
   });
 
   it("blocks self-approval unless the dev flag is set (separation of duty)", async () => {
@@ -166,7 +242,7 @@ describe("approve", () => {
     });
     expect(blocked.statusCode).toBe(403);
 
-    process.env.PORTAL_ALLOW_SELF_APPROVE = "true";
+    vi.stubEnv("PORTAL_ALLOW_SELF_APPROVE", "true");
     const allowed = await t.app.inject({
       method: "POST",
       url: `/api/v1/approvals/${requestId}/approve`,
@@ -176,8 +252,47 @@ describe("approve", () => {
     expect(allowed.json().status).toBe("approved");
   });
 
+  it("writes externalOrigins once the origin grant is approved", async () => {
+    // The one-click grant from the Violations screen (approvals.md §6.2). csp.test.ts
+    // covers it being opened as a med-risk request and stops there — this is the
+    // other half, and the only end-to-end run of the capDelta path for a
+    // capability that isn't `mcp`.
+    const slug = uniqueSlug();
+    const created = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: owner,
+      payload: { slug, displayName: "og" },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const grant = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/access/origin`,
+      headers: owner,
+      payload: { origin: "https://api.foo.com" },
+    });
+    expect(grant.statusCode).toBe(200);
+
+    const approved = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${grant.json().pending}/approve`,
+      headers: admin,
+    });
+    expect(approved.statusCode).toBe(200);
+
+    const manifest = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+    });
+    expect(manifest.json().capabilities.externalOrigins).toEqual(["https://api.foo.com"]);
+    // The delta applied to its own area only — that's the capDelta filter working.
+    expect(manifest.json().capabilities.mcp).toEqual([]);
+  });
+
   it("auto-bounces to needs_changes when the effective state moved (conflict)", async () => {
-    const { slug, requestId } = await appWithPendingRequest();
+    const { slug, appId, requestId } = await appWithPendingRequest();
     // Simulate a concurrent change to the touched (mcp) area.
     const row = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
     await t.prisma.app.update({
@@ -200,10 +315,111 @@ describe("approve", () => {
       headers: owner,
     });
     expect(manifest.json().capabilities.mcp).toEqual(["other"]);
+
+    // The auto-bounce is discriminated from an admin's by `reason`, which is the
+    // only way the audit page can tell them apart.
+    const bounce = await t.prisma.auditEvent.findFirstOrThrow({
+      where: { appId, action: "approval.needs_changes" },
+    });
+    expect(bounce.metadata).toMatchObject({ reason: "stale_snapshot" });
+  });
+
+  it("will not approve a request already bounced to needs_changes", async () => {
+    // `needs_changes` is terminal at the API level despite the name: both
+    // decision paths guard on `status === "pending"`, so the owner must file a
+    // fresh request (approvals.md §5). Nothing else pins this, and it is exactly
+    // what a well-meaning "let admins un-bounce a request" change would break.
+    const { slug, requestId } = await appWithPendingRequest();
+    const bounced = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/needs_changes`,
+      headers: admin,
+      payload: { note: "narrow the scope" },
+    });
+    expect(bounced.json().status).toBe("needs_changes");
+
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("needs_changes");
+
+    // And the deltas it carried were never applied.
+    const manifest = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+    });
+    expect(manifest.json().capabilities.mcp).toEqual([]);
   });
 });
 
 describe("deny / needs_changes / withdraw", () => {
+  // Both routes come out of one loop parameterised on exactly three values, so
+  // this table is the whole of what differs between them — and a bad edit to
+  // that tuple array is precisely the silent break this suite is here to catch.
+  // Everything else on the path (the note check, the pending guard, separation
+  // of duty) is shared source and is covered once, below, rather than twice here.
+  it.each([
+    ["deny", "denied", "approval.deny"],
+    ["needs_changes", "needs_changes", "approval.needs_changes"],
+  ])("maps %s → status %s and audit action %s", async (suffix, status, action) => {
+    const { appId, requestId } = await appWithPendingRequest();
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/${suffix}`,
+      headers: admin,
+      payload: { note: "not yet" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status, decisionNote: "not yet" });
+    expect(await auditActions(appId)).toContain(action);
+  });
+
+  it("refuses to decide your own request (separation of duty)", async () => {
+    // The approve path has its own guard and its own message; this is the
+    // deny/needs_changes one, which nothing exercised.
+    const slug = uniqueSlug();
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: admin,
+      payload: { slug, displayName: "self-deny" },
+    });
+    const put = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: admin,
+      payload: { capabilities: { mcp: ["pagerduty"] } },
+    });
+
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${put.json().pending}/deny`,
+      headers: admin,
+      payload: { note: "mine" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/separation of duty/);
+  });
+
+  it.each(["approve", "deny", "needs_changes", "withdraw"])(
+    "404s on an unknown request id (%s)",
+    async (suffix) => {
+      // A real UUID: the column is `@db.Uuid`, so a non-UUID makes Prisma raise
+      // and the generic handler turn it into a 500 rather than this 404.
+      const res = await t.app.inject({
+        method: "POST",
+        url: `/api/v1/approvals/${randomUUID()}/${suffix}`,
+        headers: admin,
+        payload: { note: "x" },
+      });
+      expect(res.statusCode).toBe(404);
+    },
+  );
+
   it("requires a note to deny", async () => {
     const { requestId } = await appWithPendingRequest();
     const noNote = await t.app.inject({
@@ -212,6 +428,15 @@ describe("deny / needs_changes / withdraw", () => {
       headers: admin,
     });
     expect(noNote.statusCode).toBe(400);
+    // An empty note is not a note — the schema leaves `note` optional with no
+    // min length, so the route's own check is what rejects this.
+    const emptyNote = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/deny`,
+      headers: admin,
+      payload: { note: "" },
+    });
+    expect(emptyNote.statusCode).toBe(400);
     const withNote = await t.app.inject({
       method: "POST",
       url: `/api/v1/approvals/${requestId}/deny`,
@@ -223,7 +448,7 @@ describe("deny / needs_changes / withdraw", () => {
   });
 
   it("lets the requester withdraw but not a stranger", async () => {
-    const { requestId } = await appWithPendingRequest();
+    const { appId, requestId } = await appWithPendingRequest();
     const stranger = await t.app.inject({
       method: "POST",
       url: `/api/v1/approvals/${requestId}/withdraw`,
@@ -237,18 +462,20 @@ describe("deny / needs_changes / withdraw", () => {
     });
     expect(self.statusCode).toBe(200);
     expect(self.json().status).toBe("withdrawn");
+    expect(await auditActions(appId)).toContain("approval.withdraw");
   });
 });
 
 describe("go-public via the visibility write-gate", () => {
   it("opens a request for → public and applies it on approve", async () => {
     const slug = uniqueSlug();
-    await t.app.inject({
+    const created = await t.app.inject({
       method: "POST",
       url: "/api/v1/apps",
       headers: owner,
       payload: { slug, displayName: "pub" },
     });
+    const appId = created.json().id as string;
 
     const vis = await t.app.inject({
       method: "POST",
@@ -274,6 +501,17 @@ describe("go-public via the visibility write-gate", () => {
       (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}`, headers: owner })).json()
         .visibility.mode,
     ).toBe("public");
+
+    // The other half of the two-events invariant: a visibility delta lands on the
+    // flat columns and pairs `app.visibility.set` with the decision. The absence
+    // of `app.manifest.set` is the load-bearing half — it is what pins the
+    // capDelta/visDelta split, which nothing else exercises.
+    expect(await auditActions(appId)).toEqual([
+      "app.create",
+      "app.visibility.set",
+      "approval.approve",
+      "approval.request",
+    ]);
   });
 
   it("applies a reduction (→ internal) immediately, no request", async () => {
