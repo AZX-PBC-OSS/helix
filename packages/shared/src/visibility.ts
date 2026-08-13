@@ -22,10 +22,10 @@ import { z } from "zod";
  * including the owner's, so the label stays out until the check exists. See
  * TODO.md.
  *
- * The Postgres enum *does* still carry `private` — as a legacy label being
- * retired over the expand/contract releases, never as an offered mode (see
- * {@link visibilityModeFromDb}). When the real `private` is built it claims a
- * name that by then is free again.
+ * The name is now free in every direction: the expand/contract releases removed
+ * the last legacy row and then the Postgres label itself, so nothing reads,
+ * writes or stores `private` any more. A test pins that this schema still
+ * refuses it, so the reservation is enforced rather than merely intended.
  */
 export const VisibilitySchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("internal") }),
@@ -39,38 +39,3 @@ export type Visibility = z.infer<typeof VisibilitySchema>;
 export const VISIBILITY_MODES = ["internal", "group", "password", "public"] as const;
 export const VisibilityModeSchema = z.enum(VISIBILITY_MODES);
 export type VisibilityMode = z.infer<typeof VisibilityModeSchema>;
-
-/**
- * Pre-rename DB labels still readable during the expand/contract window.
- * **Temporary — deleted in release 3** (see TODO.md), along with
- * {@link visibilityModeFromDb} and its call sites.
- *
- * Note what is deliberately *not* here: `private` is not a member of
- * `VISIBILITY_MODES` or the `Visibility` union. Making it one would mean the
- * request schema accepts a mode we intend to refuse, and dead branches in the
- * badge, the create form, the access tab and the CLI. The legacy label is a
- * read-side fact about rows written before the rename, not a mode the platform
- * offers — so it lives in one lookup rather than in the type.
- */
-const LEGACY_VISIBILITY_MODES: Record<string, VisibilityMode> = { private: "internal" };
-
-/**
- * Normalise a visibility label read **from the database**. Maps the pre-rename
- * spelling onto its current name so a row written before the rename keeps
- * exactly the gate it had.
- *
- * Anything unrecognised is returned **unchanged**, not thrown on. That is the
- * load-bearing part: the edge's `visibilityAllows` denies any mode it does not
- * understand, so an unknown label stays a contained per-app denial. A throwing
- * normaliser would escalate that into a registry-projection load failure, taking
- * out every app instead of the one row — the opposite of fail-closed.
- *
- * Write paths never need this: they take the `Visibility` union, which has no
- * legacy member, so everything written is already current.
- */
-export function visibilityModeFromDb(raw: string): VisibilityMode {
-  return LEGACY_VISIBILITY_MODES[raw] ?? (raw as VisibilityMode);
-}
-
-/** The legacy labels themselves — for the Prisma-enum drift guard. */
-export const LEGACY_VISIBILITY_MODE_NAMES = Object.keys(LEGACY_VISIBILITY_MODES);

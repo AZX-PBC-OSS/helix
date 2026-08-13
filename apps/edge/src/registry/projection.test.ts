@@ -96,28 +96,6 @@ describe("RegistryProjection", () => {
     expect(projection.getApp("nope")).toBeUndefined();
   });
 
-  // Expand/contract: rows written before the rename still carry `private`, and
-  // must keep serving exactly as they did. Normalising here — at the one point
-  // DB text becomes a RegistryEntry — is what lets the gate stay single-spelling.
-  it("normalises a pre-rename `private` row to internal", async () => {
-    const projection = new RegistryProjection(
-      querierFor([[{ ...ROW, slug: "legacy", visibility_mode: "private" }]]),
-    );
-    await projection.load();
-    expect(projection.getApp("legacy")?.visibilityMode).toBe("internal");
-  });
-
-  // The other half of that contract: only the *declared* legacy label is
-  // translated. Anything else passes through verbatim so `visibilityAllows`
-  // denies it, instead of being coerced into something servable.
-  it("passes an unrecognised mode through untouched, for the gate to deny", async () => {
-    const projection = new RegistryProjection(
-      querierFor([[{ ...ROW, slug: "weird", visibility_mode: "from-the-future" }]]),
-    );
-    await projection.load();
-    expect(projection.getApp("weird")?.visibilityMode).toBe("from-the-future");
-  });
-
   it("parses the capabilities.llm grant, and fails closed to null on junk", async () => {
     const projection = new RegistryProjection(
       querierFor([

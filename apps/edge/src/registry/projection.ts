@@ -17,7 +17,6 @@ import {
   LlmCapabilitySchema,
   OfflineCapabilitySchema,
   isValidServiceWorkerScope,
-  visibilityModeFromDb,
   type DataCapability,
   type LlmCapability,
   type VisibilityMode,
@@ -260,13 +259,14 @@ interface ProjectionRow {
   archived: boolean;
   blob_prefix: string | null;
   /**
-   * Raw `::text` from the column, deliberately typed wider than `VisibilityMode`
-   * — the row may still carry the pre-rename `private` label, and during a
-   * version skew could carry one this build has never heard of. Narrowing it
-   * here would be a lie the compiler then helps you forget; leaving it `string`
-   * forces every read through `visibilityModeFromDb`.
+   * Narrow again now that the expand/contract rename is finished: the Postgres
+   * enum and `VISIBILITY_MODES` are back in exact correspondence (the portal's
+   * drift guard asserts it), so the database itself constrains this column to
+   * the four modes and the type is accurate rather than aspirational. The gate
+   * keeps its deny-by-default fall-through regardless — cheap, and the only
+   * thing standing between a future label and a served request.
    */
-  visibility_mode: string;
+  visibility_mode: VisibilityMode;
   visibility_group_id: string | null;
   password_hash: string | null;
   password_salt: string | null;
@@ -408,12 +408,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           slug: row.slug,
           archived: row.archived,
           blobPrefix: row.blob_prefix,
-          // The single edge-side normalisation point for the pre-rename
-          // `private` label: everything downstream (the gate, visibilityAllows,
-          // assets, makeCallerResolver) reads a current mode and needs no
-          // legacy branch. Unknown labels pass through unchanged so the gate's
-          // deny-by-default still catches them.
-          visibilityMode: visibilityModeFromDb(row.visibility_mode),
+          visibilityMode: row.visibility_mode,
           visibilityGroupId: row.visibility_group_id,
           passwordHash: row.password_hash,
           passwordSalt: row.password_salt,

@@ -22,7 +22,6 @@ import {
   type Version,
   type Visibility,
   type VisibilityMode,
-  visibilityModeFromDb,
 } from "@azx-pbc/shared";
 import { appPublicUrl } from "../deployment.js";
 import type {
@@ -37,22 +36,13 @@ export interface VisibilityColumns {
   visibilityGroupId: string | null;
 }
 
-/**
- * Reassemble the discriminated-union Visibility from its flattened columns.
- *
- * Normalises the pre-rename `private` label on the way through — this is the
- * portal's read boundary, so `toApp`/`toManifest` (and therefore every
- * app-shaped API response) yield a current mode even while rows still carry the
- * old one. Without it `AppSchema.parse` in `toApp` would reject a legacy row and
- * fail the whole response, not just that app.
- */
-export function visibilityFromColumns(mode: string, groupId: string | null): Visibility {
-  const normalized = visibilityModeFromDb(mode);
-  if (normalized === "group") {
+/** Reassemble the discriminated-union Visibility from its flattened columns. */
+export function visibilityFromColumns(mode: VisibilityMode, groupId: string | null): Visibility {
+  if (mode === "group") {
     // groupId is non-null whenever mode is `group` (enforced on write below).
-    return { mode: normalized, groupId: groupId ?? "" };
+    return { mode, groupId: groupId ?? "" };
   }
-  return { mode: normalized };
+  return { mode };
 }
 
 /** Flatten a Visibility union into columns for an `apps` insert/update. */

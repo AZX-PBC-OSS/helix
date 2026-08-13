@@ -3,7 +3,6 @@ import {
   ApprovalDecisionRequestSchema,
   applyDeltas,
   snapshotConflicts,
-  visibilityModeFromDb,
   type Delta,
 } from "@azx-pbc/shared";
 import {
@@ -92,13 +91,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
 
         // Optimistic concurrency: if a touched value moved since the request was
         // filed, bounce to needs_changes rather than clobber it (§5).
-        if (
-          snapshotConflicts(
-            request.baseSnapshot,
-            effective,
-            visibilityModeFromDb(appRow.visibilityMode),
-          )
-        ) {
+        if (snapshotConflicts(request.baseSnapshot, effective, appRow.visibilityMode)) {
           const row = await tx.approvalRequest.update({
             where: { id: request.id },
             data: {

@@ -29,14 +29,8 @@ enum VersionStatus {
   archived
 }
 
-/// `private` is the pre-rename spelling of `internal`, retained only for the
-/// expand/contract window (release 1 adds `internal`, release 2 backfills rows,
-/// release 3 drops this member). Nothing writes it: every write goes through the
-/// `Visibility` union in @azx-pbc/shared, which has no such member. Reads
-/// normalise it via `visibilityModeFromDb`. See TODO.md.
 enum VisibilityMode {
   internal
-  private
   group
   password
   public
