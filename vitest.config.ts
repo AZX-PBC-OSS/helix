@@ -21,6 +21,12 @@ export default defineConfig({
             PORTAL_OIDC_ALLOW_INSECURE: "true",
             PORTAL_ALLOW_PUBLIC_APPS: "true",
             PORTAL_ALLOW_PASSWORD_APPS: "true",
+            // Separation of duty stays ON for the suite whatever the ambient env
+            // says — the devcontainer sets this true so a solo operator can drive
+            // the whole approval loop locally, and inheriting that silently waived
+            // the guard the approvals tests are asserting. The one test that wants
+            // the flag opts in with `vi.stubEnv`.
+            PORTAL_ALLOW_SELF_APPROVE: "false",
           },
           // Ensure the test database exists + is migrated before any suite runs.
           globalSetup: ["./vitest.globalSetup.ts"],
