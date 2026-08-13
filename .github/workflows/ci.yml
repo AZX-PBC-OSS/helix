@@ -16,10 +16,13 @@ on:
     tags: ["v*"]
   pull_request:
 
-# Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
+# Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch) —
+# but only for PRs. On `main` and on tags, a run's tail is a *publish*: two
+# merges in quick succession would otherwise cancel the first run mid-push and
+# that commit's GHCR tags would never land.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -28,6 +31,9 @@ jobs:
   check:
     name: typecheck · lint · format · test
     runs-on: ubuntu-latest
+    # A hung Azurite wait or a stuck integration suite would otherwise burn the
+    # 6h runner default. The full pass is single-digit minutes; 20 is slack.
+    timeout-minutes: 20
 
     services:
       # Matches .devcontainer/docker-compose.yml's `db`. Least-privilege runtime
@@ -141,6 +147,7 @@ jobs:
     name: pack helix CLI
     runs-on: ubuntu-latest
     needs: check
+    timeout-minutes: 15
     # The CLI is the one package we publish (ADR-0032), and the only one that
     # emits JS. Nothing in the unit suite touches the packaged artifact, so
     # without this job a broken shebang, a missed esbuild external, or a
@@ -225,6 +232,7 @@ jobs:
     name: build ${{ matrix.app }} image
     runs-on: ubuntu-latest
     needs: check
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write # push to GHCR

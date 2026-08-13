@@ -34,6 +34,7 @@ jobs:
   publish:
     name: publish @azx-pbc/helix-cli
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # If you add an `environment:` here, the same name must be selected in the
     # trusted-publisher config on npmjs.com or the OIDC claim won't match.
 
