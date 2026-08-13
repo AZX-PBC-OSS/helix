@@ -49,6 +49,8 @@ model ApprovalRequest {
 
   createdAt    DateTime  @default(now())
   decidedAt    DateTime?
+  // No `expiresAt` — deliberate, unlike Session / AppDevToken. A pending request
+  // is a standing question, not standing access; see §5 and ADR-0039.
 
   @@index([status, createdAt])   // the admin queue
   @@index([appId])               // the app-detail "pending" banner
@@ -139,6 +141,7 @@ Concretely:
 - **Who:** `pending → approved | denied | needs_changes` requires `requireAdmin` + separation-of-duty. `→ withdrawn` is the requester only. `needs_changes` is a soft bounce — the owner edits the manifest and resubmits (a fresh request; the old one stays `needs_changes` for the audit trail).
 - **Concurrency (optimistic):** the request stores `baseSnapshot` of the touched paths. At approve time, if current effective ≠ snapshot for any path, the underlying value moved (a baseline write or another approval) → auto-flip to `needs_changes` rather than clobber. This is the split model's one sharp edge: baseline writes commit freely while a request is open, so the snapshot check is what keeps an approval from resurrecting a stale value. Cheap alternative if we want stricter: a monotonically-increasing `App.policyVersion` bumped on every effective write, compared at approve.
 - **Idempotency:** approve/deny are guarded on `status = pending` (a second click is a no-op, not a double-apply).
+- **No expiry — `pending` is terminal until a human decides it.** There is deliberately no `expiresAt`, no sweep, and no timer-driven edge in the diagram above: a request is a standing *question*, not standing access, so nothing is granted while it sits. Letting one lapse silently would convert an unanswered question into an unrecorded "no", and age alone doesn't make an approval unsafe — the `baseSnapshot` conflict check above is what guards a stale approve, so an old request bounces to `needs_changes` rather than clobbering a moved value. A long queue is a staffing signal; the response is to make age visible (the queue shows "pending N days" and sorts oldest-first) rather than to auto-close the backlog. **ADR-0039** is the decision and the conditions under which it would be revisited.
 
 ---
 
@@ -195,3 +198,4 @@ Anonymous per-IP limits (#6) and audit-to-blob (#8) are independent and can land
 - **`needs_changes` as edit-in-place vs. resubmit** — proposed resubmit (old row frozen for audit); revisit if reviewers want a threaded back-and-forth.
 - **Notifications** — who gets told when a request is filed / decided? Out of scope here; the queue is pull-based for v1.
 - **MCP grant enforcement** — the classifier treats any MCP server as high-risk elevated, but MCP-as-a-capability isn't enforced at the edge yet (v1.x, architecture §12). Approving an MCP grant writes the manifest; enforcement lands with the MCP gateway.
+- **Request expiry — _not_ open; decided.** Pending requests never expire, by decision — see §5 and [ADR-0039](../adr/0039-no-approval-request-expiry.md). Listed here only so the missing `expiresAt` isn't re-read as an oversight.
