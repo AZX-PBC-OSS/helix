@@ -78,7 +78,9 @@ export function AppCreateForm({
           value={slug}
           onChange={(e) => setSlug(e.currentTarget.value.toLowerCase())}
           error={
-            slug && !slugValid ? "a-z, 0-9, hyphens; must start and end with a letter or number" : undefined
+            slug && !slugValid
+              ? "a-z, 0-9, hyphens; must start and end with a letter or number"
+              : undefined
           }
           classNames={{ input: "az-mono" }}
         />
@@ -90,7 +92,12 @@ export function AppCreateForm({
             <Text span c="dark.2" inherit>
               https://
             </Text>
-            <Text span c={slug && !slugValid ? "red.4" : slug ? "teal.4" : "dark.2"} fw={600} inherit>
+            <Text
+              span
+              c={slug && !slugValid ? "red.4" : slug ? "teal.4" : "dark.2"}
+              fw={600}
+              inherit
+            >
               {slug || "cost-explorer"}
             </Text>
             <Text span c="dark.2" inherit>
