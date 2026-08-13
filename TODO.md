@@ -131,3 +131,4 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 - Physical DB isolation (schema/DB-per-app) — not warranted; the role split + RLS is the control. (ADR-0002)
 - Sandboxed iframe without `allow-same-origin` for app isolation — category error, breaks the same-origin `/_api/*` gateway (ADR-0014). Still the right control _only_ if the portal ever embeds an unpromoted app for preview. (ADR-0019)
 - The `HKDF(master, appId)` per-app-key step-1 fix for the egress seam — unsound; both planes hold the master. (ADR-0013)
+- Approval-request expiry / a pending-request sweep — a request is a standing question, not standing access; `baseSnapshot` already makes age safe to approve, and a long queue is a staffing signal, so age is surfaced rather than swept. (ADR-0038)
