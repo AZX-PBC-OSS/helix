@@ -6,7 +6,7 @@ import { Bars } from "../../components/charts";
 import { Eyebrow, Hint, KV, Stat } from "../../components/primitives";
 import { approvalsQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
-import { timeAgo } from "../../lib/format";
+import { daysSince, timeAgo } from "../../lib/format";
 import { awaitingPromote, deployCadence, liveVersion } from "../../lib/appStatus";
 
 /** All real: registry + version history, no metering required. */
@@ -21,6 +21,11 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
     enabled: authenticated,
   });
   const pendingApprovals = approvals.data ?? [];
+  // Nothing expires these (ADR-0038), so the age of the oldest one is the signal
+  // that a request has stopped being looked at.
+  const oldestApprovalDays = pendingApprovals.length
+    ? Math.max(...pendingApprovals.map((a) => daysSince(a.createdAt)))
+    : 0;
 
   return (
     <Grid gap={18} className="az-stagger">
@@ -94,8 +99,9 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
                 {pendingApprovals.length} elevated change
                 {pendingApprovals.length > 1 ? "s" : ""}
               </b>{" "}
-              awaiting admin approval. Baseline edits already applied; these grants stay off until
-              approved.
+              awaiting admin approval
+              {oldestApprovalDays > 0 && ` — oldest pending ${oldestApprovalDays}d`}. Baseline edits
+              already applied; these grants stay off until approved.
             </Hint>
           )}
           {versions.length === 0 && (

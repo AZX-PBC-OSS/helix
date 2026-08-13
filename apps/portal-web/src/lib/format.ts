@@ -18,7 +18,12 @@ export function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-/** ISO timestamp → "2h ago" / "3d ago" / "just now". */
+/**
+ * ISO timestamp → "2h ago" / "3d ago" / "just now". Stays relative at every age:
+ * this used to fall back to a bare `toLocaleDateString()` past 30 days, which
+ * dropped the staleness signal exactly where it matters most (a 45-day-old
+ * approval read as "7/1/2026" — a date, not a backlog).
+ */
 export function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
   const s = Math.floor(ms / 1000);
@@ -27,9 +32,15 @@ export function timeAgo(iso: string): string {
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString();
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/**
+ * Whole days elapsed since an ISO timestamp. `timeAgo` renders age; this is the
+ * numeric form the approvals queue thresholds its staleness tones on.
+ */
+export function daysSince(iso: string): number {
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000));
 }
 
 // Deployment topology (apps base, dev-gateway base, spend cap) is NOT here: it
