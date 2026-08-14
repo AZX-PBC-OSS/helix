@@ -1,0 +1,26 @@
+-- Optimistic-concurrency guard over an app's **effective policy state**: the
+-- `capabilities` JSON blob plus `visibilityMode`/`visibilityGroupId`
+-- (docs/design/approvals.md §5, which floated this column as the stricter
+-- alternative to the request-time `baseSnapshot` check — now adopted).
+--
+-- Why: those columns are read-modify-written. `capabilities` is replaced whole,
+-- so a manifest PUT, a one-click origin grant, and an apply-on-approve that each
+-- computed from the same pre-image silently discarded each other's deltas under
+-- READ COMMITTED. The invariant this column carries: **every path that reads any
+-- of those three columns and writes them back CASes on the `policyVersion` it
+-- read and bumps it**, so the loser writes nothing and answers 409 rather than
+-- reporting success for a value that is not stored.
+--
+-- Backfill: none needed. Existing rows start at 0 and the first write moves them.
+--
+-- Not projected to the edge: `PROJECTION_SQL` / `PROJECTION_SQL_NO_PASSWORD`
+-- (apps/edge/src/registry/projection.ts) enumerate their columns explicitly and
+-- must NOT list this one — it serialises control-plane writes and means nothing
+-- to the data plane. That also keeps the column-scoped `helix_dev` grant
+-- (20260722225628_dev_registry_grant_columns) correct as written. `helix_edge`
+-- and `helix_portal` hold table-wide grants on `apps`
+-- (20260616000001_edge_role_grants), which cover a new column automatically, so
+-- there is no GRANT to add here.
+
+-- AlterTable
+ALTER TABLE "apps" ADD COLUMN     "policyVersion" INTEGER NOT NULL DEFAULT 0;

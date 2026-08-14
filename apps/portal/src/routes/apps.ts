@@ -16,6 +16,7 @@ import {
 import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
+import { casPolicyWrite } from "../policy/policyWrite.js";
 import { isUniqueViolation } from "../db/errors.js";
 import { capabilitiesFromRow, toApp, toManifest, visibilityToColumns } from "../db/mappers.js";
 import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
@@ -171,7 +172,14 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      return applyCapabilityChange(app.prisma, { row, requested, actor: actor.sub, reason });
+      // A full replace, so the requested value doesn't depend on the effective one
+      // — but it is still classified against the state read inside the txn.
+      return applyCapabilityChange(app.prisma, {
+        appId: row.id,
+        mutate: () => requested,
+        actor: actor.sub,
+        reason,
+      });
     },
   );
 
@@ -188,12 +196,18 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      const effective = capabilitiesFromRow(row);
-      const requested = {
-        ...effective,
-        externalOrigins: [...effective.externalOrigins, origin],
-      };
-      return applyCapabilityChange(app.prisma, { row, requested, actor: actor.sub, reason });
+      // A *relative* change: the append has to run against the origins read inside
+      // the transaction, or two grants filed from the Violations screen at once
+      // each append to the same pre-image and one origin is lost.
+      return applyCapabilityChange(app.prisma, {
+        appId: row.id,
+        mutate: (effective) => ({
+          ...effective,
+          externalOrigins: [...effective.externalOrigins, origin],
+        }),
+        actor: actor.sub,
+        reason,
+      });
     },
   );
 
@@ -214,49 +228,54 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           "enable password access via POST /api/v1/apps/:slug/access/password (it mints the credential)",
         );
       }
-      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-      if (!row) {
-        throw new AppError("not_found", `app "${req.params.slug}" not found`);
-      }
-
-      const change = classifyVisibilityChange(row.visibilityMode, visibility.mode);
-      if (!change) {
-        return { app: toApp(row), applied: [], pending: null }; // no-op
-      }
-
-      if (change.elevated) {
-        // The only elevated change is → public. When public is disabled we
-        // refuse outright rather than opening an approval that could never be
-        // safely committed. Reductions (→ internal/group) fall through below, so
-        // an already-public app can always be migrated down.
-        if (!publicAppsAllowed()) {
-          throw new AppError("forbidden", "public apps are disabled on this deployment");
+      return app.prisma.$transaction(async (tx): Promise<VisibilityUpdateResult> => {
+        // Read inside the transaction. Two things downstream depend on the current
+        // mode: `classifyVisibilityChange` decides elevated-vs-baseline from it, and
+        // the elevated branch stores it in `baseSnapshot` for the later approve to
+        // compare against. Off a read taken before the transaction, both can be
+        // deciding from a mode that has already moved — and a wrong `baseSnapshot`
+        // is worse than a stale read, because it is persisted and silently defeats
+        // the approve-time conflict check.
+        const row = await tx.app.findUnique({ where: { slug: req.params.slug } });
+        if (!row) {
+          throw new AppError("not_found", `app "${req.params.slug}" not found`);
         }
-        const baseSnapshot = captureSnapshot(
-          capabilitiesFromRow(row),
-          row.visibilityMode,
-          touchedAreas([change.delta]),
-        );
-        const pending = await app.prisma.$transaction((tx) =>
-          createApprovalRequest(tx, {
+
+        const change = classifyVisibilityChange(row.visibilityMode, visibility.mode);
+        if (!change) {
+          return { app: toApp(row), applied: [], pending: null }; // no-op
+        }
+
+        if (change.elevated) {
+          // The only elevated change is → public. When public is disabled we
+          // refuse outright rather than opening an approval that could never be
+          // safely committed. Reductions (→ internal/group) fall through below, so
+          // an already-public app can always be migrated down.
+          if (!publicAppsAllowed()) {
+            throw new AppError("forbidden", "public apps are disabled on this deployment");
+          }
+          const baseSnapshot = captureSnapshot(
+            capabilitiesFromRow(row),
+            row.visibilityMode,
+            touchedAreas([change.delta]),
+          );
+          // No policy write here, so nothing to CAS: the request only records what
+          // was asked for. A mode that moves while the request sits pending is
+          // exactly what `baseSnapshot` exists to catch at approve time (§5).
+          const pending = await createApprovalRequest(tx, {
             appId: row.id,
             deltas: [change.delta],
             risk: change.risk,
             baseSnapshot,
             requestedBy: actor.sub,
             reason,
-          }),
-        );
-        return { app: toApp(row), applied: [], pending };
-      }
+          });
+          return { app: toApp(row), applied: [], pending };
+        }
 
-      // Baseline reduction — apply now.
-      const { visibilityMode, visibilityGroupId } = visibilityToColumns(visibility);
-      const updated = await app.prisma.$transaction(async (tx) => {
-        const updated = await tx.app.update({
-          where: { id: row.id },
-          data: { visibilityMode, visibilityGroupId },
-        });
+        // Baseline reduction — apply now.
+        const { visibilityMode, visibilityGroupId } = visibilityToColumns(visibility);
+        const updated = await casPolicyWrite(tx, row, { visibilityMode, visibilityGroupId });
         await tx.auditEvent.create({
           data: {
             appId: row.id,
@@ -265,9 +284,8 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
             metadata: { applied: [change.delta] as unknown as Prisma.InputJsonValue },
           },
         });
-        return updated;
+        return { app: toApp(updated), applied: [change.delta], pending: null };
       });
-      return { app: toApp(updated), applied: [change.delta], pending: null };
     },
   );
 
@@ -299,37 +317,54 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!passwordAppsAllowed()) {
         throw new AppError("forbidden", "password apps are disabled on this deployment");
       }
-      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-      if (!row) {
-        throw new AppError("not_found", `app "${req.params.slug}" not found`);
-      }
-      if (row.visibilityMode === "password" && row.passwordEnc && row.passwordSetAt) {
-        return credential(row.slug, decryptPassword(row.passwordEnc), row.passwordSetAt);
-      }
+      // Mint before opening the transaction: `hashPassword` is a deliberately slow
+      // KDF, and holding a transaction (and its connection) open across it would
+      // idle a pool slot for the whole scrypt run. Re-enabling discards this.
       const password = generatePassphrase();
       const setAt = new Date();
       const { hash, salt } = await hashPassword(password);
-      await app.prisma.app.update({
-        where: { id: row.id },
-        data: {
-          visibilityMode: "password",
-          visibilityGroupId: null,
-          passwordHash: hash,
-          passwordSalt: salt,
-          passwordEnc: encryptPassword(password),
-          passwordSetAt: setAt,
-        },
+
+      const minted = await app.prisma.$transaction(async (tx) => {
+        const row = await tx.app.findUnique({ where: { slug: req.params.slug } });
+        if (!row) {
+          throw new AppError("not_found", `app "${req.params.slug}" not found`);
+        }
+        if (row.visibilityMode === "password" && row.passwordEnc && row.passwordSetAt) {
+          return {
+            fresh: false,
+            cred: credential(row.slug, decryptPassword(row.passwordEnc), row.passwordSetAt),
+          };
+        }
+        // CAS: the idempotency check above is a read-then-act on `visibilityMode`.
+        // Two concurrent enables would both pass it, both mint, and both write —
+        // and the loser would be handed a cleartext passphrase that is *not* the
+        // one stored, so the URL they were given does not work and the passphrase
+        // that does is unrecoverable. The loser now gets a 409 instead.
+        await casPolicyWrite(
+          tx,
+          row,
+          {
+            visibilityMode: "password",
+            visibilityGroupId: null,
+            passwordHash: hash,
+            passwordSalt: salt,
+            passwordEnc: encryptPassword(password),
+            passwordSetAt: setAt,
+          },
+          "this app's access mode changed while password access was being enabled — re-read it and retry",
+        );
+        await tx.auditEvent.create({
+          data: {
+            appId: row.id,
+            actor: actor.sub,
+            action: "app.access.password.enable",
+            metadata: {},
+          },
+        });
+        return { fresh: true, cred: credential(row.slug, password, setAt) };
       });
-      await app.prisma.auditEvent.create({
-        data: {
-          appId: row.id,
-          actor: actor.sub,
-          action: "app.access.password.enable",
-          metadata: {},
-        },
-      });
-      reply.status(201);
-      return credential(row.slug, password, setAt);
+      if (minted.fresh) reply.status(201);
+      return minted.cred;
     },
   );
 
@@ -346,34 +381,44 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!passwordAppsAllowed()) {
         throw new AppError("forbidden", "password apps are disabled on this deployment");
       }
-      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-      if (!row) {
-        throw new AppError("not_found", `app "${req.params.slug}" not found`);
-      }
-      if (row.visibilityMode !== "password") {
-        throw new AppError("conflict", "password access is not enabled for this app");
-      }
+      // Hashed before the transaction for the same reason as enable, above.
       const password = manual ?? generatePassphrase();
       const setAt = new Date();
       const { hash, salt } = await hashPassword(password);
-      await app.prisma.app.update({
-        where: { id: row.id },
-        data: {
-          passwordHash: hash,
-          passwordSalt: salt,
-          passwordEnc: encryptPassword(password),
-          passwordSetAt: setAt,
-        },
+
+      return app.prisma.$transaction(async (tx) => {
+        const row = await tx.app.findUnique({ where: { slug: req.params.slug } });
+        if (!row) {
+          throw new AppError("not_found", `app "${req.params.slug}" not found`);
+        }
+        if (row.visibilityMode !== "password") {
+          throw new AppError("conflict", "password access is not enabled for this app");
+        }
+        // Writes only the credential columns, but the guard above reads a policy
+        // column — so it CASes too. Otherwise a concurrent disable landing between
+        // the guard and the write re-populates credentials on an app that is no
+        // longer a password app, and the edge projects those columns.
+        await casPolicyWrite(
+          tx,
+          row,
+          {
+            passwordHash: hash,
+            passwordSalt: salt,
+            passwordEnc: encryptPassword(password),
+            passwordSetAt: setAt,
+          },
+          "this app's access mode changed while the password was being rotated — re-read it and retry",
+        );
+        await tx.auditEvent.create({
+          data: {
+            appId: row.id,
+            actor: actor.sub,
+            action: "app.access.password.rotate",
+            metadata: { manual: manual !== undefined },
+          },
+        });
+        return credential(row.slug, password, setAt);
       });
-      await app.prisma.auditEvent.create({
-        data: {
-          appId: row.id,
-          actor: actor.sub,
-          action: "app.access.password.rotate",
-          metadata: { manual: manual !== undefined },
-        },
-      });
-      return credential(row.slug, password, setAt);
     },
   );
 
@@ -400,14 +445,16 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [authenticate, ownsApp] },
     async (req, reply) => {
       const actor = requireActor(req);
-      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-      if (!row) {
-        throw new AppError("not_found", `app "${req.params.slug}" not found`);
-      }
-      if (row.visibilityMode === "password") {
-        await app.prisma.app.update({
-          where: { id: row.id },
-          data: {
+      await app.prisma.$transaction(async (tx) => {
+        const row = await tx.app.findUnique({ where: { slug: req.params.slug } });
+        if (!row) {
+          throw new AppError("not_found", `app "${req.params.slug}" not found`);
+        }
+        if (row.visibilityMode !== "password") return; // already in the desired state
+        await casPolicyWrite(
+          tx,
+          row,
+          {
             // Back to the baseline, deliberately: disabling a shared password
             // must not tighten the app past where it started, or turning off a
             // demo credential would silently lock out everyone who had access.
@@ -417,8 +464,9 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
             passwordEnc: null,
             passwordSetAt: null,
           },
-        });
-        await app.prisma.auditEvent.create({
+          "this app's access mode changed while password access was being disabled — re-read it and retry",
+        );
+        await tx.auditEvent.create({
           data: {
             appId: row.id,
             actor: actor.sub,
@@ -426,7 +474,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
             metadata: {},
           },
         });
-      }
+      });
       reply.status(204).send();
     },
   );
