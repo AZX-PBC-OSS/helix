@@ -110,10 +110,19 @@ export async function claimPendingRequest(
  * landed stays the documented idempotent no-op (§5) — a second click must not be
  * an error. A *different* outcome is a 409: the caller asked for a transition that
  * did not happen, and answering 200 would tell them the opposite of what is stored.
+ *
+ * `landed` is every status the calling route can legitimately have produced, not
+ * just the one it asked for. Approve is the reason it is a set: a stale request
+ * bounces to `needs_changes` and answers 200, so replaying that same call — a
+ * client timeout, a double-click — has to be a no-op too. Answering 409 there
+ * would report a conflict against a decision the caller itself made.
  */
-export function alreadyDecided(row: ApprovalRequestRow | null, want: string): ApprovalRequestRow {
+export function alreadyDecided(
+  row: ApprovalRequestRow | null,
+  landed: readonly string[],
+): ApprovalRequestRow {
   if (!row) throw new AppError("not_found", "approval request not found");
-  if (row.status === want) return row;
+  if (landed.includes(row.status)) return row;
   throw new AppError(
     "conflict",
     `approval request "${row.id}" was already ${row.status} — re-read it and retry`,

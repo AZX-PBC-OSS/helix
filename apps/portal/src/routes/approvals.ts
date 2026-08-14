@@ -75,6 +75,15 @@ async function priorDecisionsByApp(
  * the `apps` write is CAS'd on `policyVersion`. Both are load-bearing: see §5 and
  * the comments on those two helpers.
  */
+
+/**
+ * The statuses an approve call can legitimately have produced. `needs_changes` is
+ * in here because the stale-snapshot branch below lands it and answers 200 — so a
+ * replay of that same call must be a no-op, not a 409 blaming another actor for a
+ * decision this caller made.
+ */
+const APPROVE_LANDED = ["approved", "needs_changes"] as const;
+
 export async function approvalRoutes(app: FastifyInstance): Promise<void> {
   // List requests. `?app=<slug>` scopes to one app (owner or admin); without it
   // the global admin queue (admin only). `?status=` filters by lifecycle state.
@@ -147,7 +156,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         // `status` is the one mutable field the branches below depend on, and the
         // claim below is what actually gates the write. Every other field they
         // read (`requestedBy`, `deltas`, `baseSnapshot`) is immutable once filed.
-        if (request.status !== "pending") return { row: alreadyDecided(request, "approved") };
+        if (request.status !== "pending") return { row: alreadyDecided(request, APPROVE_LANDED) };
 
         // Separation of duty: an admin may not decide their own request unless
         // the dev self-approve flag is set (§4).
@@ -168,7 +177,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
             decidedAt: new Date(),
             decisionNote: "auto: effective state changed since this request was filed",
           });
-          if (!claim.claimed) return { row: alreadyDecided(claim.row, "needs_changes") };
+          if (!claim.claimed) return { row: alreadyDecided(claim.row, APPROVE_LANDED) };
           const row = claim.row;
           await tx.auditEvent.create({
             data: {
@@ -191,7 +200,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           decidedBy: actor.sub,
           decidedAt: new Date(),
         });
-        if (!claim.claimed) return { row: alreadyDecided(claim.row, "approved") };
+        if (!claim.claimed) return { row: alreadyDecided(claim.row, APPROVE_LANDED) };
         const row = claim.row;
 
         // Apply: capability deltas → capabilities JSON; a visibility delta (only
@@ -215,12 +224,19 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         // that read and this one would otherwise be clobbered by this full-blob
         // write. `baseSnapshot` does not cover it — it compares only the areas the
         // request touched, and it was captured when the request was filed.
-        await casPolicyWrite(
-          tx,
-          appRow,
-          data,
-          "the app's policy changed while this approval was being applied — retry",
-        );
+        //
+        // Guarded on there being something to write, like the sibling path in
+        // approvals/service.ts. No delta shape reaches here empty today, but an
+        // empty CAS would bump `policyVersion`, force a full projection reload for
+        // nothing, and 409 an unrelated writer.
+        if (Object.keys(data).length > 0) {
+          await casPolicyWrite(
+            tx,
+            appRow,
+            data,
+            "the app's policy changed while this approval was being applied — retry",
+          );
+        }
 
         // Two audit events: the effective mutation(s) + the approval decision.
         if (capDeltas.length > 0) {
@@ -276,7 +292,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           const request = await tx.approvalRequest.findUnique({ where: { id: req.params.id } });
           if (!request)
             throw new AppError("not_found", `approval request "${req.params.id}" not found`);
-          if (request.status !== "pending") return alreadyDecided(request, status);
+          if (request.status !== "pending") return alreadyDecided(request, [status]);
           if (request.requestedBy === actor.sub && !canSelfApprove()) {
             throw new AppError(
               "forbidden",
@@ -289,7 +305,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
             decidedAt: new Date(),
             decisionNote: note,
           });
-          if (!claim.claimed) return alreadyDecided(claim.row, status);
+          if (!claim.claimed) return alreadyDecided(claim.row, [status]);
           const updated = claim.row;
           await tx.auditEvent.create({
             data: {
@@ -320,7 +336,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         if (request.requestedBy !== actor.sub) {
           throw new AppError("forbidden", "only the requester may withdraw a request");
         }
-        if (request.status !== "pending") return alreadyDecided(request, "withdrawn");
+        if (request.status !== "pending") return alreadyDecided(request, ["withdrawn"]);
         const claim = await claimPendingRequest(tx, request.id, {
           status: "withdrawn",
           decidedBy: actor.sub,
@@ -329,7 +345,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         // The case issue #24 is about: an approve that committed while this
         // transaction was reading has already applied the deltas, so overwriting
         // the status here would advertise a withdrawal that did not happen.
-        if (!claim.claimed) return alreadyDecided(claim.row, "withdrawn");
+        if (!claim.claimed) return alreadyDecided(claim.row, ["withdrawn"]);
         const updated = claim.row;
         await tx.auditEvent.create({
           data: {

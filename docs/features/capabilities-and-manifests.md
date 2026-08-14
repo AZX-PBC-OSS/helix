@@ -146,10 +146,12 @@ cover two writes landing in the same instant, so two compare-and-swaps do:
   Without this a withdraw could overwrite an approval that had already granted the capability,
   leaving the queue and the audit trail saying the grant was pulled while the edge served it.
 - **The effective-state write** (`casPolicyWrite`, `apps.policyVersion`) — `capabilities` is
-  replaced whole, so the manifest PUT, the origin grant, the visibility switch, apply-on-approve,
-  and the password enable/rotate/disable routes all read the row *inside* their transaction and CAS
-  on the version they read. The loser gets a 409 telling it to reload; an elevated-only change
-  (e.g. an origin grant, which touches nothing live) writes nothing and so cannot conflict.
+  replaced whole, so every route that reads it and writes it back does so *inside* one transaction
+  and CASes on the version it read: the manifest PUT, the visibility switch, apply-on-approve, and
+  the password enable/rotate/disable routes. The loser gets a 409 telling it to reload. A change
+  with no baseline part writes nothing at all and so cannot conflict — the one-click origin grant
+  is entirely of that kind (every added origin is elevated), which is why two of them filed off the
+  Violations screen at once both succeed.
 
 ## Where it shows up in the UI
 
