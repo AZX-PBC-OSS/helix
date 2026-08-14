@@ -47,6 +47,34 @@ export const DeltaSchema = z.object({
 });
 export type Delta = z.infer<typeof DeltaSchema>;
 
+/**
+ * Prior-decision context for a *pending* request, joined into the global admin
+ * queue so a reviewer sees at a glance that the same (or a related) grant was
+ * already refused (issue #26). A refile is byte-for-byte identical to a
+ * first-time request otherwise. Read-side only — computed from sibling rows,
+ * never stored. Scoped to the same app; `denied` is the signal that raises the
+ * flag, other decided states are context. Present only when the app has prior
+ * decided requests (omitted ⇒ a first-time request, unchanged wire shape).
+ */
+export const PriorDecisionsSchema = z.object({
+  /** Prior *decided* (non-pending) requests on this app — the history count. */
+  total: z.number().int().nonnegative(),
+  /** Prior denied requests touching an overlapping policy area (quiet signal). */
+  deniedSameArea: z.number().int().nonnegative(),
+  /** Prior denied requests sharing an exact delta path (loud signal; ⊆ area). */
+  deniedSameGrant: z.number().int().nonnegative(),
+  /** The most recent decided request (any status), for the "last decision" line. */
+  last: z
+    .object({
+      status: ApprovalStatusSchema,
+      note: z.string().nullable(),
+      decidedBy: z.string().nullable(),
+      decidedAt: z.string(),
+    })
+    .optional(),
+});
+export type PriorDecisions = z.infer<typeof PriorDecisionsSchema>;
+
 /** The stored/served approval request — mirrors the Prisma model (§2). */
 export const ApprovalRequestSchema = z.object({
   id: z.string(),
@@ -64,6 +92,8 @@ export const ApprovalRequestSchema = z.object({
   decisionNote: z.string().nullable().optional(),
   createdAt: z.string(),
   decidedAt: z.string().nullable().optional(),
+  /** Sibling-decision context for the admin queue (issue #26); read-side only. */
+  priorDecisions: PriorDecisionsSchema.optional(),
 });
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
 
@@ -452,6 +482,57 @@ export function touchedAreas(deltas: Delta[]): Area[] {
   const set = new Set<Area>();
   for (const d of deltas) set.add(deltaArea(d.path));
   return AREAS.filter((a) => set.has(a));
+}
+
+/** A decided sibling request, newest-first, as fed to {@link summarizePriorDecisions}. */
+export interface PriorDecisionRow {
+  status: ApprovalStatus;
+  deltas: Delta[];
+  decisionNote: string | null;
+  decidedBy: string | null;
+  decidedAt: string;
+}
+
+/**
+ * Summarize a pending request's decided siblings on the *same app* for the admin
+ * queue (issue #26). Matching is deliberately boring: a `denied` sibling sharing
+ * an exact delta `path` is the same grant (loud); one merely touching an
+ * overlapping policy area is related (quiet). Both counts are `denied`-only —
+ * approvals/withdrawals/needs_changes are history, surfaced via `last`, not the
+ * flag. Returns `undefined` when there are no prior decisions, so the field is
+ * omitted and a first-time request keeps its original wire shape.
+ */
+export function summarizePriorDecisions(
+  current: Delta[],
+  prior: PriorDecisionRow[],
+): PriorDecisions | undefined {
+  if (prior.length === 0) return undefined;
+
+  const currentPaths = new Set(current.map((d) => d.path));
+  const currentAreas = new Set(current.map((d) => deltaArea(d.path)));
+
+  let deniedSameGrant = 0;
+  let deniedSameArea = 0;
+  for (const row of prior) {
+    if (row.status !== "denied") continue;
+    if (row.deltas.some((d) => currentPaths.has(d.path))) deniedSameGrant++;
+    if (row.deltas.some((d) => currentAreas.has(deltaArea(d.path)))) deniedSameArea++;
+  }
+
+  // `prior` is newest-first (the caller orders by decidedAt desc), so the head
+  // is the most recent decision.
+  const head = prior[0]!;
+  return {
+    total: prior.length,
+    deniedSameArea,
+    deniedSameGrant,
+    last: {
+      status: head.status,
+      note: head.decisionNote,
+      decidedBy: head.decidedBy,
+      decidedAt: head.decidedAt,
+    },
+  };
 }
 
 /**

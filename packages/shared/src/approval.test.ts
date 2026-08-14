@@ -9,7 +9,10 @@ import {
   classifyVisibilityChange,
   maxRisk,
   snapshotConflicts,
+  summarizePriorDecisions,
   touchedAreas,
+  type Delta,
+  type PriorDecisionRow,
 } from "./approval.js";
 
 const EMPTY: Capabilities = { mcp: [], externalOrigins: [] };
@@ -363,5 +366,66 @@ describe("maxRisk", () => {
     expect(maxRisk([])).toBe("low");
     expect(maxRisk(["low", "med"])).toBe("med");
     expect(maxRisk(["med", "high", "low"])).toBe("high");
+  });
+});
+
+describe("summarizePriorDecisions (issue #26)", () => {
+  const current: Delta[] = [{ path: "mcp[+pagerduty]", to: "pagerduty" }];
+  const decided = (over: Partial<PriorDecisionRow>): PriorDecisionRow => ({
+    status: "denied",
+    deltas: [{ path: "mcp[+pagerduty]", to: "pagerduty" }],
+    decisionNote: "no",
+    decidedBy: "alice@azx.io",
+    decidedAt: "2026-08-13T00:00:00.000Z",
+    ...over,
+  });
+
+  it("returns undefined when there are no prior decisions (first-time request)", () => {
+    expect(summarizePriorDecisions(current, [])).toBeUndefined();
+  });
+
+  it("flags an exact-grant denial loudly (deniedSameGrant, ⊆ deniedSameArea)", () => {
+    const prior = [decided({}), decided({}), decided({})];
+    const s = summarizePriorDecisions(current, prior);
+    expect(s).toMatchObject({ total: 3, deniedSameGrant: 3, deniedSameArea: 3 });
+    expect(s?.last).toEqual({
+      status: "denied",
+      note: "no",
+      decidedBy: "alice@azx.io",
+      decidedAt: "2026-08-13T00:00:00.000Z",
+    });
+  });
+
+  it("flags a same-area (not same-grant) denial quietly", () => {
+    // A different MCP server was denied before — same area, not the same grant.
+    const prior = [decided({ deltas: [{ path: "mcp[+other]", to: "other" }] })];
+    const s = summarizePriorDecisions(current, prior);
+    expect(s).toMatchObject({ total: 1, deniedSameGrant: 0, deniedSameArea: 1 });
+  });
+
+  it("does not raise either flag for a denial in an unrelated area", () => {
+    const prior = [decided({ deltas: [{ path: "llm.dollarsPerDay", from: 50, to: 500 }] })];
+    const s = summarizePriorDecisions(current, prior);
+    expect(s).toMatchObject({ total: 1, deniedSameGrant: 0, deniedSameArea: 0 });
+  });
+
+  it("counts non-denied decisions as history but never raises the flag", () => {
+    const prior: PriorDecisionRow[] = [
+      decided({ status: "approved", decisionNote: null, decidedAt: "2026-08-14T00:00:00.000Z" }),
+      decided({ status: "withdrawn", decisionNote: null }),
+      decided({ status: "needs_changes", decisionNote: "tighten scope" }),
+    ];
+    const s = summarizePriorDecisions(current, prior);
+    // total counts all; the denied-flags stay at zero; last is the newest (head).
+    expect(s).toMatchObject({ total: 3, deniedSameGrant: 0, deniedSameArea: 0 });
+    expect(s?.last?.status).toBe("approved");
+  });
+
+  it("takes `last` from the head (caller orders newest-decision-first)", () => {
+    const prior: PriorDecisionRow[] = [
+      decided({ decidedAt: "2026-08-14T00:00:00.000Z", decisionNote: "newest" }),
+      decided({ decidedAt: "2026-08-10T00:00:00.000Z", decisionNote: "older" }),
+    ];
+    expect(summarizePriorDecisions(current, prior)?.last?.note).toBe("newest");
   });
 });

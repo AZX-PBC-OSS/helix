@@ -466,6 +466,95 @@ describe("deny / needs_changes / withdraw", () => {
   });
 });
 
+describe("prior decisions on the admin queue (issue #26)", () => {
+  async function createApp(slug: string, headers = owner) {
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers,
+      payload: { slug, displayName: "refile" },
+    });
+  }
+
+  /** File an elevated mcp grant on an existing app; returns the pending request id. */
+  async function fileMcp(slug: string, server = "pagerduty") {
+    const put = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+      payload: { capabilities: { mcp: [server] }, reason: "need paging" },
+    });
+    return put.json().pending as string;
+  }
+
+  async function denyReq(requestId: string, note = "no") {
+    await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/deny`,
+      headers: admin,
+      payload: { note },
+    });
+  }
+
+  /** The admin's pending-queue entry for a given request id. */
+  async function queueEntry(requestId: string) {
+    const queue = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/approvals?status=pending",
+      headers: admin,
+    });
+    return queue.json().find((r: { id: string }) => r.id === requestId);
+  }
+
+  it("flags a refiled grant that was already denied (the inverse of the bug report)", async () => {
+    const slug = uniqueSlug();
+    await createApp(slug);
+    // Uniform notes: `decidedAt` can tie at ms resolution, so keep `last` deterministic.
+    for (let i = 0; i < 3; i++) await denyReq(await fileMcp(slug), "no");
+    const refiled = await fileMcp(slug);
+
+    const entry = await queueEntry(refiled);
+    expect(entry.priorDecisions).toMatchObject({
+      total: 3,
+      deniedSameGrant: 3,
+      deniedSameArea: 3,
+    });
+    expect(entry.priorDecisions.last).toMatchObject({ status: "denied", note: "no" });
+    // The signal the bug report found missing is now present on the payload.
+    expect(JSON.stringify(entry)).toMatch(/denied|priorDecisions/i);
+  });
+
+  it("flags a same-area denial quietly and not as the same grant", async () => {
+    const slug = uniqueSlug();
+    await createApp(slug);
+    await denyReq(await fileMcp(slug, "other"), "not that one");
+    const refiled = await fileMcp(slug, "pagerduty");
+
+    const entry = await queueEntry(refiled);
+    expect(entry.priorDecisions).toMatchObject({
+      total: 1,
+      deniedSameArea: 1,
+      deniedSameGrant: 0,
+    });
+  });
+
+  it("omits priorDecisions for a first-time request, and never sets it on the per-app view", async () => {
+    const { slug, requestId } = await appWithPendingRequest();
+    expect((await queueEntry(requestId)).priorDecisions).toBeUndefined();
+
+    // Even once history exists, the per-app owner view stays unenriched (scope: admin queue).
+    await denyReq(requestId, "no");
+    const refiled = await fileMcp(slug);
+    const ownerView = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/approvals?app=${slug}`,
+      headers: owner,
+    });
+    const ownerEntry = ownerView.json().find((r: { id: string }) => r.id === refiled);
+    expect(ownerEntry.priorDecisions).toBeUndefined();
+  });
+});
+
 describe("go-public via the visibility write-gate", () => {
   it("opens a request for → public and applies it on approve", async () => {
     const slug = uniqueSlug();

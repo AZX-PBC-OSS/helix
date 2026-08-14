@@ -3,7 +3,9 @@ import {
   ApprovalDecisionRequestSchema,
   applyDeltas,
   snapshotConflicts,
+  summarizePriorDecisions,
   type Delta,
+  type PriorDecisionRow,
 } from "@azx-pbc/shared";
 import {
   actorIsAdmin,
@@ -16,6 +18,48 @@ import { AppError } from "../plugins/errors.js";
 import { publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import { Prisma } from "../db/client.js";
 import { capabilitiesFromRow, toApprovalRequest } from "../db/mappers.js";
+
+/**
+ * Fetch the decided (non-pending) approval requests for a set of apps, newest
+ * decision first, grouped by `appId`. Feeds {@link summarizePriorDecisions} so
+ * the admin queue can flag a refiled grant that was already refused (issue #26).
+ * One batched query over the `appId` index — no per-row N+1.
+ */
+async function priorDecisionsByApp(
+  app: FastifyInstance,
+  appIds: string[],
+): Promise<Map<string, PriorDecisionRow[]>> {
+  const byApp = new Map<string, PriorDecisionRow[]>();
+  const ids = [...new Set(appIds)];
+  if (ids.length === 0) return byApp;
+
+  const decided = await app.prisma.approvalRequest.findMany({
+    where: { appId: { in: ids }, status: { not: "pending" }, decidedAt: { not: null } },
+    orderBy: { decidedAt: "desc" },
+    select: {
+      appId: true,
+      status: true,
+      deltas: true,
+      decisionNote: true,
+      decidedBy: true,
+      decidedAt: true,
+    },
+  });
+
+  for (const row of decided) {
+    const list = byApp.get(row.appId) ?? [];
+    list.push({
+      status: row.status as PriorDecisionRow["status"],
+      deltas: row.deltas as unknown as Delta[],
+      decisionNote: row.decisionNote,
+      decidedBy: row.decidedBy,
+      // `decidedAt` is non-null here (filtered above); serialize to the wire shape.
+      decidedAt: (row.decidedAt as Date).toISOString(),
+    });
+    byApp.set(row.appId, list);
+  }
+  return byApp;
+}
 
 /**
  * Approvals control-plane API (docs/design/approvals.md §5). Reads serve the
@@ -60,7 +104,22 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         orderBy: { createdAt: "desc" },
         include: { app: { select: { slug: true, displayName: true } } },
       });
-      return rows.map((r) => toApprovalRequest(r, r.app));
+
+      // Enrich each row with prior-decision context on its app (issue #26): a
+      // refiled request is otherwise indistinguishable from a first-time one.
+      // One batched query over the queue's apps (uses the `appId` index), grouped
+      // in memory — read-side only, nothing stored. See summarizePriorDecisions.
+      const priorByApp = await priorDecisionsByApp(
+        app,
+        rows.map((r) => r.appId),
+      );
+      return rows.map((r) =>
+        toApprovalRequest(
+          r,
+          r.app,
+          summarizePriorDecisions(r.deltas as unknown as Delta[], priorByApp.get(r.appId) ?? []),
+        ),
+      );
     },
   );
 
