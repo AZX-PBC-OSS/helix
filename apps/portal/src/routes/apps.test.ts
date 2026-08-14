@@ -1,5 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
+import type { PrismaClient } from "../db/client.js";
+import {
+  authHeader,
+  buildTestApp,
+  createTestPrisma,
+  uniqueSlug,
+  type TestApp,
+} from "../test/harness.js";
 
 let t: TestApp;
 
@@ -352,5 +359,145 @@ describe("operator policy: PORTAL_ALLOW_PUBLIC_APPS=false", () => {
       expect(res.statusCode).toBe(200);
       expect(res.json().applied).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * Concurrent writes to an app's effective policy state (docs/design/approvals.md
+ * §5). `capabilities` is replaced whole, so without the `policyVersion` CAS two
+ * writers computing from the same pre-image silently discard each other's deltas
+ * and both are told 200.
+ */
+describe("concurrent policy writes", () => {
+  /** A client whose `apps` CAS write is parked until released. */
+  function gatedPolicyWrite() {
+    let reachedItsWrite!: () => void;
+    const atTheWrite = new Promise<void>((resolve) => {
+      reachedItsWrite = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prisma = createTestPrisma().$extends({
+      query: {
+        app: {
+          async updateMany({ args, query }) {
+            reachedItsWrite();
+            await gate;
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    return { prisma, atTheWrite, release };
+  }
+
+  it("409s the manifest PUT that lost, instead of discarding the other's deltas", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Contended" });
+    const gated = gatedPolicyWrite();
+    const slow = buildTestApp({ prisma: gated.prisma });
+    await slow.app.ready();
+    try {
+      // The async IIFE matters: light-my-request defers dispatch until something
+      // awaits the chain, so a bare `inject()` never runs (secrets.test.ts:395).
+      const first = (async () =>
+        slow.app.inject({
+          method: "PUT",
+          url: `/api/v1/apps/${slug}/manifest`,
+          headers: authHeader(),
+          payload: { capabilities: { data: { user: true } } },
+        }))();
+      // It has read the pre-image and is about to write it back. Let a second,
+      // unrelated baseline change commit underneath it first.
+      await gated.atTheWrite;
+      const second = await t.app.inject({
+        method: "PUT",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+        payload: { capabilities: { llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 } } },
+      });
+      expect(second.statusCode).toBe(200);
+      gated.release();
+      const lost = await first;
+
+      expect(lost.statusCode).toBe(409);
+      expect(lost.json().error.code).toBe("conflict");
+
+      // The committed change survived intact — the loser wrote nothing.
+      const manifest = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(manifest.json().capabilities.llm).toEqual({
+        models: ["claude-opus-4-8"],
+        dollarsPerDay: 10,
+      });
+      expect(manifest.json().capabilities.data?.user ?? false).toBe(false);
+    } finally {
+      await slow.close();
+    }
+  });
+
+  it("hands the losing password-enable a 409 rather than a passphrase that is not stored", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Passworded" });
+    const gated = gatedPolicyWrite();
+    const slow = buildTestApp({ prisma: gated.prisma });
+    await slow.app.ready();
+    try {
+      const first = (async () =>
+        slow.app.inject({
+          method: "POST",
+          url: `/api/v1/apps/${slug}/access/password`,
+          headers: authHeader(),
+        }))();
+      await gated.atTheWrite;
+      const second = await t.app.inject({
+        method: "POST",
+        url: `/api/v1/apps/${slug}/access/password`,
+        headers: authHeader(),
+      });
+      expect(second.statusCode).toBe(201);
+      gated.release();
+      const lost = await first;
+
+      // The whole point: 201 + a cleartext passphrase that does not open the app
+      // is unrecoverable — the caller cannot tell it is the wrong one.
+      expect(lost.statusCode).toBe(409);
+      const stored = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/access/password`,
+        headers: authHeader(),
+      });
+      expect(stored.json().password).toBe(second.json().password);
+    } finally {
+      await slow.close();
+    }
+  });
+
+  it("files both origin grants concurrently — an elevated-only change writes nothing to CAS over", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({ slug, displayName: "Origins" });
+    const grant = (origin: string) =>
+      t.app.inject({
+        method: "POST",
+        url: `/api/v1/apps/${slug}/access/origin`,
+        headers: authHeader(),
+        payload: { origin },
+      });
+    const [a, b] = await Promise.all([grant("https://one.example"), grant("https://two.example")]);
+    // Neither grant changes the live blob (the origin waits for approval), so
+    // neither may be turned away as a conflict and no origin may be dropped.
+    expect([a.statusCode, b.statusCode]).toEqual([200, 200]);
+    const reqs = await t.prisma.approvalRequest.findMany({
+      where: { appId: created.json().id as string },
+    });
+    expect(reqs).toHaveLength(2);
+    expect(reqs.flatMap((r) => (r.deltas as { path: string }[]).map((d) => d.path)).sort()).toEqual(
+      ["externalOrigins[+https://one.example]", "externalOrigins[+https://two.example]"],
+    );
   });
 });

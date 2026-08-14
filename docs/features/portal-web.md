@@ -55,7 +55,11 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 - **Usage** (`/usage`, `UsagePage`) — platform-wide metering off `GET /api/v1/gateway/usage`.
 - **Admin** (`src/pages/admin/`):
   - **Approvals** (`/admin/approvals`) — the capability-approval queue off `GET /api/v1/approvals`
-    with approve / deny / request-changes mutations (deny + request-changes require a note).
+    with approve / deny / request-changes mutations (deny + request-changes require a note). A
+    decision that lost a race to another admin comes back `409` and is reported as _"someone else
+    already denied this request"_ rather than as a failure; every decision mutation invalidates
+    `onSettled`, so the queue refetches on conflict too and the row shows the decision that landed.
+    Withdraw exists on the API (the requester's verb) but has no UI yet.
   - **Audit Log** (`/admin/audit`) — `GET /api/v1/gateway/audit` over `gateway_calls`.
   - **Platform** (`/admin/platform`) — system metering off `GET /api/v1/gateway/usage`.
   - **All Apps / Registry** (`/admin/registry`) — the full app list.

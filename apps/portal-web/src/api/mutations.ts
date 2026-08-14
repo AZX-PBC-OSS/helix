@@ -98,7 +98,9 @@ export function useSetManifest() {
         method: "PUT",
         body: { capabilities, ...(reason !== undefined ? { reason } : {}) },
       }),
-    onSuccess: (_result, { slug }) => {
+    // onSettled, not onSuccess: a conflict (409) means the stored value is not
+    // what this form was editing, so the refetch is what makes the screen honest.
+    onSettled: (_result, _err, { slug }) => {
       void queryClient.invalidateQueries({ queryKey: ["apps", slug, "manifest"] });
       void queryClient.invalidateQueries({ queryKey: ["approvals"] });
     },
@@ -133,7 +135,7 @@ export function useSetVisibility() {
           body: { visibility, ...(reason !== undefined ? { reason } : {}) },
         },
       ),
-    onSuccess: (_result, { slug }) => {
+    onSettled: (_result, _err, { slug }) => {
       void queryClient.invalidateQueries({ queryKey: ["apps"] });
       void queryClient.invalidateQueries({ queryKey: ["apps", slug] });
       void queryClient.invalidateQueries({ queryKey: ["approvals"] });
@@ -154,7 +156,9 @@ function useApprovalDecision(suffix: "approve" | "deny" | "needs_changes" | "wit
         method: "POST",
         ...(note !== undefined ? { body: { note } } : {}),
       }),
-    onSuccess: () => {
+    // onSettled, not onSuccess: losing a decision race is a 409, and the queue
+    // must then refetch so it shows the decision that actually landed (§5).
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["approvals"] });
       void queryClient.invalidateQueries({ queryKey: ["apps"] });
     },
@@ -185,7 +189,7 @@ export function useGrantOrigin() {
           body: { origin },
         },
       ),
-    onSuccess: (_result, { slug }) => {
+    onSettled: (_result, _err, { slug }) => {
       void queryClient.invalidateQueries({ queryKey: ["approvals"] });
       void queryClient.invalidateQueries({ queryKey: ["csp", "violations"] });
       void queryClient.invalidateQueries({ queryKey: ["apps", slug, "manifest"] });

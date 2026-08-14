@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { TokenVerifier } from "../plugins/auth.js";
-import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
+import type { PrismaClient } from "../db/client.js";
+import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../test/harness.js";
 
 // Two actors: an app owner (no admin group) and a platform admin.
 const OWNER = "owner@azx.io";
@@ -659,5 +660,211 @@ describe("go-public via the visibility write-gate", () => {
       (await t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}`, headers: owner })).json()
         .visibility.mode,
     ).toBe("internal");
+  });
+});
+
+/**
+ * Concurrent decisions on one request (docs/design/approvals.md §5). The property
+ * under test is that the `pending → terminal` transition is what gates the `apps`
+ * write: a decision that loses the race must apply nothing and say so (409), not
+ * overwrite the decision that won.
+ */
+describe("concurrent decisions on one approval request", () => {
+  /**
+   * A second client whose write of `status` is parked until released, so the
+   * interleaving is deterministic rather than timing-dependent. Plain `Promise.all`
+   * is not enough: in-process the two requests serialise and the second legitimately
+   * sees the first's committed status (the same note as secrets.test.ts:292).
+   * Matching on the target status catches the `updateMany` CAS the routes use.
+   */
+  function gatedDecider(status: string) {
+    let reachedItsWrite!: () => void;
+    const atTheWrite = new Promise<void>((resolve) => {
+      reachedItsWrite = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stall = async (data: unknown) => {
+      if ((data as { status?: string }).status === status) {
+        reachedItsWrite();
+        await gate;
+      }
+    };
+    const prisma = createTestPrisma().$extends({
+      query: {
+        approvalRequest: {
+          async update({ args, query }) {
+            await stall(args.data);
+            return query(args);
+          },
+          async updateMany({ args, query }) {
+            await stall(args.data);
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    return { prisma, atTheWrite, release };
+  }
+
+  it("does not leave the request withdrawn while the elevated capability is live", async () => {
+    const { slug, requestId } = await appWithPendingRequest();
+    const gated = gatedDecider("withdrawn");
+    const withdrawer = buildTestApp({
+      auth: { verifiers, publicConfig: null },
+      prisma: gated.prisma,
+    });
+    await withdrawer.app.ready();
+    try {
+      // The async IIFE matters: light-my-request defers dispatch until something
+      // awaits the chain, so a bare `inject()` never runs (secrets.test.ts:395).
+      const withdrawing = (async () =>
+        withdrawer.app.inject({
+          method: "POST",
+          url: `/api/v1/approvals/${requestId}/withdraw`,
+          headers: owner,
+        }))();
+      // The withdraw has read `pending` and is about to write it. Let the approve
+      // commit its whole transaction underneath it, then release the write.
+      await gated.atTheWrite;
+      const approve = await t.app.inject({
+        method: "POST",
+        url: `/api/v1/approvals/${requestId}/approve`,
+        headers: admin,
+      });
+      expect(approve.statusCode).toBe(200);
+      gated.release();
+      const withdraw = await withdrawing;
+
+      // The loser is told the truth instead of overwriting the winner.
+      expect(withdraw.statusCode).toBe(409);
+      expect(withdraw.json().error.code).toBe("conflict");
+      expect(withdraw.json().error.details).toEqual({ status: "approved" });
+
+      const row = await t.prisma.approvalRequest.findUniqueOrThrow({ where: { id: requestId } });
+      const appRow = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+      const mcp = (appRow.capabilities as { mcp?: string[] }).mcp ?? [];
+      // The state the bug produced: the queue and the audit trail said the grant
+      // was pulled while the edge served the capability from the `apps` row.
+      expect({ status: row.status, mcp }).not.toEqual({ status: "withdrawn", mcp: ["pagerduty"] });
+      expect({ status: row.status, mcp }).toEqual({ status: "approved", mcp: ["pagerduty"] });
+
+      // Exactly one decision in the ledger — the bug recorded both.
+      const events = await t.prisma.auditEvent.findMany({ where: { appId: appRow.id } });
+      expect(events.map((e) => e.action).filter((a) => a.startsWith("approval."))).toEqual([
+        "approval.request",
+        "approval.approve",
+      ]);
+    } finally {
+      await withdrawer.close();
+    }
+  });
+
+  it("does not apply the deltas when a deny lands first", async () => {
+    const { slug, requestId } = await appWithPendingRequest();
+    const gated = gatedDecider("approved");
+    const approver = buildTestApp({
+      auth: { verifiers, publicConfig: null },
+      prisma: gated.prisma,
+    });
+    await approver.app.ready();
+    try {
+      const approving = (async () =>
+        approver.app.inject({
+          method: "POST",
+          url: `/api/v1/approvals/${requestId}/approve`,
+          headers: admin,
+        }))();
+      await gated.atTheWrite;
+      const deny = await t.app.inject({
+        method: "POST",
+        url: `/api/v1/approvals/${requestId}/deny`,
+        headers: admin,
+        payload: { note: "too risky" },
+      });
+      expect(deny.statusCode).toBe(200);
+      gated.release();
+      const approve = await approving;
+
+      expect(approve.statusCode).toBe(409);
+      expect(approve.json().error.details).toEqual({ status: "denied" });
+      // The whole approve transaction rolled back, so the capability never landed.
+      const appRow = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+      expect((appRow.capabilities as { mcp?: string[] }).mcp ?? []).toEqual([]);
+      const row = await t.prisma.approvalRequest.findUniqueOrThrow({ where: { id: requestId } });
+      expect(row.status).toBe("denied");
+    } finally {
+      await approver.close();
+    }
+  });
+
+  it("survives two decisions fired at once, whichever wins", async () => {
+    const { slug, requestId } = await appWithPendingRequest();
+    const [a, b] = await Promise.all([
+      t.app.inject({
+        method: "POST",
+        url: `/api/v1/approvals/${requestId}/approve`,
+        headers: admin,
+      }),
+      t.app.inject({
+        method: "POST",
+        url: `/api/v1/approvals/${requestId}/deny`,
+        headers: admin,
+        payload: { note: "no" },
+      }),
+    ]);
+    // Exactly one decision may land; the other is a 409. Which one is timing.
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+
+    const row = await t.prisma.approvalRequest.findUniqueOrThrow({ where: { id: requestId } });
+    const appRow = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    const mcp = (appRow.capabilities as { mcp?: string[] }).mcp ?? [];
+    // The invariant: the recorded decision and the effective state agree.
+    expect(mcp).toEqual(row.status === "approved" ? ["pagerduty"] : []);
+  });
+
+  it("409s a decision that disagrees with the one already recorded", async () => {
+    const { requestId } = await appWithPendingRequest();
+    await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/deny`,
+      headers: admin,
+      payload: { note: "no" },
+    });
+    const approve = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+    expect(approve.statusCode).toBe(409);
+    expect(approve.json().error.code).toBe("conflict");
+    expect(approve.json().error.details).toEqual({ status: "denied" });
+
+    // …and the requester's withdraw of an already-denied request likewise.
+    const withdraw = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/withdraw`,
+      headers: owner,
+    });
+    expect(withdraw.statusCode).toBe(409);
+  });
+
+  it("stays a 200 no-op when the same decision is repeated", async () => {
+    const { requestId } = await appWithPendingRequest();
+    await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/withdraw`,
+      headers: owner,
+    });
+    // A double-click is not a conflict — the caller's intent is already the truth.
+    const again = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/withdraw`,
+      headers: owner,
+    });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().status).toBe("withdrawn");
   });
 });

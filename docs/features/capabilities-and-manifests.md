@@ -135,6 +135,22 @@ check at approve time that auto-bounces a stale request to `needs_changes` rathe
 A pending request **never expires** — it waits for a human decision, by design ([ADR-0039](../adr/0039-no-approval-request-expiry.md)) — so the
 queue instead shows how long each request has been pending and sorts oldest-first.
 
+**Two writers at once → `409`, never a silent overwrite** (`docs/design/approvals.md` §5). The
+`baseSnapshot` check above covers a value that moved while a request *sat* pending; it does not
+cover two writes landing in the same instant, so two compare-and-swaps do:
+
+- **The decision transition** (`claimPendingRequest`) — a decision is `UPDATE … WHERE status =
+  'pending'`, and on approve it is claimed *before* the `apps` write, so a decision that loses
+  applies nothing. Repeating a decision that already landed is still a 200 no-op; a decision that
+  disagrees with the recorded one is a 409 carrying the landed status in `error.details.status`.
+  Without this a withdraw could overwrite an approval that had already granted the capability,
+  leaving the queue and the audit trail saying the grant was pulled while the edge served it.
+- **The effective-state write** (`casPolicyWrite`, `apps.policyVersion`) — `capabilities` is
+  replaced whole, so the manifest PUT, the origin grant, the visibility switch, apply-on-approve,
+  and the password enable/rotate/disable routes all read the row *inside* their transaction and CAS
+  on the version they read. The loser gets a 409 telling it to reload; an elevated-only change
+  (e.g. an origin grant, which touches nothing live) writes nothing and so cannot conflict.
+
 ## Where it shows up in the UI
 
 The portal SPA has a **real** manifest editor (the Capabilities tab) wired to the live GET/PUT —

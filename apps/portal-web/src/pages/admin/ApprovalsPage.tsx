@@ -13,6 +13,7 @@ import {
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import type { ApprovalRequest, ApprovalStatus, Delta } from "@azx-pbc/shared";
+import { PortalApiError } from "../../api/client";
 import { approvalsQuery } from "../../api/queries";
 import { useApproveRequest, useDenyRequest, useRequestChanges } from "../../api/mutations";
 import { Icon, type IconName } from "../../components/Icon";
@@ -57,6 +58,28 @@ function kindMeta(deltas: Delta[]): [IconName, string] {
 }
 
 const fmt = (v: Delta["from"]) => (v === undefined ? "∅" : String(v));
+
+/** How each landed status reads in "someone else already …" (docs/design/approvals.md §5). */
+const LANDED: Record<string, string> = {
+  approved: "approved",
+  denied: "denied",
+  withdrawn: "withdrawn (the requester pulled it)",
+  needs_changes: "sent back for changes",
+};
+
+/**
+ * A decision that lost a race answers 409 and carries the status that actually
+ * landed. Two admins deciding the same row at once is the ordinary way to hit it,
+ * and it is not a failure worth an alarming message — the transition simply went
+ * the other way, and the queue has already refetched (mutations use `onSettled`).
+ */
+function landedStatus(err: unknown): string | null {
+  if (!(err instanceof PortalApiError) || err.status !== 409) return null;
+  const details: unknown = err.details;
+  if (typeof details !== "object" || details === null) return null;
+  const status: unknown = (details as { status?: unknown }).status;
+  return typeof status === "string" ? status : null;
+}
 
 /** Membership deltas (`mcp[+x]`) are self-describing; scalar deltas show from → to. */
 function diffLine(d: Delta): string {
@@ -179,6 +202,12 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
   const ask = a.deltas.length === 1 ? diffLine(a.deltas[0]!) : `${a.deltas.length} changes`;
   const signal = priorSignal(a.priorDecisions);
 
+  // Surface a failed decision instead of just stopping the spinner. A 409 means
+  // someone else decided this row first — the mutations refetch the queue on
+  // settle, so the message reads as "already handled", not an error to retry.
+  const decisionError = approve.error ?? deny.error ?? requestChanges.error;
+  const landed = landedStatus(decisionError);
+
   return (
     <Card>
       <Grid gap={20}>
@@ -287,6 +316,16 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
               </Group>
             </Stack>
           )}
+
+          {decisionError && (
+            <div style={{ marginTop: 12 }}>
+              <Hint icon="alert" tone={landed ? "warn" : "bad"}>
+                {landed
+                  ? `Someone else already ${LANDED[landed] ?? landed} this request — the queue has been refreshed.`
+                  : `Couldn't record that decision: ${decisionError.message}`}
+              </Hint>
+            </div>
+          )}
         </Grid.Col>
         <Grid.Col span={{ base: 12, sm: 3 }}>
           <Stack gap={9} justify="center" h="100%">
@@ -367,6 +406,14 @@ export function ApprovalsPage() {
       {queue.isError && (
         <Hint icon="alert" tone="bad">
           Couldn't load the queue: {queue.error.message}
+        </Hint>
+      )}
+
+      {decisionError && (
+        <Hint icon="alert" tone={landed ? "warn" : "bad"}>
+          {landed
+            ? `Someone else already ${LANDED[landed] ?? landed} this request — the queue has been refreshed.`
+            : `Couldn't record that decision: ${decisionError.message}`}
         </Hint>
       )}
 

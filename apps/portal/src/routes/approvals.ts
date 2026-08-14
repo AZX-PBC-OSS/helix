@@ -16,8 +16,10 @@ import {
 } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { publicAppsAllowed } from "../policy/visibilityPolicy.js";
+import { casPolicyWrite } from "../policy/policyWrite.js";
 import { Prisma } from "../db/client.js";
 import { capabilitiesFromRow, toApprovalRequest } from "../db/mappers.js";
+import { alreadyDecided, claimPendingRequest } from "../approvals/service.js";
 
 /**
  * Fetch the decided (non-pending) approval requests for a set of apps, newest
@@ -67,6 +69,11 @@ async function priorDecisionsByApp(
  * close a request. Applying an approval is an `apps` UPDATE in one txn — the edge
  * picks the new effective state up via its registry projection and never learns
  * an approval happened (it has no grant on `approval_requests`).
+ *
+ * Every decision path compare-and-swaps the `pending → terminal` transition
+ * (`claimPendingRequest`) rather than branching on a status it read earlier, and
+ * the `apps` write is CAS'd on `policyVersion`. Both are load-bearing: see §5 and
+ * the comments on those two helpers.
  */
 export async function approvalRoutes(app: FastifyInstance): Promise<void> {
   // List requests. `?app=<slug>` scopes to one app (owner or admin); without it
@@ -135,8 +142,12 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         const request = await tx.approvalRequest.findUnique({ where: { id: req.params.id } });
         if (!request)
           throw new AppError("not_found", `approval request "${req.params.id}" not found`);
-        // Idempotent: a second click on an already-decided request is a no-op.
-        if (request.status !== "pending") return { row: request };
+        // A second click on an already-approved request is the documented no-op;
+        // any other landed status is a 409 (§5). This read is only a fast path —
+        // `status` is the one mutable field the branches below depend on, and the
+        // claim below is what actually gates the write. Every other field they
+        // read (`requestedBy`, `deltas`, `baseSnapshot`) is immutable once filed.
+        if (request.status !== "pending") return { row: alreadyDecided(request, "approved") };
 
         // Separation of duty: an admin may not decide their own request unless
         // the dev self-approve flag is set (§4).
@@ -151,15 +162,14 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         // Optimistic concurrency: if a touched value moved since the request was
         // filed, bounce to needs_changes rather than clobber it (§5).
         if (snapshotConflicts(request.baseSnapshot, effective, appRow.visibilityMode)) {
-          const row = await tx.approvalRequest.update({
-            where: { id: request.id },
-            data: {
-              status: "needs_changes",
-              decidedBy: actor.sub,
-              decidedAt: new Date(),
-              decisionNote: "auto: effective state changed since this request was filed",
-            },
+          const claim = await claimPendingRequest(tx, request.id, {
+            status: "needs_changes",
+            decidedBy: actor.sub,
+            decidedAt: new Date(),
+            decisionNote: "auto: effective state changed since this request was filed",
           });
+          if (!claim.claimed) return { row: alreadyDecided(claim.row, "needs_changes") };
+          const row = claim.row;
           await tx.auditEvent.create({
             data: {
               appId: request.appId,
@@ -171,11 +181,24 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           return { row };
         }
 
+        // Claim the transition BEFORE touching the `apps` row. A withdraw or deny
+        // that landed while this transaction was reading takes the request out of
+        // `pending`, and the elevated deltas must not be applied to an app whose
+        // request was closed by someone else (issue #24). The status transition is
+        // what gates the effective-state write — not the read above it.
+        const claim = await claimPendingRequest(tx, request.id, {
+          status: "approved",
+          decidedBy: actor.sub,
+          decidedAt: new Date(),
+        });
+        if (!claim.claimed) return { row: alreadyDecided(claim.row, "approved") };
+        const row = claim.row;
+
         // Apply: capability deltas → capabilities JSON; a visibility delta (only
         // → public reaches here) → the flat columns.
         const capDeltas = deltas.filter((d) => d.path !== "visibility");
         const visDelta = deltas.find((d) => d.path === "visibility");
-        const data: Prisma.AppUpdateInput = {};
+        const data: Prisma.AppUpdateManyMutationInput = {};
         if (capDeltas.length > 0) {
           data.capabilities = applyDeltas(effective, capDeltas) as unknown as Prisma.InputJsonValue;
         }
@@ -188,7 +211,16 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           data.visibilityMode = "public";
           data.visibilityGroupId = null;
         }
-        await tx.app.update({ where: { id: appRow.id }, data });
+        // CAS on the version read above: a baseline write that commits between
+        // that read and this one would otherwise be clobbered by this full-blob
+        // write. `baseSnapshot` does not cover it — it compares only the areas the
+        // request touched, and it was captured when the request was filed.
+        await casPolicyWrite(
+          tx,
+          appRow,
+          data,
+          "the app's policy changed while this approval was being applied — retry",
+        );
 
         // Two audit events: the effective mutation(s) + the approval decision.
         if (capDeltas.length > 0) {
@@ -211,10 +243,6 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
             },
           });
         }
-        const row = await tx.approvalRequest.update({
-          where: { id: request.id },
-          data: { status: "approved", decidedBy: actor.sub, decidedAt: new Date() },
-        });
         await tx.auditEvent.create({
           data: {
             appId: appRow.id,
@@ -248,17 +276,21 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           const request = await tx.approvalRequest.findUnique({ where: { id: req.params.id } });
           if (!request)
             throw new AppError("not_found", `approval request "${req.params.id}" not found`);
-          if (request.status !== "pending") return request;
+          if (request.status !== "pending") return alreadyDecided(request, status);
           if (request.requestedBy === actor.sub && !canSelfApprove()) {
             throw new AppError(
               "forbidden",
               "deciding your own request is not permitted (separation of duty)",
             );
           }
-          const updated = await tx.approvalRequest.update({
-            where: { id: request.id },
-            data: { status, decidedBy: actor.sub, decidedAt: new Date(), decisionNote: note },
+          const claim = await claimPendingRequest(tx, request.id, {
+            status,
+            decidedBy: actor.sub,
+            decidedAt: new Date(),
+            decisionNote: note,
           });
+          if (!claim.claimed) return alreadyDecided(claim.row, status);
+          const updated = claim.row;
           await tx.auditEvent.create({
             data: {
               appId: request.appId,
@@ -284,14 +316,21 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         const request = await tx.approvalRequest.findUnique({ where: { id: req.params.id } });
         if (!request)
           throw new AppError("not_found", `approval request "${req.params.id}" not found`);
+        // `requestedBy` never changes, so gating on this read is sound.
         if (request.requestedBy !== actor.sub) {
           throw new AppError("forbidden", "only the requester may withdraw a request");
         }
-        if (request.status !== "pending") return request;
-        const updated = await tx.approvalRequest.update({
-          where: { id: request.id },
-          data: { status: "withdrawn", decidedBy: actor.sub, decidedAt: new Date() },
+        if (request.status !== "pending") return alreadyDecided(request, "withdrawn");
+        const claim = await claimPendingRequest(tx, request.id, {
+          status: "withdrawn",
+          decidedBy: actor.sub,
+          decidedAt: new Date(),
         });
+        // The case issue #24 is about: an approve that committed while this
+        // transaction was reading has already applied the deltas, so overwriting
+        // the status here would advertise a withdrawal that did not happen.
+        if (!claim.claimed) return alreadyDecided(claim.row, "withdrawn");
+        const updated = claim.row;
         await tx.auditEvent.create({
           data: {
             appId: request.appId,
