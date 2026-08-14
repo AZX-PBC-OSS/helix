@@ -65,3 +65,13 @@ window.HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElemen
   if (this.hasAttribute("download")) return;
   anchorClick.call(this);
 };
+
+// Same class of gap: jsdom implements no FontFaceSet, and the autosize Textarea
+// subscribes to `document.fonts` "loadingdone" to re-measure after a webfont
+// swap — so rendering one throws before any assertion runs.
+if (!document.fonts) {
+  Object.defineProperty(document, "fonts", {
+    configurable: true,
+    value: { addEventListener: () => {}, removeEventListener: () => {} },
+  });
+}

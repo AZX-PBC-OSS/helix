@@ -98,9 +98,15 @@ export function useSetManifest() {
         method: "PUT",
         body: { capabilities, ...(reason !== undefined ? { reason } : {}) },
       }),
-    // onSettled, not onSuccess: a conflict (409) means the stored value is not
-    // what this form was editing, so the refetch is what makes the screen honest.
-    onSettled: (_result, _err, { slug }) => {
+    // onSuccess, deliberately — unlike the decision mutations below, which
+    // invalidate `onSettled`. This one backs an editor holding a draft:
+    // `CapabilitiesTab` reseeds that draft whenever the fetched capabilities
+    // change reference, relying on react-query's structural sharing to survive
+    // unrelated refetches. On a 409 the stored value differs *by definition*, so
+    // refetching here would reset the form to the other writer's value — wiping
+    // the owner's unsaved edits at the exact moment we tell them to try again.
+    // The conflict message is the honest signal; the draft is theirs to keep.
+    onSuccess: (_result, { slug }) => {
       void queryClient.invalidateQueries({ queryKey: ["apps", slug, "manifest"] });
       void queryClient.invalidateQueries({ queryKey: ["approvals"] });
     },

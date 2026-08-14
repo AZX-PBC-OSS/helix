@@ -26,18 +26,30 @@ const pending: ApprovalRequest = {
   decidedAt: null,
 };
 
+type Decision = { ok: boolean; status: number; body: unknown };
+
 /**
- * Serve the queue, and answer the approve POST with `decision`. Note the stubs are
- * plain objects rather than real `Response`s (the house idiom), so `ok`/`status`
- * have to be set explicitly for the client's error path to see them.
+ * Serve the queue, and answer each successive approve POST with the next entry in
+ * `decisions` (the last one repeats). Note the stubs are plain objects rather than
+ * real `Response`s (the house idiom), so `ok`/`status` have to be set explicitly
+ * for the client's error path to see them.
  */
-function stubFetch(decision: { ok: boolean; status: number; body: unknown }) {
+function stubFetch(...decisions: Decision[]) {
+  let nth = 0;
   const fetchMock = vi.fn((url: string) => {
     if (typeof url === "string" && url.includes("/approve")) {
+      const decision = decisions[Math.min(nth++, decisions.length - 1)]!;
       return Promise.resolve({
         ok: decision.ok,
         status: decision.status,
         json: async () => decision.body,
+      });
+    }
+    if (typeof url === "string" && url.includes("/deny")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ ...pending, status: "denied", decisionNote: "no" }),
       });
     }
     if (typeof url === "string" && url.includes("/api/v1/approvals")) {
@@ -78,7 +90,7 @@ describe("ApprovalsPage decision errors", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Approve grant/ }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Someone else already denied this request/)).toBeDefined();
+      expect(screen.getByText(/This request was already denied by another admin/)).toBeDefined();
     });
     // …and the queue refetched, so the row on screen is the stored state, not the
     // one this admin was looking at when they clicked.
@@ -87,6 +99,39 @@ describe("ApprovalsPage decision errors", () => {
         ([url]) => typeof url === "string" && url.includes("/approvals?"),
       );
       expect(queueCalls.length).toBeGreaterThan(1);
+    });
+  });
+
+  it("clears a stale banner when a different decision succeeds", async () => {
+    setToken("test-token");
+    // Cross-hook is the failure that matters: react-query already clears a hook's
+    // own error when that same hook fires again, but the banner reads three hooks,
+    // and it names no row — so a dead approve error sitting over a successful deny
+    // reads as though the deny had failed.
+    stubFetch({
+      ok: false,
+      status: 409,
+      body: {
+        error: { code: "conflict", message: "already denied", details: { status: "denied" } },
+      },
+    });
+    renderWithProviders(
+      <AuthProvider>
+        <ApprovalsPage />
+      </AuthProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /Approve grant/ }));
+    await waitFor(() => {
+      expect(screen.getByText(/This request was already denied/)).toBeDefined();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Deny" }));
+    await userEvent.type(screen.getByRole("textbox"), "no");
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText(/This request was already denied/)).toBeNull();
     });
   });
 

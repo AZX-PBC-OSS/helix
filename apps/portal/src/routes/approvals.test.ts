@@ -323,6 +323,17 @@ describe("approve", () => {
       where: { appId, action: "approval.needs_changes" },
     });
     expect(bounce.metadata).toMatchObject({ reason: "stale_snapshot" });
+
+    // Replaying the same approve is still a no-op, not a conflict: the decision
+    // it would be conflicting with is the one this very call just made, and a
+    // client that retried a timed-out request must not be told otherwise.
+    const replay = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().status).toBe("needs_changes");
   });
 
   it("will not approve a request already bounced to needs_changes", async () => {

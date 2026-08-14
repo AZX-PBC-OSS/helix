@@ -196,9 +196,12 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      // A *relative* change: the append has to run against the origins read inside
-      // the transaction, or two grants filed from the Violations screen at once
-      // each append to the same pre-image and one origin is lost.
+      // A *relative* change, so the append runs against the origins read inside
+      // the transaction rather than a pre-image this route read earlier. That is
+      // about classifying against committed state — an origin already granted
+      // concurrently is then correctly no delta at all. It is not protecting the
+      // live blob: every added origin is elevated (packages/shared/src/approval.ts),
+      // so the append never becomes a baseline delta and nothing here is written.
       return applyCapabilityChange(app.prisma, {
         appId: row.id,
         mutate: (effective) => ({
@@ -317,9 +320,30 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!passwordAppsAllowed()) {
         throw new AppError("forbidden", "password apps are disabled on this deployment");
       }
-      // Mint before opening the transaction: `hashPassword` is a deliberately slow
-      // KDF, and holding a transaction (and its connection) open across it would
-      // idle a pool slot for the whole scrypt run. Re-enabling discards this.
+      // Answer the idempotent re-enable without minting. `hashPassword` costs a
+      // ~128 MiB scrypt derivation (packages/shared/src/scrypt.ts calls that an
+      // exhaustion amplifier, which is why the *edge* caps concurrency; the portal
+      // does not), so paying it to hand back a credential that already exists puts
+      // a real memory cost behind an authenticated one-liner. This read is a fast
+      // path only — the authoritative check is the one inside the transaction.
+      const existing = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!existing) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      if (
+        existing.visibilityMode === "password" &&
+        existing.passwordEnc &&
+        existing.passwordSetAt
+      ) {
+        return credential(
+          existing.slug,
+          decryptPassword(existing.passwordEnc),
+          existing.passwordSetAt,
+        );
+      }
+
+      // Mint before opening the transaction: holding a transaction (and its
+      // connection) open across the KDF would idle a pool slot for the whole run.
       const password = generatePassphrase();
       const setAt = new Date();
       const { hash, salt } = await hashPassword(password);

@@ -141,3 +141,68 @@ describe("CapabilitiesTab — LLM access", () => {
     expect(screen.getByText(/needs admin approval/)).toBeDefined();
   });
 });
+
+describe("CapabilitiesTab — a save that conflicts", () => {
+  /**
+   * Serve the manifest, then answer the PUT with a 409 and serve a *different*
+   * manifest afterwards — the shape of a lost race, where the stored value has
+   * moved by definition.
+   */
+  function stubConflictingSave(before: AppManifest, after: AppManifest) {
+    let saved = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: { method?: string }) => {
+        if (typeof url === "string" && url.endsWith("/manifest") && init?.method === "PUT") {
+          saved = true;
+          return Promise.resolve({
+            ok: false,
+            status: 409,
+            json: async () => ({
+              error: {
+                code: "conflict",
+                message:
+                  "this app's policy changed while you were editing it — reload and try again",
+              },
+            }),
+          });
+        }
+        if (typeof url === "string" && url.endsWith("/manifest")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => (saved ? after : before),
+          });
+        }
+        if (typeof url === "string" && url.endsWith("/secrets")) {
+          return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+        }
+        return new Promise(() => {});
+      }),
+    );
+  }
+
+  it("keeps the owner's edits on the screen instead of resetting them", async () => {
+    // The draft is reseeded whenever the fetched capabilities change reference, so
+    // a mutation that invalidates the manifest query on *error* would reset this
+    // form to the other writer's value — wiping the edits at the exact moment the
+    // message says "try again", with nowhere left to try them from.
+    stubConflictingSave(
+      manifest({ llm: { models: [], dollarsPerDay: 10 } }),
+      manifest({ llm: { models: ["claude-haiku-4-5"], dollarsPerDay: 10 } }),
+    );
+    setToken("test-token");
+    render();
+
+    const model = "claude-opus-4-8";
+    await userEvent.click(await screen.findByRole("checkbox", { name: model }));
+    await userEvent.click(screen.getByRole("button", { name: /Save manifest/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/policy changed while you were editing it/)).toBeDefined();
+    });
+    // Still checked, and still savable — the edit survived the conflict.
+    expect((screen.getByRole("checkbox", { name: model }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole("button", { name: /Save manifest/ })).toHaveProperty("disabled", false);
+  });
+});

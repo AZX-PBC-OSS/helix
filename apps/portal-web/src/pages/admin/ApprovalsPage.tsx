@@ -59,11 +59,16 @@ function kindMeta(deltas: Delta[]): [IconName, string] {
 
 const fmt = (v: Delta["from"]) => (v === undefined ? "∅" : String(v));
 
-/** How each landed status reads in "someone else already …" (docs/design/approvals.md §5). */
+/**
+ * How each landed status reads in "this request was already …"
+ * (docs/design/approvals.md §5). Deliberately not phrased as "someone else did
+ * X": `needs_changes` can be the approve path's own automatic stale-snapshot
+ * bounce, so naming another actor would be a guess, and sometimes a wrong one.
+ */
 const LANDED: Record<string, string> = {
-  approved: "approved",
-  denied: "denied",
-  withdrawn: "withdrawn (the requester pulled it)",
+  approved: "approved by another admin",
+  denied: "denied by another admin",
+  withdrawn: "withdrawn by the requester",
   needs_changes: "sent back for changes",
 };
 
@@ -189,8 +194,18 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
 
   const busy = approve.isPending || deny.isPending || requestChanges.isPending;
 
+  // Mutation error state is per-hook and sticky until that hook is reset, and the
+  // banner carries no row identity — so without this a lost approve keeps warning
+  // over a later successful deny, reading as though the deny had failed.
+  const clearDecisionErrors = () => {
+    approve.reset();
+    deny.reset();
+    requestChanges.reset();
+  };
+
   const submitNote = () => {
     if (!noteFor || !note.trim()) return;
+    clearDecisionErrors();
     (noteFor === "deny" ? deny : requestChanges).mutate({ id: a.id, note: note.trim() });
     setNoteFor(null);
     setNote("");
@@ -321,7 +336,7 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
             <div style={{ marginTop: 12 }}>
               <Hint icon="alert" tone={landed ? "warn" : "bad"}>
                 {landed
-                  ? `Someone else already ${LANDED[landed] ?? landed} this request — the queue has been refreshed.`
+                  ? `This request was already ${LANDED[landed] ?? landed} — the queue has been refreshed.`
                   : `Couldn't record that decision: ${decisionError.message}`}
               </Hint>
             </div>
@@ -332,7 +347,10 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
             <Button
               leftSection={<Icon name="check" size={14} />}
               loading={busy}
-              onClick={() => approve.mutate({ id: a.id })}
+              onClick={() => {
+                clearDecisionErrors();
+                approve.mutate({ id: a.id });
+              }}
             >
               Approve grant
             </Button>
@@ -406,14 +424,6 @@ export function ApprovalsPage() {
       {queue.isError && (
         <Hint icon="alert" tone="bad">
           Couldn't load the queue: {queue.error.message}
-        </Hint>
-      )}
-
-      {decisionError && (
-        <Hint icon="alert" tone={landed ? "warn" : "bad"}>
-          {landed
-            ? `Someone else already ${LANDED[landed] ?? landed} this request — the queue has been refreshed.`
-            : `Couldn't record that decision: ${decisionError.message}`}
         </Hint>
       )}
 
