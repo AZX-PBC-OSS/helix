@@ -12,12 +12,12 @@ import {
   Textarea,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { ApprovalRequest, Delta } from "@azx-pbc/shared";
+import type { ApprovalRequest, ApprovalStatus, Delta } from "@azx-pbc/shared";
 import { approvalsQuery } from "../../api/queries";
 import { useApproveRequest, useDenyRequest, useRequestChanges } from "../../api/mutations";
 import { Icon, type IconName } from "../../components/Icon";
 import { Hint, PageHead, ToneBadge, type Tone } from "../../components/primitives";
-import { daysSince } from "../../lib/format";
+import { daysSince, timeAgo } from "../../lib/format";
 
 /** The approvals queue for above-baseline capability grants (real, M4+). */
 
@@ -27,8 +27,17 @@ const RISK_META: Record<ApprovalRequest["risk"], [Tone, string]> = {
   low: ["info", "ROUTINE"],
 };
 
+/** Tone + short label for a decided (or sibling-pending) request in the history log. */
+const STATUS_META: Record<ApprovalStatus, [Tone, string]> = {
+  pending: ["info", "PENDING"],
+  approved: ["live", "APPROVED"],
+  denied: ["bad", "DENIED"],
+  withdrawn: ["neutral", "WITHDRAWN"],
+  needs_changes: ["warn", "CHANGES"],
+};
+
 /**
- * Staleness signal. Pending requests never expire (ADR-0038) — nothing sweeps
+ * Staleness signal. Pending requests never expire (ADR-0039) — nothing sweeps
  * them, so the queue's job is to make an un-reviewed request harder to ignore
  * the longer it sits, not to hide it.
  */
@@ -50,31 +59,275 @@ function kindMeta(deltas: Delta[]): [IconName, string] {
 const fmt = (v: Delta["from"]) => (v === undefined ? "∅" : String(v));
 
 /** Membership deltas (`mcp[+x]`) are self-describing; scalar deltas show from → to. */
+function diffLine(d: Delta): string {
+  return d.path.includes("[") ? d.path : `${d.path}: ${fmt(d.from)} → ${fmt(d.to)}`;
+}
 function diffText(deltas: Delta[]): string {
-  return deltas
-    .map((d) => (d.path.includes("[") ? d.path : `${d.path}: ${fmt(d.from)} → ${fmt(d.to)}`))
-    .join("\n");
+  return deltas.map(diffLine).join("\n");
 }
 
-export function ApprovalsPage() {
-  const queue = useQuery(approvalsQuery({ status: "pending" }));
+/**
+ * The one-line prior-decision signal (issue #26). The exact grant denied before
+ * is loud (amber); a related grant in the same area is quiet (muted). First-time
+ * requests carry no `priorDecisions`, so this renders nothing. All the detail —
+ * the notes, the deciders, the full log — lives under the Details expander, so
+ * the card face stays a signal, not a wall of text.
+ */
+function priorSignal(
+  prior: ApprovalRequest["priorDecisions"],
+): { text: string; loud: boolean } | null {
+  if (!prior) return null;
+  if (prior.deniedSameGrant > 0)
+    return { text: `Denied ${prior.deniedSameGrant}× before`, loud: true };
+  if (prior.deniedSameArea > 0) return { text: "Related grant denied before", loud: false };
+  return null;
+}
+
+/** The lazy-loaded log of prior requests on this app, shown inside Details. */
+function PriorHistory({ appSlug, currentId }: { appSlug: string; currentId: string }) {
+  const history = useQuery(approvalsQuery({ app: appSlug }));
+  const rows = (history.data ?? []).filter((r) => r.id !== currentId);
+
+  return (
+    <Stack gap={12}>
+      {history.isPending && <Loader size="xs" />}
+      {history.isError && (
+        <Text fz={12} style={{ color: "var(--az-bad)" }}>
+          Couldn't load history: {history.error.message}
+        </Text>
+      )}
+      {!history.isPending && !history.isError && rows.length > 0 && (
+        <Text fz={11.5} c="dark.2" tt="uppercase" fw={600} style={{ letterSpacing: ".04em" }}>
+          Prior requests ({rows.length})
+        </Text>
+      )}
+      {rows.map((r) => {
+        const [tone, label] = STATUS_META[r.status];
+        return (
+          <div key={r.id}>
+            <Group gap={9} wrap="wrap">
+              <ToneBadge tone={tone}>{label}</ToneBadge>
+              <Text className="az-mono" fz={11.5} c="dark.2">
+                {timeAgo(r.decidedAt ?? r.createdAt)}
+              </Text>
+              {r.decidedBy && (
+                <Text fz={11.5} c="dark.1">
+                  {r.decidedBy}
+                </Text>
+              )}
+            </Group>
+            <Code block mt={7} style={{ fontSize: 11.5 }}>
+              {diffText(r.deltas)}
+            </Code>
+            {r.decisionNote && (
+              <Text fz={12} c="dark.2" mt={5} fs="italic">
+                “{r.decisionNote}”
+              </Text>
+            )}
+          </div>
+        );
+      })}
+    </Stack>
+  );
+}
+
+/** The demoted metadata + full history, revealed on demand (below the fold). */
+function DetailsPanel({ request: a }: { request: ApprovalRequest }) {
+  const hasHistory = !!a.priorDecisions && a.priorDecisions.total > 0 && !!a.appSlug;
+  return (
+    <Stack gap={12} mt={12} pl={12} style={{ borderLeft: "2px solid var(--az-line-2)" }}>
+      <Text fz={12} c="dark.2">
+        Requested by{" "}
+        <Text span c="dark.1">
+          {a.requestedBy}
+        </Text>{" "}
+        · filed {timeAgo(a.createdAt)}
+      </Text>
+      {/* The ask line shows only a count when a submission bundles several deltas. */}
+      {a.deltas.length > 1 && (
+        <Code block style={{ fontSize: 12 }}>
+          {diffText(a.deltas)}
+        </Code>
+      )}
+      {hasHistory && a.appSlug && <PriorHistory appSlug={a.appSlug} currentId={a.id} />}
+    </Stack>
+  );
+}
+
+function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
   const approve = useApproveRequest();
   const deny = useDenyRequest();
   const requestChanges = useRequestChanges();
 
   // Inline note capture for deny / request-changes (both require a note).
-  const [noteFor, setNoteFor] = useState<{ id: string; action: "deny" | "needs_changes" } | null>(
-    null,
-  );
+  const [noteFor, setNoteFor] = useState<"deny" | "needs_changes" | null>(null);
   const [note, setNote] = useState("");
+  const [showDetails, setShowDetails] = useState(false);
+
+  const busy = approve.isPending || deny.isPending || requestChanges.isPending;
 
   const submitNote = () => {
     if (!noteFor || !note.trim()) return;
-    const args = { id: noteFor.id, note: note.trim() };
-    (noteFor.action === "deny" ? deny : requestChanges).mutate(args);
+    (noteFor === "deny" ? deny : requestChanges).mutate({ id: a.id, note: note.trim() });
     setNoteFor(null);
     setNote("");
   };
+
+  const [kindIcon, kindLabel] = kindMeta(a.deltas);
+  const [riskTone, riskLabel] = RISK_META[a.risk];
+  const days = daysSince(a.createdAt);
+  const ask = a.deltas.length === 1 ? diffLine(a.deltas[0]!) : `${a.deltas.length} changes`;
+  const signal = priorSignal(a.priorDecisions);
+
+  return (
+    <Card>
+      <Grid gap={20}>
+        <Grid.Col span={{ base: 12, sm: 9 }}>
+          {/* Identity + risk — the "what am I looking at" line. */}
+          <Group justify="space-between" wrap="nowrap" align="flex-start" mb={10}>
+            <Group gap={9} align="baseline" wrap="wrap">
+              <Text ff="heading" fw={600} fz={16} lh={1.2}>
+                {a.appDisplayName ?? a.appSlug ?? a.appId}
+              </Text>
+              {a.appSlug && (
+                <Text className="az-mono" fz={12} c="dark.2">
+                  {a.appSlug}
+                </Text>
+              )}
+            </Group>
+            {/* Staleness (never expires, ADR-0039) rides alongside risk. */}
+            <Group gap={9} wrap="nowrap" align="center">
+              <ToneBadge tone={ageTone(days)} icon="clock">
+                {ageLabel(days)}
+              </ToneBadge>
+              <ToneBadge tone={riskTone} icon={a.risk === "high" ? "alert" : undefined}>
+                {riskLabel}
+              </ToneBadge>
+            </Group>
+          </Group>
+
+          {/* The ask: kind + the delta being requested. */}
+          <Group gap={8} mb={a.reason ? 8 : 0} wrap="wrap">
+            <Icon name={kindIcon} size={14} style={{ color: "var(--mantine-color-dark-2)" }} />
+            <Text fz={13} c="dark.1">
+              {kindLabel}
+            </Text>
+            <Text className="az-mono" fz={12.5} c="accent.4">
+              {ask}
+            </Text>
+          </Group>
+
+          {a.reason && (
+            <Text size="sm" c="dark.2" maw={620} lh={1.5} fs="italic">
+              “{a.reason}”
+            </Text>
+          )}
+
+          {/* Prior-decision signal (left) + the Details expander (right). */}
+          <Group justify="space-between" wrap="nowrap" align="center" mt={12}>
+            <Group gap={7} wrap="nowrap">
+              {signal && (
+                <>
+                  <Icon
+                    name="alert"
+                    size={14}
+                    style={{
+                      color: signal.loud ? "var(--az-warn)" : "var(--mantine-color-dark-2)",
+                    }}
+                  />
+                  <Text
+                    fz={12.5}
+                    fw={signal.loud ? 600 : 500}
+                    style={{
+                      color: signal.loud ? "var(--az-warn)" : "var(--mantine-color-dark-2)",
+                    }}
+                  >
+                    {signal.text}
+                  </Text>
+                </>
+              )}
+            </Group>
+            <Button
+              variant="subtle"
+              size="compact-xs"
+              leftSection={
+                <Icon
+                  name="chevR"
+                  size={13}
+                  style={{
+                    transform: showDetails ? "rotate(90deg)" : undefined,
+                    transition: "transform .15s",
+                  }}
+                />
+              }
+              onClick={() => setShowDetails((v) => !v)}
+            >
+              Details
+            </Button>
+          </Group>
+
+          {showDetails && <DetailsPanel request={a} />}
+
+          {noteFor && (
+            <Stack gap={8} mt={12}>
+              <Textarea
+                autosize
+                minRows={2}
+                placeholder={`Note (required to ${noteFor === "deny" ? "deny" : "request changes"})`}
+                value={note}
+                onChange={(e) => setNote(e.currentTarget.value)}
+              />
+              <Group gap={8}>
+                <Button size="xs" onClick={submitNote} disabled={!note.trim()}>
+                  Submit
+                </Button>
+                <Button size="xs" variant="default" onClick={() => setNoteFor(null)}>
+                  Cancel
+                </Button>
+              </Group>
+            </Stack>
+          )}
+        </Grid.Col>
+        <Grid.Col span={{ base: 12, sm: 3 }}>
+          <Stack gap={9} justify="center" h="100%">
+            <Button
+              leftSection={<Icon name="check" size={14} />}
+              loading={busy}
+              onClick={() => approve.mutate({ id: a.id })}
+            >
+              Approve grant
+            </Button>
+            <Button
+              variant="default"
+              disabled={busy}
+              onClick={() => {
+                setNote("");
+                setNoteFor("needs_changes");
+              }}
+            >
+              Request changes
+            </Button>
+            <Button
+              color="red"
+              variant="outline"
+              leftSection={<Icon name="x" size={14} />}
+              disabled={busy}
+              onClick={() => {
+                setNote("");
+                setNoteFor("deny");
+              }}
+            >
+              Deny
+            </Button>
+          </Stack>
+        </Grid.Col>
+      </Grid>
+    </Card>
+  );
+}
+
+export function ApprovalsPage() {
+  const queue = useQuery(approvalsQuery({ status: "pending" }));
 
   // Oldest first. The API sorts `createdAt desc` (it also serves the app-detail
   // banner, where newest-first is right), but a review queue is FIFO work — and
@@ -132,108 +385,9 @@ export function ApprovalsPage() {
       )}
 
       <Stack gap={18}>
-        {requests.map((a) => {
-          const [icon, label] = kindMeta(a.deltas);
-          const [riskTone, riskLabel] = RISK_META[a.risk];
-          const days = daysSince(a.createdAt);
-          const busy =
-            (approve.isPending && approve.variables?.id === a.id) ||
-            (deny.isPending && deny.variables?.id === a.id) ||
-            (requestChanges.isPending && requestChanges.variables?.id === a.id);
-          return (
-            <Card key={a.id}>
-              <Grid gap={20}>
-                <Grid.Col span={{ base: 12, sm: 9 }}>
-                  <Group gap={10} mb={10} wrap="wrap">
-                    <ToneBadge icon={icon}>{label}</ToneBadge>
-                    <ToneBadge tone={riskTone}>{riskLabel}</ToneBadge>
-                    <ToneBadge tone={ageTone(days)} icon="clock">
-                      {ageLabel(days)}
-                    </ToneBadge>
-                  </Group>
-                  {a.reason && (
-                    <Text size="sm" c="dark.2" maw={560} lh={1.5}>
-                      {a.reason}
-                    </Text>
-                  )}
-                  <Group gap={18} mt={14}>
-                    <Group gap={7}>
-                      <Icon name="box" size={14} style={{ color: "var(--mantine-color-dark-2)" }} />
-                      <Text className="az-mono" fz={12.5} c="accent.4">
-                        {a.appSlug ?? a.appId}
-                      </Text>
-                    </Group>
-                    <Group gap={7}>
-                      <Icon
-                        name="user"
-                        size={14}
-                        style={{ color: "var(--mantine-color-dark-2)" }}
-                      />
-                      <Text fz={12.5} c="dark.1">
-                        {a.requestedBy}
-                      </Text>
-                    </Group>
-                  </Group>
-                  <Code block mt={14} style={{ fontSize: 12 }}>
-                    {diffText(a.deltas)}
-                  </Code>
-                  {noteFor?.id === a.id && (
-                    <Stack gap={8} mt={12}>
-                      <Textarea
-                        autosize
-                        minRows={2}
-                        placeholder={`Note (required to ${noteFor.action === "deny" ? "deny" : "request changes"})`}
-                        value={note}
-                        onChange={(e) => setNote(e.currentTarget.value)}
-                      />
-                      <Group gap={8}>
-                        <Button size="xs" onClick={submitNote} disabled={!note.trim()}>
-                          Submit
-                        </Button>
-                        <Button size="xs" variant="default" onClick={() => setNoteFor(null)}>
-                          Cancel
-                        </Button>
-                      </Group>
-                    </Stack>
-                  )}
-                </Grid.Col>
-                <Grid.Col span={{ base: 12, sm: 3 }}>
-                  <Stack gap={9} justify="center" h="100%">
-                    <Button
-                      leftSection={<Icon name="check" size={14} />}
-                      loading={busy}
-                      onClick={() => approve.mutate({ id: a.id })}
-                    >
-                      Approve grant
-                    </Button>
-                    <Button
-                      variant="default"
-                      disabled={busy}
-                      onClick={() => {
-                        setNote("");
-                        setNoteFor({ id: a.id, action: "needs_changes" });
-                      }}
-                    >
-                      Request changes
-                    </Button>
-                    <Button
-                      color="red"
-                      variant="outline"
-                      leftSection={<Icon name="x" size={14} />}
-                      disabled={busy}
-                      onClick={() => {
-                        setNote("");
-                        setNoteFor({ id: a.id, action: "deny" });
-                      }}
-                    >
-                      Deny
-                    </Button>
-                  </Stack>
-                </Grid.Col>
-              </Grid>
-            </Card>
-          );
-        })}
+        {requests.map((a) => (
+          <ApprovalCard key={a.id} request={a} />
+        ))}
       </Stack>
     </div>
   );

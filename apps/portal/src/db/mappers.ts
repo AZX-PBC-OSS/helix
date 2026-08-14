@@ -13,6 +13,7 @@ import {
   type App,
   type ApprovalRequest,
   type Capabilities,
+  type PriorDecisions,
   type CspViolation,
   type GatewayCall,
   type PlatformRange,
@@ -101,6 +102,7 @@ export function toManifest(row: AppRow): AppManifest {
 export function toApprovalRequest(
   row: ApprovalRequestRow,
   app?: { slug: string; displayName: string },
+  priorDecisions?: PriorDecisions,
 ): ApprovalRequest {
   return ApprovalRequestSchema.parse({
     id: row.id,
@@ -116,6 +118,7 @@ export function toApprovalRequest(
     decisionNote: row.decisionNote,
     createdAt: row.createdAt.toISOString(),
     decidedAt: row.decidedAt?.toISOString() ?? null,
+    ...(priorDecisions ? { priorDecisions } : {}),
   });
 }
 
