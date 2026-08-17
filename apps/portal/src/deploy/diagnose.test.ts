@@ -38,6 +38,19 @@ describe("diagnoseBundle", () => {
     expect(await diagnoseBundle("/nonexistent/not-a.zip")).toBeUndefined();
   });
 
+  it("stays fast on a pathological many-entry zip (bounded enumeration)", async () => {
+    // 20k unique-directory entries — the shape that made the old O(dirs×files)
+    // planner hang. Enumeration is capped and the linear planner is quick.
+    const entries = Array.from({ length: 20_000 }, (_, i) => ({
+      name: `d${i}/a${i}.js`,
+      content: "x",
+    }));
+    const zip = await buildZipFile(entries);
+    const start = performance.now();
+    await diagnoseBundle(zip);
+    expect(performance.now() - start).toBeLessThan(3000);
+  });
+
   it("leaves the wrapper-dir bundle to validation (it deploys today, no diagnosis needed here)", async () => {
     // WRAPPER_DIR validates green, so the route never calls diagnose for it — but
     // if it did, the planner re-roots rather than declaring failure.

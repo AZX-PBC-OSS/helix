@@ -1,5 +1,6 @@
 import yauzl from "yauzl";
 import { type BundleEntry, type BundlePlan, planBundle } from "@azx-pbc/shared/bundlePlan";
+import { MAX_ENTRIES } from "./limits.js";
 
 /**
  * Turn a rejected upload into a whole-archive diagnosis (ADR-0038 decision 9).
@@ -45,6 +46,15 @@ function collectEntries(zipPath: string): Promise<BundleEntry[]> {
       zipfile.on("entry", (entry: yauzl.Entry) => {
         if (!entry.fileName.endsWith("/")) {
           entries.push({ path: entry.fileName, bytes: entry.uncompressedSize });
+        }
+        // Bound the work on the failure path (ADR-0038 #1): a rejected zip can
+        // carry far more entries than a valid bundle, and enumeration + planning
+        // must not become an event-loop DoS. Stop once we're past the deploy cap;
+        // the diagnosis of an over-cap archive is already "too many files".
+        if (entries.length >= MAX_ENTRIES) {
+          resolve(entries);
+          zipfile.close();
+          return;
         }
         zipfile.readEntry();
       });

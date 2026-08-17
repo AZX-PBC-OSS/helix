@@ -49,11 +49,19 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
         });
         reply.status(201).send({ version: toVersion(version), warnings });
       } catch (err) {
-        // Advisory only (ADR-0038 §9): rewrite a first-offender rejection into a
-        // whole-archive diagnosis. Never changes what is accepted or rejected.
+        // Advisory only (ADR-0038 §9): add a whole-archive layout diagnosis to a
+        // first-offender rejection. Never changes what is accepted or rejected —
+        // and never hides the original reason (ADR-0038 #3): a symlink / zip-slip /
+        // compression-bomb / size rejection must stay visible and auditable, so
+        // the diagnosis is *appended*, with the true reason kept in details.
         if (err instanceof AppError && err.code === "bundle_invalid") {
           const diag = await diagnoseBundle(spooled.zipPath);
-          if (diag) throw new AppError("bundle_invalid", diag.message, diag.details);
+          if (diag) {
+            throw new AppError("bundle_invalid", `${err.message} — ${diag.message}`, {
+              reason: err.message,
+              ...(diag.details as Record<string, unknown>),
+            });
+          }
         }
         throw err;
       } finally {
@@ -180,7 +188,7 @@ function readDeployReport(
 ): DeployReport | undefined {
   const field = fields?.report as { type?: string; value?: unknown } | undefined;
   if (!field || field.type !== "field" || typeof field.value !== "string") return undefined;
-  if (field.value.length > MAX_REPORT_BYTES) {
+  if (Buffer.byteLength(field.value) > MAX_REPORT_BYTES) {
     req.log.warn("ignoring oversized deploy report");
     return undefined;
   }

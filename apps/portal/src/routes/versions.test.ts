@@ -102,6 +102,27 @@ describe("POST /api/v1/apps/:slug/versions", () => {
     expect(list.json()).toEqual([]);
   });
 
+  it("adds a layout diagnosis without hiding a security-relevant rejection reason", async () => {
+    const slug = uniqueSlug();
+    await createApp(slug);
+    // A symlink (a hard security rejection) inside a project-root-shaped archive
+    // (which the planner has a layout opinion about). The compose must keep the
+    // symlink reason visible and auditable (ADR-0038 #3), not replace it.
+    const res = await upload(
+      slug,
+      await buildZipBuffer([
+        { name: "proj/link.html", symlinkTo: "/etc/passwd" },
+        { name: "proj/dist/index.html", content: "<h1>hi</h1>" },
+        { name: "proj/package.json", content: "{}" },
+      ]),
+    );
+    expect(res.statusCode).toBe(400);
+    const { message, details } = res.json().error;
+    expect(message).toMatch(/symlinks are not allowed/); // original reason survives
+    expect(message).toMatch(/whole project|dist\//); // diagnosis appended
+    expect(details.reason).toMatch(/symlinks are not allowed/); // and kept structured
+  });
+
   it("stores a valid deploy report and returns it on the version", async () => {
     const slug = uniqueSlug();
     await createApp(slug);
