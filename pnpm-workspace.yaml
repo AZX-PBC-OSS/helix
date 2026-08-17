@@ -42,9 +42,12 @@ catalog:
   # signing — the edge stays off the Azure SDK (dep-minimal, project plan §1).
   undici: ^7.16.0
   # Zip handling: yauzl reads (portal, streaming + zip-bomb-safe), archiver
-  # writes (helix CLI).
+  # writes (helix CLI). fflate reads + writes in the browser (portal-web bundle
+  # salvage — ADR-0038): tiny, dependency-free, and can list a zip's central
+  # directory without inflating it (so a node_modules zip can't OOM the tab).
   yauzl: ^3.4.0
   archiver: ^8.0.0
+  fflate: ^0.8.2
   fastify-plugin: ^6.0.0
   # ── Auth (M3) ──
   # jose + openid-client are the edge's two allowed auth additions (project

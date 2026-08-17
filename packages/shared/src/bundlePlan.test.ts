@@ -116,6 +116,19 @@ describe("planBundle — ambiguity", () => {
     expect(plan.outcome).toBe("unsalvageable");
     expect(plan.problems).toContainEqual({ kind: "no-index" });
   });
+
+  it("honours a forced root (the confirm step's 'use this folder instead')", () => {
+    const entries = [
+      f("dist/index.html"),
+      f("dist/app.js"),
+      f("build/index.html"),
+      f("build/app.js"),
+    ];
+    const plan = planBundle(entries, { forceRoot: "build/" });
+    expect(plan.outcome).toBe("rerooted");
+    expect(plan.root).toBe("build/");
+    expect(plan.files.map((p) => p.to).sort()).toEqual(["app.js", "index.html"]);
+  });
 });
 
 describe("planBundle — reference lint", () => {

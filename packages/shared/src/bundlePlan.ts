@@ -42,6 +42,12 @@ export interface PlanContext {
    * pins the root there rather than stripping it (ADR-0035, ADR-0038 §11).
    */
   offlineScope?: string;
+  /**
+   * Override root detection with a caller-chosen candidate (the confirm step's
+   * "use this folder instead"). Bypasses scoring and the offline path — the user
+   * has spoken. Files under it are kept, everything else dropped.
+   */
+  forceRoot?: string;
 }
 
 export type DropReason = "junk" | "outside-root" | "unsupported-type" | "secret";
@@ -358,6 +364,16 @@ export function planBundle(
 
   const declaredRoot = resolveDeclaredRoot(kept, ctx.declaredDir);
   const candidates = rankCandidates(kept, declaredRoot, htmlText);
+
+  // An explicit user choice (the confirm step's "use this folder") wins outright.
+  if (ctx.forceRoot !== undefined) {
+    const { files, extraDrops } = split(kept, ctx.forceRoot, htmlText, problems);
+    if (!hasIndex(kept, ctx.forceRoot)) problems.push({ kind: "no-index" });
+    const allDrops = [...drops, ...extraDrops];
+    const outcome: Outcome =
+      ctx.forceRoot === "" && allDrops.length === 0 ? "canonical" : "rerooted";
+    return { outcome, root: ctx.forceRoot, files, drops: allDrops, candidates, problems };
+  }
 
   // Offline apps pin (or nest under) their granted scope rather than obeying the
   // signal table (ADR-0038 §11) — handled before the generic path.

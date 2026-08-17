@@ -20,6 +20,7 @@
     "@mantine/dropzone": "catalog:",
     "@mantine/hooks": "catalog:",
     "@tanstack/react-query": "catalog:",
+    "fflate": "catalog:",
     "openid-client": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

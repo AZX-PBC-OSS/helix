@@ -13,16 +13,15 @@ import {
   Tabs,
   Text,
 } from "@mantine/core";
-import { Dropzone } from "@mantine/dropzone";
 import { useQuery } from "@tanstack/react-query";
 import type { UploadVersionResponse } from "@azx-pbc/shared";
-import { useUploadVersion } from "../api/mutations";
 import { appsQuery } from "../api/queries";
 import { useAuth } from "../auth/AuthProvider";
 import { AppCreateForm } from "../components/AppCreateForm";
 import { Icon } from "../components/Icon";
 import { CopyBtn, Hint, ToneBadge } from "../components/primitives";
 import { useDeployment } from "../lib/deployment";
+import { UploadStep } from "../deploy/UploadStep";
 
 /**
  * Deploy = upload a zipped build as a new immutable *preview* version
@@ -47,7 +46,6 @@ export function DeployModal({
   const apps = useQuery(appsQuery);
   const { authenticated, login, loginAvailable } = useAuth();
   const { appHost } = useDeployment();
-  const upload = useUploadVersion();
   const [slug, setSlug] = useState<string | null>(null);
   const [source, setSource] = useState<"existing" | "new" | null>(null);
   const [created, setCreated] = useState<string | null>(null);
@@ -66,7 +64,6 @@ export function DeployModal({
     setSource(null);
     setCreated(null);
     setDone(null);
-    upload.reset();
     onClose();
   }
 
@@ -115,7 +112,6 @@ export function DeployModal({
                 onChange={(v) => {
                   setSlug(v);
                   setDone(null);
-                  upload.reset();
                 }}
                 searchable
                 nothingFoundMessage="No match"
@@ -208,34 +204,12 @@ export function DeployModal({
                     )}
                   </Stack>
                 ) : (
-                  <Stack gap="sm">
-                    <Dropzone
-                      onDrop={(files) => {
-                        const file = files[0];
-                        if (file) upload.mutate({ slug: target, file }, { onSuccess: setDone });
-                      }}
-                      accept={["application/zip", "application/x-zip-compressed"]}
-                      multiple={false}
-                      loading={upload.isPending}
-                    >
-                      <Stack align="center" gap={6} py={28} style={{ pointerEvents: "none" }}>
-                        <Icon
-                          name="upload"
-                          size={28}
-                          style={{ color: "var(--mantine-color-dark-2)" }}
-                        />
-                        <Text fw={500}>Drop a build zip here</Text>
-                        <Text size="xs" c="dark.2">
-                          A zipped static build (what <Code>helix deploy</Code> would send)
-                        </Text>
-                      </Stack>
-                    </Dropzone>
-                    {upload.isError && (
-                      <Alert color="red" title="Upload failed">
-                        {upload.error.message}
-                      </Alert>
-                    )}
-                  </Stack>
+                  <UploadStep
+                    key={target}
+                    slug={target}
+                    authenticated={authenticated}
+                    onDone={setDone}
+                  />
                 )}
               </Tabs.Panel>
             </Tabs>
