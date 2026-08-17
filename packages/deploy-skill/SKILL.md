@@ -337,7 +337,10 @@ HTML/CSS/JS is entirely fine. Build to a directory (`dist/` by convention); the
 **contents** of that directory become the site root, so `dist/index.html` is served
 at `/`.
 
-Add a `helix.json` next to your project:
+**Always add a `helix.json` next to your project** — the CLI reads it, and it also
+makes the bundle self-describing: it names the build directory, so if the archive is
+ever uploaded by hand through the portal, the platform can find your build inside it
+rather than guessing.
 
 ```json
 { "slug": "my-app", "dir": "dist", "portalUrl": "{{PORTAL_ORIGIN}}" }

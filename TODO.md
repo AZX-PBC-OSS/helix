@@ -102,6 +102,18 @@ Legend for gating conditions:
 
 ---
 
+## Bundle salvage (ADR-0038)
+
+The portal SPA now detects a malformed upload and rebuilds the canonical bundle before sending it, so the API contract is unchanged. These are the deliberately-deferred follow-ups the ADR named.
+
+- [ ] **Make a missing root `index.html` a hard, scope-aware `bundle_invalid`.** Today a wrapper-directory zip (the folder zipped inside itself) validates green from the CLI/API and then serves a `404` at `/` — the `WRAPPER_DIR` fixture. The SPA fixes it before upload, but a non-SPA producer (a `curl`, a mis-pointed `helix.json` `dir`) still gets a silent-broken deploy; `diagnose.ts` only improves the message on paths that _already_ fail. Tightening to a real rejection would reject bundles that deploy today, and it must be scope-aware — an offline app legitimately has no root `index.html` (ADR-0035), so `validateBundle` would need the app's offline scope threaded down from `deployBundle` (which already has `appId`). Take this on its own evidence, not smuggled into the salvage change. — ADR-0038 §9 consequences
+- [ ] **Grow the mime allowlist for inert media** (`mp4`/`webm`/`mov`/`mp3`/`wav`/`csv`/`vtt`/`srt`). These are common in vibe-coded apps and are inert static assets with no execution surface, but they're not on `apps/portal/src/deploy/mime.ts`, so today they hard-fail a CLI deploy and — under salvage — get **dropped loudly** from a succeeding one (`unsupported-type`). That loud drop is the new failure mode leniency introduces (ADR-0038 decision 7); the first real complaint about a vanished `.mp4` is the signal to widen the list. When it moves, move `mime.ts` into `@azx-pbc/shared` so the planner's `SERVEABLE_EXTENSIONS` copy (`packages/shared/src/bundlePlan.ts`) and the server's enforcement list stop being two places that can drift. — ADR-0038 decision 7 + consequences
+- [ ] **General path-prefix support, if demand appears.** The only prefix the platform supports is an offline app's service-worker scope (ADR-0035); the planner pins/nests around it but never _invents_ nesting. A first-class "deploy this app under `/foo/`" capability is deferred until something asks. The cleaner alternative to the current `outDir: "dist/app"` requirement is to have the **edge strip the scope prefix** on in-scope lookups, which would delete the requirement, the `base`-alone 404 trap, and the planner's whole offline branch — its own ADR against ADR-0035, with real consequences (two URLs for the same bytes, only one precached). — ADR-0038 §11 + consequences
+- [ ] **Re-surface salvage guidance in the CLI.** `helix deploy` zips a directory's contents correctly by construction, but it could run the same shared planner locally and warn before uploading — an empty/unbuilt `dist`, a stray `node_modules`, a bundle whose `index.html` references files it doesn't contain. Pure reuse of `@azx-pbc/shared/bundlePlan`; no server change. — ADR-0038
+- [ ] **Move the browser zip work to a Web Worker if a large bundle janks the tab.** v1 runs `fflate` synchronously on the main thread, guarded by the up-front size refusal against the deploy cap (`archive.ts`). Correct and simple at build-output sizes; revisit only if a real bundle stutters. — ADR-0038 plan
+
+---
+
 ## Deferred / v2
 
 - [ ] **Metering ledger tamper-evidence (fast-follow before any external audit).** Hash chain + Merkle + external anchoring to a write-only sink — append-only-by-grant is not tamper-proof; `helix_portal` can rewrite history. Plus GDPR: crypto-shredding for content/PII rows and a documented Art. 17(3) retention basis for the metering tuple. — ADR-0021, issue #17

@@ -64,13 +64,28 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     each a one-click origin-grant request (`useGrantOrigin`).
 - **Deploy modal** (`src/modals/DeployModal.tsx`) — two ordered steps: **1 · Choose an app**
   (pick an existing one, or register a new one right there via the shared `AppCreateForm`) and
-  **2 · Ship a build** — the `helix deploy --slug …` command or a drag-and-drop **zip upload**
-  that renders the CSP lint warnings inline (see
-  [registry-and-deploys.md](./registry-and-deploys.md)). Step 2 stays inert until step 1 has a
-  target, since both halves address the app by slug. Registration must stay reachable from step 1
-  itself: when it lived in the picker's `nothingFoundMessage`, a single existing app hid the only
-  path to creating a second one. The standalone `CreateAppModal` (**New app** on the apps list,
-  `openCreate` on `DeployContext`) is the same form for the register-now-deploy-later path.
+  **2 · Ship a build** — the `helix deploy --slug …` command or a drag-and-drop upload that
+  renders the CSP lint warnings inline (see [registry-and-deploys.md](./registry-and-deploys.md)).
+  Step 2 stays inert until step 1 has a target, since both halves address the app by slug.
+  Registration must stay reachable from step 1 itself: when it lived in the picker's
+  `nothingFoundMessage`, a single existing app hid the only path to creating a second one. The
+  standalone `CreateAppModal` (**New app** on the apps list, `openCreate` on `DeployContext`) is
+  the same form for the register-now-deploy-later path.
+
+- **Bundle salvage** (`src/deploy/`, [ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md)) —
+  the upload half of step 2 accepts a dropped **build folder** as well as a zip, because
+  non-technical users told to "zip the contents of `dist/`" send the whole project, the folder
+  wrapped in itself, or a random directory. `archive.ts` (the one `fflate`-aware module) reads
+  the drop — listing a zip's central directory without inflating a byte, so a `node_modules`
+  upload is refused before it can OOM the tab — and the pure planner in
+  `@azx-pbc/shared/bundlePlan` decides the real build root, drops junk/secrets, and resolves each
+  HTML file's local references. A **canonical** upload ships untouched with no gate; anything else
+  raises `FixBundleFlow.tsx`, which states the assumption (which folder is the build), lists the
+  files that will ship, offers the ranked alternate roots, and shouts about dropped secrets and
+  broken references — then rebuilds the canonical zip client-side and uploads it. The offline
+  scope from the app manifest pins (or safely nests under) the granted prefix rather than
+  stripping it. `UploadStep.tsx` drives the sub-flow; what it did is sent as a client-asserted
+  `deployReport` and shown as a quiet **salvaged** badge on the Versions tab.
 
 `src/api/queries.ts` / `mutations.ts` are TanStack Query hooks over a bearer-injecting client
 (`client.ts`), every response validated through a `@azx-pbc/shared` zod schema.

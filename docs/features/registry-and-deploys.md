@@ -71,6 +71,21 @@ LISTEN/NOTIFY projection (see [edge-serving.md](./edge-serving.md)).
   not on the platform CDN allowlist and warns if `index.html` is missing. Warnings (file +
   origin + hint) ride back in the `UploadVersionResponse` (`packages/shared/src/api.ts`); the
   upload still succeeds.
+- **`diagnose.ts`** — runs **only on a `bundle_invalid` rejection**, and changes nothing about
+  what is accepted (ADR-0038). `validate.ts` fails fast on the first offending entry, so a
+  whole-project zip rejects by naming a `__MACOSX` sidecar the user never created. Diagnose
+  re-reads the zip's central directory (names + declared sizes, no inflation), hands the layout
+  to the shared planner, and rewrites the error into "this looks like your whole project; your
+  build appears to be in `dist/` — upload its contents", with a structured summary in
+  `ApiError.details`. Advisory only: CLI/API callers get a better message, never a new
+  rejection.
+
+The malformed-bundle problem is fixed **before** the upload, in the portal SPA — the contract
+here is unchanged. See [portal-web.md](./portal-web.md) (bundle salvage) and
+[ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md): the SPA detects the real build
+root, drops junk, and rebuilds the canonical archive client-side, so what reaches this endpoint
+is always the contents of a build directory. What it did rides along as a client-asserted
+`deployReport` stored on the version row (never trusted, only explanatory).
 
 ### Usage read-side (`apps/portal/src/routes/usage.ts`)
 
