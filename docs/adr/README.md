@@ -52,3 +52,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0035](0035-offline-capability-platform-service-worker.md) | Offline capability: platform-owned, scope-confined service worker | Accepted |
 | [0036](0036-deployment-capability-catalogue.md) | Deployment capability catalogue: authed instance endpoint, deployment-agnostic public docs | Proposed |
 | [0037](0037-platform-observability-otlp-boundary.md) | Platform observability: OpenTelemetry behind an OTLP-only boundary | Proposed |
+| [0038](0038-bundle-salvage-in-the-portal-spa.md) | Malformed upload bundles: salvage in the portal SPA, contract unchanged | Accepted |
