@@ -135,6 +135,7 @@ const DROP_LABEL: Record<DropReason, string> = {
   "outside-root": "outside the build",
   "unsupported-type": "unsupported types",
   secret: "secret files",
+  "unsafe-path": "unsafe paths",
 };
 
 function countDrops(drops: { reason: DropReason }[]): [DropReason, number][] {

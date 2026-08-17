@@ -111,6 +111,38 @@ describe("planBundle — ambiguity", () => {
     ).toEqual(["build/", "dist/"]);
   });
 
+  it("treats a plain multi-page site as canonical, not ambiguous (a subroute is not a tie)", () => {
+    const plan = planBundle([
+      f("index.html"),
+      f("about/index.html"),
+      f("assets/app.js"),
+      f("assets/style.css"),
+    ]);
+    expect(plan.outcome).toBe("canonical");
+    expect(plan.root).toBe("");
+    expect(plan.files.map((p) => p.to).sort()).toEqual([
+      "about/index.html",
+      "assets/app.js",
+      "assets/style.css",
+      "index.html",
+    ]);
+  });
+
+  it("never re-roots into a build-named subdir when the archive root is itself a site (no data loss)", () => {
+    const plan = planBundle([
+      f("index.html"),
+      f("app.js"),
+      f("public/index.html"),
+      f("public/x.js"),
+    ]);
+    // `public/` scores higher on its own, but choosing it would drop the root
+    // index — so the whole thing serves from the root instead.
+    expect(plan.root).toBe("");
+    expect(plan.outcome).toBe("canonical");
+    expect(plan.files.map((p) => p.to)).toContain("index.html");
+    expect(plan.files.map((p) => p.to)).toContain("public/index.html");
+  });
+
   it("is unsalvageable when nothing looks like an index", () => {
     const plan = planBundle([f("notes.txt"), f("data.json")]);
     expect(plan.outcome).toBe("unsalvageable");
@@ -128,6 +160,29 @@ describe("planBundle — ambiguity", () => {
     expect(plan.outcome).toBe("rerooted");
     expect(plan.root).toBe("build/");
     expect(plan.files.map((p) => p.to).sort()).toEqual(["app.js", "index.html"]);
+  });
+
+  it("blocks a forced root that has no index.html (would 404 at /)", () => {
+    const plan = planBundle([f("dist/index.html"), f("src/a.js"), f("src/b.js")], {
+      forceRoot: "src/",
+    });
+    expect(plan.outcome).toBe("unsalvageable");
+    expect(plan.problems).toContainEqual({ kind: "no-index" });
+  });
+});
+
+describe("planBundle — path safety", () => {
+  it("drops traversal and absolute entry paths instead of re-emitting them", () => {
+    const plan = planBundle([f("index.html"), f("../../evil.js"), f("/abs.js"), f("a\\b.js")]);
+    // Not canonical: the unsafe entries were dropped, so the SPA must rebuild
+    // rather than upload the original zip.
+    expect(plan.files.map((p) => p.to)).toEqual(["index.html"]);
+    expect(
+      plan.drops
+        .filter((d) => d.reason === "unsafe-path")
+        .map((d) => d.path)
+        .sort(),
+    ).toEqual(["../../evil.js", "/abs.js", "a\\b.js"]);
   });
 });
 
@@ -192,5 +247,35 @@ describe("planBundle — offline scope (ADR-0035 / ADR-0038 §11)", () => {
     const plan = planBundle([f("index.html"), f("assets/app.js")], offline, text);
     expect(plan.outcome).toBe("ambiguous");
     expect(plan.problems).toContainEqual({ kind: "scope-mismatch", scope: "/app/" });
+  });
+
+  it("catches a root-absolute ref in a .htm file — the offline nest gate is case/ext-aware", () => {
+    // The gate is `.html?`-insensitive, so a `.htm` sibling can't sneak a root-
+    // absolute ref past it and nest an offline build that then 404s.
+    const text = (p: string) => (p === "page.htm" ? '<link href="/assets/app.css">' : undefined);
+    const plan = planBundle([f("index.html"), f("page.htm"), f("assets/app.css")], offline, text);
+    expect(plan.outcome).toBe("ambiguous");
+    expect(plan.problems).toContainEqual({ kind: "scope-mismatch", scope: "/app/" });
+  });
+
+  it("nests the chosen root under the scope when re-planned via forceRoot", () => {
+    const plan = planBundle([f("index.html"), f("assets/app.js")], {
+      offlineScope: "/app/",
+      forceRoot: "",
+    });
+    expect(plan.outcome).toBe("nested");
+    expect(plan.files.map((p) => p.to).sort()).toEqual(["app/assets/app.js", "app/index.html"]);
+  });
+});
+
+describe("planBundle — scale (ADR-0038 #1)", () => {
+  it("plans 10k files, each in its own directory, well under a second", () => {
+    const entries: BundleEntry[] = [{ path: "index.html", bytes: 10 }];
+    for (let i = 0; i < 10_000; i++) entries.push({ path: `d${i}/a${i}.js`, bytes: 10 });
+    const start = performance.now();
+    const plan = planBundle(entries);
+    const ms = performance.now() - start;
+    expect(plan.root).toBe("");
+    expect(ms).toBeLessThan(1000); // was ~11s with the O(dirs×files) scan
   });
 });
