@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { PROJECT_ROOT_MACOS, WRAPPER_DIR } from "@azx-pbc/shared/bundleFixtures";
 import { buildZipFile } from "../test/zip.js";
-import { PROJECT_ROOT_MACOS, WRAPPER_DIR } from "./fixtures/malformed-bundles.js";
 import { validateBundle } from "./validate.js";
 
 /**

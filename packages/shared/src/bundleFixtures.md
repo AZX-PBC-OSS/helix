@@ -2,7 +2,14 @@
 
 Real upload shapes users produced when asked to "zip the contents of your `dist`
 directory", reconstructed as entry lists in
-[`malformed-bundles.ts`](./malformed-bundles.ts).
+[`bundleFixtures.ts`](./bundleFixtures.ts).
+
+They live in `@azx-pbc/shared` so one corpus feeds both consumers: the layout
+planner's tests ([`bundlePlan.test.ts`](./bundlePlan.test.ts)) and the portal's
+bundle-validation characterization tests
+(`apps/portal/src/deploy/malformed-bundles.test.ts`). `toPlannerEntries` projects
+a fixture into the planner's `{ path, bytes }` input; the portal's `buildZipFile`
+consumes the entries directly.
 
 **These are reconstructions, not the originals.** Structure is faithful — entry
 order, directory records, junk sidecars, byte-for-byte `src`/`dist` duplication,
@@ -12,8 +19,8 @@ neither of which belongs in the repo.
 
 Each fixture also declares `canonical`: the bundle-relative paths a _correct_
 upload of the same app would have carried. A test can then state the gap between
-what arrived and what was meant without re-deriving it, and whatever eventually
-does the re-rooting has its expected output written down.
+what arrived and what was meant without re-deriving it — and the planner's output
+(`plan.files.map(f => f.to)`) is asserted equal to it.
 
 ## `PROJECT_ROOT_MACOS` — zipped the project root
 
@@ -57,8 +64,8 @@ Why it's worth keeping:
 - **No content signal separates `src/` from `dist/`.** The "build" is
   `cp src/* dist/`: no bundler, no hashing, no minification. Resolving
   `index.html`'s references succeeds against _either_ directory, so a
-  reference-resolution check cannot pick the root here. Only the declared
-  config, the directory name, or asking the user can.
+  reference-resolution check cannot pick the root here. The `dist`/`src`
+  directory-name signal picks `dist/`; the declared config confirms it.
 - **Junk starts at entry #2**, so any error that reports the first offending
   entry reports junk before it reports anything true. That is the
   `file type not allowed (static files only): __MACOSX/._helix-app` message

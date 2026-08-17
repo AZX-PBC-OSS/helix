@@ -6,6 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./bodyCap": "./src/bodyCap.ts",
+    "./bundlePlan": "./src/bundlePlan.ts",
+    "./bundleFixtures": "./src/bundleFixtures.ts",
     "./devToken": "./src/devToken.ts",
     "./logging": "./src/logging.ts"
   },

@@ -1,23 +1,68 @@
-import type { ZipFileSpec } from "../../test/zip.js";
+import type { BundleEntry } from "./bundlePlan.js";
 
 /**
- * Malformed upload bundles, reconstructed from real ones users sent us.
+ * Malformed upload bundles, reconstructed from real ones users sent us
+ * (ADR-0038). See `bundleFixtures.md` for the provenance of each and what makes
+ * it interesting.
  *
  * Structure is faithful — entry order, directory records, junk sidecars, the
  * `src`/`dist` byte-for-byte duplication — while the content is stubbed down to
- * a few bytes. See `README.md` in this directory for the provenance of each and
- * what makes it interesting.
+ * a few bytes. `canonical` is what the upload *should* have carried, so a test
+ * can state the gap between what arrived and what was meant without re-deriving
+ * it.
  *
- * `canonical` is what the upload *should* have carried, so a test can state the
- * gap between what arrived and what was meant without re-deriving it.
+ * This is a **node-only** module (its binary fixtures use `Buffer`), reached via
+ * the `@azx-pbc/shared/bundleFixtures` subpath and never from the browser barrel.
+ * It is shared so the planner's tests (in this package) and the portal's bundle
+ * characterization tests read from one corpus.
  */
+
+/**
+ * A single zip entry, structurally compatible with the portal's `ZipFileSpec`
+ * (`apps/portal/src/test/zip.ts`) so its `buildZipFile` accepts these directly.
+ */
+export interface BundleFixtureEntry {
+  name: string;
+  content?: Buffer | string;
+  /** Directory record (some archivers emit these, some don't — a real difference). */
+  directory?: boolean;
+  /** When set, the entry is a symlink pointing here (for security tests). */
+  symlinkTo?: string;
+  mode?: number;
+}
+
 export interface MalformedBundle {
   /** Short label, used in test names. */
   label: string;
   /** Zip entries, in the order the original archive carried them. */
-  entries: ZipFileSpec[];
+  entries: BundleFixtureEntry[];
   /** Bundle-relative paths a correct upload of the same app would have had. */
   canonical: string[];
+}
+
+/**
+ * Project the fixture entries into the planner's `{ path, bytes }` input:
+ * directory and symlink records drop out (the planner sees regular files only),
+ * and `bytes` is the byte length of the stubbed content.
+ */
+export function toPlannerEntries(entries: BundleFixtureEntry[]): BundleEntry[] {
+  return entries
+    .filter((e) => !e.directory && e.symlinkTo === undefined)
+    .map((e) => ({
+      path: e.name,
+      bytes:
+        typeof e.content === "string" ? Buffer.byteLength(e.content) : (e.content?.length ?? 0),
+    }));
+}
+
+/** A path → decoded-text lookup over a fixture, for the reference-resolution lint. */
+export function fixtureText(entries: BundleFixtureEntry[]): (path: string) => string | undefined {
+  const byPath = new Map<string, string>();
+  for (const e of entries) {
+    if (e.directory || e.symlinkTo !== undefined) continue;
+    if (typeof e.content === "string") byPath.set(e.name, e.content);
+  }
+  return (path) => byPath.get(path);
 }
 
 /**
