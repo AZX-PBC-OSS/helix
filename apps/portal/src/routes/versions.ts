@@ -4,6 +4,7 @@ import { toApp, toVersion } from "../db/mappers.js";
 import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { deployBundle, spoolUpload } from "../deploy/upload.js";
+import { diagnoseBundle } from "../deploy/diagnose.js";
 import { setLiveVersion } from "../deploy/pointer.js";
 
 /** Deploy routes: upload a version and list versions (architecture §5, §7). */
@@ -41,6 +42,14 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
           zipPath: spooled.zipPath,
         });
         reply.status(201).send({ version: toVersion(version), warnings });
+      } catch (err) {
+        // Advisory only (ADR-0038 §9): rewrite a first-offender rejection into a
+        // whole-archive diagnosis. Never changes what is accepted or rejected.
+        if (err instanceof AppError && err.code === "bundle_invalid") {
+          const diag = await diagnoseBundle(spooled.zipPath);
+          if (diag) throw new AppError("bundle_invalid", diag.message, diag.details);
+        }
+        throw err;
       } finally {
         await spooled.cleanup();
       }
