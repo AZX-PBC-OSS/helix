@@ -4,6 +4,9 @@ coverage
 pnpm-lock.yaml
 *.tsbuildinfo
 
+# Dual-review outputs (gitignored): transient review prose, not repo source.
+review-*.md
+
 # Generated Prisma client
 apps/portal/src/db/generated
 
