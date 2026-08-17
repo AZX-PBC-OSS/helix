@@ -14,6 +14,7 @@ export function FixBundleFlow({
   plan,
   fileName,
   busy,
+  error,
   onPickRoot,
   onDeploy,
   onCancel,
@@ -22,6 +23,8 @@ export function FixBundleFlow({
   /** The dropped file/folder name, for the header. */
   fileName: string;
   busy?: boolean;
+  /** A deploy/upload error to surface (ADR-0038 #4) — the dropzone alert is gone by now. */
+  error?: string | null;
   /** Re-plan against a different candidate root. */
   onPickRoot: (root: string) => void;
   onDeploy: () => void;
@@ -111,6 +114,12 @@ export function FixBundleFlow({
             ))}
           </Group>
         </Box>
+      )}
+
+      {error && (
+        <Alert color="red" title="Deploy failed" icon={<Icon name="alert" size={16} />}>
+          {error}
+        </Alert>
       )}
 
       <Group justify="flex-end" gap="sm" mt="xs">

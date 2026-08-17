@@ -167,7 +167,9 @@ export async function loadFolder(
 
 /** react-dropzone sets `.path`; the directory picker sets `.webkitRelativePath`. */
 function normalizeFolderPath(file: File): string {
-  const raw = (file as File & { path?: string }).path ?? file.webkitRelativePath ?? file.name;
+  // `webkitRelativePath` is `""` (not undefined) for a plain File, so `||` — not
+  // `??` — is needed to fall through to the name (ADR-0038 #10).
+  const raw = (file as File & { path?: string }).path || file.webkitRelativePath || file.name;
   return raw.replace(/^\.?\//, ""); // strip a leading "/" or "./"
 }
 
@@ -194,7 +196,10 @@ export async function buildCanonicalZip(
   const out: Record<string, Uint8Array> = {};
   for (const f of plan.files) {
     const data = bytes.get(f.from);
-    if (data) out[f.to] = data;
+    // Don't silently ship fewer files than the plan (and the report) promised
+    // (ADR-0038 #9) — e.g. duplicate zip entry names collapsing on read.
+    if (!data) throw new Error(`Couldn't read ${f.from} from the upload — try re-exporting it.`);
+    out[f.to] = data;
   }
   const zipped = zipSync(out, { level: 4 });
   return new File([zipped], "bundle.zip", { type: "application/zip" });

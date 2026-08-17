@@ -61,6 +61,21 @@ describe("FixBundleFlow", () => {
     expect(onPickRoot).toHaveBeenCalledWith("src/");
   });
 
+  it("renders a deploy error (the dropzone alert is gone once the confirm step shows)", () => {
+    renderWithProviders(
+      <FixBundleFlow
+        plan={rerootedPlan()}
+        fileName="my-app"
+        error="bundle exceeds size limits"
+        onPickRoot={() => {}}
+        onDeploy={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByText("Deploy failed")).toBeTruthy();
+    expect(screen.getByText("bundle exceeds size limits")).toBeTruthy();
+  });
+
   it("blocks deploy when the bundle is unsalvageable", () => {
     const plan: BundlePlan = {
       outcome: "unsalvageable",

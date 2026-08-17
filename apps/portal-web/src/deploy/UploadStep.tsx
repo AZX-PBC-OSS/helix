@@ -55,6 +55,9 @@ export function UploadStep({
   const [reading, setReading] = useState(false);
 
   const maxBundleBytes = deployMaxBundleMb !== null ? deployMaxBundleMb * MB : null;
+  // Plan only once the manifest (and its offline scope) is known (ADR-0038 #12):
+  // planning with an unresolved scope would strip a correct offline build's prefix.
+  const notReady = authenticated && manifest.isPending;
 
   async function onDrop(files: File[]) {
     setError(null);
@@ -91,7 +94,13 @@ export function UploadStep({
   function rePlan(root: string) {
     if (!prepared) return;
     const { loaded, source } = prepared;
-    const plan = planBundle(loaded.entries, { forceRoot: root }, loaded.htmlText);
+    // Thread the full context (ADR-0038 #8): dropping declaredDir/offlineScope
+    // here would un-nest an offline build and lose the declared-dir justification.
+    const plan = planBundle(
+      loaded.entries,
+      { declaredDir: loaded.declaredDir, offlineScope, forceRoot: root },
+      loaded.htmlText,
+    );
     setPrepared({ loaded, plan, source, name: prepared.name });
   }
 
@@ -121,10 +130,12 @@ export function UploadStep({
         plan={prepared.plan}
         fileName={prepared.name}
         busy={upload.isPending}
+        error={error}
         onPickRoot={rePlan}
         onDeploy={confirmDeploy}
         onCancel={() => {
           setPrepared(null);
+          setError(null);
           upload.reset();
         }}
       />
@@ -134,10 +145,14 @@ export function UploadStep({
   return (
     <Stack gap="sm">
       <Dropzone
+        // No `accept` filter: a dropped *folder* recurses to html/css/js files,
+        // none of which are `application/zip`, so an accept filter would silently
+        // reject the whole folder (ADR-0038 #2). The flow classifies via asSource
+        // and a stray non-zip lands in the planner's unsalvageable path.
         onDrop={onDrop}
-        accept={["application/zip", "application/x-zip-compressed"]}
         multiple
         loading={reading || upload.isPending}
+        disabled={notReady}
       >
         <Stack align="center" gap={6} py={28} style={{ pointerEvents: "none" }}>
           <Icon name="upload" size={28} style={{ color: "var(--mantine-color-dark-2)" }} />
@@ -148,7 +163,7 @@ export function UploadStep({
           </Text>
         </Stack>
       </Dropzone>
-      <FolderPicker onFiles={onDrop} disabled={reading || upload.isPending} />
+      <FolderPicker onFiles={onDrop} disabled={reading || upload.isPending || notReady} />
       {error && (
         <Alert color="red" title="Couldn't read that upload" icon={<Icon name="alert" size={16} />}>
           {error}

@@ -77,4 +77,25 @@ describe("buildCanonicalZip", () => {
     const contents = unzipSync(new Uint8Array(await out.arrayBuffer()));
     expect(Object.keys(contents).sort()).toEqual(["app.js", "index.html"]);
   });
+
+  it("throws rather than silently shipping fewer files than planned", async () => {
+    const loaded = await loadZip(zipFile({ "index.html": "<h1>hi</h1>" }), null);
+    // A plan referencing a file the archive can't materialize.
+    const plan = {
+      files: [
+        { from: "index.html", to: "index.html" },
+        { from: "ghost.js", to: "ghost.js" },
+      ],
+    };
+    await expect(buildCanonicalZip(loaded, plan)).rejects.toThrow(/ghost\.js/);
+  });
+});
+
+describe("loadFolder — path fallback", () => {
+  it("uses the file name when neither .path nor webkitRelativePath is set", async () => {
+    // A plain File has webkitRelativePath === "" (not undefined); the fallback
+    // must still yield a usable path rather than an empty one.
+    const loaded = await loadFolder([new File(["<h1>hi</h1>"], "index.html")], null);
+    expect(loaded.entries.map((e) => e.path)).toEqual(["index.html"]);
+  });
 });
