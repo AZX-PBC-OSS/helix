@@ -80,4 +80,39 @@ describe("VersionsTab", () => {
     expect(await screen.findByText("Promote v3 to live?")).toBeDefined();
     expect(screen.getByText(/flips the live pointer/)).toBeDefined();
   });
+
+  it("marks a re-rooted version as salvaged, and leaves a canonical one unmarked", () => {
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
+    const salvaged: Version = {
+      ...version(3, "preview", "33333333-3333-4333-8333-333333333333"),
+      deployReport: {
+        plannerVersion: 1,
+        outcome: "rerooted",
+        root: "dist/",
+        fileCount: 2,
+        drops: { junk: 3 },
+        problems: [],
+        candidates: ["dist/"],
+      },
+    };
+    const canonical: Version = {
+      ...version(2, "live", LIVE_ID),
+      deployReport: {
+        plannerVersion: 1,
+        outcome: "canonical",
+        root: "",
+        fileCount: 2,
+        drops: {},
+        problems: [],
+        candidates: [""],
+      },
+    };
+    renderWithProviders(
+      <AuthProvider>
+        <VersionsTab app={app} versions={[salvaged, canonical]} />
+      </AuthProvider>,
+    );
+    // One badge — the re-rooted row; the canonical row shows nothing.
+    expect(screen.getAllByText("salvaged")).toHaveLength(1);
+  });
 });

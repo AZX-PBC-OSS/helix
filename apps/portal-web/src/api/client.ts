@@ -88,14 +88,22 @@ export async function fetchText(path: string): Promise<{ body: string; headers: 
   return { body: await res.text(), headers: res.headers };
 }
 
-/** Multipart upload (the deploy endpoint) — browser sets the boundary header. */
+/**
+ * Multipart upload (the deploy endpoint) — browser sets the boundary header.
+ *
+ * `fields` are appended **before** the file, so a server reading the file via a
+ * streaming multipart parser (`req.file()`) still sees them (ADR-0038's deploy
+ * report rides here).
+ */
 export async function uploadFile<Schema extends z.ZodType>(
   schema: Schema,
   path: string,
   fieldName: string,
   file: File,
+  fields?: Record<string, string>,
 ): Promise<z.output<Schema>> {
   const form = new FormData();
+  for (const [key, value] of Object.entries(fields ?? {})) form.append(key, value);
   form.append(fieldName, file);
   const res = await fetch(path, { method: "POST", headers: authHeaders(), body: form });
   if (!res.ok) await throwApiError(res);

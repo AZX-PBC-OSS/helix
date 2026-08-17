@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Box, Button, Group, Table, Text } from "@mantine/core";
-import type { App, Version } from "@azx-pbc/shared";
+import { Box, Button, Group, Table, Text, Tooltip } from "@mantine/core";
+import type { App, DeployReport, Version } from "@azx-pbc/shared";
 import { usePromoteVersion, useRollback } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
 import { Hint, ToneBadge, type Tone } from "../../components/primitives";
@@ -107,6 +107,7 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
                           LIVE
                         </ToneBadge>
                       )}
+                      <SalvageBadge report={v.deployReport} />
                     </Group>
                   </Table.Td>
                   <Table.Td>
@@ -187,5 +188,32 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
         }}
       />
     </div>
+  );
+}
+
+/**
+ * A quiet marker that the portal SPA re-rooted or trimmed this upload before
+ * sending it (ADR-0038). Client-asserted provenance — shown only to explain a
+ * version's file list, never load-bearing — so a `canonical` (untouched) deploy
+ * shows nothing.
+ */
+function SalvageBadge({ report }: { report?: DeployReport }) {
+  if (!report || report.outcome === "canonical") return null;
+  const dropped = Object.values(report.drops).reduce((n, c) => n + c, 0);
+  const detail = [
+    report.root ? `rooted at ${report.root}` : "kept at the archive root",
+    `${report.fileCount} file${report.fileCount === 1 ? "" : "s"} kept`,
+    dropped > 0 ? `${dropped} dropped` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <Tooltip label={detail} withArrow multiline maw={280}>
+      <span>
+        <ToneBadge tone="slate" icon="layers" style={{ padding: "1px 6px", fontSize: 9.5 }}>
+          salvaged
+        </ToneBadge>
+      </span>
+    </Tooltip>
   );
 }

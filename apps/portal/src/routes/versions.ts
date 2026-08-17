@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { RollbackRequestSchema } from "@azx-pbc/shared";
+import { type DeployReport, DeployReportSchema, RollbackRequestSchema } from "@azx-pbc/shared";
 import { toApp, toVersion } from "../db/mappers.js";
 import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
@@ -32,6 +32,11 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
+      // Optional salvage provenance (ADR-0038), sent as a `report` field ahead of
+      // the file. Client-asserted and unverifiable: parse-or-ignore, never a
+      // deploy failure. `req.file()` exposes fields that preceded the file.
+      const deployReport = readDeployReport(req, data.fields);
+
       const spooled = await spoolUpload(data.file);
       try {
         const { version, warnings } = await deployBundle({
@@ -40,6 +45,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
           appId: appRow.id,
           actor: actor.sub,
           zipPath: spooled.zipPath,
+          deployReport,
         });
         reply.status(201).send({ version: toVersion(version), warnings });
       } catch (err) {
@@ -158,6 +164,39 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
       return toApp(updated);
     },
   );
+}
+
+/** Max bytes of the `report` field we'll parse — a report is well under 8 KB. */
+const MAX_REPORT_BYTES = 8192;
+
+/**
+ * Read the optional client-asserted deploy report (ADR-0038). Bounded and
+ * schema-checked; an oversized, unparseable, or invalid value is logged and
+ * ignored — it must never fail a deploy. Returns undefined when absent.
+ */
+function readDeployReport(
+  req: { log: { warn: (msg: string) => void } },
+  fields: Record<string, unknown> | undefined,
+): DeployReport | undefined {
+  const field = fields?.report as { type?: string; value?: unknown } | undefined;
+  if (!field || field.type !== "field" || typeof field.value !== "string") return undefined;
+  if (field.value.length > MAX_REPORT_BYTES) {
+    req.log.warn("ignoring oversized deploy report");
+    return undefined;
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(field.value);
+  } catch {
+    req.log.warn("ignoring unparseable deploy report");
+    return undefined;
+  }
+  const parsed = DeployReportSchema.safeParse(json);
+  if (!parsed.success) {
+    req.log.warn("ignoring invalid deploy report");
+    return undefined;
+  }
+  return parsed.data;
 }
 
 /** Archived apps are frozen: no uploads or pointer moves until unarchived. */

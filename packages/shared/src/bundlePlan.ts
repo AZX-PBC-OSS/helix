@@ -20,6 +20,12 @@
  * confirm step renders. Adding a newly-observed bad shape means adding a row.
  */
 
+/**
+ * Planner revision, stamped into the deploy report (ADR-0038). Bump when the
+ * scoring or outcomes change materially, so an old stored report stays readable.
+ */
+export const PLANNER_VERSION = 1;
+
 /** One regular file in an uploaded archive. Directories are implied by paths. */
 export interface BundleEntry {
   /** Posix, archive-relative, no leading slash. */

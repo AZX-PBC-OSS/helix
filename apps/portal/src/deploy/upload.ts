@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import yauzl from "yauzl";
-import type { CspWarning } from "@azx-pbc/shared";
+import type { CspWarning, DeployReport } from "@azx-pbc/shared";
 import type { PrismaClient, Version as VersionRow } from "../db/client.js";
 import type { BlobStore } from "../blob/store.js";
 import { isUniqueViolation } from "../db/errors.js";
@@ -52,12 +52,14 @@ export async function deployBundle(opts: {
   appId: string;
   actor: string;
   zipPath: string;
+  /** Client-asserted salvage provenance (ADR-0038); stored as-is, never trusted. */
+  deployReport?: DeployReport;
 }): Promise<DeployResult> {
-  const { prisma, blobStore, appId, actor, zipPath } = opts;
+  const { prisma, blobStore, appId, actor, zipPath, deployReport } = opts;
 
   const { entries, warnings } = await validateBundle(zipPath);
 
-  const version = await allocateVersion(prisma, appId);
+  const version = await allocateVersion(prisma, appId, deployReport);
   await uploadEntries(zipPath, blobStore, version.blobPrefix);
 
   await prisma.auditEvent.create({
@@ -69,6 +71,7 @@ export async function deployBundle(opts: {
         number: version.number,
         fileCount: entries.length,
         warningCount: warnings.length,
+        ...(deployReport ? { salvageOutcome: deployReport.outcome } : {}),
       },
     },
   });
@@ -80,13 +83,23 @@ export async function deployBundle(opts: {
  * Allocate the next per-app version number. The `@@unique([appId, number])`
  * constraint backstops concurrent deploys; a losing insert retries.
  */
-async function allocateVersion(prisma: PrismaClient, appId: string): Promise<VersionRow> {
+async function allocateVersion(
+  prisma: PrismaClient,
+  appId: string,
+  deployReport?: DeployReport,
+): Promise<VersionRow> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const max = await prisma.version.aggregate({ where: { appId }, _max: { number: true } });
     const number = (max._max.number ?? 0) + 1;
     try {
       return await prisma.version.create({
-        data: { appId, number, blobPrefix: blobPrefixFor(appId, number), status: "preview" },
+        data: {
+          appId,
+          number,
+          blobPrefix: blobPrefixFor(appId, number),
+          status: "preview",
+          deployReport: deployReport ?? undefined,
+        },
       });
     } catch (err) {
       if (isUniqueViolation(err, "number")) continue;

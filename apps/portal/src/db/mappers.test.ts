@@ -405,6 +405,7 @@ describe("row mappers validate against the shared schema", () => {
       blobPrefix: blobPrefixFor(APP_ID, 1),
       status: "preview",
       createdAt: NOW,
+      deployReport: null,
     };
     expect(toVersion(row)).toEqual({
       id: VERSION_ID,
@@ -414,5 +415,29 @@ describe("row mappers validate against the shared schema", () => {
       status: "preview",
       createdAt: NOW.toISOString(),
     });
+  });
+
+  it("carries a valid stored deploy report through, and drops a malformed one", () => {
+    const base: VersionRow = {
+      id: VERSION_ID,
+      appId: APP_ID,
+      number: 1,
+      blobPrefix: blobPrefixFor(APP_ID, 1),
+      status: "preview",
+      createdAt: NOW,
+      deployReport: null,
+    };
+    const report = {
+      plannerVersion: 1,
+      outcome: "rerooted",
+      root: "dist/",
+      fileCount: 3,
+      drops: { junk: 2 },
+      problems: [],
+      candidates: ["dist/", "src/"],
+    };
+    expect(toVersion({ ...base, deployReport: report }).deployReport).toEqual(report);
+    // Client-asserted and unverifiable: a malformed blob is dropped, not thrown.
+    expect(toVersion({ ...base, deployReport: { outcome: "bogus" } }).deployReport).toBeUndefined();
   });
 });

@@ -102,6 +102,53 @@ describe("POST /api/v1/apps/:slug/versions", () => {
     expect(list.json()).toEqual([]);
   });
 
+  it("stores a valid deploy report and returns it on the version", async () => {
+    const slug = uniqueSlug();
+    await createApp(slug);
+    const report = JSON.stringify({
+      plannerVersion: 1,
+      outcome: "rerooted",
+      root: "dist/",
+      fileCount: 2,
+      drops: { junk: 3 },
+      problems: [],
+      candidates: ["dist/", "src/"],
+    });
+    const { payload, headers } = multipartBundle(
+      await simpleBundle(),
+      "bundle",
+      "bundle.zip",
+      report,
+    );
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/versions`,
+      headers: { ...authHeader(), ...headers },
+      payload,
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().version.deployReport).toMatchObject({ outcome: "rerooted", root: "dist/" });
+  });
+
+  it("ignores a malformed deploy report rather than failing the deploy", async () => {
+    const slug = uniqueSlug();
+    await createApp(slug);
+    const { payload, headers } = multipartBundle(
+      await simpleBundle(),
+      "bundle",
+      "bundle.zip",
+      "not json at all",
+    );
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/apps/${slug}/versions`,
+      headers: { ...authHeader(), ...headers },
+      payload,
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().version.deployReport).toBeUndefined();
+  });
+
   it("rejects an unauthenticated upload (401)", async () => {
     const slug = uniqueSlug();
     await createApp(slug);

@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Alert, Anchor, Code, Stack, Text } from "@mantine/core";
 import { Dropzone } from "@mantine/dropzone";
 import { useQuery } from "@tanstack/react-query";
-import type { UploadVersionResponse } from "@azx-pbc/shared";
+import type { DeployReport, UploadVersionResponse } from "@azx-pbc/shared";
 import { type BundlePlan, planBundle } from "@azx-pbc/shared/bundlePlan";
+import { toDeployReport } from "./report";
 import { manifestQuery } from "../api/queries";
 import { useUploadVersion } from "../api/mutations";
 import { Icon } from "../components/Icon";
@@ -74,9 +75,9 @@ export function UploadStep({
       // confirmed first — except that a folder is always re-zipped even when
       // clean, since there is no original archive to send.
       if (plan.outcome === "canonical" && source.kind === "zip") {
-        doUpload(source.file);
+        doUpload(source.file, toDeployReport(plan));
       } else if (plan.outcome === "canonical") {
-        doUpload(await buildCanonicalZip(loaded, plan));
+        doUpload(await buildCanonicalZip(loaded, plan), toDeployReport(plan));
       } else {
         setPrepared({ loaded, plan, source, name: sourceName(source) });
       }
@@ -98,14 +99,20 @@ export function UploadStep({
     if (!prepared) return;
     setError(null);
     try {
-      doUpload(await buildCanonicalZip(prepared.loaded, prepared.plan));
+      doUpload(
+        await buildCanonicalZip(prepared.loaded, prepared.plan),
+        toDeployReport(prepared.plan),
+      );
     } catch (err) {
       setError(readErrorMessage(err));
     }
   }
 
-  function doUpload(file: File) {
-    upload.mutate({ slug, file }, { onSuccess: onDone, onError: (e) => setError(e.message) });
+  function doUpload(file: File, report?: DeployReport) {
+    upload.mutate(
+      { slug, file, report },
+      { onSuccess: onDone, onError: (e) => setError(e.message) },
+    );
   }
 
   if (prepared) {

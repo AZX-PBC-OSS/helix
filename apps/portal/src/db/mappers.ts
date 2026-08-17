@@ -4,6 +4,7 @@ import {
   ApprovalRequestSchema,
   CapabilitiesSchema,
   CspViolationSchema,
+  DeployReportSchema,
   GatewayCallSchema,
   PlatformUsageSchema,
   UsageSummarySchema,
@@ -178,6 +179,9 @@ export function toVersion(row: VersionRow): Version {
     blobPrefix: row.blobPrefix,
     status: row.status,
     createdAt: row.createdAt.toISOString(),
+    // Client-asserted (ADR-0038) and unverifiable, so a malformed stored blob is
+    // dropped rather than allowed to break the whole version response.
+    deployReport: DeployReportSchema.safeParse(row.deployReport).data,
   });
 }
 

@@ -96,6 +96,10 @@ model Version {
   blobPrefix    String
   status        VersionStatus @default(preview)
   createdAt     DateTime      @default(now())
+  // Client-asserted salvage provenance (ADR-0038): what the portal SPA did to the
+  // upload before sending it. Never verified, never read for policy/serving — it
+  // only explains why this version's file list looks the way it does.
+  deployReport  Json?
   // Back-relation for the live pointer (the app, if any, currently serving this).
   currentForApp App?          @relation("CurrentVersion")
 

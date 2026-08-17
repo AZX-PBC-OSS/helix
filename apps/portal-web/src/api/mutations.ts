@@ -12,6 +12,7 @@ import {
   type Capabilities,
   type CreateAppRequest,
   type App,
+  type DeployReport,
   type DevTokenMintResponse,
   type InjectionRecipe,
   type ManifestUpdateResult,
@@ -250,12 +251,22 @@ export function useDisablePassword() {
 export function useUploadVersion() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ slug, file }: { slug: string; file: File }): Promise<UploadVersionResponse> =>
+    mutationFn: ({
+      slug,
+      file,
+      report,
+    }: {
+      slug: string;
+      file: File;
+      /** Client-asserted salvage provenance (ADR-0038), sent alongside the bundle. */
+      report?: DeployReport;
+    }): Promise<UploadVersionResponse> =>
       uploadFile(
         UploadVersionResponseSchema,
         `/api/v1/apps/${encodeURIComponent(slug)}/versions`,
         "bundle",
         file,
+        report ? { report: JSON.stringify(report) } : undefined,
       ),
     onSuccess: (_res, { slug }) => {
       void queryClient.invalidateQueries({ queryKey: ["apps", slug, "versions"] });

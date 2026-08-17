@@ -73,8 +73,11 @@ export function multipartBundle(
   buffer: Buffer,
   field = "bundle",
   filename = "bundle.zip",
+  /** A `report` field placed *before* the file, mirroring the SPA (ADR-0038). */
+  report?: string,
 ): { payload: Buffer; headers: Record<string, string> } {
   const form = new FormData();
+  if (report !== undefined) form.append("report", report);
   form.append(field, buffer, { filename, contentType: "application/zip" });
   return { payload: form.getBuffer(), headers: form.getHeaders() };
 }
