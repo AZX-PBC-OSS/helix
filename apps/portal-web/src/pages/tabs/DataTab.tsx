@@ -70,8 +70,14 @@ export function DataTab({ app }: { app: App }) {
   const manifest = useQuery({ ...manifestQuery(app.slug), enabled: authenticated });
   const del = useDeleteCollectionItem();
 
-  const summaries = index.data ?? [];
-  const declared = manifest.data?.capabilities.data?.collections ?? [];
+  // The `?? []` fallbacks are memoized so the empty-state identity is stable —
+  // otherwise every render hands the memos below a brand-new array and they
+  // recompute for nothing.
+  const summaries = useMemo(() => index.data ?? [], [index.data]);
+  const declared = useMemo(
+    () => manifest.data?.capabilities.data?.collections ?? [],
+    [manifest.data],
+  );
 
   /**
    * Every collection worth offering: the ones with rows (from the index) unioned
@@ -94,7 +100,7 @@ export function DataTab({ app }: { app: App }) {
     enabled: authenticated && !!collection,
   });
 
-  const items = rowsQuery.data?.rows ?? [];
+  const items = useMemo(() => rowsQuery.data?.rows ?? [], [rowsQuery.data]);
   const columns = useMemo(() => deriveCollectionColumns(items), [items]);
 
   /** Rows the current env filter is holding back, so the tab can say so. */
