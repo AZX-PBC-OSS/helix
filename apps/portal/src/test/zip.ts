@@ -9,6 +9,12 @@ export interface ZipFileSpec {
   content?: Buffer | string;
   /** When set, the entry is a symlink pointing here (for security tests). */
   symlinkTo?: string;
+  /**
+   * When set, the entry is a directory record (`name` gets a trailing slash if
+   * it lacks one). Some archivers emit these and some don't — which is itself a
+   * difference the malformed-bundle fixtures reproduce.
+   */
+  directory?: boolean;
   mode?: number;
 }
 
@@ -16,6 +22,11 @@ function appendSpecs(archive: Archiver, specs: ZipFileSpec[]): void {
   for (const spec of specs) {
     if (spec.symlinkTo !== undefined) {
       archive.symlink(spec.name, spec.symlinkTo);
+    } else if (spec.directory) {
+      // Archiver reads the type off the trailing slash, so an empty payload
+      // under a `dir/` name is the directory record — not a zero-byte file.
+      const name = spec.name.endsWith("/") ? spec.name : `${spec.name}/`;
+      archive.append(Buffer.alloc(0), { name, mode: spec.mode });
     } else {
       archive.append(spec.content ?? "", { name: spec.name, mode: spec.mode });
     }
