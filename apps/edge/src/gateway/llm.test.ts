@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { request as undiciRequest } from "undici";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { buildApp } from "../app.js";
 import { SESSION_COOKIE } from "../auth/cookies.js";
 import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
+import { until, withServer } from "../test/socket.js";
 import {
   FakeBlobReader,
   FakeLlmProvider,
@@ -492,5 +494,114 @@ describe("a vendor 400 is the app's fault, not the upstream's (ADR-0034)", () =>
 
     expect(res.statusCode).toBe(502);
     expect(res.json().error.code).toBe("internal");
+  });
+});
+
+/**
+ * Real-socket coverage for client disconnect. The rest of this file drives the
+ * app through `app.inject()`, which cannot express a client hanging up — and
+ * this route's disconnect handling was broken for exactly as long as nothing
+ * tested it over a socket.
+ */
+describe("/_api/llm/chat over a real socket", () => {
+  function headers(token: string): Record<string, string> {
+    return {
+      host: HOST.host,
+      "sec-fetch-mode": "cors",
+      "content-type": "application/json",
+      origin: ORIGIN,
+      cookie: `${SESSION_COOKIE}=${token}`,
+    };
+  }
+
+  it("aborts the upstream when the client hangs up mid-stream", async () => {
+    const edge = buildLlmEdge();
+    const token = await seedSession(edge.sessions);
+    // Long enough to still be streaming when the client goes; the per-delta
+    // pause keeps the stream open without the test sleeping on a fixed budget.
+    edge.provider.deltas = Array.from({ length: 200 }, (_, i) => `d${i}`);
+    edge.provider.onDelta = async (i) => {
+      if (i > 0) await new Promise((r) => setTimeout(r, 5));
+    };
+    await withServer(edge.app, async (base) => {
+      const res = await undiciRequest(`${base}/_api/llm/chat`, {
+        method: "POST",
+        headers: headers(token),
+        body: JSON.stringify({ ...ASK, stream: true }),
+      });
+      expect(res.statusCode).toBe(200);
+      for await (const chunk of res.body) {
+        // Hang up as soon as the stream is demonstrably flowing.
+        if (String(chunk).includes("event: delta")) break;
+      }
+      res.body.destroy();
+      await until(() => edge.provider.sawAbort, "the provider signal to abort");
+      // The ledger write trails the abort — wait for the row itself, not just
+      // the signal, or the assertions below race the handler's catch.
+      await until(() => edge.usage.records.length === 1, "the call to be metered");
+    });
+    // Metered once, and marked as the app leaving rather than a vendor failure.
+    expect(edge.usage.records).toHaveLength(1);
+    expect(edge.usage.records[0]?.outcome).toBe("error");
+    expect(edge.usage.records[0]?.errorDetail).toBe("client_disconnected");
+  });
+
+  it("aborts a non-streaming call when the client hangs up", async () => {
+    const edge = buildLlmEdge();
+    const token = await seedSession(edge.sessions);
+    edge.provider.deltas = Array.from({ length: 200 }, (_, i) => `d${i}`);
+    edge.provider.onDelta = async (i) => {
+      if (i > 0) await new Promise((r) => setTimeout(r, 5));
+    };
+    await withServer(edge.app, async (base) => {
+      const ac = new AbortController();
+      const pending = undiciRequest(`${base}/_api/llm/chat`, {
+        method: "POST",
+        headers: headers(token),
+        body: JSON.stringify({ ...ASK, stream: false }),
+        signal: ac.signal,
+      }).catch(() => undefined);
+      await until(() => edge.provider.calls.length === 1, "the provider to be called");
+      ac.abort();
+      await pending;
+      await until(() => edge.provider.sawAbort, "the provider signal to abort");
+    });
+  });
+
+  it("streams a normal completion unchanged over a socket", async () => {
+    const edge = buildLlmEdge();
+    const token = await seedSession(edge.sessions);
+    await withServer(edge.app, async (base) => {
+      const res = await undiciRequest(`${base}/_api/llm/chat`, {
+        method: "POST",
+        headers: headers(token),
+        body: JSON.stringify({ ...ASK, stream: true }),
+      });
+      expect(res.statusCode).toBe(200);
+      const body = await res.body.text();
+      expect(body).toContain("event: delta");
+      expect(body).toContain("event: done");
+    });
+    expect(edge.provider.sawAbort).toBe(false); // finishing is not a disconnect
+    expect(edge.usage.records).toHaveLength(1);
+    expect(edge.usage.records[0]?.outcome).toBe("ok");
+  });
+
+  it("completes a non-streaming call unchanged over a socket", async () => {
+    const edge = buildLlmEdge();
+    const token = await seedSession(edge.sessions);
+    await withServer(edge.app, async (base) => {
+      const res = await undiciRequest(`${base}/_api/llm/chat`, {
+        method: "POST",
+        headers: headers(token),
+        body: JSON.stringify({ ...ASK, stream: false }),
+      });
+      expect(res.statusCode).toBe(200);
+      expect((await res.body.json()) as { content: string }).toMatchObject({
+        content: "Hello world",
+      });
+    });
+    expect(edge.provider.sawAbort).toBe(false);
+    expect(edge.usage.records[0]?.outcome).toBe("ok");
   });
 });

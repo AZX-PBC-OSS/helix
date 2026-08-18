@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { request as undiciRequest } from "undici";
 import { describe, expect, it } from "vitest";
@@ -8,6 +7,7 @@ import { type JWTPayload, jwtVerify } from "jose";
 import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
+import { until, withServer } from "../test/socket.js";
 import {
   FakeBlobReader,
   FakeOidcClient,
@@ -33,6 +33,13 @@ const ORIGIN = "https://demo.local.helix.azxlabs.io:8080";
 const secret = randomBytes(32);
 const key = deriveInstructionKey(secret);
 
+/** undici rejects an in-flight request with this the moment its signal fires. */
+function abortError(): Error {
+  const err = new Error("This operation was aborted");
+  err.name = "AbortError";
+  return err;
+}
+
 class FakeEgress implements EgressProvider {
   calls: EgressRequest[] = [];
   outcome = "ok";
@@ -41,11 +48,39 @@ class FakeEgress implements EgressProvider {
   /** When set, the request body is fully drained so tests can measure its size. */
   drainRequest = false;
   drainedBytes = 0;
+  /**
+   * Hold the call open this long before answering, standing in for an upstream
+   * that takes real time. At the default 0 the response is already resolved
+   * before the edge could possibly abort, so a self-abort would be invisible —
+   * any test asserting on abort behaviour has to set this.
+   */
+  delayMs = 0;
+  /** Set when the edge's signal fired while this call was still in flight. */
+  abortedDuringCall = false;
+
   async proxy(req: EgressRequest): Promise<EgressResponse> {
     this.calls.push(req);
+    // Watch from the moment the call starts, not just during the delay window:
+    // a client that hangs up mid-upload aborts while we are still draining, and
+    // that has to be observable too.
+    let settled = false;
+    if (req.signal.aborted) this.abortedDuringCall = true;
+    else {
+      req.signal.addEventListener(
+        "abort",
+        () => {
+          // Only while in flight: once we have answered, the edge tearing the
+          // request down is ordinary completion, not a cancelled call.
+          if (!settled) this.abortedDuringCall = true;
+        },
+        { once: true },
+      );
+    }
     if (this.drainRequest && req.body && typeof req.body !== "string") {
       for await (const chunk of req.body as Readable) this.drainedBytes += (chunk as Buffer).length;
     }
+    if (this.delayMs > 0) await this.#holdOpen(req.signal);
+    settled = true;
     return {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -53,6 +88,31 @@ class FakeEgress implements EgressProvider {
       outcome: this.outcome,
     };
   }
+
+  /**
+   * Mirror undici's contract, which is the whole point of the fake here: a call
+   * in flight rejects with an AbortError as soon as its signal fires. A fake
+   * that ignored the signal would answer 200 even while the edge was aborting
+   * it, and the bug this guards against would pass.
+   */
+  #holdOpen(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(abortError());
+        return;
+      }
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        reject(abortError());
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, this.delayMs);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   async close(): Promise<void> {}
 }
 
@@ -375,21 +435,188 @@ describe("/_api/fetch", () => {
     const { app, egress } = buildFetchEdge({ maxBodyBytes: 64 });
     // 320 bytes across chunks, no content-length ⇒ the fast-path is inert.
     egress.responseBody = Readable.from(Array.from({ length: 8 }, () => Buffer.alloc(40, 0x61)));
-    await app.listen({ port: 0, host: "127.0.0.1" });
-    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
-    const res = await undiciRequest(`${base}/_api/fetch/https://api.github.com/big`, {
-      method: "GET",
-      headers: { host: "demo.local.helix.azxlabs.io", origin: ORIGIN },
+    await withServer(app, async (base) => {
+      const res = await undiciRequest(`${base}/_api/fetch/https://api.github.com/big`, {
+        method: "GET",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      expect(res.statusCode).toBe(200);
+      let got = 0;
+      try {
+        for await (const chunk of res.body) got += (chunk as Buffer).length;
+      } catch {
+        // premature close — the expected shape of a truncated response
+      }
+      expect(got).toBeLessThanOrEqual(64); // counter cut it at the cap
+      expect(got).toBeLessThan(320); // the full body never reached the app
     });
-    expect(res.statusCode).toBe(200);
-    let got = 0;
-    try {
-      for await (const chunk of res.body) got += (chunk as Buffer).length;
-    } catch {
-      // premature close — the expected shape of a truncated response
-    }
-    expect(got).toBeLessThanOrEqual(64); // counter cut it at the cap
-    expect(got).toBeLessThan(320); // the full body never reached the app
-    await app.close();
+  });
+});
+
+/**
+ * Everything below runs over a real socket. `app.inject()` cannot reach this
+ * class of bug: light-my-request never emits `'close'` on `req.raw` when the
+ * body is consumed, so a handler that mistook that for a client disconnect
+ * looked perfectly healthy under inject while failing every body-bearing
+ * method in production.
+ */
+describe("/_api/fetch over a real socket", () => {
+  const URL_PATH = "/_api/fetch/https://api.github.com/x";
+  const JSON_BODY = JSON.stringify({ a: 1 });
+  const JSON_BODY_BYTES = Buffer.byteLength(JSON_BODY);
+  const JSON_HEADERS = { ...HOST, origin: ORIGIN, "content-type": "application/json" };
+
+  it("proxies a POST with a JSON body", async () => {
+    const { app, egress, usage } = buildFetchEdge();
+    egress.drainRequest = true;
+    // A delay is what makes the assertion meaningful: it leaves a window in
+    // which a spurious abort could land, the way a real upstream does.
+    egress.delayMs = 50;
+    await withServer(app, async (base) => {
+      const res = await undiciRequest(`${base}${URL_PATH}`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON_BODY,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(await res.body.json()).toEqual({ ok: true });
+    });
+    expect(egress.abortedDuringCall).toBe(false); // the request finishing is not a disconnect
+    expect(egress.drainedBytes).toBe(JSON_BODY_BYTES);
+    expect(usage.records).toContainEqual(expect.objectContaining({ outcome: "ok" }));
+  });
+
+  it("proxies a POST with no body", async () => {
+    // The reporter's `content-length: 0` control: nothing about the *content*
+    // of the body matters, only that the method is one that may carry one.
+    const { app, egress } = buildFetchEdge();
+    egress.drainRequest = true;
+    egress.delayMs = 50;
+    await withServer(app, async (base) => {
+      const res = await undiciRequest(`${base}${URL_PATH}`, {
+        method: "POST",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      expect(res.statusCode).toBe(200);
+      await res.body.text();
+    });
+    expect(egress.abortedDuringCall).toBe(false);
+  });
+
+  it.each(["PUT", "PATCH", "DELETE"] as const)("proxies %s", async (method) => {
+    const { app, egress } = buildFetchEdge();
+    egress.drainRequest = true;
+    egress.delayMs = 50;
+    await withServer(app, async (base) => {
+      const res = await undiciRequest(`${base}${URL_PATH}`, {
+        method,
+        headers: JSON_HEADERS,
+        body: JSON_BODY,
+      });
+      expect(res.statusCode).toBe(200);
+      await res.body.text();
+    });
+    expect(egress.abortedDuringCall).toBe(false);
+  });
+
+  it("forwards a chunked multi-chunk body intact", async () => {
+    // No content-length ⇒ chunked framing, the shape the report guessed was at
+    // fault. It transits fine; the verb was never the upstream's problem.
+    const { app, egress } = buildFetchEdge();
+    egress.drainRequest = true;
+    egress.delayMs = 50;
+    await withServer(app, async (base) => {
+      const res = await undiciRequest(`${base}${URL_PATH}`, {
+        method: "POST",
+        headers: { ...HOST, origin: ORIGIN, "content-type": "application/octet-stream" },
+        body: Readable.from(Array.from({ length: 4 }, () => Buffer.alloc(1_000, 0x61))),
+      });
+      expect(res.statusCode).toBe(200);
+      await res.body.text();
+    });
+    expect(egress.abortedDuringCall).toBe(false);
+    expect(egress.drainedBytes).toBe(4_000);
+  });
+
+  it("still proxies GET and HEAD", async () => {
+    const { app, egress } = buildFetchEdge();
+    egress.delayMs = 50;
+    await withServer(app, async (base) => {
+      for (const method of ["GET", "HEAD"] as const) {
+        const res = await undiciRequest(`${base}${URL_PATH}`, {
+          method,
+          headers: { ...HOST, origin: ORIGIN },
+        });
+        expect(res.statusCode).toBe(200);
+        await res.body.dump();
+      }
+    });
+    expect(egress.calls).toHaveLength(2);
+    expect(egress.abortedDuringCall).toBe(false);
+  });
+
+  it("aborts the egress call when the client hangs up mid-upload", async () => {
+    // The reason the signal exists. `req.raw` is still mid-body here, so this
+    // is the case a `req.aborted`-based guard would also catch.
+    const { app, egress } = buildFetchEdge();
+    egress.drainRequest = true;
+    const stalled = new Readable({ read() {} });
+    stalled.push(Buffer.alloc(16, 0x61)); // one chunk, then nothing — never ends
+    await withServer(app, async (base) => {
+      const ac = new AbortController();
+      const pending = undiciRequest(`${base}${URL_PATH}`, {
+        method: "POST",
+        headers: { ...HOST, origin: ORIGIN, "content-type": "application/octet-stream" },
+        body: stalled,
+        signal: ac.signal,
+      }).catch(() => undefined);
+      await until(() => egress.calls.length === 1, "egress to be dialed");
+      ac.abort();
+      stalled.destroy();
+      await pending;
+      await until(() => egress.abortedDuringCall, "the egress call to be aborted");
+    });
+  });
+
+  it("aborts the egress call when the client uploads fully and then hangs up", async () => {
+    // The case that decides the primitive: the body arrived complete, so
+    // `req.raw.aborted` is false and Fastify's `onRequestAbort` would never
+    // fire. Watching the *response* for a premature close is what catches it.
+    const { app, egress, usage } = buildFetchEdge();
+    egress.drainRequest = true;
+    egress.delayMs = 5_000; // held open until the client gives up
+    await withServer(app, async (base) => {
+      const ac = new AbortController();
+      const pending = undiciRequest(`${base}${URL_PATH}`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON_BODY,
+        signal: ac.signal,
+      }).catch(() => undefined);
+      await until(() => egress.drainedBytes === JSON_BODY_BYTES, "the body to arrive in full");
+      ac.abort();
+      await pending;
+      await until(() => egress.abortedDuringCall, "the egress call to be aborted");
+    });
+    expect(usage.records).toContainEqual(
+      expect.objectContaining({ capability: "fetch", outcome: "error" }),
+    );
+  });
+
+  it("answers 413 for an over-cap request body, not 502", async () => {
+    // The cap trip and a disconnect both surface as a failed egress forward in
+    // the same catch, so the fix must not blur one into the other.
+    const { app, egress, usage } = buildFetchEdge({ maxBodyBytes: 64 });
+    egress.drainRequest = true;
+    await withServer(app, async (base) => {
+      const res = await undiciRequest(`${base}${URL_PATH}`, {
+        method: "POST",
+        headers: { ...HOST, origin: ORIGIN, "content-type": "application/octet-stream" },
+        body: Readable.from(Array.from({ length: 8 }, () => Buffer.alloc(40, 0x61))),
+      }).catch(() => undefined);
+      expect(res?.statusCode).toBe(413);
+      expect(((await res?.body.json()) as { code: string }).code).toBe("too_large");
+    });
+    expect(usage.records).toContainEqual(expect.objectContaining({ statusCode: 413 }));
   });
 });

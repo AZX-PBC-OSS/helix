@@ -138,13 +138,31 @@ export class FakeLlmProvider implements LlmProvider {
   error: Error | null = null;
   /** Awaited before each delta — a hook for interleaving/observation. */
   onDelta?: (index: number) => Promise<void> | void;
+  /** Set when the handler's abort signal fired while the stream was open. */
+  sawAbort = false;
 
   async *stream(req: LlmChatRequest, opts: { signal: AbortSignal }): AsyncIterable<LlmStreamEvent> {
     this.calls.push(req);
     if (this.error) throw this.error;
+    if (opts.signal.aborted) this.sawAbort = true;
+    else {
+      opts.signal.addEventListener(
+        "abort",
+        () => {
+          this.sawAbort = true;
+        },
+        { once: true },
+      );
+    }
     let index = 0;
     for (const text of this.deltas) {
-      if (opts.signal.aborted) return;
+      // Throw rather than return: a real provider surfaces a cancelled stream as
+      // an AbortError, and the handler's catch is what has to cope with it.
+      if (opts.signal.aborted) {
+        const err = new Error("This operation was aborted");
+        err.name = "AbortError";
+        throw err;
+      }
       await this.onDelta?.(index++);
       yield { type: "delta", text };
     }
