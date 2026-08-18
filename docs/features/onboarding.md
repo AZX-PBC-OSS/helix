@@ -66,6 +66,14 @@ succeed with a 200 and download the app shell. Nothing to get wrong if there's n
   leftover `{{`, so adding a token without wiring it fails the suite.
 - **No external links.** Every reference is in-app (the Capabilities tab, the Dev mode tab) or a
   plain-text repo path. A customer deployment shouldn't render dead links to somewhere else.
+- **The CLI instructions carry this deployment's `portalUrl`.** The CLI cannot discover its
+  portal — it falls back to `http://localhost:3001` (`packages/cli/src/config.ts`) — so a
+  `helix.json` copied from here without it makes `helix login` dial a portal that was never
+  there, with nothing in the error naming the cause. Both the modal's CLI tab and `SKILL.md`
+  print it, in the file rather than as a `--portal-url` flag because the file persists across
+  `create`/`deploy`/`promote`. It is printed **before** the command block for the same reason:
+  `helix create` reads the slug out of that file. The Deploy modal's one-off reminder command
+  uses the flag instead, since there may be no file there yet.
 - **The install instructions are honest.** They are now the real one-liner —
   `npm i -g @azx-pbc/helix-cli`, published from CI with provenance (ADR-0032). Before that landed
   the modal showed a clone/build/`npm link` sequence rather than a one-liner that fails on first

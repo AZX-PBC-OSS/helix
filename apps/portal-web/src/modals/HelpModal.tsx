@@ -4,7 +4,7 @@ import { renderSkill, SKILL_FILENAME } from "@azx-pbc/deploy-skill";
 import skillTemplate from "@azx-pbc/deploy-skill/SKILL.md?raw";
 import { Icon } from "../components/Icon";
 import { CopyBtn, Eyebrow, Hint } from "../components/primitives";
-import { useDeployment } from "../lib/deployment";
+import { portalOrigin, useDeployment } from "../lib/deployment";
 import { downloadText } from "../lib/download";
 
 /**
@@ -62,13 +62,17 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const { appsHost, devApiBase, devModeAvailable, deployMaxFileMb, deployMaxBundleMb } =
     useDeployment();
+  // The one value here that isn't from GET /api/v1/config, and the one the CLI
+  // can't discover: it defaults to localhost:3001 if nobody tells it.
+  const portal = portalOrigin();
+  const helixJson = helixJsonFor(portal);
 
   // Null until GET /api/v1/config lands — the buttons stay disabled rather than
   // handing an agent a skill with a placeholder host or size cap still in it.
   const skill =
     appsHost && deployMaxFileMb !== null && deployMaxBundleMb !== null
       ? renderSkill(skillTemplate, {
-          portalOrigin: window.location.origin,
+          portalOrigin: portal,
           appsHost,
           devApiBase,
           llmModels: Object.keys(MODEL_PRICING),
@@ -223,8 +227,18 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
                 </Text>
                 <CliBlock>{INSTALL_CMD}</CliBlock>
                 <Text size="sm" c="dark.2" lh={1.6}>
-                  Then, from your app directory — with a{" "}
-                  <Code>{'helix.json: { "slug": "my-app", "dir": "dist" }'}</Code>:
+                  Then put a <Code>helix.json</Code> in your app directory. <Code>portalUrl</Code>{" "}
+                  is what points <Code>helix</Code> at this portal — leave it out and every command
+                  tries a local dev portal instead:
+                </Text>
+                <Group gap={8} wrap="nowrap" align="flex-start">
+                  <Box style={{ flex: 1, minWidth: 0 }}>
+                    <CliBlock>{helixJson}</CliBlock>
+                  </Box>
+                  <CopyBtn value={helixJson} label="Copy" />
+                </Group>
+                <Text size="sm" c="dark.2" lh={1.6}>
+                  Then, from that directory:
                 </Text>
                 <Group gap={8} wrap="nowrap" align="flex-start">
                   <Box style={{ flex: 1, minWidth: 0 }}>
@@ -234,7 +248,8 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
                 </Group>
                 <Text size="xs" c="dark.3">
                   <Code>helix deploy --promote</Code> does both in one step. For CI, set{" "}
-                  <Code>HELIX_TOKEN</Code> instead of running <Code>helix login</Code>.
+                  <Code>HELIX_TOKEN</Code> and <Code>HELIX_PORTAL_URL</Code> instead of running{" "}
+                  <Code>helix login</Code>.
                 </Text>
               </Stack>
             </Tabs.Panel>
@@ -278,6 +293,17 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
  * specifiers, no prepack step), so don't "helpfully" offer that as a fallback.
  */
 const INSTALL_CMD = `npm i -g @azx-pbc/helix-cli`;
+
+/**
+ * `portalUrl` is not optional here, and it comes first in the tab for a reason:
+ * the CLI's own default is `http://localhost:3001`, so instructions that omit it
+ * work on a dev machine and nowhere else. In the file rather than as a
+ * `--portal-url` flag because it persists — `login`, `create`, `deploy` and
+ * `promote` all resolve it the same way, and it is what a real project checks in.
+ * `slug` has to exist before the first command too: `helix create` requires it.
+ */
+const helixJsonFor = (portal: string) =>
+  JSON.stringify({ slug: "my-app", dir: "dist", portalUrl: portal }, null, 2);
 
 const DEPLOY_CMD = `helix login
 helix create --display-name "My App"

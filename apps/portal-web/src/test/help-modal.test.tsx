@@ -93,6 +93,25 @@ describe("HelpModal", () => {
     expect(screen.getByText(/npm i -g @azx-pbc\/helix-cli/)).toBeDefined();
   });
 
+  it("prints a helix.json pointing at this portal, before the commands that need it", async () => {
+    setToken("t");
+    stubApi({ appPublicBase: "https://apps.example.com" });
+    renderModal();
+
+    // The CLI cannot discover its portal: without portalUrl it resolves the
+    // built-in http://localhost:3001, so every command in the block below fails
+    // to connect on any deployed portal. Built from window.location.origin
+    // rather than pinned, since that is exactly where the modal reads it from.
+    const config = await screen.findByText(new RegExp(`"portalUrl": "${window.location.origin}"`));
+    expect(config.textContent).toContain(`"slug": "my-app"`);
+
+    // And it has to come first: `helix create` reads the slug out of the file.
+    const commands = screen.getByText(/helix create --display-name/);
+    expect(
+      config.compareDocumentPosition(commands) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("downloads a skill rendered for this deployment, with no placeholders left", async () => {
     setToken("t");
     stubApi({

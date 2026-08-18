@@ -21,6 +21,14 @@ handled in `packages/cli/src/config.ts` / `args.ts`:
 | build dir | `--dir` | — | `dir` | `dist` |
 | token | `--token` | `HELIX_TOKEN` | — | _(`helix login` cache)_ |
 
+The portal URL is the one setting whose default is a trap: `http://localhost:3001`
+is right only for a portal on the same machine, and nothing about the failure says
+so. Against a deployed portal it must be set — as `portalUrl` in `helix.json` for
+anything persistent, since `login`, `create`, `deploy` and `promote` all resolve it
+the same way. The portal's **How to develop → On your machine** tab prints that
+file with this deployment's URL already in it, and so does the agent skill
+([onboarding.md](./onboarding.md)).
+
 ### Commands (`packages/cli/src/commands.ts`)
 
 ```

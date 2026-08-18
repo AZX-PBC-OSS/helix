@@ -28,11 +28,23 @@ Each setting is resolved **flags → environment → `helix.json` → built-in d
 | Build dir  | `--dir`        | —                  | `dir`            | `dist`                     |
 | Auth token | `--token`      | `HELIX_TOKEN`      | —                | _(`helix login` if unset)_ |
 
-A minimal `helix.json` is just:
+A `helix.json` looks like:
 
 ```json
-{ "slug": "my-app" }
+{ "slug": "my-app", "dir": "dist", "portalUrl": "https://portal.example.com" }
 ```
+
+**`portalUrl` is the one you cannot leave to the default.** `http://localhost:3001`
+is right only for a portal running on your own machine; against a deployed one,
+set `portalUrl` (or `HELIX_PORTAL_URL`, or `--portal-url`) or every command —
+starting with `helix login` — fails to connect to a portal that was never there.
+Your portal prints the exact file to copy under **How to develop → On your
+machine**. The file is the form worth checking in: `login`, `create`, `deploy`
+and `promote` all resolve it the same way, so it is set once.
+
+The repo's `examples/*/helix.json` deliberately omit it — a checked-in portal URL
+would be wrong for every deployment but one — so to deploy an example, add
+`portalUrl` to its file or export `HELIX_PORTAL_URL` first.
 
 `--dir` is resolved **relative to the current working directory**, and so is
 `helix.json` — another reason to run `helix` from the app directory.

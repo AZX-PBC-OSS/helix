@@ -51,8 +51,19 @@ describe("DeployModal", () => {
     render("cost-explorer");
 
     // Both halves of the flow address the app by slug, with nothing to choose.
-    expect(await screen.findByText("helix deploy --slug cost-explorer")).toBeDefined();
+    expect(await screen.findByText(/helix deploy --slug cost-explorer/)).toBeDefined();
     expect(screen.getByText(/Drop your build output folder/i)).toBeDefined();
+  });
+
+  it("points the copied command at this portal, not the CLI default", async () => {
+    setToken("t");
+    stubFetch();
+    render("cost-explorer");
+
+    // Without --portal-url the CLI resolves http://localhost:3001, so a command
+    // copied off a deployed portal fails to connect and does not say why.
+    const cli = await screen.findByText(/helix deploy --slug cost-explorer/);
+    expect(cli.textContent).toContain(`--portal-url ${window.location.origin}`);
   });
 
   it("leads with the upload and puts the CLI under it", async () => {
@@ -63,7 +74,7 @@ describe("DeployModal", () => {
     // Not peers on a tab strip: the upload is the only path that works for
     // someone whose app was built in a browser.
     const drop = await screen.findByText(/Drop your build output folder/i);
-    const cli = screen.getByText("helix deploy --slug cost-explorer");
+    const cli = screen.getByText(/helix deploy --slug cost-explorer/);
     expect(drop.compareDocumentPosition(cli) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryAllByRole("tab")).toEqual([]);
   });
@@ -86,7 +97,7 @@ describe("DeployModal", () => {
     stubFetch();
     render("cost-explorer");
 
-    await screen.findByText("helix deploy --slug cost-explorer");
+    await screen.findByText(/helix deploy --slug cost-explorer/);
     expect(screen.queryByRole("combobox", { name: "App" })).toBeNull();
     expect(screen.queryByRole("radio", { name: /existing app/i })).toBeNull();
     expect(screen.queryByRole("radio", { name: /new app/i })).toBeNull();

@@ -61,6 +61,19 @@ describe("renderSkill", () => {
     expect(out).toContain("helix deploy");
   });
 
+  /**
+   * The CLI cannot discover its portal — it defaults to `http://localhost:3001`,
+   * so a `helix.json` handed to an agent without `portalUrl` produces a login
+   * that fails to connect and does not say why. The template is the only document
+   * in the repo that has always got this right; this is what keeps it that way.
+   */
+  it("gives the helix.json a portalUrl, ahead of the commands that resolve it", () => {
+    const out = renderSkill(TEMPLATE, VARS);
+
+    expect(out).toContain(`"portalUrl": "https://portal.example.com"`);
+    expect(out.indexOf("portalUrl")).toBeLessThan(out.indexOf("helix login"));
+  });
+
   it("passes through an unknown token rather than blanking it", () => {
     expect(renderSkill("keep {{NOT_A_VAR}} intact", VARS)).toBe("keep {{NOT_A_VAR}} intact");
   });

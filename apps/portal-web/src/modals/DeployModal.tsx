@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { Icon } from "../components/Icon";
 import { CopyBtn, Eyebrow, Hint, ToneBadge } from "../components/primitives";
 import { UploadStep } from "../deploy/UploadStep";
+import { portalOrigin } from "../lib/deployment";
 
 /**
  * Deploy = upload a zipped build as a new immutable *preview* version
@@ -45,7 +46,11 @@ export function DeployModal({
   }
 
   if (!slug) return null;
-  const cliCmd = `helix deploy --slug ${slug}`;
+  // `--portal-url` because this is a one-off reminder, not project setup: whoever
+  // copies it may have no `helix.json` yet, and the CLI would otherwise fall back
+  // to its `http://localhost:3001` default. Harmless where the file does set it —
+  // flags win over the file, with the same value.
+  const cliCmd = `helix deploy --slug ${slug} --portal-url ${portalOrigin()}`;
 
   return (
     <Modal
@@ -124,7 +129,10 @@ export function DeployModal({
                 once with <Code>helix login</Code>, then run this from your app&apos;s project root:
               </Text>
               <Box style={{ position: "relative" }}>
-                <Code block style={{ fontSize: 13, paddingRight: 84 }}>
+                {/* Wraps rather than scrolls: with the portal URL on it the command is
+                    longer than the block, and a command whose tail is hidden off-screen
+                    is exactly the failure this block exists to prevent. */}
+                <Code block style={{ fontSize: 13, paddingRight: 84, whiteSpace: "pre-wrap" }}>
                   {cliCmd}
                 </Code>
                 <Box style={{ position: "absolute", top: 6, right: 6 }}>

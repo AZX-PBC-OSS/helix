@@ -83,3 +83,20 @@ export function hostOf(url: string | undefined): string | null {
     return null;
   }
 }
+
+/**
+ * The origin the portal API is on — the one deployment value this SPA may read
+ * off `window.location`, because it is the origin the portal served it from.
+ * Contrast everything above: apps live on a *different* domain whose scheme and
+ * port aren't recoverable from the portal's URL, which is why that has to come
+ * from `GET /api/v1/config`.
+ *
+ * Kept as a named function so the two surfaces that hand out `helix` commands
+ * (`modals/HelpModal.tsx`, `modals/DeployModal.tsx`) can't quietly diverge, and
+ * so it's clear this is not the apps host. It matters because the CLI's built-in
+ * portal URL is `http://localhost:3001` (`packages/cli/src/config.ts`) — any
+ * instruction that omits it works only against a local dev portal.
+ */
+export function portalOrigin(): string {
+  return window.location.origin;
+}
