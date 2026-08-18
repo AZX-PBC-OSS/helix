@@ -118,7 +118,7 @@ export function AccessTab({ app }: { app: App }) {
                 </Button>
               }
             >
-              Changing visibility needs a signed-in actor.
+              You need to be signed in to change visibility.
             </Hint>
           )}
           {passwordActive && authenticated && (
@@ -287,7 +287,7 @@ export function AccessTab({ app }: { app: App }) {
                   </Button>
                 }
               >
-                Lifecycle actions need a signed-in actor.
+                You need to be signed in to archive or unarchive this app.
               </Hint>
             ) : archived ? (
               <Button

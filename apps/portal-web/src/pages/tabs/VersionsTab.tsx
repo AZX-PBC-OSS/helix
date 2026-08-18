@@ -55,8 +55,8 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
               </Button>
             }
           >
-            Promote and rollback need a signed-in actor — every pointer flip is attributed in the
-            audit log.
+            You need to be signed in to promote or roll back — every change is recorded in the audit
+            log against the person who made it.
           </Hint>
         </Box>
       )}

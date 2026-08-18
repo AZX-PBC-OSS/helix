@@ -61,7 +61,7 @@ export function SecretsCard({ app }: { app: App }) {
             </Button>
           }
         >
-          Managing connection secrets needs a signed-in actor.
+          You need to be signed in to manage connection secrets.
         </Hint>
       </Card>
     );

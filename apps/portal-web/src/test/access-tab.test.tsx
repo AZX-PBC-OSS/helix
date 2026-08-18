@@ -77,7 +77,7 @@ describe("AccessTab visibility switcher", () => {
   it("hides switch actions and prompts sign-in when logged out", () => {
     stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
     render(makeApp({ mode: "internal" }));
-    expect(screen.getByText(/Changing visibility needs a signed-in actor/)).toBeDefined();
+    expect(screen.getByText(/You need to be signed in to change visibility/)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Request public access" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Make internal" })).toBeNull();
   });

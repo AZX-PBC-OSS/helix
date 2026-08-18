@@ -85,7 +85,7 @@ export function DeployModal({
             {!authenticated ? (
               <Group justify="space-between">
                 <Text size="sm" c="dark.2">
-                  Uploading needs a signed-in actor.
+                  You need to be signed in to upload a build.
                 </Text>
                 <Button variant="default" onClick={login} disabled={!loginAvailable}>
                   Sign in

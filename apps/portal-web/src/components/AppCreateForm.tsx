@@ -190,7 +190,7 @@ export function AppCreateForm({
       ) : (
         <Group justify="space-between">
           <Text size="sm" c="dark.2">
-            Creating an app needs a signed-in actor.
+            You need to be signed in to create an app.
           </Text>
           <Button variant="default" onClick={login} disabled={!loginAvailable}>
             Sign in

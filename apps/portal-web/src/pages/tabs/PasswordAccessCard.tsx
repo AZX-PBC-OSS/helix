@@ -60,7 +60,7 @@ export function PasswordAccessCard({ app }: { app: App }) {
             </Button>
           }
         >
-          Managing access needs a signed-in actor.
+          You need to be signed in to manage shared-password access.
         </Hint>
       </Card>
     );

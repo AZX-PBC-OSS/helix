@@ -71,7 +71,7 @@ export function DevModeTab({ app }: { app: App }) {
             </Button>
           }
         >
-          Managing dev tokens needs a signed-in actor.
+          You need to be signed in to manage dev tokens.
         </Hint>
       </Card>
     );
