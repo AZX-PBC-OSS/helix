@@ -46,6 +46,13 @@ import { errorDetailOf, type GatewayOutcome, type UsageStore } from "./usage.js"
 const BURST_WINDOW_DIVISOR = 6;
 const BURST_BUDGET_FRACTION = 1 / BURST_WINDOW_DIVISOR;
 
+/**
+ * Ledger `errorDetail` for a call the app abandoned. `GatewayOutcome` has no
+ * `cancelled` member and adding one would migrate an enum shared with the portal
+ * and the DB, so the outcome stays `error` and this marker carries the meaning.
+ */
+const CLIENT_DISCONNECTED = "client_disconnected";
+
 export interface LlmGatewayRuntime {
   config: GatewayConfig;
   registry: RegistryReader;
@@ -187,8 +194,26 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
     }
 
     // Admitted. Abort the upstream if the client goes away.
+    //
+    // Watch the *response*, not the request. `req.raw` emits 'close' when the
+    // request body finishes arriving, which on this route has already happened
+    // before the handler runs (Fastify's JSON parser drained it), so a listener
+    // here was attached after the event and never fired at all — the disconnect
+    // abort below has never actually run. The ServerResponse's 'close' fires when
+    // the connection goes away, and `writableEnded` separates "we finished
+    // answering" from "they hung up". Fastify's own `request.signal` is wired to
+    // the same unguarded `req.on('close')` — do not substitute it.
+    //
+    // `writableEnded`, not `writableFinished`: the two agree on a real socket,
+    // but light-my-request's null socket never settles `writableFinished`, so
+    // under `app.inject()` every ordinary response would look like a hang-up.
     const abort = new AbortController();
-    req.raw.on("close", () => abort.abort());
+    let clientGone = false;
+    reply.raw.on("close", () => {
+      if (reply.raw.writableEnded) return;
+      clientGone = true;
+      abort.abort();
+    });
 
     const startedAt = performance.now();
     let recorded = false;
@@ -277,6 +302,15 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
         codec.endStream(reply);
         await recordOnce(outcomeFor(finalStopReason));
       } catch (err) {
+        // The app hung up: the abort above is what ended this stream, so there is
+        // no upstream failure to describe and no socket left to describe it on.
+        // Meter it as an `error` carrying a distinct detail — `GatewayOutcome` has
+        // no `cancelled` member, and adding one would mean migrating a shared enum
+        // for something the detail already distinguishes.
+        if (clientGone) {
+          await recordOnce("error", { errorDetail: CLIENT_DISCONNECTED });
+          return;
+        }
         await recordOnce("error", { errorDetail: errorDetailOf(err) });
         const { status, code, message, param } = describeError(err, { structured });
         if (!started) {
@@ -310,6 +344,11 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
         usage: finalUsage,
       });
     } catch (err) {
+      // As above: our own abort ended this, not the vendor.
+      if (clientGone) {
+        await recordOnce("error", { errorDetail: CLIENT_DISCONNECTED });
+        return;
+      }
       await recordOnce("error", { errorDetail: errorDetailOf(err) });
       const { status, code, message, param } = describeError(err, { structured });
       // 502 for upstream failures, 400 when the vendor rejected the app's request;
