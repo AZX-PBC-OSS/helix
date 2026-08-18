@@ -52,7 +52,33 @@ describe("DeployModal", () => {
 
     // Both halves of the flow address the app by slug, with nothing to choose.
     expect(await screen.findByText("helix deploy --slug cost-explorer")).toBeDefined();
-    expect(screen.getByRole("tab", { name: /upload zip/i })).toBeDefined();
+    expect(screen.getByText(/Drop your build output folder/i)).toBeDefined();
+  });
+
+  it("leads with the upload and puts the CLI under it", async () => {
+    setToken("t");
+    stubFetch();
+    render("cost-explorer");
+
+    // Not peers on a tab strip: the upload is the only path that works for
+    // someone whose app was built in a browser.
+    const drop = await screen.findByText(/Drop your build output folder/i);
+    const cli = screen.getByText("helix deploy --slug cost-explorer");
+    expect(drop.compareDocumentPosition(cli) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryAllByRole("tab")).toEqual([]);
+  });
+
+  it("titles both sections and says who the CLI is for", async () => {
+    setToken("t");
+    stubFetch();
+    render("cost-explorer");
+
+    expect(await screen.findByText(/Upload a build/i)).toBeDefined();
+    expect(screen.getByText(/Or deploy from the command line/i)).toBeDefined();
+    // A user asked us where their "app directory" was — the section leads with
+    // the audience, then names the folder in the term that audience uses.
+    expect(screen.getByText(/command-line tool for developers/i)).toBeDefined();
+    expect(screen.getByText(/project root/i)).toBeDefined();
   });
 
   it("offers no app picker or create step", async () => {

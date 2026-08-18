@@ -67,9 +67,15 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   creation surface and lives on **My Apps**, in the page header and in the empty state; it
   navigates to the new app's page on success. **Deploy** (`src/modals/DeployModal.tsx`) is opened
   only from an app — its detail header — and takes the slug it ships into, so `openDeploy(slug)`
-  has no untargeted form and the modal has no app picker. It offers the `helix deploy --slug …`
-  command or a drag-and-drop upload that renders the CSP lint warnings inline (see
-  [registry-and-deploys.md](./registry-and-deploys.md)).
+  has no untargeted form and the modal has no app picker. Inside are two titled sections, not a
+  tab strip of equals: **Upload a build** leads, and **Or deploy from the command line** sits
+  under a divider. The ordering follows from who is standing there — a developer using `helix`
+  deploys from a terminal without opening the portal at all, so whoever reaches this modal is
+  overwhelmingly the one who can't: no checkout, no terminal, an app built in a browser. The CLI
+  block is kept as a reference rather than a rival path, and names its audience in the first
+  clause so everyone else can stop reading (back when it was a tab of equal weight, one of them
+  asked us where their "app directory" was). CSP lint warnings render inline on the upload result
+  (see [registry-and-deploys.md](./registry-and-deploys.md)).
 
   Creation must stay reachable **independent of how many apps exist**: it once lived only in the
   deploy picker's `nothingFoundMessage`, so a single registered app hid the only path to a second
@@ -82,7 +88,9 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   `SHOW_VISIBILITY_AT_CREATE`, the render switch, flipped back on when a second mode unlocks.
 
 - **Bundle salvage** (`src/deploy/`, [ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md)) —
-  the deploy modal's upload tab accepts a dropped **build folder** as well as a zip, because
+  the deploy modal's upload section accepts a dropped **build folder** as well as a zip — each
+  with its own click-to-choose link under the dropzone, since drag-and-drop doesn't reach
+  everyone — because
   non-technical users told to "zip the contents of `dist/`" send the whole project, the folder
   wrapped in itself, or a random directory. `archive.ts` (the one `fflate`-aware module) reads
   the drop — listing a zip's central directory without inflating a byte, so a `node_modules`

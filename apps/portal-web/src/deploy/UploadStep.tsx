@@ -163,7 +163,7 @@ export function UploadStep({
           </Text>
         </Stack>
       </Dropzone>
-      <FolderPicker onFiles={onDrop} disabled={reading || upload.isPending || notReady} />
+      <PickLinks onFiles={onDrop} disabled={reading || upload.isPending || notReady} />
       {error && (
         <Alert color="red" title="Couldn't read that upload" icon={<Icon name="alert" size={16} />}>
           {error}
@@ -173,8 +173,13 @@ export function UploadStep({
   );
 }
 
-/** A hidden directory input, for choosing a folder by click (drag covers the rest). */
-function FolderPicker({
+/**
+ * Click-to-choose, for the people drag-and-drop doesn't reach. Both shapes the
+ * dropzone accepts get an equal link: a directory picker and a file picker
+ * filtered to zips. Offering only the folder one stranded anyone who already
+ * has an archive and doesn't want to drag it.
+ */
+function PickLinks({
   onFiles,
   disabled,
 }: {
@@ -183,26 +188,45 @@ function FolderPicker({
 }) {
   return (
     <Text size="xs" c="dark.2" ta="center">
-      or{" "}
-      <Anchor
-        component="label"
-        style={{ cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}
-      >
-        choose a folder
-        <input
-          type="file"
-          hidden
-          disabled={disabled}
-          // Non-standard but widely supported directory-selection attributes.
-          {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-          onChange={(e) => {
-            const files = Array.from(e.currentTarget.files ?? []);
-            if (files.length) onFiles(files);
-            e.currentTarget.value = "";
-          }}
-        />
-      </Anchor>
+      or <PickLink onFiles={onFiles} disabled={disabled} label="choose a folder" directory /> ·{" "}
+      <PickLink onFiles={onFiles} disabled={disabled} label="choose a zip" />
     </Text>
+  );
+}
+
+/** One hidden input behind an anchor — a directory picker, or a zip file picker. */
+function PickLink({
+  onFiles,
+  disabled,
+  label,
+  directory,
+}: {
+  onFiles: (files: File[]) => void;
+  disabled?: boolean;
+  label: string;
+  /** Non-standard but widely supported directory-selection attributes. */
+  directory?: boolean;
+}) {
+  return (
+    <Anchor
+      component="label"
+      style={{ cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}
+    >
+      {label}
+      <input
+        type="file"
+        hidden
+        disabled={disabled}
+        {...(directory
+          ? ({ webkitdirectory: "", directory: "" } as Record<string, string>)
+          : { accept: ".zip,application/zip" })}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          if (files.length) onFiles(files);
+          e.currentTarget.value = "";
+        }}
+      />
+    </Anchor>
   );
 }
 

@@ -75,4 +75,24 @@ describe("UploadStep — folder drop", () => {
     // The dropped project files that aren't the build are shown as dropped.
     expect(screen.getByText(/outside the build/)).toBeTruthy();
   });
+
+  /**
+   * Drag-and-drop takes a folder *or* a zip, but click-to-choose only offered
+   * the folder — so anyone who already had an archive and didn't want to drag
+   * it had no way through. Both shapes now get a link.
+   */
+  it("offers a zip picker beside the folder picker", async () => {
+    stubFetch();
+    renderWithProviders(<UploadStep slug="demo" authenticated onDone={() => {}} />);
+
+    expect(await screen.findByText("choose a folder")).toBeTruthy();
+    expect(screen.getByText("choose a zip")).toBeTruthy();
+
+    const zip = document.querySelector<HTMLInputElement>('input[accept=".zip,application/zip"]');
+    expect(zip).not.toBeNull();
+    // Distinct inputs: the zip one must not carry the directory attributes, or
+    // the browser would ask for a folder either way.
+    expect(zip?.hasAttribute("webkitdirectory")).toBe(false);
+    expect(document.querySelectorAll('input[type="file"]')).toHaveLength(3);
+  });
 });
