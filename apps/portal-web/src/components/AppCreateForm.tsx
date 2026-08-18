@@ -61,6 +61,18 @@ const VISIBILITY_OPTIONS: Array<{
  */
 const UNAVAILABLE_AT_CREATE: readonly VisibilityMode[] = ["group", "password", "public"];
 
+/**
+ * Whether to ask about visibility at all. Off while `internal` is the only
+ * selectable option: a four-row control where three rows are locked reads as a
+ * choice, and offering a choice with one answer is worse than stating the
+ * answer. Flip to `true` when a second mode becomes selectable (see
+ * {@link UNAVAILABLE_AT_CREATE}) and the control returns as it was.
+ *
+ * Typed `boolean` rather than inferred `false` on purpose — it keeps both
+ * branches type-checked, so the hidden control can't rot while it's off.
+ */
+const SHOW_VISIBILITY_AT_CREATE: boolean = false;
+
 export function AppCreateForm({
   onCreated,
   onCancel,
@@ -137,24 +149,32 @@ export function AppCreateForm({
         value={displayName}
         onChange={(e) => setDisplayName(e.currentTarget.value)}
       />
-      <Radio.Group
-        label="Visibility"
-        description="Who can open the app. You can change this later on the app's Access tab."
-        value={mode}
-        onChange={(v) => setMode(v as VisibilityMode)}
-      >
-        <Stack gap={8} mt={8}>
-          {options.map((o) => (
-            <Radio
-              key={o.mode}
-              value={o.mode}
-              label={o.label}
-              description={o.desc}
-              disabled={UNAVAILABLE_AT_CREATE.includes(o.mode)}
-            />
-          ))}
-        </Stack>
-      </Radio.Group>
+      {SHOW_VISIBILITY_AT_CREATE ? (
+        <Radio.Group
+          label="Visibility"
+          description="Who can open the app. You can change this later on the app's Access tab."
+          value={mode}
+          onChange={(v) => setMode(v as VisibilityMode)}
+        >
+          <Stack gap={8} mt={8}>
+            {options.map((o) => (
+              <Radio
+                key={o.mode}
+                value={o.mode}
+                label={o.label}
+                description={o.desc}
+                disabled={UNAVAILABLE_AT_CREATE.includes(o.mode)}
+              />
+            ))}
+          </Stack>
+        </Radio.Group>
+      ) : (
+        // Not a control, but don't leave the app's audience unstated either.
+        <Text size="sm" c="dark.2" lh={1.5}>
+          New apps are <b>Internal</b> by default — anyone who can sign in to your organization can
+          open them. You can change this any time on the app&apos;s Access tab.
+        </Text>
+      )}
       {mode === "group" && (
         <TextInput
           label="Group id"

@@ -84,18 +84,17 @@ afterEach(() => {
 });
 
 describe("AppCreateForm", () => {
-  it("leaves internal as the only selectable visibility", async () => {
+  it("states the visibility instead of asking, while there is one answer", async () => {
     setToken("t");
     stubFetch();
     render();
 
-    const internal = await screen.findByRole("radio", { name: /internal/i });
-    expect(internal.hasAttribute("disabled")).toBe(false);
-
-    for (const name of [/group-restricted/i, /^password/i, /^public/i]) {
-      const radio = await screen.findByRole("radio", { name });
-      expect(radio.hasAttribute("disabled")).toBe(true);
-    }
+    // A control with one selectable row reads as a choice it isn't, so the form
+    // says what the app will be and where to change it — no radios at all.
+    expect(await screen.findByText(/Internal/)).toBeDefined();
+    expect(await screen.findByText(/change this any time on the app's Access tab/)).toBeDefined();
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.queryAllByRole("radio")).toEqual([]);
   });
 
   it("creates internal apps", async () => {
@@ -114,12 +113,14 @@ describe("AppCreateForm", () => {
     );
   });
 
-  it("keeps the group id field out of the way while group is unavailable", async () => {
+  it("asks for nothing beyond the subdomain and display name", async () => {
     setToken("t");
     stubFetch();
     render();
 
-    await screen.findByRole("radio", { name: /group-restricted/i });
+    await screen.findByRole("textbox", { name: /subdomain/i });
+    expect(screen.getAllByRole("textbox")).toHaveLength(2);
+    // Group is the mode most likely to creep back in ahead of its gate.
     expect(screen.queryByRole("textbox", { name: /group id/i })).toBeNull();
   });
 });

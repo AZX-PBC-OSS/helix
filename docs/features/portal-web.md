@@ -74,9 +74,12 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   Creation must stay reachable **independent of how many apps exist**: it once lived only in the
   deploy picker's `nothingFoundMessage`, so a single registered app hid the only path to a second
   one. That guarantee now rests on the unconditional My Apps button, and `apps-list.test.tsx`
-  holds the line. Visibility at create is `internal` only — `password`/`public` are deferred and
-  additionally gated on deployment policy, and `group` is listed-but-disabled until the edge's
-  directory-group check exists (`UNAVAILABLE_AT_CREATE` in `AppCreateForm.tsx`).
+  holds the line. Visibility at create is `internal` only, and the form no longer **asks** — a
+  control whose every other row is locked reads as a choice it isn't, so it states what the app
+  will be and points at the Access tab. Two constants in `AppCreateForm.tsx` govern this:
+  `UNAVAILABLE_AT_CREATE` (which modes are locked — `password`/`public` are deferred and
+  additionally gated on deployment policy, `group` waits on the edge's directory-group check) and
+  `SHOW_VISIBILITY_AT_CREATE`, the render switch, flipped back on when a second mode unlocks.
 
 - **Bundle salvage** (`src/deploy/`, [ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md)) —
   the deploy modal's upload tab accepts a dropped **build folder** as well as a zip, because
