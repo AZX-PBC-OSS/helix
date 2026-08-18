@@ -5,6 +5,7 @@ import { renderWithProviders } from "./render";
 import { AuthProvider } from "../auth/AuthProvider";
 import { RequireAdmin, RequireAuth } from "../auth/guards";
 import { Shell } from "../components/Shell";
+import { HelpProvider } from "../modals/HelpContext";
 import { setToken, clearToken } from "../auth/tokenStore";
 
 /**
@@ -135,7 +136,9 @@ describe("Shell admin nav", () => {
   function renderShell() {
     return renderWithProviders(
       <AuthProvider>
-        <Shell>content</Shell>
+        <HelpProvider>
+          <Shell>content</Shell>
+        </HelpProvider>
       </AuthProvider>,
     );
   }

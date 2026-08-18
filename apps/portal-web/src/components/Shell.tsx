@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { NavLink as RouterNavLink, useLocation } from "react-router";
 import {
   AppShell,
@@ -19,7 +19,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { Icon, type IconName } from "./Icon";
 import { Logo } from "./Logo";
 import { Eyebrow, ToneBadge } from "./primitives";
-import { HelpModal } from "../modals/HelpModal";
+import { useHelp } from "../modals/HelpContext";
 
 /** App chrome: sidebar nav (Workspace / Admin), onboarding, live health. */
 
@@ -175,7 +175,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const { isAdmin } = useAuth();
   const apps = useQuery(appsQuery);
   const liveCount = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
-  const [helpOpen, setHelpOpen] = useState(false);
+  const { openHelp } = useHelp();
 
   return (
     <AppShell navbar={{ width: 248, breakpoint: "xs" }} padding={0}>
@@ -214,7 +214,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <Button
             variant="default"
             leftSection={<Icon name="book" size={15} />}
-            onClick={() => setHelpOpen(true)}
+            onClick={openHelp}
             fullWidth
             mb={12}
             styles={{ label: { flex: 1, textAlign: "left" } }}
@@ -233,8 +233,6 @@ export function Shell({ children }: { children: ReactNode }) {
           <UserChip />
         </Box>
       </AppShell.Navbar>
-
-      <HelpModal opened={helpOpen} onClose={() => setHelpOpen(false)} />
 
       <AppShell.Main style={{ position: "relative", zIndex: 1 }}>
         <ScrollArea h="100vh" type="auto">

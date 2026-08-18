@@ -1,11 +1,12 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { App } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { AppsListPage } from "../pages/AppsListPage";
 import { AuthProvider } from "../auth/AuthProvider";
 import { DeployProvider } from "../modals/DeployContext";
+import { HelpProvider } from "../modals/HelpContext";
 
 /**
  * These deliberately use a non-dev domain everywhere. The bug this guards is a
@@ -66,7 +67,9 @@ function render() {
   renderWithProviders(
     <AuthProvider>
       <DeployProvider>
-        <AppsListPage />
+        <HelpProvider>
+          <AppsListPage />
+        </HelpProvider>
       </DeployProvider>
     </AuthProvider>,
   );
@@ -150,5 +153,57 @@ describe("AppsListPage", () => {
 
     await screen.findByText("Cost Explorer");
     expect(screen.queryByRole("button", { name: /deploy/i })).toBeNull();
+  });
+
+  /**
+   * The agent handoff replaced four stat cards, and unconditionally: the skill is
+   * re-copied whenever you start an app or a fresh agent session, so it is not
+   * first-run content that earns its place only on an empty registry.
+   */
+  describe("agent handoff", () => {
+    // A current portal always sends the size caps; the skill can't render without
+    // them, so a config missing them is a *disabled* copy button, not a default.
+    const FULL_CONFIG = { appPublicBase: APPS_BASE, deployMaxFileMb: 12, deployMaxBundleMb: 60 };
+
+    it("hands out the skill with apps already in the registry", async () => {
+      stubFetch(APPS, FULL_CONFIG);
+      render();
+
+      await screen.findByText("Cost Explorer");
+      const copy = await screen.findByRole("button", { name: /copy agent instructions/i });
+      await waitFor(() => expect(copy).toHaveProperty("disabled", false));
+    });
+
+    it("hands out the same skill on an empty registry", async () => {
+      stubFetch([], FULL_CONFIG);
+      render();
+
+      await screen.findByText("No apps yet");
+      const copy = await screen.findByRole("button", { name: /copy agent instructions/i });
+      await waitFor(() => expect(copy).toHaveProperty("disabled", false));
+    });
+
+    /**
+     * Rendered without the deployment config the skill carries `{{PLACEHOLDER}}`
+     * hosts and no size caps, and what leaves this button is acted on directly by
+     * a coding agent — so it stays disabled rather than handing over a guess. An
+     * older portal that omits the caps lands in the same state.
+     */
+    it("withholds the skill until the deployment config arrives", async () => {
+      stubFetch(APPS, "pending");
+      render();
+
+      const copy = await screen.findByRole("button", { name: /copy agent instructions/i });
+      expect(copy).toHaveProperty("disabled", true);
+    });
+
+    it("opens the onboarding modal without a trip to the sidebar", async () => {
+      stubFetch(APPS, FULL_CONFIG);
+      render();
+
+      expect(screen.queryByText("The four steps")).toBeNull();
+      await userEvent.click(await screen.findByRole("button", { name: /how to develop/i }));
+      expect(await screen.findByText("The four steps")).toBeDefined();
+    });
   });
 });

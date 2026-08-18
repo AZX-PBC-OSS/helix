@@ -305,11 +305,14 @@ export function CopyBtn({
   label,
   size = "xs",
   variant = "default",
+  color,
 }: {
   value: string;
   label: string;
   size?: string;
   variant?: string;
+  /** Off-primary hue, for a copy that shouldn't compete with a nearby orange CTA. */
+  color?: string;
 }) {
   return (
     <CopyButton value={value}>
@@ -317,6 +320,7 @@ export function CopyBtn({
         <Button
           variant={variant}
           size={size}
+          color={color}
           onClick={copy}
           leftSection={<Icon name={copied ? "check" : "copy"} size={12} />}
         >

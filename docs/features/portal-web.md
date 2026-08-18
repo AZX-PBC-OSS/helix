@@ -26,7 +26,8 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 
 ### Routes (all real, all wired)
 
-- **My Apps** (`/`, `AppsListPage`) — `GET /api/v1/apps` grid + create.
+- **My Apps** (`/`, `AppsListPage`) — `GET /api/v1/apps` grid + create, under a band handing the
+  agent skill straight over (see [Onboarding](#onboarding-srcmodalshelpmodaltsx)).
 - **App detail** (`/apps/:slug`, `AppDetailPage`) with tabs:
   - **Overview** — metadata, live + preview versions, deploy/rollback actions.
   - **Versions** — history with promote/rollback (the live version lifecycle).
@@ -115,11 +116,18 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 
 ### Onboarding (`src/modals/HelpModal.tsx`)
 
-A **How to develop** button in the sidebar footer opens a modal summarising the platform for a
-newcomer — what a Helix app is, the four steps from empty account to live app, and a tab pair for
+A **How to develop** button — in the sidebar footer, and on the My Apps handoff band — opens a
+modal summarising the platform for a newcomer — what a Helix app is, the four steps from empty account to live app, and a tab pair for
 the two ways to build (browser builder via the dev gateway, or the `helix` CLI). Its **Copy** /
 **Download** buttons hand out `packages/deploy-skill/SKILL.md`, rendered with this deployment's
 hostnames, for a coding agent to load.
+
+`lib/skill.ts` (`useRenderedSkill`) does that rendering for both surfaces, and owns the rule that
+matters: the skill is `null` — and every button offering it disabled — until `GET /api/v1/config`
+lands, because a skill with a `{{PLACEHOLDER}}` host in it is worse for an agent than no skill.
+The band on **My Apps** replaced four stat cards counting apps by state; the skill is re-copied
+every time someone starts an app or a fresh agent session, so it earns a permanent place there
+where a first-run-only nudge would not. Open state for the modal lives on `modals/HelpContext.tsx`.
 
 The modal is the summary and `SKILL.md` is the reference — keep long-form content in the skill so
 the two can't tell different stories. The skill is imported with Vite's `?raw` (bundled, not

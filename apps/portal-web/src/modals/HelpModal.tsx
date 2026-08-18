@@ -1,11 +1,10 @@
 import { Box, Button, Code, Divider, Group, List, Modal, Stack, Tabs, Text } from "@mantine/core";
-import { MODEL_PRICING } from "@azx-pbc/shared";
-import { renderSkill, SKILL_FILENAME } from "@azx-pbc/deploy-skill";
-import skillTemplate from "@azx-pbc/deploy-skill/SKILL.md?raw";
+import { SKILL_FILENAME } from "@azx-pbc/deploy-skill";
 import { Icon } from "../components/Icon";
 import { CopyBtn, Eyebrow, Hint } from "../components/primitives";
 import { portalOrigin, useDeployment } from "../lib/deployment";
 import { downloadText } from "../lib/download";
+import { useRenderedSkill } from "../lib/skill";
 
 /**
  * The onboarding surface: how to go from an account to a deployed app, for the
@@ -60,8 +59,7 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 }
 
 export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
-  const { appsHost, devApiBase, devModeAvailable, deployMaxFileMb, deployMaxBundleMb } =
-    useDeployment();
+  const { appsHost, devApiBase, devModeAvailable } = useDeployment();
   // The one value here that isn't from GET /api/v1/config, and the one the CLI
   // can't discover: it defaults to localhost:3001 if nobody tells it.
   const portal = portalOrigin();
@@ -69,17 +67,7 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
 
   // Null until GET /api/v1/config lands — the buttons stay disabled rather than
   // handing an agent a skill with a placeholder host or size cap still in it.
-  const skill =
-    appsHost && deployMaxFileMb !== null && deployMaxBundleMb !== null
-      ? renderSkill(skillTemplate, {
-          portalOrigin: portal,
-          appsHost,
-          devApiBase,
-          llmModels: Object.keys(MODEL_PRICING),
-          maxFileMb: deployMaxFileMb,
-          maxBundleMb: deployMaxBundleMb,
-        })
-      : null;
+  const skill = useRenderedSkill();
 
   return (
     <Modal
@@ -121,7 +109,13 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
           </Text>
           <Group gap={8}>
             {skill ? (
-              <CopyBtn value={skill} label="Copy agent instructions" size="sm" variant="filled" />
+              <CopyBtn
+                value={skill}
+                label="Copy agent instructions"
+                size="sm"
+                variant="filled"
+                color="accent"
+              />
             ) : (
               <Button size="sm" disabled leftSection={<Icon name="copy" size={13} />}>
                 Copy agent instructions

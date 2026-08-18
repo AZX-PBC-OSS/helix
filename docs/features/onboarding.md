@@ -9,7 +9,8 @@ where people actually are. Two pieces:
   for a human, reachable from the sidebar on every screen.
 - **`packages/deploy-skill`** — the same story in full, as a `SKILL.md` a coding agent can load,
   handed out from that modal by **Copy** or **Download** with this deployment's real hostnames
-  already substituted in.
+  already substituted in — and, since it is the thing people actually come for, from a band on
+  **My Apps** without opening the modal at all.
 
 The platform's documentation is extensive and all of it lives in the repo. Someone building an
 app in a browser IDE will never see it. This is the surface that closes that gap.
@@ -19,8 +20,9 @@ app in a browser IDE will never see it. This is the surface that closes that gap
 ### The modal
 
 `apps/portal-web/src/modals/HelpModal.tsx`, opened from a **How to develop** button in the
-sidebar footer (`components/Shell.tsx`, local `useState` — the sidebar is the only entry point
-today; a second one would justify a provider like `modals/DeployContext.tsx`).
+sidebar footer (`components/Shell.tsx`) or from the My Apps handoff band. Two entry points, so
+the open state sits on `modals/HelpContext.tsx` — a provider mirroring `modals/DeployContext.tsx`,
+mounted above `Shell` in `App.tsx`.
 
 It covers, in order: what a Helix app is (static frontend, gateway, manifest), the copy/download
 buttons, the four steps (create → grant capabilities → build → deploy & promote), then a tab pair
@@ -88,5 +90,7 @@ succeed with a 200 and download the app shell. Nothing to get wrong if there's n
   find-and-replace the skill could carry, per [fetch-proxy design §3.1](../design/fetch-proxy.md).
 - **Serving the skill over HTTP** — an agent can't `curl` it today; it comes out of the browser.
   A `GET /api/v1/skill` reusing `renderSkill()` is the obvious addition if that's wanted.
-- **A first-run nudge** — the guide is discoverable but passive; an empty **My Apps** list is the
-  natural place to point at it.
+- **Branching the handoff on browser-vs-agent** — the band pitches the skill to everyone. Someone
+  who has said they build in a browser IDE would be better served leading with the dev gateway.
+- **Deploying an example in one click** — `examples/` is the obvious "start from something that
+  works", but nothing serves those bundles to the SPA today, so the guide can only name them.

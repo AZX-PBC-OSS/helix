@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Center,
+  Code,
   Group,
   Loader,
   SegmentedControl,
@@ -19,10 +20,10 @@ import { appsQuery, versionsQuery } from "../api/queries";
 import { Icon } from "../components/Icon";
 import { Sparkline } from "../components/charts";
 import {
+  CopyBtn,
   Eyebrow,
   Hint,
   PageHead,
-  Stat,
   StatusLine,
   ToneBadge,
   VisibilityBadge,
@@ -31,6 +32,8 @@ import { timeAgo } from "../lib/format";
 import { useDeployment } from "../lib/deployment";
 import { appStatus, awaitingPromote, deployCadence, liveVersion } from "../lib/appStatus";
 import { useDeploy } from "../modals/DeployContext";
+import { useHelp } from "../modals/HelpContext";
+import { useRenderedSkill } from "../lib/skill";
 
 function AppCard({ app }: { app: App }) {
   const { hostFor } = useDeployment();
@@ -118,6 +121,76 @@ function AppCard({ app }: { app: App }) {
   );
 }
 
+/**
+ * Hand the agent the instructions, from the screen it starts on.
+ *
+ * Unconditional, and it replaced four stat cards counting apps by state. Those
+ * were a dashboard for a workspace that mostly has three apps in it, and at zero
+ * apps they were four zeroes greeting a first-time user. This is the trade: the
+ * skill is the highest-value thing the portal hands out, it was one click deep
+ * behind the sidebar's **How to develop**, and it is not first-run content —
+ * you re-copy it whenever you start an app or a fresh agent session, which is
+ * exactly when you are standing here.
+ *
+ * The pitch is a one-line version of the modal's own callout
+ * (`modals/HelpModal.tsx`); keep the two saying the same thing. Creating an app
+ * deliberately isn't here — the page header owns that, a few pixels up.
+ */
+function AgentHandoff() {
+  const { openHelp } = useHelp();
+  const skill = useRenderedSkill();
+
+  return (
+    <Card
+      mb={24}
+      p="14px 18px"
+      style={{
+        border: "1px solid var(--az-line-2)",
+        background: "color-mix(in srgb, var(--az-acc) 6%, transparent)",
+      }}
+    >
+      <Group justify="space-between" align="center" gap={16} wrap="wrap">
+        <Box style={{ minWidth: 260, flex: 1 }}>
+          <Eyebrow mb={4}>Building with an AI agent?</Eyebrow>
+          <Text size="sm" c="dark.2" lh={1.5}>
+            Hand it this deployment&apos;s instructions — the capability manifest, the{" "}
+            <Code>/_api/*</Code> gateway, the CSP to build within, and the deploy flow, with real
+            hostnames already filled in.
+          </Text>
+        </Box>
+        <Group gap={8} wrap="nowrap">
+          {/* Cyan, not the primary orange: the page header's Create app sits a few
+              pixels above, and two filled CTAs in the same hue read as one choice
+              made twice. Handing over the skill is the accent family's job — the
+              same hue this card is tinted with. */}
+          {/* Disabled, never a half-rendered skill, until GET /api/v1/config lands. */}
+          {skill ? (
+            <CopyBtn
+              value={skill}
+              label="Copy agent instructions"
+              size="sm"
+              variant="filled"
+              color="accent"
+            />
+          ) : (
+            <Button size="sm" disabled leftSection={<Icon name="copy" size={13} />}>
+              Copy agent instructions
+            </Button>
+          )}
+          <Button
+            variant="default"
+            size="sm"
+            leftSection={<Icon name="book" size={14} />}
+            onClick={openHelp}
+          >
+            How to develop
+          </Button>
+        </Group>
+      </Group>
+    </Card>
+  );
+}
+
 type Filter = "all" | "live" | "preview" | "archived";
 
 export function AppsListPage() {
@@ -166,32 +239,7 @@ export function AppsListPage() {
         }
       />
 
-      <SimpleGrid cols={{ base: 2, md: 4 }} spacing={18} mb={24} className="az-stagger">
-        <Card>
-          <Stat icon="grid" label="Apps" value={counts.all} sub={`${counts.live} live`} />
-        </Card>
-        <Card>
-          <Stat
-            icon="dot"
-            label="Live"
-            value={counts.live}
-            tone="var(--az-live)"
-            sub="serving traffic"
-          />
-        </Card>
-        <Card>
-          <Stat
-            icon="layers"
-            label="Preview only"
-            value={counts.preview}
-            tone="var(--az-violet)"
-            sub="not yet promoted"
-          />
-        </Card>
-        <Card>
-          <Stat icon="clock" label="Archived" value={counts.archived} sub="410 + Clear-Site-Data" />
-        </Card>
-      </SimpleGrid>
+      <AgentHandoff />
 
       <Group mb={18} gap={10}>
         <SegmentedControl

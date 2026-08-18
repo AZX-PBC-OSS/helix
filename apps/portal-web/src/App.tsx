@@ -5,6 +5,7 @@ import { CallbackPage } from "./auth/CallbackPage";
 import { RequireAdmin, RequireAuth } from "./auth/guards";
 import { Shell } from "./components/Shell";
 import { DeployProvider } from "./modals/DeployContext";
+import { HelpProvider } from "./modals/HelpContext";
 import { AppsListPage } from "./pages/AppsListPage";
 import { AppDetailPage } from "./pages/AppDetailPage";
 import { UsagePage } from "./pages/UsagePage";
@@ -48,9 +49,11 @@ export function App() {
           path="*"
           element={
             <DeployProvider>
-              <RequireAuth>
-                <Portal />
-              </RequireAuth>
+              <HelpProvider>
+                <RequireAuth>
+                  <Portal />
+                </RequireAuth>
+              </HelpProvider>
             </DeployProvider>
           }
         />

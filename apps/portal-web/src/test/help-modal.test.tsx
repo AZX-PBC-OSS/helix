@@ -6,6 +6,7 @@ import { AuthProvider } from "../auth/AuthProvider";
 import { setToken, clearToken } from "../auth/tokenStore";
 import { Shell } from "../components/Shell";
 import { HelpModal } from "../modals/HelpModal";
+import { HelpProvider } from "../modals/HelpContext";
 
 /**
  * The onboarding modal is the one place the platform explains itself, and what
@@ -59,7 +60,9 @@ describe("HelpModal", () => {
     stubApi({ appPublicBase: "https://apps.example.com" });
     renderWithProviders(
       <AuthProvider>
-        <Shell>content</Shell>
+        <HelpProvider>
+          <Shell>content</Shell>
+        </HelpProvider>
       </AuthProvider>,
     );
 
