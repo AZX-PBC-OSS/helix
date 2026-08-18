@@ -202,10 +202,12 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     if (result.etag) reply.header("etag", result.etag);
     if (result.lastModified) reply.header("last-modified", result.lastModified);
 
-    // Stop pulling from Blob if the client goes away mid-stream.
-    req.raw.on("close", () => {
-      if (req.raw.destroyed && result.kind === "found") result.body.destroy();
-    });
+    // No hand-rolled teardown here: Fastify's `sendStream` wires `eos(res)` and
+    // destroys the payload itself if the client goes away mid-stream, so pulling
+    // from Blob already stops. The listener that used to sit here keyed off
+    // `req.raw` 'close' with a `req.raw.destroyed` guard that is always true
+    // inside that listener — the same "close means disconnect" misreading that
+    // broke the fetch-proxy for every body-bearing method.
 
     // Fastify pipes the stream — assets are never buffered (project plan §1).
     await reply.send(result.body);
