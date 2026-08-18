@@ -166,8 +166,23 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       rt.instructionKey,
     );
 
+    // Abort the egress call if the app goes away — but watch the *response*, not
+    // the request. `req.raw` emits 'close' when the request body finishes
+    // arriving (the ended stream auto-destroys), which for a proxy that drains
+    // `req.raw` itself is normal completion, not a disconnect: watching it
+    // aborted every POST/PUT/PATCH/DELETE the moment its body landed, long
+    // before egress answered. The ServerResponse's 'close' fires when the
+    // connection actually goes away, and `writableEnded` separates "we
+    // finished answering" from "they hung up". Fastify's own `request.signal` is
+    // wired to the same unguarded `req.on('close')` — do not substitute it.
+    //
+    // `writableEnded`, not `writableFinished`: the two agree on a real socket,
+    // but light-my-request's null socket never settles `writableFinished`, so
+    // under `app.inject()` every ordinary response would look like a hang-up.
     const abort = new AbortController();
-    req.raw.on("close", () => abort.abort());
+    reply.raw.on("close", () => {
+      if (!reply.raw.writableEnded) abort.abort();
+    });
 
     // Count the request bytes forwarded to egress: a chunked / CL-absent /
     // lying-CL upload can't stream past the cap uncounted. A trip destroys
