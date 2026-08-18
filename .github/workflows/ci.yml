@@ -4,6 +4,9 @@ name: CI
 # format:check, tests) against live Postgres + Azurite, then builds the three
 # app images and publishes them to the GitHub Container Registry (GHCR).
 #
+# The `audit` job runs alongside `check` and is a REPORT, never a gate — it has
+# no `needs`, nothing needs it, and it cannot fail. See its comment below.
+#
 # The `check` job reproduces the dev-container environment (.devcontainer/
 # docker-compose.yml): the same least-privilege Postgres role split, an Azurite
 # blob emulator, and the same (dev-only, well-known) env values. `db` and
@@ -142,6 +145,52 @@ jobs:
         # The script runs every step even if an earlier one fails, then exits
         # non-zero if any failed — so one run surfaces the full picture.
         run: ./check-and-lint.sh
+
+  audit:
+    name: dependency advisories (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Deliberately gates NOTHING: this job declares no `needs`, no other job
+    # needs it, and scripts/audit-report.mjs always exits 0. Do not "fix" that
+    # by making it fail, and do not add it to the required status checks.
+    #
+    # Why: advisories are published by third parties on their own schedule, with
+    # no relation to the commit under test. A gate here means an overnight CVE
+    # against a dependency we are ALREADY running in production stops feature
+    # work, stops rollbacks, and stops the very deploy that would carry the fix
+    # — at the moment we can least afford it, and having bought nothing, since
+    # the vulnerable code is deployed either way. `pnpm audit` is also a live
+    # network call to the registry, so gating on it makes a registry blip a
+    # build outage. Report loudly, block nothing.
+    #
+    # Continuous monitoring is Dependabot alerts' job (a repo setting, not CI —
+    # it rescans when the advisory database changes rather than when we push).
+    # This job exists for the dev loop: the report lands on the run page you are
+    # already looking at, and `pnpm audit:report` gives you the same table
+    # locally before you push.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          # No `cache: pnpm` on purpose — see the next step. There is no install
+          # to speed up, so restoring a store would be pure overhead.
+
+      - name: Report advisories
+        # No `pnpm install`: `pnpm audit` resolves entirely from pnpm-lock.yaml
+        # plus the workspace manifests, which is what keeps this job ~15s rather
+        # than the several minutes a full install costs.
+        #
+        # Writes the table to $GITHUB_STEP_SUMMARY (the run page) and leaves a
+        # ::warning:: annotation with the counts. A warning, not an error: it is
+        # visible on the run without colouring it red.
+        run: node scripts/audit-report.mjs
 
   package:
     name: pack helix CLI

@@ -35,6 +35,7 @@ Constraints from that work that outlive any status line:
 | `pnpm --filter @azx-pbc/portal db:migrate`        | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                                                                                                  |
 | `pnpm --filter @azx-pbc/helix-cli helix -- <cmd>` | Run the `helix` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`). Runs in `packages/cli`; for real deploys run it from an app dir instead — see `packages/cli/README.md` |
 | `./check-and-lint.sh`                             | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first)                                                                                  |
+| `pnpm audit:report`                               | Dependency advisories as a readable table — the same report CI posts to its run summary. Reports only: advisories never gate a build (see the `audit` job in CI)                    |
 
 The portal API lives under `/api/v1`. Mutating routes take a bearer token through the verifier chain — an IdP-minted JWT (`helix login`) or `$PORTAL_DEV_TOKEN` (CI/dev fallback); reads now require the same token (only `/health` + the auth-config bootstrap stay public). Deploys land as `preview` versions — promotion to live is a separate step (architecture §5.1).
 
