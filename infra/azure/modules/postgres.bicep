@@ -40,12 +40,12 @@ param skuName string = 'Standard_D2ds_v5'
 param skuTier string = 'GeneralPurpose'
 
 @description('PostgreSQL major version.')
-param postgresVersion string = '16'
+param postgresVersion string = '18'
 
 @description('Storage size in GB.')
 param storageSizeGB int = 32
 
-resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
+resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
   name: serverName
   location: location
   sku: {
@@ -73,7 +73,7 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   }
 }
 
-resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
+resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-01' = {
   parent: server
   name: databaseName
   properties: {
