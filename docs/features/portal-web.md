@@ -84,7 +84,10 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   control whose every other row is locked reads as a choice it isn't, so it states what the app
   will be and points at the Access tab. Two constants in `AppCreateForm.tsx` govern this:
   `UNAVAILABLE_AT_CREATE` (which modes are locked — `password`/`public` are deferred and
-  additionally gated on deployment policy, `group` waits on the edge's directory-group check) and
+  additionally gated on deployment policy; `group` is gated not on a missing check but on Entra
+  configuration, since the deployed install points `EDGE_OIDC_GROUPS_CLAIM` at App Roles and no
+  per-group role is defined yet — see the [Entra runbook](../runbooks/entra-app-registration.md))
+  and
   `SHOW_VISIBILITY_AT_CREATE`, the render switch, flipped back on when a second mode unlocks.
 
 - **Bundle salvage** (`src/deploy/`, [ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md)) —

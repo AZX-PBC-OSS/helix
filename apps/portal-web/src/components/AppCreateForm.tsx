@@ -52,12 +52,20 @@ const VISIBILITY_OPTIONS: Array<{
  * `password`/`public` are deferred features whose *rendering* is already gated
  * on deployment policy (`allowPasswordApps`/`allowPublicApps` below) — they're
  * listed-but-locked so the set of surfaces an app can have stays legible.
- * `group` is here because the edge's directory-group check isn't implemented,
- * so offering it would register apps against a gate that never runs. It has no
- * deployment flag and so always renders, disabled. Re-enabling is a one-line
- * removal from this list — the group id field and its validation are kept below
- * for exactly that reason. A follow-up covers the other screens that still
- * offer `group` (the app's Access tab); this list only governs create.
+ *
+ * `group` is a different case, and not a missing check: `visibilityAllows`
+ * (`apps/edge/src/auth/validate.ts`) implements it, and dev-idp exercises it
+ * locally and in CI. What's missing is the claim feeding it. The deployed Entra
+ * install sets `EDGE_OIDC_GROUPS_CLAIM=roles`, so the gate reads **App Roles**,
+ * and using it for real means defining an app role per group in Entra and
+ * assigning members — see `docs/runbooks/entra-app-registration.md`. Until
+ * someone does that, a `group` app denies everyone, so we don't offer the mode
+ * at create. It has no deployment flag and so always renders, disabled.
+ *
+ * Re-enabling is a one-line removal from this list — the group id field and its
+ * validation are kept below for exactly that reason. A follow-up covers the
+ * other screens that still offer `group` (the app's Access tab); this list only
+ * governs create.
  */
 const UNAVAILABLE_AT_CREATE: readonly VisibilityMode[] = ["group", "password", "public"];
 

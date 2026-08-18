@@ -64,8 +64,8 @@ behaviors:
   skip the gate, while every other mode goes through it. This is the single identity seam the
   gateway keys off (see [llm-gateway.md](./llm-gateway.md), [app-data-gateway.md](./app-data-gateway.md)).
 - **`public` visibility — anonymous tier.** Going public is a high-risk change that routes through
-  the approval queue (`docs/design/approvals.md` §6.3); the portal **Settings → Visibility** card
-  is the real switcher for it (reductions apply immediately, public opens a request). At the
+  the approval queue (`docs/design/approvals.md` §6.3); the **Access** tab on the app's portal
+  page is the real switcher for it (reductions apply immediately, public opens a request). At the
   gateway the anonymous tier is **per-IP rate-limited** — `apps/edge/src/gateway/ipRateLimiter.ts`,
   a fixed-window limiter over the shared `CounterStore` (`counterStore.ts`) it shares with
   `loginThrottle.ts`, caps every anonymous `/_api/*`
@@ -208,8 +208,15 @@ not merely a nice-to-have.
 - **Per-app RBAC** on the portal side (v1). The BOLA half is done (`ownsApp`); what's left is
   owner/editor/viewer roles and owner-scoped **reads**, which are still authenticated-only
   (ADR-0007, issue #9).
-- Per-app **group visibility** (`visibility: group`) is built but deferred in practice until a
-  pilot app needs it; pilot apps use `internal`/`password`.
+- Per-app **group visibility** (`visibility: group`). The gate is built — `visibilityAllows`
+  checks the session's group snapshot, and `apps/dev-idp` exercises it locally and in CI — but it
+  does not work on the deployed platform, and the missing piece is configuration rather than
+  code. Entra emits no `groups` delegated claim, so the install points `EDGE_OIDC_GROUPS_CLAIM`
+  at **App Roles**; using group visibility for real means defining an app role per group and
+  assigning members ([Entra runbook](../runbooks/entra-app-registration.md)). Until someone does,
+  a `group` app denies everyone, so the portal's create form no longer offers the mode
+  (`UNAVAILABLE_AT_CREATE` in `AppCreateForm.tsx`) — the Access tab still does, which a follow-up
+  covers. Pilot apps use `internal`/`password`.
 
 **Since shipped — real Entra registration.** Production now authenticates against a real Entra
 app registration; the swap was config-only (issuer/client), exactly as designed, and the local

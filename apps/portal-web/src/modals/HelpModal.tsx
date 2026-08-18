@@ -141,8 +141,8 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
           <Eyebrow mb={12}>The four steps</Eyebrow>
           <Stack gap={13}>
             <Step n={1} title="Create the app">
-              From <b>Deploy app → Create</b>, or <Code>helix create</Code>. You get a slug; the app
-              can exist with no code in it at all.
+              <b>Create app</b> on <b>My Apps</b>, or <Code>helix create</Code>. You get a slug; the
+              app can exist with no code in it at all.
             </Step>
             <Step n={2} title="Grant its capabilities">
               On the app&apos;s <b>Capabilities</b> tab: which models it may call and a daily dollar

@@ -129,7 +129,7 @@ you did not declare returns `403` — that is the expected failure, not a bug.
 ```jsonc
 {
   "app": "my-app", // the slug
-  "visibility": { "mode": "internal" }, // internal | { mode: "group", groupId } | password | public
+  "visibility": { "mode": "internal" }, // internal | password | public ("group" needs Entra setup — ask first)
   "capabilities": {
     "llm": {
       "models": ["claude-haiku-4-5"], // exact ids; anything else is 403 model_not_allowed
