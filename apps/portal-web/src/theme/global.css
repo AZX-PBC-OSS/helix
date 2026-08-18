@@ -154,6 +154,19 @@
   color: var(--mantine-color-dark-2);
 }
 
+/* The disclosure chevron is the same cyan chevR the eyebrow uses, so an
+   accordion row reads as a section header that happens to open: pointing right
+   when closed, down when open. Mantine's default 180deg flip would point it
+   back at its own label. Wins on specificity ([data-rotate]) and, for the
+   margin, on source order — global.css is imported after Mantine's styles. */
+.az-accordion-chevron {
+  color: var(--az-acc);
+  margin-inline: 0 8px;
+}
+.az-accordion-chevron[data-rotate] {
+  transform: rotate(90deg);
+}
+
 .az-mono {
   font-family: var(--mantine-font-family-monospace);
 }

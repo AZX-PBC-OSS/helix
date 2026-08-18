@@ -67,14 +67,17 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   creation surface and lives on **My Apps**, in the page header and in the empty state; it
   navigates to the new app's page on success. **Deploy** (`src/modals/DeployModal.tsx`) is opened
   only from an app — its detail header — and takes the slug it ships into, so `openDeploy(slug)`
-  has no untargeted form and the modal has no app picker. Inside are two titled sections, not a
-  tab strip of equals: **Upload a build** leads, and **Or deploy from the command line** sits
-  under a divider. The ordering follows from who is standing there — a developer using `helix`
+  has no untargeted form and the modal has no app picker. Inside is a two-item `Accordion`, not a
+  tab strip of equals: **Upload a build** is open, and **Deploy from the command line** starts
+  collapsed. Which one is open follows from who is standing there — a developer using `helix`
   deploys from a terminal without opening the portal at all, so whoever reaches this modal is
   overwhelmingly the one who can't: no checkout, no terminal, an app built in a browser. The CLI
-  block is kept as a reference rather than a rival path, and names its audience in the first
-  clause so everyone else can stop reading (back when it was a tab of equal weight, one of them
-  asked us where their "app directory" was). CSP lint warnings render inline on the upload result
+  block is kept as a reference rather than a rival path, and its closed row carries the subtitle
+  "For developers using the helix CLI" so everyone else can skip it without opening anything
+  (back when it was a tab of equal weight, one of them asked us where their "app directory"
+  was). The accordion is `multiple`, so opening the CLI doesn't collapse the dropzone; once a
+  version lands the accordion is replaced outright by the upload receipt, since that screen has
+  nothing left to choose. CSP lint warnings render inline on that receipt
   (see [registry-and-deploys.md](./registry-and-deploys.md)).
 
   Creation must stay reachable **independent of how many apps exist**: it once lived only in the

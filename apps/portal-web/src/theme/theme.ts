@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { createTheme, type CSSVariablesResolver, type MantineColorsTuple } from "@mantine/core";
 
 /**
@@ -160,6 +161,27 @@ export const theme = createTheme({
       styles: {
         content: { border: "1px solid var(--az-line-2)" },
         header: { backgroundColor: "transparent" },
+      },
+    },
+    // Stock Mantine dresses an accordion for light mode — a gray-3 border and
+    // a dark-6 active fill, both wrong against the frosted glass. Left chevron
+    // so the disclosure arrow lands where the eyebrow's own chevron used to.
+    Accordion: {
+      defaultProps: {
+        variant: "separated",
+        chevronPosition: "left",
+        radius: "md",
+        chevronSize: 11,
+      },
+      styles: {
+        // Component-scoped vars Mantine sets on its own root class, so a
+        // cssVariablesResolver entry on :root would lose to it.
+        root: {
+          "--item-border-color": "var(--az-line)",
+          "--item-filled-color": "rgba(255,255,255,.03)",
+        } as CSSProperties,
+        control: { paddingInline: 14 },
+        content: { paddingInline: 14, paddingBottom: 14 },
       },
     },
     Tooltip: {
