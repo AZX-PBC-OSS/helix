@@ -135,7 +135,7 @@ describe("Shell admin nav", () => {
   function renderShell() {
     return renderWithProviders(
       <AuthProvider>
-        <Shell onDeploy={() => {}}>content</Shell>
+        <Shell>content</Shell>
       </AuthProvider>,
     );
   }

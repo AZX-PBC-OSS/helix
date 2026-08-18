@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { App } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { AppsListPage } from "../pages/AppsListPage";
@@ -117,5 +118,37 @@ describe("AppsListPage", () => {
     render();
     expect(await screen.findByText("No apps yet")).toBeDefined();
     expect(screen.queryByText(/served at/)).toBeNull();
+  });
+
+  /**
+   * The regression that drove the New app / Deploy split, inherited from
+   * `deploy-modal.test.tsx`: registering an app was once only reachable through
+   * the deploy modal picker's "nothing found" message, so a single app in the
+   * registry hid the only path to a second one anywhere in the UI. My Apps now
+   * owns creation, and its button does not care how many apps exist.
+   */
+  it("keeps app creation reachable when apps already exist", async () => {
+    stubFetch(APPS);
+    render();
+
+    await userEvent.click(await screen.findByRole("button", { name: /create app/i }));
+    // The registration form itself, not a link off to somewhere else.
+    expect(await screen.findByRole("textbox", { name: /subdomain/i })).toBeDefined();
+  });
+
+  it("opens the create modal from the empty state", async () => {
+    stubFetch([]);
+    render();
+
+    await userEvent.click(await screen.findByRole("button", { name: /create your first app/i }));
+    expect(await screen.findByRole("textbox", { name: /subdomain/i })).toBeDefined();
+  });
+
+  it("offers no deploy affordance — deploying belongs to an app's own page", async () => {
+    stubFetch(APPS);
+    render();
+
+    await screen.findByText("Cost Explorer");
+    expect(screen.queryByRole("button", { name: /deploy/i })).toBeNull();
   });
 });

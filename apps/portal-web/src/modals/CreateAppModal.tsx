@@ -3,9 +3,12 @@ import { Modal, Text } from "@mantine/core";
 import { AppCreateForm } from "../components/AppCreateForm";
 
 /**
- * Standalone registration: create an app and go straight to it. The deploy
- * flow embeds the same form (`AppCreateForm`) instead of routing through here,
- * because there the create is step 1 of shipping a build, not a destination.
+ * Registration, and the SPA's only creation surface: create an app and go
+ * straight to its page — which is where you deploy into it. Deliberately a
+ * modal rather than a route; the form is two fields plus a visibility choice
+ * with one live option, and its destination is the app it just made, so a
+ * `/apps/new` URL would be one nobody links to twice. It becomes a page if
+ * create ever grows steps (templates, repo import, an approval gate).
  */
 export function CreateAppModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const navigate = useNavigate();
@@ -16,7 +19,7 @@ export function CreateAppModal({ opened, onClose }: { opened: boolean; onClose: 
       onClose={onClose}
       title={
         <Text ff="heading" fw={600}>
-          Register an app
+          Create app
         </Text>
       }
       size="lg"

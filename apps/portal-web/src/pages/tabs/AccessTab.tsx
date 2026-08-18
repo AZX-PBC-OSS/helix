@@ -19,6 +19,14 @@ import { Eyebrow, Hint, PreviewBadge, ToneBadge } from "../../components/primiti
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
 import { PasswordAccessCard } from "./PasswordAccessCard";
 
+/**
+ * Descriptions answer "who gets in", in the user's terms — not how the platform
+ * achieves it. Keep them parallel with the create form's shorter versions in
+ * `components/AppCreateForm.tsx`; this is the screen where the choice is
+ * actually made, so it earns the extra clause about what each mode implies.
+ * Avoid claims that depend on how the directory itself is configured (whether
+ * guests exist and can sign in is a tenant decision, not this app's).
+ */
 const VISIBILITY_ROWS: Array<{
   mode: VisibilityMode;
   icon: IconName;
@@ -29,25 +37,25 @@ const VISIBILITY_ROWS: Array<{
     mode: "internal",
     icon: "lock",
     label: "Internal",
-    desc: "SSO via the IdP — any signed-in directory user, guests included. Unauthenticated visitors are redirected to login.",
+    desc: "Anyone who can sign in to your organization. No further check; visitors who aren't signed in are sent to sign in first.",
   },
   {
     mode: "group",
     icon: "user",
     label: "Group-restricted",
-    desc: "SSO plus a directory-group membership check, re-checked per request.",
+    desc: "Sign-in, narrowed to members of one directory group. Membership is re-read as each visitor's session refreshes, so removing someone from the group cuts off access without waiting for them to sign out.",
   },
   {
     mode: "password",
     icon: "key",
     label: "Password",
-    desc: "Shared password gate for external demos. Pseudonymous identity.",
+    desc: "One shared password instead of sign-in, for people outside your organization. Visitors aren't identified individually, and each gets their own isolated session.",
   },
   {
     mode: "public",
     icon: "globe",
     label: "Public",
-    desc: "No gate. Anonymous-tier quotas + per-IP limits. Requires admin approval.",
+    desc: "No sign-in at all — anyone with the link. Usage is capped per app and per visitor IP address.",
   },
 ];
 
@@ -95,10 +103,9 @@ export function AccessTab({ app }: { app: App }) {
             <Eyebrow>Visibility</Eyebrow>
           </Group>
           <Text size="sm" c="dark.2" mb={16}>
-            Auth is terminated at the edge proxy — the app ships zero auth code. Switching to
-            internal or group applies immediately, including from public; only going public is an
-            elevated change that pauses for admin approval. Shared-password access is managed on the
-            right.
+            Who can open the app. Switching to Internal or a group applies immediately — including
+            from Public. Going public is the one change that waits for admin approval.
+            Shared-password access is managed on the right.
           </Text>
 
           {!authenticated && (
@@ -123,9 +130,9 @@ export function AccessTab({ app }: { app: App }) {
           {currentModeDisallowed && (
             <Box mb={12}>
               <Hint icon="shield" tone="bad">
-                {current === "public" ? "Public" : "Password"} apps are disabled on this deployment,
-                so the edge is refusing to serve this one. Switch to Internal or a group to restore
-                serving.
+                {current === "public" ? "Public" : "Password"} apps are turned off for this
+                installation, so this app isn&apos;t being served at all. Switch to Internal or a
+                group to bring it back.
               </Hint>
             </Box>
           )}
@@ -266,8 +273,9 @@ export function AccessTab({ app }: { app: App }) {
           <Card style={{ borderColor: "var(--az-bad-dim)" }}>
             <Eyebrow mb={4}>Lifecycle</Eyebrow>
             <Text size="sm" c="dark.2" mb={14} lh={1.5}>
-              Archiving makes the edge serve <span className="az-mono">410 + Clear-Site-Data</span>{" "}
-              for the subdomain immediately. Slugs are never reused; unarchive restores serving.
+              Archiving takes the app offline immediately: the address stops serving and each
+              visitor&apos;s stored data for it is cleared from their browser. The subdomain is
+              never handed to another app. Unarchive puts it back exactly as it was.
             </Text>
             {!authenticated ? (
               <Hint
@@ -315,9 +323,9 @@ export function AccessTab({ app }: { app: App }) {
               <PreviewBadge milestone="v1" />
             </Group>
             <Text size="sm" c="dark.2" lh={1.5}>
-              Per-app roles (owner / editor / viewer) are a v1 portal feature — today any
-              authenticated portal actor may mutate, and every action is attributed in the audit
-              trail.
+              Per-app roles (owner / editor / viewer) aren&apos;t built yet. Today anyone signed in
+              to the portal can change this app — every change is recorded in the audit log against
+              the person who made it.
             </Text>
           </Card>
         </Stack>
@@ -332,9 +340,10 @@ export function AccessTab({ app }: { app: App }) {
         body={
           <Stack gap={10}>
             <Text size="sm" c="dark.2" lh={1.5}>
-              Public apps serve to anyone with no sign-in — an anonymous tier with per-app quotas
-              and per-IP limits. This is a high-risk change, so it opens an approval request rather
-              than applying now; an admin must approve before the app goes live publicly.
+              A public app opens to anyone with the link, with no sign-in — usage is capped per app
+              and per visitor IP address. Because that is hard to undo once the link is out, this
+              opens an approval request rather than applying now; the app stays as it is until an
+              admin approves.
             </Text>
             <Textarea
               label="Reason for review (optional)"
@@ -372,9 +381,9 @@ export function AccessTab({ app }: { app: App }) {
         title={`Archive ${app.displayName}?`}
         body={
           <>
-            The edge will serve <span className="az-mono">410 + Clear-Site-Data</span> for{" "}
-            <span className="az-mono">{app.slug}</span> immediately and the registry record is
-            frozen. This is reversible — unarchive restores the live pointer as it was.
+            <span className="az-mono">{app.slug}</span> stops serving immediately, and each
+            visitor&apos;s stored data for it is cleared from their browser. This is reversible —
+            unarchive puts the app back exactly as it was.
           </>
         }
         confirmLabel="Archive"

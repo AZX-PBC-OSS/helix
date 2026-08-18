@@ -62,18 +62,24 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     `GET /api/v1/secrets` (see [secrets-and-connections.md](./secrets-and-connections.md)).
   - **Violations** (`/admin/violations`) — CSP violation reports off `GET /api/v1/csp/violations`,
     each a one-click origin-grant request (`useGrantOrigin`).
-- **Deploy modal** (`src/modals/DeployModal.tsx`) — two ordered steps: **1 · Choose an app**
-  (pick an existing one, or register a new one right there via the shared `AppCreateForm`) and
-  **2 · Ship a build** — the `helix deploy --slug …` command or a drag-and-drop upload that
-  renders the CSP lint warnings inline (see [registry-and-deploys.md](./registry-and-deploys.md)).
-  Step 2 stays inert until step 1 has a target, since both halves address the app by slug.
-  Registration must stay reachable from step 1 itself: when it lived in the picker's
-  `nothingFoundMessage`, a single existing app hid the only path to creating a second one. The
-  standalone `CreateAppModal` (**New app** on the apps list, `openCreate` on `DeployContext`) is
-  the same form for the register-now-deploy-later path.
+- **Creating vs deploying** — two jobs, each on the screen its object lives on. **Create app**
+  (`CreateAppModal` over the shared `AppCreateForm`, `openCreate` on `DeployContext`) is the sole
+  creation surface and lives on **My Apps**, in the page header and in the empty state; it
+  navigates to the new app's page on success. **Deploy** (`src/modals/DeployModal.tsx`) is opened
+  only from an app — its detail header — and takes the slug it ships into, so `openDeploy(slug)`
+  has no untargeted form and the modal has no app picker. It offers the `helix deploy --slug …`
+  command or a drag-and-drop upload that renders the CSP lint warnings inline (see
+  [registry-and-deploys.md](./registry-and-deploys.md)).
+
+  Creation must stay reachable **independent of how many apps exist**: it once lived only in the
+  deploy picker's `nothingFoundMessage`, so a single registered app hid the only path to a second
+  one. That guarantee now rests on the unconditional My Apps button, and `apps-list.test.tsx`
+  holds the line. Visibility at create is `internal` only — `password`/`public` are deferred and
+  additionally gated on deployment policy, and `group` is listed-but-disabled until the edge's
+  directory-group check exists (`UNAVAILABLE_AT_CREATE` in `AppCreateForm.tsx`).
 
 - **Bundle salvage** (`src/deploy/`, [ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md)) —
-  the upload half of step 2 accepts a dropped **build folder** as well as a zip, because
+  the deploy modal's upload tab accepts a dropped **build folder** as well as a zip, because
   non-technical users told to "zip the contents of `dist/`" send the whole project, the folder
   wrapped in itself, or a random directory. `archive.ts` (the one `fflate`-aware module) reads
   the drop — listing a zip's central directory without inflating a byte, so a `node_modules`

@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import {
-  Anchor,
   Box,
   Button,
   Card,
@@ -124,7 +123,7 @@ type Filter = "all" | "live" | "preview" | "archived";
 export function AppsListPage() {
   const apps = useQuery(appsQuery);
   const { appHost, appUrl } = useDeployment();
-  const { openDeploy, openCreate } = useDeploy();
+  const { openCreate } = useDeploy();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
 
@@ -157,18 +156,13 @@ export function AppsListPage() {
         title="My Apps"
         sub="Static apps you've deployed."
         actions={
-          <>
-            <Button
-              variant="default"
-              leftSection={<Icon name="plus" size={15} />}
-              onClick={openCreate}
-            >
-              New app
-            </Button>
-            <Button leftSection={<Icon name="upload" size={15} />} onClick={() => openDeploy()}>
-              Deploy app
-            </Button>
-          </>
+          // The one creation surface in the SPA, and deliberately unconditional:
+          // registration used to hide inside the deploy modal's app picker, so a
+          // single registered app cut off the path to a second. Deploying moved
+          // to the app's own page, where it has a target.
+          <Button size="md" leftSection={<Icon name="plus" size={15} />} onClick={openCreate}>
+            Create app
+          </Button>
         }
       />
 
@@ -238,8 +232,7 @@ export function AppsListPage() {
             <Text c="dark.2" size="sm" maw={420}>
               {list.length === 0 ? (
                 <>
-                  Create one here or from the CLI —{" "}
-                  <Anchor onClick={() => openDeploy()}>deploy your first app</Anchor>.
+                  Register one here or from the CLI, then ship a build into it.
                   {/* Drop the "served at" clause entirely until the deployment
                       config lands — a half-rendered URL is worse than none. */}
                   {appUrl("<slug>") && (
@@ -257,6 +250,16 @@ export function AppsListPage() {
                 "Try a different filter or search."
               )}
             </Text>
+            {list.length === 0 && (
+              <Button
+                mt={12}
+                size="md"
+                leftSection={<Icon name="plus" size={15} />}
+                onClick={openCreate}
+              >
+                Create your first app
+              </Button>
+            )}
           </Stack>
         </Card>
       )}

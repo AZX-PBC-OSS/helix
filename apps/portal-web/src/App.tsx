@@ -4,7 +4,7 @@ import { AuthProvider } from "./auth/AuthProvider";
 import { CallbackPage } from "./auth/CallbackPage";
 import { RequireAdmin, RequireAuth } from "./auth/guards";
 import { Shell } from "./components/Shell";
-import { DeployProvider, useDeploy } from "./modals/DeployContext";
+import { DeployProvider } from "./modals/DeployContext";
 import { AppsListPage } from "./pages/AppsListPage";
 import { AppDetailPage } from "./pages/AppDetailPage";
 import { UsagePage } from "./pages/UsagePage";
@@ -21,9 +21,8 @@ function admin(element: ReactNode) {
 }
 
 function Portal() {
-  const { openDeploy } = useDeploy();
   return (
-    <Shell onDeploy={() => openDeploy()}>
+    <Shell>
       <Routes>
         <Route path="/" element={<AppsListPage />} />
         <Route path="/apps/:slug" element={<AppDetailPage />} />

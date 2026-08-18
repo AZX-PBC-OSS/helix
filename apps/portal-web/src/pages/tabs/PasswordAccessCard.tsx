@@ -48,8 +48,8 @@ export function PasswordAccessCard({ app }: { app: App }) {
       <Card>
         <Eyebrow mb={4}>Shared password access</Eyebrow>
         <Text size="sm" c="dark.2" mb={14} lh={1.5}>
-          A single shared password for external demos — hand out the URL and password, no SSO
-          required. Each visitor gets a pseudonymous, isolated session.
+          One shared password instead of sign-in — hand out the address and the password. Visitors
+          aren&apos;t identified individually, and each gets their own isolated session.
         </Text>
         <Hint
           icon="user"
@@ -86,9 +86,9 @@ export function PasswordAccessCard({ app }: { app: App }) {
       {!isPassword ? (
         <>
           <Text size="sm" c="dark.2" mb={14} lh={1.5}>
-            Put a single shared password on the app for external demos — give out the URL and
-            password (e.g. at a conference) without making the app public. Each visitor gets a
-            pseudonymous, isolated session.
+            Put one shared password on the app so you can give out the address and password — to a
+            client, or a room at a conference — without making the app public. Visitors aren&apos;t
+            identified individually, and each gets their own isolated session.
           </Text>
           <Button
             leftSection={<Icon name="key" size={14} />}
@@ -104,12 +104,12 @@ export function PasswordAccessCard({ app }: { app: App }) {
         <Stack gap={14}>
           {allowPasswordApps ? (
             <Text size="sm" c="dark.2" lh={1.5}>
-              Anyone with this URL and password can open the app. Re-roll if it leaks.
+              Anyone with this address and password can open the app. Re-roll it if it gets out.
             </Text>
           ) : (
             <Hint icon="shield" tone="bad">
-              Password apps are disabled on this deployment — the edge is refusing to serve this
-              one. Disable password access to revert to internal.
+              Password apps are turned off for this installation, so this app isn&apos;t being
+              served at all. Disable password access to put it back to Internal.
             </Hint>
           )}
 

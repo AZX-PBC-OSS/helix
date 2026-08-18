@@ -171,12 +171,10 @@ function UserChip() {
   );
 }
 
-export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: () => void }) {
+export function Shell({ children }: { children: ReactNode }) {
   const { isAdmin } = useAuth();
   const apps = useQuery(appsQuery);
   const liveCount = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
-  // The sidebar is the only entry point today; if a second one appears (an
-  // empty-state CTA, say), lift this into a provider like DeployContext.
   const [helpOpen, setHelpOpen] = useState(false);
 
   return (
@@ -185,10 +183,9 @@ export function Shell({ children, onDeploy }: { children: ReactNode; onDeploy: (
         <Box px={6} pb={18} pt={4}>
           <Brand />
         </Box>
-        <Button leftSection={<Icon name="upload" size={15} />} mb={18} onClick={onDeploy}>
-          Deploy app
-        </Button>
-
+        {/* Deploying is an app-scoped action and lives on the app's own page;
+            creating one lives on My Apps. Neither belongs in the sidebar, where
+            a global "Deploy app" button had no target to act on. */}
         <Eyebrow mb={8}>Workspace</Eyebrow>
         <Stack gap={2}>
           {WORKSPACE_NAV.map((item) => (

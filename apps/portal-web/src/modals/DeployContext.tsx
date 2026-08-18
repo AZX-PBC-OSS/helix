@@ -2,34 +2,39 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import { CreateAppModal } from "./CreateAppModal";
 import { DeployModal } from "./DeployModal";
 
-/** Global launcher for the deploy/create modals (sidebar button, page CTAs). */
+/** Global launcher for the deploy/create modals, opened from page-level CTAs. */
 
 interface DeployControls {
-  /** Open the deploy modal, optionally preselecting an app. */
-  openDeploy: (slug?: string) => void;
+  /**
+   * Open the deploy modal against an app. The slug is required: a build is
+   * always shipped *into* something, and picking that something is My Apps'
+   * job — it shows live/preview state, host and version, where an in-modal
+   * app dropdown showed a name and a slug.
+   */
+  openDeploy: (slug: string) => void;
   openCreate: () => void;
 }
 
 const DeployCtx = createContext<DeployControls | null>(null);
 
 export function DeployProvider({ children }: { children: ReactNode }) {
-  const [deploySlug, setDeploySlug] = useState<string | null | undefined>(undefined);
+  // Open-ness is tracked apart from the target so the slug survives Mantine's
+  // close transition — collapsing the two would blank the modal body mid-fade.
+  const [deploySlug, setDeploySlug] = useState<string | null>(null);
+  const [deployOpen, setDeployOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
 
-  const openDeploy = useCallback((slug?: string) => setDeploySlug(slug ?? null), []);
+  const openDeploy = useCallback((slug: string) => {
+    setDeploySlug(slug);
+    setDeployOpen(true);
+  }, []);
   const openCreate = useCallback(() => setCreateOpen(true), []);
   const value = useMemo(() => ({ openDeploy, openCreate }), [openDeploy, openCreate]);
 
   return (
     <DeployCtx.Provider value={value}>
       {children}
-      {/* Registering an app is step 1 *inside* the deploy modal; this standalone
-          one is for the "just register it, I'll deploy later" path. */}
-      <DeployModal
-        opened={deploySlug !== undefined}
-        initialSlug={deploySlug ?? undefined}
-        onClose={() => setDeploySlug(undefined)}
-      />
+      <DeployModal opened={deployOpen} slug={deploySlug} onClose={() => setDeployOpen(false)} />
       <CreateAppModal opened={createOpen} onClose={() => setCreateOpen(false)} />
     </DeployCtx.Provider>
   );

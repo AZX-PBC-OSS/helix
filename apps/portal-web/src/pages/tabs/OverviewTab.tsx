@@ -8,14 +8,12 @@ import { approvalsQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { timeAgo } from "../../lib/format";
 import { awaitingPromote, deployCadence, liveVersion } from "../../lib/appStatus";
-import { useDeploy } from "../../modals/DeployContext";
 
 /** All real: registry + version history, no metering required. */
 export function OverviewTab({ app, versions }: { app: App; versions: Version[] }) {
   const live = liveVersion(app, versions);
   const pending = awaitingPromote(app, versions);
   const last = versions[0];
-  const { openDeploy } = useDeploy();
   const { authenticated } = useAuth();
   // Pending capability/visibility approvals for this app (docs/design/approvals.md).
   const approvals = useQuery({
@@ -68,7 +66,12 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
               icon="layers"
               tone="slate"
               action={
-                <Button variant="default" size="xs" onClick={() => openDeploy(app.slug)}>
+                <Button
+                  variant="default"
+                  size="xs"
+                  component={Link}
+                  to={`/apps/${app.slug}?tab=versions`}
+                >
                   Review preview
                 </Button>
               }

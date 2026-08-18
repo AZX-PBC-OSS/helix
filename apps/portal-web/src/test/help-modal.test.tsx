@@ -59,7 +59,7 @@ describe("HelpModal", () => {
     stubApi({ appPublicBase: "https://apps.example.com" });
     renderWithProviders(
       <AuthProvider>
-        <Shell onDeploy={() => {}}>content</Shell>
+        <Shell>content</Shell>
       </AuthProvider>,
     );
 

@@ -7,12 +7,18 @@ import { Icon } from "./Icon";
 import { useDeployment } from "../lib/deployment";
 
 /**
- * Registering an app: slug + display name + how it's gated. Shared by the
- * standalone "Register an app" modal and step 1 of the deploy flow, so the two
- * can't drift on what a registration means — the caller only decides what
- * happens *after* the create (navigate to the app, or keep going and deploy).
+ * Registering an app: slug + display name + how it's gated. Lives apart from
+ * `CreateAppModal` so the form stays testable on its own and a second creation
+ * surface (an empty-state page, say) can mount it without the modal chrome —
+ * the caller only decides what happens *after* the create.
  */
 
+/**
+ * Descriptions answer "who gets in", in the user's terms — not how the platform
+ * achieves it. Avoid claims that depend on how the directory itself is set up
+ * (whether guest accounts exist and can sign in is a tenant decision, not this
+ * app's), and avoid milestone labels, which mean nothing outside the repo.
+ */
 const VISIBILITY_OPTIONS: Array<{
   mode: VisibilityMode;
   label: string;
@@ -21,20 +27,39 @@ const VISIBILITY_OPTIONS: Array<{
   {
     mode: "internal",
     label: "Internal",
-    desc: "SSO — any signed-in directory user, guests included. The default.",
+    desc: "Anyone who can sign in to your organization. No further check.",
   },
   {
     mode: "group",
     label: "Group-restricted",
-    desc: "SSO plus a directory-group membership check.",
+    desc: "Sign-in, narrowed to members of one directory group. Not yet available.",
   },
-  { mode: "password", label: "Password", desc: "Shared password gate for external demos (M4)." },
+  {
+    mode: "password",
+    label: "Password",
+    desc: "One shared password instead of sign-in, for people outside your organization. Set the password on the Access tab once the app exists.",
+  },
   {
     mode: "public",
     label: "Public",
-    desc: "No gate; anonymous quotas. Needs admin approval (M4).",
+    desc: "No sign-in at all — anyone with the link. Request it from the Access tab once the app exists; an admin has to approve it.",
   },
 ];
+
+/**
+ * Modes you can see but not pick at create time, for two different reasons.
+ *
+ * `password`/`public` are deferred features whose *rendering* is already gated
+ * on deployment policy (`allowPasswordApps`/`allowPublicApps` below) — they're
+ * listed-but-locked so the set of surfaces an app can have stays legible.
+ * `group` is here because the edge's directory-group check isn't implemented,
+ * so offering it would register apps against a gate that never runs. It has no
+ * deployment flag and so always renders, disabled. Re-enabling is a one-line
+ * removal from this list — the group id field and its validation are kept below
+ * for exactly that reason. A follow-up covers the other screens that still
+ * offer `group` (the app's Access tab); this list only governs create.
+ */
+const UNAVAILABLE_AT_CREATE: readonly VisibilityMode[] = ["group", "password", "public"];
 
 export function AppCreateForm({
   onCreated,
@@ -114,7 +139,7 @@ export function AppCreateForm({
       />
       <Radio.Group
         label="Visibility"
-        description="Auth is terminated at the edge — the app ships zero auth code"
+        description="Who can open the app. You can change this later on the app's Access tab."
         value={mode}
         onChange={(v) => setMode(v as VisibilityMode)}
       >
@@ -125,7 +150,7 @@ export function AppCreateForm({
               value={o.mode}
               label={o.label}
               description={o.desc}
-              disabled={o.mode === "password" || o.mode === "public"}
+              disabled={UNAVAILABLE_AT_CREATE.includes(o.mode)}
             />
           ))}
         </Stack>
