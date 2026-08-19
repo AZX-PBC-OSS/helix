@@ -5,7 +5,7 @@ import { renderWithProviders } from "./render";
 import { ApprovalsPage } from "../pages/admin/ApprovalsPage";
 
 /**
- * Pending requests never expire (ADR-0038), so the queue carries the whole
+ * Pending requests never expire (ADR-0039), so the queue carries the whole
  * burden of making an un-reviewed request harder to ignore the longer it sits.
  * These cover the two halves of that: the escalating age badge, and the
  * oldest-first sort that keeps a stale request off the bottom of the list.

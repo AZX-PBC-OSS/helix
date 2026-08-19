@@ -21,7 +21,7 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
     enabled: authenticated,
   });
   const pendingApprovals = approvals.data ?? [];
-  // Nothing expires these (ADR-0038), so the age of the oldest one is the signal
+  // Nothing expires these (ADR-0039), so the age of the oldest one is the signal
   // that a request has stopped being looked at.
   const oldestApprovalDays = pendingApprovals.length
     ? Math.max(...pendingApprovals.map((a) => daysSince(a.createdAt)))
