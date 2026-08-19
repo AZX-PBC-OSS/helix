@@ -93,8 +93,15 @@ catalog:
   "@eslint/js": ^10.0.1
   "@types/react": ^19.2.17
   "@types/react-dom": ^19.2.3
+  # The root package.json declares vite off this entry even though only the SPA
+  # imports it: vitest takes vite as an auto-installed peer over `^6 || ^7 || ^8`,
+  # so with nothing declaring it there it resolved its own 8.x and ran the SPA
+  # suite through the rolldown major while `vite build` used 7.x. That mismatch
+  # is what put "`esbuild` option ... use `oxc` instead" on every `pnpm test` —
+  # vite 8 deprecates options @vitejs/plugin-react 5 still sets. Keep it declared
+  # so runner and build share one copy.
   vite: ^7.3.6
-  "@vitejs/plugin-react": ^5.2.0
+  "@vitejs/plugin-react": ^5.2.0 # v6 peers on vite ^8 — moves with the rolldown bump
   postcss: ^8.5.23
   postcss-preset-mantine: ^1.18.0
   postcss-simple-vars: ^7.0.1
