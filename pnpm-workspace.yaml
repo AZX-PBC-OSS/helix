@@ -19,19 +19,27 @@ allowBuilds:
   "@prisma/client": true
   "@prisma/engines": true
 
+# Force-patch transitive deps that no workspace package declares, so `pnpm
+# update` cannot reach them in-range. Drop an entry once every parent's own
+# range has moved past it.
+#   brace-expansion — GHSA DoS via exponential-time expansion of consecutive
+#   non-expanding {} groups; minimatch allows ^5.0.5, we need >= 5.0.7.
+overrides:
+  brace-expansion: ^5.0.9
+
 # Single-source dependency versions across the monorepo (pnpm catalog).
 # Packages reference these with "catalog:" instead of pinning their own range,
 # so a bump happens in exactly one place. https://pnpm.io/catalogs
 catalog:
   # ── Runtime ──
-  fastify: ^5.8.5
+  fastify: ^5.12.0
   zod: ^4.4.3
   "@fastify/multipart": ^10.0.0 # bundle upload (M1)
   # Registry persistence — portal only (the edge stays dependency-minimal and
   # hand-writes SQL; project plan §1, §6). Prisma 7 is Rust-engine-free and
   # needs a driver adapter (pg) passed to PrismaClient.
-  "@prisma/client": ^7.8.0
-  "@prisma/adapter-pg": ^7.8.0
+  "@prisma/client": ^7.9.1
+  "@prisma/adapter-pg": ^7.9.1
   pg: ^8.21.0
   # Blob storage (Azurite in dev, Azure Blob in prod) — portal only.
   "@azure/storage-blob": ^12.32.0
@@ -56,7 +64,7 @@ catalog:
   # (apps/dev-idp, never deployed — project plan §3, Entra row).
   jose: ^6.2.3
   openid-client: ^6.8.4
-  oidc-provider: ^9.8.4
+  oidc-provider: ^9.11.3
   # ── Portal SPA (apps/portal-web) ──
   # Mantine 9 pins React 19. Vite stays on the 7.x line (vitest 4 supports it;
   # 8.x is the rolldown major — adopt as its own bump). Fonts are self-hosted
@@ -79,7 +87,7 @@ catalog:
   "@eslint/js": ^10.0.1
   "@types/react": ^19.2.17
   "@types/react-dom": ^19.2.3
-  vite: ^7.3.5
+  vite: ^7.3.6
   "@vitejs/plugin-react": ^5.2.0
   postcss: ^8.5.23
   postcss-preset-mantine: ^1.18.0
@@ -94,7 +102,7 @@ catalog:
   "@types/yauzl": ^3.3.0
   "@types/archiver": ^8.0.0
   "@types/oidc-provider": ^9.5.0
-  prisma: ^7.8.0
+  prisma: ^7.9.1
   form-data: ^4.0.6 # build multipart bodies in app.inject tests
   eslint: ^10.4.1
   prettier: ^3.8.4
@@ -102,7 +110,7 @@ catalog:
   # we emit JS. Lets @azx-pbc/shared stay a build-free raw-TS workspace package
   # (its `exports` point at ./src) without leaking `workspace:*` into a
   # published manifest.
-  esbuild: ^0.28.1
+  esbuild: ^0.28.2
   tsx: ^4.22.4
   typescript: ^6.0.3
   typescript-eslint: ^8.61.0
