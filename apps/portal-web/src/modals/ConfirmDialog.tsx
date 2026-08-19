@@ -39,7 +39,10 @@ export function ConfirmDialog({
         <Text ff="heading" fw={600} fz={17}>
           {title}
         </Text>
-        <Text size="sm" c="dark.2" lh={1.5}>
+        {/* A div, not Text's default <p>: callers pass block content (a Stack with
+            a Textarea, for one), and a <div>/<p> inside a <p> is invalid HTML the
+            browser silently re-parents. */}
+        <Text component="div" size="sm" c="dark.2" lh={1.5}>
           {body}
         </Text>
         {error && (
