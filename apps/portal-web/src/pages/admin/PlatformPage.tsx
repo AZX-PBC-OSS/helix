@@ -53,7 +53,8 @@ function DeltaBadge({ delta }: { delta: number | null }) {
 export function PlatformPage() {
   const [range, setRange] = useState<PlatformRange>("30d");
   const [metric, setMetric] = useState<UsageMetric>("cost");
-  const apps = useQuery(appsQuery);
+  // The platform rollup counts every app, whoever owns it.
+  const apps = useQuery(appsQuery("all"));
   const platform = useQuery(platformUsageQuery(range));
   const { platformMonthlyUsdCap } = useDeployment();
 

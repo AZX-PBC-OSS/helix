@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router";
+import { useSearchParams } from "react-router";
 import {
   Box,
   Button,
@@ -9,117 +9,21 @@ import {
   Group,
   Loader,
   SegmentedControl,
-  SimpleGrid,
   Stack,
   Text,
   TextInput,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { App } from "@azx-pbc/shared";
-import { appsQuery, versionsQuery } from "../api/queries";
+import { AppListScopeSchema, type AppListScope } from "@azx-pbc/shared";
+import { appsQuery } from "../api/queries";
+import { AppsTable } from "../components/AppsTable";
 import { Icon } from "../components/Icon";
-import { Sparkline } from "../components/charts";
-import {
-  CopyBtn,
-  Eyebrow,
-  Hint,
-  PageHead,
-  StatusLine,
-  ToneBadge,
-  VisibilityBadge,
-} from "../components/primitives";
-import { timeAgo } from "../lib/format";
+import { CopyBtn, Eyebrow, Hint, PageHead } from "../components/primitives";
 import { useDeployment } from "../lib/deployment";
-import { appStatus, awaitingPromote, deployCadence, liveVersion } from "../lib/appStatus";
+import { appStatus } from "../lib/appStatus";
 import { useDeploy } from "../modals/DeployContext";
 import { useHelp } from "../modals/HelpContext";
 import { useRenderedSkill } from "../lib/skill";
-
-function AppCard({ app }: { app: App }) {
-  const { hostFor } = useDeployment();
-  const versions = useQuery(versionsQuery(app.slug));
-  const vs = versions.data ?? [];
-  const status = appStatus(app, vs);
-  const live = liveVersion(app, vs);
-  const pending = awaitingPromote(app, vs);
-  const lastDeploy = vs[0];
-
-  return (
-    <Card
-      component={Link}
-      to={`/apps/${app.slug}`}
-      style={{ display: "flex", flexDirection: "column", gap: 14, color: "inherit" }}
-    >
-      <Group justify="space-between" align="flex-start" gap={12} wrap="nowrap">
-        <Group gap={12} wrap="nowrap" style={{ minWidth: 0 }}>
-          <Center
-            w={38}
-            h={38}
-            style={{
-              borderRadius: 10,
-              background: "var(--mantine-color-dark-5)",
-              border: "1px solid var(--az-line-2)",
-              flexShrink: 0,
-            }}
-          >
-            <Text ff="heading" fw={600} fz={15} c="dark.1">
-              {app.displayName[0]?.toUpperCase()}
-            </Text>
-          </Center>
-          <Box style={{ minWidth: 0 }}>
-            <Text ff="heading" fw={600} fz={15} truncate>
-              {app.displayName}
-            </Text>
-            <Text className="az-mono" fz={11.5} c="dark.2" mt={3} truncate>
-              {hostFor(app)}
-            </Text>
-          </Box>
-        </Group>
-        <StatusLine kind={status} />
-      </Group>
-
-      <Group gap={8} wrap="wrap">
-        <VisibilityBadge visibility={app.visibility} />
-        {live && <ToneBadge icon="layers">live v{live.number}</ToneBadge>}
-        {pending && (
-          <ToneBadge tone="violet" icon="layers">
-            v{pending.number} awaiting promote
-          </ToneBadge>
-        )}
-      </Group>
-
-      <Group
-        justify="space-between"
-        align="flex-end"
-        pt={13}
-        mt="auto"
-        style={{ borderTop: "1px solid var(--az-line)" }}
-      >
-        <Group gap={20}>
-          <Box>
-            <Eyebrow>Deploys</Eyebrow>
-            <Text className="az-mono az-tnum" fz={15} fw={600} mt={3}>
-              {versions.isPending ? "…" : vs.length}
-            </Text>
-          </Box>
-          <Box>
-            <Eyebrow>Last deploy</Eyebrow>
-            <Text className="az-mono az-tnum" fz={15} fw={600} mt={3}>
-              {lastDeploy ? timeAgo(lastDeploy.createdAt) : "—"}
-            </Text>
-          </Box>
-        </Group>
-        <Sparkline
-          data={deployCadence(vs)}
-          w={92}
-          h={32}
-          stroke={status === "archived" ? "var(--mantine-color-dark-3)" : "var(--az-acc)"}
-          dot
-        />
-      </Group>
-    </Card>
-  );
-}
 
 /**
  * Hand the agent the instructions, from the screen it starts on.
@@ -191,30 +95,58 @@ function AgentHandoff() {
   );
 }
 
-type Filter = "all" | "live" | "preview" | "archived";
+type Filter = "all" | "live" | "notlive" | "archived";
 
+/**
+ * The apps list — the workspace's landing screen and the only presentation of
+ * the registry.
+ *
+ * There used to be two: a card grid here and a dense table on `/admin/registry`,
+ * both rendering `GET /api/v1/apps`, which returned every app to either one. Two
+ * names for one query, with the different layouts hiding it. The scope control
+ * below is that distinction made real — and it is a **filter, not a gate**: any
+ * signed-in principal may browse a colleague's apps, because a deployment serves
+ * one trusted org (ADR-0028). `/admin/registry` now redirects here at
+ * `?scope=all`.
+ */
 export function AppsListPage() {
-  const apps = useQuery(appsQuery);
+  const [params, setParams] = useSearchParams();
+  // Scope lives in the URL so it survives a reload, can be linked, and gives the
+  // old admin route somewhere to land.
+  const scope: AppListScope = AppListScopeSchema.catch("mine").parse(params.get("scope") ?? "mine");
+  const apps = useQuery(appsQuery(scope));
   const { appHost, appUrl } = useDeployment();
   const { openCreate } = useDeploy();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
 
+  const setScope = (next: string) => {
+    const p = new URLSearchParams(params);
+    // `mine` is the default, so keep it out of the URL rather than pinning it.
+    if (next === "mine") p.delete("scope");
+    else p.set("scope", next);
+    setParams(p, { replace: true });
+  };
+
   const list = useMemo(() => apps.data ?? [], [apps.data]);
+  // Counts and the status column now agree: both read `appStatus`, which needs the
+  // list endpoint's projected preview number to tell "nothing deployed" from "a
+  // build is waiting". "Not live" covers both, which is what this ever counted.
   const counts = useMemo(
     () => ({
       all: list.length,
-      live: list.filter((a) => !a.archivedAt && a.currentVersionId).length,
-      preview: list.filter((a) => !a.archivedAt && !a.currentVersionId).length,
-      archived: list.filter((a) => a.archivedAt).length,
+      live: list.filter((a) => appStatus(a) === "live").length,
+      notlive: list.filter((a) => ["preview", "empty"].includes(appStatus(a))).length,
+      archived: list.filter((a) => appStatus(a) === "archived").length,
     }),
     [list],
   );
 
   const shown = list.filter((a) => {
-    if (filter === "live" && (a.archivedAt || !a.currentVersionId)) return false;
-    if (filter === "preview" && (a.archivedAt || a.currentVersionId)) return false;
-    if (filter === "archived" && !a.archivedAt) return false;
+    const status = appStatus(a);
+    if (filter === "live" && status !== "live") return false;
+    if (filter === "notlive" && !["preview", "empty"].includes(status)) return false;
+    if (filter === "archived" && status !== "archived") return false;
     if (search && !(a.displayName + a.slug).toLowerCase().includes(search.toLowerCase()))
       return false;
     return true;
@@ -226,8 +158,12 @@ export function AppsListPage() {
         // The apps domain arrives with the deployment config; until it does, the
         // eyebrow is just "Workspace" rather than a guessed host.
         eyebrow={["Workspace", appHost("<slug>")].filter(Boolean).join(" · ")}
-        title="My Apps"
-        sub="Static apps you've deployed."
+        title="Apps"
+        sub={
+          scope === "mine"
+            ? "Static apps you've deployed."
+            : "Every app registered on this deployment."
+        }
         actions={
           // The one creation surface in the SPA, and deliberately unconditional:
           // registration used to hide inside the deploy modal's app picker, so a
@@ -243,12 +179,20 @@ export function AppsListPage() {
 
       <Group mb={18} gap={10}>
         <SegmentedControl
+          value={scope}
+          onChange={setScope}
+          data={[
+            { value: "mine", label: "Mine" },
+            { value: "all", label: "All" },
+          ]}
+        />
+        <SegmentedControl
           value={filter}
           onChange={(v) => setFilter(v as Filter)}
           data={[
             { value: "all", label: `All ${counts.all}` },
             { value: "live", label: `Live ${counts.live}` },
-            { value: "preview", label: `Preview ${counts.preview}` },
+            { value: "notlive", label: `Not live ${counts.notlive}` },
             { value: "archived", label: `Archived ${counts.archived}` },
           ]}
         />
@@ -275,10 +219,16 @@ export function AppsListPage() {
         <Card py={56} style={{ textAlign: "center" }}>
           <Stack align="center" gap={6}>
             <Text ff="heading" fw={600} fz={17}>
-              {list.length === 0 ? "No apps yet" : "Nothing matches"}
+              {list.length > 0
+                ? "Nothing matches"
+                : scope === "mine"
+                  ? "No apps yet"
+                  : "Nothing registered yet"}
             </Text>
             <Text c="dark.2" size="sm" maw={420}>
-              {list.length === 0 ? (
+              {list.length > 0 ? (
+                "Try a different filter or search."
+              ) : (
                 <>
                   Register one here or from the CLI, then ship a build into it.
                   {/* Drop the "served at" clause entirely until the deployment
@@ -294,8 +244,6 @@ export function AppsListPage() {
                     </>
                   )}
                 </>
-              ) : (
-                "Try a different filter or search."
               )}
             </Text>
             {list.length === 0 && (
@@ -312,11 +260,7 @@ export function AppsListPage() {
         </Card>
       )}
 
-      <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing={18} className="az-stagger">
-        {shown.map((a) => (
-          <AppCard key={a.id} app={a} />
-        ))}
-      </SimpleGrid>
+      {apps.isSuccess && shown.length > 0 && <AppsTable rows={shown} />}
     </div>
   );
 }

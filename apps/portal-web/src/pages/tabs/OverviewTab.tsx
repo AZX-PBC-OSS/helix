@@ -7,12 +7,12 @@ import { Eyebrow, Hint, KV, Stat } from "../../components/primitives";
 import { approvalsQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { daysSince, timeAgo } from "../../lib/format";
-import { awaitingPromote, deployCadence, liveVersion } from "../../lib/appStatus";
+import { awaitingPromoteNumber, deployCadence, deployFacts } from "../../lib/appStatus";
 
 /** All real: registry + version history, no metering required. */
 export function OverviewTab({ app, versions }: { app: App; versions: Version[] }) {
-  const live = liveVersion(app, versions);
-  const pending = awaitingPromote(app, versions);
+  const facts = deployFacts(app, versions);
+  const pending = awaitingPromoteNumber(facts);
   const last = versions[0];
   const { authenticated } = useAuth();
   // Pending capability/visibility approvals for this app (docs/design/approvals.md).
@@ -44,9 +44,9 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
               <Stat
                 icon="dot"
                 label="Serving"
-                value={live ? `v${live.number}` : "—"}
-                tone={live ? "var(--az-live)" : undefined}
-                sub={live ? "registry pointer" : "nothing promoted yet"}
+                value={facts.liveNumber === null ? "—" : `v${facts.liveNumber}`}
+                tone={facts.liveNumber === null ? undefined : "var(--az-live)"}
+                sub={facts.liveNumber === null ? "nothing promoted yet" : "registry pointer"}
               />
             </Card>
             <Card>
@@ -66,7 +66,7 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
             <Bars data={deployCadence(versions)} h={92} />
           </Card>
 
-          {pending && (
+          {pending !== null && (
             <Hint
               icon="layers"
               tone="slate"
@@ -81,8 +81,8 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
                 </Button>
               }
             >
-              <b>v{pending.number}</b> is deployed to preview and awaiting promotion. Live traffic
-              is unaffected until you promote.
+              <b>v{pending}</b> is deployed to preview and awaiting promotion. Live traffic is
+              unaffected until you promote.
             </Hint>
           )}
           {pendingApprovals.length > 0 && (

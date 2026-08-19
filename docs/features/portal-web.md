@@ -26,8 +26,23 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 
 ### Routes (all real, all wired)
 
-- **My Apps** (`/`, `AppsListPage`) — `GET /api/v1/apps` grid + create, under a band handing the
-  agent skill straight over (see [Onboarding](#onboarding-srcmodalshelpmodaltsx)).
+- **Apps** (`/`, `AppsListPage`) — the one presentation of the registry: a dense table
+  (`components/AppsTable.tsx`) over `GET /api/v1/apps`, plus create, under a band handing the
+  agent skill straight over (see [Onboarding](#onboarding-srcmodalshelpmodaltsx)). A **Mine/All**
+  control drives `?scope=`; every column (owner, live version, deploy count, last deploy) comes
+  from the list endpoint's own projection, so the page costs a fixed number of queries at any row
+  count, and spend joins `GET /api/v1/gateway/usage`'s `byApp` by slug.
+
+  Scope is a **filter, not a gate.** Any signed-in principal may read `scope=all` — a deployment
+  serves one trusted org (ADR-0028/ADR-0023), and "whose app is this, and who do I ask about it"
+  is a question the portal should answer. Read-scoping as *authorization* is still v1 RBAC's job
+  (ADR-0007); nothing here narrows what a caller may read.
+
+  This replaced a 3-up card grid plus a separate admin-only table at `/admin/registry`. Both
+  rendered the same unscoped `GET /api/v1/apps`, so they showed identical rows under two names —
+  and the card grid fetched `GET /versions` per card to fill in its sparkline and counters, while
+  the table, having no version rows to consult, reported an app with a build awaiting promote as
+  never deployed. The projection fixed both. `/admin/registry` now redirects to `/?scope=all`.
 - **App detail** (`/apps/:slug`, `AppDetailPage`) with tabs:
   - **Overview** — metadata, live + preview versions, deploy/rollback actions.
   - **Versions** — history with promote/rollback (the live version lifecycle).
@@ -62,14 +77,13 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     Withdraw exists on the API (the requester's verb) but has no UI yet.
   - **Audit Log** (`/admin/audit`) — `GET /api/v1/gateway/audit` over `gateway_calls`.
   - **Platform** (`/admin/platform`) — system metering off `GET /api/v1/gateway/usage`.
-  - **All Apps / Registry** (`/admin/registry`) — the full app list.
   - **Secrets** (`/admin/secrets`) — global connection secrets, full CRUD + per-app grants off
     `GET /api/v1/secrets` (see [secrets-and-connections.md](./secrets-and-connections.md)).
   - **Violations** (`/admin/violations`) — CSP violation reports off `GET /api/v1/csp/violations`,
     each a one-click origin-grant request (`useGrantOrigin`).
 - **Creating vs deploying** — two jobs, each on the screen its object lives on. **Create app**
   (`CreateAppModal` over the shared `AppCreateForm`, `openCreate` on `DeployContext`) is the sole
-  creation surface and lives on **My Apps**, in the page header and in the empty state; it
+  creation surface and lives on **Apps**, in the page header and in the empty state; it
   navigates to the new app's page on success. **Deploy** (`src/modals/DeployModal.tsx`) is opened
   only from an app — its detail header — and takes the slug it ships into, so `openDeploy(slug)`
   has no untargeted form and the modal has no app picker. Inside is a two-item `Accordion`, not a
@@ -87,7 +101,7 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 
   Creation must stay reachable **independent of how many apps exist**: it once lived only in the
   deploy picker's `nothingFoundMessage`, so a single registered app hid the only path to a second
-  one. That guarantee now rests on the unconditional My Apps button, and `apps-list.test.tsx`
+  one. That guarantee now rests on the unconditional Apps-page button, and `apps-list.test.tsx`
   holds the line. Visibility at create is `internal` only, and the form no longer **asks** — a
   control whose every other row is locked reads as a choice it isn't, so it states what the app
   will be and points at the Access tab. Two constants in `AppCreateForm.tsx` govern this:
@@ -120,7 +134,7 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 
 ### Onboarding (`src/modals/HelpModal.tsx`)
 
-A **How to develop** button — in the sidebar footer, and on the My Apps handoff band — opens a
+A **How to develop** button — in the sidebar footer, and on the Apps page's handoff band — opens a
 modal summarising the platform for a newcomer — what a Helix app is, the four steps from empty account to live app, and a tab pair for
 the two ways to build (browser builder via the dev gateway, or the `helix` CLI). Its **Copy** /
 **Download** buttons hand out `packages/deploy-skill/SKILL.md`, rendered with this deployment's
@@ -129,7 +143,7 @@ hostnames, for a coding agent to load.
 `lib/skill.ts` (`useRenderedSkill`) does that rendering for both surfaces, and owns the rule that
 matters: the skill is `null` — and every button offering it disabled — until `GET /api/v1/config`
 lands, because a skill with a `{{PLACEHOLDER}}` host in it is worse for an agent than no skill.
-The band on **My Apps** replaced four stat cards counting apps by state; the skill is re-copied
+The band on **Apps** replaced four stat cards counting apps by state; the skill is re-copied
 every time someone starts an app or a fresh agent session, so it earns a permanent place there
 where a first-run-only nudge would not. Open state for the modal lives on `modals/HelpContext.tsx`.
 

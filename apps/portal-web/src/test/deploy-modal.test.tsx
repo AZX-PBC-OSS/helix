@@ -8,8 +8,8 @@ import { DeployModal } from "../modals/DeployModal";
 
 /**
  * The modal does one thing: ship a build into the app it was opened for. It has
- * no app picker and no create step — the picker was worse than My Apps at
- * picking, and registration lives on My Apps behind an always-visible button
+ * no app picker and no create step — the picker was worse than the apps page at
+ * picking, and registration lives on the apps page behind an always-visible button
  * (see `apps-list.test.tsx`, which holds the reachability line this file used to).
  *
  * Open state is asserted through `aria-expanded` on the controls, never through

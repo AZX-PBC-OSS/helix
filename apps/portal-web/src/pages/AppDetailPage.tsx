@@ -3,9 +3,9 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { appQuery, versionsQuery } from "../api/queries";
 import { Icon } from "../components/Icon";
-import { Hint, StatusLine, ToneBadge, VisibilityBadge } from "../components/primitives";
+import { Hint, Principal, StatusLine, ToneBadge, VisibilityBadge } from "../components/primitives";
 import { useDeployment } from "../lib/deployment";
-import { appStatus, awaitingPromote, liveVersion } from "../lib/appStatus";
+import { appStatus, awaitingPromoteNumber, deployFacts } from "../lib/appStatus";
 import { useDeploy } from "../modals/DeployContext";
 import { OverviewTab } from "./tabs/OverviewTab";
 import { VersionsTab } from "./tabs/VersionsTab";
@@ -37,7 +37,7 @@ export function AppDetailPage() {
       <Hint tone="bad" icon="alert">
         {app.error.message} —{" "}
         <Anchor component={Link} to="/">
-          back to My Apps
+          back to Apps
         </Anchor>
       </Hint>
     );
@@ -45,9 +45,11 @@ export function AppDetailPage() {
 
   const a = app.data;
   const vs = versions.data ?? [];
-  const status = appStatus(a, vs);
-  const live = liveVersion(a, vs);
-  const pending = awaitingPromote(a, vs);
+  // This page has the full version list, so facts come from it rather than from
+  // the list endpoint's projection — same shape either way (`lib/appStatus`).
+  const facts = deployFacts(a, vs);
+  const status = appStatus(a, facts);
+  const pending = awaitingPromoteNumber(facts);
   const tab = params.get("tab") ?? "overview";
   const appLink = urlFor(a);
   const appHostText = hostFor(a);
@@ -62,7 +64,7 @@ export function AppDetailPage() {
         mb={16}
         style={{ display: "inline-flex", alignItems: "center", gap: 7 }}
       >
-        <Icon name="chevR" size={13} style={{ transform: "rotate(180deg)" }} /> My Apps
+        <Icon name="chevR" size={13} style={{ transform: "rotate(180deg)" }} /> Apps
       </Anchor>
 
       <Group justify="space-between" align="flex-start" mb={24} gap="lg" wrap="wrap">
@@ -109,8 +111,21 @@ export function AppDetailPage() {
             )}
             <Group gap={8} mt={12} wrap="wrap">
               <VisibilityBadge visibility={a.visibility} />
-              <ToneBadge icon="layers">live {live ? `v${live.number}` : "—"}</ToneBadge>
-              {pending && <ToneBadge tone="slate">preview v{pending.number}</ToneBadge>}
+              <ToneBadge icon="layers">
+                live {facts.liveNumber === null ? "—" : `v${facts.liveNumber}`}
+              </ToneBadge>
+              {pending !== null && <ToneBadge tone="slate">preview v{pending}</ToneBadge>}
+              {/* Whose app this is. Shown to every signed-in reader, not just the
+                  owner — "who do I ask about this?" is the question the field
+                  exists to answer, and a deployment serves one trusted org.
+                  Not a ToneBadge: `Principal` can render a second line, which a
+                  badge's inline span has nowhere to put. */}
+              {(a.ownerId ?? a.ownerName ?? a.ownerEmail) && (
+                <Group gap={6} wrap="nowrap" c="dark.2">
+                  <Icon name="user" size={12} />
+                  <Principal id={a.ownerId} name={a.ownerName} email={a.ownerEmail} fz={12} />
+                </Group>
+              )}
             </Group>
           </Box>
         </Group>

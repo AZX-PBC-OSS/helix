@@ -25,7 +25,7 @@ import { portalOrigin } from "../lib/deployment";
  * This used to lead with a "pick or create an app" step, which existed to keep
  * registration reachable: it once hid inside the app picker's "nothing found"
  * message, so a single registered app cut off the path to a second. That
- * guarantee now belongs to the **Create app** button on My Apps
+ * guarantee now belongs to the **Create app** button on the apps page
  * (`AppsListPage`) — always visible, independent of how many apps exist.
  */
 export function DeployModal({

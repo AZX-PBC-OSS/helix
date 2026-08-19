@@ -534,7 +534,12 @@ async function checkBrowser() {
         );
         assert(kids > 0, "#root never mounted");
         const text = await browser.evaluate("document.body.innerText.replace(/\\s+/g,' ')");
-        assert(/My Apps/i.test(text), `chrome did not render the app shell: ${text.slice(0, 120)}`);
+        // The sidebar's workspace nav — "Apps" and "Usage" together, so this does
+        // not pass on the word "Apps" appearing anywhere in a page body.
+        assert(
+          /Apps\s+Usage/i.test(text),
+          `chrome did not render the app shell: ${text.slice(0, 120)}`,
+        );
         assert(
           browser.errors.length === 0,
           `page errors: ${browser.errors.slice(0, 3).join(" | ")}`,

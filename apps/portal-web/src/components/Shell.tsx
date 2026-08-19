@@ -31,7 +31,7 @@ interface NavItem {
 }
 
 const WORKSPACE_NAV: NavItem[] = [
-  { to: "/", label: "My Apps", icon: "grid" },
+  { to: "/", label: "Apps", icon: "grid" },
   { to: "/usage", label: "Usage", icon: "gauge" },
 ];
 
@@ -39,7 +39,6 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/admin/approvals", label: "Approvals", icon: "check" },
   { to: "/admin/audit", label: "Audit Log", icon: "list" },
   { to: "/admin/platform", label: "Activity", icon: "activity" },
-  { to: "/admin/registry", label: "All Apps", icon: "layers" },
   { to: "/admin/secrets", label: "Secrets", icon: "key" },
   { to: "/admin/violations", label: "Violations", icon: "shield" },
 ];
@@ -173,7 +172,9 @@ function UserChip() {
 
 export function Shell({ children }: { children: ReactNode }) {
   const { isAdmin } = useAuth();
-  const apps = useQuery(appsQuery);
+  // Deployment-wide, not the caller's own: this badge doubles as the portal
+  // reachability indicator in the sidebar footer.
+  const apps = useQuery(appsQuery("all"));
   const liveCount = apps.data?.filter((a) => !a.archivedAt && a.currentVersionId).length ?? 0;
   const { openHelp } = useHelp();
 
@@ -184,7 +185,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <Brand />
         </Box>
         {/* Deploying is an app-scoped action and lives on the app's own page;
-            creating one lives on My Apps. Neither belongs in the sidebar, where
+            creating one lives on the apps page. Neither belongs in the sidebar, where
             a global "Deploy app" button had no target to act on. */}
         <Eyebrow mb={8}>Workspace</Eyebrow>
         <Stack gap={2}>

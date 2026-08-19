@@ -15,7 +15,7 @@ import { portalOrigin, useDeployment } from "./deployment";
  * so every surface that offers the skill offers a *disabled* control until the
  * config lands. That rule lives here rather than at the call sites, which is why
  * this is a hook and not a function: two surfaces hand the skill out (the
- * onboarding modal and the My Apps handoff band) and they must not diverge.
+ * onboarding modal and the apps page's handoff band) and they must not diverge.
  *
  * Memoised because `AppsListPage` re-renders on every search keystroke.
  */

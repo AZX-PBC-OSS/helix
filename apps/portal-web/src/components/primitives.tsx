@@ -147,6 +147,55 @@ export function VisibilityBadge({ visibility }: { visibility: Visibility }) {
 }
 
 /**
+ * A person, as the control plane recorded them.
+ *
+ * Every attribution the portal renders is a bare string a route stamped at write
+ * time — an app's owner, an approval's `requestedBy`, a secret's `createdBy` —
+ * and none of them are resolved against the directory. So there is exactly one
+ * rendering question, answered here: prefer a captured display name, then a
+ * captured email, and only then the raw identity, which is human-readable today
+ * only because the portal verifier collapses the subject to
+ * `email ?? preferred_username ?? sub`.
+ *
+ * Never compare what this renders. The identity is `ownerId` and it is slated to
+ * be re-based onto an opaque directory id.
+ */
+export function Principal({
+  id,
+  name,
+  email,
+  fz = 12.5,
+}: {
+  id?: string | undefined;
+  name?: string | undefined;
+  email?: string | undefined;
+  fz?: number;
+}) {
+  const label = name ?? email ?? id;
+  if (!label) {
+    return (
+      <Text fz={fz} c="dark.3">
+        —
+      </Text>
+    );
+  }
+  // Show the address under a display name, but never the same string twice.
+  const secondary = name && email && email !== name ? email : undefined;
+  return (
+    <Box>
+      <Text fz={fz} c="dark.1" truncate>
+        {label}
+      </Text>
+      {secondary && (
+        <Text className="az-mono" fz={10.5} c="dark.3" truncate>
+          {secondary}
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+/**
  * The one consistent "not wired yet" marker. Everything it tags is mock
  * surface shipping ahead of its milestone — unmissable, and honest.
  */

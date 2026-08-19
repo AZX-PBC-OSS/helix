@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { z } from "zod";
 import {
+  AppListItemSchema,
   AppManifestSchema,
   AppSchema,
   ApprovalRequestSchema,
@@ -18,6 +19,7 @@ import {
   SecretMetadataSchema,
   UsageSummarySchema,
   VersionSchema,
+  type AppListScope,
   type PlatformRange,
   type UsageRange,
 } from "@azx-pbc/shared";
@@ -50,10 +52,21 @@ export const globalSecretsQuery = queryOptions({
 
 /** Server state, keyed for targeted invalidation after mutations. */
 
-export const appsQuery = queryOptions({
-  queryKey: ["apps"],
-  queryFn: () => fetchJson(z.array(AppSchema), "/api/v1/apps"),
-});
+/**
+ * The apps list, in one of its two scopes. `mine` is the default the page lands
+ * on; `all` is the whole registry, open to any signed-in principal.
+ *
+ * Keyed `["apps", "list", scope]` rather than `["apps", scope]` so it can never
+ * collide with `appQuery`'s `["apps", slug]` — a slug of `all` or `mine` is legal.
+ * The extra segment still sits under the `["apps"]` prefix every mutation
+ * invalidates, so a create or archive refreshes both scopes.
+ */
+export const appsQuery = (scope: AppListScope = "mine") =>
+  queryOptions({
+    queryKey: ["apps", "list", scope],
+    queryFn: () =>
+      fetchJson(z.array(AppListItemSchema), `/api/v1/apps?scope=${encodeURIComponent(scope)}`),
+  });
 
 export const appQuery = (slug: string) =>
   queryOptions({

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Route, Routes } from "react-router";
+import { Navigate, Route, Routes } from "react-router";
 import { AuthProvider } from "./auth/AuthProvider";
 import { CallbackPage } from "./auth/CallbackPage";
 import { RequireAdmin, RequireAuth } from "./auth/guards";
@@ -12,7 +12,6 @@ import { UsagePage } from "./pages/UsagePage";
 import { ApprovalsPage } from "./pages/admin/ApprovalsPage";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { PlatformPage } from "./pages/admin/PlatformPage";
-import { RegistryPage } from "./pages/admin/RegistryPage";
 import { SecretsPage } from "./pages/admin/SecretsPage";
 import { ViolationsPage } from "./pages/admin/ViolationsPage";
 
@@ -31,7 +30,11 @@ function Portal() {
         <Route path="/admin/approvals" element={admin(<ApprovalsPage />)} />
         <Route path="/admin/audit" element={admin(<AuditPage />)} />
         <Route path="/admin/platform" element={admin(<PlatformPage />)} />
-        <Route path="/admin/registry" element={admin(<RegistryPage />)} />
+        {/* The admin registry was a second, admin-only rendering of the same
+            `GET /api/v1/apps` the apps page shows. It is now that page's `all`
+            scope, open to any signed-in principal — so the old route keeps
+            working as a link, rather than 404ing bookmarks. */}
+        <Route path="/admin/registry" element={<Navigate to="/?scope=all" replace />} />
         <Route path="/admin/secrets" element={admin(<SecretsPage />)} />
         <Route path="/admin/violations" element={admin(<ViolationsPage />)} />
         <Route path="*" element={<AppsListPage />} />

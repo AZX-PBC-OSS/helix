@@ -38,7 +38,9 @@ function stubApi(me: PortalMeResponse | { status: 401 }): void {
       if (url.endsWith("/api/v1/auth/config")) {
         return Promise.resolve({ ok: true, status: 200, json: async () => AUTH_CONFIG });
       }
-      if (url.endsWith("/api/v1/apps")) {
+      // Matched loosely: the list carries a `?scope=` now, and an unmatched route
+      // in this stub hangs rather than 404ing.
+      if (url.includes("/api/v1/apps")) {
         return Promise.resolve({ ok: true, status: 200, json: async () => [] });
       }
       if (url.endsWith("/api/v1/config")) {
@@ -148,7 +150,7 @@ describe("Shell admin nav", () => {
     setToken("test-token");
     renderShell();
     // A workspace link is always present; admin links are not.
-    expect(await screen.findByText("My Apps")).toBeDefined();
+    expect(await screen.findByText("Apps")).toBeDefined();
     await waitFor(() => expect(screen.queryByText("Approvals")).toBeNull());
   });
 
@@ -158,5 +160,8 @@ describe("Shell admin nav", () => {
     renderShell();
     expect(await screen.findByText("Approvals")).toBeDefined();
     expect(screen.getByText("Secrets")).toBeDefined();
+    // "All Apps" used to live here. It is the apps page's `all` scope now, open to
+    // everyone, so an admin-only nav entry for it would be a lie.
+    expect(screen.queryByText("All Apps")).toBeNull();
   });
 });

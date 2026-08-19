@@ -5,7 +5,7 @@ import { HelpModal } from "./HelpModal";
  * Global launcher for the onboarding modal, opened from more than one place.
  *
  * It lived on `useState` in `components/Shell.tsx` while the sidebar footer was
- * the only entry point. The My Apps handoff band is the second, and it sits
+ * the only entry point. The apps page's handoff band is the second, and it sits
  * under `Shell` rather than inside it — hence a provider, mounted above both.
  * Deliberately not folded into `DeployContext`: that one launches the
  * deploy/create dialogs, and `useDeploy().openHelp` would read wrong.

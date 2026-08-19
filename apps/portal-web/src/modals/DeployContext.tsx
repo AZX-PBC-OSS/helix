@@ -7,7 +7,7 @@ import { DeployModal } from "./DeployModal";
 interface DeployControls {
   /**
    * Open the deploy modal against an app. The slug is required: a build is
-   * always shipped *into* something, and picking that something is My Apps'
+   * always shipped *into* something, and picking that something is the apps page's
    * job — it shows live/preview state, host and version, where an in-modal
    * app dropdown showed a name and a slug.
    */
