@@ -131,11 +131,29 @@ describe("AppsListPage", () => {
     expect(await screen.findByText("Standup")).toBeDefined();
   });
 
-  it("shows each app's host from the URL the server computed", async () => {
+  /**
+   * The host is no longer table text — it was the widest column, saying per row
+   * what the name already said. It reaches the reader through the link beside the
+   * name instead, so that link's target is what these cases pin.
+   */
+  it("links each live app at the URL the server computed", async () => {
     stubFetch(APPS);
     render();
-    expect(await screen.findByText("cost-explorer.apps.example.com")).toBeDefined();
-    expect(screen.getByText("standup.apps.example.com")).toBeDefined();
+
+    const link = await screen.findByRole("link", {
+      name: /open cost-explorer\.apps\.example\.com/i,
+    });
+    expect(link.getAttribute("href")).toBe("https://cost-explorer.apps.example.com");
+  });
+
+  // Standup has no live version, so there is nothing serving to open. Same rule
+  // the app's own header follows.
+  it("offers no app link for an app that is not live", async () => {
+    stubFetch(APPS);
+    render();
+
+    await screen.findByText("Standup");
+    expect(screen.queryByRole("link", { name: /open standup/i })).toBeNull();
   });
 
   // An older portal predating AppSchema.url: compose the slug onto the base from
@@ -143,14 +161,20 @@ describe("AppsListPage", () => {
   it("falls back to the deployment base when an app carries no url", async () => {
     stubFetch([makeApp("legacy", "Legacy", true)]);
     render();
-    expect(await screen.findByText("legacy.apps.example.com")).toBeDefined();
+
+    const link = await screen.findByRole("link", { name: /open legacy\.apps\.example\.com/i });
+    expect(link.getAttribute("href")).toBe("https://legacy.apps.example.com");
   });
 
-  it("renders no host at all while the deployment config is in flight", async () => {
+  it("renders no app link at all while the deployment config is in flight", async () => {
     stubFetch([makeApp("legacy", "Legacy", true)], "pending");
     render();
-    // The row renders; only the host line is withheld — never a guessed domain.
+
+    // The row renders; only the link is withheld — never a guessed domain. Asserts
+    // the link's absence, not merely the absence of the dev host: with the host
+    // gone from the table text, a substring check would pass on its own.
     expect(await screen.findByText("Legacy")).toBeDefined();
+    expect(screen.queryByRole("link", { name: /^open /i })).toBeNull();
     expect(screen.queryByText(/helix\.azxlabs\.io/)).toBeNull();
   });
 

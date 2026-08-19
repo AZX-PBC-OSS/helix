@@ -1,8 +1,9 @@
-import { Box, Center, Group, Table, Text } from "@mantine/core";
+import { Anchor, Box, Center, Group, Table, Text, Tooltip } from "@mantine/core";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import type { AppListItem } from "@azx-pbc/shared";
 import { platformUsageQuery } from "../api/queries";
+import { Icon } from "./Icon";
 import { Principal, StatusLine, VisibilityBadge } from "./primitives";
 import { fmtUsd, timeAgo } from "../lib/format";
 import { useDeployment } from "../lib/deployment";
@@ -21,49 +22,76 @@ import { appStatus, awaitingPromoteNumber, deployFacts } from "../lib/appStatus"
  * Every column here comes from the list endpoint's own projection, so the table
  * costs a fixed number of queries no matter how many apps it renders. The card
  * grid fetched `GET /versions` per card.
+ *
+ * The app's hostname is deliberately absent as text: it is long, identical up to
+ * the slug on every row, and was costing a quarter of the table's width to say
+ * something the name already says. It lives on the external-link icon beside the
+ * name — tooltip and `aria-label` — and in full on the app's own page.
  */
 
 /** Spend over the range the platform rollup reports; keyed by slug. */
 const SPEND_RANGE = "30d" as const;
 
 function AppRow({ app, spendUsd }: { app: AppListItem; spendUsd: number | undefined }) {
-  const { hostFor } = useDeployment();
+  const { hostFor, urlFor } = useDeployment();
   const facts = deployFacts(app);
   const status = appStatus(app, facts);
   const pending = awaitingPromoteNumber(facts);
+  // Only a link once the app is actually serving, and only once we know where it
+  // is — same rule as the app's own header. Both helpers are null until the
+  // deployment config lands, so a guessed host can never render.
+  const host = hostFor(app);
+  const appLink = status === "live" ? urlFor(app) : null;
 
   return (
     <Table.Tr>
       <Table.Td>
-        <Group
-          gap={11}
-          wrap="nowrap"
-          component={Link}
-          {...{ to: `/apps/${app.slug}` }}
-          style={{ color: "inherit", textDecoration: "none" }}
-        >
-          <Center
-            w={32}
-            h={32}
-            style={{
-              borderRadius: 8,
-              background: "var(--mantine-color-dark-5)",
-              border: "1px solid var(--az-line-2)",
-              flexShrink: 0,
-            }}
+        {/* The two links are siblings, never nested: the row's name opens the app's
+            page in the portal, the icon opens the app itself. */}
+        <Group gap={8} wrap="nowrap">
+          <Group
+            gap={11}
+            wrap="nowrap"
+            component={Link}
+            {...{ to: `/apps/${app.slug}` }}
+            style={{ color: "inherit", textDecoration: "none", minWidth: 0 }}
           >
-            <Text ff="heading" fw={600} fz={13} c="dark.1">
-              {app.displayName[0]?.toUpperCase()}
-            </Text>
-          </Center>
-          <Box style={{ minWidth: 0 }}>
+            <Center
+              w={32}
+              h={32}
+              style={{
+                borderRadius: 8,
+                background: "var(--mantine-color-dark-5)",
+                border: "1px solid var(--az-line-2)",
+                flexShrink: 0,
+              }}
+            >
+              <Text ff="heading" fw={600} fz={13} c="dark.1">
+                {app.displayName[0]?.toUpperCase()}
+              </Text>
+            </Center>
             <Text fz={13.5} fw={600} truncate>
               {app.displayName}
             </Text>
-            <Text className="az-mono" fz={11} c="dark.2" truncate>
-              {hostFor(app)}
-            </Text>
-          </Box>
+          </Group>
+          {/* The host used to sit under the name as a second line. It was the
+              longest string in the table and the only reason this column needed
+              a quarter of the width — so it moved into this affordance, where the
+              tooltip still hands it over on demand. */}
+          {appLink && host && (
+            <Tooltip label={host} position="top" withArrow>
+              <Anchor
+                href={appLink}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open ${host}`}
+                c="accent.4"
+                style={{ display: "inline-flex", flexShrink: 0 }}
+              >
+                <Icon name="ext" size={13} />
+              </Anchor>
+            </Tooltip>
+          )}
         </Group>
       </Table.Td>
       <Table.Td>
@@ -133,9 +161,9 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
           own frame rather than the page scrolling sideways. */}
       <Table.ScrollContainer minWidth={880}>
         {/* `table-layout: fixed` is what makes the widths below authoritative and
-            the App cell's `truncate` actually engage. On `auto`, the app host
-            sets the column's minimum from its own content and the table grows
-            past its container, pushing spend out of sight. */}
+            the App cell's `truncate` actually engage. On `auto` a long display
+            name sets its column's minimum from its own content and the table
+            grows past its container, pushing spend out of sight. */}
         <Table
           verticalSpacing="sm"
           horizontalSpacing="lg"
@@ -143,15 +171,16 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
           style={{ tableLayout: "fixed" }}
         >
           <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
-            {/* Explicit widths, because the app host is by far the longest string
-                here and left to itself it takes the width every other column
-                needs — headers and timestamps wrap, and the spend column gets
-                pushed out of view. The App cell truncates instead. */}
+            {/* Explicit, because eight columns of auto-width content wrap their
+                headers and timestamps and shove the last column off-screen. The
+                App cell truncates rather than growing. */}
             <Table.Tr>
               <Table.Th w="24%">App</Table.Th>
               <Table.Th w="16%">Owner</Table.Th>
-              <Table.Th w="11%">Visibility</Table.Th>
-              <Table.Th w="10%">Status</Table.Th>
+              <Table.Th w="10%">Visibility</Table.Th>
+              <Table.Th w="11%">Status</Table.Th>
+              {/* Wide enough for "vN awaiting promote" on one line — it is nowrap,
+                  so a narrower column would overflow rather than wrap. */}
               <Table.Th w="12%">Live</Table.Th>
               <Table.Th w="7%">Deploys</Table.Th>
               <Table.Th w="10%">Last deploy</Table.Th>
