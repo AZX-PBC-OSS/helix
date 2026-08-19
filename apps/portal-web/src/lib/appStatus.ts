@@ -13,7 +13,6 @@ import type { StatusKind } from "../components/primitives";
  * preview waiting as if it had never been deployed.
  */
 export interface DeployFacts {
-  versionCount: number;
   /** ISO timestamp of the newest version; null before the first deploy. */
   lastDeployAt: string | null;
   /** `number` of the version being served; null before the first promote. */
@@ -23,14 +22,13 @@ export interface DeployFacts {
 }
 
 const EMPTY: DeployFacts = {
-  versionCount: 0,
   lastDeployAt: null,
   liveNumber: null,
   latestPreviewNumber: null,
 };
 
 function isListItem(app: App | AppListItem): app is AppListItem {
-  return "versionCount" in app;
+  return "latestPreviewNumber" in app;
 }
 
 /**
@@ -45,7 +43,6 @@ export function deployFacts(app: App | AppListItem, versions?: Version[]): Deplo
     const previews = versions.filter((v) => v.status === "preview").map((v) => v.number);
     const times = versions.map((v) => v.createdAt).sort();
     return {
-      versionCount: versions.length,
       lastDeployAt: times.at(-1) ?? null,
       liveNumber: live?.number ?? null,
       latestPreviewNumber: previews.length > 0 ? Math.max(...previews) : null,
@@ -53,7 +50,6 @@ export function deployFacts(app: App | AppListItem, versions?: Version[]): Deplo
   }
   if (isListItem(app)) {
     return {
-      versionCount: app.versionCount,
       lastDeployAt: app.lastDeployAt,
       liveNumber: app.liveVersionNumber,
       latestPreviewNumber: app.latestPreviewNumber,

@@ -161,18 +161,16 @@ describe("GET /api/v1/apps — deploy aggregates", () => {
     const slug = await createApp(alice);
     const row = (await list(alice)).find((r) => r.slug === slug);
 
-    expect(row?.versionCount).toBe(0);
     expect(row?.lastDeployAt).toBeNull();
     expect(row?.liveVersionNumber).toBeNull();
     expect(row?.latestPreviewNumber).toBeNull();
   });
 
-  it("rolls up count, last deploy, live version and latest preview", async () => {
+  it("rolls up last deploy, live version and latest preview", async () => {
     const slug = await createApp(alice);
     await seedVersions(slug, 3, 2);
     const row = (await list(alice)).find((r) => r.slug === slug);
 
-    expect(row?.versionCount).toBe(3);
     expect(row?.liveVersionNumber).toBe(2);
     // v1 and v3 are preview; the newest is what the "awaiting promote" signal reads.
     expect(row?.latestPreviewNumber).toBe(3);

@@ -69,8 +69,6 @@ export type App = z.infer<typeof AppSchema>;
  * preview is waiting to be promoted" (§5.1) without fetching any version rows.
  */
 export const AppListItemSchema = AppSchema.extend({
-  /** Total versions ever deployed into this app. */
-  versionCount: z.int().nonnegative(),
   /** When the most recent version was created; null before the first deploy. */
   lastDeployAt: z.iso.datetime().nullable(),
   /** `number` of the version currently served; null before the first promote. */

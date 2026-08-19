@@ -31,7 +31,6 @@ function makeApp(
     archivedAt: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    versionCount: live ? 1 : 0,
     lastDeployAt: live ? new Date().toISOString() : null,
     liveVersionNumber: live ? 1 : null,
     latestPreviewNumber: null,
@@ -357,7 +356,6 @@ describe("AppsListPage", () => {
   it("distinguishes a pending preview from an app that has never deployed", async () => {
     stubFetch([
       makeApp("waiting", "Waiting", false, "https://waiting.apps.example.com", {
-        versionCount: 1,
         latestPreviewNumber: 3,
         lastDeployAt: new Date().toISOString(),
       }),

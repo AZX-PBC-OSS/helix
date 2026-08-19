@@ -115,7 +115,7 @@ export function AppsListPage() {
   // old admin route somewhere to land.
   const scope: AppListScope = AppListScopeSchema.catch("mine").parse(params.get("scope") ?? "mine");
   const apps = useQuery(appsQuery(scope));
-  const { appHost, appUrl } = useDeployment();
+  const { appUrl } = useDeployment();
   const { openCreate } = useDeploy();
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -155,9 +155,11 @@ export function AppsListPage() {
   return (
     <div>
       <PageHead
-        // The apps domain arrives with the deployment config; until it does, the
-        // eyebrow is just "Workspace" rather than a guessed host.
-        eyebrow={["Workspace", appHost("<slug>")].filter(Boolean).join(" · ")}
+        // Just "Workspace", matching Usage and the admin screens' "Admin". This
+        // used to splice in `<slug>.<apps host>` — a literal placeholder host,
+        // which said less than the real per-row link now does and made this the
+        // one page header in the SPA with a shape of its own.
+        eyebrow="Workspace"
         title="Apps"
         sub={
           scope === "mine"

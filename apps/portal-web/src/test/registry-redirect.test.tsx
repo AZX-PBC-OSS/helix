@@ -36,7 +36,6 @@ const OWNED = {
   ownerId: "alice@azx.dev",
   ownerName: "Alice Anders",
   ownerEmail: "alice@azx.dev",
-  versionCount: 0,
   lastDeployAt: null,
   liveVersionNumber: null,
   latestPreviewNumber: null,

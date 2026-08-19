@@ -29,7 +29,7 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
 - **Apps** (`/`, `AppsListPage`) — the one presentation of the registry: a dense table
   (`components/AppsTable.tsx`) over `GET /api/v1/apps`, plus create, under a band handing the
   agent skill straight over (see [Onboarding](#onboarding-srcmodalshelpmodaltsx)). A **Mine / Everyone's**
-  control drives `?scope=`; every column (owner, live version, deploy count, last deploy) comes
+  control drives `?scope=`; every column (owner, live version, last deploy) comes
   from the list endpoint's own projection, so the page costs a fixed number of queries at any row
   count, and spend joins `GET /api/v1/gateway/usage`'s `byApp` by slug.
 

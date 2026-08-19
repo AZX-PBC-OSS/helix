@@ -85,7 +85,6 @@ export function toApp(row: AppRow): App {
 
 /** The deploy aggregates the list endpoint rolls up per app (see `toAppListItem`). */
 export interface DeployAggregates {
-  versionCount: number;
   lastDeployAt: Date | null;
   liveVersionNumber: number | null;
   latestPreviewNumber: number | null;
@@ -100,7 +99,6 @@ export interface DeployAggregates {
 export function toAppListItem(row: AppRow, aggregates?: Partial<DeployAggregates>): AppListItem {
   return AppListItemSchema.parse({
     ...toApp(row),
-    versionCount: aggregates?.versionCount ?? 0,
     lastDeployAt: aggregates?.lastDeployAt?.toISOString() ?? null,
     liveVersionNumber: aggregates?.liveVersionNumber ?? null,
     latestPreviewNumber: aggregates?.latestPreviewNumber ?? null,

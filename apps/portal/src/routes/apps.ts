@@ -120,7 +120,6 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         app.prisma.version.groupBy({
           by: ["appId"],
           where: { appId: { in: appIds } },
-          _count: { _all: true },
           _max: { createdAt: true },
         }),
         app.prisma.version.groupBy({
@@ -132,7 +131,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
 
       const byApp = new Map<string, Partial<DeployAggregates>>();
       for (const t of totals) {
-        byApp.set(t.appId, { versionCount: t._count._all, lastDeployAt: t._max.createdAt });
+        byApp.set(t.appId, { lastDeployAt: t._max.createdAt });
       }
       for (const p of previews) {
         byApp.set(p.appId, { ...byApp.get(p.appId), latestPreviewNumber: p._max.number });

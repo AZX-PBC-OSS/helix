@@ -19,6 +19,11 @@ import { appStatus, awaitingPromoteNumber, deployFacts } from "../lib/appStatus"
  * was no metering API when it was built, and there is one now — so the column
  * a reader actually wants next to an app is what it costs.
  *
+ * A lifetime deploy count came across from those cards and went back out again:
+ * it is a number nobody acts on in a list, and "when did this last ship" already
+ * answers the question it was standing in for. The count is on the app's own
+ * Versions tab, where the history it summarises actually lives.
+ *
  * Every column here comes from the list endpoint's own projection, so the table
  * costs a fixed number of queries no matter how many apps it renders. The card
  * grid fetched `GET /versions` per card.
@@ -122,11 +127,6 @@ function AppRow({ app, spendUsd }: { app: AppListItem; spendUsd: number | undefi
         )}
       </Table.Td>
       <Table.Td>
-        <Text className="az-mono az-tnum" fz={12} c="dark.2">
-          {app.versionCount}
-        </Text>
-      </Table.Td>
-      <Table.Td>
         <Text className="az-mono" fz={12} c="dark.2" style={{ whiteSpace: "nowrap" }}>
           {facts.lastDeployAt ? timeAgo(facts.lastDeployAt) : "—"}
         </Text>
@@ -157,7 +157,7 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
         background: "var(--mantine-color-dark-7)",
       }}
     >
-      {/* Eight columns is wider than a phone: let the table scroll inside its
+      {/* Seven columns is wider than a phone: let the table scroll inside its
           own frame rather than the page scrolling sideways. */}
       <Table.ScrollContainer minWidth={880}>
         {/* `table-layout: fixed` is what makes the widths below authoritative and
@@ -171,20 +171,19 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
           style={{ tableLayout: "fixed" }}
         >
           <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
-            {/* Explicit, because eight columns of auto-width content wrap their
+            {/* Explicit, because seven columns of auto-width content wrap their
                 headers and timestamps and shove the last column off-screen. The
                 App cell truncates rather than growing. */}
             <Table.Tr>
-              <Table.Th w="24%">App</Table.Th>
-              <Table.Th w="16%">Owner</Table.Th>
-              <Table.Th w="10%">Visibility</Table.Th>
+              <Table.Th w="27%">App</Table.Th>
+              <Table.Th w="18%">Owner</Table.Th>
+              <Table.Th w="11%">Visibility</Table.Th>
               <Table.Th w="11%">Status</Table.Th>
               {/* Wide enough for "vN awaiting promote" on one line — it is nowrap,
                   so a narrower column would overflow rather than wrap. */}
               <Table.Th w="12%">Live</Table.Th>
-              <Table.Th w="7%">Deploys</Table.Th>
               <Table.Th w="10%">Last deploy</Table.Th>
-              <Table.Th w="10%">Spend · {SPEND_RANGE}</Table.Th>
+              <Table.Th w="11%">Spend · {SPEND_RANGE}</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
