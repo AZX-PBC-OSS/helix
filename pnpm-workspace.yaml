@@ -77,10 +77,10 @@ catalog:
   # via fontsource: no CDN fetches from the control plane.
   react: ^19.2.7
   react-dom: ^19.2.7
-  "@mantine/core": ^9.3.1
-  "@mantine/hooks": ^9.3.1
-  "@mantine/dropzone": ^9.3.1
-  "@mantine/charts": ^9.3.1 # usage charts (wraps recharts); SPA-only, not the edge
+  "@mantine/core": ^9.5.1
+  "@mantine/hooks": ^9.5.1
+  "@mantine/dropzone": ^9.5.1
+  "@mantine/charts": ^9.5.1 # usage charts (wraps recharts); SPA-only, not the edge
   recharts: ^3.2.1 # @mantine/charts peer
   "@tanstack/react-query": ^5.101.0
   react-router: ^7.18.2 # library mode (BrowserRouter) — no framework runtime
