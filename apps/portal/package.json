@@ -13,7 +13,8 @@
     "db:deploy": "prisma migrate deploy",
     "db:deploy:azure": "tsx scripts/migrate-deploy.ts",
     "db:reset": "prisma migrate reset --force",
-    "seed:llm": "tsx scripts/seed-platform-secret.ts"
+    "seed:llm": "tsx scripts/seed-platform-secret.ts",
+    "db:backfill-owners": "tsx scripts/backfill-app-owners.ts"
   },
   "dependencies": {
     "@azure/identity": "catalog:",

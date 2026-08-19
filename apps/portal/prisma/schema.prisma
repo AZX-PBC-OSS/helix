@@ -45,8 +45,19 @@ model App {
   displayName       String
   /// Creator's `actor.sub`, set at `app.create`. Nullable: rows predating the
   /// approvals work (docs/design/approvals.md §4) have no recorded owner. Drives
-  /// the admin queue "owner" column and "who may request/withdraw".
+  /// the admin queue "owner" column, "who may request/withdraw", and the apps
+  /// list's `scope=mine` filter. **The identity half — compared, never rendered.**
   ownerId           String?
+  /// The owner's claims as they read at `app.create` (`actor.name`/`actor.email`).
+  /// **The display half — rendered, never compared.** Stored rather than resolved
+  /// because `ownerId` is only human-readable by accident today: the portal
+  /// verifier collapses the subject to `email ?? preferred_username ?? sub`
+  /// (`src/auth/verifier.ts`), and TODO.md's `private`-visibility work plans to
+  /// re-base `ownerId` onto Entra's opaque `oid`. These columns keep every owner
+  /// cell in the portal readable across that change. Slightly stale if someone
+  /// renames themselves in the directory; nullable for rows predating them.
+  ownerName         String?
+  ownerEmail        String?
   // Visibility is a discriminated union in zod; stored flattened here so it is
   // queryable/indexable (only `group` carries a payload).
   visibilityMode    VisibilityMode

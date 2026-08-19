@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import {
+  AppListScopeSchema,
   CapabilitiesSchema,
   CreateAppRequestSchema,
   OriginGrantRequestSchema,
@@ -18,7 +19,14 @@ import { AppError } from "../plugins/errors.js";
 import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import { casPolicyWrite } from "../policy/policyWrite.js";
 import { isUniqueViolation } from "../db/errors.js";
-import { capabilitiesFromRow, toApp, toManifest, visibilityToColumns } from "../db/mappers.js";
+import {
+  capabilitiesFromRow,
+  toApp,
+  toAppListItem,
+  toManifest,
+  visibilityToColumns,
+  type DeployAggregates,
+} from "../db/mappers.js";
 import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
 import { Prisma } from "../db/client.js";
 import {
@@ -54,6 +62,12 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           slug: body.slug,
           displayName: body.displayName,
           ownerId: actor.sub,
+          // Capture the actor's display claims alongside the identity. The
+          // portal never resolves an owner against the directory later, so this
+          // is the only moment they are available; they may go stale if the
+          // person is renamed, which is the trade documented on the columns.
+          ownerName: actor.name ?? null,
+          ownerEmail: actor.email ?? null,
           visibilityMode,
           visibilityGroupId,
           capabilities,
@@ -73,11 +87,65 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     reply.status(201).send(toApp(row));
   });
 
-  // List all apps. Read — sign-in required (any authenticated principal).
-  app.get("/api/v1/apps", { preHandler: authenticate }, async () => {
-    const rows = await app.prisma.app.findMany({ orderBy: { createdAt: "asc" } });
-    return rows.map(toApp);
-  });
+  /**
+   * List apps. Read — sign-in required (any authenticated principal).
+   *
+   * `scope` is a **filter, not a permission gate.** `mine` narrows to the
+   * caller's own apps because that is what the apps page defaults to showing;
+   * `all` is open to every signed-in principal, exactly as this route has always
+   * been. Browsing a colleague's apps is intended (one trusted org per
+   * deployment — ADR-0028/ADR-0023), so do not read `mine` as a boundary or
+   * bolt authorization onto it: read-scoping is v1 RBAC's job (ADR-0007).
+   *
+   * The deploy aggregates are rolled up in three fixed queries rather than per
+   * row — the apps table needs live version, last deploy and version count for
+   * every row, and fetching them per app is the 1+N this replaced.
+   */
+  app.get<{ Querystring: { scope?: string } }>(
+    "/api/v1/apps",
+    { preHandler: authenticate },
+    async (req) => {
+      const actor = requireActor(req);
+      const scope = AppListScopeSchema.catch("mine").parse(req.query.scope ?? "mine");
+
+      const rows = await app.prisma.app.findMany({
+        where: scope === "mine" ? { ownerId: actor.sub } : {},
+        orderBy: { createdAt: "asc" },
+        include: { currentVersion: { select: { number: true } } },
+      });
+      if (rows.length === 0) return [];
+
+      const appIds = rows.map((r) => r.id);
+      const [totals, previews] = await Promise.all([
+        app.prisma.version.groupBy({
+          by: ["appId"],
+          where: { appId: { in: appIds } },
+          _count: { _all: true },
+          _max: { createdAt: true },
+        }),
+        app.prisma.version.groupBy({
+          by: ["appId"],
+          where: { appId: { in: appIds }, status: "preview" },
+          _max: { number: true },
+        }),
+      ]);
+
+      const byApp = new Map<string, Partial<DeployAggregates>>();
+      for (const t of totals) {
+        byApp.set(t.appId, { versionCount: t._count._all, lastDeployAt: t._max.createdAt });
+      }
+      for (const p of previews) {
+        byApp.set(p.appId, { ...byApp.get(p.appId), latestPreviewNumber: p._max.number });
+      }
+
+      return rows.map((row) =>
+        toAppListItem(row, {
+          ...byApp.get(row.id),
+          liveVersionNumber: row.currentVersion?.number ?? null,
+        }),
+      );
+    },
+  );
 
   // Get one app by slug. Read — sign-in required.
   app.get<{ Params: { slug: string } }>(

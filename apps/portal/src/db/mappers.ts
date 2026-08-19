@@ -1,4 +1,5 @@
 import {
+  AppListItemSchema,
   AppManifestSchema,
   AppSchema,
   ApprovalRequestSchema,
@@ -11,6 +12,7 @@ import {
   VersionSchema,
   type AppManifest,
   type App,
+  type AppListItem,
   type ApprovalRequest,
   type Capabilities,
   type PriorDecisions,
@@ -73,6 +75,35 @@ export function toApp(row: AppRow): App {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     url: appPublicUrl(row.slug),
+    // Nullable columns, optional wire fields: `?? undefined` so a row with no
+    // recorded owner omits the keys rather than sending nulls the schema refuses.
+    ownerId: row.ownerId ?? undefined,
+    ownerName: row.ownerName ?? undefined,
+    ownerEmail: row.ownerEmail ?? undefined,
+  });
+}
+
+/** The deploy aggregates the list endpoint rolls up per app (see `toAppListItem`). */
+export interface DeployAggregates {
+  versionCount: number;
+  lastDeployAt: Date | null;
+  liveVersionNumber: number | null;
+  latestPreviewNumber: number | null;
+}
+
+/**
+ * Map an `apps` row plus its rolled-up deploy aggregates to the wire
+ * `AppListItem`. The aggregates are supplied by the caller, which computes them
+ * for the whole page in one pass — see `GET /api/v1/apps`. Missing aggregates
+ * mean "an app with no versions", not "unknown", so they default to empty.
+ */
+export function toAppListItem(row: AppRow, aggregates?: Partial<DeployAggregates>): AppListItem {
+  return AppListItemSchema.parse({
+    ...toApp(row),
+    versionCount: aggregates?.versionCount ?? 0,
+    lastDeployAt: aggregates?.lastDeployAt?.toISOString() ?? null,
+    liveVersionNumber: aggregates?.liveVersionNumber ?? null,
+    latestPreviewNumber: aggregates?.latestPreviewNumber ?? null,
   });
 }
 
