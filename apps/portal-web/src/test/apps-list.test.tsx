@@ -264,7 +264,9 @@ describe("AppsListPage", () => {
       render();
       await screen.findByText("Mine App");
 
-      await userEvent.click(screen.getByRole("radio", { name: "All" }));
+      // "Everyone's", not "All" — the status filter's first segment is the "All"
+      // one, and this asserts the scope control specifically.
+      await userEvent.click(screen.getByRole("radio", { name: "Everyone's" }));
       expect(await screen.findByText("Their App")).toBeDefined();
     });
 

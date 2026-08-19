@@ -178,12 +178,19 @@ export function AppsListPage() {
       <AgentHandoff />
 
       <Group mb={18} gap={10}>
+        {/* "Everyone's", not "All": this control sits directly beside the status
+            filter, whose first segment is also an "All", and two adjacent
+            controls both offering "All" read as one broken control even though
+            each is clear alone. The label carries the axis — whose apps — while
+            the status filter keeps `All` for the same reason it has counts: it
+            heads a family (`All 7 | Live 4 | …`) and matches the filter idiom in
+            DataTab and AuditPage. The wire value stays `all`. */}
         <SegmentedControl
           value={scope}
           onChange={setScope}
           data={[
             { value: "mine", label: "Mine" },
-            { value: "all", label: "All" },
+            { value: "all", label: "Everyone's" },
           ]}
         />
         <SegmentedControl
