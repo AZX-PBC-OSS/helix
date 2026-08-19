@@ -17,7 +17,7 @@ describe("timeAgo", () => {
    * The regression this guards: `timeAgo` used to fall back to a bare
    * `toLocaleDateString()` past 30 days, so the oldest thing on a screen was the
    * only one without a relative age — precisely where staleness matters most
-   * (a 45-day-old approval read as "7/1/2026"). See ADR-0038.
+   * (a 45-day-old approval read as "7/1/2026"). See ADR-0039.
    */
   it("stays relative past 30 days", () => {
     expect(timeAgo(agoIso(45 * DAY))).toBe("45d ago");
