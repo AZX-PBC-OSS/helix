@@ -39,7 +39,9 @@ run_step() {
 if [[ "${FIX}" -eq 1 ]]; then
   echo "Auto-fixing lint + formatting before checks..."
   pnpm lint:fix || true
-  pnpm format || true
+  # --log-level warn: `prettier --write` otherwise names all ~300 files it looked
+  # at, which buries every warning the steps below emit. The format step re-checks.
+  pnpm format --log-level warn || true
 fi
 
 run_step "typecheck" pnpm typecheck
