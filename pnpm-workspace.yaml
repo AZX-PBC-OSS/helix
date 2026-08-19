@@ -40,7 +40,7 @@ catalog:
   "@azure/identity": ^4.5.0
   # Edge HTTP client: streams assets from Blob with hand-rolled SharedKey
   # signing — the edge stays off the Azure SDK (dep-minimal, project plan §1).
-  undici: ^7.16.0
+  undici: ^7.29.0
   # Zip handling: yauzl reads (portal, streaming + zip-bomb-safe), archiver
   # writes (helix CLI). fflate reads + writes in the browser (portal-web bundle
   # salvage — ADR-0038): tiny, dependency-free, and can list a zip's central
@@ -69,19 +69,19 @@ catalog:
   "@mantine/charts": ^9.3.1 # usage charts (wraps recharts); SPA-only, not the edge
   recharts: ^3.2.1 # @mantine/charts peer
   "@tanstack/react-query": ^5.101.0
-  react-router: ^7.17.0 # library mode (BrowserRouter) — no framework runtime
+  react-router: ^7.18.2 # library mode (BrowserRouter) — no framework runtime
   "@fontsource-variable/space-grotesk": ^5.2.10
   "@fontsource-variable/hanken-grotesk": ^5.2.8
   "@fontsource-variable/jetbrains-mono": ^5.2.8
   # Portal serves the built SPA statically (project plan §1).
-  "@fastify/static": ^9.1.3
+  "@fastify/static": ^10.1.2
   # ── Dev tooling ──
   "@eslint/js": ^10.0.1
   "@types/react": ^19.2.17
   "@types/react-dom": ^19.2.3
   vite: ^7.3.5
   "@vitejs/plugin-react": ^5.2.0
-  postcss: ^8.5.15
+  postcss: ^8.5.23
   postcss-preset-mantine: ^1.18.0
   postcss-simple-vars: ^7.0.1
   jsdom: ^29.1.1
@@ -95,14 +95,14 @@ catalog:
   "@types/archiver": ^8.0.0
   "@types/oidc-provider": ^9.5.0
   prisma: ^7.8.0
-  form-data: ^4.0.5 # build multipart bodies in app.inject tests
+  form-data: ^4.0.6 # build multipart bodies in app.inject tests
   eslint: ^10.4.1
   prettier: ^3.8.4
   # Bundles the helix CLI to a single publishable dist/helix.js — the one place
   # we emit JS. Lets @azx-pbc/shared stay a build-free raw-TS workspace package
   # (its `exports` point at ./src) without leaking `workspace:*` into a
   # published manifest.
-  esbuild: ^0.28.0
+  esbuild: ^0.28.1
   tsx: ^4.22.4
   typescript: ^6.0.3
   typescript-eslint: ^8.61.0
