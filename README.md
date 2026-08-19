@@ -14,18 +14,22 @@ _what & why_), and [`docs/platform-project-plan.md`](./docs/platform-project-pla
 what & in what order_) — [`docs/README.md`](./docs/README.md) maps the rest. The whole design rests on one stance — **every hosted app is untrusted code** —
 and contains the blast radius per app instead of trying to verify it.
 
-> **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Registry + deploys
-> (portal API + `helix` CLI),
-> edge serving on the wildcard apps domain, the §4.2 / Appendix A auth flow against **real Entra**
-> in production and a local OIDC issuer in dev (central callback, one-time handoff token,
-> `__Host-session` cookies, server-side
-> sessions, group visibility, silent refresh, password/public modes, `/_api/me`; portal/CLI
-> bearer JWTs), the `/_api/*` **gateway** (LLM proxy `/_api/llm/chat`, app-data `/_api/data/*` —
-> user / collection / shared — with a metering ledger and the Postgres role split), an enforced
-> capability **approval** workflow, **plus the `helix-egress` mechanism plane**: the fetch-proxy
-> (`/_api/fetch/<url>` + an opt-in transparent fetch/XHR shim) and secret-backed connections,
-> built as a third container from day one. The Entra registration and the Azure deploy have both
-> landed; a real pilot app end to end is the outstanding M5 residual.
+> **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Running in
+> production on Container Apps — three planes, real Entra OIDC, wildcard TLS, a live Key Vault
+> — and still fully runnable on a laptop, with `apps/dev-idp` standing in for Entra and an AES-GCM
+> envelope for Key Vault. Shipped: registry + deploys (portal API, `helix` CLI, and
+> drag-and-drop upload in the SPA), edge serving, the §4.2 / Appendix A auth flow (central
+> callback, one-time handoff token, `__Host-session` cookies, server-side sessions, group
+> visibility, silent refresh, password/public modes, `/_api/me`; portal/CLI bearer JWTs), the
+> `/_api/*` **gateway** — LLM (`/_api/llm/chat`, plus an OpenAI-compatible
+> `/_api/openai/v1/*` surface and structured output), app-data (`/_api/data/*`: user /
+> collection / shared), and the fetch-proxy (`/_api/fetch/<url>` + an opt-in transparent
+> fetch/XHR shim) — all metered against a ledger over the Postgres role split, an enforced
+> capability **approval** workflow, secret-backed connections through the **`helix-egress`**
+> mechanism plane (its own container from day one), the platform-authored **offline** service
+> worker, and **dev mode** for building an app against an isolated `env=dev` tier. Outstanding
+> from M5: a real pilot app end to end, and confirming the egress firewall is on in the live
+> deployments (project plan §4).
 
 ## Layout
 
@@ -36,13 +40,14 @@ apps/
   portal-web/  # the portal SPA (Vite + React 19 + Mantine + TanStack Query)
   egress/      # helix-egress — mechanism plane: outbound HTTP + secret injection + SSRF
   dev-idp/     # local OIDC issuer (oidc-provider). Dev only, never deployed.
+  certbot/     # scheduled ACA job: wildcard TLS via DNS-01 (deployment only, no local role)
 packages/
   shared/        # @azx-pbc/shared — zod schemas: visibility, app, version, manifest, auth, llm, data, usage, instruction
   secret-store/  # @azx-pbc/secret-store — seal/open/destroy seam (dev envelope / prod Key Vault)
-  cli/           # helix — the deploy CLI (login / deploy / promote / …)
+  cli/           # helix — the deploy CLI (login / deploy / promote / …), published to npm
   deploy-skill/  # SKILL.md — the agent skill for building apps on Helix
-examples/      # reference apps to `helix deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy); built dist/ committed
-docs/          # TOUR is at repo root; here: OVERVIEW, platform-architecture, project-plan, adr/, features/, design/ (see docs/README.md)
+examples/      # reference apps to `helix deploy` (hello-world, notes, chatbot, waitlist, github-stars, fetch-proxy, offline); built dist/ committed
+docs/          # TOUR is at repo root; here: OVERVIEW, platform-architecture, project-plan, adr/, features/, design/, runbooks/, reviews/ (see docs/README.md)
 infra/azure/   # Bicep — the deployed Azure topology (source of truth; see its README)
 .devcontainer/ # VS Code dev container; also runs Postgres 18 + Azurite
 ```
@@ -50,12 +55,15 @@ infra/azure/   # Bicep — the deployed Azure topology (source of truth; see its
 ## Prerequisites
 
 Open the repo in the **dev container** (VS Code: _Reopen in Container_). It provides Node 24,
-pnpm, and the `db` (Postgres) + `azurite` (Blob) services, with `DATABASE_URL`,
-`AZURE_STORAGE_CONNECTION_STRING`, the M3 auth env (`EDGE_OIDC_*`, `EDGE_AUTH_SECRET`,
-`PORTAL_OIDC_*`, `EDGE_TLS_*`), and the egress env (`HELIX_INSTRUCTION_SECRET` for the
-edge↔egress attested instruction) already set. `pnpm install` runs on create, and post-create
-generates a mkcert wildcard cert for `*.local.helix.azxlabs.io` into `.devcontainer/certs/` (gitignored),
-the dev secret-store KEK, and the `helix_egress` DB role.
+pnpm, and the `db` (Postgres 18) + `azurite` (Blob) services, with `DATABASE_URL` and the
+per-role DSNs, `AZURE_STORAGE_CONNECTION_STRING`, the M3 auth env (`EDGE_OIDC_*`,
+`EDGE_AUTH_SECRET`, `PORTAL_OIDC_*`, `EDGE_TLS_*`), the egress env
+(`HELIX_INSTRUCTION_SECRET` for the edge↔egress attested instruction), and dev mode
+(`EDGE_ALLOW_DEV_MODE`) already set. The least-privilege Postgres roles (`helix_portal`,
+`helix_edge`, `helix_egress`, `helix_dev`) are created on first DB init by
+`.devcontainer/db-init/`. `pnpm install` runs on create, and post-create generates a mkcert
+wildcard cert for `*.local.helix.azxlabs.io` into `.devcontainer/certs/` (gitignored) plus the
+dev secret-store KEK.
 
 ### The platform is HTTPS-only
 
@@ -72,13 +80,15 @@ processes inside the container already trust the CA via `NODE_EXTRA_CA_CERTS`.
 
 ```bash
 pnpm dev:idp      # :3002 — local OIDC issuer (apps/dev-idp). Fixture users below.
-pnpm dev:portal   # :3001 — registry + deploy API
+pnpm dev:portal   # :3001 — registry + deploy API (also serves the built SPA)
 pnpm dev:edge     # :8080 — HTTPS. Apps at https://<slug>.local.helix.azxlabs.io:8080,
                   #         login on https://auth.local.helix.azxlabs.io:8080
 pnpm dev:egress   # :8081 — mechanism plane (fetch-proxy + secret injection).
-                  #         Only needed when exercising /_api/fetch or connections.
+                  #         Needed for /_api/fetch, connections, and the LLM gateway.
 pnpm dev:devgw    # :8082 — HTTPS. The dev-gateway: develop an app against its
-                  #         isolated env=dev tier from Lovable / localhost (see below).
+                  #         isolated env=dev tier from a browser builder / localhost (see below).
+pnpm dev:web      # :5173 — the SPA dev server (proxies /api + /health to :3001)
+pnpm dev:clean    #         free any of those ports left held by a dead process
 ```
 
 `*.local.helix.azxlabs.io` resolves to `127.0.0.1`, so app subdomains and the auth host work with no
@@ -90,48 +100,71 @@ pnpm dev:devgw    # :8082 — HTTPS. The dev-gateway: develop an app against its
 | `bob@azx.dev`     | `eng-team`                   |
 | `mallory@azx.dev` | _none_ (for group-denial)    |
 
-The dev container sets `EDGE_DEV_ALLOW_UNAUTHENTICATED=true`, which skips the **session gate**
-(handy while iterating on an app) but not TLS — apps still serve over HTTPS. To exercise the
-real login flow, run the edge with that flag cleared:
+The dev container leaves `EDGE_DEV_ALLOW_UNAUTHENTICATED` **off**, so local dev mirrors reality:
+app navigations 302 into the real SSO flow and the session-gated `/_api/*` gateway is exercisable
+from the browser. To serve app content without logging in — debugging asset serving in isolation,
+say — start the edge with the bypass on (it skips the **session gate** only, never TLS):
 
 ```bash
-EDGE_DEV_ALLOW_UNAUTHENTICATED= pnpm dev:edge
+EDGE_DEV_ALLOW_UNAUTHENTICATED=true pnpm dev:edge
 ```
 
 ## Deploy an app and log in
 
+Two paths, same registry. **From the portal SPA**: create the app, then drop a build folder or a
+zip onto the deploy modal — it validates and salvages the bundle in the browser before upload.
+**From the CLI** (`npm i -g @azx-pbc/helix-cli`, or run it out of the workspace as below), from
+inside the app directory:
+
 ```bash
+# 0. Run the CLI straight from the working tree, under the name it really has:
+alias helix='node --import tsx /workspace/packages/cli/src/bin.ts'
+
 # 1. Sign the CLI in (OIDC device flow against the dev IdP). Or export
 #    HELIX_TOKEN=$PORTAL_DEV_TOKEN to use the static dev token instead.
 cd examples/notes
-node --import tsx ../../packages/cli/src/bin.ts login     # prints a URL + code; pick alice
+helix login                 # prints a URL + code; pick alice
 
 # 2. Register + deploy + promote (slug/dir come from helix.json):
-node --import tsx ../../packages/cli/src/bin.ts create
-node --import tsx ../../packages/cli/src/bin.ts deploy --promote
+helix create
+helix deploy --promote
 
 # 3. Open it (accept the cert warning the first time):
 open https://notes.local.helix.azxlabs.io:8080/
 ```
 
-With the gate on (no bypass), an unauthenticated visit 302s to the login page; pick a fixture
+`helix` is **cwd-driven** — it reads `helix.json`, and resolves `--dir`, from the directory you
+are standing in, like `git`. That is why the alias above points at an absolute path, and why
+`pnpm --filter @azx-pbc/helix-cli helix` is the one form to avoid for a real deploy: `--filter`
+runs with the cwd inside `packages/cli`, where the app isn't.
+
+The examples' `helix.json` deliberately omits `portalUrl` — a checked-in portal URL would be
+wrong for every deployment but one — so the CLI falls back to `http://localhost:3001`, which is
+right here and nowhere else. Against a deployed portal, set `portalUrl` (or `HELIX_PORTAL_URL`);
+the portal prints the exact file to copy under **How to develop → On your machine**.
+
+With the gate on (the default), an unauthenticated visit 302s to the login page; pick a fixture
 user and you land back on the app with a host-scoped session. `GET /_api/me` returns the
-signed-in user. See [`apps/edge/README.md`](./apps/edge/README.md) for the request flow and
-config, [`apps/dev-idp/README.md`](./apps/dev-idp/README.md) for the IdP, and
+signed-in user. To exercise the **LLM gateway** locally, run `pnpm dev:egress` and seed a
+`platform`-scoped secret named `anthropic` (portal → Secrets) — the edge never holds a vendor
+key, so the capability fails closed until egress can resolve one (ADR-0008).
+
+See [`apps/edge/README.md`](./apps/edge/README.md) for the request flow and config,
+[`apps/dev-idp/README.md`](./apps/dev-idp/README.md) for the IdP, and
 [`packages/cli/README.md`](./packages/cli/README.md) for the CLI and its auth.
 
 ## Develop an app against Helix (dev mode)
 
 The flow above _deploys_ a finished app. To iterate on an app that's still being written
-elsewhere — on `localhost`, in Lovable, in a cloud IDE — and have it call the real platform
-(LLM, data, fetch) as you go, use **dev mode**: an isolated `env=dev` tier on the same app,
-reached through the **dev-gateway** (`pnpm dev:devgw`, `:8082`). It never touches production
+elsewhere — on `localhost`, in a browser builder, in a cloud IDE — and have it call the real
+platform (LLM, data, fetch) as you go, use **dev mode**: an isolated `env=dev` tier on the same
+app, reached through the **dev-gateway** (`pnpm dev:devgw`, `:8082`). It never touches production
 data, budget, or secrets, and promotion later moves _code_, never dev data.
 
 ```bash
 # 1. Create the app (no code needed yet) and grant its capabilities in the portal.
 # 2. In the portal "Dev mode" tab: register your app's origin (e.g. http://localhost:5173
-#    or your Lovable URL) and mint a dev token (shown once, azxdev_…). Configure any
+#    or your builder's URL) and mint a dev token (shown once, azxdev_…). Configure any
 #    env=dev connection secrets in the "Secrets" tab (Tier → dev).
 # 3. From your in-development app, call the dev-gateway — same /_api/* shape as prod,
 #    slug in the path, token as a bearer:
@@ -147,19 +180,24 @@ opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-pr
 
 ## Commands (from the repo root)
 
-| Command                     | What                                               |
-| --------------------------- | -------------------------------------------------- |
-| `pnpm install`              | Install all workspace deps                         |
-| `pnpm typecheck`            | `tsc` across every package                         |
-| `pnpm lint` / `pnpm format` | ESLint / Prettier                                  |
-| `pnpm test`                 | Vitest across the workspace                        |
-| `pnpm dev:idp`              | Local OIDC issuer (`:3002`)                        |
-| `pnpm dev:portal`           | helix-portal (`:3001`, registry + deploy API)      |
-| `pnpm dev:edge`             | helix-edge (`:8080`, HTTPS)                        |
-| `pnpm dev:egress`           | helix-egress (`:8081`, fetch-proxy + secrets)      |
-| `pnpm dev:devgw`            | azx-dev-gateway (`:8082`, develop against env=dev) |
-| `pnpm dev:web`              | portal SPA (`:5173`, proxies `/api` to :3001)      |
-| `./check-and-lint.sh`       | Poor-man's CI: typecheck + lint + format + tests   |
+| Command                                    | What                                               |
+| ------------------------------------------ | -------------------------------------------------- |
+| `pnpm install`                             | Install all workspace deps                         |
+| `pnpm typecheck`                           | `tsc` across every package                         |
+| `pnpm lint` / `pnpm format`                | ESLint / Prettier (`format:check` to verify only)  |
+| `pnpm test`                                | Vitest across the workspace                        |
+| `pnpm dev:idp`                             | Local OIDC issuer (`:3002`)                        |
+| `pnpm dev:portal`                          | helix-portal (`:3001`, registry + deploy API)      |
+| `pnpm dev:edge`                            | helix-edge (`:8080`, HTTPS)                        |
+| `pnpm dev:egress`                          | helix-egress (`:8081`, fetch-proxy + secrets)      |
+| `pnpm dev:devgw`                           | the dev-gateway (`:8082`, develop against env=dev) |
+| `pnpm dev:web`                             | portal SPA (`:5173`, proxies `/api` to :3001)      |
+| `pnpm dev:clean`                           | Free the dev ports (8080–8082, 3001, 3002, 5173)   |
+| `pnpm --filter @azx-pbc/portal db:migrate` | Create/apply a Prisma migration (dev)              |
+| `./check-and-lint.sh`                      | Poor-man's CI: typecheck + lint + format + tests   |
+
+`./check-and-lint.sh` (add `--fix` to auto-fix first) is the same gate CI runs, and a change
+isn't finished until it passes clean.
 
 ## Conventions
 
