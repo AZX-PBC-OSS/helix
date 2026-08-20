@@ -26,6 +26,7 @@
     "@azx-pbc/deploy-skill": "workspace:*",
     "@fastify/multipart": "catalog:",
     "@fastify/static": "catalog:",
+    "@azx-pbc/telemetry": "workspace:*",
     "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",
     "fastify": "catalog:",

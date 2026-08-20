@@ -71,6 +71,23 @@ catalog:
   jose: ^6.2.3
   openid-client: ^6.8.4
   oidc-provider: ^9.11.3
+  # ── Observability (ADR-0037) ──
+  # OpenTelemetry, and OTLP is the only wire format any service knows: the
+  # destination (App Insights today) is configured in infra/azure, never named
+  # in apps/ or packages/. Composed from the individual SDK packages rather
+  # than @opentelemetry/sdk-node, which bundles the @opentelemetry/instrumentation
+  # require-time patching machinery ADR-0037 §4 rejects outright — a tree we
+  # would carry into the dependency-minimal edge and never use (ADR-0003).
+  # The api facade is separately versioned (1.x) and no-ops when unregistered;
+  # the two exporters are 0.x, where `^` is minor-locked. That is deliberate:
+  # the experimental packages break at minor and must not float.
+  "@opentelemetry/api": ^1.9.1
+  "@opentelemetry/sdk-trace-node": ^2.10.0
+  "@opentelemetry/sdk-metrics": ^2.10.0
+  "@opentelemetry/exporter-trace-otlp-http": ^0.221.0
+  "@opentelemetry/exporter-metrics-otlp-http": ^0.221.0
+  "@opentelemetry/resources": ^2.10.0
+  "@opentelemetry/semantic-conventions": ^1.43.0
   # ── Portal SPA (apps/portal-web) ──
   # Mantine 9 pins React 19. Vite stays on the 7.x line (vitest 4 supports it;
   # 8.x is the rolldown major — adopt as its own bump). Fonts are self-hosted

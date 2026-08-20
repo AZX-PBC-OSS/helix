@@ -11,8 +11,12 @@ import { makeProxyHandler } from "./proxy.js";
  * the edge's `/proxy` calls, never app users. It is the one component that holds
  * plaintext secrets and a route to the public internet; everything else about it
  * is deliberately tiny.
+ *
+ * `SERVICE_NAME` is exported for `server.ts`'s `startTelemetry` call, so the
+ * OTel `service.name` resource attribute and the `/health` `service` field
+ * below cannot drift apart (ADR-0037).
  */
-const SERVICE_NAME = "azx-egress";
+export const SERVICE_NAME = "azx-egress";
 
 export interface EgressDeps {
   config: EgressConfig;

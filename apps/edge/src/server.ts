@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { buildApp } from "./app.js";
+import { startTelemetry } from "@azx-pbc/telemetry";
+import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig, publicOrigin } from "./config.js";
 import { createBlobReader } from "./blob/client.js";
 import { LiveRegistry, type RegistryLogger } from "./registry/listener.js";
@@ -52,6 +53,11 @@ function loadDotEnvLocal(): void {
 }
 
 loadDotEnvLocal();
+
+// Telemetry first, after the dotenv load (so `.env.local` can point it at a
+// local collector) and before anything it might one day instrument. Inert
+// unless an OTLP endpoint is configured — see @azx-pbc/telemetry and ADR-0037.
+const telemetry = startTelemetry(SERVICE_NAME);
 
 // Bind 0.0.0.0 — inside the container the port is reached across the Docker
 // network / forwarded to the host.
@@ -255,6 +261,8 @@ app.addHook("onClose", async () => {
   await llmProvider?.close();
   await counterStore.close();
   await blob.close();
+  // Last: flush the final batch after everything that could still record.
+  await telemetry.shutdown();
 });
 
 try {

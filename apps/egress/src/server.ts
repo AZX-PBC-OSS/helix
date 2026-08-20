@@ -6,7 +6,8 @@ import {
   type SecretStore,
   type TokenProvider,
 } from "@azx-pbc/secret-store";
-import { buildApp } from "./app.js";
+import { startTelemetry } from "@azx-pbc/telemetry";
+import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";
 import { PgSecretResolver, type SecretResolver } from "./secrets.js";
@@ -49,6 +50,10 @@ function loadDotEnvLocal(): void {
 }
 
 loadDotEnvLocal();
+
+// Inert unless an OTLP endpoint is configured (ADR-0037). Mirrors the edge:
+// after the dotenv load, before anything else comes up.
+const telemetry = startTelemetry(SERVICE_NAME);
 
 const config = loadConfig();
 const instructionKey = deriveInstructionKey(config.instructionSecret);
@@ -126,6 +131,7 @@ app.addHook("onClose", async () => {
   await burnStore.close();
   await resolver?.close();
   await tokenProvider?.close();
+  await telemetry.shutdown();
 });
 
 try {

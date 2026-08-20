@@ -33,8 +33,12 @@ import { assertDeploymentConfig } from "./deployment.js";
  * azx-portal — the control plane (architecture §3, §7). Privileged: registry
  * writes, deploy endpoint, capability approvals. Not routable from app
  * subdomains. Owns the Postgres schema and migrations (Prisma).
+ *
+ * `SERVICE_NAME` is exported for `server.ts`'s `startTelemetry` call, so the
+ * OTel `service.name` resource attribute and the `/health` `service` field
+ * below cannot drift apart (ADR-0037).
  */
-const SERVICE_NAME = "azx-portal";
+export const SERVICE_NAME = "azx-portal";
 
 export interface BuildAppOptions {
   /** Inject a PrismaClient and BlobStore (tests). Defaults build real ones. */
