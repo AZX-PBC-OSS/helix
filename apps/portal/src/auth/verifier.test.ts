@@ -76,13 +76,62 @@ describe("createOidcVerifier", () => {
     });
   });
 
-  it("reads the groups claim, falling back to roles", async () => {
+  it("unions the groups and roles claims", async () => {
     const groups = await verifier.verify(await mint({ claims: { groups: ["platform-admin"] } }));
     expect(groups?.groups).toEqual(["platform-admin"]);
     const roles = await verifier.verify(await mint({ claims: { roles: ["admins"] } }));
     expect(roles?.groups).toEqual(["admins"]);
     const none = await verifier.verify(await mint());
     expect(none?.groups).toEqual([]);
+    // Both at once — `groups` first, then whatever `roles` adds.
+    const both = await verifier.verify(
+      await mint({ claims: { groups: ["group-a"], roles: ["role-b"] } }),
+    );
+    expect(both?.groups).toEqual(["group-a", "role-b"]);
+  });
+
+  /**
+   * The regression this case exists to hold. `groups ?? roles` discarded
+   * `roles` the instant `groups` was present, and the admin gate
+   * (`actorIsAdmin`, plugins/auth.ts) reads exactly one configured value out of
+   * that array. So the day the portal app registration starts emitting a
+   * security-groups claim (ADR-0040), every platform admin loses the approvals
+   * queue and the admin pages — triggered by an IdP-side config change, with no
+   * deploy and, before this, nothing in the repo that would go red.
+   */
+  it("keeps the admin role claim when a groups claim is also present", async () => {
+    const actor = await verifier.verify(
+      await mint({
+        claims: {
+          groups: ["11111111-2222-3333-4444-555555555555"],
+          roles: ["platform-admin"],
+        },
+      }),
+    );
+    expect(actor?.groups).toContain("platform-admin");
+    expect(actor?.groups).toContain("11111111-2222-3333-4444-555555555555");
+  });
+
+  it("dedupes a value carried by both claims", async () => {
+    const actor = await verifier.verify(
+      await mint({ claims: { groups: ["shared", "a"], roles: ["shared", "b"] } }),
+    );
+    expect(actor?.groups).toEqual(["shared", "a", "b"]);
+  });
+
+  /**
+   * The second half of the same bug: `??` fell through only on null/undefined,
+   * so a *malformed* `groups` claim was truthy, won the coalesce, filtered down
+   * to [] — and silently threw away a perfectly good `roles`. Same lockout, and
+   * this one needed no registration change to fire.
+   */
+  it("still reads roles when the groups claim is present but malformed", async () => {
+    for (const malformed of ["platform-admin", 42, {}, true, [""], [7]]) {
+      const actor = await verifier.verify(
+        await mint({ claims: { groups: malformed, roles: ["platform-admin"] } }),
+      );
+      expect(actor?.groups).toEqual(["platform-admin"]);
+    }
   });
 
   it("falls back preferred_username → sub for the actor sub", async () => {

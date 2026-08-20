@@ -24,9 +24,16 @@ export interface Actor {
   name?: string;
   email?: string;
   /**
-   * IdP group/role ids from the token (the `groups` claim, falling back to
-   * Entra's `roles`). Drives admin gating for approvals (docs/design/
-   * approvals.md §4); empty when the token carries neither claim.
+   * IdP group/role ids from the token — the **union** of the `groups` and
+   * `roles` claims, not one falling back to the other (see
+   * {@link unionClaimArrays}). Drives admin gating for approvals
+   * (docs/design/approvals.md §4); empty when the token carries neither claim.
+   *
+   * One flat array by design: every consumer is a membership test, so a mixed
+   * bag of security-group ids and App Role values needs no discrimination. Note
+   * that once a deployment emits security-group claims (ADR-0040) this holds
+   * group ids *and* role values together, so anything that resolves entries as
+   * groups against a directory must filter by id shape rather than assume.
    */
   groups: string[];
 }
@@ -55,6 +62,28 @@ function claimString(value: unknown): string | undefined {
 function claimStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+/**
+ * Union several string-array claims, deduped, first-seen order preserved.
+ *
+ * **This is deliberately a union and must never become `a ?? b`.** It reads
+ * `groups` and `roles` together because an Entra token can legitimately carry
+ * both at once: a security-groups claim on the app registration fills `groups`
+ * with group ids, while the platform-admin App Role rides `roles` (ADR-0040).
+ * Coalescing let the mere *presence* of `groups` discard `roles` entirely, and
+ * since the admin gate (`actorIsAdmin`, plugins/auth.ts) tests for one
+ * configured value in this array, that locked every platform admin out of the
+ * approvals queue — set off by an IdP-side config change, with no deploy to
+ * correlate it against.
+ *
+ * `??` also fell through only on null/undefined, so a malformed `groups` claim
+ * (a bare string, a number) was truthy enough to win the coalesce and then
+ * filter down to nothing, taking a valid `roles` with it. Filtering per claim
+ * and unioning the results makes garbage in one claim cost only that claim.
+ */
+function unionClaimArrays(...values: unknown[]): string[] {
+  return [...new Set(values.flatMap(claimStringArray))];
 }
 
 /**
@@ -122,7 +151,7 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
         const email = claimString(payload.email);
         const name = claimString(payload.name);
         const preferred = claimString(payload.preferred_username);
-        const groups = claimStringArray(payload.groups ?? payload.roles);
+        const groups = unionClaimArrays(payload.groups, payload.roles);
         return { sub: email ?? preferred ?? sub, via: "oidc", name, email, groups };
       } catch {
         return null;
