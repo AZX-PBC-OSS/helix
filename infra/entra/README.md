@@ -13,12 +13,12 @@ The three OIDC clients (architecture §4.2) as Infrastructure-as-Code, via the
 
 ## What it declares
 
-| Registration                                                                               | Bicep highlights                                                                                                               |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `*-edge`                                                                                   | web redirect URIs, `email` optional claim, **certificate** keyCredential (private_key_jwt — the tenant blocks secrets)         |
-| `*-portal`                                                                                 | SPA redirect URIs, **`requestedAccessTokenVersion: 2`**, the `access` scope, the **`platform-admin`** app role, `email` claims |
-| `*-cli`                                                                                    | `isFallbackPublicClient: true` (device code), delegated permission to the portal `access` scope                                |
-| + service principals, an optional `platform-admin` role assignment, optional admin consent |
+| Registration                                                                                                                                                 | Bicep highlights                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `*-edge`                                                                                                                                                     | web redirect URIs, `email` optional claim, **certificate** keyCredential (private_key_jwt — the tenant blocks secrets), **`groupMembershipClaims: SecurityGroup`**         |
+| `*-portal`                                                                                                                                                   | SPA redirect URIs, **`requestedAccessTokenVersion: 2`**, the `access` scope, the **`platform-admin`** app role, `email` claims, **`groupMembershipClaims: SecurityGroup`** |
+| `*-cli`                                                                                                                                                      | `isFallbackPublicClient: true` (device code), delegated permission to the portal `access` scope                                                                            |
+| + service principals, an optional `platform-admin` role assignment, optional admin consent, and the portal identity's **`GroupMember.Read.All`** Graph grant |
 
 Its outputs (`edgeOidcClientId`, `portalOidcAudience`, `azxWebClientId`,
 `azxCliClientId`) are exactly the params the `../azure` stack needs — deploy this
@@ -37,6 +37,17 @@ stories):
   claim, no GUIDs/Graph/overage.
 - **Certificate, not secret** — `keyCredentials`, because the tenant policy blocks
   client secrets.
+- **`groupMembershipClaims: 'SecurityGroup'`** on both edge and portal — per-app group
+  visibility reads security groups, not App Roles ([ADR-0040](../../docs/adr/0040-entra-group-visibility-directory-seam.md)
+  decision 1), because a role-per-group would make "scope this app to a group" an
+  infrastructure deploy. On the edge it feeds `visibilityAllows`; on the portal it
+  feeds the picker's "groups you're a member of" default from a token the portal
+  already verifies. **The portal half has an ordering dependency** — see wart #5.
+- **`GroupMember.Read.All` on the portal's managed identity**, not on any registration
+  here and not as a client secret. One permission, app-only, narrowest that answers
+  `$search` (proven by probe, not by docs — `Group.Read.All` had zero incremental
+  capability across sixteen calls). Declaring the `appRoleAssignedTo` **is** the admin
+  consent.
 
 ## Known warts (read before deploying)
 
@@ -58,6 +69,20 @@ stories):
 4. **Federated identity credential** (the cleanest edge auth — no key material)
    is sketched in `main.bicep` but disabled: it needs an edge code change to
    present a managed-identity token as the OIDC `client_assertion`.
+5. **The Graph grant needs a second pass, and the portal claim needs a deployed
+   portal.** `portalIdentityPrincipalId` names an identity created by `../azure`,
+   which cannot exist until this stack has produced the client ids — so the order is
+   **entra → azure → entra**, with the second pass carrying
+   `HELIX_PORTAL_IDENTITY_PRINCIPAL_ID`. Separately, `groupMembershipClaims` on the
+   _portal_ registration must not be applied until the **running** portal image
+   unions the `groups` and `roles` claims (`unionClaimArrays`, commit `abb6912`);
+   against an older image it silently strips `platform-admin` and locks every admin
+   out of approvals. Both gates are sequenced in
+   [`docs/runbooks/entra-group-claims-rollout.md`](../../docs/runbooks/entra-group-claims-rollout.md).
+6. **Consent rights, again.** The `appRoleAssignedTo` against Microsoft Graph needs
+   `AppRoleAssignment.ReadWrite.All` (Privileged Role Administrator / Global
+   Administrator) — the same bar as `grantAdminConsent`, and above what wart #2's
+   Application Administrator gives you.
 
 ## Deploy (when the time comes)
 
@@ -66,6 +91,11 @@ cd infra/entra
 az bicep build --file main.bicep            # compile check (needs the extension)
 az deployment group create -g <rg> -f main.bicep -p main.bicepparam
 # then the identifierUris one-liner (wart #1), then feed outputs to ../azure
+
+# ...and once ../azure has deployed, a second pass to grant the Graph permission:
+export HELIX_PORTAL_IDENTITY_PRINCIPAL_ID=$(az identity show \
+  -g <rg> -n <namePrefix>-portal-id --query principalId -o tsv)
+az deployment group create -g <rg> -f main.bicep -p main.bicepparam
 ```
 
 The `<rg>` is incidental — the Graph objects are tenant-scoped; the resource

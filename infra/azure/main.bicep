@@ -465,8 +465,15 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
       { name: 'EDGE_OIDC_ISSUER', value: oidcIssuer }
       { name: 'EDGE_OIDC_CLIENT_ID', value: edgeOidcClientId }
-      // App Roles (the `roles` claim), not security groups — see the runbook.
-      { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'roles' }
+      // Security groups (the `groups` claim), NOT App Roles — ADR-0040 decision 1.
+      // Pairs with `groupMembershipClaims: 'SecurityGroup'` on the edge registration
+      // (../entra/main.bicep): change both or neither. While this said `roles` and
+      // that registration declared no app roles, the claim was empty for every user,
+      // so `visibility: group` denied 100% of them — the app's owner included.
+      // Redundant with the code default (apps/edge/src/config.ts) and kept explicit
+      // anyway: an empty group claim fails silently, and this is the line you grep
+      // for when it does.
+      { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'groups' }
       { name: 'EDGE_OIDC_SCOPES', value: 'openid profile email' }
       // Operator visibility policy — the serving half of the pair (the portal
       // holds the authoring half). The app parses these STRICTLY (`=== "true"`),
@@ -696,3 +703,8 @@ output edgeFqdn string = edgeApp.?outputs.fqdn ?? ''
 output egressFqdn string = egressApp.?outputs.fqdn ?? ''
 output portalFqdn string = portalApp.?outputs.fqdn ?? ''
 output devGatewayFqdn string = devGatewayApp.?outputs.fqdn ?? ''
+// Feeds `portalIdentityPrincipalId` on the SIBLING ../entra stack, whose second pass
+// grants this identity GroupMember.Read.All on Microsoft Graph (ADR-0040 decision 4).
+// The two stacks deploy in the order entra -> azure -> entra: this output is the only
+// thing flowing back the other way.
+output portalIdentityPrincipalId string = identity.outputs.portalIdentityPrincipalId

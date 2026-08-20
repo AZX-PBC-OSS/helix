@@ -211,12 +211,18 @@ not merely a nice-to-have.
 - Per-app **group visibility** (`visibility: group`). The gate is built — `visibilityAllows`
   checks the session's group snapshot, and `apps/dev-idp` exercises it locally and in CI — but it
   does not work on the deployed platform, and the missing piece is configuration rather than
-  code. Entra emits no `groups` delegated claim, so the install points `EDGE_OIDC_GROUPS_CLAIM`
-  at **App Roles**; using group visibility for real means defining an app role per group and
-  assigning members ([Entra runbook](../runbooks/entra-app-registration.md)). Until someone does,
-  a `group` app denies everyone, so the portal's create form no longer offers the mode
-  (`UNAVAILABLE_AT_CREATE` in `AppCreateForm.tsx`) — the Access tab still does, which a follow-up
-  covers. Pilot apps use `internal`/`password`.
+  code. Entra emits no `groups` delegated *scope*; it emits group claims from the app
+  registration. [ADR-0040](../adr/0040-entra-group-visibility-directory-seam.md) settles how:
+  **security groups** (`groupMembershipClaims: SecurityGroup` on the edge registration, GUIDs in
+  the `groups` claim), not an App Role per group — a role per group would make scoping an app to
+  a group an infrastructure deploy. `infra/entra` and `infra/azure` now declare that shape, and
+  applying it to a live tenant is
+  [`entra-group-claims-rollout.md`](../runbooks/entra-group-claims-rollout.md). Until an install
+  runs it, the claim is empty and a `group` app denies everyone, so the portal's create form does
+  not offer the mode (`UNAVAILABLE_AT_CREATE` in `AppCreateForm.tsx`) — the Access tab still does,
+  with free-text GUID entry, which is also the permanent fallback when the directory permission is
+  ungranted. Pilot apps use `internal`/`password`. Note that group membership in the claim is
+  **transitive**: scoping to a parent group admits members of its nested children.
 
 **Since shipped — real Entra registration.** Production now authenticates against a real Entra
 app registration; the swap was config-only (issuer/client), exactly as designed, and the local

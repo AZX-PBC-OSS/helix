@@ -19,17 +19,24 @@ where the dev IdP had been doing Entra's job for us, and both already landed:
 
 ## Decisions baked into this runbook
 
-- **Authorization via App Roles, not security groups.** App roles let us emit
-  human-readable string values (e.g. `platform-admin`) in the `roles` claim —
-  no GUIDs, no Microsoft Graph lookups, no >200-group claim overage, no Entra
-  P1 license (when assigning individual users). Our config and stored
-  identifiers stay readable, matching the dev-idp behavior.
+- **Portal admin gating via App Roles; per-app group visibility via security
+  groups.** These are two different questions and, since
+  [ADR-0040](../adr/0040-entra-group-visibility-directory-seam.md), two different
+  answers. *Admin gating* stays on an App Role: `platform-admin` in the `roles`
+  claim on the **portal** registration — human-readable, no GUIDs, no Graph, no
+  P1 license when assigning individual users. *Per-app group visibility* uses
+  **security groups** on the **edge** registration
+  (`groupMembershipClaims: SecurityGroup`, GUIDs in the `groups` claim), because
+  a role-per-group would make "scope this app to a group" an infrastructure
+  deploy — relocating the problem the feature exists to solve. The two coexist on
+  separate registrations and separate claims; the portal verifier unions them.
 - **Single-tenant.** Only the org's own users sign in. Issuer is the **v2**
   endpoint: `https://login.microsoftonline.com/{tenantId}/v2.0`.
 - **Pilot apps use `internal` or `password` visibility.** The only role plumbing
-  M5 needs is one `platform-admin` role for portal admin gating. Per-app
-  **group visibility** (`visibility: group`) is deferred until a real app needs
-  it (see [Deferred](#deferred-until-needed)).
+  this runbook needs is one `platform-admin` role for portal admin gating.
+  Per-app **group visibility** (`visibility: group`) is a separate, later step —
+  ADR-0040 and
+  [`entra-group-claims-rollout.md`](entra-group-claims-rollout.md).
 
 Substitute the real apex domain for `azx.helix.azxlabs.io` if it differs
 (`docs/platform-architecture.md` §4.2).
@@ -83,8 +90,11 @@ client, so it authenticates itself at the token endpoint. Two supported forms:
 - The edge reads only the **ID token** and derives display name from
   `name → preferred_username → email`. `preferred_username` (the UPN) is always
   present in v2, so a missing `email` degrades gracefully.
-- **No app roles needed for the pilot** — only add roles here later, when an app
-  uses `visibility: group`.
+- **No app roles here, ever.** `visibility: group` reads security groups, not App
+  Roles (ADR-0040 decision 1), so the later step adds
+  `groupMembershipClaims: SecurityGroup` to this registration rather than an
+  `appRoles[]` entry per group. See
+  [`entra-group-claims-rollout.md`](entra-group-claims-rollout.md).
 
 ### Reg 2 — `helix-portal` (portal SPA + the API its tokens target)
 
@@ -235,8 +245,8 @@ Set these in the M5 ACA app configuration / Key Vault. **The dev
 | `EDGE_OIDC_CLIENT_SECRET` | from Key Vault — **or** use the certificate pair below (set exactly one form) |
 | `EDGE_OIDC_CLIENT_PRIVATE_KEY` | (cert auth) PKCS#8 private-key PEM, or base64-encoded PEM |
 | `EDGE_OIDC_CLIENT_CERTIFICATE` | (cert auth) the matching X.509 cert PEM, or base64-encoded PEM |
-| `EDGE_OIDC_GROUPS_CLAIM` | **`roles`** (point the edge at the App Roles claim) |
-| `EDGE_OIDC_SCOPES` | `openid profile email` (drop `groups`; roles ride the token automatically) |
+| `EDGE_OIDC_GROUPS_CLAIM` | **`groups`** (security-group GUIDs — the code default; set it explicitly anyway, an empty group claim fails silently). Was `roles`; ADR-0040 flipped it. |
+| `EDGE_OIDC_SCOPES` | `openid profile email` (drop the code default's `groups` — it is not a Graph delegated permission; group claims come from the registration, not a scope) |
 | `EDGE_AUTH_SECRET` | fresh base64 ≥32 bytes (internal HKDF key, **not** an Entra secret) |
 | `EDGE_OIDC_ALLOW_INSECURE` | unset |
 
@@ -292,7 +302,7 @@ EDGE_OIDC_CLIENT_SECRET=          # empty: disables the dev secret so it doesn't
 EDGE_OIDC_ALLOW_INSECURE=         # empty: Entra is https
 EDGE_OIDC_CLIENT_PRIVATE_KEY=<base64 of .devcontainer/certs/entra-edge-key.pem>
 EDGE_OIDC_CLIENT_CERTIFICATE=<base64 of .devcontainer/certs/entra-edge-cert.pem>
-EDGE_OIDC_GROUPS_CLAIM=roles
+EDGE_OIDC_GROUPS_CLAIM=groups     # needs groupMembershipClaims: SecurityGroup on the registration
 EDGE_OIDC_SCOPES=openid profile email
 ```
 
@@ -331,11 +341,19 @@ local config of their own — they read everything from the portal's
 
 ---
 
-## Deferred (until needed)
+## Beyond this runbook
 
-- **Per-app group visibility (`visibility: group`).** When the first app needs
-  it, define an app role per group on `helix-edge` and assign members, then
-  store that role value as the app's `visibilityGroupId`. Decide
-  App-Role-vs-security-group at that point, with a concrete need in hand.
+- **Per-app group visibility (`visibility: group`).** No longer deferred: the
+  App-Role-vs-security-group question was settled empirically and security groups
+  won ([ADR-0040](../adr/0040-entra-group-visibility-directory-seam.md), evidence
+  in [`docs/reviews/2026-08-20-entra-group-permissions-probe.md`](../reviews/2026-08-20-entra-group-permissions-probe.md)).
+  In short: `groupMembershipClaims: SecurityGroup` on the edge **and** portal
+  registrations, `EDGE_OIDC_GROUPS_CLAIM=groups`, and **one** admin-consented
+  Graph permission — `GroupMember.Read.All`, application, held by the portal's
+  managed identity — so GUIDs can be resolved to names. Procedure:
+  [`entra-group-claims-rollout.md`](entra-group-claims-rollout.md). It has a hard
+  ordering gate; read §0 before touching the portal registration.
+- **Microsoft Graph group resolution** is therefore *required*, not avoidable —
+  security groups emit object GUIDs and Entra has no "emit display name" option
+  for cloud-only groups.
 - **Multi-tenant / IdP-agnostic customers** (`docs/platform-project-plan.md` §3).
-- **Microsoft Graph group resolution** — not needed with App Roles.

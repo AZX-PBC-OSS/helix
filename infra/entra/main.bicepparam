@@ -23,3 +23,13 @@ param adminPrincipalId = readEnvironmentVariable('HELIX_ADMIN_PRINCIPAL_ID', '')
 // Pre-grant tenant-wide consent for CLI -> portal scope (needs an admin deploy
 // principal). false = users consent at first `helix login`.
 param grantAdminConsent = false
+
+// Portal managed-identity object id -> grants it GroupMember.Read.All on Microsoft
+// Graph, the group picker's only directory credential (ADR-0040). SECOND PASS: this
+// stack deploys first to produce the client ids, so the Azure stack — and therefore
+// the identity — does not exist yet on pass 1. Leave it empty, deploy ../azure, then
+// re-run this stack with:
+//   export HELIX_PORTAL_IDENTITY_PRINCIPAL_ID=$(az identity show \
+//     -g <rg> -n <namePrefix>-portal-id --query principalId -o tsv)
+// Full procedure: docs/runbooks/entra-group-claims-rollout.md.
+param portalIdentityPrincipalId = readEnvironmentVariable('HELIX_PORTAL_IDENTITY_PRINCIPAL_ID', '')

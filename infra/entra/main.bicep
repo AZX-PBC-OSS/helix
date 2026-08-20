@@ -55,6 +55,9 @@ param edgeAccessPrincipalIds array = []
 @description('Object ids of the users/groups allowed to SIGN IN to this install\'s portal (the control plane). Usually staff only — narrower than edgeAccessPrincipalIds, which may include customer guests. Confers NO admin rights; that is adminPrincipalId.')
 param portalAccessPrincipalIds array = []
 
+@description('Object (principal) id of the portal container app\'s user-assigned managed identity — the `portalIdentityPrincipalId` output of the sibling ../azure stack. Non-empty GRANTS it the GroupMember.Read.All Microsoft Graph application permission (ADR-0040 decision 4), which is the group picker\'s only directory credential. Empty on a first pass, because the Azure stack does not exist yet and has no identity to name; fill it on a second pass. Presence IS the grant, deliberately — the same idiom as edgeAccessPrincipalIds, and for the same reason: it makes "granted but pointed at nothing" unexpressible. NOTE this needs a deploy principal that can consent (Privileged Role Administrator / Global Administrator, or AppRoleAssignment.ReadWrite.All) — an app owner is NOT enough, same bar as grantAdminConsent.')
+param portalIdentityPrincipalId string = ''
+
 // Whether Entra refuses a token to an unassigned user. DERIVED from the lists
 // above rather than a separate flag, deliberately: the hazard with this switch is
 // enabling it before anyone is assigned, which locks out every user of the install
@@ -104,8 +107,23 @@ resource edgeApp 'Microsoft.Graph/applications@v1.0' = {
       displayName: 'CN=${namePrefix}-edge'
     }
   ]
-  // No app roles for the pilot — they're only needed for `visibility: group`
-  // apps (deferred). Add an appRoles[] entry per group when that lands.
+  // Per-app group visibility (`visibility: group`) reads SECURITY GROUPS, not App
+  // Roles — ADR-0040 decision 1. So there are still no appRoles here, and there
+  // never will be: an appRoles[] entry per group would mean an infrastructure
+  // deploy every time somebody wants to scope an app to a group they already
+  // manage, which relocates the problem the feature exists to solve rather than
+  // solving it. `SecurityGroup` puts the caller's security-group object GUIDs in
+  // the `groups` claim instead, which is what apps/edge/src/auth/validate.ts
+  // (visibilityAllows) intersects against the app's allowed groups.
+  //
+  // Pairs with EDGE_OIDC_GROUPS_CLAIM=groups on the edge container in ../azure —
+  // that var used to say `roles`, and with no app roles declared here the claim
+  // was empty for everyone, so `group` visibility denied 100% of users including
+  // the app's own owner. Change both or neither.
+  //
+  // Cost accepted: GUIDs, not names. Entra has no "emit display name" option for
+  // cloud-only groups, which is why the portal grows a Graph resolver below.
+  groupMembershipClaims: 'SecurityGroup'
 }
 
 resource edgeSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
@@ -201,6 +219,23 @@ resource portalApp 'Microsoft.Graph/applications@v1.0' = {
     idToken: [ { name: 'email', essential: false } ]
     accessToken: [ { name: 'email', essential: false } ]
   }
+  // The caller's own security groups, so the group picker can default to "groups
+  // you're a member of" from a token the portal has ALREADY cryptographically
+  // verified — no Graph call, no second delegated credential (ADR-0040 decision 6).
+  //
+  // HARD ORDERING DEPENDENCY: this makes `groups` present on portal tokens, and
+  // apps/portal/src/auth/verifier.ts must be the version that UNIONS `groups` and
+  // `roles` (unionClaimArrays, commit abb6912). The older `payload.groups ??
+  // payload.roles` discards `roles` the moment `groups` shows up, which drops
+  // platform-admin and locks every admin out of approvals and the admin pages —
+  // an Entra-side change with no deploy to correlate it against. Verify the
+  // RUNNING portal image carries that fix before applying this property; the
+  // rollout doc gates on it (docs/runbooks/entra-group-claims-rollout.md §0).
+  //
+  // Admin gating itself does NOT move: it stays an exact-value match on the
+  // `platform-admin` App Role in `roles` (PORTAL_ADMIN_GROUP_ID). Different claim,
+  // different registration, no collision — the two just have to coexist.
+  groupMembershipClaims: 'SecurityGroup'
   // identifierUris MUST be ['api://${portalApp.appId}'] so clients can request
   // the `api://<id>/access` scope — BUT Bicep can't self-reference appId within
   // the same resource. Options: (a) a one-time post-deploy
@@ -327,6 +362,52 @@ resource portalSelfConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (g
   resourceId: portalSp.id
   scope: 'access'
 }
+
+// ---------------------------------------------------------------------------
+// The one admin-consented Graph permission (ADR-0040 decision 2 + 4)
+// ---------------------------------------------------------------------------
+// Group visibility stores group GUIDs, so the portal needs to turn GUIDs into
+// names and let an operator search for a group by name. That is the ONLY thing
+// this grant is for, and it is deliberately the narrowest permission that can do
+// it. Grantee is the portal's MANAGED IDENTITY, not any registration above — a
+// credential that already exists, with nothing to rotate, and one the tenant's
+// app management policy cannot refuse (it bans client secrets; see the probe).
+//
+// GroupMember.Read.All, not Group.Read.All and not Directory.Read.All. This was
+// settled empirically, not from the docs: across sixteen probes Group.Read.All
+// showed ZERO incremental capability, including the query the whole design hinged
+// on — `GET /groups?$search="displayName:…"&$count=true` with
+// `ConsistencyLevel: eventual`, which returns 200 under the narrow permission.
+// Group.Read.All's consent string additionally grants group *conversations*, which
+// we will never call, so asking for it is indefensible in front of the customer
+// administrator we have to persuade. Evidence:
+// docs/reviews/2026-08-20-entra-group-permissions-probe.md.
+//
+// Be honest about the blast radius rather than reassured by the wording: "Read all
+// group memberships" does include `GET /groups/{id}/members` for every group in the
+// tenant (probe §7). What bounds us is not the grant but our usage — the
+// packages/directory seam exposes searchGroups + getGroups and NO member
+// enumeration, read app-only from the control plane, never from the edge (ADR-0003).
+//
+// Declaring this resource IS the admin consent; there is no separate approval step.
+// It is keyed off portalIdentityPrincipalId rather than a bool because the grant is
+// meaningless without a specific identity to hang it on.
+var graphGroupMemberReadAllRoleId = '98830695-27a2-44f7-8c18-0c3ebc9698f6' // GroupMember.Read.All, application. Same id in every tenant.
+
+resource portalGraphGroupRead 'Microsoft.Graph/appRoleAssignedTo@v1.0' = if (!empty(portalIdentityPrincipalId)) {
+  appRoleId: graphGroupMemberReadAllRoleId
+  principalId: portalIdentityPrincipalId
+  resourceId: graphSp.id
+}
+
+// If this is ungranted — a customer tenant mid-negotiation, or an administrator who
+// declines — nothing breaks. The provider reports itself unavailable on
+// `403 Authorization_RequestDenied` and the Access tab falls back to free-text GUID
+// entry behind a banner naming the missing permission (ADR-0040 decision 8).
+// ENFORCEMENT never depended on Graph; only the picker does. There is no narrower
+// ask to fall back to: Graph application permissions are tenant-wide by
+// construction — administrative units scope directory ROLE assignments, not app
+// permission grants, and resource-specific consent exists only for Teams.
 
 // ---------------------------------------------------------------------------
 // Outputs — feed these into the sibling Azure stack's params (../azure)
