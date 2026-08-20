@@ -13,6 +13,8 @@ mistake. Where a review's conclusion still stands, it was folded into an
 | [`2026-06-26-adr-challenge.md`](2026-06-26-adr-challenge.md)                               | 2026-06-26 | A 5-model adversarial panel challenging every ADR then on file (UPHOLD / WEAKEN / OVERTURN), grounded in source.                                |
 | [`2026-06-26-adr-challenge-verification.md`](2026-06-26-adr-challenge-verification.md)     | 2026-06-26 | Independent re-check of every row of the challenge against source — which challenges held, and which didn't.                                    |
 | [`2026-06-build-vs-buy.md`](2026-06-build-vs-buy.md)                                       | 2026-06    | Decision-support for the M4.5 design review: why build Helix rather than assemble it from off-the-shelf products, and the strategic fork behind that verdict. |
+| [`2026-08-20-entra-group-permissions-probe.md`](2026-08-20-entra-group-permissions-probe.md) | 2026-08-20 | Empirical probe of Microsoft Graph permission scoping for Entra group visibility: `GroupMember.Read.All` vs `Group.Read.All` across sixteen calls, claim transitivity, and the delegated user-plane alternative. Folded into [ADR-0040](../adr/0040-entra-group-visibility-directory-seam.md). |
+| [`2026-08-20-entra-group-permissions-probe-protocol.md`](2026-08-20-entra-group-permissions-probe-protocol.md) | 2026-08-20 | The handoff brief that errand ran from — the `az`/Graph test protocol, kept so the probe can be repeated against another tenant. |
 
 ADRs 0001–0013 were scaffolded from the 2026-06-25 review; `ISSUE-xx` / `DEC-xx` references in
 those ADRs point into it. ADRs 0025–0026 came out of the same pass. The open follow-ups distilled

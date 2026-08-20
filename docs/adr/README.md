@@ -54,3 +54,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0037](0037-platform-observability-otlp-boundary.md) | Platform observability: OpenTelemetry behind an OTLP-only boundary | Proposed |
 | [0038](0038-bundle-salvage-in-the-portal-spa.md) | Malformed upload bundles: salvage in the portal SPA, contract unchanged | Accepted |
 | [0039](0039-no-approval-request-expiry.md) | Pending approval requests do not expire | Accepted |
+| [0040](0040-entra-group-visibility-directory-seam.md) | Group visibility: security groups, one Graph permission, behind a directory seam | Accepted |
