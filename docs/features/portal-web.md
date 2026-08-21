@@ -58,7 +58,13 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     [app-data-gateway.md](./app-data-gateway.md).
   - **Access** — visibility switcher (`POST /apps/:slug/visibility`): the SSO-gated modes (→ internal /
     group) apply immediately, going public opens a confirm-with-reason approval request, and
-    `password` mode defers to the shared-password card (`PasswordAccessCard`). Plus
+    `password` mode defers to the shared-password card (`PasswordAccessCard`). The `group` row is
+    the one that stays actionable while it is already current, because its action is "edit which
+    groups" — `GroupPicker` (a Mantine `MultiSelect` over `GET /api/v1/directory/groups`, defaulting
+    to the caller's own claim-derived groups from `/directory/my-groups`, capped at
+    `MAX_VISIBILITY_GROUPS`) plus an add-by-id field for a group search can't reach. Where the
+    deployment has no Graph grant the search control is hidden and the id field carries a banner
+    naming the missing permission — the gate is unaffected either way (ADR-0040). Plus
     archive/unarchive and the one preview surface — the **Access (RBAC)** card carrying
     `<PreviewBadge milestone="v1" />` (per-app owner/editor/viewer roles are a v1 feature; today
     `ownsApp` gates app-scoped mutations and any read returning per-subject data, and every action
@@ -106,10 +112,11 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
   control whose every other row is locked reads as a choice it isn't, so it states what the app
   will be and points at the Access tab. Two constants in `AppCreateForm.tsx` govern this:
   `UNAVAILABLE_AT_CREATE` (which modes are locked — `password`/`public` are deferred and
-  additionally gated on deployment policy; `group` is gated not on a missing check but on Entra
-  configuration, since the deployed install points `EDGE_OIDC_GROUPS_CLAIM` at App Roles and no
-  per-group role is defined yet — see the [Entra runbook](../runbooks/entra-app-registration.md))
-  and
+  additionally gated on deployment policy; `group` is locked not on a missing check but on a
+  per-deployment one, since a tenant only emits security-group claims once an operator applies
+  [`entra-group-claims-rollout.md`](../runbooks/entra-group-claims-rollout.md), and until then a
+  `group` app created here would lock out its own creator on its first request — the Access tab
+  offers it because there the app already exists and the change is one click to undo) and
   `SHOW_VISIBILITY_AT_CREATE`, the render switch, flipped back on when a second mode unlocks.
 
 - **Bundle salvage** (`src/deploy/`, [ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md)) —
@@ -202,7 +209,8 @@ portal serve it at :3001.
 
 - **Never silently fake.** Surfaces that aren't fully built ship as one honest `PreviewBadge`
   rather than a screen that pretends to work — and as those surfaces became real, the badges came
-  off. The lone survivor is per-app RBAC (`SettingsTab.tsx`).
+  off. The lone survivor is per-app RBAC — the **Access (RBAC)** card on the Access tab
+  (`AccessTab.tsx`; the tab was renamed from Settings).
 - **Dashboards show tokens and cost.** `gateway_calls` stores token/request counts **and** a frozen,
   as-charged `costMicroUsd` priced at write time from a code-resident rate table (ADR-0021); the SPA
   recomputes `costUsd` from that same table for display — the dollar figure is derived from a real

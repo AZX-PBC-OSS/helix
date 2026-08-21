@@ -1,18 +1,8 @@
 import { useState } from "react";
-import {
-  Box,
-  Button,
-  Card,
-  Center,
-  Grid,
-  Group,
-  Stack,
-  Text,
-  TextInput,
-  Textarea,
-} from "@mantine/core";
+import { Box, Button, Card, Center, Grid, Group, Stack, Text, Textarea } from "@mantine/core";
 import type { App, Visibility, VisibilityMode } from "@azx-pbc/shared";
 import { useArchiveApp, useSetVisibility } from "../../api/mutations";
+import { GroupPicker } from "../../components/GroupPicker";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Eyebrow, Hint, PreviewBadge, ToneBadge } from "../../components/primitives";
@@ -43,7 +33,7 @@ const VISIBILITY_ROWS: Array<{
     mode: "group",
     icon: "user",
     label: "Group-restricted",
-    desc: "Sign-in, narrowed to members of one directory group. Membership is re-read as each visitor's session refreshes, so removing someone from the group cuts off access without waiting for them to sign out.",
+    desc: "Sign-in, narrowed to members of the directory groups you choose — including members of any groups nested inside them. Anyone in any one of them gets in. Membership is re-read as each visitor's session refreshes, so removing someone from a group cuts off access without waiting for them to sign out.",
   },
   {
     mode: "password",
@@ -66,11 +56,21 @@ export function AccessTab({ app }: { app: App }) {
   const [confirming, setConfirming] = useState(false);
   const [goingPublic, setGoingPublic] = useState(false);
   const [reason, setReason] = useState("");
-  // Inline group-id editor, opened from the group row.
+  // Inline group picker, opened from the group row.
   const [groupOpen, setGroupOpen] = useState(false);
-  const [groupId, setGroupId] = useState(
-    app.visibility.mode === "group" ? app.visibility.groupId : "",
-  );
+  const currentGroupIds = app.visibility.mode === "group" ? app.visibility.groupIds : [];
+  const [groupIds, setGroupIds] = useState<string[]>(currentGroupIds);
+  /**
+   * Whether the draft matches what's stored, compared as a **set** — order is
+   * meaningless in an any-of rule, so a reorder is not an edit. The server agrees
+   * (`classifyVisibilityChange` sorts before comparing and returns no delta), and
+   * disabling the button here means the UI says so before the round trip instead
+   * of reporting a successful save that changed nothing.
+   */
+  const unchanged =
+    app.visibility.mode === "group" &&
+    groupIds.length === currentGroupIds.length &&
+    [...groupIds].sort().join("\u0000") === [...currentGroupIds].sort().join("\u0000");
   const archived = app.archivedAt !== null;
   const current = app.visibility.mode;
   // Leaving `password` mode goes through the password card's Disable (it wipes
@@ -140,12 +140,21 @@ export function AccessTab({ app }: { app: App }) {
           <Stack gap={10} mt={authenticated && !passwordActive ? 0 : 12}>
             {rows.map((row) => {
               const on = current === row.mode;
-              // An action is offered only to a signed-in actor, only on a row
-              // that isn't already current, and only while not in password mode
-              // (password is owned by the card on the right). The `password` row
-              // itself never gets a switcher button — enabling it mints a
+              // An action is offered only to a signed-in actor, only while not in
+              // password mode (password is owned by the card on the right), and
+              // normally only on a row that isn't already current. The `password`
+              // row itself never gets a switcher button — enabling it mints a
               // credential, so it lives in PasswordAccessCard.
-              const actionable = authenticated && !passwordActive && !on && row.mode !== "password";
+              //
+              // `group` is the exception to the `!on` rule, and it has to be: its
+              // action is "edit which groups", which is the one thing an owner
+              // wants precisely *because* the app is already group-scoped. While
+              // `!on` applied to it, changing an app's groups meant switching to
+              // Internal first — briefly widening the app to the whole directory
+              // to narrow it.
+              const editable = row.mode === "group";
+              const actionable =
+                authenticated && !passwordActive && row.mode !== "password" && (!on || editable);
               return (
                 <div
                   key={row.mode}
@@ -190,7 +199,22 @@ export function AccessTab({ app }: { app: App }) {
                         {on && app.visibility.mode === "group" && (
                           <>
                             {" "}
-                            Group: <span className="az-mono">{app.visibility.groupId}</span>
+                            {app.visibility.groupIds.length === 0 ? (
+                              // A `group` app with no groups admits nobody. The
+                              // edge fails closed on it, so this is inert rather
+                              // than dangerous — but it looks identical to a
+                              // working app from the outside, so say it plainly.
+                              <Text span c="orange.4" fw={600}>
+                                No groups selected — nobody can open this app.
+                              </Text>
+                            ) : (
+                              <>
+                                {app.visibility.groupIds.length === 1 ? "Group: " : "Groups: "}
+                                <span className="az-mono">
+                                  {app.visibility.groupIds.join(", ")}
+                                </span>
+                              </>
+                            )}
                           </>
                         )}
                       </Text>
@@ -207,7 +231,7 @@ export function AccessTab({ app }: { app: App }) {
                     )}
                     {actionable && row.mode === "group" && (
                       <Button variant="default" size="xs" onClick={() => setGroupOpen((o) => !o)}>
-                        Restrict to group
+                        {on ? "Edit groups" : "Restrict to groups"}
                       </Button>
                     )}
                     {actionable && row.mode === "public" && (
@@ -225,25 +249,42 @@ export function AccessTab({ app }: { app: App }) {
                     )}
                   </Group>
                   {actionable && row.mode === "group" && groupOpen && (
-                    <Group gap={8} px={14} pb={13} align="flex-end" wrap="nowrap">
-                      <TextInput
-                        label="Directory group id"
-                        placeholder="e.g. eng-team or an Entra group GUID"
-                        value={groupId}
-                        onChange={(e) => setGroupId(e.currentTarget.value)}
-                        style={{ flex: 1 }}
-                        size="xs"
-                        classNames={{ input: "az-mono" }}
+                    <Stack gap={10} px={14} pb={13}>
+                      <GroupPicker
+                        value={groupIds}
+                        onChange={setGroupIds}
+                        disabled={setVisibility.isPending}
+                        slug={app.slug}
                       />
-                      <Button
-                        size="xs"
-                        disabled={groupId.trim().length === 0 || setVisibility.isPending}
-                        loading={setVisibility.isPending}
-                        onClick={() => apply({ mode: "group", groupId: groupId.trim() })}
-                      >
-                        Apply
-                      </Button>
-                    </Group>
+                      <Group gap={8} justify="flex-end">
+                        <Button
+                          size="xs"
+                          variant="default"
+                          onClick={() => {
+                            // Discard the draft, don't keep it: a half-edited set
+                            // left behind the collapsed panel would be applied by
+                            // a later click that looked unrelated.
+                            setGroupIds(currentGroupIds);
+                            setGroupOpen(false);
+                          }}
+                          disabled={setVisibility.isPending}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          size="xs"
+                          // An empty set is refused here rather than in the schema:
+                          // it IS storable (the edge fails closed on it), but it is
+                          // never what someone means to click, so the UI is where
+                          // that gets caught.
+                          disabled={groupIds.length === 0 || setVisibility.isPending || unchanged}
+                          loading={setVisibility.isPending}
+                          onClick={() => apply({ mode: "group", groupIds })}
+                        >
+                          {on ? "Save groups" : "Apply"}
+                        </Button>
+                      </Group>
+                    </Stack>
                   )}
                 </div>
               );

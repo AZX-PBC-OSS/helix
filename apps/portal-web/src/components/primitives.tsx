@@ -126,9 +126,18 @@ export function VisibilityBadge({ visibility }: { visibility: Visibility }) {
     case "internal":
       return <ToneBadge icon="lock">Internal</ToneBadge>;
     case "group":
+      // Names aren't available here (they're resolved live, and this renders in
+      // table cells that must not each fire a directory lookup), and ten GUIDs
+      // would not fit anyway — so one group shows its id and several show a
+      // count. Zero is called out: it's inert rather than dangerous, but it looks
+      // exactly like a working app from the outside.
       return (
         <ToneBadge tone="info" icon="user">
-          Group · {visibility.groupId}
+          {visibility.groupIds.length === 0
+            ? "Group · none"
+            : visibility.groupIds.length === 1
+              ? `Group · ${visibility.groupIds[0]}`
+              : `Group · ${visibility.groupIds.length} groups`}
         </ToneBadge>
       );
     case "password":

@@ -22,6 +22,7 @@ import {
   type App,
   type Capabilities,
   type FetchConnection,
+  visibilityLabel,
 } from "@azx-pbc/shared";
 import { useSetManifest } from "../../api/mutations";
 import { manifestQuery } from "../../api/queries";
@@ -177,7 +178,9 @@ function fromDraft(d: Draft): Capabilities {
 function renderYaml(app: App, d: Draft): string {
   const lines = [
     `app: ${app.slug}`,
-    `visibility: ${app.visibility.mode}${app.visibility.mode === "group" ? `:${app.visibility.groupId}` : ""}`,
+    // The same `group:a,b` shorthand the CLI parses and the approvals diff shows,
+    // rendered from one place so the three can't drift apart.
+    `visibility: ${visibilityLabel(app.visibility)}`,
     `capabilities:`,
   ];
   if (d.models.length || d.dollarsPerDay !== undefined) {

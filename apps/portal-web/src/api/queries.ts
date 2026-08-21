@@ -10,6 +10,7 @@ import {
   CollectionSummarySchema,
   CspViolationsPageSchema,
   DeploymentConfigResponseSchema,
+  DirectoryGroupsResponseSchema,
   DevTokenMetadataSchema,
   GatewayAuditPageSchema,
   HealthStatusSchema,
@@ -242,3 +243,60 @@ export const deploymentConfigQuery = queryOptions({
   queryFn: () => fetchJson(DeploymentConfigResponseSchema, "/api/v1/config"),
   staleTime: Infinity,
 });
+
+/**
+ * Groups matching a search term (ADR-0040 §4). Backs the Access tab's picker.
+ *
+ * `enabled` is the caller's job, and it matters here: the endpoint refuses a term
+ * under three characters with a 400, so firing on every keystroke would produce a
+ * burst of guaranteed failures and burn the per-actor rate limit on them. Gate on
+ * a debounced term of sufficient length.
+ *
+ * Group **names are never persisted** (ADR-0040 §7) — the authorization value is
+ * the id array on the app row and nothing else. This cache is the only copy of a
+ * name the browser holds, which is exactly why `staleTime` is short: a renamed or
+ * deleted group should stop showing its old name within a session.
+ */
+export const directoryGroupsQuery = (q: string) =>
+  queryOptions({
+    queryKey: ["directory", "groups", q],
+    queryFn: () =>
+      fetchJson(
+        DirectoryGroupsResponseSchema,
+        `/api/v1/directory/groups?q=${encodeURIComponent(q)}`,
+      ),
+    staleTime: 30_000,
+  });
+
+/**
+ * The caller's own groups — the picker's default view, before they search.
+ *
+ * Served from the groups claim on the access token the portal already verified,
+ * not from Graph (ADR-0040 §6), so it costs no extra credential and answers even
+ * on a deployment with no directory grant.
+ */
+export const myGroupsQuery = queryOptions({
+  queryKey: ["directory", "my-groups"],
+  queryFn: () => fetchJson(DirectoryGroupsResponseSchema, "/api/v1/directory/my-groups"),
+  staleTime: 60_000,
+});
+
+/**
+ * The names of the groups **this app** is currently scoped to (ADR-0040 §7).
+ *
+ * App-scoped rather than a general id resolver: the ids are already on the app
+ * row this caller can read, so it discloses nothing new. Without it the picker
+ * shows `unknown group (<id>)` for every stored group — technically the
+ * documented degradation, but wrong when the directory can name them perfectly
+ * well.
+ */
+export const appVisibilityGroupsQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["apps", slug, "visibility", "groups"],
+    queryFn: () =>
+      fetchJson(
+        DirectoryGroupsResponseSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/visibility/groups`,
+      ),
+    staleTime: 30_000,
+  });

@@ -1,7 +1,7 @@
 import { Box, Button, Card, Grid, Group, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
-import type { App, Version } from "@azx-pbc/shared";
+import { visibilityLabel, type App, type Version } from "@azx-pbc/shared";
 import { Bars } from "../../components/charts";
 import { Eyebrow, Hint, KV, Stat } from "../../components/primitives";
 import { approvalsQuery } from "../../api/queries";
@@ -124,8 +124,7 @@ export function OverviewTab({ app, versions }: { app: App; versions: Version[] }
               {app.id.slice(0, 8)}…
             </KV>
             <KV k="Visibility" mono>
-              {app.visibility.mode}
-              {app.visibility.mode === "group" ? `:${app.visibility.groupId}` : ""}
+              {visibilityLabel(app.visibility)}
             </KV>
             <KV k="Created" mono>
               {new Date(app.createdAt).toLocaleDateString()}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Alert, Box, Button, Group, Radio, Stack, Text, TextInput } from "@mantine/core";
 import { SLUG_PATTERN, type App, type Visibility, type VisibilityMode } from "@azx-pbc/shared";
 import { useCreateApp } from "../api/mutations";
+import { GroupPicker } from "./GroupPicker";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon } from "./Icon";
 import { useDeployment } from "../lib/deployment";
@@ -32,7 +33,7 @@ const VISIBILITY_OPTIONS: Array<{
   {
     mode: "group",
     label: "Group-restricted",
-    desc: "Sign-in, narrowed to members of one directory group. Not yet available.",
+    desc: "Sign-in, narrowed to members of the directory groups you choose, including any nested inside them. Set the groups on the Access tab once the app exists.",
   },
   {
     mode: "password",
@@ -53,19 +54,24 @@ const VISIBILITY_OPTIONS: Array<{
  * on deployment policy (`allowPasswordApps`/`allowPublicApps` below) — they're
  * listed-but-locked so the set of surfaces an app can have stays legible.
  *
- * `group` is a different case, and not a missing check: `visibilityAllows`
- * (`apps/edge/src/auth/validate.ts`) implements it, and dev-idp exercises it
- * locally and in CI. What's missing is the claim feeding it. The deployed Entra
- * install sets `EDGE_OIDC_GROUPS_CLAIM=roles`, so the gate reads **App Roles**,
- * and using it for real means defining an app role per group in Entra and
- * assigning members — see `docs/runbooks/entra-app-registration.md`. Until
- * someone does that, a `group` app denies everyone, so we don't offer the mode
- * at create. It has no deployment flag and so always renders, disabled.
+ * `group` is a different case, and the reason has changed — the old one is
+ * fixed. The gate (`visibilityAllows`, `apps/edge/src/auth/validate.ts`), the
+ * `groups` claim, the group picker and the Access tab are all real and shipped
+ * (ADR-0040). What remains is **per-deployment**: a tenant only starts emitting
+ * security-group claims once an operator applies
+ * `docs/runbooks/entra-group-claims-rollout.md`, and until then the claim is
+ * empty and a `group` app denies everyone *including its owner*.
  *
- * Re-enabling is a one-line removal from this list — the group id field and its
- * validation are kept below for exactly that reason. A follow-up covers the
- * other screens that still offer `group` (the app's Access tab); this list only
- * governs create.
+ * That is why it stays locked here but is offered on the Access tab. Choosing
+ * `group` at create means the very first thing a brand-new app does is lock its
+ * creator out, with nothing yet deployed to explain it — the worst possible first
+ * impression of a working feature. On the Access tab the app already exists, the
+ * owner can see what it was, and the change is one click to undo.
+ *
+ * Unlike `password`/`public` there is no deployment flag for it, so it always
+ * renders, disabled. Re-enabling is a one-line removal from this list once
+ * emitting the claim is the norm rather than a rollout step; the picker below is
+ * already wired for it.
  */
 const UNAVAILABLE_AT_CREATE: readonly VisibilityMode[] = ["group", "password", "public"];
 
@@ -103,13 +109,14 @@ export function AppCreateForm({
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [mode, setMode] = useState<VisibilityMode>("internal");
-  const [groupId, setGroupId] = useState("");
+  const [groupIds, setGroupIds] = useState<string[]>([]);
 
   const slugValid = SLUG_PATTERN.test(slug);
-  const valid = slugValid && displayName.trim().length > 0 && (mode !== "group" || groupId.trim());
+  const valid =
+    slugValid && displayName.trim().length > 0 && (mode !== "group" || groupIds.length > 0);
 
   function submit() {
-    const visibility: Visibility = mode === "group" ? { mode, groupId: groupId.trim() } : { mode };
+    const visibility: Visibility = mode === "group" ? { mode, groupIds } : { mode };
     create.mutate({ slug, displayName: displayName.trim(), visibility }, { onSuccess: onCreated });
   }
 
@@ -183,15 +190,7 @@ export function AppCreateForm({
           open them. You can change this any time on the app&apos;s Access tab.
         </Text>
       )}
-      {mode === "group" && (
-        <TextInput
-          label="Group id"
-          placeholder="eng-team"
-          value={groupId}
-          onChange={(e) => setGroupId(e.currentTarget.value)}
-          classNames={{ input: "az-mono" }}
-        />
-      )}
+      {mode === "group" && <GroupPicker value={groupIds} onChange={setGroupIds} />}
 
       {create.isError && (
         <Alert color="red" title="Create failed">

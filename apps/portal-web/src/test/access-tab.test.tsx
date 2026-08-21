@@ -29,10 +29,26 @@ function makeApp(visibility: Visibility): App {
  * else (/me) never resolves — irrelevant here, and `retry: false` in the test
  * QueryClient keeps it quiet.
  */
-function stubFetch(result: VisibilityUpdateResult): ReturnType<typeof vi.fn> {
+function stubFetch(
+  result: VisibilityUpdateResult,
+  directory: { mine: unknown; search: unknown } = {
+    mine: AVAILABLE_MINE,
+    search: AVAILABLE_SEARCH,
+  },
+): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((url: string) => {
     if (typeof url === "string" && url.endsWith("/visibility")) {
       return Promise.resolve({ ok: true, status: 200, json: async () => result });
+    }
+    if (typeof url === "string" && url.includes("/directory/my-groups")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => directory.mine,
+      });
+    }
+    if (typeof url === "string" && url.includes("/directory/groups")) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => directory.search });
     }
     if (typeof url === "string" && url.endsWith("/auth/config")) {
       return Promise.resolve({
@@ -130,5 +146,130 @@ describe("AccessTab visibility switcher", () => {
     expect(screen.getByText(/Disable it on the right to switch/)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Request public access" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Make internal" })).toBeNull();
+  });
+});
+
+/** The caller's own groups, as `/directory/my-groups` answers them. */
+const AVAILABLE_MINE = {
+  available: true,
+  groups: [{ id: "eng-team", displayName: "Engineering", securityEnabled: true }],
+};
+
+/** A search hit, as `/directory/groups` answers it. */
+const AVAILABLE_SEARCH = {
+  available: true,
+  groups: [{ id: "product-team", displayName: "Product", securityEnabled: true }],
+};
+
+/**
+ * The group picker (ADR-0040 §5, §8, §9).
+ *
+ * Two of these are regression pins rather than feature tests: an owner has to be
+ * able to edit the groups of an app that is *already* group-scoped (the row used
+ * to go inert once current, so changing groups meant switching to Internal first
+ * — briefly widening the app to the whole directory in order to narrow it), and
+ * the tab has to keep working when the tenant never granted the Graph
+ * permission.
+ */
+describe("AccessTab group picker", () => {
+  it("offers editing to an app that is already group-scoped", async () => {
+    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    // Not "Restrict to groups": the app is already there, so the action is an edit.
+    expect(await screen.findByRole("button", { name: "Edit groups" })).toBeDefined();
+  });
+
+  it("shows the current group ids, and says so when there are none", () => {
+    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
+    setToken("test-token");
+    const { unmount } = render(makeApp({ mode: "group", groupIds: ["eng-team", "product-team"] }));
+    expect(screen.getByText(/eng-team, product-team/)).toBeDefined();
+    unmount();
+
+    // A zero-group `group` app is inert (the edge fails closed) but looks
+    // identical to a working one from the outside, so it is called out.
+    render(makeApp({ mode: "group", groupIds: [] }));
+    expect(screen.getByText(/No groups selected — nobody can open this app/)).toBeDefined();
+  });
+
+  it("saves an edited group set as an array", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "group", groupIds: ["eng-team"] }),
+      applied: [{ path: "visibility", from: "group:eng-team", to: "group:eng-team,product-team" }],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+    // Add a second group through the by-id escape hatch — the same path a group
+    // that search can't reach has to take.
+    await user.type(await screen.findByLabelText("Add by id"), "product-team");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Save groups" }));
+
+    await waitFor(() =>
+      expect(visibilityBody(fetchMock)).toEqual({
+        visibility: { mode: "group", groupIds: ["eng-team", "product-team"] },
+      }),
+    );
+  });
+
+  it("will not save an empty group set", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Restrict to groups" }));
+    // No jest-dom in this suite, so assert the attribute the DOM actually carries.
+    expect((await screen.findByRole("button", { name: "Apply" })).hasAttribute("disabled")).toBe(
+      true,
+    );
+    expect(visibilityBody(fetchMock)).toBeUndefined();
+  });
+
+  /**
+   * ADR-0040 §8. A tenant that declined `GroupMember.Read.All` must still get a
+   * working Access tab: the picker becomes plain id entry behind a banner naming
+   * the permission an administrator would grant. Enforcement never depended on
+   * Graph, so group visibility itself keeps working — the banner has to say that
+   * too, or it reads as "this feature is broken".
+   */
+  it("degrades to id entry with a banner when the directory is unavailable", async () => {
+    stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      {
+        mine: {
+          available: false,
+          reason: "no-consent",
+          detail: "tenant said no",
+          missingPermission: "GroupMember.Read.All",
+        },
+        search: {
+          available: false,
+          reason: "no-consent",
+          detail: "tenant said no",
+          missingPermission: "GroupMember.Read.All",
+        },
+      },
+    );
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["11111111-1111-4111-8111-111111111111"] }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+
+    expect(await screen.findByText(/Group search is unavailable/)).toBeDefined();
+    expect(screen.getByText(/GroupMember\.Read\.All/)).toBeDefined();
+    // And it says the gate still works, so the banner is not read as an outage.
+    expect(screen.getByText(/Access control itself is unaffected/)).toBeDefined();
+    // The id field is still there, so the stored GUID remains editable.
+    expect(screen.getByLabelText("Group id")).toBeDefined();
   });
 });
