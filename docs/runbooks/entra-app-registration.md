@@ -355,5 +355,9 @@ local config of their own — they read everything from the portal's
   ordering gate; read §0 before touching the portal registration.
 - **Microsoft Graph group resolution** is therefore *required*, not avoidable —
   security groups emit object GUIDs and Entra has no "emit display name" option
-  for cloud-only groups.
+  for cloud-only groups. That resolver now exists: `packages/directory`
+  (`searchGroups`/`getGroups`, portal-only, zero runtime dependencies), behind
+  `GET /api/v1/directory/groups` and the Access tab's group picker. Without the
+  grant it reports itself unavailable and the tab falls back to entering ids
+  directly — the gate is unaffected either way.
 - **Multi-tenant / IdP-agnostic customers** (`docs/platform-project-plan.md` §3).

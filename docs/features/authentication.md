@@ -208,21 +208,40 @@ not merely a nice-to-have.
 - **Per-app RBAC** on the portal side (v1). The BOLA half is done (`ownsApp`); what's left is
   owner/editor/viewer roles and owner-scoped **reads**, which are still authenticated-only
   (ADR-0007, issue #9).
-- Per-app **group visibility** (`visibility: group`). The gate is built — `visibilityAllows`
-  checks the session's group snapshot, and `apps/dev-idp` exercises it locally and in CI — but it
-  does not work on the deployed platform, and the missing piece is configuration rather than
-  code. Entra emits no `groups` delegated *scope*; it emits group claims from the app
-  registration. [ADR-0040](../adr/0040-entra-group-visibility-directory-seam.md) settles how:
-  **security groups** (`groupMembershipClaims: SecurityGroup` on the edge registration, GUIDs in
-  the `groups` claim), not an App Role per group — a role per group would make scoping an app to
-  a group an infrastructure deploy. `infra/entra` and `infra/azure` now declare that shape, and
-  applying it to a live tenant is
-  [`entra-group-claims-rollout.md`](../runbooks/entra-group-claims-rollout.md). Until an install
-  runs it, the claim is empty and a `group` app denies everyone, so the portal's create form does
-  not offer the mode (`UNAVAILABLE_AT_CREATE` in `AppCreateForm.tsx`) — the Access tab still does,
-  with free-text GUID entry, which is also the permanent fallback when the directory permission is
-  ungranted. Pilot apps use `internal`/`password`. Note that group membership in the claim is
-  **transitive**: scoping to a parent group admits members of its nested children.
+
+**Since shipped — per-app group visibility.** `visibility: group` is real end to end
+([ADR-0040](../adr/0040-entra-group-visibility-directory-seam.md)). An app is scoped to **N
+groups, any-of** (`visibilityGroupIds text[]`, capped at 10 in zod), and `visibilityAllows`
+intersects that set against the session's group snapshot — checked at the OIDC callback,
+re-checked per request against the live registry entry, and re-snapshotted on silent refresh.
+Empty set denies, and so does an unrecognised mode: the gate fails closed.
+
+Both Entra registrations declare `groupMembershipClaims: SecurityGroup`, so the `groups` claim
+carries security-group object GUIDs — **not** an App Role per group, which would have made
+scoping an app to a group an infrastructure deploy. Because Entra has no "emit display name"
+option for cloud-only groups, the portal resolves names through `packages/directory`
+(`searchGroups`/`getGroups` only — deliberately no member enumeration, though the grant permits
+it) against one admin-consented Graph permission, `GroupMember.Read.All`, held by the portal's
+managed identity. Names are resolved live and never stored beside the ids; the one exception is
+an audit row, which records them as observed at write time.
+
+Three things worth knowing before using it:
+
+- **Membership is transitive.** Scoping to a parent group admits members of its nested children.
+  The Access tab's copy says so.
+- **A tenant has to be rolled out first.** Until an operator applies
+  [`entra-group-claims-rollout.md`](../runbooks/entra-group-claims-rollout.md) the claim is
+  empty and a `group` app denies everyone including its owner — which is why the create form
+  still doesn't offer the mode (`UNAVAILABLE_AT_CREATE` in `AppCreateForm.tsx`) while the Access
+  tab does.
+- **The picker degrades, the gate doesn't.** Without the Graph grant the group picker reports
+  itself unavailable and the Access tab falls back to entering ids directly, behind a banner
+  naming the permission. Enforcement never depended on Graph.
+
+Above roughly 200 groups Entra replaces the claim with `_claim_names`, at which point the edge
+reads no groups and denies. That is fail-closed but indistinguishable from a bug, so the edge
+logs it specifically; resolving overage would put a Graph call on the sign-in path in the plane
+[ADR-0003](../adr/0003-dependency-minimal-edge.md) forbids one, and is deferred.
 
 **Since shipped — real Entra registration.** Production now authenticates against a real Entra
 app registration; the swap was config-only (issuer/client), exactly as designed, and the local
