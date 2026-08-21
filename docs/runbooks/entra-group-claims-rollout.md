@@ -245,10 +245,18 @@ a duplicate-assignment error, which is a safe no-op.
 
 ## §4 — Prove the grant works, before any code depends on it
 
-`packages/directory` does not exist yet. This step checks the credential path end to
-end anyway, using the real managed identity in the real container, so that when the
-code lands you already know the tenant answers. It is the cheapest possible
-de-risking of ADR-0040 decision 4 and worth the five minutes.
+`packages/directory` is the code that will make these calls in anger
+(`EntraDirectory`, portal-only). This step checks the same credential path by hand,
+using the real managed identity in the real container, **before** the portal has any
+reason to try it — so a failure here is a tenant answer rather than a bug hunt
+through the control plane. It is the cheapest possible de-risking of ADR-0040
+decision 4 and worth the five minutes.
+
+If the portal is already running this code, the same answer is available without
+`exec`: `GET /api/v1/directory/groups?q=<term>` returns `available: false` with
+`reason: "no-consent"` when the grant is missing, and the Access tab shows a banner
+naming the permission. The probe below is still worth running first, because it
+distinguishes "not propagated yet" from "not granted" — which the endpoint does not.
 
 Allow **30–60 seconds** for the grant to propagate first. A token minted too early
 carries `roles: null` while the assignment is already visible on the SP — re-mint,
@@ -307,6 +315,55 @@ node -e '
 ```
 
 Type `exit` to leave the container.
+
+---
+
+## §4b — Searching a real tenant from a developer machine
+
+**The grant in §3.3 cannot help a local portal, and this is the trap that costs
+an afternoon.** It is assigned to the portal container app's *user-assigned
+managed identity*, and a managed identity's token endpoint exists only inside
+Azure. A laptop or devcontainer cannot borrow it. So a developer who has pointed
+their portal at real Entra for **auth** (via `apps/portal/.env.local`) still has
+no Graph credential for **search** — and before `PORTAL_DIRECTORY` existed they
+silently got the dev fixture groups instead: searching their real tenant returned
+nothing, searching `eng` returned convincing fakes, and nothing said why.
+
+The portal now names its backend at boot. Check that line first:
+
+```
+directory provider: dev fixtures (no AZURE_CLIENT_ID) — NOT your real directory; …
+directory provider: Microsoft Graph (PORTAL_DIRECTORY=entra)
+directory provider: Microsoft Graph (managed identity via AZURE_CLIENT_ID)
+```
+
+Three ways to get real results locally, cheapest first:
+
+1. **Don't — use the deployed portal.** The identity holding the grant lives
+   there. Nothing to create, and it exercises the real production path rather
+   than an approximation of it. Best answer for *verifying* the feature.
+2. **`az login` as yourself**, plus `PORTAL_DIRECTORY=entra`. No new credential,
+   but note it yields a **delegated (user) token**: what you can read is your own
+   directory rights, not the app role. A directory admin will usually get
+   results; an ordinary user gets `403 Authorization_RequestDenied`, which shows
+   up as the Access tab's banner. It does **not** validate the production path.
+3. **A dev app registration with its own `GroupMember.Read.All` grant**, then
+   `PORTAL_DIRECTORY=entra` plus `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+   `AZURE_CLIENT_CERTIFICATE_PATH`. Use a **certificate, not a secret** — this
+   tenant's app management policy bans password credentials (`passwordAddition`
+   restricted) while `keyCredentials` is unrestricted (probe §2). This mirrors
+   production most closely and is also the only option that adds durable
+   credential surface to a laptop; weigh that before choosing it.
+
+Setting the `AZURE_*` variables above is safe for the rest of the portal: Blob
+auth selects on `AZURE_STORAGE_BLOB_ENDPOINT` and Key Vault custody on
+`AZURE_KEY_VAULT_URL`, so neither is disturbed by a Graph credential.
+
+If Graph refuses, the endpoint says which problem you have rather than returning
+an empty list — `reason: "no-credential"` (the portal cannot authenticate; your
+problem) versus `reason: "no-consent"` (the grant is missing; a directory
+administrator's problem). They are deliberately distinct because they send you to
+different people.
 
 ---
 

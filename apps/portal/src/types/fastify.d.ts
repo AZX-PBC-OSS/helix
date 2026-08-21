@@ -1,4 +1,5 @@
 import type { SecretStore } from "@azx-pbc/secret-store";
+import type { DirectoryProvider } from "@azx-pbc/directory";
 import type { PrismaClient } from "../db/client.js";
 import type { BlobStore } from "../blob/store.js";
 import type { Actor } from "../plugins/auth.js";
@@ -14,6 +15,13 @@ declare module "fastify" {
     blobStore: BlobStore;
     /** Connection-secret custody (seal/destroy only); null when unconfigured. */
     secretStore: SecretStore | null;
+    /**
+     * Directory group search / id→name resolution (ADR-0040). Never null — an
+     * unconfigured deployment gets an `UnavailableDirectory` that reports its own
+     * absence as a value, so no call site needs a null check that could 500 the
+     * Access tab.
+     */
+    directory: DirectoryProvider;
   }
 
   interface FastifyRequest {

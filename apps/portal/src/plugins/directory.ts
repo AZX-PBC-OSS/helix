@@ -1,0 +1,69 @@
+import fp from "fastify-plugin";
+import { UnavailableDirectory, type DirectoryProvider } from "@azx-pbc/directory";
+import { createDirectoryFromEnv } from "../directory/custody.js";
+
+export interface DirectoryPluginOptions {
+  /** Inject a provider (tests). When omitted, one is built from the environment. */
+  provider?: DirectoryProvider;
+}
+
+/**
+ * Decorates the portal with the directory provider (ADR-0040 decision 3) — group
+ * search and id→name resolution for the Access tab's group picker.
+ *
+ * **The decorator is never null**, unlike `secretStore`. That is deliberate: a
+ * nullable provider pushes a null check into every call site, and the one that
+ * gets forgotten is a 500 on the Access tab — exactly the failure decision 8
+ * forbids ("must not surface as a broken Access tab, and must not be silent").
+ * An {@link UnavailableDirectory} reports its own absence as a value instead, so
+ * the degraded path is the same code path as the happy one.
+ *
+ * A construction failure is therefore also non-fatal, and logged: silently
+ * degrading to "directory unavailable" would be indistinguishable from never
+ * having configured one.
+ */
+export const directoryPlugin = fp<DirectoryPluginOptions>(
+  async (app, opts) => {
+    app.decorate("directory", opts.provider ?? buildFromEnv(app.log));
+  },
+  { name: "directory" },
+);
+
+interface PluginLog {
+  info: (obj: object, msg: string) => void;
+  warn: (obj: object, msg: string) => void;
+  error: (obj: object, msg: string) => void;
+}
+
+/**
+ * Build from the environment and **say which backend won, every time.**
+ *
+ * That log line is not decoration. Group names are not stored anywhere, so the
+ * only evidence of which directory answered a search is the answer itself — and
+ * a fixture-backed picker looks exactly like a working one, just with different
+ * groups in it. Without this line, "my tenant's groups aren't showing up" is
+ * indistinguishable from "that group doesn't exist" and from "the Graph grant is
+ * missing", and the first thing anyone reaches for is the Entra config, which is
+ * the one thing that is fine.
+ *
+ * Fixtures log at `warn`, not `info`: on a developer machine pointed at a real
+ * tenant for auth — which is a normal setup — fixtures are almost certainly not
+ * what was wanted.
+ */
+function buildFromEnv(log: PluginLog): DirectoryProvider {
+  try {
+    const { provider, detail } = createDirectoryFromEnv();
+    const fixtures = detail.startsWith("dev fixtures");
+    const line = `directory provider: ${detail}`;
+    if (fixtures) log.warn({ backend: "fixtures" }, line);
+    else log.info({ backend: provider.constructor.name }, line);
+    return provider;
+  } catch (err) {
+    log.error(
+      { err },
+      "directory provider is configured but could not be built — group search will report " +
+        "itself unavailable and the Access tab will fall back to free-text group ids",
+    );
+    return new UnavailableDirectory("the directory provider failed to initialise");
+  }
+}

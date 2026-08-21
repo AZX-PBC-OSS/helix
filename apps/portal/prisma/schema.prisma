@@ -289,6 +289,27 @@ model RateCounter {
 /// short-lived (~instruction TTL + clock tolerance) and a GC sweep drops expired
 /// ones. `helix_egress` fully manages it (SELECT+INSERT+DELETE — its first write
 /// grants); `helix_portal` is carved out to read-only.
+/// Fixed-window abuse counters owned by the **control plane** (ADR-0040 §4).
+///
+/// Same three columns as `rate_counters`, and deliberately NOT that table.
+/// `rate_counters` is shared by the edge, which keys the shared-password login
+/// throttle (`auth/loginThrottle.ts`) and the anonymous IP limiter
+/// (`ipRateLimiter.ts`) in it; migration 20260721215912 revoked the portal's
+/// writes there. Granting them back would hand the control plane — or a portal
+/// RCE — the ability to zero the edge's brute-force protection, and Postgres
+/// cannot scope a grant by key prefix (RLS is deliberately off that hot path).
+/// A second table costs one migration and keeps the two planes' abuse-control
+/// state disjoint.
+model PortalRateCounter {
+  /// Namespaced by purpose + actor, e.g. `dirsearch:<actor.sub>`.
+  bucketKey String   @id
+  count     Int
+  resetAt   DateTime
+
+  @@index([resetAt])
+  @@map("portal_rate_counters")
+}
+
 model InstructionJti {
   /// The instruction's `jti` (== its per-call `requestId`).
   jti       String   @id

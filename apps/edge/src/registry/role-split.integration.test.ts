@@ -105,6 +105,15 @@ describe("helix_edge least-privilege grants", () => {
       await expect(pool.query("SELECT count(*) FROM instruction_jti")).rejects.toThrow(
         /permission denied/i,
       );
+      // And so is the control plane's own counter table (ADR-0040 §4). This is
+      // the mirror image of the portal being kept out of `rate_counters`, and it
+      // is the property that whole second table exists to buy: neither plane can
+      // reach into the other's abuse-control state. Asserted from this side too
+      // because a blanket `ON ALL TABLES` bootstrap would widen it silently.
+      await expect(pool.query("SELECT count(*) FROM portal_rate_counters")).rejects.toThrow(
+        /permission denied/i,
+      );
+
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
     } finally {
@@ -199,6 +208,25 @@ function devUrl(): string {
   u.username = "helix_dev";
   u.password = "helix_dev";
   return u.toString();
+}
+
+function portalUrl(): string {
+  const u = new URL(TEST_DATABASE_URL);
+  u.username = "helix_portal";
+  u.password = "helix_portal";
+  return u.toString();
+}
+
+async function portalRoleAvailable(): Promise<boolean> {
+  const pool = new Pool({ connectionString: portalUrl(), max: 1 });
+  try {
+    await pool.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await pool.end();
+  }
 }
 
 async function devRoleAvailable(): Promise<boolean> {
@@ -324,6 +352,43 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
     await expect(writeAs(devUrl(), "prod")).rejects.toThrow(/row-level security/i);
     // …and helix_edge cannot write a dev row.
     await expect(writeAs(edgeUrl(), "dev")).rejects.toThrow(/row-level security/i);
+  });
+
+  /**
+   * The portal half of ADR-0040 §4's separation. `rate_counters` is shared with
+   * the edge, which keys its shared-password login throttle and anonymous IP
+   * limiter there — so portal write access to it would mean the control plane
+   * (or a portal RCE) could zero the edge's brute-force protection, and Postgres
+   * cannot scope that grant by key prefix. Hence a second table. Both halves are
+   * asserted: a migration that "helpfully" re-granted the shared table would
+   * otherwise pass every test in the suite.
+   */
+  it("helix_portal owns its own counters and still cannot touch the edge's", async () => {
+    if (!(await portalRoleAvailable())) return;
+    const pool = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      await expect(
+        pool.query(
+          `INSERT INTO portal_rate_counters ("bucketKey", count, "resetAt")
+             VALUES ('rs-portal', 1, now())
+           ON CONFLICT ("bucketKey") DO UPDATE SET count = portal_rate_counters.count + 1`,
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`DELETE FROM portal_rate_counters WHERE "bucketKey" = 'rs-portal'`),
+      ).resolves.toBeDefined();
+
+      // The edge's table: readable (it holds no secret), but not writable.
+      for (const sql of [
+        `INSERT INTO rate_counters ("bucketKey", count, "resetAt") VALUES ('rs-x', 1, now())`,
+        `UPDATE rate_counters SET count = 0`,
+        `DELETE FROM rate_counters`,
+      ]) {
+        await expect(pool.query(sql)).rejects.toThrow(/permission denied/i);
+      }
+    } finally {
+      await pool.end();
+    }
   });
 
   it("helix_dev holds the least-privilege data-plane grant set and nothing more", async () => {

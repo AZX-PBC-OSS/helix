@@ -1,6 +1,7 @@
 // The shared contract: zod schemas validated at every boundary, with their
 // inferred types exported alongside (architecture §1, project plan §1).
 export * from "./visibility.js";
+export * from "./directory.js";
 export * from "./app.js";
 export * from "./version.js";
 export * from "./manifest.js";

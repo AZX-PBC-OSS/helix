@@ -39,7 +39,9 @@ export function createTestPrisma(): PrismaClient {
  * multi-statement work actually rolls back. `close()` disposes it either way.
  */
 export function buildTestApp(
-  opts: Pick<BuildAppOptions, "auth" | "spaDist" | "secretStore"> & { prisma?: PrismaClient } = {},
+  opts: Pick<BuildAppOptions, "auth" | "spaDist" | "secretStore" | "directory"> & {
+    prisma?: PrismaClient;
+  } = {},
 ): TestApp {
   const prisma = opts.prisma ?? createPrismaClient(TEST_DATABASE_URL);
   const blob = new InMemoryBlobStore();

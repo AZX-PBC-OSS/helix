@@ -315,6 +315,9 @@ importers:
       '@azure/storage-blob':
         specifier: 'catalog:'
         version: 12.32.0
+      '@azx-pbc/directory':
+        specifier: workspace:*
+        version: link:../../packages/directory
       '@azx-pbc/secret-store':
         specifier: workspace:*
         version: link:../../packages/secret-store
@@ -503,6 +506,12 @@ importers:
         version: 6.0.3
 
   packages/deploy-skill:
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
+  packages/directory:
     devDependencies:
       typescript:
         specifier: 'catalog:'

@@ -19,10 +19,11 @@
   "dependencies": {
     "@azure/identity": "catalog:",
     "@azure/storage-blob": "catalog:",
-    "@fastify/multipart": "catalog:",
-    "@fastify/static": "catalog:",
+    "@azx-pbc/directory": "workspace:*",
     "@azx-pbc/secret-store": "workspace:*",
     "@azx-pbc/shared": "workspace:*",
+    "@fastify/multipart": "catalog:",
+    "@fastify/static": "catalog:",
     "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",
     "fastify": "catalog:",

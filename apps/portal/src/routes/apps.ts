@@ -286,6 +286,23 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // opens an approval request (docs/design/approvals.md §3, §6.3). Enabling
   // `password` visibility is NOT done here — it needs a minted credential, so
   // it keeps its dedicated /access/password routes below.
+  /**
+   * `{ id: displayName }` for as many ids as the directory can name. Never
+   * throws: see the caller's comment for why a failure here must not fail a
+   * visibility write.
+   */
+  const resolveGroupNamesForAudit = async (ids: string[]): Promise<Record<string, string>> => {
+    if (ids.length === 0) return {};
+    try {
+      const outcome = await app.directory.getGroups(ids);
+      if (!outcome.available) return {};
+      return Object.fromEntries(outcome.value.map((g) => [g.id, g.displayName]));
+    } catch (err) {
+      app.log.warn({ err }, "could not resolve group names for the visibility audit entry");
+      return {};
+    }
+  };
+
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/visibility",
     { preHandler: [authenticate, ownsApp] },
@@ -298,6 +315,28 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           "enable password access via POST /api/v1/apps/:slug/access/password (it mints the credential)",
         );
       }
+      /**
+       * Resolve the requested groups to names for the audit trail (ADR-0040 §7).
+       *
+       * An audit entry is the **one** place a group name is recorded, and it is
+       * not a cache: it is a historical fact about what the operator believed
+       * they were selecting, and audit rows are immutable. That is the thing
+       * anyone actually wants six months later, when the group may have been
+       * renamed or deleted.
+       *
+       * Resolved **before** the transaction opens, deliberately. The ids come
+       * from the request body, so nothing here needs the row — and holding a
+       * Postgres transaction open across an outbound HTTP call to Microsoft Graph
+       * would pin a connection for the duration of someone else's network, on the
+       * privileged plane, for a value that is only ever read by a human.
+       *
+       * Best-effort by construction: a directory that is unavailable, throttled,
+       * or simply doesn't know an id costs the audit row its names and nothing
+       * else. Failing the visibility write because a *log annotation* could not be
+       * fetched would be the tail wagging the dog.
+       */
+      const groupNames = await resolveGroupNamesForAudit(visibilityGroupIds(visibility));
+
       return app.prisma.$transaction(async (tx): Promise<VisibilityUpdateResult> => {
         // Read inside the transaction. Two things downstream depend on the current
         // visibility: `classifyVisibilityChange` decides elevated-vs-baseline from
@@ -364,6 +403,10 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
             metadata: {
               applied: [change.delta],
               groupIds: columns.visibilityGroupIds,
+              // Omitted rather than nulled when nothing resolved — an absent key
+              // reads as "we could not name these", a null reads as "these have
+              // no names", and only the first is ever true.
+              ...(Object.keys(groupNames).length > 0 ? { groupNames } : {}),
             } as unknown as Prisma.InputJsonValue,
           },
         });

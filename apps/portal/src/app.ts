@@ -5,11 +5,13 @@ import { loggerOption } from "@azx-pbc/shared/logging";
 import type { PrismaClient } from "./db/client.js";
 import type { BlobStore } from "./blob/store.js";
 import type { SecretStore } from "@azx-pbc/secret-store";
+import type { DirectoryProvider } from "@azx-pbc/directory";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { blobPlugin } from "./plugins/blob.js";
 import { secretStorePlugin } from "./plugins/secretStore.js";
 import { errorsPlugin } from "./plugins/errors.js";
 import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
+import { directoryPlugin } from "./plugins/directory.js";
 import { assertBundleLimits, resolveMaxTotalBytes } from "./deploy/limits.js";
 import { appRoutes } from "./routes/apps.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -22,6 +24,7 @@ import { dataRoutes } from "./routes/data.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { authRoutes } from "./routes/auth.js";
 import { configRoutes } from "./routes/config.js";
+import { directoryRoutes } from "./routes/directory.js";
 import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
 import { assertDeploymentConfig } from "./deployment.js";
 
@@ -40,6 +43,8 @@ export interface BuildAppOptions {
   auth?: AuthPluginOptions;
   /** Inject the secret-store custody (tests). Defaults build from the env. */
   secretStore?: SecretStore | null;
+  /** Inject the directory provider (tests). Defaults build from the env. */
+  directory?: DirectoryProvider;
   /**
    * Built-SPA directory; null forces the stopgap dashboard (tests),
    * undefined auto-detects ($PORTAL_WEB_DIST or apps/portal-web/dist).
@@ -67,6 +72,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(prismaPlugin, { client: opts.prisma });
   app.register(blobPlugin, { store: opts.blobStore });
   app.register(secretStorePlugin, { store: opts.secretStore });
+  app.register(directoryPlugin, { provider: opts.directory });
   app.register(authPlugin, opts.auth ?? {});
   // One bundle file per upload; cap the (compressed) upload size. Resolved once
   // at build time — this bounds what `spoolUpload` writes to the replica's temp
@@ -91,6 +97,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(dataRoutes);
   app.register(authRoutes);
   app.register(configRoutes);
+  app.register(directoryRoutes);
 
   // The real dashboard when a built SPA is present; the M2 stopgap otherwise.
   const spaDist = opts.spaDist !== undefined ? opts.spaDist : resolveSpaDist();
