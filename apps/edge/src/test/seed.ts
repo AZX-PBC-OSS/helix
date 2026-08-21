@@ -3,6 +3,7 @@ import { Pool as PgPool } from "pg";
 import { Pool as UndiciPool } from "undici";
 import { parseConnectionString, type AzureBlobConfig } from "../config.js";
 import { signRequest } from "../blob/signing.js";
+import type { VisibilityMode } from "@azx-pbc/shared";
 
 /**
  * Integration-test seeding against the dev container's real services: raw SQL
@@ -51,8 +52,8 @@ export async function seedApp(
     slug?: string;
     live?: boolean;
     archived?: boolean;
-    visibilityMode?: "internal" | "group" | "password" | "public";
-    visibilityGroupId?: string;
+    visibilityMode?: VisibilityMode;
+    visibilityGroupIds?: string[];
   } = {},
 ): Promise<SeededApp> {
   const appId = randomUUID();
@@ -61,13 +62,13 @@ export async function seedApp(
   const blobPrefix = `apps/${appId}/1/`;
 
   await pool.query(
-    `INSERT INTO apps (id, slug, "displayName", "visibilityMode", "visibilityGroupId", "archivedAt", "createdAt", "updatedAt")
+    `INSERT INTO apps (id, slug, "displayName", "visibilityMode", "visibilityGroupIds", "archivedAt", "createdAt", "updatedAt")
      VALUES ($1, $2, $2, $3::"VisibilityMode", $4, $5, now(), now())`,
     [
       appId,
       slug,
       opts.visibilityMode ?? "internal",
-      opts.visibilityGroupId ?? null,
+      opts.visibilityGroupIds ?? [],
       opts.archived ? new Date() : null,
     ],
   );

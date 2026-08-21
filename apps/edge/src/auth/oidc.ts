@@ -224,6 +224,24 @@ export class OpenIdConnectClient implements OidcClient {
       const groups = Array.isArray(rawGroups)
         ? rawGroups.filter((g): g is string => typeof g === "string")
         : [];
+      // Claim overage (ADR-0040 decision 10). Above roughly 200 groups Entra
+      // drops the groups claim and substitutes `_claim_names`/`_claim_sources`
+      // pointing at Graph. We read no groups in that case and therefore DENY
+      // every `group` app — which is the right direction, but indistinguishable
+      // from a bug from the outside, and the user just sees a 403 on an app they
+      // are a member of. Log it specifically so the condition is diagnosable.
+      //
+      // v1 does not resolve overage: doing so means a Graph call on the sign-in
+      // hot path, in the one plane ADR-0003 forbids a Graph client to. That is a
+      // separate decision with a different shape, deferred until a real user
+      // trips this line.
+      if (rawGroups === undefined && claims._claim_names !== undefined) {
+        this.#log.warn(
+          { sub: claims.sub, groupsClaim: this.#auth.groupsClaim },
+          "OIDC groups claim replaced by _claim_names (group overage) — no groups read, " +
+            "so every group-scoped app will deny this session",
+        );
+      }
       const displayName =
         [claims.name, claims.preferred_username, claims.email].find(
           (v): v is string => typeof v === "string" && v.length > 0,

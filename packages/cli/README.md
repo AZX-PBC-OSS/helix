@@ -63,7 +63,7 @@ helix rollback [number]                                      # revert the live p
 ```
 
 `deploy` uploads the bundle as a **preview**; `--promote` flips it live in the
-same step (architecture §5.1). `visibility` is `internal | group:<id> | password
+same step (architecture §5.1). `visibility` is `internal | group:<id>[,<id>…] | password
 | public`.
 
 > **Breaking in 0.2.0:** the `private` visibility mode was renamed to `internal`.

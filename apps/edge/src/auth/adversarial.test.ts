@@ -50,7 +50,7 @@ function buildAuthEdge(): AuthEdge {
       slug: "team",
       blobPrefix: "apps/c/1/",
       visibilityMode: "group",
-      visibilityGroupId: "eng-team",
+      visibilityGroupIds: ["eng-team"],
     }),
     registryEntry({
       appId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",

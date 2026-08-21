@@ -231,7 +231,11 @@ describe("manifest (capabilities) GET/PUT", () => {
 describe("GET /api/v1/apps and /:slug", () => {
   it("round-trips a group-visibility app and 404s on unknown", async () => {
     const slug = uniqueSlug();
-    await createApp({ slug, displayName: "Grouped", visibility: { mode: "group", groupId: "g1" } });
+    await createApp({
+      slug,
+      displayName: "Grouped",
+      visibility: { mode: "group", groupIds: ["g1"] },
+    });
 
     const got = await t.app.inject({
       method: "GET",
@@ -239,7 +243,7 @@ describe("GET /api/v1/apps and /:slug", () => {
       headers: authHeader(),
     });
     expect(got.statusCode).toBe(200);
-    expect(got.json().visibility).toEqual({ mode: "group", groupId: "g1" });
+    expect(got.json().visibility).toEqual({ mode: "group", groupIds: ["g1"] });
 
     const list = await t.app.inject({
       method: "GET",
@@ -355,10 +359,107 @@ describe("operator policy: PORTAL_ALLOW_PUBLIC_APPS=false", () => {
     const slug = uniqueSlug();
     await createApp({ slug, displayName: "Reducible" });
     await withPublicDisallowed(async () => {
-      const res = await setVisibility(slug, { visibility: { mode: "group", groupId: "g1" } });
+      const res = await setVisibility(slug, { visibility: { mode: "group", groupIds: ["g1"] } });
       expect(res.statusCode).toBe(200);
       expect(res.json().applied).toHaveLength(1);
     });
+  });
+
+  /**
+   * The route-level half of ADR-0040 §5's regression. `classifyVisibilityChange`
+   * used to compare bare modes, so `group → group` returned null and the handler
+   * treats null as a no-op and returns before writing — editing which group could
+   * open an app answered **200 with no write and no audit row**. That was
+   * invisible while an app held one group behind a free-text box; it is the
+   * central operation now, so it gets asserted at the route, not only in the
+   * classifier's unit test.
+   */
+  it("applies a group-set edit that leaves the mode alone, and audits it", async () => {
+    const slug = uniqueSlug();
+    await createApp({
+      slug,
+      displayName: "Regrouped",
+      visibility: { mode: "group", groupIds: ["eng"] },
+    });
+
+    const res = await setVisibility(slug, {
+      visibility: { mode: "group", groupIds: ["eng", "product"] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().pending).toBeNull(); // baseline — applies immediately
+    expect(res.json().applied).toEqual([
+      { path: "visibility", from: "group:eng", to: "group:eng,product" },
+    ]);
+    expect(res.json().app.visibility).toEqual({ mode: "group", groupIds: ["eng", "product"] });
+
+    // The write actually landed, rather than the response merely describing it.
+    const row = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    expect(row.visibilityGroupIds).toEqual(["eng", "product"]);
+
+    // And the audit row carries the machine-readable set, not just the diff —
+    // an audit entry is the only place group values are recorded at all (§7).
+    const events = await t.prisma.auditEvent.findMany({
+      where: { appId: row.id, action: "app.visibility.set" },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.metadata).toMatchObject({ groupIds: ["eng", "product"] });
+    // Names come from the directory at write time (ADR-0040 §7 — the audit row is
+    // the one place a name is recorded, because it is a historical fact rather
+    // than a cache). The default test harness has no directory that knows "eng",
+    // so the key is absent rather than null — "we could not name these", not
+    // "these have no names". The named case is covered in directory.test.ts.
+    expect(events[0]?.metadata).not.toHaveProperty("groupNames");
+  });
+
+  it("removing a group is also a baseline write, not a no-op", async () => {
+    const slug = uniqueSlug();
+    await createApp({
+      slug,
+      displayName: "Narrowed",
+      visibility: { mode: "group", groupIds: ["eng", "product"] },
+    });
+    const res = await setVisibility(slug, { visibility: { mode: "group", groupIds: ["eng"] } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().applied).toHaveLength(1);
+    const row = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    expect(row.visibilityGroupIds).toEqual(["eng"]);
+  });
+
+  // Order is meaningless in an any-of set, so re-sending the same groups in a
+  // different order must stay a genuine no-op: no write, no policyVersion bump
+  // (which forces an edge projection reload), no audit row.
+  it("treats a reordered group set as a no-op", async () => {
+    const slug = uniqueSlug();
+    await createApp({
+      slug,
+      displayName: "Reordered",
+      visibility: { mode: "group", groupIds: ["eng", "product"] },
+    });
+    const before = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    const res = await setVisibility(slug, {
+      visibility: { mode: "group", groupIds: ["product", "eng"] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().applied).toEqual([]);
+    const after = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    expect(after.policyVersion).toBe(before.policyVersion);
+    const events = await t.prisma.auditEvent.findMany({
+      where: { appId: before.id, action: "app.visibility.set" },
+    });
+    expect(events).toHaveLength(0);
+  });
+
+  it("refuses more than the capped number of groups (400)", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Too many" });
+    const res = await setVisibility(slug, {
+      visibility: {
+        mode: "group",
+        groupIds: Array.from({ length: 11 }, (_, i) => `g${i}`),
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
   });
 });
 

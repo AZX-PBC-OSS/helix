@@ -77,7 +77,7 @@ describe("resolveAppForAuth", () => {
   const registry = new FakeRegistry([
     registryEntry({ slug: "demo", blobPrefix: "apps/x/1/" }),
     registryEntry({ slug: "gone", archived: true }),
-    registryEntry({ slug: "team", visibilityMode: "group", visibilityGroupId: "eng-team" }),
+    registryEntry({ slug: "team", visibilityMode: "group", visibilityGroupIds: ["eng-team"] }),
     registryEntry({ slug: "open", visibilityMode: "public" }),
     registryEntry({ slug: "gated", visibilityMode: "password" }),
   ]);
@@ -110,16 +110,47 @@ describe("visibilityAllows", () => {
     expect(visibilityAllows(registryEntry({ slug: "a" }), [])).toBe(true);
   });
 
-  it("group requires the configured group in the snapshot", () => {
-    const entry = registryEntry({ slug: "a", visibilityMode: "group", visibilityGroupId: "g1" });
+  it("group requires one of the configured groups in the snapshot", () => {
+    const entry = registryEntry({ slug: "a", visibilityMode: "group", visibilityGroupIds: ["g1"] });
     expect(visibilityAllows(entry, ["g1", "g2"])).toBe(true);
     expect(visibilityAllows(entry, ["g2"])).toBe(false);
     expect(visibilityAllows(entry, [])).toBe(false);
   });
 
-  it("a group app with no groupId admits nobody (misconfig fails closed)", () => {
-    const entry = registryEntry({ slug: "a", visibilityMode: "group", visibilityGroupId: null });
+  // Any-of, not all-of (ADR-0040 §5) — "engineering OR product". Getting this
+  // backwards would be a silent lockout for everyone not in every listed group,
+  // which reads as "the feature doesn't work" rather than as an authz bug, so it
+  // is worth pinning from more than one direction.
+  it("group is any-of: membership in exactly one listed group is enough", () => {
+    const entry = registryEntry({
+      slug: "a",
+      visibilityMode: "group",
+      visibilityGroupIds: ["eng", "product", "design"],
+    });
+    expect(visibilityAllows(entry, ["eng"])).toBe(true);
+    expect(visibilityAllows(entry, ["design"])).toBe(true); // last listed, not just first
+    expect(visibilityAllows(entry, ["product", "unrelated"])).toBe(true);
+    expect(visibilityAllows(entry, ["eng", "product", "design"])).toBe(true);
+    expect(visibilityAllows(entry, ["sales", "unrelated"])).toBe(false);
+    expect(visibilityAllows(entry, [])).toBe(false);
+  });
+
+  it("a group app with no groups admits nobody (misconfig fails closed)", () => {
+    const entry = registryEntry({ slug: "a", visibilityMode: "group", visibilityGroupIds: [] });
     expect(visibilityAllows(entry, ["anything"])).toBe(false);
+    expect(visibilityAllows(entry, [])).toBe(false);
+  });
+
+  // The projection normalizes the array column, but the gate is the last line
+  // and must not depend on that having happened — a stale replica, a hand-run
+  // SQL fix, or a future writer that skips the mapper all reach here directly.
+  it("survives a non-array group field without admitting anyone", () => {
+    const entry = registryEntry({ slug: "a", visibilityMode: "group" });
+    for (const bad of [null, undefined, "g1", 42, {}]) {
+      const off = { ...entry, visibilityGroupIds: bad as never };
+      expect(() => visibilityAllows(off, ["g1"])).not.toThrow();
+      expect(visibilityAllows(off, ["g1"])).toBe(false);
+    }
   });
 
   it("a password session (groups irrelevant) is allowed — the password was the proof", () => {

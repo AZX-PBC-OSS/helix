@@ -45,8 +45,13 @@ export interface RegistryEntry {
   blobPrefix: string | null;
   /** Access rule (architecture §4.2); checked at login and on every request. */
   visibilityMode: VisibilityMode;
-  /** The group that may open the app — only when `visibilityMode` is `group`. */
-  visibilityGroupId: string | null;
+  /**
+   * The groups that may open the app — only when `visibilityMode` is `group`,
+   * and **any-of**: membership in one of them is enough (ADR-0040 §5). Empty
+   * when the mode is anything else, and empty is also a legal `group` state that
+   * denies everyone (`visibilityAllows` fails closed on it).
+   */
+  visibilityGroupIds: string[];
   /**
    * scrypt hash + salt of the shared password — only when `visibilityMode` is
    * `password` (docs/features/authentication.md). The edge verifies a login
@@ -88,6 +93,22 @@ export interface RegistryEntry {
    * Parsed fail-closed, and the scope is **re-validated here** (below).
    */
   offline: { scope: string } | null;
+}
+
+/**
+ * Normalize the `visibilityGroupIds` array column, fail-closed to `[]`.
+ *
+ * `node-postgres` hands back a `text[]` as a JS `string[]` with no configuration,
+ * so on the happy path this is a shape assertion rather than a parse. It exists
+ * because this is the only authorization-bearing field on the entry that is
+ * neither constrained by a Postgres enum (like `visibility_mode`) nor already
+ * run through a fail-closed helper (like everything out of `capabilities`) — and
+ * an unexpected shape must deny rather than throw inside the reconcile loop and
+ * strand the whole projection. `[]` denies, per `visibilityAllows`.
+ */
+function parseVisibilityGroupIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
 /** Extract `capabilities.llm` from the raw JSON column, fail-closed to null. */
@@ -267,7 +288,7 @@ interface ProjectionRow {
    * thing standing between a future label and a served request.
    */
   visibility_mode: VisibilityMode;
-  visibility_group_id: string | null;
+  visibility_group_ids: unknown;
   password_hash: string | null;
   password_salt: string | null;
   /** The `capabilities` JSONB column (pg parses it to an object). */
@@ -283,7 +304,7 @@ export interface ProjectionQuerier {
 // unquoted they would silently lowercase and fail.
 const PROJECTION_SQL = `
   SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
-         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupId" AS visibility_group_id,
+         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupIds" AS visibility_group_ids,
          a."passwordHash" AS password_hash, a."passwordSalt" AS password_salt,
          a.capabilities AS capabilities
   FROM apps a
@@ -299,7 +320,7 @@ const PROJECTION_SQL = `
 // needs the slug/visibility/capabilities to route `/_api/*`.
 const PROJECTION_SQL_NO_PASSWORD = `
   SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
-         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupId" AS visibility_group_id,
+         a."visibilityMode"::text AS visibility_mode, a."visibilityGroupIds" AS visibility_group_ids,
          NULL::text AS password_hash, NULL::text AS password_salt,
          a.capabilities AS capabilities
   FROM apps a
@@ -409,7 +430,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           archived: row.archived,
           blobPrefix: row.blob_prefix,
           visibilityMode: row.visibility_mode,
-          visibilityGroupId: row.visibility_group_id,
+          visibilityGroupIds: parseVisibilityGroupIds(row.visibility_group_ids),
           passwordHash: row.password_hash,
           passwordSalt: row.password_salt,
           llm: parseLlmCapability(row.capabilities),

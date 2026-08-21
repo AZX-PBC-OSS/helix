@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { App, Version, Visibility } from "@azx-pbc/shared";
+import { MAX_VISIBILITY_GROUPS, type App, type Version, type Visibility } from "@azx-pbc/shared";
 import { CliError, PortalClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { zipDirectory } from "./zip.js";
@@ -14,7 +14,13 @@ function requireSlug(config: ResolvedConfig): string {
 }
 
 /**
- * Parse a CLI visibility string: `internal` | `group:<id>` | `password` | `public`.
+ * Parse a CLI visibility string: `internal` | `group:<id>[,<id>…]` | `password`
+ * | `public`.
+ *
+ * The comma list is **additive** — `group:<one-id>` still parses to exactly what
+ * it always did, so a published CLI already on someone's machine or in a CI
+ * script keeps working, and nothing here needs a major bump (ADR-0040 §5).
+ * Groups are any-of: membership in one of them opens the app.
  *
  * `private` was renamed to `internal` and is **not** accepted as an alias — it
  * errors like any other unknown value. The name is being kept free for a real
@@ -25,9 +31,24 @@ function requireSlug(config: ResolvedConfig): string {
 export function parseVisibility(input?: string): Visibility | undefined {
   if (!input) return undefined;
   if (input.startsWith("group:")) {
-    const groupId = input.slice("group:".length);
-    if (!groupId) throw new CliError("group visibility needs an id: group:<id>");
-    return { mode: "group", groupId };
+    // Trim each id and drop the empties, so `group:a, b` and a trailing comma
+    // are typos this forgives rather than group ids named " b" and "" — a
+    // whitespace-padded id would be stored verbatim and then silently match
+    // nobody at the edge, which is the least debuggable outcome available.
+    const groupIds = input
+      .slice("group:".length)
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+    if (groupIds.length === 0) {
+      throw new CliError("group visibility needs at least one id: group:<id>[,<id>…]");
+    }
+    if (groupIds.length > MAX_VISIBILITY_GROUPS) {
+      throw new CliError(
+        `group visibility takes at most ${MAX_VISIBILITY_GROUPS} ids (got ${groupIds.length})`,
+      );
+    }
+    return { mode: "group", groupIds };
   }
   if (input === "internal" || input === "password" || input === "public") {
     return { mode: input };
@@ -43,7 +64,9 @@ export function parseVisibility(input?: string): Visibility | undefined {
         "reserved for a future owner-only mode, so it is not accepted as an alias.",
     );
   }
-  throw new CliError(`invalid visibility "${input}" (internal | group:<id> | password | public)`);
+  throw new CliError(
+    `invalid visibility "${input}" (internal | group:<id>[,<id>…] | password | public)`,
+  );
 }
 
 function printVersion(v: Version): void {

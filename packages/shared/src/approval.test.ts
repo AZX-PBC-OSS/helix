@@ -11,9 +11,11 @@ import {
   snapshotConflicts,
   summarizePriorDecisions,
   touchedAreas,
+  visibilityLabel,
   type Delta,
   type PriorDecisionRow,
 } from "./approval.js";
+import type { VisibilityMode } from "./visibility.js";
 
 const EMPTY: Capabilities = { mcp: [], externalOrigins: [] };
 
@@ -240,12 +242,12 @@ describe("classifyChange — offline (ADR-0035)", () => {
 
   it("is its own conflict area, so a concurrent LLM edit does not stale it", () => {
     const eff = withScope("/app/");
-    const snap = captureSnapshot(eff, "internal", touchedAreas([{ path: "offline.scope" }]));
+    const snap = captureSnapshot(eff, vis("internal"), touchedAreas([{ path: "offline.scope" }]));
     expect(Object.keys(snap)).toEqual(["offline"]);
     expect(
-      snapshotConflicts(snap, { ...eff, llm: { models: ["claude-fable-5"] } }, "internal"),
+      snapshotConflicts(snap, { ...eff, llm: { models: ["claude-fable-5"] } }, vis("internal")),
     ).toBe(false);
-    expect(snapshotConflicts(snap, withScope("/other/"), "internal")).toBe(true);
+    expect(snapshotConflicts(snap, withScope("/other/"), vis("internal"))).toBe(true);
   });
 });
 
@@ -282,14 +284,58 @@ describe("classifyChange — mixed submission splits and risk = max", () => {
   });
 });
 
+/** A `VisibilityState` from the shorthand the tests actually care about. */
+const vis = (mode: VisibilityMode, ...groupIds: string[]) => ({ mode, groupIds });
+
 describe("classifyVisibilityChange", () => {
   it("gates → public as high, everything else baseline", () => {
-    expect(classifyVisibilityChange("group", "public")).toMatchObject({
+    expect(classifyVisibilityChange(vis("group", "g1"), vis("public"))).toMatchObject({
       elevated: true,
       risk: "high",
     });
-    expect(classifyVisibilityChange("public", "internal")).toMatchObject({ elevated: false });
-    expect(classifyVisibilityChange("internal", "internal")).toBeNull();
+    expect(classifyVisibilityChange(vis("public"), vis("internal"))).toMatchObject({
+      elevated: false,
+    });
+    expect(classifyVisibilityChange(vis("internal"), vis("internal"))).toBeNull();
+  });
+
+  // The regression this exists for: while this took two bare modes, a
+  // group-set edit compared equal and returned null, and `routes/apps.ts` reads
+  // null as "no-op" — so changing which group could open an app answered 200,
+  // wrote nothing, and audited nothing (ADR-0040 §5).
+  it("sees a group-set edit that leaves the mode alone", () => {
+    const change = classifyVisibilityChange(vis("group", "eng"), vis("group", "product"));
+    expect(change).not.toBeNull();
+    expect(change).toMatchObject({ elevated: false, risk: "low" });
+    expect(change?.delta).toEqual({ path: "visibility", from: "group:eng", to: "group:product" });
+  });
+
+  it("treats adding and removing a group as baseline — the population moves inside the tenant", () => {
+    expect(
+      classifyVisibilityChange(vis("group", "eng"), vis("group", "eng", "product")),
+    ).toMatchObject({ elevated: false, risk: "low" });
+    expect(
+      classifyVisibilityChange(vis("group", "eng", "product"), vis("group", "eng")),
+    ).toMatchObject({ elevated: false, risk: "low" });
+  });
+
+  // Order is meaningless in an any-of set, so re-selecting the same groups in a
+  // different order must not manufacture a delta — that would write, bump
+  // policyVersion, force a projection reload and file an audit row for nothing.
+  it("ignores reordering, and normalises the label", () => {
+    expect(
+      classifyVisibilityChange(vis("group", "eng", "product"), vis("group", "product", "eng")),
+    ).toBeNull();
+    expect(visibilityLabel(vis("group", "product", "eng"))).toBe("group:eng,product");
+    expect(visibilityLabel(vis("internal"))).toBe("internal");
+    expect(visibilityLabel(vis("group"))).toBe("group:");
+  });
+
+  it("still gates a group app going public, group set or not", () => {
+    expect(classifyVisibilityChange(vis("group", "eng", "product"), vis("public"))).toMatchObject({
+      elevated: true,
+      risk: "high",
+    });
   });
 });
 
@@ -344,20 +390,31 @@ describe("snapshot + conflict (optimistic concurrency)", () => {
     });
     const areas = touchedAreas(r.elevatedDeltas);
     expect(areas).toEqual(["mcp"]);
-    const snap = captureSnapshot(eff, "internal", areas);
+    const snap = captureSnapshot(eff, vis("internal"), areas);
 
     // unchanged → no conflict
-    expect(snapshotConflicts(snap, eff, "internal")).toBe(false);
+    expect(snapshotConflicts(snap, eff, vis("internal"))).toBe(false);
 
     // someone else added an mcp server → conflict
     const moved: Capabilities = { ...eff, mcp: ["other"] };
-    expect(snapshotConflicts(snap, moved, "internal")).toBe(true);
+    expect(snapshotConflicts(snap, moved, vis("internal"))).toBe(true);
   });
 
   it("detects a visibility move", () => {
-    const snap = captureSnapshot(EMPTY, "group", ["visibility"]);
-    expect(snapshotConflicts(snap, EMPTY, "group")).toBe(false);
-    expect(snapshotConflicts(snap, EMPTY, "internal")).toBe(true);
+    const snap = captureSnapshot(EMPTY, vis("group", "g1"), ["visibility"]);
+    expect(snapshotConflicts(snap, EMPTY, vis("group", "g1"))).toBe(false);
+    expect(snapshotConflicts(snap, EMPTY, vis("internal"))).toBe(true);
+  });
+
+  // A pending → public request filed while the app was scoped to `eng` must not
+  // commit blind if someone re-scoped it to `product` in the meantime: the
+  // reviewer approved a specific before-state. A mode-only snapshot said "still
+  // group" and let it through.
+  it("detects a group-set move under an open request", () => {
+    const snap = captureSnapshot(EMPTY, vis("group", "eng"), ["visibility"]);
+    expect(snapshotConflicts(snap, EMPTY, vis("group", "product"))).toBe(true);
+    expect(snapshotConflicts(snap, EMPTY, vis("group", "eng", "product"))).toBe(true);
+    expect(snapshotConflicts(snap, EMPTY, vis("group", "eng"))).toBe(false);
   });
 });
 

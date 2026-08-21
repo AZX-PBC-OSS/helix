@@ -64,9 +64,11 @@ describe("AppManifestSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("requires a groupId for group visibility", () => {
+  it("requires a group list for group visibility", () => {
     expect(VisibilitySchema.safeParse({ mode: "group" }).success).toBe(false);
-    expect(VisibilitySchema.safeParse({ mode: "group", groupId: "eng-team" }).success).toBe(true);
+    expect(VisibilitySchema.safeParse({ mode: "group", groupIds: ["eng-team"] }).success).toBe(
+      true,
+    );
   });
 });
 

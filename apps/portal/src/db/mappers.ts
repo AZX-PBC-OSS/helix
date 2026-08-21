@@ -10,6 +10,7 @@ import {
   PlatformUsageSchema,
   UsageSummarySchema,
   VersionSchema,
+  visibilityGroupIds,
   type AppManifest,
   type App,
   type AppListItem,
@@ -37,23 +38,30 @@ import type {
 /** Flattened visibility columns as stored on the `apps` row. */
 export interface VisibilityColumns {
   visibilityMode: VisibilityMode;
-  visibilityGroupId: string | null;
+  visibilityGroupIds: string[];
 }
 
-/** Reassemble the discriminated-union Visibility from its flattened columns. */
-export function visibilityFromColumns(mode: VisibilityMode, groupId: string | null): Visibility {
-  if (mode === "group") {
-    // groupId is non-null whenever mode is `group` (enforced on write below).
-    return { mode, groupId: groupId ?? "" };
-  }
-  return { mode };
+/**
+ * Reassemble the discriminated-union Visibility from its flattened columns.
+ *
+ * **Total over every column state, deliberately.** A `group` row with an empty
+ * array round-trips as `{ mode: "group", groupIds: [] }` rather than being
+ * rejected or rewritten, because this function sits on the read path of every
+ * app-shaped response: `toApp` validates its output through `AppSchema`, so a
+ * shape this returns that zod refuses is a 500 on `GET /api/v1/apps` — the whole
+ * list, for one odd row. The predecessor did exactly that, coercing a NULL group
+ * id to `""` (which fails `z.string().min(1)`) behind a comment asserting the
+ * state was unreachable. Authorization does not depend on this being strict: the
+ * edge's gate denies an empty set (`visibilityAllows`), so a zero-group app is
+ * inert rather than open.
+ */
+export function visibilityFromColumns(mode: VisibilityMode, groupIds: string[]): Visibility {
+  return mode === "group" ? { mode, groupIds } : { mode };
 }
 
 /** Flatten a Visibility union into columns for an `apps` insert/update. */
 export function visibilityToColumns(visibility: Visibility): VisibilityColumns {
-  return visibility.mode === "group"
-    ? { visibilityMode: "group", visibilityGroupId: visibility.groupId }
-    : { visibilityMode: visibility.mode, visibilityGroupId: null };
+  return { visibilityMode: visibility.mode, visibilityGroupIds: visibilityGroupIds(visibility) };
 }
 
 /**
@@ -69,7 +77,7 @@ export function toApp(row: AppRow): App {
     id: row.id,
     slug: row.slug,
     displayName: row.displayName,
-    visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupId),
+    visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupIds),
     currentVersionId: row.currentVersionId,
     archivedAt: row.archivedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -118,7 +126,7 @@ export function capabilitiesFromRow(row: AppRow): Capabilities {
 export function toManifest(row: AppRow): AppManifest {
   return AppManifestSchema.parse({
     app: row.slug,
-    visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupId),
+    visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupIds),
     capabilities: capabilitiesFromRow(row),
   });
 }

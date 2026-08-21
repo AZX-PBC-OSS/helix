@@ -170,7 +170,12 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
 
         // Optimistic concurrency: if a touched value moved since the request was
         // filed, bounce to needs_changes rather than clobber it (§5).
-        if (snapshotConflicts(request.baseSnapshot, effective, appRow.visibilityMode)) {
+        if (
+          snapshotConflicts(request.baseSnapshot, effective, {
+            mode: appRow.visibilityMode,
+            groupIds: appRow.visibilityGroupIds,
+          })
+        ) {
           const claim = await claimPendingRequest(tx, request.id, {
             status: "needs_changes",
             decidedBy: actor.sub,
@@ -218,7 +223,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
             throw new AppError("forbidden", "public apps are disabled on this deployment");
           }
           data.visibilityMode = "public";
-          data.visibilityGroupId = null;
+          data.visibilityGroupIds = [];
         }
         // CAS on the version read above: a baseline write that commits between
         // that read and this one would otherwise be clobbered by this full-blob

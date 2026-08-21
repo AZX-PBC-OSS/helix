@@ -185,7 +185,7 @@ export async function applyCapabilityChange(
       // can detect a value that moved underneath the request.
       const baseSnapshot = captureSnapshot(
         applied,
-        row.visibilityMode,
+        { mode: row.visibilityMode, groupIds: row.visibilityGroupIds },
         touchedAreas(elevatedDeltas),
       );
       pending = await createApprovalRequest(tx, {

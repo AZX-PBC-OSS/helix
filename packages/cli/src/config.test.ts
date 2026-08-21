@@ -97,7 +97,24 @@ describe("parseVisibility", () => {
     expect(parseVisibility(undefined)).toBeUndefined();
     expect(parseVisibility("internal")).toEqual({ mode: "internal" });
     expect(parseVisibility("public")).toEqual({ mode: "public" });
-    expect(parseVisibility("group:eng")).toEqual({ mode: "group", groupId: "eng" });
+    expect(parseVisibility("group:eng")).toEqual({ mode: "group", groupIds: ["eng"] });
+    // The comma list is additive — a single id still parses exactly as it did
+    // before ADR-0040, which is what keeps the published CLI usable unchanged.
+    expect(parseVisibility("group:eng,product")).toEqual({
+      mode: "group",
+      groupIds: ["eng", "product"],
+    });
+    // Forgives the typos, so a padded id can't be stored verbatim and then
+    // silently match nobody at the edge.
+    expect(parseVisibility("group:eng, product,")).toEqual({
+      mode: "group",
+      groupIds: ["eng", "product"],
+    });
+    expect(() => parseVisibility("group:")).toThrow(/at least one id/);
+    expect(() => parseVisibility("group:,,")).toThrow(/at least one id/);
+    expect(() =>
+      parseVisibility(`group:${Array.from({ length: 11 }, (_, i) => `g${i}`).join(",")}`),
+    ).toThrow(/at most 10 ids/);
   });
 
   it("rejects malformed input", () => {

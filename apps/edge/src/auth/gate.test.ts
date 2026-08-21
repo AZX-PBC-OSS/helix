@@ -220,7 +220,7 @@ describe("per-request visibility re-check", () => {
         slug: "demo",
         blobPrefix: PREFIX,
         visibilityMode: "group",
-        visibilityGroupId: "eng-team",
+        visibilityGroupIds: ["eng-team"],
       }),
     ]);
     const edge = buildGatedEdge(registry);

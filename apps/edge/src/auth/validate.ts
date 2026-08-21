@@ -247,7 +247,26 @@ export function visibilityAllows(entry: RegistryEntry, groups: string[]): boolea
   // itself sufficient, and *which* user holds it is deliberately not consulted.
   if (entry.visibilityMode === "internal") return true;
   if (entry.visibilityMode === "group") {
-    return entry.visibilityGroupId !== null && groups.includes(entry.visibilityGroupId);
+    // Any-of (ADR-0040 §5): membership in ANY listed group opens the app. An
+    // empty list denies — the same fail-closed answer the nullable scalar gave
+    // before it, and the reason a zero-group app is a representable state rather
+    // than a validation error.
+    //
+    // The `Array.isArray` guard is not belt-and-braces over the projection's
+    // normalizer. This gate is the last line, and the types cannot cover the ways
+    // a malformed value reaches it — a replica running older projection code, a
+    // hand-run SQL fix, a future writer that skips the mapper. Without the guard
+    // a non-array THROWS, and a throw inside the request path is a 500, not a
+    // denial: it would surface as an outage on a working app rather than as the
+    // closed door this function's whole contract promises.
+    //
+    // Linear scan, not a Set: the cap is 10 groups (MAX_VISIBILITY_GROUPS) and a
+    // session snapshot is small, so building two Sets per request would cost more
+    // than it saves on the hottest authorization path in the platform.
+    return (
+      Array.isArray(entry.visibilityGroupIds) &&
+      entry.visibilityGroupIds.some((id) => groups.includes(id))
+    );
   }
   // A `password` session is itself proof of the password — it could only have
   // been minted by the /_auth/login challenge (passwordLogin.ts). The OIDC

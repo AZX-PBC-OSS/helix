@@ -109,7 +109,7 @@ beforeAll(async () => {
   groupApp = await seedApp(pool, {
     live: true,
     visibilityMode: "group",
-    visibilityGroupId: "eng-team",
+    visibilityGroupIds: ["eng-team"],
   });
 
   const auth = testAuthConfig({
@@ -134,7 +134,7 @@ beforeAll(async () => {
       slug: groupApp.slug,
       blobPrefix: groupApp.blobPrefix,
       visibilityMode: "group",
-      visibilityGroupId: "eng-team",
+      visibilityGroupIds: ["eng-team"],
     }),
   ]);
   const blob = new FakeBlobReader();

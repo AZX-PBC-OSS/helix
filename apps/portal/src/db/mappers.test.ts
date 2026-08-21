@@ -28,20 +28,34 @@ describe("enum drift guards", () => {
 });
 
 describe("visibility column mapping", () => {
-  it("round-trips a group visibility through columns", () => {
-    const columns = visibilityToColumns({ mode: "group", groupId: "abc" });
-    expect(columns).toEqual({ visibilityMode: "group", visibilityGroupId: "abc" });
-    expect(visibilityFromColumns(columns.visibilityMode, columns.visibilityGroupId)).toEqual({
+  it("round-trips a multi-group visibility through columns", () => {
+    const columns = visibilityToColumns({ mode: "group", groupIds: ["abc", "def"] });
+    expect(columns).toEqual({ visibilityMode: "group", visibilityGroupIds: ["abc", "def"] });
+    expect(visibilityFromColumns(columns.visibilityMode, columns.visibilityGroupIds)).toEqual({
       mode: "group",
-      groupId: "abc",
+      groupIds: ["abc", "def"],
     });
   });
 
-  it("nulls the group id for payload-less modes", () => {
-    expect(visibilityToColumns({ mode: "internal" })).toEqual({
-      visibilityMode: "internal",
-      visibilityGroupId: null,
-    });
+  it("empties the group list for payload-less modes", () => {
+    for (const mode of ["internal", "password", "public"] as const) {
+      expect(visibilityToColumns({ mode })).toEqual({
+        visibilityMode: mode,
+        visibilityGroupIds: [],
+      });
+      expect(visibilityFromColumns(mode, [])).toEqual({ mode });
+    }
+  });
+
+  // The read path has to be total. `toApp` validates its output through
+  // `AppSchema`, so any column state this turns into a shape zod refuses is a
+  // 500 on `GET /api/v1/apps` — the entire list, for one odd row. The
+  // predecessor did exactly that: it coerced a NULL group id to `""`, which
+  // fails `z.string().min(1)`, behind a comment asserting the state could not
+  // arise. Safety comes from the edge's gate denying an empty set, not from this
+  // function being strict.
+  it("maps a zero-group `group` row rather than refusing it", () => {
+    expect(visibilityFromColumns("group", [])).toEqual({ mode: "group", groupIds: [] });
   });
 });
 
@@ -57,7 +71,7 @@ describe("row mappers validate against the shared schema", () => {
       slug: "cost-explorer",
       displayName: "Cost Explorer",
       visibilityMode: "internal",
-      visibilityGroupId: null,
+      visibilityGroupIds: [],
       currentVersionId: null,
       passwordHash: null,
       passwordSalt: null,
@@ -86,13 +100,46 @@ describe("row mappers validate against the shared schema", () => {
     });
   });
 
+  // The end-to-end version of the same property: `toApp` runs its output through
+  // `AppSchema`, so a zero-group row must not throw *here* either — this is the
+  // call `GET /api/v1/apps` makes for every row it returns, and one bad row used
+  // to take the whole list down with a 500.
+  it("maps a zero-group `group` row through toApp without throwing", () => {
+    const row: AppRow = {
+      id: APP_ID,
+      slug: "orphan-group",
+      displayName: "Orphan Group",
+      visibilityMode: "group",
+      visibilityGroupIds: [],
+      currentVersionId: null,
+      passwordHash: null,
+      passwordSalt: null,
+      passwordEnc: null,
+      passwordSetAt: null,
+      ownerId: null,
+      ownerName: null,
+      ownerEmail: null,
+      capabilities: {},
+      policyVersion: 0,
+      archivedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    expect(() => toApp(row)).not.toThrow();
+    expect(toApp(row).visibility).toEqual({ mode: "group", groupIds: [] });
+    expect(toApp({ ...row, visibilityGroupIds: ["eng", "product"] }).visibility).toEqual({
+      mode: "group",
+      groupIds: ["eng", "product"],
+    });
+  });
+
   it("maps an archived apps row with an ISO archivedAt", () => {
     const row: AppRow = {
       id: APP_ID,
       slug: "cost-explorer",
       displayName: "Cost Explorer",
       visibilityMode: "internal",
-      visibilityGroupId: null,
+      visibilityGroupIds: [],
       currentVersionId: null,
       passwordHash: null,
       passwordSalt: null,
@@ -116,7 +163,7 @@ describe("row mappers validate against the shared schema", () => {
       slug: "cost-explorer",
       displayName: "Cost Explorer",
       visibilityMode: "group",
-      visibilityGroupId: "eng-team",
+      visibilityGroupIds: ["eng-team"],
       currentVersionId: null,
       passwordHash: null,
       passwordSalt: null,
@@ -134,7 +181,7 @@ describe("row mappers validate against the shared schema", () => {
     const manifest = toManifest(row);
     expect(manifest).toEqual({
       app: "cost-explorer",
-      visibility: { mode: "group", groupId: "eng-team" },
+      visibility: { mode: "group", groupIds: ["eng-team"] },
       capabilities: {
         llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 },
         mcp: [],
@@ -149,7 +196,7 @@ describe("row mappers validate against the shared schema", () => {
       slug: "x",
       displayName: "X",
       visibilityMode: "internal",
-      visibilityGroupId: null,
+      visibilityGroupIds: [],
       currentVersionId: null,
       passwordHash: null,
       passwordSalt: null,

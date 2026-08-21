@@ -105,7 +105,6 @@ describe("helix_edge least-privilege grants", () => {
       await expect(pool.query("SELECT count(*) FROM instruction_jti")).rejects.toThrow(
         /permission denied/i,
       );
-
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
     } finally {
@@ -340,8 +339,19 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
       );
       // Reads the registry projection to route (dev-mode §5.4, dev_registry_grant
       // _columns) — but ONLY the non-secret columns, under a column-scoped grant.
+      //
+      // `visibilityGroupIds` is named explicitly, and that is the point rather
+      // than thoroughness. A column-scoped grant enumerates columns, so ANY
+      // migration that renames or replaces one silently drops it from the grant
+      // and the failure is a runtime `permission denied` in the dev-gateway on a
+      // query that type-checks and passes every unit test. ADR-0040 renamed this
+      // exact column, and before this line the suite asserted only
+      // `visibilityMode` — so it would have gone green through the breakage.
+      // Whatever the registry projection selects, assert here.
       await expect(
-        pool.query(`SELECT slug, "visibilityMode", capabilities FROM apps LIMIT 1`),
+        pool.query(
+          `SELECT slug, "visibilityMode", "visibilityGroupIds", capabilities FROM apps LIMIT 1`,
+        ),
       ).resolves.toBeDefined();
       await expect(pool.query("SELECT count(*) FROM versions")).resolves.toBeDefined();
       // The prod password columns are OFF-LIMITS — a compromised dev-gateway can't

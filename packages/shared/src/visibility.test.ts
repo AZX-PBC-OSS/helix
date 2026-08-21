@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { VISIBILITY_MODES, VisibilitySchema } from "./visibility.js";
+import {
+  MAX_VISIBILITY_GROUPS,
+  VISIBILITY_MODES,
+  VisibilitySchema,
+  visibilityGroupIds,
+} from "./visibility.js";
 
 /**
  * `private` was the pre-rename spelling of `internal`, and the name is being
@@ -23,8 +28,54 @@ describe("the `private` visibility mode stays reserved", () => {
 
   it("still accepts each mode the platform does offer", () => {
     for (const mode of VISIBILITY_MODES) {
-      const candidate = mode === "group" ? { mode, groupId: "g1" } : { mode };
+      const candidate = mode === "group" ? { mode, groupIds: ["g1"] } : { mode };
       expect(VisibilitySchema.safeParse(candidate).success).toBe(true);
     }
+  });
+});
+
+/**
+ * The cap is enforced in this schema and nowhere else (ADR-0040 §5) — no CHECK
+ * constraint, no route-level guard. That makes it cheap to retune, and it makes
+ * these assertions the only thing standing behind the number, so they are load-
+ * bearing rather than decorative.
+ */
+describe("group visibility takes N groups, any-of", () => {
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `g${i}`);
+
+  it("accepts up to the cap and refuses one more", () => {
+    expect(
+      VisibilitySchema.safeParse({ mode: "group", groupIds: ids(MAX_VISIBILITY_GROUPS) }).success,
+    ).toBe(true);
+    expect(
+      VisibilitySchema.safeParse({ mode: "group", groupIds: ids(MAX_VISIBILITY_GROUPS + 1) })
+        .success,
+    ).toBe(false);
+  });
+
+  // Deliberately valid, and the reason is a read path rather than a policy: this
+  // shape has to round-trip because `visibilityFromColumns` sits under every
+  // app-shaped response, and a row the schema refuses is a 500 on the whole apps
+  // list. The edge's gate is what makes it safe — an empty set admits nobody.
+  it("accepts an empty group list (a deny-everyone app, not a validation error)", () => {
+    expect(VisibilitySchema.safeParse({ mode: "group", groupIds: [] }).success).toBe(true);
+  });
+
+  it("refuses an empty-string id, and a missing list entirely", () => {
+    expect(VisibilitySchema.safeParse({ mode: "group", groupIds: [""] }).success).toBe(false);
+    expect(VisibilitySchema.safeParse({ mode: "group" }).success).toBe(false);
+  });
+
+  it("refuses the pre-ADR-0040 scalar shape rather than silently dropping it", () => {
+    // A stale `helix` CLI or a hand-rolled manifest sends this. It must fail
+    // loudly: accepted-and-ignored would store a `group` app scoped to nobody.
+    expect(VisibilitySchema.safeParse({ mode: "group", groupId: "g1" }).success).toBe(false);
+  });
+
+  it("visibilityGroupIds reads the payload, and answers [] for every other mode", () => {
+    expect(visibilityGroupIds({ mode: "group", groupIds: ["a", "b"] })).toEqual(["a", "b"]);
+    expect(visibilityGroupIds({ mode: "internal" })).toEqual([]);
+    expect(visibilityGroupIds({ mode: "password" })).toEqual([]);
+    expect(visibilityGroupIds({ mode: "public" })).toEqual([]);
   });
 });

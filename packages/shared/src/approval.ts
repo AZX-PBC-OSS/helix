@@ -340,6 +340,42 @@ export interface VisibilityChange {
 }
 
 /**
+ * An app's whole visibility value: the mode plus, for `group`, the set of groups
+ * that may open it. Both halves travel together because they are one decision
+ * stored in one column pair, and classifying either alone gets it wrong — see
+ * {@link visibilityLabel}.
+ */
+export interface VisibilityState {
+  mode: VisibilityMode;
+  /**
+   * Optional so a `Visibility` union member passes straight in — `{ mode:
+   * "internal" }` has no groups to name, and requiring an explicit `[]` at every
+   * such call site buys nothing. Absent is read as empty.
+   */
+  groupIds?: string[];
+}
+
+/**
+ * The canonical text form of a visibility value — `internal`, `password`,
+ * `public`, or `group:<id>[,<id>…]` with the ids **sorted**.
+ *
+ * This is the same shorthand the `helix` CLI and the manifest already accept, so
+ * it is not a new encoding; it is the repo's existing one, reused as the scalar
+ * a {@link Delta} can carry.
+ *
+ * Sorting matters. Group membership is an any-of set, so order is meaningless —
+ * sorting means re-selecting the same groups in a different order produces no
+ * delta and no audit row. That is the opposite of the capability arrays, where
+ * `snapshotConflicts` deliberately treats reordering as a change: there the
+ * order is at least potentially meaningful, so counting it is the conservative
+ * direction. Here it would be noise.
+ */
+export function visibilityLabel(state: VisibilityState): string {
+  if (state.mode !== "group") return state.mode;
+  return `group:${[...(state.groupIds ?? [])].sort().join(",")}`;
+}
+
+/**
  * Visibility lives in flat `apps` columns, not in `capabilities`, so it is
  * classified on its own. Only `→ public` elevates (high); every other move,
  * including `public → internal`, is baseline (§3).
@@ -348,15 +384,31 @@ export interface VisibilityChange {
  * "any widening needs approval". `group → internal` genuinely widens access
  * (one directory group → every authenticated principal) and is still baseline,
  * because `internal` *is* the platform's baseline trust level and the default
- * for a new app. What gates is exposure to people outside the directory.
+ * for a new app. What gates is exposure to people outside the directory. By the
+ * same rule, **editing which groups may open a `group` app is baseline** — it
+ * moves the population around inside the directory without ever leaving it.
+ *
+ * It compares whole {@link visibilityLabel} values, not just modes, and that is
+ * load-bearing rather than tidy. While this took two `VisibilityMode`s, a
+ * `group → group` edit that changed only the group set compared equal, returned
+ * `null`, and the caller in `routes/apps.ts` treats `null` as a no-op — so
+ * changing which group could open an app answered 200, wrote nothing, and
+ * audited nothing. That was invisible while an app could hold only one group and
+ * the field was a free-text box; it is the whole point of the feature now.
  */
 export function classifyVisibilityChange(
-  from: VisibilityMode,
-  to: VisibilityMode,
+  from: VisibilityState,
+  to: VisibilityState,
 ): VisibilityChange | null {
-  if (from === to) return null;
-  const elevated = to === "public";
-  return { delta: { path: "visibility", from, to }, elevated, risk: elevated ? "high" : "low" };
+  const fromLabel = visibilityLabel(from);
+  const toLabel = visibilityLabel(to);
+  if (fromLabel === toLabel) return null;
+  const elevated = to.mode === "public";
+  return {
+    delta: { path: "visibility", from: fromLabel, to: toLabel },
+    elevated,
+    risk: elevated ? "high" : "low",
+  };
 }
 
 // ── Applying deltas (route baseline write + approve elevated write) ───────────
@@ -542,14 +594,20 @@ export function summarizePriorDecisions(
  */
 export function captureSnapshot(
   effective: unknown,
-  visibilityMode: VisibilityMode,
+  visibility: VisibilityState,
   areas: Area[],
 ): Record<string, unknown> {
   const caps = CapabilitiesSchema.parse(effective ?? {});
   const snap: Record<string, unknown> = {};
   for (const area of areas) {
+    // The visibility area snapshots the whole {@link visibilityLabel}, not the
+    // bare mode: a `group` app whose group set moved under an open request has
+    // changed in exactly the way this check exists to catch, and a mode-only
+    // snapshot compared equal through it.
     snap[area] =
-      area === "visibility" ? visibilityMode : (caps[area as keyof Capabilities] ?? null);
+      area === "visibility"
+        ? visibilityLabel(visibility)
+        : (caps[area as keyof Capabilities] ?? null);
   }
   return snap;
 }
@@ -562,11 +620,11 @@ export function captureSnapshot(
 export function snapshotConflicts(
   baseSnapshot: unknown,
   effective: unknown,
-  visibilityMode: VisibilityMode,
+  visibility: VisibilityState,
 ): boolean {
   if (baseSnapshot === null || typeof baseSnapshot !== "object") return false;
   const snap = baseSnapshot as Record<string, unknown>;
-  const current = captureSnapshot(effective, visibilityMode, Object.keys(snap) as Area[]);
+  const current = captureSnapshot(effective, visibility, Object.keys(snap) as Area[]);
   for (const key of Object.keys(snap)) {
     if (JSON.stringify(snap[key]) !== JSON.stringify(current[key])) return true;
   }

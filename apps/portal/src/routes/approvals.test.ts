@@ -621,7 +621,7 @@ describe("go-public via the visibility write-gate", () => {
       method: "POST",
       url: "/api/v1/apps",
       headers: owner,
-      payload: { slug, displayName: "grp", visibility: { mode: "group", groupId: "g1" } },
+      payload: { slug, displayName: "grp", visibility: { mode: "group", groupIds: ["g1"] } },
     });
     const vis = await t.app.inject({
       method: "POST",

@@ -10,6 +10,7 @@ import {
   SetVisibilityRequestSchema,
   captureSnapshot,
   classifyVisibilityChange,
+  visibilityGroupIds,
   touchedAreas,
   type ManifestUpdateResult,
   type VisibilityUpdateResult,
@@ -51,7 +52,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     if (body.visibility.mode === "password" && !passwordAppsAllowed()) {
       throw new AppError("forbidden", "password apps are disabled on this deployment");
     }
-    const { visibilityMode, visibilityGroupId } = visibilityToColumns(body.visibility);
+    const visibilityColumns = visibilityToColumns(body.visibility);
     // Fill capability defaults so the stored shape always parses on read.
     const capabilities = CapabilitiesSchema.parse(body.capabilities ?? {});
 
@@ -68,8 +69,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           // person is renamed, which is the trade documented on the columns.
           ownerName: actor.name ?? null,
           ownerEmail: actor.email ?? null,
-          visibilityMode,
-          visibilityGroupId,
+          ...visibilityColumns,
           capabilities,
         },
       });
@@ -300,18 +300,23 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       }
       return app.prisma.$transaction(async (tx): Promise<VisibilityUpdateResult> => {
         // Read inside the transaction. Two things downstream depend on the current
-        // mode: `classifyVisibilityChange` decides elevated-vs-baseline from it, and
-        // the elevated branch stores it in `baseSnapshot` for the later approve to
-        // compare against. Off a read taken before the transaction, both can be
-        // deciding from a mode that has already moved — and a wrong `baseSnapshot`
-        // is worse than a stale read, because it is persisted and silently defeats
-        // the approve-time conflict check.
+        // visibility: `classifyVisibilityChange` decides elevated-vs-baseline from
+        // it, and the elevated branch stores it in `baseSnapshot` for the later
+        // approve to compare against. Off a read taken before the transaction, both
+        // can be deciding from a value that has already moved — and a wrong
+        // `baseSnapshot` is worse than a stale read, because it is persisted and
+        // silently defeats the approve-time conflict check.
         const row = await tx.app.findUnique({ where: { slug: req.params.slug } });
         if (!row) {
           throw new AppError("not_found", `app "${req.params.slug}" not found`);
         }
 
-        const change = classifyVisibilityChange(row.visibilityMode, visibility.mode);
+        // Both halves of the current value, and both halves of the requested one:
+        // a `group → group` edit that moves only the group set is a real change,
+        // and comparing modes alone reported it as a no-op (ADR-0040 §5).
+        const before = { mode: row.visibilityMode, groupIds: row.visibilityGroupIds };
+        const after = { mode: visibility.mode, groupIds: visibilityGroupIds(visibility) };
+        const change = classifyVisibilityChange(before, after);
         if (!change) {
           return { app: toApp(row), applied: [], pending: null }; // no-op
         }
@@ -326,7 +331,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           }
           const baseSnapshot = captureSnapshot(
             capabilitiesFromRow(row),
-            row.visibilityMode,
+            before,
             touchedAreas([change.delta]),
           );
           // No policy write here, so nothing to CAS: the request only records what
@@ -344,14 +349,22 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         }
 
         // Baseline reduction — apply now.
-        const { visibilityMode, visibilityGroupId } = visibilityToColumns(visibility);
-        const updated = await casPolicyWrite(tx, row, { visibilityMode, visibilityGroupId });
+        const columns = visibilityToColumns(visibility);
+        const updated = await casPolicyWrite(tx, row, columns);
         await tx.auditEvent.create({
           data: {
             appId: row.id,
             actor: actor.sub,
             action: "app.visibility.set",
-            metadata: { applied: [change.delta] as unknown as Prisma.InputJsonValue },
+            // `groupIds` alongside the delta looks redundant — the delta's `to`
+            // already encodes them as `group:a,b` — and is not: the delta is a
+            // rendered diff, this is the machine-readable set, and an audit row is
+            // the one place group values are recorded at all (ADR-0040 §7 keeps
+            // names off the `apps` row precisely so there is a single live truth).
+            metadata: {
+              applied: [change.delta],
+              groupIds: columns.visibilityGroupIds,
+            } as unknown as Prisma.InputJsonValue,
           },
         });
         return { app: toApp(updated), applied: [change.delta], pending: null };
@@ -436,7 +449,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           row,
           {
             visibilityMode: "password",
-            visibilityGroupId: null,
+            visibilityGroupIds: [],
             passwordHash: hash,
             passwordSalt: salt,
             passwordEnc: encryptPassword(password),

@@ -26,7 +26,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     archived: false,
     blobPrefix: null,
     visibilityMode: "internal",
-    visibilityGroupId: null,
+    visibilityGroupIds: [],
     passwordHash: null,
     passwordSalt: null,
     llm: null,

@@ -40,14 +40,14 @@ enum VisibilityMode {
 /// `currentVersionId` is the live pointer — null before the first promote;
 /// "deploy" flips it, "rollback" flips it back (architecture §4.3).
 model App {
-  id                String            @id @default(uuid()) @db.Uuid
-  slug              String            @unique
-  displayName       String
+  id                 String            @id @default(uuid()) @db.Uuid
+  slug               String            @unique
+  displayName        String
   /// Creator's `actor.sub`, set at `app.create`. Nullable: rows predating the
   /// approvals work (docs/design/approvals.md §4) have no recorded owner. Drives
   /// the admin queue "owner" column, "who may request/withdraw", and the apps
   /// list's `scope=mine` filter. **The identity half — compared, never rendered.**
-  ownerId           String?
+  ownerId            String?
   /// The owner's claims as they read at `app.create` (`actor.name`/`actor.email`).
   /// **The display half — rendered, never compared.** Stored rather than resolved
   /// because `ownerId` is only human-readable by accident today: the portal
@@ -56,50 +56,54 @@ model App {
   /// re-base `ownerId` onto Entra's opaque `oid`. These columns keep every owner
   /// cell in the portal readable across that change. Slightly stale if someone
   /// renames themselves in the directory; nullable for rows predating them.
-  ownerName         String?
-  ownerEmail        String?
+  ownerName          String?
+  ownerEmail         String?
   // Visibility is a discriminated union in zod; stored flattened here so it is
   // queryable/indexable (only `group` carries a payload).
-  visibilityMode    VisibilityMode
-  visibilityGroupId String?
+  visibilityMode     VisibilityMode
+  /// Any-of group ids for `group` visibility; empty for every other mode, and
+  /// empty is also a legal (deny-everyone) `group` state. Cap lives in zod
+  /// (`MAX_VISIBILITY_GROUPS`), not here — an array needs no migration to
+  /// re-tune it (ADR-0040 §5).
+  visibilityGroupIds String[]
   // Shared-password credential for `password` visibility (docs/features/
   // authentication.md). `passwordHash`/`passwordSalt` (scrypt) are PROJECTED to
   // the edge to verify a login; `passwordEnc` (AES-256-GCM) is portal-only —
   // decryptable here so the owner can re-display/copy the cleartext, never read
   // by the edge. All null unless visibility is `password`.
-  passwordHash      String?
-  passwordSalt      String?
-  passwordEnc       String?
-  passwordSetAt     DateTime?
+  passwordHash       String?
+  passwordSalt       String?
+  passwordEnc        String?
+  passwordSetAt      DateTime?
   // The live version pointer. One-to-one with Version; SetNull so deleting a
   // version (only via app cascade in practice) can't dangle the pointer.
-  currentVersionId  String?           @unique @db.Uuid
-  currentVersion    Version?          @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
-  versions          Version[]         @relation("AppVersions")
-  sessions          Session[]
-  approvalRequests  ApprovalRequest[]
+  currentVersionId   String?           @unique @db.Uuid
+  currentVersion     Version?          @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions           Version[]         @relation("AppVersions")
+  sessions           Session[]
+  approvalRequests   ApprovalRequest[]
   /// Secrets owned by this app (`scope = 'app'`); global secrets have no owner.
-  secrets           AppSecret[]
+  secrets            AppSecret[]
   /// Grants of `global` secrets to this app (the consuming side).
-  grantedSecrets    AppSecretGrant[]
+  grantedSecrets     AppSecretGrant[]
   /// Dev-mode tokens for developing this app against its env=dev partition (§4).
-  devTokens         AppDevToken[]
+  devTokens          AppDevToken[]
   /// Per-app capability manifest (architecture §6.3) — what the gateway grants
   /// and enforces. JSON matches @azx-pbc/shared `CapabilitiesSchema`; the edge
   /// reads it through the registry projection. Defaults to the baseline (no
   /// capabilities). Manifest versioning/approvals are a v1 control-plane feature.
-  capabilities      Json              @default("{}")
+  capabilities       Json              @default("{}")
   /// Optimistic-concurrency guard over the **effective policy state** — the
   /// `capabilities` blob plus the two `visibility*` columns (docs/design/
   /// approvals.md §5). Every path that reads those columns and writes them back
   /// compare-and-swaps on the value it read and bumps it, so two writers cannot
   /// silently lose each other's change; the loser gets a 409. Not projected to
   /// the edge — it exists only to serialise control-plane writes.
-  policyVersion     Int               @default(0)
+  policyVersion      Int               @default(0)
   /// Archived apps return 410 + Clear-Site-Data at the edge (architecture §7).
-  archivedAt        DateTime?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  archivedAt         DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
 
   @@map("apps")
 }
@@ -214,41 +218,41 @@ model ApprovalRequest {
 /// AuditEvent) — the ledger outlives any single app row, so reads left-join the
 /// slug and tolerate its absence.
 model GatewayCall {
-  id           String   @id @default(uuid()) @db.Uuid
-  appId        String   @db.Uuid
+  id                       String   @id @default(uuid()) @db.Uuid
+  appId                    String   @db.Uuid
   /// Partition tier (dev-mode design §5.1): 'prod' | 'dev'. Makes budgets/usage
   /// naturally per-env — the env-literal RLS (§5.3) scopes every SUM to one tier.
-  env          String   @default("prod")
-  userOid      String
+  env                      String   @default("prod")
+  userOid                  String
   /// Capability invoked — `llm` in M4.
-  capability   String
+  capability               String
   /// Model the request asked for (post-allowlist).
-  model        String
-  inputTokens  Int      @default(0)
-  outputTokens Int      @default(0)
+  model                    String
+  inputTokens              Int      @default(0)
+  outputTokens             Int      @default(0)
   /// Cache-aware input accounting (Anthropic prices these differently: read
   /// ~0.1x, write 1.25x). Always 0 until prompt caching is enabled, but captured
   /// now so dollar math is correct the day it flips on.
-  cacheReadInputTokens     Int @default(0)
-  cacheCreationInputTokens Int @default(0)
+  cacheReadInputTokens     Int      @default(0)
+  cacheCreationInputTokens Int      @default(0)
   /// Frozen as-charged cost of this call in **micro-USD** (1e-6 USD), priced by
   /// the edge at write time via `@azx-pbc/shared` (`costUsd`). Integer for exact
   /// SUMs. This is the source of truth for both the per-app USD spend gate (a
   /// daily + rolling-hour window in apps/edge/src/gateway/usage.ts) and every
   /// dollar figure the portal displays — token columns stay so cost is always
   /// re-derivable if rates are corrected. 0 for non-LLM and quota-blocked rows.
-  costMicroUsd BigInt   @default(0)
+  costMicroUsd             BigInt   @default(0)
   /// `ok` | `error` | `refusal` | `quota_blocked`.
-  outcome      String
+  outcome                  String
   /// Upstream round-trip latency in ms (0 when not measured).
-  durationMs   Int      @default(0)
+  durationMs               Int      @default(0)
   /// Upstream/egress HTTP status — meaningful for `fetch`; null for streamed `llm`.
-  statusCode   Int?
+  statusCode               Int?
   /// LLM stop reason (`end_turn` | `max_tokens` | `refusal` | …); null for non-LLM.
-  stopReason   String?
+  stopReason               String?
   /// Short, truncated upstream error string; null on success.
-  errorDetail  String?
-  createdAt    DateTime @default(now())
+  errorDetail              String?
+  createdAt                DateTime @default(now())
 
   /// Per-app windowed reads (edge budget + portal usage tab) and the audit
   /// cursor — env-partitioned so per-tier budget SUMs hit the index.

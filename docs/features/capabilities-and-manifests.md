@@ -50,7 +50,7 @@ response header). It buys cold boot and nothing more. See
 [edge-serving.md](./edge-serving.md).
 
 `Visibility` is a discriminated union — `internal` | `group` (+ `groupId`) | `password` |
-`public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupId`) and reassembled
+`public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupIds`, an any-of array) and reassembled
 by the mappers.
 
 ## How grants flow and are enforced
