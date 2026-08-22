@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildClientAuth, certThumbprintX5t } from "./oidc.js";
+import { buildClientAuth, certThumbprintX5t, groupsClaimOverflowed } from "./oidc.js";
 
 /**
  * Certificate (private_key_jwt) client auth — the path for Entra tenants whose
@@ -56,5 +56,44 @@ describe("buildClientAuth", () => {
         certificatePem: "-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----",
       }),
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * ADR-0040 decision 10's diagnostic. Log-only — the deny is correct either way,
+ * since the claim is absent and `visibilityAllows` fails closed on an empty set —
+ * so what is under test is whether the operator is pointed at the right cause.
+ */
+describe("groupsClaimOverflowed", () => {
+  it("fires when the overage covers the configured claim", () => {
+    expect(groupsClaimOverflowed({ _claim_names: { groups: "src1" } }, "groups")).toBe(true);
+    expect(groupsClaimOverflowed({ _claim_names: { roles: "src1" } }, "roles")).toBe(true);
+  });
+
+  /**
+   * The misattribution this replaced. A deployment reading `roles` where a user
+   * simply has no app-role assignment, with an unrelated `_claim_names` present,
+   * was told it had a group-overage problem — sending an operator after Entra's
+   * 200-group limit when the fix was one role assignment.
+   */
+  it("does not fire when the overage covers some other claim", () => {
+    expect(groupsClaimOverflowed({ _claim_names: { groups: "src1" } }, "roles")).toBe(false);
+  });
+
+  it("does not fire when the claim is present, however it arrived", () => {
+    expect(
+      groupsClaimOverflowed({ groups: ["a"], _claim_names: { groups: "src1" } }, "groups"),
+    ).toBe(false);
+    // Present but empty is still present: no groups is not the same as overage.
+    expect(groupsClaimOverflowed({ groups: [], _claim_names: { groups: "s" } }, "groups")).toBe(
+      false,
+    );
+  });
+
+  it("does not fire on a missing or malformed _claim_names", () => {
+    expect(groupsClaimOverflowed({}, "groups")).toBe(false);
+    for (const bad of [null, "src1", 42, []]) {
+      expect(groupsClaimOverflowed({ _claim_names: bad }, "groups")).toBe(false);
+    }
   });
 });

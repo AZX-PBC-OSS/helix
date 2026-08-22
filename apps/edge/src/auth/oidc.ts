@@ -140,6 +140,34 @@ export interface OidcLogger {
 }
 
 /** openid-client implementation with never-throw boot discovery + retry. */
+/**
+ * Did Entra replace the configured groups claim with a `_claim_names` pointer?
+ *
+ * Above roughly 200 groups the claim is swapped for `_claim_names` /
+ * `_claim_sources` referring the caller to Graph. The edge reads no groups in that
+ * case and therefore denies every `group` app — fail-closed, which is right, but
+ * indistinguishable from a bug, so it is worth a specific log line.
+ *
+ * The predicate asks whether the overage covers **our** claim, not merely whether
+ * `_claim_names` exists at all. Testing for its bare presence attributed the wrong
+ * cause on any deployment reading a different claim: on
+ * `EDGE_OIDC_GROUPS_CLAIM=roles`, a user with no app-role assignment and an
+ * unrelated `_claim_names` entry was told they had a group-overage problem —
+ * sending an operator after Entra's 200-group limit when the real fix was one
+ * assignment. Symmetrically, a genuine overage on a custom claim was missed.
+ *
+ * Extracted and exported only so it can be tested without standing up a token
+ * exchange. The deny path does not consult it — `groups` is `[]` either way.
+ */
+export function groupsClaimOverflowed(
+  claims: Record<string, unknown>,
+  groupsClaim: string,
+): boolean {
+  if (claims[groupsClaim] !== undefined) return false;
+  const names = claims._claim_names;
+  return typeof names === "object" && names !== null && groupsClaim in names;
+}
+
 export class OpenIdConnectClient implements OidcClient {
   #auth: AuthConfig;
   #redirectUri: string;
@@ -235,7 +263,7 @@ export class OpenIdConnectClient implements OidcClient {
       // hot path, in the one plane ADR-0003 forbids a Graph client to. That is a
       // separate decision with a different shape, deferred until a real user
       // trips this line.
-      if (rawGroups === undefined && claims._claim_names !== undefined) {
+      if (groupsClaimOverflowed(claims, this.#auth.groupsClaim)) {
         this.#log.warn(
           { sub: claims.sub, groupsClaim: this.#auth.groupsClaim },
           "OIDC groups claim replaced by _claim_names (group overage) — no groups read, " +

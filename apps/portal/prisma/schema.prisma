@@ -281,14 +281,6 @@ model RateCounter {
   @@map("rate_counters")
 }
 
-/// One-time-use burn set for the attested instruction the edge mints for egress
-/// (ADR-0013 Step 1, issue #3). **Egress-written data**: egress does one atomic
-/// INSERT … ON CONFLICT DO NOTHING per proxied call (apps/egress/src/burn.ts) —
-/// `rowCount === 0` means the `jti` was already spent, i.e. a replay, and the
-/// call is refused. Global (a `jti` is unique regardless of app); rows are
-/// short-lived (~instruction TTL + clock tolerance) and a GC sweep drops expired
-/// ones. `helix_egress` fully manages it (SELECT+INSERT+DELETE — its first write
-/// grants); `helix_portal` is carved out to read-only.
 /// Fixed-window abuse counters owned by the **control plane** (ADR-0040 §4).
 ///
 /// Same three columns as `rate_counters`, and deliberately NOT that table.
@@ -310,6 +302,14 @@ model PortalRateCounter {
   @@map("portal_rate_counters")
 }
 
+/// One-time-use burn set for the attested instruction the edge mints for egress
+/// (ADR-0013 Step 1, issue #3). **Egress-written data**: egress does one atomic
+/// INSERT … ON CONFLICT DO NOTHING per proxied call (apps/egress/src/burn.ts) —
+/// `rowCount === 0` means the `jti` was already spent, i.e. a replay, and the
+/// call is refused. Global (a `jti` is unique regardless of app); rows are
+/// short-lived (~instruction TTL + clock tolerance) and a GC sweep drops expired
+/// ones. `helix_egress` fully manages it (SELECT+INSERT+DELETE — its first write
+/// grants); `helix_portal` is carved out to read-only.
 model InstructionJti {
   /// The instruction's `jti` (== its per-call `requestId`).
   jti       String   @id
