@@ -4,6 +4,7 @@ import {
   VISIBILITY_MODES,
   VisibilitySchema,
   visibilityGroupIds,
+  WritableVisibilitySchema,
 } from "./visibility.js";
 
 /**
@@ -77,5 +78,38 @@ describe("group visibility takes N groups, any-of", () => {
     expect(visibilityGroupIds({ mode: "internal" })).toEqual([]);
     expect(visibilityGroupIds({ mode: "password" })).toEqual([]);
     expect(visibilityGroupIds({ mode: "public" })).toEqual([]);
+  });
+});
+
+/**
+ * The write path is stricter than the read path, deliberately. `AppSchema` parses
+ * every stored row, so a restriction that made one odd row unrepresentable would
+ * turn it into a 500 on the whole apps list — the failure `visibilityFromColumns`
+ * was fixed to stop having.
+ */
+describe("the writable variant refuses what no legitimate path produces", () => {
+  it("rejects a comma — the label delimiter — and whitespace", () => {
+    for (const bad of ["eng,prod", "eng prod", " eng", "eng\t"]) {
+      expect(WritableVisibilitySchema.safeParse({ mode: "group", groupIds: [bad] }).success).toBe(
+        false,
+      );
+    }
+  });
+
+  it("accepts what the picker and the CLI can actually express", () => {
+    for (const good of [["eng-team"], ["eng-team", "11111111-1111-4111-8111-111111111111"], []]) {
+      expect(WritableVisibilitySchema.safeParse({ mode: "group", groupIds: good }).success).toBe(
+        true,
+      );
+    }
+    expect(WritableVisibilitySchema.safeParse({ mode: "internal" }).success).toBe(true);
+  });
+
+  // The read schema stays permissive on exactly those values, so a row written
+  // before the refinement existed still renders instead of 500ing the list.
+  it("leaves the read schema permissive, so a legacy row still parses", () => {
+    expect(VisibilitySchema.safeParse({ mode: "group", groupIds: ["eng,prod"] }).success).toBe(
+      true,
+    );
   });
 });

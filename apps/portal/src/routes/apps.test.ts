@@ -449,6 +449,41 @@ describe("operator policy: PORTAL_ALLOW_PUBLIC_APPS=false", () => {
     expect(events).toHaveLength(0);
   });
 
+  /**
+   * The label-as-equality-key collision, at the route. `["eng","prod"]` and
+   * `["eng,prod"]` render the same `group:eng,prod`, so switching between them
+   * compared equal and the handler took its no-op branch: 200, no write, no audit.
+   * The reverse mattered more — an app scoped to the single id (which admits
+   * nobody) could not be corrected.
+   *
+   * The write path now refuses the comma outright, which is the belt; the classifier
+   * comparing sets is the braces, and `approval.test.ts` pins that directly.
+   */
+  it("refuses a group id containing the label delimiter (400)", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Pasted" });
+    for (const bad of ["eng,prod", "eng prod"]) {
+      const res = await setVisibility(slug, { visibility: { mode: "group", groupIds: [bad] } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe("validation_failed");
+    }
+  });
+
+  it("dedupes a repeated group id rather than storing or counting it twice", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Duped" });
+    const res = await setVisibility(slug, {
+      visibility: { mode: "group", groupIds: ["eng", "eng", "prod"] },
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    expect(row.visibilityGroupIds).toEqual(["eng", "prod"]);
+    // And the delta reads as the set, not as `group:eng,eng,prod`.
+    expect(res.json().applied).toEqual([
+      { path: "visibility", from: "internal", to: "group:eng,prod" },
+    ]);
+  });
+
   it("refuses more than the capped number of groups (400)", async () => {
     const slug = uniqueSlug();
     await createApp({ slug, displayName: "Too many" });

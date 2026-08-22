@@ -376,6 +376,26 @@ export function visibilityLabel(state: VisibilityState): string {
 }
 
 /**
+ * Whether two visibility values are the same, compared as a **set** for `group`.
+ *
+ * Separate from {@link visibilityLabel} on purpose. The label is a display and
+ * audit form, and using it as an equality key made a group id that *contains a
+ * comma* collide with the pair it joins to: `["eng","prod"]` and `["eng,prod"]`
+ * both label `group:eng,prod`, so switching an app between them compared equal,
+ * produced no delta, and the route read that as a no-op — HTTP 200, no write, no
+ * audit row, in both directions. A stringly-typed key over a delimiter the values
+ * can contain is the bug; comparing the sets removes the class of it rather than
+ * forbidding the character.
+ */
+function sameVisibility(a: VisibilityState, b: VisibilityState): boolean {
+  if (a.mode !== b.mode) return false;
+  if (a.mode !== "group") return true;
+  const left = new Set(a.groupIds ?? []);
+  const right = new Set(b.groupIds ?? []);
+  return left.size === right.size && [...left].every((id) => right.has(id));
+}
+
+/**
  * Visibility lives in flat `apps` columns, not in `capabilities`, so it is
  * classified on its own. Only `→ public` elevates (high); every other move,
  * including `public → internal`, is baseline (§3).
@@ -388,21 +408,26 @@ export function visibilityLabel(state: VisibilityState): string {
  * same rule, **editing which groups may open a `group` app is baseline** — it
  * moves the population around inside the directory without ever leaving it.
  *
- * It compares whole {@link visibilityLabel} values, not just modes, and that is
- * load-bearing rather than tidy. While this took two `VisibilityMode`s, a
- * `group → group` edit that changed only the group set compared equal, returned
- * `null`, and the caller in `routes/apps.ts` treats `null` as a no-op — so
- * changing which group could open an app answered 200, wrote nothing, and
- * audited nothing. That was invisible while an app could hold only one group and
- * the field was a free-text box; it is the whole point of the feature now.
+ * It compares whole visibility values, not just modes, and that is load-bearing
+ * rather than tidy. While this took two `VisibilityMode`s, a `group → group` edit
+ * that changed only the group set compared equal, returned `null`, and the caller
+ * in `routes/apps.ts` treats `null` as a no-op — so changing which group could
+ * open an app answered 200, wrote nothing, and audited nothing. That was invisible
+ * while an app could hold only one group and the field was a free-text box; it is
+ * the whole point of the feature now.
+ *
+ * The comparison is {@link sameVisibility} — a set test — and not equality of the
+ * rendered label, which was the same bug one level down: an id containing the
+ * label's `,` delimiter collided with the pair it joins to. The label is still
+ * what the delta *carries*, because that is a human-facing diff.
  */
 export function classifyVisibilityChange(
   from: VisibilityState,
   to: VisibilityState,
 ): VisibilityChange | null {
+  if (sameVisibility(from, to)) return null;
   const fromLabel = visibilityLabel(from);
   const toLabel = visibilityLabel(to);
-  if (fromLabel === toLabel) return null;
   const elevated = to.mode === "public";
   return {
     delta: { path: "visibility", from: fromLabel, to: toLabel },

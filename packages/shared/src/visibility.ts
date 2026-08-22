@@ -79,3 +79,43 @@ export type VisibilityMode = z.infer<typeof VisibilityModeSchema>;
 export function visibilityGroupIds(visibility: Visibility): string[] {
   return visibility.mode === "group" ? visibility.groupIds : [];
 }
+
+/**
+ * Refuse a group id that no legitimate path can produce, on the **write** path.
+ *
+ * Not folded into {@link VisibilityGroupIdsSchema}, and that is the point: that
+ * schema also validates on READ (`toApp` parses every row through `AppSchema`), so
+ * a restriction there turns a single odd stored row into a 500 on the whole apps
+ * list. Reads must stay total; writes can be picky.
+ *
+ * A comma is rejected because it is {@link visibilityLabel}'s delimiter, so an id
+ * containing one produces an audit entry and an approval diff that cannot be read
+ * back unambiguously. Correctness no longer depends on this — change detection
+ * compares sets, not labels — but a pasted `a,b` is a mistake worth catching at
+ * the boundary rather than storing. Whitespace goes for the same reason it does in
+ * the CLI's parser: a padded id is stored verbatim and then silently matches
+ * nobody at the edge, which is the least debuggable outcome available. Neither
+ * character can appear in an Entra object id or in a `group:a,b` CLI argument, so
+ * this rejects nothing anyone can legitimately express.
+ */
+export function assertWritableGroupIds(ids: string[]): boolean {
+  return ids.every((id) => !/[,\s]/.test(id));
+}
+
+/** Message for the refinement above, so the API and the CLI word it the same. */
+export const WRITABLE_GROUP_ID_MESSAGE =
+  "a group id cannot contain a comma or whitespace (check for a pasted list)";
+
+/**
+ * {@link VisibilitySchema} for request bodies — the read-permissive schema plus
+ * {@link assertWritableGroupIds}.
+ *
+ * The split exists so the API can refuse input that the read path must still be
+ * able to represent. `AppSchema` keeps using the permissive one; the manifest's
+ * `visibility` is output-only (the PUT body carries capabilities alone), so it
+ * needs no writable variant.
+ */
+export const WritableVisibilitySchema = VisibilitySchema.refine(
+  (v) => v.mode !== "group" || assertWritableGroupIds(v.groupIds),
+  { message: WRITABLE_GROUP_ID_MESSAGE, path: ["groupIds"] },
+);

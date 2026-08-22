@@ -380,7 +380,13 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         // a `group → group` edit that moves only the group set is a real change,
         // and comparing modes alone reported it as a no-op (ADR-0040 §5).
         const before = { mode: row.visibilityMode, groupIds: row.visibilityGroupIds };
-        const after = { mode: visibility.mode, groupIds: visibilityGroupIds(visibility) };
+        // `after` is derived from the COLUMNS, not from the request body, so the
+        // delta and the row it describes cannot disagree. Reading the body here
+        // instead meant a request carrying `["eng","eng","prod"]` stored the
+        // deduped set but audited `group:eng,eng,prod` — a diff describing a value
+        // that was never written.
+        const columns = visibilityToColumns(visibility);
+        const after = { mode: columns.visibilityMode, groupIds: columns.visibilityGroupIds };
         const change = classifyVisibilityChange(before, after);
         if (!change) {
           return { app: toApp(row), applied: [], pending: null }; // no-op
@@ -414,7 +420,6 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         }
 
         // Baseline reduction — apply now.
-        const columns = visibilityToColumns(visibility);
         const updated = await casPolicyWrite(tx, row, columns);
         await tx.auditEvent.create({
           data: {

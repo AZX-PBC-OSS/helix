@@ -59,9 +59,23 @@ export function visibilityFromColumns(mode: VisibilityMode, groupIds: string[]):
   return mode === "group" ? { mode, groupIds } : { mode };
 }
 
-/** Flatten a Visibility union into columns for an `apps` insert/update. */
+/**
+ * Flatten a Visibility union into columns for an `apps` insert/update.
+ *
+ * **Dedupes**, because this is the one place every write funnels through and a
+ * repeated id is never meaningful in an any-of set. Left as-is it counted twice
+ * against the cap of 10 and rendered `group:a,a`, which then differs from
+ * `group:a` in the audit trail for no reason. Done here rather than in the zod
+ * schema deliberately: the schema is shared with the READ path (`toApp` validates
+ * through `AppSchema`), and anything that makes a stored row unrepresentable turns
+ * one odd row into a 500 on the whole apps list — the failure this mapper was just
+ * fixed to stop having.
+ */
 export function visibilityToColumns(visibility: Visibility): VisibilityColumns {
-  return { visibilityMode: visibility.mode, visibilityGroupIds: visibilityGroupIds(visibility) };
+  return {
+    visibilityMode: visibility.mode,
+    visibilityGroupIds: [...new Set(visibilityGroupIds(visibility))],
+  };
 }
 
 /**

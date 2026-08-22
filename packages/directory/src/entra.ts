@@ -198,8 +198,26 @@ export class EntraDirectory implements DirectoryProvider {
      * — and surfacing that as an opaque 500 on the group picker tells the operator
      * nothing about which. Still retried first, so a transient credential blip is
      * not reported as a misconfiguration.
+     *
+     * BOTH flags are needed, and a single "was the last failure a credential one"
+     * flag was wrong. It recorded only the most recent attempt, so a real Graph
+     * outage plus one transient token hiccup on the final attempt reported
+     * `no-credential` — a permanent, operator-must-act outcome the SPA renders as
+     * "check that a managed identity is attached", which never surfaces as an error
+     * and never retries. That is exactly the "hide a real outage behind a consent
+     * banner" failure `DirectoryOutcome`'s own doc warns against. `no-credential`
+     * is now claimed only when Graph was never reached at all.
      */
-    let lastFailureWasCredential = false;
+    let sawCredentialFailure = false;
+    /**
+     * The last Graph-side failure, kept separately from `lastError`.
+     *
+     * When both kinds happened, this is the one worth raising: "graph returned
+     * 503" is the actionable fact, and the token blip that happened to come last
+     * is noise. Throwing merely the *latest* error would report a token failure
+     * with no status while Graph was the thing that was down.
+     */
+    let lastGraphError: DirectoryError | undefined;
 
     for (let attempt = 0; attempt <= this.#retries; attempt += 1) {
       const remaining = deadline - this.#now();
@@ -214,9 +232,8 @@ export class EntraDirectory implements DirectoryProvider {
       let token: string;
       try {
         token = await this.#getToken();
-        lastFailureWasCredential = false;
       } catch (err) {
-        lastFailureWasCredential = true;
+        sawCredentialFailure = true;
         lastError = new DirectoryError("graph token acquisition failed", undefined, undefined, {
           cause: err,
         });
@@ -246,9 +263,13 @@ export class EntraDirectory implements DirectoryProvider {
         retryAfter = res.headers.get("retry-after");
         text = await res.text();
       } catch (err) {
-        lastError = new DirectoryError(`graph ${method} ${path} failed`, undefined, undefined, {
-          cause: err,
-        });
+        lastGraphError = new DirectoryError(
+          `graph ${method} ${path} failed`,
+          undefined,
+          undefined,
+          { cause: err },
+        );
+        lastError = lastGraphError;
         if (attempt === this.#retries) break;
         if (!(await this.#backoff(attempt, null, deadline))) break;
         continue;
@@ -274,7 +295,12 @@ export class EntraDirectory implements DirectoryProvider {
         };
       }
       if (status === 429 || status >= 500) {
-        lastError = new DirectoryError(`graph ${method} ${path} returned ${status}`, status, code);
+        lastGraphError = new DirectoryError(
+          `graph ${method} ${path} returned ${status}`,
+          status,
+          code,
+        );
+        lastError = lastGraphError;
         if (attempt === this.#retries) break;
         if (!(await this.#backoff(attempt, retryAfter, deadline))) break;
         continue;
@@ -282,7 +308,10 @@ export class EntraDirectory implements DirectoryProvider {
       throw new DirectoryError(`graph ${method} ${path} returned ${status}`, status, code);
     }
 
-    if (lastFailureWasCredential) {
+    // Only when the credential is the *whole* story. If any attempt got as far as
+    // Graph and Graph failed, that is an outage: throw, so it is retryable and
+    // visible as an error rather than as a settled configuration verdict.
+    if (sawCredentialFailure && !lastGraphError) {
       return {
         available: false,
         reason: "no-credential",
@@ -293,6 +322,7 @@ export class EntraDirectory implements DirectoryProvider {
       };
     }
     throw (
+      lastGraphError ??
       lastError ??
       new DirectoryError(`graph ${method} ${path} exhausted its ${this.#totalMs}ms budget`)
     );

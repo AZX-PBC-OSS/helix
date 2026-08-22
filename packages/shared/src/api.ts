@@ -2,7 +2,7 @@ import { z } from "zod";
 import { AppSchema } from "./app.js";
 import { CapabilitiesSchema } from "./manifest.js";
 import { VersionSchema } from "./version.js";
-import { VisibilitySchema } from "./visibility.js";
+import { WritableVisibilitySchema } from "./visibility.js";
 
 /**
  * The portal's versioned REST contract (architecture §7, project plan §1).
@@ -15,7 +15,7 @@ import { VisibilitySchema } from "./visibility.js";
 export const CreateAppRequestSchema = z.object({
   slug: AppSchema.shape.slug,
   displayName: AppSchema.shape.displayName,
-  visibility: VisibilitySchema.default({ mode: "internal" }),
+  visibility: WritableVisibilitySchema.default({ mode: "internal" }),
   /** Optional per-app capability grant set at create time (architecture §6.3). */
   capabilities: CapabilitiesSchema.optional(),
 });
@@ -31,7 +31,7 @@ export type SetManifestRequest = z.infer<typeof SetManifestRequestSchema>;
 
 /** `POST /api/v1/apps/:slug/visibility` body — change how the app gates access. */
 export const SetVisibilityRequestSchema = z.object({
-  visibility: VisibilitySchema,
+  visibility: WritableVisibilitySchema,
   /** Justification carried onto the approval request when going public. */
   reason: z.string().max(2000).optional(),
 });

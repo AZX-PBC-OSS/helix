@@ -331,6 +331,35 @@ describe("classifyVisibilityChange", () => {
     expect(visibilityLabel(vis("group"))).toBe("group:");
   });
 
+  /**
+   * The label was being used as an equality key, and it joins on `,` — so an id
+   * that CONTAINS a comma collided with the pair it joins to. Both directions were
+   * stuck: the route reads `null` as a no-op, so it answered 200 with no write and
+   * no audit row, and an app wrongly scoped to the single id `"eng,prod"` (which
+   * admits nobody) could not be corrected to `["eng","prod"]`.
+   *
+   * The fix compares sets, so the collision is gone regardless of what characters
+   * an id contains. The write path additionally refuses the delimiter, but that is
+   * hygiene layered on top rather than the thing correctness rests on — which is
+   * why this test exercises the classifier directly, with ids the schema would now
+   * reject.
+   */
+  it("does not confuse a comma-containing id with the pair its label joins", () => {
+    const pair = vis("group", "eng", "prod");
+    const single = vis("group", "eng,prod");
+    // The labels genuinely collide — that is the trap, and it is still true.
+    expect(visibilityLabel(pair)).toBe(visibilityLabel(single));
+    // The classification does not.
+    expect(classifyVisibilityChange(pair, single)).not.toBeNull();
+    expect(classifyVisibilityChange(single, pair)).not.toBeNull();
+  });
+
+  it("treats a duplicated id as no change", () => {
+    // `["a","a"]` and `["a"]` are the same set, so re-saving one as the other is
+    // not an edit. (The write path dedupes, so this is the read-back case.)
+    expect(classifyVisibilityChange(vis("group", "a", "a"), vis("group", "a"))).toBeNull();
+  });
+
   it("still gates a group app going public, group set or not", () => {
     expect(classifyVisibilityChange(vis("group", "eng", "product"), vis("public"))).toMatchObject({
       elevated: true,

@@ -351,3 +351,47 @@ describe("EntraDirectory when it cannot get a token", () => {
     expect(calls).toBe(2);
   });
 });
+
+/**
+ * `no-credential` is a *settled verdict*: the SPA renders it as a banner telling
+ * the operator to go fix a credential, and being a 200 it never surfaces as an
+ * error and never retries. So it must only be claimed when the credential really
+ * is the whole story.
+ */
+describe("EntraDirectory does not blame the credential for a Graph outage", () => {
+  it("throws when Graph failed, even if the last token attempt also failed", async () => {
+    // Graph 503 on every attempt; the token blips only on the final one — which a
+    // single "was the last failure a credential one" flag reported as
+    // `no-credential`, hiding a real outage behind a configuration banner.
+    let tokenCalls = 0;
+    const s = scripted([json(503, { error: { code: "ServiceUnavailable" } })]);
+    const dir = new EntraDirectory(
+      opts(s.impl, {
+        retries: 2,
+        getToken: async () => {
+          tokenCalls += 1;
+          if (tokenCalls === 3) throw new Error("IMDS blip");
+          return "token";
+        },
+      }),
+    );
+    await expect(dir.searchGroups("eng", 10)).rejects.toMatchObject({ status: 503 });
+    expect(tokenCalls).toBe(3);
+  });
+
+  it("still reports no-credential when Graph was never reached", async () => {
+    const s = scripted([json(200, { value: [] })]);
+    const dir = new EntraDirectory(
+      opts(s.impl, {
+        getToken: async () => {
+          throw new Error("ManagedIdentityCredential authentication failed");
+        },
+      }),
+    );
+    await expect(dir.searchGroups("eng", 10)).resolves.toMatchObject({
+      available: false,
+      reason: "no-credential",
+    });
+    expect(s.count()).toBe(0);
+  });
+});
