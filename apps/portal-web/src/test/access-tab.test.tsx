@@ -31,7 +31,7 @@ function makeApp(visibility: Visibility): App {
  */
 function stubFetch(
   result: VisibilityUpdateResult,
-  directory: { mine: unknown; search: unknown } = {
+  directory: { mine: unknown; search: unknown; stored?: unknown } = {
     mine: AVAILABLE_MINE,
     search: AVAILABLE_SEARCH,
   },
@@ -39,6 +39,13 @@ function stubFetch(
   const fetchMock = vi.fn((url: string) => {
     if (typeof url === "string" && url.endsWith("/visibility")) {
       return Promise.resolve({ ok: true, status: 200, json: async () => result });
+    }
+    if (typeof url === "string" && url.includes("/visibility/groups")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => directory.stored ?? EMPTY_AVAILABLE,
+      });
     }
     if (typeof url === "string" && url.includes("/directory/my-groups")) {
       return Promise.resolve({
@@ -148,6 +155,17 @@ describe("AccessTab visibility switcher", () => {
     expect(screen.queryByRole("button", { name: "Make internal" })).toBeNull();
   });
 });
+
+/** An available directory that simply knows nothing — the common stub default. */
+const EMPTY_AVAILABLE = { available: true, groups: [] };
+
+/** A tenant that never granted the Graph permission. */
+const NO_CONSENT = {
+  available: false,
+  reason: "no-consent",
+  detail: "tenant said no",
+  missingPermission: "GroupMember.Read.All",
+};
 
 /** The caller's own groups, as `/directory/my-groups` answers them. */
 const AVAILABLE_MINE = {
@@ -269,7 +287,109 @@ describe("AccessTab group picker", () => {
     expect(screen.getByText(/GroupMember\.Read\.All/)).toBeDefined();
     // And it says the gate still works, so the banner is not read as an outage.
     expect(screen.getByText(/Access control itself is unaffected/)).toBeDefined();
-    // The id field is still there, so the stored GUID remains editable.
+    // The id field is still there, so a GUID can be added.
     expect(screen.getByLabelText("Group id")).toBeDefined();
+  });
+
+  /**
+   * The regression that the assertion above did NOT catch, and the reason it is
+   * worth a test of its own.
+   *
+   * The degraded branch used to set `display: none` on the MultiSelect, which is a
+   * style prop on its ROOT — so it hid the pills showing the current selection and
+   * every pill's remove button along with the search box. Since the id field only
+   * ever appends, an owner on a tenant without the Graph grant could add ids but
+   * not remove one; at the cap, with that field disabled, there was no editable
+   * control at all, and narrowing the app meant switching to Internal and back —
+   * briefly widening it to the whole directory.
+   *
+   * Asserting "the id field exists" passed straight through that. Asserting the
+   * selection is *visible and removable* does not.
+   */
+  it("keeps the selection visible and removable while the directory is unavailable", async () => {
+    const fetchMock = stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      { mine: NO_CONSENT, search: NO_CONSENT, stored: NO_CONSENT },
+    );
+    setToken("test-token");
+    const { container } = render(makeApp({ mode: "group", groupIds: ["keep-me", "remove-me"] }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+    await screen.findByText(/Group search is unavailable/);
+
+    // Both selections render, and nothing above them is display:none.
+    const pills = [...container.querySelectorAll('[class*="Pill-root"]')];
+    expect(pills.map((p) => p.textContent)).toEqual([
+      "unknown group (keep-me)",
+      "unknown group (remove-me)",
+    ]);
+    for (const pill of pills) {
+      let el: HTMLElement | null = pill as HTMLElement;
+      while (el) {
+        expect(el.style.display).not.toBe("none");
+        el = el.parentElement;
+      }
+    }
+
+    // And removal actually works, end to end through the save.
+    const removes = container.querySelectorAll('[class*="Pill-remove"]');
+    expect(removes).toHaveLength(2);
+    await user.click(removes[1] as Element);
+    await user.click(screen.getByRole("button", { name: "Save groups" }));
+
+    await waitFor(() =>
+      expect(visibilityBody(fetchMock)).toEqual({
+        visibility: { mode: "group", groupIds: ["keep-me"] },
+      }),
+    );
+  });
+
+  /**
+   * `stored` is the third Graph-backed query and was missing from the
+   * `unavailable` check. `my-groups` cannot fill in for it: with no group claims
+   * it short-circuits to an empty list without calling Graph, so it reports
+   * `available: true` on a tenant where search cannot work. Before this, opening a
+   * group-scoped app as such a caller showed a normal search UI and no banner.
+   */
+  it("shows the banner from the stored-groups query alone, before any search", async () => {
+    stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      // Caller has no group claims, so my-groups is available-but-empty…
+      { mine: EMPTY_AVAILABLE, search: EMPTY_AVAILABLE, stored: NO_CONSENT },
+    );
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+
+    // …and the banner still appears, without the operator typing anything.
+    expect(await screen.findByText(/Group search is unavailable/)).toBeDefined();
+    expect(screen.getByLabelText("Group id")).toBeDefined();
+  });
+
+  /**
+   * Cancel discarded the draft; the "Edit groups" toggle collapsed the same panel
+   * and did not — so an operator could back out of a selection and re-open later
+   * to find it still there, ready for a Save that looked unrelated. Both paths go
+   * through `closePicker` now.
+   */
+  it("discards the draft when the panel is closed with the toggle, not just Cancel", async () => {
+    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+    await user.type(await screen.findByLabelText("Add by id"), "sneaky-group");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    // Close via the toggle — the path that used to keep the draft.
+    await user.click(screen.getByRole("button", { name: "Edit groups" }));
+    await user.click(screen.getByRole("button", { name: "Edit groups" }));
+
+    expect(screen.queryByText(/sneaky-group/)).toBeNull();
+    // Nothing to save, because the abandoned edit is genuinely gone.
+    expect(
+      (await screen.findByRole("button", { name: "Save groups" })).hasAttribute("disabled"),
+    ).toBe(true);
   });
 });

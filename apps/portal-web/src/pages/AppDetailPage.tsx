@@ -199,7 +199,8 @@ export function AppDetailPage() {
           <DataTab app={a} />
         </Tabs.Panel>
         <Tabs.Panel value="access">
-          <AccessTab app={a} />
+          {/* Keyed so the group-picker draft resets per app — see AccessTab. */}
+          <AccessTab key={a.id} app={a} />
         </Tabs.Panel>
         <Tabs.Panel value="dev-mode">
           <DevModeTab app={a} />

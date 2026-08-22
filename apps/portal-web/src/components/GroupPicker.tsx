@@ -22,10 +22,12 @@ import { Hint } from "./primitives";
  *    deliberately, and seed `data` with an explicit label for those ids rather
  *    than letting a bare GUID appear as if it were a name.
  *
- * 3. **It survives an unavailable directory.** When the tenant hasn't granted
- *    `GroupMember.Read.All` there is no picker to show, so it becomes a plain
- *    id entry field with a banner naming the permission (§8). Group visibility
- *    keeps working end to end regardless — enforcement never depended on Graph.
+ * 3. **It survives an unavailable directory, and stays fully editable.** When the
+ *    tenant hasn't granted `GroupMember.Read.All` the search goes away but the
+ *    selection and its remove buttons do not, and a banner names the permission
+ *    (§8). Removal has to keep working precisely here: this is the state where an
+ *    owner cannot re-find a group they just took off. Group visibility keeps
+ *    working end to end regardless — enforcement never depended on Graph.
  */
 export function GroupPicker({
   value,
@@ -63,12 +65,22 @@ export function GroupPicker({
   const stored = useQuery({ ...appVisibilityGroupsQuery(slug ?? ""), enabled: Boolean(slug) });
 
   /**
-   * Unavailability is reported by whichever query actually needed the directory.
-   * Search is the one that does — `my-groups` answers off the token claim — so a
-   * missing grant shows up there first, and only once the operator searches. Read
-   * both so the banner appears either way.
+   * Unavailability is reported by whichever query actually needed the directory,
+   * and **all three of them do** — an earlier version of this read only `found`
+   * and `mine` on the reasoning that "`my-groups` answers off the token claim".
+   * That is true of where the *ids* come from and false of what happens next:
+   * `my-groups` still resolves them through Graph. Worse, when the caller has no
+   * group claims at all it short-circuits to an empty list without touching
+   * Graph, so it can never report an outage — and for a group-scoped app opened
+   * by such a caller who has not searched yet, `stored` was the only query that
+   * knew, and its answer was thrown away. No banner, on a tenant where search
+   * cannot work.
+   *
+   * `stored` first because it is the most specific signal: it fires on open,
+   * without waiting for the operator to type.
    */
   const unavailable =
+    (stored.data && !stored.data.available && stored.data) ||
     (found.data && !found.data.available && found.data) ||
     (mine.data && !mine.data.available && mine.data) ||
     null;
@@ -142,31 +154,54 @@ export function GroupPicker({
           Access control itself is unaffected — the ids below are still enforced at sign-in.
         </Hint>
       )}
+      {/*
+       * ALWAYS MOUNTED, even with no directory to search. An earlier version set
+       * `display: none` here when unavailable, reasoning that a search box which
+       * can never return anything reads as "no such group" rather than "we cannot
+       * look". That was true and beside the point: `display` is a style prop on
+       * the MultiSelect *root*, so it hid the whole wrapper — the pills showing
+       * the current selection and every pill's remove button with them. Since
+       * `addManual` only ever appends, an owner on a tenant that never granted the
+       * Graph permission could add group ids but neither see the selection nor
+       * remove one; at the cap, with the id field disabled, there was no editable
+       * control left at all. The only way to narrow such an app was switching to
+       * Internal and back — briefly widening it to the entire directory, which is
+       * the exact hazard the Access tab's `editable` branch exists to prevent.
+       *
+       * So the control stays; only `searchable` goes. `searchValue`/`onSearchChange`
+       * are omitted with it, because a controlled search value on a non-searchable
+       * MultiSelect is a Mantine warning.
+       */}
       <MultiSelect
         label="Directory groups"
-        // One description, not one per state: the control is hidden outright when
-        // there is nothing to search, so an unavailable-specific string here would
-        // be dead copy that only ever showed up as a duplicate of the banner.
-        description="Search your directory, or pick from the groups you're in. Anyone in any of these groups can open the app."
-        placeholder={value.length === 0 ? "search for a group" : undefined}
+        description={
+          unavailable
+            ? "Remove a group with its ×. New ones have to be added by id below."
+            : "Search your directory, or pick from the groups you're in. Anyone in any of these groups can open the app."
+        }
+        placeholder={
+          value.length === 0 ? (unavailable ? "none selected" : "search for a group") : undefined
+        }
         data={data}
         value={value}
         onChange={onChange}
-        searchable
-        searchValue={search}
-        onSearchChange={setSearch}
+        searchable={!unavailable}
+        {...(unavailable ? {} : { searchValue: search, onSearchChange: setSearch })}
         nothingFoundMessage={
-          canSearch
-            ? found.isFetching
-              ? "Searching…"
-              : "No matching groups — you can still add an id below."
-            : "Type at least 3 characters to search."
+          // A failed search must not read as an empty one. `DirectoryError` from a
+          // throttled or broken Graph surfaces as a query error, not as an
+          // `available: false` outcome, so without this branch a rate-limited
+          // directory told every operator "no matching groups" — i.e. "that group
+          // does not exist".
+          found.isError
+            ? "Search failed — the directory did not answer. Try again, or add the id below."
+            : canSearch
+              ? found.isFetching
+                ? "Searching…"
+                : "No matching groups — you can still add an id below."
+              : "Type at least 3 characters to search."
         }
         maxValues={MAX_VISIBILITY_GROUPS}
-        // Hidden rather than merely empty when there is no directory to search:
-        // a search box that can never return anything is worse than no search box,
-        // because it reads as "no such group" instead of "we cannot look".
-        display={unavailable ? "none" : undefined}
         disabled={disabled}
       />
       {/*

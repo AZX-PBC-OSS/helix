@@ -60,6 +60,29 @@ export function AccessTab({ app }: { app: App }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const currentGroupIds = app.visibility.mode === "group" ? app.visibility.groupIds : [];
   const [groupIds, setGroupIds] = useState<string[]>(currentGroupIds);
+
+  /**
+   * Close the picker and discard the draft.
+   *
+   * Both close paths go through here on purpose. Cancel used to reset while the
+   * "Edit groups" toggle — which collapses the same panel — did not, so one path
+   * bypassed the guard the other one documented: an operator could add a group,
+   * back out via the toggle, and re-open later to find it still in the draft with
+   * Save live, ready to be applied by a click that looked unrelated.
+   */
+  const closePicker = () => {
+    setGroupIds(currentGroupIds);
+    setGroupOpen(false);
+  };
+
+  // NOTE: the group draft above is per-app state, and what keeps it that way is
+  // the `key={a.id}` on this component in `AppDetailPage`. React Router renders
+  // one element for `/apps/:slug`, so browser back/forward between two cached
+  // detail pages can otherwise hand this component a different app without
+  // remounting it — carrying a draft across, aimed at the wrong app. Resetting by
+  // remount rather than in an effect is both React's own answer and what
+  // `react-hooks/set-state-in-effect` requires.
+
   /**
    * Whether the draft matches what's stored, compared as a **set** — order is
    * meaningless in an any-of rule, so a reorder is not an edit. The server agrees
@@ -230,7 +253,11 @@ export function AccessTab({ app }: { app: App }) {
                       </Button>
                     )}
                     {actionable && row.mode === "group" && (
-                      <Button variant="default" size="xs" onClick={() => setGroupOpen((o) => !o)}>
+                      <Button
+                        variant="default"
+                        size="xs"
+                        onClick={() => (groupOpen ? closePicker() : setGroupOpen(true))}
+                      >
                         {on ? "Edit groups" : "Restrict to groups"}
                       </Button>
                     )}
@@ -260,13 +287,7 @@ export function AccessTab({ app }: { app: App }) {
                         <Button
                           size="xs"
                           variant="default"
-                          onClick={() => {
-                            // Discard the draft, don't keep it: a half-edited set
-                            // left behind the collapsed panel would be applied by
-                            // a later click that looked unrelated.
-                            setGroupIds(currentGroupIds);
-                            setGroupOpen(false);
-                          }}
+                          onClick={closePicker}
                           disabled={setVisibility.isPending}
                         >
                           Cancel
