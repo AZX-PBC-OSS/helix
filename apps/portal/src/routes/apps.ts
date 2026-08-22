@@ -11,6 +11,7 @@ import {
   captureSnapshot,
   classifyVisibilityChange,
   visibilityGroupIds,
+  visibilityLabel,
   touchedAreas,
   type ManifestUpdateResult,
   type VisibilityUpdateResult,
@@ -41,6 +42,23 @@ import { appPublicUrl } from "../deployment.js";
 /** App registry routes: create, list, get (architecture §7). */
 export async function appRoutes(app: FastifyInstance): Promise<void> {
   // Create an app. Mutating — requires the dev token.
+  /**
+   * `{ id: displayName }` for as many ids as the directory can name. Never
+   * throws: see the caller's comment for why a failure here must not fail a
+   * visibility write.
+   */
+  const resolveGroupNamesForAudit = async (ids: string[]): Promise<Record<string, string>> => {
+    if (ids.length === 0) return {};
+    try {
+      const outcome = await app.directory.getGroups(ids);
+      if (!outcome.available) return {};
+      return Object.fromEntries(outcome.value.map((g) => [g.id, g.displayName]));
+    } catch (err) {
+      app.log.warn({ err }, "could not resolve group names for the visibility audit entry");
+      return {};
+    }
+  };
+
   app.post("/api/v1/apps", { preHandler: authenticate }, async (req, reply) => {
     const body = CreateAppRequestSchema.parse(req.body);
     const actor = requireActor(req);
@@ -53,6 +71,9 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("forbidden", "password apps are disabled on this deployment");
     }
     const visibilityColumns = visibilityToColumns(body.visibility);
+    // Best-effort, like the visibility route's: a name the directory could not
+    // supply costs the audit row its names and nothing else.
+    const createGroupNames = await resolveGroupNamesForAudit(visibilityColumns.visibilityGroupIds);
     // Fill capability defaults so the stored shape always parses on read.
     const capabilities = CapabilitiesSchema.parse(body.capabilities ?? {});
 
@@ -81,7 +102,29 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await app.prisma.auditEvent.create({
-      data: { appId: row.id, actor: actor.sub, action: "app.create", metadata: { slug: row.slug } },
+      data: {
+        appId: row.id,
+        actor: actor.sub,
+        action: "app.create",
+        // Visibility is recorded here for the same reason the visibility route
+        // records it (ADR-0040 §7: an audit entry is the ONE place a group name
+        // is kept). An app can be group-scoped from birth — `CreateAppRequest`
+        // accepts the full union and `helix create --visibility group:a,b`
+        // produces exactly that; only the SPA declines to offer the mode — so
+        // without this, the groups an app was created with were recorded nowhere.
+        metadata: {
+          slug: row.slug,
+          visibility: visibilityLabel(body.visibility),
+          ...(visibilityColumns.visibilityGroupIds.length > 0
+            ? {
+                groupIds: visibilityColumns.visibilityGroupIds,
+                ...(Object.keys(createGroupNames).length > 0
+                  ? { groupNames: createGroupNames }
+                  : {}),
+              }
+            : {}),
+        } as unknown as Prisma.InputJsonValue,
+      },
     });
 
     reply.status(201).send(toApp(row));
@@ -286,23 +329,6 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   // opens an approval request (docs/design/approvals.md §3, §6.3). Enabling
   // `password` visibility is NOT done here — it needs a minted credential, so
   // it keeps its dedicated /access/password routes below.
-  /**
-   * `{ id: displayName }` for as many ids as the directory can name. Never
-   * throws: see the caller's comment for why a failure here must not fail a
-   * visibility write.
-   */
-  const resolveGroupNamesForAudit = async (ids: string[]): Promise<Record<string, string>> => {
-    if (ids.length === 0) return {};
-    try {
-      const outcome = await app.directory.getGroups(ids);
-      if (!outcome.available) return {};
-      return Object.fromEntries(outcome.value.map((g) => [g.id, g.displayName]));
-    } catch (err) {
-      app.log.warn({ err }, "could not resolve group names for the visibility audit entry");
-      return {};
-    }
-  };
-
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/visibility",
     { preHandler: [authenticate, ownsApp] },

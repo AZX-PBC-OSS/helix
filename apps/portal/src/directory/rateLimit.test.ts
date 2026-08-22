@@ -23,24 +23,33 @@ describe("directory search rate limit", () => {
   it("counts up and refuses past the limit", async () => {
     const sub = actor();
     for (let i = 1; i <= 3; i += 1) {
-      await expect(bumpSearchLimit(prisma, sub, 3)).resolves.toEqual({ allowed: true, count: i });
+      await expect(bumpSearchLimit(prisma, sub, "search", 3)).resolves.toEqual({
+        allowed: true,
+        count: i,
+      });
     }
-    await expect(bumpSearchLimit(prisma, sub, 3)).resolves.toEqual({ allowed: false, count: 4 });
+    await expect(bumpSearchLimit(prisma, sub, "search", 3)).resolves.toEqual({
+      allowed: false,
+      count: 4,
+    });
   });
 
   it("counts per actor, so one principal cannot exhaust another's budget", async () => {
     const a = actor();
     const b = actor();
-    await bumpSearchLimit(prisma, a, 1);
-    await bumpSearchLimit(prisma, a, 1);
-    await expect(bumpSearchLimit(prisma, b, 1)).resolves.toEqual({ allowed: true, count: 1 });
+    await bumpSearchLimit(prisma, a, "search", 1);
+    await bumpSearchLimit(prisma, a, "search", 1);
+    await expect(bumpSearchLimit(prisma, b, "search", 1)).resolves.toEqual({
+      allowed: true,
+      count: 1,
+    });
   });
 
   it("restarts the window once it has elapsed", async () => {
     const sub = actor();
     // A zero-length window is already elapsed by the next statement.
-    await expect(bumpSearchLimit(prisma, sub, 1, 0)).resolves.toMatchObject({ count: 1 });
-    await expect(bumpSearchLimit(prisma, sub, 1, 0)).resolves.toMatchObject({
+    await expect(bumpSearchLimit(prisma, sub, "search", 1, 0)).resolves.toMatchObject({ count: 1 });
+    await expect(bumpSearchLimit(prisma, sub, "search", 1, 0)).resolves.toMatchObject({
       allowed: true,
       count: 1,
     });
@@ -56,7 +65,7 @@ describe("directory search rate limit", () => {
   it("is atomic under concurrency — no check-then-increment race", async () => {
     const sub = actor();
     const verdicts = await Promise.all(
-      Array.from({ length: 10 }, () => bumpSearchLimit(prisma, sub, 5)),
+      Array.from({ length: 10 }, () => bumpSearchLimit(prisma, sub, "search", 5)),
     );
     expect(verdicts.filter((v) => v.allowed)).toHaveLength(5);
     expect(verdicts.map((v) => v.count).sort((x, y) => x - y)).toEqual([
@@ -66,7 +75,7 @@ describe("directory search rate limit", () => {
 
   it("sweeps elapsed windows, and only its own keys", async () => {
     const sub = actor();
-    await bumpSearchLimit(prisma, sub, 1, 0); // already elapsed
+    await bumpSearchLimit(prisma, sub, "search", 1, 0); // already elapsed
     const foreign = `otherpurpose:${randomUUID()}`;
     await prisma.portalRateCounter.create({
       data: { bucketKey: foreign, count: 1, resetAt: new Date(0) },
@@ -83,5 +92,36 @@ describe("directory search rate limit", () => {
       await prisma.portalRateCounter.findUnique({ where: { bucketKey: foreign } }),
     ).not.toBeNull();
     await prisma.portalRateCounter.delete({ where: { bucketKey: foreign } });
+  });
+
+  /**
+   * The two surfaces cost differently, so they get separate budgets. A resolve
+   * fires on every Access-tab render of a group-scoped app; sharing one bucket
+   * would let ordinary navigation exhaust the search allowance, which is the
+   * allowance that actually guards the tenant-wide read.
+   */
+  it("keeps the search and resolve budgets separate", async () => {
+    const sub = actor();
+    await bumpSearchLimit(prisma, sub, "search", 1);
+    await expect(bumpSearchLimit(prisma, sub, "search", 1)).resolves.toMatchObject({
+      allowed: false,
+    });
+    // Exhausting search must not touch resolve.
+    await expect(bumpSearchLimit(prisma, sub, "resolve", 1)).resolves.toEqual({
+      allowed: true,
+      count: 1,
+    });
+  });
+
+  it("sweeps both buckets, not just the search one", async () => {
+    const sub = actor();
+    await bumpSearchLimit(prisma, sub, "search", 1, 0);
+    await bumpSearchLimit(prisma, sub, "resolve", 1, 0);
+    await sweepSearchLimits(prisma);
+    for (const prefix of ["dirsearch", "dirresolve"]) {
+      expect(
+        await prisma.portalRateCounter.findUnique({ where: { bucketKey: `${prefix}:${sub}` } }),
+      ).toBeNull();
+    }
   });
 });

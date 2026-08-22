@@ -1,7 +1,8 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { DirectoryGroupsResponseSchema, type DirectoryGroupsResponse } from "@azx-pbc/shared";
 import {
+  DirectoryError,
   GRAPH_GROUP_PERMISSION,
   MAX_SEARCH_RESULTS,
   MIN_SEARCH_LENGTH,
@@ -11,7 +12,7 @@ import {
 } from "@azx-pbc/directory";
 import { authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
-import { bumpSearchLimit, SEARCH_LIMIT } from "../directory/rateLimit.js";
+import { bumpSearchLimit, RATE_BUCKETS, SEARCH_LIMIT } from "../directory/rateLimit.js";
 
 /**
  * Directory group lookup for the Access tab's group picker (ADR-0040 §4).
@@ -55,6 +56,35 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
    * Translate a provider outcome into the wire shape, so both routes degrade
    * identically and neither has to remember to.
    */
+  /**
+   * Run a directory call and turn a *transient* failure into a typed 503.
+   *
+   * `DirectoryError` is not an `AppError`, so without this the error plugin mapped
+   * it to a bare 500 — and once Graph starts 429ing (its own throttle, which the
+   * per-actor limit reduces but cannot remove), the SPA sees an errored query with
+   * no data, so its `unavailable` check stays null, no banner renders, and the
+   * picker says "no matching groups". A throttled directory read as "that group
+   * does not exist", for every operator at once.
+   *
+   * `capability_unavailable` (-> 503) rather than a fabricated `available: false`:
+   * the whole point of that shape is that it means "permanently, until an operator
+   * acts", and a Graph blip is neither. A 503 is retryable and says so.
+   */
+  const attempt = async <T>(what: string, call: () => Promise<T>): Promise<T> => {
+    try {
+      return await call();
+    } catch (err) {
+      if (err instanceof DirectoryError) {
+        app.log.warn({ err, what }, "directory call failed");
+        throw new AppError(
+          "capability_unavailable",
+          "the directory did not answer — try again shortly",
+        );
+      }
+      throw err;
+    }
+  };
+
   const respond = <T extends GroupSummary[] | GroupName[]>(
     outcome: DirectoryOutcome<T>,
   ): DirectoryGroupsResponse => {
@@ -83,6 +113,28 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
     });
   };
 
+  /**
+   * Spend a resolve from this actor's budget, or refuse.
+   *
+   * Both id -> name routes issue a `getByIds` to Graph on every request, and for a
+   * while neither was limited: the route comment justified that on
+   * information-disclosure grounds ("a caller who can read this route can already
+   * read those same ids"), which is true and answers the wrong question. The
+   * resource being spent is the **tenant's shared Graph throttle budget**, which
+   * is exactly why the search route limits *before* its upstream call. Same
+   * reasoning, same fix, looser number — a resolve is page-render traffic.
+   */
+  const requireResolveBudget = async (req: FastifyRequest, sub: string): Promise<void> => {
+    const verdict = await bumpSearchLimit(app.prisma, sub, "resolve");
+    if (!verdict.allowed) {
+      req.log.warn(
+        { actor: sub, count: verdict.count, limit: RATE_BUCKETS.resolve.limit },
+        "directory resolve rate limit exceeded",
+      );
+      throw new AppError("rate_limited", "too many directory lookups — try again shortly");
+    }
+  };
+
   // Search the tenant's groups. See the restrictions in the module comment.
   app.get<{ Querystring: { q?: string; top?: string } }>(
     "/api/v1/directory/groups",
@@ -102,7 +154,7 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
         throw new AppError("rate_limited", "too many directory searches — try again shortly");
       }
 
-      const outcome = await app.directory.searchGroups(q, top);
+      const outcome = await attempt("searchGroups", () => app.directory.searchGroups(q, top));
       // Audited whether or not it found anything: the interesting record is that
       // this principal searched the directory for this term, which is exactly
       // what the new disclosure surface is.
@@ -115,24 +167,6 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  /**
-   * The groups the caller is in — the picker's default view.
-   *
-   * Served from the **groups claim on the caller's own already-verified access
-   * token** (`Actor.groups`), not from Graph and not from a delegated
-   * `User.Read` token (ADR-0040 decision 6). The rejected alternative worked and
-   * needed no administrator, but required the portal to hold or forward a user
-   * access token — new, durable credential surface on the control plane — in
-   * exchange for information a token we already verify carries for free. It also
-   * dragged in Graph's `/me/memberOf` null-payload trap; this route cannot reach
-   * that endpoint at all.
-   *
-   * `Actor.groups` is the union of the `groups` and `roles` claims, so it holds
-   * App Role values (`platform-admin`) beside group ids. Nothing here filters
-   * them: `EntraDirectory.getGroups` drops non-GUID ids before calling Graph, and
-   * anything that doesn't resolve is simply omitted. That keeps the shape
-   * knowledge in the one place that has to have it.
-   */
   /**
    * Resolve **one app's own** stored group ids to names (ADR-0040 §7).
    *
@@ -154,19 +188,42 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
     "/api/v1/apps/:slug/visibility/groups",
     { preHandler: authenticate },
     async (req): Promise<DirectoryGroupsResponse> => {
-      requireActor(req);
+      const actor = requireActor(req);
       const row = await app.prisma.app.findUnique({
         where: { slug: req.params.slug },
         select: { visibilityGroupIds: true },
       });
       if (!row) throw new AppError("not_found", `app "${req.params.slug}" not found`);
       if (row.visibilityGroupIds.length === 0) {
+        // No Graph call, so nothing to limit — and a group-less app must not spend
+        // anyone's budget just by being opened.
         return DirectoryGroupsResponseSchema.parse({ available: true, groups: [] });
       }
-      return respond(await app.directory.getGroups(row.visibilityGroupIds));
+      await requireResolveBudget(req, actor.sub);
+      return respond(
+        await attempt("getGroups", () => app.directory.getGroups(row.visibilityGroupIds)),
+      );
     },
   );
 
+  /**
+   * The groups the caller is in — the picker's default view.
+   *
+   * Served from the **groups claim on the caller's own already-verified access
+   * token** (`Actor.groups`), not from Graph and not from a delegated
+   * `User.Read` token (ADR-0040 decision 6). The rejected alternative worked and
+   * needed no administrator, but required the portal to hold or forward a user
+   * access token — new, durable credential surface on the control plane — in
+   * exchange for information a token we already verify carries for free. It also
+   * dragged in Graph's `/me/memberOf` null-payload trap; this route cannot reach
+   * that endpoint at all.
+   *
+   * `Actor.groups` is the union of the `groups` and `roles` claims, so it holds
+   * App Role values (`platform-admin`) beside group ids. Nothing here filters
+   * them: `EntraDirectory.getGroups` drops non-GUID ids before calling Graph, and
+   * anything that doesn't resolve is simply omitted. That keeps the shape
+   * knowledge in the one place that has to have it.
+   */
   app.get(
     "/api/v1/directory/my-groups",
     { preHandler: authenticate },
@@ -178,7 +235,8 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
         // for the case an operator can actually act on.
         return DirectoryGroupsResponseSchema.parse({ available: true, groups: [] });
       }
-      return respond(await app.directory.getGroups(actor.groups));
+      await requireResolveBudget(req, actor.sub);
+      return respond(await attempt("getGroups", () => app.directory.getGroups(actor.groups)));
     },
   );
 }

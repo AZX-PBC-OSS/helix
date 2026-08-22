@@ -1,6 +1,7 @@
 import fp from "fastify-plugin";
 import { UnavailableDirectory, type DirectoryProvider } from "@azx-pbc/directory";
 import { createDirectoryFromEnv } from "../directory/custody.js";
+import { SEARCH_WINDOW_MS, sweepSearchLimits } from "../directory/rateLimit.js";
 
 export interface DirectoryPluginOptions {
   /** Inject a provider (tests). When omitted, one is built from the environment. */
@@ -25,6 +26,33 @@ export interface DirectoryPluginOptions {
 export const directoryPlugin = fp<DirectoryPluginOptions>(
   async (app, opts) => {
     app.decorate("directory", opts.provider ?? buildFromEnv(app.log));
+
+    /**
+     * GC elapsed `portal_rate_counters` windows.
+     *
+     * `sweepSearchLimits` existed with no caller at all for a while, which made
+     * its own doc comment ("so a flood can't grow the table without bound") an
+     * assertion about a bound that did not exist, and left the migration's
+     * `resetAt` index and `DELETE` grant as dead weight. The row count was in fact
+     * bounded by the population of portal principals — small, but not what the
+     * comment claimed, and not something a future high-cardinality bucket prefix
+     * would keep true.
+     *
+     * Shape copied from the edge's `rate_counters` sweeper
+     * (`apps/edge/src/server.ts`): `unref` so it never holds the process open,
+     * cleared on close so the many apps a test run builds do not leak timers.
+     * Homed here rather than in `server.ts` so `buildApp()`/`close()` exercise the
+     * disposal.
+     */
+    const sweep = setInterval(() => {
+      void sweepSearchLimits(app.prisma).catch((err: unknown) => {
+        app.log.warn({ err }, "portal_rate_counters sweep failed");
+      });
+    }, SEARCH_WINDOW_MS);
+    sweep.unref();
+    app.addHook("onClose", async () => {
+      clearInterval(sweep);
+    });
   },
   { name: "directory" },
 );

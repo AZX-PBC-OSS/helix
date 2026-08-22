@@ -1,5 +1,6 @@
-import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
+import { describe, expect, it, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import {
+  DirectoryError,
   StaticDirectory,
   UnavailableDirectory,
   GRAPH_GROUP_PERMISSION,
@@ -8,7 +9,14 @@ import {
   type GroupName,
   type GroupSummary,
 } from "@azx-pbc/directory";
-import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
+import {
+  authHeader,
+  buildTestApp,
+  createTestPrisma,
+  uniqueSlug,
+  type TestApp,
+} from "../test/harness.js";
+import { bumpSearchLimit, RATE_BUCKETS } from "../directory/rateLimit.js";
 
 /**
  * The directory endpoints, and specifically the two properties ADR-0040 leans on
@@ -327,6 +335,55 @@ describe("visibility audit records group names as observed at write time", () =>
 
   // A visibility change must not fail because a log annotation could not be
   // fetched — the directory is best-effort here and nothing else.
+  /**
+   * `app.create` recorded only `{ slug }` while already storing visibility. The API
+   * accepts a group-scoped app on create (`CreateAppRequestSchema` takes the full
+   * union, and `helix create --visibility group:a,b` produces it) — only the SPA
+   * declines to offer the mode. So an app could be group-scoped from birth with
+   * nothing anywhere recording which groups, or what they were called.
+   */
+  it("records the groups an app is created with, names included", async () => {
+    const slug = uniqueSlug("cre");
+    const res = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: authHeader(),
+      payload: {
+        slug,
+        displayName: slug,
+        visibility: { mode: "group", groupIds: ["eng-team", "product-team"] },
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const row = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    const events = await t.prisma.auditEvent.findMany({
+      where: { appId: row.id, action: "app.create" },
+    });
+    expect(events[0]?.metadata).toMatchObject({
+      slug,
+      visibility: "group:eng-team,product-team",
+      groupIds: ["eng-team", "product-team"],
+      groupNames: { "eng-team": "Engineering", "product-team": "Product" },
+    });
+  });
+
+  it("records the visibility of a non-group app without inventing group keys", async () => {
+    const slug = uniqueSlug("cre");
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: authHeader(),
+      payload: { slug, displayName: slug },
+    });
+    const row = await t.prisma.app.findUniqueOrThrow({ where: { slug } });
+    const events = await t.prisma.auditEvent.findMany({
+      where: { appId: row.id, action: "app.create" },
+    });
+    expect(events[0]?.metadata).toMatchObject({ slug, visibility: "internal" });
+    expect(events[0]?.metadata).not.toHaveProperty("groupIds");
+    expect(events[0]?.metadata).not.toHaveProperty("groupNames");
+  });
+
   it("still applies the change when the directory cannot name anything", async () => {
     const t2 = buildTestApp({ directory: new DeniedDirectory() });
     await t2.app.ready();
@@ -356,5 +413,145 @@ describe("visibility audit records group names as observed at write time", () =>
     } finally {
       await t2.close();
     }
+  });
+});
+
+/** The dev-token actor's `sub`, which is what the rate-limit bucket is keyed on. */
+const TEST_ACTOR_SUB = process.env.PORTAL_DEV_ACTOR ?? "dev@azx.io";
+
+/**
+ * Clear this actor's rate-limit windows before every test.
+ *
+ * `portal_rate_counters` is real Postgres and the bucket key is per actor, not per
+ * test — and every test here authenticates as the same dev token. Without this, the
+ * one test that deliberately exhausts a budget leaves a row that 429s unrelated
+ * tests for the rest of the window, including on the *next* run of the file. The
+ * suite would then pass or fail depending on how recently it last ran.
+ */
+beforeEach(async () => {
+  const prisma = createTestPrisma();
+  try {
+    await prisma.portalRateCounter.deleteMany({
+      where: { bucketKey: { in: [`dirsearch:${TEST_ACTOR_SUB}`, `dirresolve:${TEST_ACTOR_SUB}`] } },
+    });
+  } finally {
+    await prisma.$disconnect();
+  }
+});
+
+/** A directory whose upstream is throttled or broken — transient, not structural. */
+class ThrottledDirectory implements DirectoryProvider {
+  async searchGroups(): Promise<DirectoryOutcome<GroupSummary[]>> {
+    throw new DirectoryError("graph GET /groups returned 429", 429, "TooManyRequests");
+  }
+  async getGroups(): Promise<DirectoryOutcome<GroupName[]>> {
+    throw new DirectoryError("graph POST /getByIds returned 429", 429, "TooManyRequests");
+  }
+}
+
+/**
+ * A transient upstream failure must not look like an empty result or a crash.
+ *
+ * `DirectoryError` is not an `AppError`, so it used to fall through to the generic
+ * 500 handler. In the SPA that leaves an errored query with no data, so the
+ * picker's `unavailable` check stays null, no banner renders, and it reports "no
+ * matching groups" — a throttled directory reading as "that group does not exist"
+ * for every operator at once.
+ *
+ * It is deliberately NOT turned into `available: false`: that shape means
+ * "permanently, until an operator acts", and a Graph blip is neither. 503 is
+ * retryable and says so.
+ */
+describe("a transient directory failure is a typed 503, not a 500", () => {
+  let t: TestApp;
+  beforeAll(async () => {
+    t = buildTestApp({ directory: new ThrottledDirectory() });
+    await t.app.ready();
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it("maps it on every route that calls Graph", async () => {
+    const slug = uniqueSlug("thr");
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: authHeader(),
+      payload: { slug, displayName: slug, visibility: { mode: "group", groupIds: ["eng-team"] } },
+    });
+
+    for (const url of [
+      "/api/v1/directory/groups?q=eng",
+      `/api/v1/apps/${slug}/visibility/groups`,
+      "/api/v1/directory/my-groups",
+    ]) {
+      const res = await get(t, url);
+      expect(res.statusCode).toBe(503);
+      expect(res.json().error.code).toBe("capability_unavailable");
+    }
+  });
+});
+
+/**
+ * Both id -> name routes issue a `getByIds` to Graph on every request. Neither was
+ * limited: the omission was justified on information-disclosure grounds, which is
+ * true and answers the wrong question — the resource being spent is the tenant's
+ * shared Graph throttle budget, which is exactly why the search route limits
+ * before its upstream call.
+ */
+describe("the resolve routes spend a rate-limit budget", () => {
+  let t: TestApp;
+  beforeAll(async () => {
+    t = buildTestApp({ directory: new StaticDirectory(GROUPS) });
+    await t.app.ready();
+  });
+  afterAll(async () => {
+    await t.close();
+  });
+
+  const exhaust = async (sub: string, bucket: "search" | "resolve") => {
+    // Spend the whole window directly, so the test does not depend on the limit.
+    for (let i = 0; i <= RATE_BUCKETS[bucket].limit; i += 1) {
+      await bumpSearchLimit(t.prisma, sub, bucket);
+    }
+  };
+
+  it("429s the app-scoped resolve once the resolve budget is gone", async () => {
+    const slug = uniqueSlug("rl");
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: authHeader(),
+      payload: { slug, displayName: slug, visibility: { mode: "group", groupIds: ["eng-team"] } },
+    });
+    expect((await get(t, `/api/v1/apps/${slug}/visibility/groups`)).statusCode).toBe(200);
+
+    await exhaust(TEST_ACTOR_SUB, "resolve");
+    const res = await get(t, `/api/v1/apps/${slug}/visibility/groups`);
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error.code).toBe("rate_limited");
+
+    // Search keeps its own budget — page-render traffic must not spend the
+    // allowance that guards the tenant-wide read.
+    expect((await get(t, "/api/v1/directory/groups?q=eng")).statusCode).toBe(200);
+  });
+
+  it("does not spend a resolve on an app with no groups", async () => {
+    const slug = uniqueSlug("rl");
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: authHeader(),
+      payload: { slug, displayName: slug },
+    });
+    const before = await t.prisma.portalRateCounter.findUnique({
+      where: { bucketKey: `dirresolve:${TEST_ACTOR_SUB}` },
+    });
+    await get(t, `/api/v1/apps/${slug}/visibility/groups`);
+    const after = await t.prisma.portalRateCounter.findUnique({
+      where: { bucketKey: `dirresolve:${TEST_ACTOR_SUB}` },
+    });
+    expect(after?.count ?? 0).toBe(before?.count ?? 0);
   });
 });

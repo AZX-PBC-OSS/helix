@@ -23,10 +23,28 @@ import type { PrismaClient } from "../db/client.js";
  * either way.
  */
 
-/** Requests per actor per window. */
-export const SEARCH_LIMIT = 30;
+/**
+ * The purposes this table carries, and the limit each gets per actor per window.
+ *
+ * Two buckets rather than one, because the two surfaces cost differently. A
+ * search is an operator typing; a resolve fires on every Access-tab render of a
+ * group-scoped app, so sharing one budget would let ordinary navigation exhaust
+ * the search allowance. The prefix is what keeps them separate in one table, and
+ * what `sweepSearchLimits` scopes its DELETE to.
+ */
+export const RATE_BUCKETS = {
+  /** `GET /api/v1/directory/groups` — tenant-wide search. */
+  search: { prefix: "dirsearch", limit: 30 },
+  /** The two id -> name resolves. Looser: this is page-render traffic. */
+  resolve: { prefix: "dirresolve", limit: 120 },
+} as const;
 
-/** Window length. */
+export type RateBucket = keyof typeof RATE_BUCKETS;
+
+/** Kept for the log line and the tests that pin the search limit. */
+export const SEARCH_LIMIT = RATE_BUCKETS.search.limit;
+
+/** Window length, shared by both buckets. */
 export const SEARCH_WINDOW_MS = 60_000;
 
 export interface RateLimitVerdict {
@@ -47,12 +65,16 @@ export interface RateLimitVerdict {
 export async function bumpSearchLimit(
   prisma: PrismaClient,
   actorSub: string,
-  limit = SEARCH_LIMIT,
+  bucket: RateBucket = "search",
+  // Annotated: `as const` on RATE_BUCKETS would otherwise narrow this to the
+  // literal union of the configured limits, so a test could not pass its own.
+  limit: number = RATE_BUCKETS[bucket].limit,
   windowMs = SEARCH_WINDOW_MS,
 ): Promise<RateLimitVerdict> {
   // Namespaced by purpose so the table can carry other control-plane counters
-  // later without key collisions.
-  const key = `dirsearch:${actorSub}`;
+  // later without key collisions, and so one purpose's flood cannot spend
+  // another's budget.
+  const key = `${RATE_BUCKETS[bucket].prefix}:${actorSub}`;
   const rows = await prisma.$queryRaw<Array<{ count: number }>>`
     INSERT INTO portal_rate_counters ("bucketKey", count, "resetAt")
       VALUES (${key}, 1, now() + (${windowMs} || ' milliseconds')::interval)
@@ -70,14 +92,20 @@ export async function bumpSearchLimit(
 /**
  * Drop elapsed windows so a flood can't grow the table without bound.
  *
+ * Wired to an interval in `plugins/directory.ts` — it had no caller at all for a
+ * while, which made the sentence above an assertion about a bound that did not
+ * exist, and left the migration's `resetAt` index and `DELETE` grant as dead
+ * weight.
+ *
  * Prefix-scoped, unlike the edge's sweep. The portal owns this whole table today,
  * but a sweep that deletes every elapsed row is the kind of thing that keeps
- * working after someone adds a second counter with a longer window, and quietly
- * resets it. Scoping to the keys this module owns costs nothing now and removes
- * that trap.
+ * working after someone adds a counter with a longer window, and quietly resets
+ * it. Scoping to the prefixes this module owns costs nothing now and removes that
+ * trap.
  */
 export async function sweepSearchLimits(prisma: PrismaClient): Promise<void> {
+  const prefixes = Object.values(RATE_BUCKETS).map((b) => `${b.prefix}:%`);
   await prisma.$executeRaw`
     DELETE FROM portal_rate_counters
-     WHERE "resetAt" < now() AND "bucketKey" LIKE 'dirsearch:%'`;
+     WHERE "resetAt" < now() AND "bucketKey" LIKE ANY (${prefixes})`;
 }
