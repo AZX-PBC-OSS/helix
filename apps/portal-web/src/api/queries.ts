@@ -24,7 +24,7 @@ import {
   type PlatformRange,
   type UsageRange,
 } from "@azx-pbc/shared";
-import { fetchJson } from "./client";
+import { fetchJson, fetchText } from "./client";
 
 /** An app's connection secrets — metadata only (the value is never returned). */
 export const appSecretsQuery = (slug: string) =>
@@ -242,6 +242,23 @@ export const deploymentConfigQuery = queryOptions({
   queryKey: ["config"],
   queryFn: () => fetchJson(DeploymentConfigResponseSchema, "/api/v1/config"),
   staleTime: Infinity,
+});
+
+/**
+ * The agent skill, rendered server-side for *this* deployment
+ * (`GET /api/v1/skill`, ADR-0036). Bearer-gated like the rest of `/api/v1`, so
+ * callers gate on `authenticated` via `enabled` — an unsigned visitor sees a
+ * disabled control rather than a skill with a placeholder host still in it.
+ *
+ * The rendered skill is fixed for the page lifetime (it carries this
+ * deployment's hosts and baselines, neither of which changes per session), so
+ * `staleTime: Infinity`. Consumed through `useRenderedSkill()` (lib/skill.ts).
+ */
+export const skillQuery = queryOptions({
+  queryKey: ["skill"],
+  queryFn: async () => (await fetchText("/api/v1/skill")).body,
+  staleTime: Infinity,
+  retry: false,
 });
 
 /**

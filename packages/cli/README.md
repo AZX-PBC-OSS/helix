@@ -60,11 +60,19 @@ helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a version
 helix versions                                               # list versions
 helix promote  <number>                                      # make a version live
 helix rollback [number]                                      # revert the live pointer
+helix skill    [--path <file>]                               # write this deployment's agent skill to disk
 ```
 
 `deploy` uploads the bundle as a **preview**; `--promote` flips it live in the
 same step (architecture §5.1). `visibility` is `internal | group:<id>[,<id>…] | password
 | public`.
+
+`helix skill` fetches this deployment's rendered agent skill (`GET /api/v1/skill`,
+ADR-0036) — the same document the portal's **How to develop** modal hands out, with
+this deployment's hosts, servable models, and approval baselines already substituted
+in. It needs no app slug or `helix.json`, only a portal URL and a token. Defaults to
+`./SKILL.md`; `--path .claude/skills/helix/SKILL.md` drops it where a Claude Code
+agent reads it off disk.
 
 > **Breaking in 0.2.0:** the `private` visibility mode was renamed to `internal`.
 > It never checked _which_ user signed in, only that someone had. Passing the old

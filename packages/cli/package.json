@@ -34,6 +34,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@azx-pbc/deploy-skill": "workspace:*",
     "@azx-pbc/dev-idp": "workspace:*",
     "@azx-pbc/shared": "workspace:*",
     "@types/archiver": "catalog:",

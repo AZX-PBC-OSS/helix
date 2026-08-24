@@ -315,6 +315,9 @@ importers:
       '@azure/storage-blob':
         specifier: 'catalog:'
         version: 12.32.0
+      '@azx-pbc/deploy-skill':
+        specifier: workspace:*
+        version: link:../../packages/deploy-skill
       '@azx-pbc/directory':
         specifier: workspace:*
         version: link:../../packages/directory
@@ -486,6 +489,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@azx-pbc/deploy-skill':
+        specifier: workspace:*
+        version: link:../deploy-skill
       '@azx-pbc/dev-idp':
         specifier: workspace:*
         version: link:../../apps/dev-idp

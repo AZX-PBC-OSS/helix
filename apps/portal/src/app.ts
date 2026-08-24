@@ -24,6 +24,7 @@ import { dataRoutes } from "./routes/data.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { authRoutes } from "./routes/auth.js";
 import { configRoutes } from "./routes/config.js";
+import { catalogueRoutes } from "./routes/catalogue.js";
 import { directoryRoutes } from "./routes/directory.js";
 import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
 import { assertDeploymentConfig } from "./deployment.js";
@@ -97,6 +98,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(dataRoutes);
   app.register(authRoutes);
   app.register(configRoutes);
+  app.register(catalogueRoutes);
   app.register(directoryRoutes);
 
   // The real dashboard when a built SPA is present; the M2 stopgap otherwise.

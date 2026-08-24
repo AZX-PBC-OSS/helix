@@ -11,6 +11,7 @@ import {
   logoutCommand,
   promoteCommand,
   rollbackCommand,
+  skillCommand,
   versionsCommand,
   whoamiCommand,
 } from "./commands.js";
@@ -28,6 +29,7 @@ Usage:
   helix versions
   helix promote  <number>
   helix rollback [number]
+  helix skill    [--path <file>]   # write this deployment's agent skill to disk
 
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
 Env:  HELIX_PORTAL_URL, HELIX_TOKEN (static token — skips login; CI/scripts).
@@ -67,6 +69,9 @@ async function main(): Promise<void> {
       break;
     case "whoami":
       await whoamiCommand(client);
+      break;
+    case "skill":
+      await skillCommand(client, config, { path: values.path });
       break;
     case "deploy":
       await deployCommand(client, config, { promote: values.promote });

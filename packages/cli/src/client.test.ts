@@ -44,6 +44,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("PortalClient authentication", () => {
   const authed: [string, (c: PortalClient) => Promise<unknown>, unknown][] = [
     ["me", (c) => c.me(), { sub: "u1", via: "oidc", email: "e@x.io", isAdmin: false }],
+    ["getSkill", (c) => c.getSkill(), "# Helix skill\n"],
     ["listVersions", (c) => c.listVersions("demo"), []],
     ["createApp", (c) => c.createApp({ slug: "demo", displayName: "Demo" }), APP],
     ["promote", (c) => c.promote("demo", 1), APP],
@@ -66,6 +67,33 @@ describe("PortalClient authentication", () => {
     const { calls } = stubFetch({ issuer: "http://idp", cliClientId: "azx-cli" });
     await new PortalClient("http://portal").getAuthConfig();
     expect(authHeader(calls[0]!.init)).toBeUndefined();
+  });
+
+  it("getSkill sends a bearer token and returns the markdown body", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      return new Response("# Helix skill\n", {
+        status: 200,
+        headers: { "content-type": "text/markdown" },
+      });
+    });
+    const skill = await new PortalClient("http://portal", "tok").getSkill();
+    expect(skill).toBe("# Helix skill\n");
+    expect(calls[0]!.url).toBe("http://portal/api/v1/skill");
+    expect(authHeader(calls[0]!.init)).toBe("Bearer tok");
+  });
+
+  it("getSkill surfaces the portal's error code on a non-ok response", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "unauthorized", message: "no token" } }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(new PortalClient("http://portal", "tok").getSkill()).rejects.toMatchObject({
+      code: "unauthorized",
+    });
   });
 });
 

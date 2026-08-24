@@ -22,6 +22,7 @@
     "@azx-pbc/directory": "workspace:*",
     "@azx-pbc/secret-store": "workspace:*",
     "@azx-pbc/shared": "workspace:*",
+    "@azx-pbc/deploy-skill": "workspace:*",
     "@fastify/multipart": "catalog:",
     "@fastify/static": "catalog:",
     "@prisma/adapter-pg": "catalog:",

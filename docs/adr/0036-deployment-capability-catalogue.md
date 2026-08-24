@@ -2,7 +2,43 @@
 
 ## Status
 
-Proposed.
+Accepted. Decisions 1–6 and the `helix skill` CLI command landed; decision 7
+(the public docs site) is deferred — `renderSkillGeneric()` is in place for it,
+the site build itself is not. "Deferred" is a decision, not a proposal.
+
+## Implementation (v1 scoping)
+
+Three points the Decision left open were resolved at build time, and each
+constrains the value the catalogue delivers today:
+
+- **Servable models are derived from seeded `platform` secrets, not from the
+  edge's routing table.** The portal can read `app_secrets` but cannot observe
+  `RoutingLlmProvider.#byProvider` (the edge's boot-time wiring); no single
+  component holds both facts. v1 assumes the **default symmetric wiring** — both
+  families wired whenever egress is up, and the platform-secret name equal to
+  the provider family (`anthropic`/`openai`). Under that assumption a model is
+  servable when its `providerForModel(m)` family has a seeded platform secret,
+  which closes the 502 (unseeded-secret) gap — the deployment-permanent fact the
+  Context defects turn on. It does **not** close the 503 (family-not-wired) gap:
+  a hand-wired single-vendor edge would still advertise models it cannot route.
+  The invariant in Consequences ("the catalogue's model list must agree with
+  `RoutingLlmProvider.supports()`") therefore holds *under the symmetric-wiring
+  assumption*, not by construction. An operator who overrode
+  `EDGE_LLM_*_CONNECTION` would see inaccurate filtering. Closing this fully
+  needs the edge to report its wired families (a new field on `/health` checks[]
+  or a new edge endpoint the portal reads at catalogue-build time) — additive,
+  not blocking.
+- **Connections are listed by name only, without the origin each fronts.** A
+  `global`-scope secret has no stored origin — the origin is declared per-app in
+  each manifest's `fetch.origins` — so the ADR's "each with the origin it fronts"
+  cannot be honoured without inventing one. An agent learns a connection exists
+  and is referenceable, and supplies the origin itself. Deriving origins from
+  existing apps' manifests was rejected: that reports current usage, not a menu.
+  Adding an optional origin/description field to `AppSecret` is the clean fix if
+  this proves too thin.
+- **The public docs site (decision 7) is deferred.** `renderSkillGeneric()`
+  and the "no leftover `{{`" guard covering both render modes landed so the site
+  can consume the generic render later; no site build is in this pass.
 
 ## Context
 
@@ -143,14 +179,25 @@ instance serve its own half.
   regions of `SKILL.md` rather than restating them, so the drift risk sits in the
   include boundaries, not in the prose. A section renamed in `SKILL.md` breaks the
   site build — noisy, which is the desired failure.
-- **Connection names are a real, if small, disclosure.** Anyone with a portal token
-  learns which third-party integrations this deployment has provisioned. That is a
-  deliberate widening from today, where connections are visible only via
-  `/api/v1/secrets` to a privileged caller. Revisit if per-app RBAC
+- **Connection names are a real, if small, disclosure, and it took effect.**
+  Any authenticated portal principal now learns which `global`-scope connections
+  this deployment has provisioned, via `GET /api/v1/capabilities` behind the
+  ADR-0024 bearer chain (not `requireAdmin`). That is a deliberate widening from
+  the prior state, where connections were visible only via `/api/v1/secrets` to
+  an admin. The catalogue sits at the same trust level as every other `/api/v1`
+  read, consistent with decision 5; revisit if per-app RBAC
   ([ADR-0007](0007-portal-authz-v0.md)) lands and portal reads stop implying
   platform-wide trust.
+- **The approval-prediction payload is agent-facing, with no platform-side
+  consumer yet.** `approval.elevationTriggers` + `approval.baselines` are the
+  catalogue's most useful payload (decision 3), but neither the SPA nor the CLI
+  renders "design an app that auto-approves" guidance from them today — the
+  value is for an agent or tool reading the JSON directly. Catalogue-driven
+  manifest validation in the CLI (the natural platform-side consumer) is
+  deferred.
 - **Deferred:** per-app catalogue projection (what *this* app has been granted, useful
   to an agent iterating on an existing app), catalogue-driven manifest validation in
-  the CLI, and any machine-readable capability description for
-  [ADR-0031](0031-connection-providers-delegated-auth.md)'s delegated-auth providers.
-  Each is additive behind the same endpoint.
+  the CLI, any machine-readable capability description for
+  [ADR-0031](0031-connection-providers-delegated-auth.md)'s delegated-auth providers,
+  and the public docs site (decision 7). Each is additive behind the same endpoint
+  or behind `renderSkillGeneric()`.

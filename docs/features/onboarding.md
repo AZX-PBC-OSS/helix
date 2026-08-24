@@ -1,6 +1,6 @@
 # Onboarding — the in-app guide and the agent skill
 
-> **Related ADRs:** [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — why hostnames can't be baked in) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps — the first thing anyone must be told) · [ADR-0032](../adr/0032-cli-naming-and-distribution.md) (CLI naming + distribution — where the `npm i -g` line comes from).
+> **Related ADRs:** [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — why hostnames can't be baked in) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps — the first thing anyone must be told) · [ADR-0032](../adr/0032-cli-naming-and-distribution.md) (CLI naming + distribution — where the `npm i -g` line comes from) · [ADR-0036](../adr/0036-deployment-capability-catalogue.md) (deployment capability catalogue — the instance endpoint that renders the skill and serves the values the docs site can't).
 
 **What it is.** The path from "I have a portal account" to "I have a deployed app", surfaced
 where people actually are. Two pieces:
@@ -42,21 +42,29 @@ endpoints with real request/response shapes, the deploy contract and its limits,
 worth handling, and a pre-flight checklist.
 
 It ships as a **template**. Hostnames differ per deployment and the dev gateway is opt-in, so the
-file carries `{{PORTAL_ORIGIN}}`, `{{APPS_HOST}}`, `{{DEV_API_BASE}}`, and `{{LLM_MODELS}}` tokens
-plus a `<!-- IF:DEV_API -->` block, and `renderSkill()` (`packages/deploy-skill/src/index.ts`)
-fills them from `GET /api/v1/config` at copy/download time. A deployment with no dev gateway loses
-that section entirely rather than being handed a base URL that will never answer — the same
-degradation the **Dev mode** tab does.
+file carries `{{PORTAL_ORIGIN}}`, `{{APPS_HOST}}`, `{{DEV_API_BASE}}`, `{{LLM_MODELS}}`, the deploy
+caps, and the four `{{BASELINE_*}}` approval thresholds, plus a `<!-- IF:DEV_API -->` block.
+`renderSkill()` (`packages/deploy-skill/src/index.ts`) fills them; the portal renders it server-side
+at `GET /api/v1/skill` from the capability catalogue, and the SPA fetches that (ADR-0036). A
+deployment with no dev gateway loses that section entirely rather than being handed a base URL that
+will never answer — the same degradation the **Dev mode** tab does.
 
-The models offered come from `MODEL_PRICING` in `@azx-pbc/shared`, so "what this platform will
-serve" cannot drift from what it prices.
+The models offered come from the catalogue's **servable** list (curated ∩ the upstream family has a
+seeded `platform` secret), not the curated superset, so "what this platform will serve" cannot drift
+from what it prices *and* what it can actually route — a deployment that never seeded the `openai`
+key stops advertising `gpt-*` rather than 502ing at call time.
 
-### Why it's bundled, not fetched
+### Why it's fetched, not bundled
 
-The SPA imports the markdown with Vite's `?raw`, so it lands in the JS bundle and needs no portal
-route. That is deliberate: the portal serves the SPA with an `index.html` fallback on a miss
-(`apps/portal/src/routes/spa.ts`, `wildcard: false`), so a fetch of a mistyped static path would
-succeed with a 200 and download the app shell. Nothing to get wrong if there's nothing to fetch.
+The SPA used to import the markdown with Vite's `?raw` and render it client-side from
+`GET /api/v1/config` plus `MODEL_PRICING`. That listed models the edge could not serve, so an agent
+built against it 502'd. The skill is now rendered server-side by `GET /api/v1/skill` (authed, behind
+the ADR-0024 bearer chain) from the catalogue, and the SPA fetches the result — closing the
+curated-vs-servable gap at its source. The catalogue itself is `GET /api/v1/capabilities` (also
+authed): a single instance-wide JSON document answering, manifest key by key, what this deployment
+can do and which requests auto-approve. An agent or the `helix skill` CLI command reads either; the
+public docs site (deferred) will consume `renderSkillGeneric()` — the same template with descriptive
+prose in place of every placeholder, pointing readers at their own `/api/v1/capabilities`.
 
 ## Design notes (why)
 
@@ -65,7 +73,8 @@ succeed with a 200 and download the app shell. Nothing to get wrong if there's n
   is to be short enough that someone reads it.
 - **A placeholder that reaches an agent is a bug, not a typo.** An agent acts on the file
   literally. `packages/deploy-skill/src/index.test.ts` asserts the rendered output contains no
-  leftover `{{`, so adding a token without wiring it fails the suite.
+  leftover `{{` in **both** render modes (the instance `renderSkill()` and the generic
+  `renderSkillGeneric()`), so adding a token without wiring both maps fails the suite.
 - **No external links.** Every reference is in-app (the Capabilities tab, the Dev mode tab) or a
   plain-text repo path. A customer deployment shouldn't render dead links to somewhere else.
 - **The CLI instructions carry this deployment's `portalUrl`.** The CLI cannot discover its
@@ -88,8 +97,10 @@ succeed with a 200 and download the app shell. Nothing to get wrong if there's n
 
 - **A codemod in the skill** — "rewrite my third-party `fetch` calls to `/_api/fetch/<url>`" is a
   find-and-replace the skill could carry, per [fetch-proxy design §3.1](../design/fetch-proxy.md).
-- **Serving the skill over HTTP** — an agent can't `curl` it today; it comes out of the browser.
-  A `GET /api/v1/skill` reusing `renderSkill()` is the obvious addition if that's wanted.
+- **The public docs site** — deployment-agnostic, includes regions of `SKILL.md` via
+  `renderSkillGeneric()`, and points readers at their own `/api/v1/capabilities` for values
+  (ADR-0036 §7). The generic renderer and the "no leftover `{{`" guard for it are already in place;
+  the site build itself is the remaining work.
 - **Branching the handoff on browser-vs-agent** — the band pitches the skill to everyone. Someone
   who has said they build in a browser IDE would be better served leading with the dev gateway.
 - **Deploying an example in one click** — `examples/` is the obvious "start from something that

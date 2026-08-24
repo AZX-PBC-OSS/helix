@@ -58,6 +58,16 @@ export class PortalClient {
     return this.#json(PortalMeResponseSchema, "GET", "/api/v1/me", { auth: true });
   }
 
+  /**
+   * The deployment-rendered agent skill (`GET /api/v1/skill`, ADR-0036) —
+   * `text/markdown`, already substituted with this deployment's hosts, servable
+   * models, and approval baselines. Authed like every other `/api/v1` read.
+   * Powers `helix skill`.
+   */
+  getSkill(): Promise<string> {
+    return this.#text("/api/v1/skill", { auth: true });
+  }
+
   listVersions(slug: string): Promise<Version[]> {
     // `auth: true` — portal reads are sign-in-gated too (ADR-0024); only
     // /health and the auth-config bootstrap are public.
@@ -133,8 +143,31 @@ export class PortalClient {
     }
     return schema.parse(data);
   }
+
+  /** A non-JSON GET (the markdown skill) — errors still typed via the envelope. */
+  async #text(path: string, opts: { auth?: boolean }): Promise<string> {
+    const headers = await this.#authHeaders(opts.auth ?? false);
+    const res = await fetch(this.#url(path), { method: "GET", headers });
+    const body = await res.text();
+    if (!res.ok) {
+      const data: unknown = body ? safeJsonParse(body) : undefined;
+      const parsed = ApiErrorSchema.safeParse(data);
+      if (parsed.success) throw new CliError(parsed.data.error.message, parsed.data.error.code);
+      throw new CliError(`request failed (HTTP ${res.status})`);
+    }
+    return body;
+  }
 }
 
 function enc(segment: string): string {
   return encodeURIComponent(segment);
+}
+
+/** JSON.parse that swallows the error — for probing an error body that may not be JSON. */
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
 }

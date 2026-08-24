@@ -1,5 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { MAX_VISIBILITY_GROUPS, type App, type Version, type Visibility } from "@azx-pbc/shared";
+import { SKILL_FILENAME } from "@azx-pbc/deploy-skill";
 import { CliError, PortalClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { zipDirectory } from "./zip.js";
@@ -187,4 +189,23 @@ export async function logoutCommand(config: ResolvedConfig): Promise<void> {
 export async function whoamiCommand(client: PortalClient): Promise<void> {
   const me = await client.me();
   console.log(`${me.sub} (via ${me.via}${me.name ? `, ${me.name}` : ""})`);
+}
+
+/**
+ * `helix skill` — fetch this deployment's rendered agent skill from
+ * `GET /api/v1/skill` and write it to disk (ADR-0036). Instance-wide, so it
+ * needs no app slug or `helix.json` — only a portal URL and a token, the same
+ * as `helix whoami`. The conventional location for an agent that reads it off
+ * disk is `.claude/skills/helix/SKILL.md`; the default is `./SKILL.md` in the
+ * current directory, overridable with `--path`.
+ */
+export async function skillCommand(
+  client: PortalClient,
+  _config: ResolvedConfig,
+  opts: { path?: string },
+): Promise<void> {
+  const skill = await client.getSkill();
+  const outPath = resolve(opts.path ?? SKILL_FILENAME);
+  await writeFile(outPath, skill, "utf8");
+  console.log(`Wrote skill to ${outPath}`);
 }

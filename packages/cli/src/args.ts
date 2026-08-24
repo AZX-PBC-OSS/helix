@@ -10,6 +10,7 @@ const options = {
   promote: { type: "boolean" },
   "display-name": { type: "string" },
   visibility: { type: "string" },
+  path: { type: "string" },
   help: { type: "boolean" },
 } as const;
 

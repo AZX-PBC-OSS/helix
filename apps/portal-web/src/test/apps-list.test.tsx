@@ -7,6 +7,7 @@ import { AppsListPage } from "../pages/AppsListPage";
 import { AuthProvider } from "../auth/AuthProvider";
 import { DeployProvider } from "../modals/DeployContext";
 import { HelpProvider } from "../modals/HelpContext";
+import { setToken, clearToken } from "../auth/tokenStore";
 
 /**
  * These deliberately use a non-dev domain everywhere. The bug this guards is a
@@ -84,6 +85,13 @@ function stubFetch(
   },
   /** Per-slug answers for the app-scoped group-name resolver, keyed by slug. */
   groups: Record<string, unknown> = {},
+  /**
+   * The rendered skill body served at `/api/v1/skill` (ADR-0036). `"pending"`
+   * leaves the fetch unresolved, so the handoff buttons stay disabled — the
+   * gate the "withholds" case asserts on. Default is a non-empty body so an
+   * authenticated page offers the skill.
+   */
+  skill: string | "pending" = "# Helix skill\n",
 ) {
   const seen: string[] = [];
   vi.stubGlobal(
@@ -106,6 +114,16 @@ function stubFetch(
         return config === "pending"
           ? new Promise<Response>(() => {})
           : Promise.resolve(jsonResponse(config));
+      }
+      if (url === "/api/v1/me") {
+        return Promise.resolve(jsonResponse({ sub: "alice@azx.dev", via: "oidc" }));
+      }
+      if (url === "/api/v1/skill") {
+        return skill === "pending"
+          ? new Promise<Response>(() => {})
+          : Promise.resolve(
+              new Response(skill, { status: 200, headers: { "content-type": "text/markdown" } }),
+            );
       }
       if (url.startsWith("/api/v1/gateway/usage")) {
         return Promise.resolve(
@@ -138,7 +156,10 @@ function render(route = "/") {
   );
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  clearToken();
+});
 
 describe("AppsListPage", () => {
   it("renders a row per app from the registry", async () => {
@@ -392,13 +413,16 @@ describe("AppsListPage", () => {
    * The agent handoff replaced four stat cards, and unconditionally: the skill is
    * re-copied whenever you start an app or a fresh agent session, so it is not
    * first-run content that earns its place only on an empty registry.
+   *
+   * Since ADR-0036 the skill is fetched authed from `/api/v1/skill`, so the
+   * handoff buttons gate on a token + that fetch resolving — not on the deploy
+   * caps in `/api/v1/config` (the server renders them now).
    */
   describe("agent handoff", () => {
-    // A current portal always sends the size caps; the skill can't render without
-    // them, so a config missing them is a *disabled* copy button, not a default.
     const FULL_CONFIG = { appPublicBase: APPS_BASE, deployMaxFileMb: 12, deployMaxBundleMb: 60 };
 
     it("hands out the skill with apps already in the registry", async () => {
+      setToken("t");
       stubFetch(APPS, FULL_CONFIG);
       render();
 
@@ -408,6 +432,7 @@ describe("AppsListPage", () => {
     });
 
     it("hands out the same skill on an empty registry", async () => {
+      setToken("t");
       stubFetch([], FULL_CONFIG);
       render();
 
@@ -417,13 +442,23 @@ describe("AppsListPage", () => {
     });
 
     /**
-     * Rendered without the deployment config the skill carries `{{PLACEHOLDER}}`
-     * hosts and no size caps, and what leaves this button is acted on directly by
-     * a coding agent — so it stays disabled rather than handing over a guess. An
-     * older portal that omits the caps lands in the same state.
+     * What leaves this button is acted on directly by a coding agent, so it
+     * stays disabled rather than handing over a guess. The gate is now the authed
+     * `/api/v1/skill` fetch — a deployment whose skill endpoint hasn't answered
+     * yet lands in the same disabled state as an unsigned visitor.
      */
-    it("withholds the skill until the deployment config arrives", async () => {
-      stubFetch(APPS, "pending");
+    it("withholds the skill until the skill endpoint resolves", async () => {
+      setToken("t");
+      stubFetch(APPS, FULL_CONFIG, { byApp: [] }, {}, "pending");
+      render();
+
+      const copy = await screen.findByRole("button", { name: /copy agent instructions/i });
+      expect(copy).toHaveProperty("disabled", true);
+    });
+
+    it("withholds the skill when not signed in", async () => {
+      // No token ⇒ the authed /api/v1/skill never fires.
+      stubFetch(APPS, FULL_CONFIG);
       render();
 
       const copy = await screen.findByRole("button", { name: /copy agent instructions/i });
@@ -431,6 +466,7 @@ describe("AppsListPage", () => {
     });
 
     it("opens the onboarding modal without a trip to the sidebar", async () => {
+      setToken("t");
       stubFetch(APPS, FULL_CONFIG);
       render();
 

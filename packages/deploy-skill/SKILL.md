@@ -166,10 +166,11 @@ one that does the job — `claude-haiku-4-5` is the sensible default for classif
 extraction, and short generation.
 
 **Some grants need a human.** Staying inside the baseline (curated models,
-≤ $50/day of LLM, ≤ 10 000 writes/day, ≤ 50 MB/day, ≤ 10 000 proxied requests/day)
-applies immediately. Adding an `externalOrigins` entry, any `fetch.origins` entry,
-any `mcp` server, going `public`, or exceeding a baseline queues an **approval** for
-a platform admin. Plan for the wait; don't design around it by, say, hardcoding a
+≤ ${{BASELINE_DOLLARS_PER_DAY}}/day of LLM, ≤ {{BASELINE_WRITES_PER_DAY}} writes/day,
+≤ {{BASELINE_BYTES_PER_DAY}} bytes/day, ≤ {{BASELINE_FETCH_REQUESTS_PER_DAY}} proxied
+requests/day) applies immediately. Adding an `externalOrigins` entry, any `fetch.origins`
+entry, any `mcp` server, going `public`, or exceeding a baseline queues an **approval**
+for a platform admin. Plan for the wait; don't design around it by, say, hardcoding a
 key in the bundle.
 
 `connection` names a secret the platform stores and injects server-side. You never
