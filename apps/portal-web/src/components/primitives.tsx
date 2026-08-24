@@ -220,6 +220,7 @@ function GroupVisibilityBadge({ groupIds, slug }: { groupIds: string[]; slug: st
   return (
     <Tooltip
       label={label}
+      color="dark"
       multiline
       maw={320}
       position="top"
