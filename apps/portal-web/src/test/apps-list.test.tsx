@@ -41,6 +41,17 @@ function makeApp(
 
 /** Column order in `AppsTable`: App, Owner, Visibility, Status, … */
 const OWNER_CELL = 1;
+const VISIBILITY_CELL = 2;
+
+/**
+ * GUID-shaped on purpose, and one of them is the id from the bug report. Entra
+ * emits group object GUIDs; the dev fixtures emit readable ids like `eng-team`
+ * (ADR-0040 accepts that split), which is exactly why a 36-character id
+ * overflowing its cell never showed up locally. A fixture using `eng-team` would
+ * pass against the broken code.
+ */
+const GROUP_A = "410e685b-da84-4e10-867f-1d7847009cba";
+const GROUP_B = "8c1f0a44-2b7e-4d51-9a03-6f5b2c9d1e70";
 
 const APPS = [
   makeApp("cost-explorer", "Cost Explorer", true, "https://cost-explorer.apps.example.com"),
@@ -71,6 +82,8 @@ function stubFetch(
   usage: { byApp: { slug: string; tokens: number; requests: number; costUsd: number }[] } = {
     byApp: [],
   },
+  /** Per-slug answers for the app-scoped group-name resolver, keyed by slug. */
+  groups: Record<string, unknown> = {},
 ) {
   const seen: string[] = [];
   vi.stubGlobal(
@@ -78,6 +91,11 @@ function stubFetch(
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       seen.push(url);
+      const groupsCall = /^\/api\/v1\/apps\/([^/]+)\/visibility\/groups$/.exec(url);
+      if (groupsCall) {
+        const answer = groups[decodeURIComponent(groupsCall[1] ?? "")];
+        if (answer !== undefined) return Promise.resolve(jsonResponse(answer));
+      }
       const appsCall = /^\/api\/v1\/apps(\?|$)/.exec(url);
       if (appsCall) {
         const scope = new URL(url, "http://x").searchParams.get("scope") ?? "mine";
@@ -419,6 +437,140 @@ describe("AppsListPage", () => {
       expect(screen.queryByText("The four steps")).toBeNull();
       await userEvent.click(await screen.findByRole("button", { name: /how to develop/i }));
       expect(await screen.findByText("The four steps")).toBeDefined();
+    });
+  });
+
+  /**
+   * The Visibility column, which used to print a raw group id. Under Entra that
+   * id is a 36-character GUID and `AppsTable` is `table-layout: fixed`, so the
+   * badge escaped its cell and painted over Status and Live. The fix is that the
+   * cell's content is bounded and constant — the ids and their resolved names
+   * live in a tooltip, fetched only when someone asks for it.
+   */
+  describe("visibility column", () => {
+    const GROUPED = [
+      makeApp("scoped", "Scoped", true, undefined, {
+        visibility: { mode: "group", groupIds: [GROUP_A, GROUP_B] },
+      }),
+    ];
+
+    function visibilityCell(name: string): HTMLElement {
+      const row = screen.getByText(name).closest("tr");
+      expect(row).not.toBeNull();
+      const cell = within(row as HTMLElement).getAllByRole("cell")[VISIBILITY_CELL];
+      expect(cell).toBeDefined();
+      return cell as HTMLElement;
+    }
+
+    /** The wrapper span Mantine's Tooltip anchors to — see `VisibilityBadge`. */
+    function badgeTarget(cell: HTMLElement): HTMLElement {
+      const target = cell.querySelector<HTMLElement>('[tabindex="0"]');
+      expect(target).not.toBeNull();
+      return target as HTMLElement;
+    }
+
+    it("never puts a group id in the cell", async () => {
+      stubFetch(GROUPED);
+      render();
+
+      await screen.findByText("Scoped");
+      const cell = visibilityCell("Scoped");
+      expect(cell.textContent).toBe("Group");
+      expect(cell.textContent).not.toContain(GROUP_A);
+      expect(cell.textContent).not.toContain(GROUP_B);
+    });
+
+    it("calls no resolver until the badge is asked about", async () => {
+      const seen = stubFetch(
+        GROUPED,
+        { appPublicBase: APPS_BASE },
+        { byApp: [] },
+        {
+          scoped: { available: true, groups: [{ id: GROUP_A, displayName: "Engineering" }] },
+        },
+      );
+      render();
+
+      await screen.findByText("Scoped");
+      expect(seen.some((u) => u.includes("/visibility/groups"))).toBe(false);
+
+      await userEvent.hover(badgeTarget(visibilityCell("Scoped")));
+      await waitFor(() => expect(seen.some((u) => u.includes("/visibility/groups"))).toBe(true));
+    });
+
+    it("names the groups on hover, and keeps the ids beside them", async () => {
+      stubFetch(
+        GROUPED,
+        { appPublicBase: APPS_BASE },
+        { byApp: [] },
+        {
+          scoped: {
+            available: true,
+            groups: [
+              { id: GROUP_A, displayName: "Engineering", securityEnabled: true },
+              { id: GROUP_B, displayName: "Product", securityEnabled: true },
+            ],
+          },
+        },
+      );
+      render();
+
+      await screen.findByText("Scoped");
+      await userEvent.hover(badgeTarget(visibilityCell("Scoped")));
+
+      expect(await screen.findByText("Engineering")).toBeDefined();
+      expect(await screen.findByText("Product")).toBeDefined();
+      // The id is the authorization value, so the tooltip shows it too.
+      expect(await screen.findByText(GROUP_A)).toBeDefined();
+      // ADR-0040 §9: scoping to a parent group admits its children, and the copy
+      // has to say so — "these groups" alone over-admits silently.
+      expect(await screen.findByText(/nested groups/)).toBeDefined();
+    });
+
+    /**
+     * A deployment whose administrator never granted the Graph permission. The
+     * tooltip has to name the degradation: ten `unknown group` lines with no
+     * explanation reads as ten deleted groups.
+     */
+    it("says why the names are missing when the directory is unavailable", async () => {
+      stubFetch(
+        GROUPED,
+        { appPublicBase: APPS_BASE },
+        { byApp: [] },
+        {
+          scoped: {
+            available: false,
+            reason: "no-consent",
+            detail: "the portal's identity has no group permission",
+            missingPermission: "GroupMember.Read.All",
+          },
+        },
+      );
+      render();
+
+      await screen.findByText("Scoped");
+      await userEvent.hover(badgeTarget(visibilityCell("Scoped")));
+
+      expect(await screen.findByText(/GroupMember\.Read\.All/)).toBeDefined();
+      expect((await screen.findAllByText("unknown group")).length).toBe(2);
+      expect(await screen.findByText(GROUP_A)).toBeDefined();
+    });
+
+    /**
+     * The one fact the column still spends characters on: an app scoped to no
+     * groups admits nobody, and from the outside it looks exactly like a working
+     * app.
+     */
+    it("calls out an app scoped to no groups", async () => {
+      stubFetch([
+        makeApp("inert", "Inert", true, undefined, {
+          visibility: { mode: "group", groupIds: [] },
+        }),
+      ]);
+      render();
+
+      await screen.findByText("Inert");
+      expect(visibilityCell("Inert").textContent).toBe("No groups");
     });
   });
 });

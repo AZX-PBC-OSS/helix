@@ -110,7 +110,7 @@ export function AppDetailPage() {
               </Text>
             )}
             <Group gap={8} mt={12} wrap="wrap">
-              <VisibilityBadge visibility={a.visibility} />
+              <VisibilityBadge visibility={a.visibility} slug={a.slug} />
               <ToneBadge icon="layers">
                 live {facts.liveNumber === null ? "—" : `v${facts.liveNumber}`}
               </ToneBadge>

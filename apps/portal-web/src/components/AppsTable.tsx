@@ -103,7 +103,7 @@ function AppRow({ app, spendUsd }: { app: AppListItem; spendUsd: number | undefi
         <Principal id={app.ownerId} name={app.ownerName} email={app.ownerEmail} />
       </Table.Td>
       <Table.Td>
-        <VisibilityBadge visibility={app.visibility} />
+        <VisibilityBadge visibility={app.visibility} slug={app.slug} />
       </Table.Td>
       <Table.Td>
         <StatusLine kind={status} />

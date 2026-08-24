@@ -1,6 +1,8 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { Badge, Box, Button, CopyButton, Group, Stack, Text, Title, Tooltip } from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
 import type { Visibility } from "@azx-pbc/shared";
+import { appVisibilityGroupsQuery } from "../api/queries";
 import { Icon, type IconName } from "./Icon";
 
 /** The control-plane vocabulary widgets: eyebrows, status dots, badges, stats. */
@@ -121,25 +123,144 @@ export function ToneBadge({
   );
 }
 
-export function VisibilityBadge({ visibility }: { visibility: Visibility }) {
+/**
+ * The `group` arm of {@link VisibilityBadge}, which needs more than a `switch`
+ * case for two reasons.
+ *
+ * The pill is a **fixed label** — and a short one. What it used to print was a
+ * group id, which is a 36-character GUID in every real deployment (ADR-0040 §1
+ * accepts GUIDs as the cost of not needing an infra deploy per group); in a
+ * `table-layout: fixed` cell that painted straight over the two columns to its
+ * right. The dev fixtures' readable ids (`eng-team`) are why it never showed up
+ * locally.
+ *
+ * Both labels are kept about as short as `Internal` and `Password`, the widest
+ * pills this vocabulary already ships, and that is the whole budget. Measured:
+ * the Visibility column is 11% of an 880px minimum and `horizontalSpacing="lg"`
+ * spends 40px of it, leaving a ~66px content box — so `Internal` at ~90px, and
+ * every other label here, already overflows into the cell padding. The table has
+ * always worked that way and it reads fine.
+ *
+ * Which is why "make the pill truncate at its content box" is *not* the fix, and
+ * was tried: clamping `ToneBadge` to `max-width: 100%` ellipsised `Public` into
+ * `Pub…` in a cell with 30px to spare, and made every badge in the app narrower.
+ * Keeping the label shorter than the ones that already fit is the fix.
+ *
+ * And the names those ids resolve to are fetched **on hover**, never on render.
+ * The resolver is app-scoped by design — a general `?ids=` resolver was rejected
+ * as a "what is this GUID called" oracle — so naming a whole table eagerly would
+ * be one request per row, spent on detail nobody has asked to see. The old
+ * comment here said names "aren't available"; they are, one hover at a time.
+ *
+ * `armed` latches on the first hover or focus and never clears: the fetch has to
+ * outlive the pointer, and re-arming would refetch nothing anyway because the
+ * answer is cached under the app's own query key.
+ */
+function GroupVisibilityBadge({ groupIds, slug }: { groupIds: string[]; slug: string }) {
+  const [armed, setArmed] = useState(false);
+  const resolved = useQuery({ ...appVisibilityGroupsQuery(slug), enabled: armed });
+
+  const answer = resolved.data;
+  const byId = new Map((answer?.available ? answer.groups : []).map((g) => [g.id, g]));
+  // Until the resolver has actually answered, an id is just an id. Calling it an
+  // *unknown* group before we have asked would be a claim we cannot back — and it
+  // is the difference between "this group was deleted" and "you haven't hovered
+  // long enough yet".
+  const answered = answer !== undefined || resolved.isError;
+
+  const label =
+    groupIds.length === 0 ? (
+      // Same sentence the Access tab uses, because it is the same fact: an app
+      // scoped to no groups admits nobody, and from the outside it is
+      // indistinguishable from a working one.
+      <Text fz={11.5}>No groups selected — nobody can open this app.</Text>
+    ) : (
+      <Stack gap={3}>
+        {answer && !answer.available && (
+          <Text fz={10.5} c="dimmed">
+            Group names are unavailable on this deployment
+            {answer.reason === "no-consent" && answer.missingPermission
+              ? ` — the portal's identity is missing ${answer.missingPermission}.`
+              : ` — ${answer.detail}`}
+          </Text>
+        )}
+        {groupIds.map((id) => {
+          const g = byId.get(id);
+          return (
+            <Box key={id}>
+              <Text fz={11.5}>
+                {g
+                  ? // Only an explicit `false` earns the caveat — absent means
+                    // nobody told us, which is not the same thing (ADR-0040 §3).
+                    g.securityEnabled === false
+                    ? `${g.displayName} — not a security group`
+                    : g.displayName
+                  : answered
+                    ? "unknown group"
+                    : "resolving…"}
+              </Text>
+              {/* The id is kept beside the name, not replaced by it: the id is
+                  the authorization value, and it is what an operator needs when
+                  they have to go and look the group up in the directory. */}
+              <Text className="az-mono" fz={10} c="dimmed">
+                {id}
+              </Text>
+            </Box>
+          );
+        })}
+        {/* ADR-0040 §9: membership in the claim is transitive, so scoping to a
+            parent group admits its children. Saying "these groups" alone
+            under-specifies in the direction that silently over-admits. */}
+        <Text fz={10} c="dimmed">
+          Members of these groups — including members of nested groups — can open this app.
+        </Text>
+      </Stack>
+    );
+
+  return (
+    <Tooltip
+      label={label}
+      multiline
+      maw={320}
+      position="top"
+      // `focus` is off in Mantine's defaults, so without this the `tabIndex`
+      // below would be a tab stop that does nothing.
+      events={{ hover: true, focus: true, touch: true }}
+    >
+      {/* The wrapper is not decoration: `ToneBadge` takes a fixed prop list and
+          forwards neither ref nor the handlers Mantine clones onto its target, so
+          a Tooltip wrapped straight around it would silently never open. This
+          plain span is the element Mantine can hold on to — and it is where the
+          hover/focus arming lives. `tabIndex` because a tooltip is the only place
+          this detail exists, and mouse-only would mean it does not exist at all
+          for some readers. */}
+      <span
+        tabIndex={0}
+        onMouseEnter={() => setArmed(true)}
+        onFocus={() => setArmed(true)}
+        style={{ display: "inline-flex", borderRadius: 999 }}
+      >
+        <ToneBadge tone="info" icon="user">
+          {groupIds.length === 0 ? "No groups" : "Group"}
+        </ToneBadge>
+      </span>
+    </Tooltip>
+  );
+}
+
+export function VisibilityBadge({
+  visibility,
+  slug,
+}: {
+  visibility: Visibility;
+  /** The app these ids belong to — the only thing that can resolve them to names. */
+  slug: string;
+}) {
   switch (visibility.mode) {
     case "internal":
       return <ToneBadge icon="lock">Internal</ToneBadge>;
     case "group":
-      // Names aren't available here (they're resolved live, and this renders in
-      // table cells that must not each fire a directory lookup), and ten GUIDs
-      // would not fit anyway — so one group shows its id and several show a
-      // count. Zero is called out: it's inert rather than dangerous, but it looks
-      // exactly like a working app from the outside.
-      return (
-        <ToneBadge tone="info" icon="user">
-          {visibility.groupIds.length === 0
-            ? "Group · none"
-            : visibility.groupIds.length === 1
-              ? `Group · ${visibility.groupIds[0]}`
-              : `Group · ${visibility.groupIds.length} groups`}
-        </ToneBadge>
-      );
+      return <GroupVisibilityBadge groupIds={visibility.groupIds} slug={slug} />;
     case "password":
       return (
         <ToneBadge tone="warn" icon="key">
