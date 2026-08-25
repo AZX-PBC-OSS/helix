@@ -23,7 +23,12 @@ import { Hint } from "./primitives";
  *    deliberately, and seed `data` with an explicit label for those ids rather
  *    than letting a bare GUID appear as if it were a name.
  *
- * 3. **A caller who may not search is not a caller with a broken directory.**
+ * 3. **Three states, not two — and the third is "we don't know".** Search may be
+ *    allowed, refused, or unanswered (`/api/v1/me` errored). Unanswered renders
+ *    no search box *and no explanation*, because every sentence available for
+ *    that state would be a guess about deployment policy.
+ *
+ * 4. **A caller who may not search is not a caller with a broken directory.**
  *    `PORTAL_DIRECTORY_SEARCH` (ADR-0040 decision 11) can restrict search to
  *    platform admins, or to nobody. That state is kept strictly apart from
  *    `unavailable`: the two id→name resolves are never gated, so a restricted
@@ -32,7 +37,7 @@ import { Hint } from "./primitives";
  *    would tell them the directory is down while it is visibly naming groups for
  *    them, and would push them to the free-text id box they do not need.
  *
- * 4. **It survives an unavailable directory, and stays fully editable.** When the
+ * 5. **It survives an unavailable directory, and stays fully editable.** When the
  *    tenant hasn't granted `GroupMember.Read.All` the search goes away but the
  *    selection and its remove buttons do not, and a banner names the permission
  *    (§8). Removal has to keep working precisely here: this is the state where an
@@ -64,8 +69,18 @@ export function GroupPicker({
    * `nothingFoundMessage` has to translate into "search failed" — which this is
    * not.
    */
-  const { canSearchDirectory } = useAuth();
-  const searchBlocked = !canSearchDirectory;
+  const { canSearchDirectory, searchRestriction } = useAuth();
+  /**
+   * Two booleans from a tri-state, not one negation of a boolean. `undefined`
+   * means `/api/v1/me` has not answered — in flight, or errored, which is
+   * reachable on a single 500 because `meQuery` does not retry and `meLoading`
+   * only covers the in-flight half. Both derived values are then false, so an
+   * unknown state offers no search box and, critically, **makes no claim about
+   * why**. `!canSearchDirectory` collapsed "refused" and "don't know" into the
+   * same branch and rendered a deployment-policy sentence for both.
+   */
+  const searchAllowed = canSearchDirectory === true;
+  const searchRefused = canSearchDirectory === false;
   /**
    * The endpoint refuses a term under three characters (no bare-prefix directory
    * dumps) and rate-limits per actor, so firing per keystroke would spend that
@@ -77,7 +92,7 @@ export function GroupPicker({
   const mine = useQuery(myGroupsQuery);
   const found = useQuery({
     ...directoryGroupsQuery(debounced),
-    enabled: canSearch && !searchBlocked,
+    enabled: canSearch && searchAllowed,
   });
   /**
    * Names for the groups the app is *already* scoped to. Without this every
@@ -120,7 +135,11 @@ export function GroupPicker({
     // allocates a fresh array on every render, so as a dependency it would defeat
     // the memo entirely.
     const mineGroups = mine.data?.available ? mine.data.groups : [];
-    const foundGroups = found.data?.available ? found.data.groups : [];
+    // Gated on `searchAllowed` as well as on the payload: if `me` refetches
+    // mid-session and flips this caller to refused, the last search's results are
+    // still sitting in the query cache under their own key, and merging them would
+    // leave the option list showing groups this caller can no longer discover.
+    const foundGroups = searchAllowed && found.data?.available ? found.data.groups : [];
     const storedGroups = stored.data?.available ? stored.data.groups : [];
     const byId = new Map<string, DirectoryGroup>();
     for (const g of [...storedGroups, ...mineGroups, ...foundGroups]) {
@@ -147,7 +166,7 @@ export function GroupPicker({
       ...options,
       ...unresolved.map((id) => ({ value: id, label: `unknown group (${id})`, disabled: false })),
     ];
-  }, [mine.data, found.data, stored.data, value]);
+  }, [mine.data, found.data, stored.data, value, searchAllowed]);
 
   const atCap = value.length >= MAX_VISIBILITY_GROUPS;
 
@@ -187,10 +206,23 @@ export function GroupPicker({
        * "unavailable" would be false, and would send someone to ask an
        * administrator about a Graph permission that is granted and working.
        */}
-      {searchBlocked && !unavailable && (
+      {searchRefused && !unavailable && (
         <Hint tone="slate" icon="info">
-          Searching all directory groups is limited to platform admins on this deployment. You can
-          still pick from the groups you&apos;re in, or add any group by its id.
+          {/*
+           * Worded from the reason, not from a guess. The first version hard-coded
+           * "limited to platform admins", which is false under the `none` tier —
+           * and false in the worst direction, because a platform admin refused by
+           * `none` was told the restriction was the very role they hold, sending
+           * them to audit a PORTAL_ADMIN_GROUP_ID that is perfectly correct.
+           * `searchRestriction` is absent on older portals, so the last branch is
+           * a real fallback rather than a formality.
+           */}
+          {searchRestriction === "admins"
+            ? "Searching all directory groups is limited to platform admins on this deployment — ask one if you need a group you can't find here."
+            : searchRestriction === "none"
+              ? "Searching all directory groups is turned off on this deployment, for everyone."
+              : "Searching all directory groups is restricted on this deployment."}{" "}
+          You can still pick from the groups you&apos;re in, or add any group by its id.
         </Hint>
       )}
       {/*
@@ -216,7 +248,7 @@ export function GroupPicker({
         description={
           unavailable
             ? "Remove a group with its ×. New ones have to be added by id below."
-            : searchBlocked
+            : !searchAllowed
               ? "Pick from the groups you're in, or add any group by id below. Anyone in any of these groups can open the app."
               : "Search your directory, or pick from the groups you're in. Anyone in any of these groups can open the app."
         }
@@ -224,7 +256,7 @@ export function GroupPicker({
           value.length === 0
             ? unavailable
               ? "none selected"
-              : searchBlocked
+              : !searchAllowed
                 ? "pick from your groups"
                 : "search for a group"
             : undefined
@@ -232,8 +264,8 @@ export function GroupPicker({
         data={data}
         value={value}
         onChange={onChange}
-        searchable={!unavailable && !searchBlocked}
-        {...(unavailable || searchBlocked
+        searchable={!unavailable && searchAllowed}
+        {...(unavailable || !searchAllowed
           ? {}
           : { searchValue: search, onSearchChange: setSearch })}
         nothingFoundMessage={
@@ -244,7 +276,7 @@ export function GroupPicker({
           // does not exist".
           found.isError
             ? "Search failed — the directory did not answer. Try again, or add the id below."
-            : searchBlocked
+            : !searchAllowed
               ? // Reached when the caller is in no groups and the app has none stored,
                 // so there is nothing to list. Never mentions searching: this caller
                 // cannot, and telling them to type would be a dead end.

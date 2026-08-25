@@ -50,8 +50,40 @@ describe("directorySearchPolicy", () => {
     });
   });
 
-  it("does not accept a tier by different casing", () => {
-    expect(directorySearchPolicy({ PORTAL_DIRECTORY_SEARCH: "Everyone" }).tier).toBe("admins");
+  /**
+   * These pinned the opposite behaviour when the fallback was exact-match, which
+   * made the *narrowest* tier the one most likely to come back wider than the
+   * operator wrote: `None` is not a typo, and the fallback points at `admins`.
+   */
+  it.each([
+    ["None", "none"],
+    ["NONE", "none"],
+    [" none", "none"],
+    ["none ", "none"],
+    ["none\n", "none"],
+    ["Everyone", "everyone"],
+    ["  ADMINS  ", "admins"],
+  ])("resolves %j to the tier it plainly means (%s)", (raw, tier) => {
+    const policy = directorySearchPolicy({ PORTAL_DIRECTORY_SEARCH: raw });
+    expect(policy.tier).toBe(tier);
+    // Normalised, not "recovered from an error" — nothing to warn about.
+    expect(policy.invalid).toBeUndefined();
+  });
+
+  it("still falls back to admins for a value that is genuinely not a tier", () => {
+    expect(directorySearchPolicy({ PORTAL_DIRECTORY_SEARCH: "  Everybody " }).tier).toBe("admins");
+  });
+
+  it("reports the raw value as invalid, not the normalised one", () => {
+    // The boot log exists to tell an operator what they wrote. Echoing a trimmed,
+    // lowercased version back hides the stray character that caused the problem.
+    expect(directorySearchPolicy({ PORTAL_DIRECTORY_SEARCH: " Everybody\n" }).invalid).toBe(
+      " Everybody\n",
+    );
+  });
+
+  it("treats a whitespace-only value as unset", () => {
+    expect(directorySearchPolicy({ PORTAL_DIRECTORY_SEARCH: "   " }).tier).toBe("everyone");
   });
 
   it("reports no `invalid` for a value it accepted", () => {

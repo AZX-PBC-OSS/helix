@@ -39,8 +39,16 @@ function stubFetch(
     mine: AVAILABLE_MINE,
     search: AVAILABLE_SEARCH,
   },
-  /** Overrides for `/api/v1/me`; defaults to a caller who may search. */
-  me: { isAdmin?: boolean; canSearchDirectory?: boolean } = {},
+  /**
+   * Overrides for `/api/v1/me`; defaults to a caller who may search. `status`
+   * models a portal fault — `meQuery` sets `retry: false`, so one 500 is enough.
+   */
+  me: {
+    isAdmin?: boolean;
+    canSearchDirectory?: boolean;
+    searchRestriction?: "admins" | "none";
+    status?: number;
+  } = {},
 ): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((url: string) => {
     if (typeof url === "string" && url.endsWith("/visibility")) {
@@ -76,6 +84,13 @@ function stubFetch(
       });
     }
     if (typeof url === "string" && url.endsWith("/api/v1/me")) {
+      if (me.status !== undefined && me.status >= 400) {
+        return Promise.resolve({
+          ok: false,
+          status: me.status,
+          json: async () => ({ error: { code: "internal", message: "boom" } }),
+        });
+      }
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -84,6 +99,7 @@ function stubFetch(
           via: "oidc",
           isAdmin: me.isAdmin ?? false,
           canSearchDirectory: me.canSearchDirectory ?? true,
+          ...(me.searchRestriction ? { searchRestriction: me.searchRestriction } : {}),
         }),
       });
     }
@@ -397,7 +413,7 @@ describe("AccessTab group picker", () => {
     const fetchMock = stubFetch(
       { app: makeApp({ mode: "internal" }), applied: [], pending: null },
       { mine: AVAILABLE_MINE, search: AVAILABLE_SEARCH, stored: AVAILABLE_MINE },
-      { canSearchDirectory: false },
+      { canSearchDirectory: false, searchRestriction: "admins" },
     );
     setToken("test-token");
     const { container } = render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
@@ -431,12 +447,67 @@ describe("AccessTab group picker", () => {
     ).toBe(false);
   });
 
+  /**
+   * Under `none` nobody may search, platform admins included — so naming them is
+   * false, and false in the worst direction: an admin refused by `none` is told
+   * the restriction is the role they hold, and goes off to audit a
+   * `PORTAL_ADMIN_GROUP_ID` that is perfectly correct.
+   */
+  it("does not blame platform admins when the tier refuses everyone", async () => {
+    stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      { mine: AVAILABLE_MINE, search: AVAILABLE_SEARCH, stored: AVAILABLE_MINE },
+      { isAdmin: true, canSearchDirectory: false, searchRestriction: "none" },
+    );
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+
+    expect(await screen.findByText(/turned off on this deployment/)).toBeDefined();
+    expect(screen.queryByText(/limited to platform admins/)).toBeNull();
+    // Still a working picker, exactly as under `admins`.
+    expect(screen.getByLabelText("Add by id")).toBeDefined();
+  });
+
+  /**
+   * `meLoading` only covers the in-flight half, and `meQuery` does not retry — so
+   * a single 500 renders the tree with no `me` at all. The old `?? false` turned
+   * that into a confident statement of deployment policy, false on a default
+   * deployment, caused by a transient fault with nothing on screen to connect it
+   * to. Unknown must assert nothing.
+   */
+  it("makes no claim about search when /me failed", async () => {
+    const fetchMock = stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      { mine: AVAILABLE_MINE, search: AVAILABLE_SEARCH, stored: AVAILABLE_MINE },
+      { status: 500 },
+    );
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+    await screen.findByLabelText("Add by id");
+
+    // No restriction sentence of any wording, and no unavailable banner either.
+    expect(screen.queryByText(/limited to platform admins/)).toBeNull();
+    expect(screen.queryByText(/turned off on this deployment/)).toBeNull();
+    expect(screen.queryByText(/restricted on this deployment/)).toBeNull();
+    expect(screen.queryByText(/Group search is unavailable/)).toBeNull();
+    // And no search is attempted on a permission we cannot establish.
+    expect(
+      fetchMock.mock.calls.some(
+        ([url]) => typeof url === "string" && url.includes("/directory/groups"),
+      ),
+    ).toBe(false);
+  });
+
   /** A dead directory is the more useful thing to say, so it wins over the tier hint. */
   it("prefers the unavailable banner when the directory is also down", async () => {
     stubFetch(
       { app: makeApp({ mode: "internal" }), applied: [], pending: null },
       { mine: NO_CONSENT, search: NO_CONSENT, stored: NO_CONSENT },
-      { canSearchDirectory: false },
+      { canSearchDirectory: false, searchRestriction: "admins" },
     );
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));

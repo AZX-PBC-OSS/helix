@@ -239,11 +239,16 @@ Three things worth knowing before using it:
   naming the permission. Enforcement never depended on Graph.
 - **Who may search is a deployment setting.** `PORTAL_DIRECTORY_SEARCH` is `everyone` (the
   default, and what ADR-0040 shipped), `admins`, or `none`. It gates
-  `GET /api/v1/directory/groups` only: the two id→name resolves stay open to any authenticated
-  caller, because neither returns anything the caller couldn't already read. So a restricted
-  caller keeps a working picker — own groups by name, stored groups by name, add-by-id — and
-  loses only the discovery of groups they're not in. Distinct from the bullet above on purpose:
-  nothing is broken, and the UI must not say it is (ADR-0040 decision 11).
+  `GET /api/v1/directory/groups` outright. `my-groups` is never gated — it resolves the claim
+  on the caller's own verified token. The app-scoped resolve
+  (`/apps/:slug/visibility/groups`) additionally requires owner-or-admin **once a tier is
+  set**, because group ids on an app are never validated against the directory, so an
+  ungated resolve is a name-and-existence oracle over ids the caller chose; it stays open
+  under `everyone`, where the apps-table badge needs it and there is no posture to enforce.
+  A restricted caller keeps a working picker — own groups by name, their own apps' stored
+  groups by name, add-by-id — and loses only the discovery of groups they're not in.
+  Distinct from the bullet above on purpose: nothing is broken, and the UI must not say it
+  is (ADR-0040 decision 11).
 
 Above roughly 200 groups Entra replaces the claim with `_claim_names`, at which point the edge
 reads no groups and denies. That is fail-closed but indistinguishable from a bug, so the edge

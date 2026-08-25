@@ -168,11 +168,13 @@ describe("GET /api/v1/me", () => {
       }
     };
 
-    const meWith = async (roles?: string[]): Promise<{ canSearchDirectory: boolean }> => {
+    const meWith = async (
+      roles?: string[],
+    ): Promise<{ canSearchDirectory: boolean; searchRestriction?: string }> => {
       const token = await mintAccessToken(roles ? { roles } : {});
       const res = await edge.app.inject({ url: "/api/v1/me", headers: authHeader(token) });
       expect(res.statusCode).toBe(200);
-      return res.json() as { canSearchDirectory: boolean };
+      return res.json() as { canSearchDirectory: boolean; searchRestriction?: string };
     };
 
     it("is true for a non-admin under the default (everyone) tier", async () => {
@@ -198,6 +200,43 @@ describe("GET /api/v1/me", () => {
           expect((await meWith(["platform-admin"])).canSearchDirectory).toBe(false);
         },
       );
+    });
+
+    /**
+     * The reason is what lets the picker say something true under both narrow
+     * tiers. Without it the UI hard-coded "limited to platform admins", which
+     * tells a platform admin refused by `none` that the restriction is the role
+     * they hold — sending them to audit a correct `PORTAL_ADMIN_GROUP_ID`.
+     */
+    describe("searchRestriction", () => {
+      it("is absent when the caller may search", async () => {
+        await withEnv({ PORTAL_DIRECTORY_SEARCH: undefined }, async () => {
+          const me = await meWith();
+          expect(me.canSearchDirectory).toBe(true);
+          // A permitted caller learns nothing about the posture at all.
+          expect(me.searchRestriction).toBeUndefined();
+        });
+      });
+
+      it("names the admins tier for a refused non-admin", async () => {
+        await withEnv(
+          { PORTAL_DIRECTORY_SEARCH: "admins", PORTAL_ADMIN_GROUP_ID: "platform-admin" },
+          async () => {
+            expect((await meWith()).searchRestriction).toBe("admins");
+            // …and stays absent for the admin on the same deployment.
+            expect((await meWith(["platform-admin"])).searchRestriction).toBeUndefined();
+          },
+        );
+      });
+
+      it("names the none tier even for a platform admin", async () => {
+        await withEnv(
+          { PORTAL_DIRECTORY_SEARCH: "none", PORTAL_ADMIN_GROUP_ID: "platform-admin" },
+          async () => {
+            expect((await meWith(["platform-admin"])).searchRestriction).toBe("none");
+          },
+        );
+      });
     });
 
     it("fails closed to the admins tier on an unrecognised value", async () => {

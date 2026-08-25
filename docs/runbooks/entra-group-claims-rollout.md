@@ -529,9 +529,14 @@ az containerapp update -g "$RG" -n "$PREFIX-portal" \
 
 Two things to know before you set it:
 
-- It gates **search only**. Name resolution is never gated, so a restricted operator still
-  sees their own groups and the app's stored groups *by name* and can still add any group
-  by id. They lose discovery of groups they are not in, and nothing else.
+- It gates **search**, and one thing more. Name resolution stays available, so a restricted
+  operator still sees their own groups and their own apps' stored groups *by name* and can
+  still add any group by id. But setting any tier also narrows
+  `GET /api/v1/apps/:slug/visibility/groups` to **owner-or-admin**, because group ids stored
+  on an app are never validated against the directory — leaving it open would let anyone
+  resolve arbitrary ids by parking them on an app of their own. Visible effect: on the apps
+  table, hovering the group badge of an app you do not own reads "name not available to
+  you" instead of naming the group.
 - `admins` needs `PORTAL_ADMIN_GROUP_ID` set, or **nobody** qualifies and search is off for
   everyone. The portal names the resolved tier in its boot log (`directory provider: …;
   search: …`) — check it after the deploy rather than assuming.

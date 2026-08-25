@@ -32,13 +32,19 @@ export const PortalMeResponseSchema = z.object({
    * Whether the actor holds the `platform-admin` role. Computed server-side from
    * the actor's group/role claim — the raw ids never cross to the browser. Drives
    * admin nav + route gating in the SPA (and `helix whoami`).
+   *
+   * **Defaulted, not required**, for the same reason as
+   * {@link canSearchDirectory} below: this schema parses `PortalClient.me()` in
+   * the *published* CLI, which routinely talks to portals older than itself. The
+   * polarity is the cautious one — a portal that never sent the field is not
+   * telling us the caller is an admin.
    */
-  isAdmin: z.boolean(),
+  isAdmin: z.boolean().default(false),
   /**
    * Whether this caller may run a tenant-wide group search (ADR-0040 decision
    * 11). Computed server-side from the deployment's `PORTAL_DIRECTORY_SEARCH`
-   * tier and the actor's admin-ness — the tier itself never crosses to the
-   * browser, and neither do the raw claims it was decided from.
+   * tier and the actor's admin-ness. A caller who *may* search learns nothing
+   * else; one who may not gets {@link searchRestriction} alongside.
    *
    * Sent so the group picker can **avoid issuing a search it is not allowed to
    * make**, rather than firing one and interpreting the 403. That matters
@@ -47,8 +53,37 @@ export const PortalMeResponseSchema = z.object({
    * useful and must not fall back to the "directory unavailable" banner. Server
    * enforcement is independent of this hint (`GET /api/v1/directory/groups`
    * refuses on its own).
+   *
+   * **Defaults to `true` when absent, and the polarity is the whole point.** The
+   * CLI bundles this schema (ADR-0032) and portals are customer-deployed and
+   * version independently (ADR-0028), so a new CLI against an older portal is
+   * routine — and it was a hard break while this was required: `helix whoami`
+   * failed outright, and `helix login` failed at its final "greet the actor"
+   * step, which runs *after* the tokens are written, so a login that genuinely
+   * succeeded reported an error. A portal old enough to omit this has no tier
+   * enforcement at all and therefore behaves exactly like `everyone`, so `true`
+   * describes the portal actually being talked to. Defaulting to `false` would
+   * instead tell a client that search is unavailable where it works.
    */
-  canSearchDirectory: z.boolean(),
+  canSearchDirectory: z.boolean().default(true),
+  /**
+   * Why search was refused, when it was — **present only when
+   * {@link canSearchDirectory} is false**, and never `everyone`, which by
+   * construction refuses nobody.
+   *
+   * Exists because "restricted" and "restricted *to platform admins*" are
+   * different sentences and only one of them is true under the `none` tier. The
+   * picker has to be able to say which, and telling a platform admin that search
+   * is "limited to platform admins" while refusing them sends them off to audit
+   * a `PORTAL_ADMIN_GROUP_ID` that is perfectly correct.
+   *
+   * This is a deliberate, bounded narrowing of decision 11's "the browser learns
+   * the answer, never the tier": a *permitted* caller still learns nothing, and a
+   * refused one learns only which rule refused them — which they can already
+   * infer from the 403 they would get by asking. The admin group id still never
+   * crosses.
+   */
+  searchRestriction: z.enum(["admins", "none"]).optional(),
 });
 export type PortalMeResponse = z.infer<typeof PortalMeResponseSchema>;
 

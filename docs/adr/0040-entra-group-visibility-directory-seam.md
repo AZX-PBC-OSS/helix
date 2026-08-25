@@ -130,13 +130,23 @@ Three properties are load-bearing:
   unavailable for everyone whatever the tier says. `none` is therefore not
   redundant with `off`: `off` also kills id→name resolution, where `none` keeps
   every name resolving and removes only discovery.
-- **The tier gates search alone.** The two id→name resolves stay open to any
-  authenticated caller, because neither returns anything the caller could not
-  already read — `my-groups` resolves the claim on their own verified token, and
-  `/apps/:slug/visibility/groups` resolves ids already carried by
-  `GET /api/v1/apps/:slug`. So a restricted caller keeps a working picker: their
-  own groups by name, the app's stored groups by name, and the add-by-id box.
-  What they lose is discovery of groups they are not in.
+- **The tier gates search; the resolves are handled separately.** `my-groups` is
+  never gated — it resolves the claim on the caller's own verified token and
+  genuinely returns nothing new. `/apps/:slug/visibility/groups` needed a
+  correction: a first pass excused it with the same argument, on the grounds that
+  it resolves ids already carried by `GET /api/v1/apps/:slug`. **That was false,
+  because the caller chooses the ids.** `POST /api/v1/apps` is authenticate-only
+  and `VisibilityGroupIdsSchema` never validates a group id against the
+  directory, so anyone could store ten arbitrary ids on an app of their own and
+  read the names back with search refused — and since unresolvable ids are
+  silently omitted, learn which of them exist. So on any deployment that sets a
+  tier, that route additionally requires **owner-or-admin**
+  (`ownsAppWhenSearchRestricted`), reusing `ownsApp`. It stays open under
+  `everyone`, deliberately: the same route backs the apps-table badge's
+  hover-to-name for every row, and gating it where nothing is restricted would
+  pay a UX cost for no benefit. A restricted caller therefore keeps a working
+  picker — own groups by name, their own apps' stored groups by name, add-by-id —
+  and loses discovery of groups they are not in.
 - **"You may not search" is not a `DirectoryUnavailableReason`, and must never be
   rendered as one.** Those values are deployment-level and name an operator's
   fix; this is per-caller and nothing is broken. Concretely, `GroupPicker` ORs
@@ -145,7 +155,26 @@ Three properties are load-bearing:
   would claim the directory is down while it is visibly naming groups on the same
   screen. Instead the server refuses with a plain `403`, and `/api/v1/me` carries
   a server-computed `canSearchDirectory` so the SPA never issues the request at
-  all. The browser learns the answer, never the tier or the admin group id.
+  all.
+- **What the browser is told, precisely.** A caller who **may** search learns
+  nothing about the posture. A caller who is **refused** additionally gets
+  `searchRestriction: "admins" | "none"`. An earlier draft of this decision said
+  the browser learns "the answer, never the tier", and that was too strong to
+  implement honestly: with only a boolean the picker hard-coded "limited to
+  platform admins", which is false under `none` — and false in the worst
+  direction, since a platform admin refused by `none` is told the restriction is
+  the role they hold, and goes off to audit a `PORTAL_ADMIN_GROUP_ID` that is
+  correct. The reason discloses nothing a refused caller could not infer from the
+  403 they would get by asking. The admin group id still never crosses.
+- **`canSearchDirectory` is a tri-state in the SPA, and `isAdmin`/`canSearchDirectory`
+  are defaulted on the wire.** Unknown (`/api/v1/me` errored — reachable on one
+  500, since that query does not retry and `meLoading` covers only the in-flight
+  half) must render no search box **and no explanation**, because every available
+  sentence would be a guess about deployment policy. On the wire both booleans
+  carry zod defaults so the published CLI keeps parsing older portals (ADR-0032 +
+  ADR-0028): `canSearchDirectory` defaults to **true**, because a portal old
+  enough to omit it has no tier enforcement and so behaves like `everyone`;
+  `isAdmin` defaults to **false**, because silence is not a grant.
 
 The refusal is checked **before** the rate limit, so a denied caller spends no
 budget and costs no write, and it is logged rather than audited — with the limiter
@@ -156,6 +185,14 @@ INSERT available to any authenticated principal.
 discovering group *names*; using a group *id* is unaffected, and removing the box
 would leave a restricted caller unable to scope an app to any group they are not
 personally in.
+
+**Residual, stated plainly.** Even with the owner-or-admin gate, an operator can
+still resolve arbitrary ids on their *own* apps — ten per request, against the
+resolve limiter. That is a real name-and-existence oracle and it is not closed
+here. It does not defeat the tier: there is no name→id direction, and Entra
+object ids are not guessable, so it confirms ids the caller already holds rather
+than discovering new ones. Closing it means validating stored group ids against
+the directory, or per-app RBAC (ADR-0007) — a different decision either way.
 
 ## Consequences
 

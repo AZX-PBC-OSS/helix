@@ -68,8 +68,11 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     deployment doesn't let search (`PORTAL_DIRECTORY_SEARCH`, ADR-0040 decision 11) gets a third,
     deliberately distinct state: no search box, but their own groups and the app's stored groups
     still listed *by name*, behind a hint that says the scope is limited rather than that anything
-    is unavailable. The SPA branches on `canSearchDirectory` from `/api/v1/me`, so it never issues
-    a search it would only be refused. Plus
+    is unavailable — worded from `searchRestriction` (`admins` vs `none`), because "ask a platform
+    admin" is wrong advice under a tier that refuses admins too. The SPA branches on
+    `canSearchDirectory` from `/api/v1/me`, so it never issues a search it would only be refused;
+    that field is **tri-state**, and an unanswered `/me` renders no search box *and no claim*
+    rather than asserting a policy it cannot know. Plus
     archive/unarchive and the one preview surface — the **Access (RBAC)** card carrying
     `<PreviewBadge milestone="v1" />` (per-app owner/editor/viewer roles are a v1 feature; today
     `ownsApp` gates app-scoped mutations and any read returning per-subject data, and every action

@@ -35,11 +35,29 @@ export interface AuthState {
    * interpreting the 403 — which matters because a refused search is **not** a
    * broken directory, and must not be rendered as one.
    *
-   * Defaults false while /api/v1/me is in flight, like `isAdmin`: a hint that
-   * fails closed shows the narrower picker for a moment, which is recoverable,
-   * where failing open shows a search box that then vanishes.
+   * **Tri-state, and `undefined` is load-bearing: it means we do not know.** This
+   * was a plain boolean defaulting to `false`, justified on "while /api/v1/me is
+   * in flight" — and `RequireAuth` does hold the tree behind a loader for that.
+   * But `meLoading` is `me.isLoading`, which goes false the moment the query
+   * *errors* with anything other than a 401, and `meQuery` sets `retry: false` —
+   * so a single 500 or one network blip rendered the app with no `me` at all, and
+   * the picker turned that into "search is limited to platform admins on this
+   * deployment": a confident statement of deployment policy, false on a default
+   * deployment, caused by a transient portal fault with nothing on screen to
+   * connect it to.
+   *
+   * So the unknown case is now representable, and the picker shows no search box
+   * **and no claim** for it. `isAdmin` degrades the same way and is left alone —
+   * hiding a nav item asserts nothing.
    */
-  canSearchDirectory: boolean;
+  canSearchDirectory: boolean | undefined;
+  /**
+   * Why search was refused, when it was. Absent when the caller may search, and
+   * when `me` has not answered. Drives which sentence the picker shows — "ask a
+   * platform admin" is good advice under the `admins` tier and actively
+   * misleading under `none`.
+   */
+  searchRestriction: PortalMeResponse["searchRestriction"];
   /** A token is present but /api/v1/me hasn't resolved yet (guards show a loader). */
   meLoading: boolean;
   /** Whether the portal has an IdP configured (login possible at all). */
@@ -103,7 +121,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authenticated,
       me: me.data,
       isAdmin: me.data?.isAdmin ?? false,
-      canSearchDirectory: me.data?.canSearchDirectory ?? false,
+      // No `?? false`: see the tri-state note on the field.
+      canSearchDirectory: me.data?.canSearchDirectory,
+      searchRestriction: me.data?.searchRestriction,
       meLoading: authenticated && me.isLoading,
       loginAvailable: authConfig.isSuccess && Boolean(authConfig.data.webClientId),
       allowPublicApps: authConfig.data?.allowPublicApps ?? false,

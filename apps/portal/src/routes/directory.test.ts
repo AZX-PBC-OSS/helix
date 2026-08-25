@@ -568,6 +568,7 @@ describe("PORTAL_DIRECTORY_SEARCH tiers", () => {
   const ADMIN_GROUP = "platform-admin";
   const ADMIN_SUB = "admin@azx.dev";
   const USER_SUB = "bob@azx.dev";
+  const STRANGER_SUB = "carol@azx.dev";
 
   const verifiers = [
     {
@@ -575,12 +576,15 @@ describe("PORTAL_DIRECTORY_SEARCH tiers", () => {
       async verify(token: string) {
         if (token === "admin") return { sub: ADMIN_SUB, via: "oidc", groups: [ADMIN_GROUP] };
         if (token === "user") return { sub: USER_SUB, via: "oidc", groups: ["eng-team"] };
+        if (token === "stranger") return { sub: STRANGER_SUB, via: "oidc", groups: [] };
         return null;
       },
     },
   ];
   const asAdmin = { authorization: "Bearer admin" };
   const asUser = { authorization: "Bearer user" };
+  /** Authenticated, not an admin, and not the owner of anything below. */
+  const asStranger = { authorization: "Bearer stranger" };
 
   let t: TestApp;
   let prevAdminGroup: string | undefined;
@@ -694,6 +698,87 @@ describe("PORTAL_DIRECTORY_SEARCH tiers", () => {
     await t.prisma.portalRateCounter.deleteMany({ where: { bucketKey: key } });
     expect((await search(asUser)).statusCode).toBe(403);
     expect(await t.prisma.portalRateCounter.findUnique({ where: { bucketKey: key } })).toBeNull();
+  });
+
+  /**
+   * The app-scoped resolve is owner-or-admin **only where a tier is set**
+   * (ADR-0040 decision 11). The conditionality is the part worth pinning: an
+   * always-on gate would degrade `GroupVisibilityBadge`'s hover-to-name on every
+   * apps-table row of every deployment, including the `everyone` default that has
+   * no disclosure posture to enforce.
+   */
+  describe("the app-scoped resolve gate", () => {
+    /** An app owned by USER_SUB, scoped to a group. */
+    const ownedApp = async (): Promise<string> => {
+      const slug = uniqueSlug("gate");
+      const res = await t.app.inject({
+        method: "POST",
+        url: "/api/v1/apps",
+        headers: asUser,
+        payload: { slug, displayName: slug, visibility: { mode: "group", groupIds: ["eng-team"] } },
+      });
+      expect(res.statusCode).toBe(201);
+      return slug;
+    };
+
+    const resolve = (slug: string, headers: Record<string, string>) =>
+      t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/visibility/groups`, headers });
+
+    it("stays open to any authenticated caller when no tier is set", async () => {
+      // The default deployment is untouched — this is the regression the
+      // conditionality exists to prevent, not an incidental property.
+      const slug = await ownedApp();
+      expect((await resolve(slug, asUser)).statusCode).toBe(200);
+      expect((await resolve(slug, asAdmin)).statusCode).toBe(200);
+    });
+
+    it("requires owner-or-admin once a tier is set", async () => {
+      const slug = await ownedApp();
+      process.env.PORTAL_DIRECTORY_SEARCH = "none";
+      // The owner still resolves their own app's groups: the picker they need it
+      // for is the whole reason the tier gates search rather than names.
+      expect((await resolve(slug, asUser)).statusCode).toBe(200);
+      // A platform admin is not the owner and still passes — `ownsApp` is
+      // owner-OR-admin, and re-deriving that here would let the two drift.
+      expect((await resolve(slug, asAdmin)).statusCode).toBe(200);
+    });
+
+    it("refuses a caller who is neither owner nor admin once a tier is set", async () => {
+      const slug = await ownedApp();
+      process.env.PORTAL_DIRECTORY_SEARCH = "admins";
+      const res = await resolve(slug, asStranger);
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe("forbidden");
+    });
+
+    /**
+     * The finding this gate exists for: ids are never validated against the
+     * directory (`VisibilityGroupIdsSchema`), so a caller can store arbitrary ids
+     * on an app and read the names back — a name *and* existence oracle that the
+     * search tier otherwise does not touch. Narrowed to the caller's own apps.
+     */
+    it("does not let a stranger resolve arbitrary ids stored on someone else's app", async () => {
+      const slug = uniqueSlug("oracle");
+      await t.app.inject({
+        method: "POST",
+        url: "/api/v1/apps",
+        headers: asUser,
+        payload: {
+          slug,
+          displayName: slug,
+          visibility: { mode: "group", groupIds: ["product-team", "does-not-exist"] },
+        },
+      });
+      process.env.PORTAL_DIRECTORY_SEARCH = "none";
+      expect((await resolve(slug, asStranger)).statusCode).toBe(403);
+    });
+
+    it("does not leak app existence to a refused caller", async () => {
+      // `ownsApp` 404s before the handler runs, so "no such app" and "not yours"
+      // are indistinguishable to someone probing slugs.
+      process.env.PORTAL_DIRECTORY_SEARCH = "none";
+      expect((await resolve(uniqueSlug("nope"), asStranger)).statusCode).toBe(404);
+    });
   });
 
   /** A denial is logged, not audited — an audit row per refusal is a free INSERT flood. */

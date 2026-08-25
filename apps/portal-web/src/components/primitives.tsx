@@ -2,6 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { Badge, Box, Button, CopyButton, Group, Stack, Text, Title, Tooltip } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import type { Visibility } from "@azx-pbc/shared";
+import { PortalApiError } from "../api/client";
 import { appVisibilityGroupsQuery } from "../api/queries";
 import { Icon, type IconName } from "./Icon";
 
@@ -167,6 +168,16 @@ function GroupVisibilityBadge({ groupIds, slug }: { groupIds: string[]; slug: st
   // is the difference between "this group was deleted" and "you haven't hovered
   // long enough yet".
   const answered = answer !== undefined || resolved.isError;
+  /**
+   * A refusal is not a deletion. On a deployment that set
+   * `PORTAL_DIRECTORY_SEARCH`, the resolver additionally requires owner-or-admin
+   * (ADR-0040 decision 11), so hovering a row you do not own answers 403 — and
+   * `answered` alone renders that as "unknown group", i.e. "this group was
+   * deleted", which is exactly the distinction the note above says this component
+   * cares about. The id is still printed underneath either way, which is what an
+   * operator needs in order to go and look it up.
+   */
+  const refused = resolved.error instanceof PortalApiError && resolved.error.status === 403;
 
   const label =
     groupIds.length === 0 ? (
@@ -195,9 +206,11 @@ function GroupVisibilityBadge({ groupIds, slug }: { groupIds: string[]; slug: st
                     g.securityEnabled === false
                     ? `${g.displayName} — not a security group`
                     : g.displayName
-                  : answered
-                    ? "unknown group"
-                    : "resolving…"}
+                  : refused
+                    ? "name not available to you"
+                    : answered
+                      ? "unknown group"
+                      : "resolving…"}
               </Text>
               {/* The id is kept beside the name, not replaced by it: the id is
                   the authorization value, and it is what an operator needs when

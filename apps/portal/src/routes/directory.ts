@@ -10,7 +10,7 @@ import {
   type GroupName,
   type GroupSummary,
 } from "@azx-pbc/directory";
-import { authenticate, requireActor } from "../plugins/auth.js";
+import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { bumpSearchLimit, RATE_BUCKETS, SEARCH_LIMIT } from "../directory/rateLimit.js";
 import { directorySearchAllowed, directorySearchTier } from "../policy/directoryPolicy.js";
@@ -32,10 +32,14 @@ import { directorySearchAllowed, directorySearchTier } from "../policy/directory
  * **Who may search at all is a deployment setting** — `PORTAL_DIRECTORY_SEARCH`,
  * decision 11, resolved in `../policy/directoryPolicy.ts`. It defaults to
  * `everyone`, which is the posture described above and the one ADR-0040 shipped;
- * `admins` and `none` narrow it. The tier gates **this route only**: the two
- * id→name resolves below stay open to any authenticated caller, because neither
- * hands back anything the caller could not already read, and gating them would
- * degrade the picker without narrowing anything.
+ * `admins` and `none` narrow it.
+ *
+ * The tier gates the search route outright. It does **not** gate `my-groups`,
+ * which resolves the group claim on the caller's own verified token and so
+ * genuinely hands back nothing new. The app-scoped resolve sits between the two
+ * and is discussed at the route itself: a first pass excused it with the same
+ * "nothing the caller could not already read" argument, which turned out to be
+ * false, so on a restricted deployment it additionally requires owner-or-admin.
  *
  * Neither route can 500 on an unconfigured or unconsented directory: the provider
  * reports absence as a value and both routes answer **200 with
@@ -44,6 +48,29 @@ import { directorySearchAllowed, directorySearchTier } from "../policy/directory
  * keeps working end to end — enforcement never depended on Graph, only the picker
  * does.
  */
+
+/**
+ * Require owner-or-admin on the app-scoped resolve, but **only where a tier is
+ * actually set** (ADR-0040 decision 11).
+ *
+ * Conditional rather than always-on, because the resolve has a second consumer:
+ * `GroupVisibilityBadge` (`apps/portal-web/src/components/primitives.tsx`) names
+ * an app's groups on hover from the apps table, for *any* row the caller can see.
+ * Gating unconditionally would degrade that to "unknown group" on every
+ * deployment — including the `everyone` default, which by definition has no
+ * disclosure posture to enforce. Paying a UX cost where there is no benefit is
+ * how a security control gets removed later by someone who only sees the cost.
+ *
+ * `ownsApp` is reused verbatim rather than reimplemented as an `ownerId` compare:
+ * it already allows owner-**or**-admin, already fails closed on a null `ownerId`,
+ * and already emits the ownership-denied warn line. Its own 404-on-missing-app
+ * also fires before the handler's, which keeps "no such app" indistinguishable
+ * from "not yours" for a caller probing slugs.
+ */
+async function ownsAppWhenSearchRestricted(req: FastifyRequest): Promise<void> {
+  if (directorySearchTier() === "everyone") return;
+  await ownsApp(req);
+}
 
 const SearchQuerySchema = z.object({
   /**
@@ -208,14 +235,28 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Resolve **one app's own** stored group ids to names (ADR-0040 §7).
    *
-   * App-scoped on purpose, rather than a general `?ids=…` resolver. The picker
-   * needs names for the ids already on the app row, and a caller who can read
-   * this route can already read those same ids from `GET /api/v1/apps/:slug` — so
-   * this adds no information they did not have, and needs no rate limit, no audit
-   * row and no new disclosure surface to reason about. A general id resolver
-   * would instead be a "does this GUID name a group, and what is it called"
-   * oracle for arbitrary input, which is a genuinely bigger ask than the search
-   * endpoint above and buys nothing the picker needs.
+   * App-scoped on purpose, rather than a general `?ids=…` resolver — a general
+   * one would be a flat "does this GUID name a group, and what is it called"
+   * oracle for arbitrary input, which is a bigger ask than the search endpoint
+   * above and buys nothing the picker needs.
+   *
+   * **Being app-scoped is a smaller mitigation than it first appears, and the
+   * original reasoning here was wrong.** It said a caller who can read this route
+   * can already read the same ids from `GET /api/v1/apps/:slug`, so nothing is
+   * disclosed. True of the *ids*; false of the *names*, and false in a way that
+   * matters, because the caller chooses the ids: `POST /api/v1/apps` is
+   * authenticate-only and `VisibilityGroupIdsSchema` never validates a group id
+   * against the directory. Store ten arbitrary ids on an app of your own, read
+   * this route, and you have resolved ten names with search refused — and since
+   * ids that do not resolve are silently omitted, you have also learned which of
+   * them exist.
+   *
+   * So on any deployment that set a tier this additionally requires
+   * owner-or-admin ({@link ownsAppWhenSearchRestricted}). What is left is an
+   * operator naming groups on their own apps, ten ids at a time against the
+   * resolve limiter, with no name→id direction and no way to guess an Entra
+   * object id — a real residual, bounded, and not one that defeats the tier.
+   * Removing it altogether is per-app RBAC (ADR-0007), not this knob.
    *
    * Names live nowhere but this response: there is deliberately no name column on
    * `App`, because a second, staler copy of a name sitting beside a live
@@ -224,7 +265,7 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/visibility/groups",
-    { preHandler: authenticate },
+    { preHandler: [authenticate, ownsAppWhenSearchRestricted] },
     async (req): Promise<DirectoryGroupsResponse> => {
       const actor = requireActor(req);
       const row = await app.prisma.app.findUnique({
