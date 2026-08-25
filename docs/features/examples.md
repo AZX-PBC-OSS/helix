@@ -13,6 +13,7 @@ only**; every dynamic capability flows through the edge gateway at `/_api/*`. Fu
 | `notes` | A realistic self-contained SPA (localStorage, multiple asset types). | — |
 | `chatbot` | Streams Claude through the gateway — no key in the app, manifest-granted, metered. | `/_api/llm/chat` |
 | `waitlist` | A **public** contact harvester: write-only collections + owner-seeded shared read. | `/_api/data/*` |
+| `oversell` | The write-concurrency contract (ADR-0041): CAS on shared keys, with one-click probes that force every failure. | `/_api/data/*` |
 | `github-stars` | Calls a public API **directly** — CSP-blocked until an admin grants the origin (approval loop). | — (CSP) |
 | `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the transparent shim. | `/_api/fetch/*` |
 | `offline` | Cold-boots with no network on the platform's scope-confined service worker; six probes separate what the platform caches from what the app still owns. | — (`/_helix/sw.js`) |
@@ -39,6 +40,18 @@ A public app that appends submissions to a **write-only** collection via
 `POST /_api/data/collections/:name` and reads owner-seeded state via shared-read. The app cannot
 read the collection back — the owner drains it through the portal export API, on the privileged
 DB role. See [app-data-gateway.md](./app-data-gateway.md).
+
+### `oversell` — the write-concurrency contract in practice
+
+A public "one widget left" shop whose stock lives at a single `shared` key (ADR-0041). Every
+purchase runs the canonical read → `If-Match` → retry-on-`412` loop from the deploy skill, and
+the on-screen exchange log narrates each request and response so the mechanism is visible rather
+than trust-me. Because the premise is a *race*, the app also ships deterministic probes that force
+every failure without a second tab: a stale-`If-Match` `412` (with the disclosed
+`currentVersion` and the one-retry recovery), a precondition-less `428`, create-if-absent claimed
+twice, and the refused `If-Match: *` escape hatch. The ledger half — `412`s recorded as
+non-charging `conflict` rows — is portal-side: see the app's Usage tab. See
+[app-data-gateway.md](./app-data-gateway.md).
 
 ### `github-stars` — the CSP approval loop in practice
 

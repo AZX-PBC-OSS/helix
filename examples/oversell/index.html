@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#b45309" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Last Widget Co. — one shelf, every tab</title>
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <p class="kicker">Last Widget Co.</p>
+        <h1>One shelf. Every tab at once.</h1>
+        <p class="tagline">
+          A <strong>public</strong> AZX app — no login. The stock count lives at a single
+          <em>shared</em> key that every visitor's tab reads and writes. Every purchase is a
+          <strong>compare-and-swap</strong>: the write carries the version it read, and if someone
+          else's write landed first, the platform answers <code>412</code> and the buyer
+          transparently re-reads and retries. The bug this prevents is <strong>overselling</strong> —
+          two tabs buying the same last widget, both told "yours."
+        </p>
+      </header>
+
+      <section class="card shop">
+        <div class="shelf">
+          <div class="count-wrap">
+            <span id="count">–</span>
+            <span class="muted">widgets in stock</span>
+          </div>
+          <span id="version" class="chip" title="The ETag of the value you last read">
+            version —
+          </span>
+        </div>
+        <div class="row">
+          <button id="buy" type="button">Buy one — the safe way</button>
+          <button id="restock" type="button" class="ghost">Restock to 3</button>
+        </div>
+        <p id="shop-status" class="status" aria-live="polite"></p>
+      </section>
+
+      <details class="proof">
+        <summary>Try to break it: the two-tab oversell</summary>
+        <p>
+          Open this page in a <strong>second tab</strong>. Restock to 1, then press
+          <em>Buy one</em> in both tabs. One tab wins. The other gets a <code>412</code>, re-reads,
+          and sees an empty shelf — instead of selling a widget that no longer exists. Watch the
+          exchange log below: the losing tab's retry is the whole feature.
+        </p>
+      </details>
+
+      <details class="proof">
+        <summary>Probes: force every concurrency failure, one click each</summary>
+        <p>
+          Races don't need two humans with good timing. Each probe drives the exact request sequence
+          against a scratch key and prints the wire exchange.
+        </p>
+        <div class="probe-grid">
+          <button id="probe-stale" type="button">Lose a race on purpose</button>
+          <button id="probe-raw" type="button">Write with no precondition</button>
+          <button id="probe-claim" type="button">Claim the same key twice</button>
+          <button id="probe-star" type="button">Try the If-Match: * escape hatch</button>
+        </div>
+        <pre id="probe-out" class="prove-out" aria-live="polite"></pre>
+      </details>
+
+      <section class="card">
+        <p class="log-title">Exchange log <span class="muted">(what the browser actually sent and got)</span></p>
+        <pre id="log" class="log" aria-live="polite"></pre>
+      </section>
+
+      <footer>
+        <p>
+          A lost race is never charged against the app's daily write budget — but it is
+          <em>recorded</em>. See the <code>conflict</code> rows in the app's Usage tab in the portal.
+        </p>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
