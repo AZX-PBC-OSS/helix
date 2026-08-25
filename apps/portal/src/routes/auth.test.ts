@@ -111,13 +111,22 @@ describe("GET /api/v1/me", () => {
       email: "alice@azx.dev",
       // No admin group configured here → not an admin.
       isAdmin: false,
+      // PORTAL_DIRECTORY_SEARCH unset → the `everyone` tier, so admin-ness is
+      // irrelevant. This pins the default: unset must not tighten the surface
+      // ADR-0040 shipped open.
+      canSearchDirectory: true,
     });
   });
 
   it("echoes the dev-token actor through the same chain", async () => {
     const res = await edge.app.inject({ url: "/api/v1/me", headers: authHeader("test-token") });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ sub: "dev@azx.io", via: "dev-token", isAdmin: false });
+    expect(res.json()).toEqual({
+      sub: "dev@azx.io",
+      via: "dev-token",
+      isAdmin: false,
+      canSearchDirectory: true,
+    });
   });
 
   it("reports isAdmin:true when the actor carries the configured admin role", async () => {
@@ -132,6 +141,75 @@ describe("GET /api/v1/me", () => {
       if (prev === undefined) delete process.env.PORTAL_ADMIN_GROUP_ID;
       else process.env.PORTAL_ADMIN_GROUP_ID = prev;
     }
+  });
+
+  /**
+   * `canSearchDirectory` is what the SPA's group picker branches on, so it has to
+   * track the tier and the actor together (ADR-0040 decision 11). The picker
+   * never sees the tier itself.
+   */
+  describe("canSearchDirectory", () => {
+    const withEnv = async (
+      env: Record<string, string | undefined>,
+      run: () => Promise<void>,
+    ): Promise<void> => {
+      const prev = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      try {
+        await run();
+      } finally {
+        for (const [k, v] of Object.entries(prev)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    };
+
+    const meWith = async (roles?: string[]): Promise<{ canSearchDirectory: boolean }> => {
+      const token = await mintAccessToken(roles ? { roles } : {});
+      const res = await edge.app.inject({ url: "/api/v1/me", headers: authHeader(token) });
+      expect(res.statusCode).toBe(200);
+      return res.json() as { canSearchDirectory: boolean };
+    };
+
+    it("is true for a non-admin under the default (everyone) tier", async () => {
+      await withEnv({ PORTAL_DIRECTORY_SEARCH: undefined }, async () => {
+        expect((await meWith()).canSearchDirectory).toBe(true);
+      });
+    });
+
+    it("splits admin from non-admin under the admins tier", async () => {
+      await withEnv(
+        { PORTAL_DIRECTORY_SEARCH: "admins", PORTAL_ADMIN_GROUP_ID: "platform-admin" },
+        async () => {
+          expect((await meWith(["platform-admin"])).canSearchDirectory).toBe(true);
+          expect((await meWith()).canSearchDirectory).toBe(false);
+        },
+      );
+    });
+
+    it("is false even for an admin under the none tier", async () => {
+      await withEnv(
+        { PORTAL_DIRECTORY_SEARCH: "none", PORTAL_ADMIN_GROUP_ID: "platform-admin" },
+        async () => {
+          expect((await meWith(["platform-admin"])).canSearchDirectory).toBe(false);
+        },
+      );
+    });
+
+    it("fails closed to the admins tier on an unrecognised value", async () => {
+      await withEnv(
+        { PORTAL_DIRECTORY_SEARCH: "everybody", PORTAL_ADMIN_GROUP_ID: "platform-admin" },
+        async () => {
+          // A typo must not silently widen a surface an operator was narrowing.
+          expect((await meWith()).canSearchDirectory).toBe(false);
+          expect((await meWith(["platform-admin"])).canSearchDirectory).toBe(true);
+        },
+      );
+    });
   });
 
   it("401s without or with a bad token", async () => {

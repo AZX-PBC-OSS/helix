@@ -25,9 +25,13 @@ function makeApp(visibility: Visibility): App {
 /**
  * Route the visibility POST to a canned result and the auth-config query to a
  * deployment that permits both open surfaces (so the public option is offered —
- * these assertions are about the request flow, not the policy gate). Everything
- * else (/me) never resolves — irrelevant here, and `retry: false` in the test
- * QueryClient keeps it quiet.
+ * these assertions are about the request flow, not the policy gate).
+ *
+ * `/me` **resolves**, and has to. `GroupPicker` reads `canSearchDirectory` off it
+ * and that hint fails closed while the query is in flight, so a pending-forever
+ * `/me` would render every one of these tests against the restricted picker. It
+ * would also be an unreal state: `RequireAuth` holds the whole app behind a
+ * loader until `/me` lands, so under the gate it is always resolved.
  */
 function stubFetch(
   result: VisibilityUpdateResult,
@@ -35,6 +39,8 @@ function stubFetch(
     mine: AVAILABLE_MINE,
     search: AVAILABLE_SEARCH,
   },
+  /** Overrides for `/api/v1/me`; defaults to a caller who may search. */
+  me: { isAdmin?: boolean; canSearchDirectory?: boolean } = {},
 ): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((url: string) => {
     if (typeof url === "string" && url.endsWith("/visibility")) {
@@ -69,7 +75,19 @@ function stubFetch(
         }),
       });
     }
-    return new Promise(() => {}); // /me — pending forever
+    if (typeof url === "string" && url.endsWith("/api/v1/me")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sub: "alice@azx.dev",
+          via: "oidc",
+          isAdmin: me.isAdmin ?? false,
+          canSearchDirectory: me.canSearchDirectory ?? true,
+        }),
+      });
+    }
+    return new Promise(() => {}); // anything else — pending forever
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -364,6 +382,69 @@ describe("AccessTab group picker", () => {
 
     // …and the banner still appears, without the operator typing anything.
     expect(await screen.findByText(/Group search is unavailable/)).toBeDefined();
+    expect(screen.getByLabelText("Group id")).toBeDefined();
+  });
+
+  /**
+   * The restricted-search tier (ADR-0040 decision 11). The failure this guards
+   * against is treating "you may not search" as "the directory is unavailable":
+   * the two id→name resolves are never gated, so this caller can still see and
+   * pick real, *named* groups. Rendering the unavailable banner here would tell
+   * them a working directory is broken and push them at a free-text id box they
+   * do not need.
+   */
+  it("keeps a named, pickable list when the caller may not search", async () => {
+    const fetchMock = stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      { mine: AVAILABLE_MINE, search: AVAILABLE_SEARCH, stored: AVAILABLE_MINE },
+      { canSearchDirectory: false },
+    );
+    setToken("test-token");
+    const { container } = render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+
+    // The scope-limit hint, NOT the unavailable banner.
+    expect(await screen.findByText(/limited to platform admins/)).toBeDefined();
+    expect(screen.queryByText(/Group search is unavailable/)).toBeNull();
+
+    // The stored group renders by NAME, not as `unknown group (…)` — the whole
+    // point of the tier gating search alone. Same pill query as the
+    // directory-unavailable test above, so the two are directly comparable.
+    await waitFor(() =>
+      expect(
+        [...container.querySelectorAll('[class*="Pill-root"]')].map((el) => el.textContent),
+      ).toEqual(["Engineering"]),
+    );
+
+    // The escape hatch is still there, and still labelled for the normal path —
+    // this caller is not on the degraded one.
+    expect(screen.getByLabelText("Add by id")).toBeDefined();
+    expect(screen.queryByLabelText("Group id")).toBeNull();
+
+    // And no search was ever issued: the picker asks up front rather than
+    // firing a request it knows will be refused.
+    expect(
+      fetchMock.mock.calls.some(
+        ([url]) => typeof url === "string" && url.includes("/directory/groups"),
+      ),
+    ).toBe(false);
+  });
+
+  /** A dead directory is the more useful thing to say, so it wins over the tier hint. */
+  it("prefers the unavailable banner when the directory is also down", async () => {
+    stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      { mine: NO_CONSENT, search: NO_CONSENT, stored: NO_CONSENT },
+      { canSearchDirectory: false },
+    );
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+
+    expect(await screen.findByText(/Group search is unavailable/)).toBeDefined();
+    expect(screen.queryByText(/limited to platform admins/)).toBeNull();
     expect(screen.getByLabelText("Group id")).toBeDefined();
   });
 

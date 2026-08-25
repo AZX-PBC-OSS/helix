@@ -506,6 +506,49 @@ Four facts unblock the code work (TODO.md item "Wire Entra group visibility"):
 
 ---
 
+## §8.5 — Decide the search posture (optional, but decide it out loud)
+
+Once the grant is live, `GET /api/v1/directory/groups` lets **every authenticated portal
+principal** turn a three-letter term into group display names from anywhere in the tenant.
+That is ADR-0040's shipped default and it is deliberate; it is also the thing a customer
+security team is most likely to push back on, and it is entirely ours to change — nothing
+here needs re-consenting.
+
+`PORTAL_DIRECTORY_SEARCH` (ADR-0040 decision 11) takes:
+
+| Value | Who may search | Everything else |
+| --- | --- | --- |
+| `everyone` | any signed-in principal | the default; unset means this |
+| `admins` | holders of `PORTAL_ADMIN_GROUP_ID` | others keep own-groups + stored names + add-by-id |
+| `none` | nobody | same as above, for everyone |
+
+```bash
+az containerapp update -g "$RG" -n "$PREFIX-portal" \
+  --set-env-vars PORTAL_DIRECTORY_SEARCH=admins
+```
+
+Two things to know before you set it:
+
+- It gates **search only**. Name resolution is never gated, so a restricted operator still
+  sees their own groups and the app's stored groups *by name* and can still add any group
+  by id. They lose discovery of groups they are not in, and nothing else.
+- `admins` needs `PORTAL_ADMIN_GROUP_ID` set, or **nobody** qualifies and search is off for
+  everyone. The portal names the resolved tier in its boot log (`directory provider: …;
+  search: …`) — check it after the deploy rather than assuming.
+
+Verify with two accounts:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" "https://portal.<appsDomain>/api/v1/me" | jq .canSearchDirectory
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+  "https://portal.<appsDomain>/api/v1/directory/groups?q=eng"   # 200 admin, 403 non-admin
+```
+
+Rollback is `PORTAL_DIRECTORY_SEARCH=everyone` (or unsetting it) — no token churn, no
+consent change.
+
+---
+
 ## §9 — Rollback
 
 Both changes are single calls with no data migration behind them, and nothing in the

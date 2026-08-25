@@ -1,6 +1,7 @@
 import fp from "fastify-plugin";
 import { UnavailableDirectory, type DirectoryProvider } from "@azx-pbc/directory";
 import { createDirectoryFromEnv } from "../directory/custody.js";
+import { directorySearchPolicy } from "../policy/directoryPolicy.js";
 import { SEARCH_WINDOW_MS, sweepSearchLimits } from "../directory/rateLimit.js";
 
 export interface DirectoryPluginOptions {
@@ -77,14 +78,29 @@ interface PluginLog {
  * Fixtures log at `warn`, not `info`: on a developer machine pointed at a real
  * tenant for auth — which is a normal setup — fixtures are almost certainly not
  * what was wanted.
+ *
+ * The **search tier** rides the same line (ADR-0040 decision 11). Same argument
+ * one axis over: a caller who may not search sees a picker with no search box,
+ * which looks identical to a directory that has nothing to say, and the tier is
+ * the only thing that distinguishes them. An unrecognised value additionally
+ * warns on its own line, because it means an operator tried to set a posture and
+ * got a different one.
  */
 function buildFromEnv(log: PluginLog): DirectoryProvider {
+  const search = directorySearchPolicy();
+  if (search.invalid !== undefined) {
+    log.warn(
+      { value: search.invalid, tier: search.tier },
+      `PORTAL_DIRECTORY_SEARCH="${search.invalid}" is not one of everyone|admins|none — ` +
+        `falling back to "${search.tier}"`,
+    );
+  }
   try {
     const { provider, detail } = createDirectoryFromEnv();
     const fixtures = detail.startsWith("dev fixtures");
-    const line = `directory provider: ${detail}`;
-    if (fixtures) log.warn({ backend: "fixtures" }, line);
-    else log.info({ backend: provider.constructor.name }, line);
+    const line = `directory provider: ${detail}; search: ${search.tier}`;
+    if (fixtures) log.warn({ backend: "fixtures", search: search.tier }, line);
+    else log.info({ backend: provider.constructor.name, search: search.tier }, line);
     return provider;
   } catch (err) {
     log.error(

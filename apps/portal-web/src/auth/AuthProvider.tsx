@@ -28,6 +28,18 @@ export interface AuthState {
   me: PortalMeResponse | undefined;
   /** Server-computed: the actor holds the `platform-admin` role. */
   isAdmin: boolean;
+  /**
+   * Server-computed: this caller may run a tenant-wide group search
+   * (`PORTAL_DIRECTORY_SEARCH`, ADR-0040 decision 11). Lets `GroupPicker` avoid
+   * issuing a search it would only be refused, rather than firing one and
+   * interpreting the 403 — which matters because a refused search is **not** a
+   * broken directory, and must not be rendered as one.
+   *
+   * Defaults false while /api/v1/me is in flight, like `isAdmin`: a hint that
+   * fails closed shows the narrower picker for a moment, which is recoverable,
+   * where failing open shows a search box that then vanishes.
+   */
+  canSearchDirectory: boolean;
   /** A token is present but /api/v1/me hasn't resolved yet (guards show a loader). */
   meLoading: boolean;
   /** Whether the portal has an IdP configured (login possible at all). */
@@ -91,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authenticated,
       me: me.data,
       isAdmin: me.data?.isAdmin ?? false,
+      canSearchDirectory: me.data?.canSearchDirectory ?? false,
       meLoading: authenticated && me.isLoading,
       loginAvailable: authConfig.isSuccess && Boolean(authConfig.data.webClientId),
       allowPublicApps: authConfig.data?.allowPublicApps ?? false,

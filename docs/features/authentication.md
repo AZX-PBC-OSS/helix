@@ -237,6 +237,13 @@ Three things worth knowing before using it:
 - **The picker degrades, the gate doesn't.** Without the Graph grant the group picker reports
   itself unavailable and the Access tab falls back to entering ids directly, behind a banner
   naming the permission. Enforcement never depended on Graph.
+- **Who may search is a deployment setting.** `PORTAL_DIRECTORY_SEARCH` is `everyone` (the
+  default, and what ADR-0040 shipped), `admins`, or `none`. It gates
+  `GET /api/v1/directory/groups` only: the two id→name resolves stay open to any authenticated
+  caller, because neither returns anything the caller couldn't already read. So a restricted
+  caller keeps a working picker — own groups by name, stored groups by name, add-by-id — and
+  loses only the discovery of groups they're not in. Distinct from the bullet above on purpose:
+  nothing is broken, and the UI must not say it is (ADR-0040 decision 11).
 
 Above roughly 200 groups Entra replaces the claim with `_claim_names`, at which point the edge
 reads no groups and denies. That is fail-closed but indistinguishable from a bug, so the edge

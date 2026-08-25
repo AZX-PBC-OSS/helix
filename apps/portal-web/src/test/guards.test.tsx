@@ -55,8 +55,18 @@ function stubApi(me: PortalMeResponse | { status: 401 }): void {
   );
 }
 
-const ADMIN: PortalMeResponse = { sub: "alice@azx.dev", via: "oidc", isAdmin: true };
-const NON_ADMIN: PortalMeResponse = { sub: "bob@azx.dev", via: "oidc", isAdmin: false };
+const ADMIN: PortalMeResponse = {
+  sub: "alice@azx.dev",
+  via: "oidc",
+  isAdmin: true,
+  canSearchDirectory: true,
+};
+const NON_ADMIN: PortalMeResponse = {
+  sub: "bob@azx.dev",
+  via: "oidc",
+  isAdmin: false,
+  canSearchDirectory: true,
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();

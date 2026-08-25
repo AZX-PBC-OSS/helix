@@ -64,7 +64,12 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     to the caller's own claim-derived groups from `/directory/my-groups`, capped at
     `MAX_VISIBILITY_GROUPS`) plus an add-by-id field for a group search can't reach. Where the
     deployment has no Graph grant the search control is hidden and the id field carries a banner
-    naming the missing permission — the gate is unaffected either way (ADR-0040). Plus
+    naming the missing permission — the gate is unaffected either way (ADR-0040). A caller the
+    deployment doesn't let search (`PORTAL_DIRECTORY_SEARCH`, ADR-0040 decision 11) gets a third,
+    deliberately distinct state: no search box, but their own groups and the app's stored groups
+    still listed *by name*, behind a hint that says the scope is limited rather than that anything
+    is unavailable. The SPA branches on `canSearchDirectory` from `/api/v1/me`, so it never issues
+    a search it would only be refused. Plus
     archive/unarchive and the one preview surface — the **Access (RBAC)** card carrying
     `<PreviewBadge milestone="v1" />` (per-app owner/editor/viewer roles are a v1 feature; today
     `ownsApp` gates app-scoped mutations and any read returning per-subject data, and every action

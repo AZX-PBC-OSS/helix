@@ -66,7 +66,7 @@ function stubApi(s: Stub = {}): ReturnType<typeof vi.fn> {
     if (url.endsWith("/api/v1/auth/config")) return json(AUTH_CONFIG);
     if (url.endsWith("/api/v1/config")) return json({ appPublicBase: "https://apps.example.com" });
     if (url.endsWith("/api/v1/me")) {
-      return json({ sub: "alice@azx.dev", via: "oidc", isAdmin: false });
+      return json({ sub: "alice@azx.dev", via: "oidc", isAdmin: false, canSearchDirectory: true });
     }
     if (url.includes("/manifest")) {
       if (s.manifest === "pending") return new Promise(() => {});

@@ -21,6 +21,7 @@ const ME: PortalMeResponse = {
   email: "bob@azx.dev",
   // Deliberately not an admin — that is the behaviour change being pinned.
   isAdmin: false,
+  canSearchDirectory: true,
 };
 
 const OWNED = {

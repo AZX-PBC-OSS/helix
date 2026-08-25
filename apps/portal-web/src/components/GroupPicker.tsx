@@ -4,6 +4,7 @@ import { useDebouncedValue } from "@mantine/hooks";
 import { useQuery } from "@tanstack/react-query";
 import { MAX_VISIBILITY_GROUPS, type DirectoryGroup } from "@azx-pbc/shared";
 import { appVisibilityGroupsQuery, directoryGroupsQuery, myGroupsQuery } from "../api/queries";
+import { useAuth } from "../auth/AuthProvider";
 import { Hint } from "./primitives";
 
 /**
@@ -22,7 +23,16 @@ import { Hint } from "./primitives";
  *    deliberately, and seed `data` with an explicit label for those ids rather
  *    than letting a bare GUID appear as if it were a name.
  *
- * 3. **It survives an unavailable directory, and stays fully editable.** When the
+ * 3. **A caller who may not search is not a caller with a broken directory.**
+ *    `PORTAL_DIRECTORY_SEARCH` (ADR-0040 decision 11) can restrict search to
+ *    platform admins, or to nobody. That state is kept strictly apart from
+ *    `unavailable`: the two id→name resolves are never gated, so a restricted
+ *    caller still sees their own groups *by name* and their app's stored groups
+ *    *by name* — only discovery goes. Rendering it through the unavailable banner
+ *    would tell them the directory is down while it is visibly naming groups for
+ *    them, and would push them to the free-text id box they do not need.
+ *
+ * 4. **It survives an unavailable directory, and stays fully editable.** When the
  *    tenant hasn't granted `GroupMember.Read.All` the search goes away but the
  *    selection and its remove buttons do not, and a banner names the permission
  *    (§8). Removal has to keep working precisely here: this is the state where an
@@ -47,6 +57,16 @@ export function GroupPicker({
   const [search, setSearch] = useState("");
   const [manual, setManual] = useState("");
   /**
+   * Server-computed from this deployment's tier and the caller's admin-ness, so
+   * the browser never learns the tier or the admin group id. Asked up front
+   * rather than by firing a search and reading the 403: the request would be
+   * refused every time, and an errored query is exactly the shape
+   * `nothingFoundMessage` has to translate into "search failed" — which this is
+   * not.
+   */
+  const { canSearchDirectory } = useAuth();
+  const searchBlocked = !canSearchDirectory;
+  /**
    * The endpoint refuses a term under three characters (no bare-prefix directory
    * dumps) and rate-limits per actor, so firing per keystroke would spend that
    * budget on guaranteed 400s. Debounce, then gate on length.
@@ -55,7 +75,10 @@ export function GroupPicker({
   const canSearch = debounced.length >= 3;
 
   const mine = useQuery(myGroupsQuery);
-  const found = useQuery({ ...directoryGroupsQuery(debounced), enabled: canSearch });
+  const found = useQuery({
+    ...directoryGroupsQuery(debounced),
+    enabled: canSearch && !searchBlocked,
+  });
   /**
    * Names for the groups the app is *already* scoped to. Without this every
    * stored group renders as `unknown group (<id>)` — the documented degradation,
@@ -155,6 +178,22 @@ export function GroupPicker({
         </Hint>
       )}
       {/*
+       * Only when the directory is otherwise fine. If it is unavailable that
+       * banner is the more useful thing to say, and stacking both would offer two
+       * competing explanations for one missing search box.
+       *
+       * Deliberately NOT worded as a failure. Everything else on this control
+       * still works — the groups below are named, the selection is editable — so
+       * "unavailable" would be false, and would send someone to ask an
+       * administrator about a Graph permission that is granted and working.
+       */}
+      {searchBlocked && !unavailable && (
+        <Hint tone="slate" icon="info">
+          Searching all directory groups is limited to platform admins on this deployment. You can
+          still pick from the groups you&apos;re in, or add any group by its id.
+        </Hint>
+      )}
+      {/*
        * ALWAYS MOUNTED, even with no directory to search. An earlier version set
        * `display: none` here when unavailable, reasoning that a search box which
        * can never return anything reads as "no such group" rather than "we cannot
@@ -177,16 +216,26 @@ export function GroupPicker({
         description={
           unavailable
             ? "Remove a group with its ×. New ones have to be added by id below."
-            : "Search your directory, or pick from the groups you're in. Anyone in any of these groups can open the app."
+            : searchBlocked
+              ? "Pick from the groups you're in, or add any group by id below. Anyone in any of these groups can open the app."
+              : "Search your directory, or pick from the groups you're in. Anyone in any of these groups can open the app."
         }
         placeholder={
-          value.length === 0 ? (unavailable ? "none selected" : "search for a group") : undefined
+          value.length === 0
+            ? unavailable
+              ? "none selected"
+              : searchBlocked
+                ? "pick from your groups"
+                : "search for a group"
+            : undefined
         }
         data={data}
         value={value}
         onChange={onChange}
-        searchable={!unavailable}
-        {...(unavailable ? {} : { searchValue: search, onSearchChange: setSearch })}
+        searchable={!unavailable && !searchBlocked}
+        {...(unavailable || searchBlocked
+          ? {}
+          : { searchValue: search, onSearchChange: setSearch })}
         nothingFoundMessage={
           // A failed search must not read as an empty one. `DirectoryError` from a
           // throttled or broken Graph surfaces as a query error, not as an
@@ -195,11 +244,16 @@ export function GroupPicker({
           // does not exist".
           found.isError
             ? "Search failed — the directory did not answer. Try again, or add the id below."
-            : canSearch
-              ? found.isFetching
-                ? "Searching…"
-                : "No matching groups — you can still add an id below."
-              : "Type at least 3 characters to search."
+            : searchBlocked
+              ? // Reached when the caller is in no groups and the app has none stored,
+                // so there is nothing to list. Never mentions searching: this caller
+                // cannot, and telling them to type would be a dead end.
+                "No groups to pick from — add one by id below."
+              : canSearch
+                ? found.isFetching
+                  ? "Searching…"
+                  : "No matching groups — you can still add an id below."
+                : "Type at least 3 characters to search."
         }
         maxValues={MAX_VISIBILITY_GROUPS}
         disabled={disabled}
@@ -214,6 +268,10 @@ export function GroupPicker({
       <Group gap={8} align="flex-end" wrap="nowrap">
         <TextInput
           label={unavailable ? "Group id" : "Add by id"}
+          /* Stays enabled in every state. What the tier controls is discovering
+             group *names*, not using a group *id* — so removing this would leave a
+             restricted caller unable to scope an app to any group they are not
+             personally in, which no posture asks for. */
           description={
             unavailable ? "Paste the group's object id from Microsoft Entra." : undefined
           }

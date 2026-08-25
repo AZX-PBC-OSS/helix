@@ -13,20 +13,29 @@ import {
 import { authenticate, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { bumpSearchLimit, RATE_BUCKETS, SEARCH_LIMIT } from "../directory/rateLimit.js";
+import { directorySearchAllowed, directorySearchTier } from "../policy/directoryPolicy.js";
 
 /**
  * Directory group lookup for the Access tab's group picker (ADR-0040 §4).
  *
  * **This is a new information-disclosure surface the platform adds to itself**,
- * distinct from anything Graph does: it exposes tenant-wide group search to every
- * authenticated portal principal. It cannot be narrowed with `ownsApp` — the
- * picker is needed at app-*create* time, before an app exists — and portal reads
- * are still authenticated-only under ADR-0007 (per-app RBAC is the outstanding
- * `PreviewBadge`). So it ships restrictive on four axes, all of which ADR-0040's
- * consequences commit to: a minimum query length so there are no bare-prefix
- * directory dumps, a hard result cap, a per-actor rate limit, and an audit row.
- * Loosening any of them later is easy; tightening after someone depends on it is
- * not.
+ * distinct from anything Graph does: search turns a three-letter term into group
+ * display names from anywhere in the tenant. It cannot be narrowed with `ownsApp`
+ * — the picker is needed at app-*create* time, before an app exists — and portal
+ * reads are still authenticated-only under ADR-0007 (per-app RBAC is the
+ * outstanding `PreviewBadge`). So it ships restrictive on four axes, all of which
+ * ADR-0040's consequences commit to: a minimum query length so there are no
+ * bare-prefix directory dumps, a hard result cap, a per-actor rate limit, and an
+ * audit row. Loosening any of them later is easy; tightening after someone depends
+ * on it is not.
+ *
+ * **Who may search at all is a deployment setting** — `PORTAL_DIRECTORY_SEARCH`,
+ * decision 11, resolved in `../policy/directoryPolicy.ts`. It defaults to
+ * `everyone`, which is the posture described above and the one ADR-0040 shipped;
+ * `admins` and `none` narrow it. The tier gates **this route only**: the two
+ * id→name resolves below stay open to any authenticated caller, because neither
+ * hands back anything the caller could not already read, and gating them would
+ * degrade the picker without narrowing anything.
  *
  * Neither route can 500 on an unconfigured or unconsented directory: the provider
  * reports absence as a value and both routes answer **200 with
@@ -142,6 +151,35 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
     async (req): Promise<DirectoryGroupsResponse> => {
       const actor = requireActor(req);
       const { q, top } = SearchQuerySchema.parse(req.query);
+
+      /**
+       * Who may search at all (ADR-0040 decision 11). Checked BEFORE the rate
+       * limit, so a refused caller neither spends their own budget nor costs a
+       * write to `portal_rate_counters` — refusing a request should be the
+       * cheapest thing this route does.
+       *
+       * Logged, never audited. `requireAdmin` sets that precedent, and the
+       * reason is sharper here: the rate limit deliberately does not run on this
+       * path, so auditing the denial would hand any authenticated principal an
+       * unbounded INSERT into `audit_events`. The interesting audit record is a
+       * search that *happened*, which is still written below.
+       *
+       * The log line mirrors `requireAdmin`'s fields for the same reason it has
+       * them: after the Entra swap the most confusing failure by far is an
+       * authenticated user who simply is not assigned `platform-admin`, and
+       * "search stopped working for one person" needs to be greppable.
+       */
+      if (!directorySearchAllowed(actor)) {
+        req.log.warn(
+          { actor: actor.sub, via: actor.via, tier: directorySearchTier() },
+          "directory search denied: this deployment restricts search and the actor does not qualify",
+        );
+        throw new AppError(
+          "forbidden",
+          "group search is restricted on this deployment — you can still pick from your own " +
+            "groups, or add a group by id",
+        );
+      }
 
       // Rate limit BEFORE the upstream call, so a flood costs us one cheap upsert
       // rather than a Graph round trip (and our Graph throttle budget) each.

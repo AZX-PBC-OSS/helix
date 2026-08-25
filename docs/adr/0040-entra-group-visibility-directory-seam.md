@@ -1,6 +1,6 @@
 # 0040. Group visibility: security groups, one admin-consented Graph permission, behind a directory seam
 
-**Status:** Accepted _(recorded 2026-08-20)_
+**Status:** Accepted _(recorded 2026-08-20; amended 2026-08-25 — decision 11)_
 **Related:** ADR [0004](0004-auth-model.md) (the gate this feeds); ADR [0003](0003-dependency-minimal-edge.md) (why Graph stays out of the edge); ADR [0006](0006-secret-custody-seam.md) (the seam this copies); ADR [0007](0007-portal-authz-v0.md) (why the search endpoint is exposed as widely as it is); ADR [0027](0027-blob-auth-managed-identity.md) (the credential posture); ADR [0028](0028-deployment-model-customer-deployed.md) (why a customer tenant is the hard case); `docs/runbooks/entra-app-registration.md` ("Deferred (until needed)" — this closes it); `docs/reviews/2026-08-20-entra-group-permissions-probe.md` (the evidence)
 
 ## Context
@@ -103,6 +103,60 @@ Above roughly 200 groups Entra replaces the claim with `_claim_names` / `_claim_
 
 v1 does not resolve overage. The edge logs loudly and specifically when it sees `_claim_names`, so the condition is diagnosable rather than mysterious. Resolving it would put a Graph call on the sign-in hot path in the plane that is forbidden one (ADR-0003), so it is a separate decision with a different shape, deferred until a real user trips it.
 
+### 11. Who may search is a deployment setting, defaulting to today's behaviour
+
+_Amendment, 2026-08-25. Decisions 1–10 are unchanged; this narrows the surface the
+last bullet of the Consequences describes._
+
+`PORTAL_DIRECTORY_SEARCH` takes `everyone` | `admins` | `none`, resolved in
+`apps/portal/src/policy/directoryPolicy.ts` and enforced on
+`GET /api/v1/directory/groups`. `admins` reuses `actorIsAdmin` — the same
+`PORTAL_ADMIN_GROUP_ID` definition that gates the approvals queue, not a second
+one. **Unset means `everyone`**, which is exactly what this ADR shipped, so the
+setting is opt-in and no deployment changes behaviour without an operator acting.
+An unrecognised value falls to `admins` and warns at boot: a typo must not
+silently widen a surface an operator was trying to narrow.
+
+This exists because the consent ask and this surface are **different negotiations
+with different people**. The Graph grant is settled once with a directory
+administrator and decision 2 already makes it the narrowest one that works. This
+one is ours, we chose it, and a customer who objects to it currently has no answer
+short of declining the picker. A dial turns that objection into a config line.
+
+Three properties are load-bearing:
+
+- **It is a different axis from `PORTAL_DIRECTORY`**, which selects the *backend*.
+  This selects *who may query it*. `PORTAL_DIRECTORY=off` still reports
+  unavailable for everyone whatever the tier says. `none` is therefore not
+  redundant with `off`: `off` also kills id→name resolution, where `none` keeps
+  every name resolving and removes only discovery.
+- **The tier gates search alone.** The two id→name resolves stay open to any
+  authenticated caller, because neither returns anything the caller could not
+  already read — `my-groups` resolves the claim on their own verified token, and
+  `/apps/:slug/visibility/groups` resolves ids already carried by
+  `GET /api/v1/apps/:slug`. So a restricted caller keeps a working picker: their
+  own groups by name, the app's stored groups by name, and the add-by-id box.
+  What they lose is discovery of groups they are not in.
+- **"You may not search" is not a `DirectoryUnavailableReason`, and must never be
+  rendered as one.** Those values are deployment-level and name an operator's
+  fix; this is per-caller and nothing is broken. Concretely, `GroupPicker` ORs
+  `available: false` across all three queries into one banner reading "Group
+  search is unavailable on this deployment" — a refusal routed through that shape
+  would claim the directory is down while it is visibly naming groups on the same
+  screen. Instead the server refuses with a plain `403`, and `/api/v1/me` carries
+  a server-computed `canSearchDirectory` so the SPA never issues the request at
+  all. The browser learns the answer, never the tier or the admin group id.
+
+The refusal is checked **before** the rate limit, so a denied caller spends no
+budget and costs no write, and it is logged rather than audited — with the limiter
+deliberately not on that path, an audit row per refusal would be an unbounded
+INSERT available to any authenticated principal.
+
+**Not** gated on this: the add-by-id escape hatch. What the tier controls is
+discovering group *names*; using a group *id* is unaffected, and removing the box
+would leave a restricted caller unable to scope an app to any group they are not
+personally in.
+
 ## Consequences
 
 - **`payload.groups ?? payload.roles` was a live landmine — closed.** `verifier.ts` used `??`, not a union. `groups` was absent, the fallback fired, and `roles` delivered `platform-admin`. The moment decision 6 added SecurityGroup claims to the portal registration, `groups` would have become present and truthy, the fallback would have stopped firing, and **admin gating would have broken in production** — approvals and every admin page locking out every admin — triggered by an Entra-side configuration change with no code deploy and no failing test. It was the single most dangerous item in this ADR and the least visible. `unionClaimArrays` (`apps/portal/src/auth/verifier.ts`) now concatenates both claims, with tests pinning it, and landed before the registration was touched.
@@ -111,7 +165,7 @@ v1 does not resolve overage. The edge logs loudly and specifically when it sees 
 - **There is no bounded consent ask available.** Graph application permissions are tenant-wide by construction: administrative units scope *directory role* assignments, not app-permission grants, and resource-specific consent exists only for Teams resources. The probe found nothing to test. So a customer administrator who wants "read only these groups" cannot be accommodated at the permission layer, and decision 8 — degrade to free-text GUIDs — is the only answer we have for a refusal. That makes decision 8 a requirement, not a nicety.
 - **The per-actor rate limit lives on its own table, not the shared one.** ADR-0040 asked for one without saying where it lives, and the obvious answer — `rate_counters`, which already has exactly the right three columns — is wrong. That table is shared with the edge, which keys the shared-password login throttle and the anonymous IP limiter in it, and migration `20260721215912` revoked the portal's writes to it. Granting them back would hand the control plane (or a portal RCE) the ability to zero the edge's brute-force protection, and Postgres cannot scope a grant by key prefix — RLS is deliberately off that hot path. So the portal got `portal_rate_counters`: same shape, its own grant, the two planes' abuse-control state disjoint. `role-split.integration.test.ts` asserts both directions.
 
-- **Helix now exposes tenant-wide group search to every authenticated portal principal.** Portal reads are still authenticated-only (ADR-0007; per-app RBAC is the outstanding `PreviewBadge`), and the picker cannot be gated behind `ownsApp` because it is needed at app-*create* time, before an app exists. This is a new information-disclosure surface the platform is adding to itself, distinct from anything Graph does. It ships restrictive: minimum query length of 3 characters (no bare-prefix directory dumps), a hard `$top` cap, per-actor rate limiting, and audit. Loosening later is easy; tightening after someone depends on it is not.
+- **Helix exposes tenant-wide group search to every authenticated portal principal _by default_.** Portal reads are still authenticated-only (ADR-0007; per-app RBAC is the outstanding `PreviewBadge`), and the picker cannot be gated behind `ownsApp` because it is needed at app-*create* time, before an app exists. This is a new information-disclosure surface the platform is adding to itself, distinct from anything Graph does. It ships restrictive: minimum query length of 3 characters (no bare-prefix directory dumps), a hard `$top` cap, per-actor rate limiting, and audit. Loosening later is easy; tightening after someone depends on it is not. **Amended 2026-08-25:** that posture is now the `everyone` tier and no longer the only one — decision 11 makes it `PORTAL_DIRECTORY_SEARCH`, still defaulting to `everyone`, so a deployment can narrow it to platform-admins or to nobody without losing the picker. The default is unchanged precisely because tightening it silently, on the next deploy of a working deployment, is the failure this ADR keeps warning about in the other direction.
 - **Guests are excluded by construction, which is a win.** B2B guests are directory principals, so `internal` admits them — precisely the overreach that drove the 2026-08-12 guest-access work. Guests are rarely in security groups, so group visibility narrows to staff without any install-level assignment list. It is a better answer to that problem than the one currently deployed.
 - **Graph can answer 200 with a payload of nulls, so any group-property read needs a check that fails loudly.** Under delegated `User.Read`, `/me/memberOf` returns the correct *number* of groups with every property including `displayName` and `securityEnabled` set to `null` — no error, no annotation. A picker built on it renders the right count of blank rows and reads as a UI defect rather than a consent one; worse, an entirely reasonable `filter(g => g.securityEnabled)` matches zero while looking correct in review. Decision 6 keeps us off that endpoint entirely, but the rule stands for any future property read: a null `displayName` is an error, not an empty string.
 - **The edge is untouched.** No new dependency, no Graph, no credential, no new call on the sign-in path — only `visibilityAllows` widening from `includes` to a set intersection, inside the existing deny-by-default fall-through that a test in `validate.test.ts` already pins.

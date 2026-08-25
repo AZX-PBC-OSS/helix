@@ -34,6 +34,21 @@ export const PortalMeResponseSchema = z.object({
    * admin nav + route gating in the SPA (and `helix whoami`).
    */
   isAdmin: z.boolean(),
+  /**
+   * Whether this caller may run a tenant-wide group search (ADR-0040 decision
+   * 11). Computed server-side from the deployment's `PORTAL_DIRECTORY_SEARCH`
+   * tier and the actor's admin-ness — the tier itself never crosses to the
+   * browser, and neither do the raw claims it was decided from.
+   *
+   * Sent so the group picker can **avoid issuing a search it is not allowed to
+   * make**, rather than firing one and interpreting the 403. That matters
+   * because a refused search is not a broken directory: the caller's own groups
+   * and their app's stored groups still resolve to names, so the picker stays
+   * useful and must not fall back to the "directory unavailable" banner. Server
+   * enforcement is independent of this hint (`GET /api/v1/directory/groups`
+   * refuses on its own).
+   */
+  canSearchDirectory: z.boolean(),
 });
 export type PortalMeResponse = z.infer<typeof PortalMeResponseSchema>;
 

@@ -555,3 +555,152 @@ describe("the resolve routes spend a rate-limit budget", () => {
     expect(after?.count ?? 0).toBe(before?.count ?? 0);
   });
 });
+
+/**
+ * The search tier (ADR-0040 decision 11, `../policy/directoryPolicy.ts`).
+ *
+ * The load-bearing property is not the 403 — it is that a caller refused *search*
+ * still gets **names** from both resolve routes. Group visibility's picker stays
+ * useful for them, and the SPA must not fall back to the "directory unavailable"
+ * banner, which is reserved for a deployment an operator has to go fix.
+ */
+describe("PORTAL_DIRECTORY_SEARCH tiers", () => {
+  const ADMIN_GROUP = "platform-admin";
+  const ADMIN_SUB = "admin@azx.dev";
+  const USER_SUB = "bob@azx.dev";
+
+  const verifiers = [
+    {
+      name: "stub",
+      async verify(token: string) {
+        if (token === "admin") return { sub: ADMIN_SUB, via: "oidc", groups: [ADMIN_GROUP] };
+        if (token === "user") return { sub: USER_SUB, via: "oidc", groups: ["eng-team"] };
+        return null;
+      },
+    },
+  ];
+  const asAdmin = { authorization: "Bearer admin" };
+  const asUser = { authorization: "Bearer user" };
+
+  let t: TestApp;
+  let prevAdminGroup: string | undefined;
+  let prevTier: string | undefined;
+
+  beforeAll(async () => {
+    prevAdminGroup = process.env.PORTAL_ADMIN_GROUP_ID;
+    prevTier = process.env.PORTAL_DIRECTORY_SEARCH;
+    process.env.PORTAL_ADMIN_GROUP_ID = ADMIN_GROUP;
+    t = buildTestApp({
+      directory: new StaticDirectory(GROUPS),
+      auth: { verifiers, publicConfig: null },
+    });
+    await t.app.ready();
+  });
+
+  afterAll(async () => {
+    if (prevAdminGroup === undefined) delete process.env.PORTAL_ADMIN_GROUP_ID;
+    else process.env.PORTAL_ADMIN_GROUP_ID = prevAdminGroup;
+    if (prevTier === undefined) delete process.env.PORTAL_DIRECTORY_SEARCH;
+    else process.env.PORTAL_DIRECTORY_SEARCH = prevTier;
+    await t.close();
+  });
+
+  beforeEach(() => {
+    delete process.env.PORTAL_DIRECTORY_SEARCH;
+  });
+
+  const search = (headers: Record<string, string>) =>
+    t.app.inject({ method: "GET", url: "/api/v1/directory/groups?q=eng", headers });
+
+  it("lets any authenticated principal search when unset — ADR-0040's shipped posture", async () => {
+    // Pinned deliberately: this default is what makes the change opt-in, so a
+    // deployment that never sets the var sees no behaviour change at all.
+    expect((await search(asUser)).statusCode).toBe(200);
+    expect((await search(asAdmin)).statusCode).toBe(200);
+  });
+
+  it("restricts search to platform-admins under `admins`", async () => {
+    process.env.PORTAL_DIRECTORY_SEARCH = "admins";
+    expect((await search(asAdmin)).statusCode).toBe(200);
+    const denied = await search(asUser);
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe("forbidden");
+  });
+
+  it("refuses everyone under `none`, admins included", async () => {
+    process.env.PORTAL_DIRECTORY_SEARCH = "none";
+    expect((await search(asAdmin)).statusCode).toBe(403);
+    expect((await search(asUser)).statusCode).toBe(403);
+  });
+
+  it("fails closed to `admins` on an unrecognised value", async () => {
+    process.env.PORTAL_DIRECTORY_SEARCH = "everybody";
+    expect((await search(asUser)).statusCode).toBe(403);
+    expect((await search(asAdmin)).statusCode).toBe(200);
+  });
+
+  /**
+   * The whole point of the tier being search-only. If these regress, the picker
+   * shows `unknown group (<guid>)` for a caller who is merely not an admin, and
+   * the SPA renders the unavailable banner for a directory that is working.
+   */
+  it("still resolves the caller's own groups to names when search is refused", async () => {
+    process.env.PORTAL_DIRECTORY_SEARCH = "none";
+    const res = await t.app.inject({
+      method: "GET",
+      url: "/api/v1/directory/my-groups",
+      headers: asUser,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      available: true,
+      groups: [{ id: "eng-team", displayName: "Engineering", securityEnabled: true }],
+    });
+  });
+
+  it("still resolves an app's stored groups to names when search is refused", async () => {
+    process.env.PORTAL_DIRECTORY_SEARCH = "none";
+    const slug = uniqueSlug("tier");
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: asUser,
+      payload: { slug, displayName: slug, visibility: { mode: "group", groupIds: ["eng-team"] } },
+    });
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/visibility/groups`,
+      headers: asUser,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().available).toBe(true);
+    // `StaticDirectory` reports the security flag on resolve as well as on search;
+    // `EntraDirectory` omits it here, which is why the picker treats absent as
+    // "not read" rather than false. Either shape is fine — the assertion that
+    // matters is that the *name* came back.
+    expect(res.json().groups).toEqual([
+      { id: "eng-team", displayName: "Engineering", securityEnabled: true },
+    ]);
+  });
+
+  /**
+   * Ordering: the tier check runs before `bumpSearchLimit`. A refused caller must
+   * not spend their own allowance, and must not cost a write — otherwise a
+   * principal who can never search can still flood `portal_rate_counters`.
+   */
+  it("does not spend the search budget on a refused request", async () => {
+    process.env.PORTAL_DIRECTORY_SEARCH = "none";
+    const key = `dirsearch:${USER_SUB}`;
+    await t.prisma.portalRateCounter.deleteMany({ where: { bucketKey: key } });
+    expect((await search(asUser)).statusCode).toBe(403);
+    expect(await t.prisma.portalRateCounter.findUnique({ where: { bucketKey: key } })).toBeNull();
+  });
+
+  /** A denial is logged, not audited — an audit row per refusal is a free INSERT flood. */
+  it("writes no audit row for a refused search", async () => {
+    process.env.PORTAL_DIRECTORY_SEARCH = "none";
+    const before = await t.prisma.auditEvent.count({ where: { action: "directory.search" } });
+    expect((await search(asUser)).statusCode).toBe(403);
+    expect(await t.prisma.auditEvent.count({ where: { action: "directory.search" } })).toBe(before);
+  });
+});

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { AuthConfigResponseSchema, PortalMeResponseSchema } from "@azx-pbc/shared";
 import { actorIsAdmin, authenticate, requireActor } from "../plugins/auth.js";
+import { directorySearchAllowed } from "../policy/directoryPolicy.js";
 import { AppError } from "../plugins/errors.js";
 
 /** Auth-adjacent API surface: IdP discovery for the CLI, and actor echo. */
@@ -24,6 +25,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       ...(actor.name ? { name: actor.name } : {}),
       ...(actor.email ? { email: actor.email } : {}),
       isAdmin: actorIsAdmin(actor),
+      canSearchDirectory: directorySearchAllowed(actor),
     });
   });
 }

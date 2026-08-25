@@ -43,7 +43,11 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("PortalClient authentication", () => {
   const authed: [string, (c: PortalClient) => Promise<unknown>, unknown][] = [
-    ["me", (c) => c.me(), { sub: "u1", via: "oidc", email: "e@x.io", isAdmin: false }],
+    [
+      "me",
+      (c) => c.me(),
+      { sub: "u1", via: "oidc", email: "e@x.io", isAdmin: false, canSearchDirectory: true },
+    ],
     ["getSkill", (c) => c.getSkill(), "# Helix skill\n"],
     ["listVersions", (c) => c.listVersions("demo"), []],
     ["createApp", (c) => c.createApp({ slug: "demo", displayName: "Demo" }), APP],
