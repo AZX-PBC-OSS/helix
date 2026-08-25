@@ -302,6 +302,10 @@ it when sent.
 async function updateShared(key, mutate) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch(`/_api/data/shared/${key}`);
+    // A failed read is NOT "key absent" — without this guard a 403/429/503
+    // falls into the create branch, 412s three times, and misreports the real
+    // failure as contention.
+    if (!res.ok && res.status !== 404) throw new Error(`read failed: ${res.status}`);
     const current = res.status === 404 ? undefined : (await res.json()).value;
     const etag = res.headers.get("etag"); // null when the key doesn't exist yet
     const put = await fetch(`/_api/data/shared/${key}`, {

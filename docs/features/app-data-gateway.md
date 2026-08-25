@@ -82,7 +82,11 @@ winner committed (null when the key is absent) — so the loser can recover in-b
 recovery path. Strict parsing: ETag lists, weak validators, a concrete `If-None-Match`,
 duplicated headers, and non-canonical or out-of-int64-range versions are all `400
 validation_failed` rather than silently downgraded to last-write-wins (or, for the
-out-of-range case, exploded as a 502 at bind time).
+out-of-range case, exploded as a 502 at bind time). One known gap, deliberately accepted:
+the version is a per-row counter, so `DELETE` + recreate restarts it at 1 and a stale
+`If-Match: "1"` would match a value it never read (ABA). DELETE is user-scope-only today —
+the race is one person's own tabs — and the fix (a row-birth nonce in the ETag) is due the
+day a shared delete verb lands, not before (ADR-0041 non-goals).
 
 Validation knobs: keys ≤ 256 chars with no control chars; values size-capped at **64 KiB** of
 opaque app JSON (`MAX_VALUE_BYTES`). Writes (`user.put`, `collection.append`, `shared.put`) go

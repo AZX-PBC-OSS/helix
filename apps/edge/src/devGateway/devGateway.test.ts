@@ -321,7 +321,6 @@ describe("dev-gateway CORS preflight", () => {
     await app.close();
   });
 
-
   it("reflects a registered origin and allows the Authorization header", async () => {
     const tokens = new FakeDevTokenStore();
     tokens.add(newDevToken(), {

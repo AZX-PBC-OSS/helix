@@ -345,6 +345,11 @@ model AppData {
   /// node-postgres hands it back as a string, which is what an opaque ETag
   /// should be: no Number precision question, no formatting step where the
   /// token can lose fidelity (the bug class that disqualified updatedAt).
+  /// NOT delete-safe: the counter is per row, so delete + recreate restarts at
+  /// 1 and a stale `If-Match: "1"` would match a value it never read (ABA).
+  /// Acceptable while DELETE is user-scope-only (one person's own tabs);
+  /// revisit — e.g. a row-birth nonce folded into the ETag — before any shared
+  /// delete verb lands.
   version   BigInt   @default(1)
 
   /// One row per (app, env, user-or-shared, key); the gateway's partition is unique.

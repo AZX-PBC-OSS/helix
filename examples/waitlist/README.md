@@ -83,8 +83,9 @@ curl -fsSk -X PUT "https://waitlist.local.helix.azxlabs.io:8080/_api/data/shared
 ```
 
 Re-seeding an existing banner needs its current version instead: `GET` the key,
-then re-`PUT` with `If-Match: "<etag>"` from the response (a stale or missing
-precondition is a `412`/`428`, not a silent overwrite).
+then re-`PUT` with the response's ETag value verbatim — `If-Match: <etag>` (the
+value already includes its quotes, e.g. `If-Match: "2"`). A stale or missing
+precondition is a `412`/`428`, not a silent overwrite.
 
 ### Drain the signups (owner)
 
