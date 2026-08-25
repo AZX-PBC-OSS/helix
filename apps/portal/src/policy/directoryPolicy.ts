@@ -95,14 +95,15 @@ export function directorySearchPolicy(env: NodeJS.ProcessEnv = process.env): Dir
   // whitespace must not be able to change the posture in either direction.
   const normalised = raw.trim().toLowerCase();
   if (normalised === "") return { tier: "everyone" };
-  if (is(normalised)) return { tier: normalised };
+  if (isTier(normalised)) return { tier: normalised };
   // The raw string, not the normalised one: the boot log exists to tell an
   // operator what they wrote, and echoing a cleaned-up version back hides exactly
   // the stray character that caused the problem.
   return { tier: "admins", invalid: raw };
 }
 
-function is(value: string): value is DirectorySearchTier {
+/** Narrow an already-normalised string to a tier. */
+function isTier(value: string): value is DirectorySearchTier {
   return (DIRECTORY_SEARCH_TIERS as readonly string[]).includes(value);
 }
 
