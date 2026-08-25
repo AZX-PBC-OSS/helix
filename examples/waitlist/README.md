@@ -70,14 +70,21 @@ caller-scoped); no vendor key is required. Then open
 ### Seed the announcement (optional)
 
 The shared banner is owner-seeded. From the app origin (public apps accept an
-anonymous, same-origin write to a `sharedWrite` key):
+anonymous, same-origin write to a `sharedWrite` key). Shared writes are
+compare-and-swap (ADR-0041): the first seed asserts the key is unwritten with
+`If-None-Match: *`:
 
 ```bash
 curl -fsSk -X PUT "https://waitlist.local.helix.azxlabs.io:8080/_api/data/shared/announcement" \
   -H "origin: https://waitlist.local.helix.azxlabs.io:8080" \
+  -H "if-none-match: *" \
   -H "content-type: application/json" \
   -d '"🚀 1,200 founders already joined — early access ships in March."'
 ```
+
+Re-seeding an existing banner needs its current version instead: `GET` the key,
+then re-`PUT` with `If-Match: "<etag>"` from the response (a stale or missing
+precondition is a `412`/`428`, not a silent overwrite).
 
 ### Drain the signups (owner)
 

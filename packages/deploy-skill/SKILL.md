@@ -272,7 +272,7 @@ DELETE /_api/data/user/:key
 GET    /_api/data/user               list this user's keys
 POST   /_api/data/collections/:name  append one item  → 201, empty body
 GET    /_api/data/shared/:key        app-scoped, readable by every user
-PUT    /_api/data/shared/:key
+PUT    /_api/data/shared/:key        concurrency precondition REQUIRED — below
 ```
 
 - **`user`** is partitioned by the signed-in user by the database itself. A `public`
@@ -283,6 +283,43 @@ PUT    /_api/data/shared/:key
   collection from the portal. Anonymous visitors of a `public` app may append.
 - **`shared`** keys are visible to everyone who can open the app. Never put anything
   user-specific or sensitive there.
+
+**Shared writes are compare-and-swap, and the precondition is mandatory.** Every
+read of a `user` or `shared` key returns an `ETag: "<version>"` header — an opaque
+token, not a timestamp; never parse it. A `PUT /_api/data/shared/:key` must carry
+either `If-Match: "<version>"` (the ETag from your last read — write only if the
+value hasn't moved) or `If-None-Match: *` (create the key only if it doesn't
+exist). A shared PUT with neither is refused `428 precondition_required`, and a
+stale version gets `412 conflict` — someone else wrote between your read and your
+write, so re-read, re-apply your change, and retry. Neither failure is charged
+against `writesPerDay`, but retries must be **bounded**. `If-Match: *` is refused
+everywhere: it asserts nothing. `user`-scope writes may omit the precondition
+(last-write-wins is fine when the only race is one person's two tabs), but honor
+it when sent.
+
+```js
+// The canonical shared-write loop: read → modify → If-Match → retry on 412.
+async function updateShared(key, mutate) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(`/_api/data/shared/${key}`);
+    const current = res.status === 404 ? undefined : (await res.json()).value;
+    const etag = res.headers.get("etag"); // null when the key doesn't exist yet
+    const put = await fetch(`/_api/data/shared/${key}`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        // Claim an unwritten key; otherwise CAS on exactly what you read.
+        ...(etag ? { "if-match": etag } : { "if-none-match": "*" }),
+      },
+      body: JSON.stringify(mutate(current)),
+    });
+    if (put.ok) return;
+    if (put.status !== 412) throw new Error(`shared write failed: ${put.status}`);
+    // 412 = lost a race; the loop's re-read picks up the winner's value.
+  }
+  throw new Error(`"${key}" is contended — gave up after 3 attempts`);
+}
+```
 
 ```js
 await fetch("/_api/data/user/prefs", {
@@ -325,6 +362,8 @@ yourself in new code — it is explicit and it works without the shim.
 | 400    | `validation_failed`      | Bad request body — or a `responseFormat` this model can't enforce    |
 | 403    | `forbidden`              | The capability isn't in the manifest                                 |
 | 403    | `model_not_allowed`      | Model isn't in `capabilities.llm.models`                             |
+| 412    | `conflict`               | Lost a shared-write race — re-read and retry with the new `ETag`     |
+| 428    | `precondition_required`  | Shared write without `If-Match`/`If-None-Match` — fix the code       |
 | 429    | `quota_exceeded`         | Daily budget spent — in-flight calls finish, new ones are refused    |
 | 429    | `rate_limited`           | Anonymous per-IP limit on a `public` app                             |
 | 503    | `capability_unavailable` | The platform isn't configured for this capability here               |
@@ -434,6 +473,8 @@ the portal offers a reset for the throwaway dev partition.
 - [ ] Every capability the code uses is declared in the manifest, with a budget.
 - [ ] `403` and `429` from the gateway are handled and shown to the user.
 - [ ] User-specific state is in `/_api/data/user/*`, not in `shared`.
+- [ ] Every `shared` write goes through the read → `If-Match` → retry-on-`412`
+      loop (or `If-None-Match: *` to create) — a plain shared PUT is refused.
 - [ ] Nothing sensitive is written to a `shared` key or logged to the console.
 - [ ] The build output has an `index.html` at its root and deploys clean of CSP
       lint warnings.

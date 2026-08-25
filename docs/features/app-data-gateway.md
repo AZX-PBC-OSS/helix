@@ -1,6 +1,6 @@
 # App-data gateway
 
-> **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning).
+> **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning) · [ADR-0041](../adr/0041-app-data-write-concurrency.md) (write concurrency: CAS on an opaque version, mandatory on `shared`).
 
 **What it is.** `/_api/data/*` — the gateway's second capability (architecture §6.1, app-data
 design [§3/§5](../design/app-data-storage.md)). Untrusted apps get persistent storage without a
@@ -23,13 +23,13 @@ Edge handler: `apps/edge/src/gateway/data-handler.ts` (`makeDataHandlers`). Stor
 ### The route table is part of the security model
 
 ```
-PUT    /_api/data/user/:key          putUser
-GET    /_api/data/user/:key          getUser
+PUT    /_api/data/user/:key          putUser        (precondition optional)
+GET    /_api/data/user/:key          getUser        (emits ETag)
 DELETE /_api/data/user/:key          deleteUser
 GET    /_api/data/user               listUser
-POST   /_api/data/collections/:name  postCollection   (append-only)
-GET    /_api/data/shared/:key        getShared
-PUT    /_api/data/shared/:key        putShared
+POST   /_api/data/collections/:name  postCollection (append-only)
+GET    /_api/data/shared/:key        getShared      (emits ETag)
+PUT    /_api/data/shared/:key        putShared      (precondition MANDATORY)
 ```
 
 Note the **deliberate absence** of any collection list/read/delete verb. The §3.2 write-only
@@ -50,6 +50,33 @@ else 503) → app holds a `data` grant (`entry.data`, else 403). Then per verb:
   body** — the writer gets no row id and no read-back.
 - **Shared** requires the key to be in `entry.data.sharedRead` (read) or the narrower
   `entry.data.sharedWrite` (write).
+
+### Optimistic concurrency (ADR-0041)
+
+Writes are compare-and-swap on an opaque monotonic `version` column (`BIGINT` — pg returns
+it as a **string**, which is exactly what an opaque ETag should be; `updatedAt` was rejected
+because the microsecond→millisecond round-trip through node-postgres can't survive a `WHERE`
+equality). Single-key GETs and successful PUTs emit it as `ETag: "<version>"` (reads stay
+`cache-control: no-store`; conditional reads/`304` are not in scope). A PUT states its
+assumption with a header, and each precondition is its **own SQL statement** — a single
+`INSERT … ON CONFLICT DO UPDATE … WHERE version = $n` upsert was rejected because it inserts
+when no row exists even though the client asserted a current value:
+
+| Request           | Statement                                             | Zero rows means |
+| ----------------- | ----------------------------------------------------- | --------------- |
+| `If-Match: "n"`   | `UPDATE … WHERE … AND version = $n`                   | `412 conflict`  |
+| `If-None-Match: *`| `INSERT … ON CONFLICT DO NOTHING` (create-if-absent)  | `412 conflict`  |
+| no precondition   | today's upsert — `user` scope only                    | n/a             |
+
+Preconditions are **mandatory on `shared`** (a race there is between different, mutually
+unaware principals; the loser never finds out) and **optional on `user`** (the race is one
+person's two tabs; last-write-wins stays the default). A shared PUT with neither header is
+`428 precondition_required`; `If-Match: *` is refused everywhere — on shared it is the
+one-character escape hatch around the mandate. Both failure modes are **deliberately
+un-metered**: no `gateway_calls` row, no `writesPerDay` consumption, so a contended retry
+loop can't turn into a self-inflicted quota outage. Strict parsing: ETag lists, weak
+validators, a concrete `If-None-Match`, and duplicated headers are all `400
+validation_failed` rather than silently downgraded to last-write-wins.
 
 Validation knobs: keys ≤ 256 chars with no control chars; values size-capped at **64 KiB** of
 opaque app JSON (`MAX_VALUE_BYTES`). Writes (`user.put`, `collection.append`, `shared.put`) go
