@@ -86,6 +86,7 @@ Legend for gating conditions:
 
 - [ ] **CSP supply-chain hardening.** Consider SRI or versioned-script pinning for the CDN allowlist; add `object-src 'none'`; decide whether the CDN list should be per-app / opt-in rather than global. Record the third-party stored-XSS exposure on public / shared-write apps in the threat model. — ADR-0009 (DEC-03)
 - [ ] **Anonymous shared-writes threat model.** Decide whether `sharedWrite` should require authentication (make `public` + `sharedWrite` an explicit, approval-gated opt-in); separate/attribute the anonymous write budget so a flood can't self-DoS the app's authenticated writes; consider a sentinel GUC value instead of `""`. Document the anonymous-write threat model. — ADR-0010 (DEC-02)
+- [ ] **Bound an authenticated 412 flood on a shared key, not just meter it.** ADR-0041 decision 7 (as amended) records a non-charging `conflict` ledger row per lost CAS race, which makes a stale-`If-Match` retry loop _visible_ but not _bounded_ — the anonymous tier's per-IP limiter covers only public-app callers without a session, and the dev gateway passes no limiter, so a signed-in caller's loop never trips a cap and never consumes `writesPerDay` (by design). Extending the per-IP (or a per-user) limiter to authenticated shared writes is the fix; the ledger row is the tripwire that tells us it matters. — ADR-0041 decision 7, dual review finding 4 (2026-08-25)
 
 ---
 

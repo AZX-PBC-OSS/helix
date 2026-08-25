@@ -72,11 +72,17 @@ Preconditions are **mandatory on `shared`** (a race there is between different, 
 unaware principals; the loser never finds out) and **optional on `user`** (the race is one
 person's two tabs; last-write-wins stays the default). A shared PUT with neither header is
 `428 precondition_required`; `If-Match: *` is refused everywhere — on shared it is the
-one-character escape hatch around the mandate. Both failure modes are **deliberately
-un-metered**: no `gateway_calls` row, no `writesPerDay` consumption, so a contended retry
-loop can't turn into a self-inflicted quota outage. Strict parsing: ETag lists, weak
-validators, a concrete `If-None-Match`, and duplicated headers are all `400
-validation_failed` rather than silently downgraded to last-write-wins.
+one-character escape hatch around the mandate. Neither failure is **charged** against
+`writesPerDay` (a contended retry loop must not become a quota outage), but a `412` still
+records a non-charging `conflict` ledger row so contention is visible in the usage tab and
+audit log; a `428` records nothing (it never reaches the store and fires in dev on the
+first write). A `412` body also carries `error.details.currentVersion` — the version the
+winner committed (null when the key is absent) — so the loser can recover in-band; for a
+`sharedWrite`-only key, whose writer holds no read grant, that disclosure is the *only*
+recovery path. Strict parsing: ETag lists, weak validators, a concrete `If-None-Match`,
+duplicated headers, and non-canonical or out-of-int64-range versions are all `400
+validation_failed` rather than silently downgraded to last-write-wins (or, for the
+out-of-range case, exploded as a 502 at bind time).
 
 Validation knobs: keys ≤ 256 chars with no control chars; values size-capped at **64 KiB** of
 opaque app JSON (`MAX_VALUE_BYTES`). Writes (`user.put`, `collection.append`, `shared.put`) go

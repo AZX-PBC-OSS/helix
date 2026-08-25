@@ -25,7 +25,7 @@ import { withPartition } from "../db/partition.js";
  * metering hot path — an accepted cost for the fail-closed backstop.
  */
 
-export type GatewayOutcome = "ok" | "error" | "refusal" | "quota_blocked";
+export type GatewayOutcome = "ok" | "error" | "refusal" | "quota_blocked" | "conflict";
 
 export interface GatewayCallRecord {
   appId: string;

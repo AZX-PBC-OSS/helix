@@ -24,7 +24,9 @@ import type { UsageStore } from "./usage.js";
  * (create-if-absent). Preconditions are MANDATORY on `shared` — a shared PUT
  * carrying neither is 428 `precondition_required` — and optional on `user`,
  * which keeps last-write-wins by default. A stated precondition that doesn't
- * hold is 412 `conflict`; 412/428 are never metered or charged (decision 7).
+ * hold is 412 `conflict`. Neither failure is CHARGED against writesPerDay
+ * (decision 7); a 412 still records a non-charging `conflict` ledger row so a
+ * contended retry loop is visible rather than silent.
  *
  * The §3.2 collection invariant is structural: there is no list/read verb for
  * collections here, and the store has no method to enumerate them — covered by
@@ -221,7 +223,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     appId: string,
     userOid: string,
     model: string,
-    outcome: "ok" | "error" | "quota_blocked",
+    outcome: "ok" | "error" | "quota_blocked" | "conflict",
     env: Env,
   ): void {
     rt.usage
@@ -307,11 +309,12 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         );
         if (result.kind === "conflict") {
           // A stated precondition lost the race. Never charged against
-          // writesPerDay (ADR-0041 decision 7): the write did not happen, and
-          // a contended retry loop must not consume the app's daily budget.
-          // `currentVersion` lets the loser recover in-band — for a
-          // sharedWrite-only key it is the ONLY way to learn what to CAS
-          // against, since GET is 403 there (review finding 2).
+          // writesPerDay (ADR-0041 decision 7 as amended: dataWritesToday
+          // counts outcome='ok' only), but VISIBLE — a contended retry loop
+          // leaves a conflict row per attempt, not silence. `currentVersion`
+          // lets the loser recover in-band — for a sharedWrite-only key it is
+          // the ONLY way to learn what to CAS against (review finding 2).
+          meter(ctx.entry.appId, oid, "user.put", "conflict", ctx.caller.env);
           sendApiError(
             reply,
             412,
@@ -553,6 +556,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           parsed.precondition,
         );
         if (result.kind === "conflict") {
+          meter(ctx.entry.appId, meterOid, "shared.put", "conflict", ctx.caller.env);
           sendApiError(
             reply,
             412,

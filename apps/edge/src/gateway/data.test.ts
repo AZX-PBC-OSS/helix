@@ -21,7 +21,8 @@ import {
  * (§3.1, gated, caller-scoped, partitioned by the session user — never by app
  * input), the structural §3.2 assertion that no collection read/list verb
  * exists on the edge, and the ADR-0041 write-concurrency contract (CAS on an
- * opaque version, mandatory preconditions on `shared`, un-metered 412/428).
+ * opaque version, mandatory preconditions on `shared`, 412s that are
+ * ledger-visible but never charged).
  * Fakes for the store and ledger — no DB; the RLS partition invariant and the
  * real row-lock CAS semantics are proven against real Postgres in
  * data.integration.test.ts.
@@ -402,6 +403,10 @@ describe("write concurrency (ADR-0041)", () => {
     // The loser learns what the winner committed — in-band recovery, and the
     // only recovery a sharedWrite-only key has (review finding 2).
     expect(b.json().error.details).toEqual({ currentVersion: "2" });
+    // And the collision is VISIBLE: a non-charging conflict row per loser
+    // (review finding 4) — one ok + one conflict, in order.
+    expect(edge.usage.records.map((r) => r.outcome)).toEqual(["ok", "conflict"]);
+    expect(edge.usage.records[1]).toMatchObject({ model: "shared.put", capability: "data" });
     // "gamma" is NOT silently gone — the loser is told to re-read and retry.
   });
 
@@ -462,7 +467,7 @@ describe("write concurrency (ADR-0041)", () => {
     expect(res.json().error.code).toBe("precondition_required");
   });
 
-  it("a 412 loser is not metered and does not consume writesPerDay", async () => {
+  it("a 412 loser is visible in the ledger but never charged (ADR-0041 decision 7)", async () => {
     const edge = buildDataEdge({
       visibilityMode: "public",
       data: { ...SHARED_RW, writesPerDay: 5 },
@@ -475,7 +480,10 @@ describe("write concurrency (ADR-0041)", () => {
       headers: { "if-match": '"99"' },
     });
     expect(res.statusCode).toBe(412);
-    expect(edge.usage.records).toHaveLength(0);
+    // Visible: one conflict row. Not charged: the daily budget counts 'ok'
+    // only, so a contended retry loop cannot turn into a quota outage.
+    expect(edge.usage.records).toHaveLength(1);
+    expect(edge.usage.records[0]).toMatchObject({ outcome: "conflict", model: "shared.put" });
     expect(await edge.usage.dataWritesToday()).toBe(writesBefore);
   });
 
