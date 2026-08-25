@@ -265,6 +265,63 @@ describe("dev-gateway DevTokenResolver", () => {
 });
 
 describe("dev-gateway CORS preflight", () => {
+  it("exposes ETag on data responses so the cross-origin CAS loop can read it", async () => {
+    // ADR-0041 review finding 1: ETag is not CORS-safelisted — without an
+    // expose header, `res.headers.get("etag")` is null in a Lovable-hosted
+    // dev app even though the header is on the wire, and its shared-write
+    // loop can never take the If-Match branch.
+    const tokens = new FakeDevTokenStore();
+    const token = newDevToken();
+    tokens.add(token, {
+      appId: APP_A,
+      developerOid: "d",
+      origins: [GOOD_ORIGIN],
+      expiresAt: future(),
+      revokedAt: null,
+    });
+    const store = new FakeAppDataStore();
+    await store.putShared(APP_A, "k", { seeded: true }, "dev", { kind: "ifNoneMatch" });
+    const registry = new FakeRegistry([
+      registryEntry({
+        slug: "myapp",
+        appId: APP_A,
+        data: { user: true, collections: [], sharedRead: ["k"], sharedWrite: [] },
+      }),
+    ]);
+    const app: FastifyInstance = buildDevGateway({
+      config: testDevGatewayConfig(),
+      registry,
+      devTokens: tokens,
+      appData: store,
+      usage: new FakeUsageStore(),
+      llmProvider: null,
+      egress: null,
+      instructionKey: null,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/myapp/_api/data/shared/k",
+      headers: { authorization: `Bearer ${token}`, origin: GOOD_ORIGIN },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.etag).toBe('"1"');
+    expect(res.headers["access-control-expose-headers"]).toBe("etag");
+
+    // The no-reflection invariant extends to the expose header: an
+    // unregistered origin gets nothing (the resolver never sets devCorsOrigin).
+    const denied = await app.inject({
+      method: "GET",
+      url: "/myapp/_api/data/shared/k",
+      headers: { authorization: `Bearer ${token}`, origin: "https://evil.example" },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(denied.headers["access-control-expose-headers"]).toBeUndefined();
+    await app.close();
+  });
+
+
   it("reflects a registered origin and allows the Authorization header", async () => {
     const tokens = new FakeDevTokenStore();
     tokens.add(newDevToken(), {

@@ -147,6 +147,12 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       // Overwriting ACAO is correct — it defeats an upstream reflecting its own on
       // a proxied fetch. Vary is appended so upstream cache directives survive.
       reply.header("access-control-allow-origin", req.devCorsOrigin);
+      // ETag is not CORS-safelisted: without this the browser hides it from
+      // `res.headers.get("etag")`, and the ADR-0041 CAS loop on a cross-origin
+      // dev app reads null, always takes the create-if-absent branch, succeeds
+      // once, then 412s forever (review finding 1). Same-origin prod apps are
+      // unaffected; this is the only cross-origin data path.
+      reply.header("access-control-expose-headers", "etag");
       addVaryOrigin(reply);
     }
     return payload;
