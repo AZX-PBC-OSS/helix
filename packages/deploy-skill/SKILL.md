@@ -321,6 +321,12 @@ async function updateShared(key, mutate) {
 }
 ```
 
+A key in `sharedWrite` but not `sharedRead` can't be re-read (GET is `403`), so
+the loop's re-read can't work there. The 412 body still tells you what to CAS
+against: retry once with `if-match: "<error.details.currentVersion>"`. That is a
+**blind overwrite** — you never saw the value you're replacing — so prefer
+granting `sharedRead` on any key an app writes.
+
 ```js
 await fetch("/_api/data/user/prefs", {
   method: "PUT",

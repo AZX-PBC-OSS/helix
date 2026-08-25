@@ -65,9 +65,16 @@ export type SharedWritePrecondition = Exclude<WritePrecondition, { kind: "none" 
 /**
  * The result of a conditional write. `conflict` maps to HTTP 412 — a stated
  * precondition did not hold (the row moved, or already existed for
- * create-if-absent). The loser is NOT metered (decision 7).
+ * create-if-absent). It carries the CURRENT version (null when the key is
+ * absent) so the loser can recover in-band — load-bearing for a
+ * `sharedWrite`-only key, whose writer holds no read grant and could not
+ * otherwise learn what to CAS against (review finding 2). It leaks a write
+ * counter to a principal that already holds the write grant, and nothing
+ * else. The loser is never charged against writesPerDay (ADR-0041 decision 7).
  */
-export type PutResult = { kind: "ok"; version: string; updatedAt: string } | { kind: "conflict" };
+export type PutResult =
+  | { kind: "ok"; version: string; updatedAt: string }
+  | { kind: "conflict"; currentVersion: string | null };
 
 /** Server-stamped abuse-triage metadata for a collection append (never echoed). */
 export interface CollectionMeta {
@@ -217,7 +224,21 @@ export class PgAppDataStore implements AppDataStore {
             ).rows[0];
         }
       })();
-      if (!row) return { kind: "conflict" };
+      if (!row) {
+        // Disclose the current version (review finding 2) so the loser can
+        // recover in-band — load-bearing for a sharedWrite-only key, whose
+        // writer holds no read grant. Same transaction: a lost UPDATE returned
+        // only after the winner's row lock resolved, so this READ COMMITTED
+        // snapshot sees the committed winning version.
+        const cur = await client.query(
+          `SELECT version FROM app_data WHERE "appId" = $1 AND env = $2 AND "userOid" = $3 AND key = $4`,
+          [appId, env, userOid, key],
+        );
+        return {
+          kind: "conflict",
+          currentVersion: (cur.rows[0] as { version: string } | undefined)?.version ?? null,
+        };
+      }
       return { kind: "ok", version: row.version, updatedAt: row.updatedAt.toISOString() };
     });
   }
@@ -297,7 +318,16 @@ export class PgAppDataStore implements AppDataStore {
             ).rows[0];
         }
       })();
-      if (!row) return { kind: "conflict" };
+      if (!row) {
+        const cur = await client.query(
+          `SELECT version FROM app_data WHERE "appId" = $1 AND env = $2 AND "userOid" IS NULL AND key = $3`,
+          [appId, env, key],
+        );
+        return {
+          kind: "conflict",
+          currentVersion: (cur.rows[0] as { version: string } | undefined)?.version ?? null,
+        };
+      }
       return { kind: "ok", version: row.version, updatedAt: row.updatedAt.toISOString() };
     });
   }

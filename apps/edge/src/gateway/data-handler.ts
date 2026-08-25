@@ -56,12 +56,13 @@ function sendApiError(
   status: number,
   code: ApiErrorCode,
   message: string,
+  details?: unknown,
 ): void {
   reply
     .status(status)
     .header("cache-control", "no-store")
     .type("application/json; charset=utf-8")
-    .send({ error: { code, message } });
+    .send({ error: { code, message, ...(details === undefined ? {} : { details }) } });
 }
 
 /**
@@ -305,14 +306,18 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           parsed.precondition,
         );
         if (result.kind === "conflict") {
-          // A stated precondition lost the race. NOT metered or charged
-          // (ADR-0041 decision 7): the write did not happen, and a contended
-          // retry loop must not consume the app's daily budget.
+          // A stated precondition lost the race. Never charged against
+          // writesPerDay (ADR-0041 decision 7): the write did not happen, and
+          // a contended retry loop must not consume the app's daily budget.
+          // `currentVersion` lets the loser recover in-band — for a
+          // sharedWrite-only key it is the ONLY way to learn what to CAS
+          // against, since GET is 403 there (review finding 2).
           sendApiError(
             reply,
             412,
             "conflict",
             "the value changed since your read — re-read and retry",
+            { currentVersion: result.currentVersion },
           );
           return;
         }
@@ -553,6 +558,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
             412,
             "conflict",
             "the value changed since your read — re-read and retry",
+            { currentVersion: result.currentVersion },
           );
           return;
         }

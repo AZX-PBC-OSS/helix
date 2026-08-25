@@ -160,9 +160,10 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
         version: "1",
       });
 
-      // A second create-if-absent conflicts instead of clobbering.
+      // A second create-if-absent conflicts instead of clobbering — and
+      // discloses the version it conflicted with (review finding 2).
       const dupe = await s.putShared(APP, "tally", { yes: 99 }, "prod", { kind: "ifNoneMatch" });
-      expect(dupe).toEqual({ kind: "conflict" });
+      expect(dupe).toEqual({ kind: "conflict", currentVersion: "1" });
 
       // If-Match on the current version wins and bumps; on a stale one loses.
       const won = await s.putShared(APP, "tally", { yes: 2 }, "prod", {
@@ -174,14 +175,14 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
         kind: "ifMatch",
         version: "1",
       });
-      expect(stale).toEqual({ kind: "conflict" });
+      expect(stale).toEqual({ kind: "conflict", currentVersion: "2" });
       // If-Match against an absent key conflicts rather than inserting — the
       // precise hole a single `ON CONFLICT … WHERE` upsert would leave open.
       const absent = await s.putShared(APP, "never-written", 1, "prod", {
         kind: "ifMatch",
         version: "1",
       });
-      expect(absent).toEqual({ kind: "conflict" });
+      expect(absent).toEqual({ kind: "conflict", currentVersion: null });
       expect(await s.getShared(APP, "never-written", "prod")).toBeNull();
 
       // int64 max binds cleanly and simply loses (the handler rejects anything
@@ -190,7 +191,7 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
         kind: "ifMatch",
         version: "9223372036854775807",
       });
-      expect(huge).toEqual({ kind: "conflict" });
+      expect(huge).toEqual({ kind: "conflict", currentVersion: "2" });
 
       // Still one row, not a pile of near-duplicates: the partial unique index
       // is what every conflict target above keys off.
@@ -225,6 +226,11 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
       ]);
       const outcomes = [a.kind, b.kind].sort();
       expect(outcomes).toEqual(["conflict", "ok"]);
+      // The loser sees the winner's committed version (the post-conflict
+      // SELECT runs after the row-lock wait, on a fresh READ COMMITTED
+      // snapshot) — so one blind retry would land.
+      const loser = a.kind === "conflict" ? a : b;
+      expect(loser.kind === "conflict" && loser.currentVersion).toBe("2");
 
       const stored = await s.getShared(APP, "hot", "prod");
       expect(stored?.version).toBe("2");

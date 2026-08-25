@@ -253,14 +253,18 @@ export class FakeAppDataStore implements AppDataStore {
 
   #put(mapKey: string, value: unknown, precondition: WritePrecondition): PutResult {
     const existing = this.rows.get(mapKey);
+    const conflict = (): PutResult => ({
+      kind: "conflict",
+      // Mirrors the real store's post-conflict SELECT: the loser learns what
+      // to CAS against next (null when the key is absent).
+      currentVersion: existing ? String(existing.version) : null,
+    });
     switch (precondition.kind) {
       case "ifMatch":
-        if (!existing || String(existing.version) !== precondition.version) {
-          return { kind: "conflict" };
-        }
+        if (!existing || String(existing.version) !== precondition.version) return conflict();
         break;
       case "ifNoneMatch":
-        if (existing) return { kind: "conflict" };
+        if (existing) return conflict();
         break;
       case "none":
         break;

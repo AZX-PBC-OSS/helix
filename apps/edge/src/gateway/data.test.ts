@@ -399,6 +399,9 @@ describe("write concurrency (ADR-0041)", () => {
     expect(a.statusCode).toBe(200);
     expect(b.statusCode).toBe(412);
     expect(b.json().error.code).toBe("conflict");
+    // The loser learns what the winner committed — in-band recovery, and the
+    // only recovery a sharedWrite-only key has (review finding 2).
+    expect(b.json().error.details).toEqual({ currentVersion: "2" });
     // "gamma" is NOT silently gone — the loser is told to re-read and retry.
   });
 
@@ -410,6 +413,8 @@ describe("write concurrency (ADR-0041)", () => {
       headers: { "if-match": '"1"' },
     });
     expect(res.statusCode).toBe(412);
+    // No current row → null, so the client knows to create-if-absent next.
+    expect(res.json().error.details).toEqual({ currentVersion: null });
     // And it really did not create the key.
     expect(await req(edge, "GET", "/_api/data/shared/index", { token: null })).toMatchObject({
       statusCode: 404,
@@ -425,6 +430,7 @@ describe("write concurrency (ADR-0041)", () => {
       headers: CREATE,
     });
     expect(res.statusCode).toBe(412);
+    expect(res.json().error.details).toEqual({ currentVersion: "1" });
     const after = await req(edge, "GET", "/_api/data/shared/index", { token: null });
     expect(after.json().value).toEqual(["alpha"]);
   });
