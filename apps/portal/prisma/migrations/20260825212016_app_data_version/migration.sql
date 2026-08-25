@@ -1,0 +1,14 @@
+-- ADR-0041 — app-data write concurrency. `app_data` gains the opaque
+-- optimistic-concurrency token: starts at 1, every write sets
+-- `version = version + 1`, and the edge CASes on it (`UPDATE … WHERE
+-- version = $n` / `INSERT … ON CONFLICT DO NOTHING`). BIGINT on purpose —
+-- node-postgres hands BIGINT back as a string, which is what an opaque ETag
+-- should be: no Number precision question and no formatting step where the
+-- token can lose fidelity (the bug class that disqualified `updatedAt` —
+-- microsecond storage truncated to milliseconds by the JS Date parse).
+--
+-- Additive only: one column with a default on a portal-owned table. No grant
+-- changes — helix_edge/helix_portal hold TABLE-level DML on app_data
+-- (20260616231036_app_data), which covers new columns automatically — and no
+-- RLS policy changes: the version plays no part in the partition predicate.
+ALTER TABLE "app_data" ADD COLUMN "version" BIGINT NOT NULL DEFAULT 1;

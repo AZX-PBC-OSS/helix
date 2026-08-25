@@ -340,6 +340,12 @@ model AppData {
   key       String
   value     Json
   updatedAt DateTime @default(now()) @updatedAt
+  /// Opaque optimistic-concurrency token (ADR-0041): starts at 1, incremented by
+  /// every write, CAS'd by `If-Match` on the data plane. BIGINT on purpose —
+  /// node-postgres hands it back as a string, which is what an opaque ETag
+  /// should be: no Number precision question, no formatting step where the
+  /// token can lose fidelity (the bug class that disqualified updatedAt).
+  version   BigInt   @default(1)
 
   /// One row per (app, env, user-or-shared, key); the gateway's partition is unique.
   @@unique([appId, env, userOid, key])
