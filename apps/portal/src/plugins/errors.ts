@@ -18,6 +18,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   model_not_allowed: 403,
   quota_exceeded: 429,
   rate_limited: 429,
+  precondition_required: 428,
   capability_unavailable: 503,
   internal: 500,
 };

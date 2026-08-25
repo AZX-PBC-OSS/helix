@@ -138,6 +138,14 @@ export const API_ERROR_CODES = [
    * of its own budget. HTTP 429.
    */
   "rate_limited",
+  /**
+   * Gateway: a `shared` app-data write carried no concurrency precondition
+   * (`If-Match` / `If-None-Match`), which that scope requires (ADR-0041).
+   * Distinct from `conflict` (a precondition that was stated and lost) because
+   * the two demand opposite responses: `conflict` says re-read and retry,
+   * `precondition_required` says the app's code is wrong. HTTP 428.
+   */
+  "precondition_required",
   /** Gateway: a configured capability is not available on this edge. */
   "capability_unavailable",
   "internal",
