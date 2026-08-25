@@ -481,6 +481,10 @@ describe("write concurrency (ADR-0041)", () => {
       { "if-match": 'W/"1"' }, // weak validator
       { "if-match": '"1", "2"' }, // ETag list
       { "if-match": '"abc"' }, // non-numeric
+      { "if-match": '"007"' }, // non-canonical: a validator never issued (leading zeros)
+      { "if-match": '"0"' }, // versions start at 1; 0 is never current
+      { "if-match": '"9223372036854775808"' }, // int64 max + 1 → Postgres 22003 if bound
+      { "if-match": '"99999999999999999999999"' }, // the review's 23-digit reproducer
       { "if-none-match": '"1"' }, // concrete If-None-Match
       { "if-match": '"1"', "if-none-match": "*" }, // both headers
     ];
@@ -493,6 +497,20 @@ describe("write concurrency (ADR-0041)", () => {
       expect(res.statusCode).toBe(400);
       expect(res.json().error.code).toBe("validation_failed");
     }
+  });
+
+  it("an in-range but never-current If-Match reaches the store and loses cleanly (412, not 502)", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: SHARED_RW });
+    await seedShared(edge, ["alpha"]);
+    // int64 max: canonical and bindable, so it must exercise the real CAS and
+    // lose — not blow up the query (the finding-3 hole was exactly this path).
+    const res = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["x"],
+      headers: { "if-match": '"9223372036854775807"' },
+    });
+    expect(res.statusCode).toBe(412);
+    expect(res.json().error.code).toBe("conflict");
   });
 
   it("user scope keeps last-write-wins by default but honors a stated precondition", async () => {

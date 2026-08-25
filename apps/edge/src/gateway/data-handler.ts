@@ -108,7 +108,19 @@ type ParsedPrecondition = WritePrecondition | { kind: "ifMatchAny" };
  * validators (`W/"…"`), a concrete `If-None-Match`, and duplicated headers are
  * all `invalid` (400) — a lenient parse would silently downgrade a client's
  * intended CAS into last-write-wins, the failure this feature exists to catch.
+ *
+ * The digit string must be CANONICAL and in int64 range: `[1-9]`-led, ≤19
+ * digits, ≤ 2^63-1. Leading zeros (`"007"`) would let a validator the server
+ * never issued validate (BIGINT comparison is numeric, not octet-equal), and
+ * an out-of-range literal makes Postgres raise 22003 at bind time — a client
+ * garbage header surfacing as a 502 (review findings 3/5). Rejecting both here
+ * also guarantees the stored version's string form is its numeric form, which
+ * is what makes the in-memory fake's string comparison faithful to the real
+ * store's.
  */
+const IF_MATCH_ETAG = /^"([1-9]\d{0,18})"$/;
+const INT64_MAX = 9223372036854775807n;
+
 function parsePrecondition(
   req: FastifyRequest,
 ): { kind: "ok"; precondition: ParsedPrecondition } | { kind: "invalid" } {
@@ -118,8 +130,8 @@ function parsePrecondition(
   if (ifMatch !== undefined && ifNoneMatch !== undefined) return { kind: "invalid" };
   if (ifMatch !== undefined) {
     if (ifMatch === "*") return { kind: "ok", precondition: { kind: "ifMatchAny" } };
-    const m = /^"(\d+)"$/.exec(ifMatch);
-    if (!m || m[1] === undefined) return { kind: "invalid" };
+    const m = IF_MATCH_ETAG.exec(ifMatch);
+    if (!m || m[1] === undefined || BigInt(m[1]) > INT64_MAX) return { kind: "invalid" };
     return { kind: "ok", precondition: { kind: "ifMatch", version: m[1] } };
   }
   if (ifNoneMatch !== undefined) {

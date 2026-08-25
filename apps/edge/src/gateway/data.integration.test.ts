@@ -184,6 +184,14 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
       expect(absent).toEqual({ kind: "conflict" });
       expect(await s.getShared(APP, "never-written", "prod")).toBeNull();
 
+      // int64 max binds cleanly and simply loses (the handler rejects anything
+      // larger with 400 before it reaches here — binding it raised 22003).
+      const huge = await s.putShared(APP, "tally", { yes: 4 }, "prod", {
+        kind: "ifMatch",
+        version: "9223372036854775807",
+      });
+      expect(huge).toEqual({ kind: "conflict" });
+
       // Still one row, not a pile of near-duplicates: the partial unique index
       // is what every conflict target above keys off.
       const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
