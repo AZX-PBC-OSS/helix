@@ -5,7 +5,7 @@ import { buildDevGateway } from "./app.js";
 import type { DevTokenRow, DevTokenStore } from "./devTokenStore.js";
 import { testDevGatewayConfig } from "../test/config.js";
 import { FakeAppDataStore, FakeRegistry, FakeUsageStore, registryEntry } from "../test/fakes.js";
-import type { AppDataStore } from "../gateway/data.js";
+import type { AppDataStore, PutResult, StoredValue } from "../gateway/data.js";
 import type { Env } from "@azx-pbc/shared";
 
 /**
@@ -48,11 +48,11 @@ class FakeDevTokenStore implements DevTokenStore {
 /** Records the `env` the handlers thread into the store — proves env=dev routing. */
 class EnvRecordingStore implements AppDataStore {
   lastEnv: Env | null = null;
-  async putUserKey(_a: string, _u: string, _k: string, _v: unknown, env: Env): Promise<string> {
+  async putUserKey(_a: string, _u: string, _k: string, _v: unknown, env: Env): Promise<PutResult> {
     this.lastEnv = env;
-    return new Date().toISOString();
+    return { kind: "ok", version: "1", updatedAt: new Date().toISOString() };
   }
-  async getUserKey(): Promise<unknown> {
+  async getUserKey(): Promise<StoredValue | null> {
     return null;
   }
   async deleteUserKey(): Promise<boolean> {
@@ -62,11 +62,11 @@ class EnvRecordingStore implements AppDataStore {
     return [];
   }
   async appendCollection(): Promise<void> {}
-  async getShared(): Promise<unknown> {
+  async getShared(): Promise<StoredValue | null> {
     return null;
   }
-  async putShared(): Promise<string> {
-    return new Date().toISOString();
+  async putShared(): Promise<PutResult> {
+    return { kind: "ok", version: "1", updatedAt: new Date().toISOString() };
   }
   async close(): Promise<void> {}
 }

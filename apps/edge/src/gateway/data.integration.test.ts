@@ -53,19 +53,19 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
     if (!(await edgeRoleAvailable())) return;
     store = new PgAppDataStore(edgeUrl(), { max: 2 });
 
-    await store.putUserKey(APP, "alice", "todo", ["milk"], "prod");
-    expect(await store.getUserKey(APP, "alice", "todo", "prod")).toEqual(["milk"]);
+    await store.putUserKey(APP, "alice", "todo", ["milk"], "prod", { kind: "none" });
+    expect((await store.getUserKey(APP, "alice", "todo", "prod"))?.value).toEqual(["milk"]);
 
     // Upsert replaces.
-    await store.putUserKey(APP, "alice", "todo", ["milk", "eggs"], "prod");
-    expect(await store.getUserKey(APP, "alice", "todo", "prod")).toEqual(["milk", "eggs"]);
+    await store.putUserKey(APP, "alice", "todo", ["milk", "eggs"], "prod", { kind: "none" });
+    expect((await store.getUserKey(APP, "alice", "todo", "prod"))?.value).toEqual(["milk", "eggs"]);
 
     // Different user, same app+key: a distinct partition (absent).
     expect(await store.getUserKey(APP, "bob", "todo", "prod")).toBeNull();
     // Different app, same user+key: also distinct.
     expect(await store.getUserKey(OTHER_APP, "alice", "todo", "prod")).toBeNull();
 
-    await store.putUserKey(APP, "alice", "prefs", { theme: "dark" }, "prod");
+    await store.putUserKey(APP, "alice", "prefs", { theme: "dark" }, "prod", { kind: "none" });
     const keys = await store.listUserKeys(APP, "alice", "prod");
     expect(keys.map((k) => k.key)).toEqual(["prefs", "todo"]);
 
@@ -145,25 +145,55 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
     }
   });
 
-  it("shared keys upsert via the partial unique index", async () => {
+  it("shared keys create-if-absent and CAS via the partial unique index (ADR-0041)", async () => {
     if (!(await edgeRoleAvailable())) return;
     const s = new PgAppDataStore(edgeUrl(), { max: 1 });
     try {
       expect(await s.getShared(APP, "tally", "prod")).toBeNull();
-      await s.putShared(APP, "tally", { yes: 1 }, "prod");
-      expect(await s.getShared(APP, "tally", "prod")).toEqual({ yes: 1 });
-      // Upsert (not a duplicate row) — the partial unique index makes this work
-      // even though the full unique index treats NULL userOid as distinct.
-      await s.putShared(APP, "tally", { yes: 2 }, "prod");
-      expect(await s.getShared(APP, "tally", "prod")).toEqual({ yes: 2 });
 
+      // Create-if-absent lands at version 1 — a STRING, because BIGINT is the
+      // whole point: the opaque token never passes through a JS Number.
+      const created = await s.putShared(APP, "tally", { yes: 1 }, "prod", { kind: "ifNoneMatch" });
+      expect(created).toMatchObject({ kind: "ok", version: "1" });
+      expect(await s.getShared(APP, "tally", "prod")).toMatchObject({
+        value: { yes: 1 },
+        version: "1",
+      });
+
+      // A second create-if-absent conflicts instead of clobbering.
+      const dupe = await s.putShared(APP, "tally", { yes: 99 }, "prod", { kind: "ifNoneMatch" });
+      expect(dupe).toEqual({ kind: "conflict" });
+
+      // If-Match on the current version wins and bumps; on a stale one loses.
+      const won = await s.putShared(APP, "tally", { yes: 2 }, "prod", {
+        kind: "ifMatch",
+        version: "1",
+      });
+      expect(won).toMatchObject({ kind: "ok", version: "2" });
+      const stale = await s.putShared(APP, "tally", { yes: 3 }, "prod", {
+        kind: "ifMatch",
+        version: "1",
+      });
+      expect(stale).toEqual({ kind: "conflict" });
+      // If-Match against an absent key conflicts rather than inserting — the
+      // precise hole a single `ON CONFLICT … WHERE` upsert would leave open.
+      const absent = await s.putShared(APP, "never-written", 1, "prod", {
+        kind: "ifMatch",
+        version: "1",
+      });
+      expect(absent).toEqual({ kind: "conflict" });
+      expect(await s.getShared(APP, "never-written", "prod")).toBeNull();
+
+      // Still one row, not a pile of near-duplicates: the partial unique index
+      // is what every conflict target above keys off.
       const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
       try {
         const r = await owner.query(
-          `SELECT count(*)::int AS n FROM app_data WHERE "appId" = $1 AND "userOid" IS NULL AND key = 'tally'`,
+          `SELECT count(*)::int AS n, max(version)::int AS v FROM app_data
+            WHERE "appId" = $1 AND "userOid" IS NULL AND key = 'tally'`,
           [APP],
         );
-        expect((r.rows[0] as { n: number }).n).toBe(1);
+        expect(r.rows[0]).toMatchObject({ n: 1, v: 2 });
       } finally {
         await owner.end();
       }
@@ -172,12 +202,42 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
     }
   });
 
+  it("two concurrent CAS writes on the same base version: exactly one wins", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const s = new PgAppDataStore(edgeUrl(), { max: 2 });
+    try {
+      await s.putShared(APP, "hot", ["alpha"], "prod", { kind: "ifNoneMatch" });
+
+      // The ADR's race for real: both writers assert version 1. Under READ
+      // COMMITTED the loser's UPDATE waits on the winner's row lock, then
+      // re-evaluates `version = 1` against the committed row — and misses.
+      const [a, b] = await Promise.all([
+        s.putShared(APP, "hot", ["alpha", "gamma"], "prod", { kind: "ifMatch", version: "1" }),
+        s.putShared(APP, "hot", ["alpha", "delta"], "prod", { kind: "ifMatch", version: "1" }),
+      ]);
+      const outcomes = [a.kind, b.kind].sort();
+      expect(outcomes).toEqual(["conflict", "ok"]);
+
+      const stored = await s.getShared(APP, "hot", "prod");
+      expect(stored?.version).toBe("2");
+      // Whichever won, the row is exactly one writer's value — not a merge.
+      expect([
+        ["alpha", "gamma"],
+        ["alpha", "delta"],
+      ]).toContainEqual(stored?.value);
+    } finally {
+      await s.close();
+    }
+  });
+
   it("RLS fails closed: a bare read with no partition GUCs sees nothing", async () => {
     if (!(await edgeRoleAvailable())) return;
-    await new PgAppDataStore(edgeUrl(), { max: 1 }).putUserKey(APP, "carol", "k", 1, "prod").then(
-      // keep store available for cleanup via the same APP id
-      () => undefined,
-    );
+    await new PgAppDataStore(edgeUrl(), { max: 1 })
+      .putUserKey(APP, "carol", "k", 1, "prod", { kind: "none" })
+      .then(
+        // keep store available for cleanup via the same APP id
+        () => undefined,
+      );
     const pool = new Pool({ connectionString: edgeUrl(), max: 1 });
     try {
       // No set_config — the policy predicate is NULL → matches zero rows.

@@ -17,11 +17,14 @@ import {
 } from "../test/fakes.js";
 
 /**
- * The `/_api/data/user/*` capability (app-data design §3.1/§5). Per-user private
- * KV: gated, caller-scoped, partitioned by the session user — never by app
- * input. Plus the structural §3.2 assertion: no collection read/list verb
- * exists on the edge. Fakes for the store and ledger — no DB; the RLS partition
- * invariant is proven against real Postgres in data.integration.test.ts.
+ * The `/_api/data/*` capability (app-data design §3/§5): per-user private KV
+ * (§3.1, gated, caller-scoped, partitioned by the session user — never by app
+ * input), the structural §3.2 assertion that no collection read/list verb
+ * exists on the edge, and the ADR-0041 write-concurrency contract (CAS on an
+ * opaque version, mandatory preconditions on `shared`, un-metered 412/428).
+ * Fakes for the store and ledger — no DB; the RLS partition invariant and the
+ * real row-lock CAS semantics are proven against real Postgres in
+ * data.integration.test.ts.
  */
 
 const APP_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -88,7 +91,12 @@ function req(
   edge: DataEdge,
   method: string,
   url: string,
-  opts: { token?: string | null; origin?: string | null; payload?: unknown } = {},
+  opts: {
+    token?: string | null;
+    origin?: string | null;
+    payload?: unknown;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<LightMyRequestResponse> {
   const origin = opts.origin === undefined ? ORIGIN : opts.origin;
   return edge.app.inject({
@@ -102,6 +110,7 @@ function req(
       ...(opts.payload !== undefined ? { "content-type": "application/json" } : {}),
       ...(origin ? { origin } : {}),
       ...(opts.token ? { cookie: `${SESSION_COOKIE}=${opts.token}` } : {}),
+      ...opts.headers,
     },
     ...(opts.payload !== undefined ? { payload: opts.payload as object } : {}),
   });
@@ -281,10 +290,15 @@ describe("shared scope (§3.3)", () => {
 
   it("reads a shared key on a public app anonymously", async () => {
     const edge = buildDataEdge({ visibilityMode: "public", data: SHARED });
-    await edge.store.putShared(APP_ID, "leaderboard", [{ name: "ada", score: 10 }]);
+    await edge.store.putShared(APP_ID, "leaderboard", [{ name: "ada", score: 10 }], "prod", {
+      kind: "ifNoneMatch",
+    });
     const res = await req(edge, "GET", "/_api/data/shared/leaderboard", { token: null });
     expect(res.statusCode).toBe(200);
     expect(res.json().value).toEqual([{ name: "ada", score: 10 }]);
+    // The concurrency token rides the ETag (ADR-0041 decision 2) — a string,
+    // quoted, so the client can hand it straight back as If-Match.
+    expect(res.headers.etag).toBe('"1"');
   });
 
   it("403s a key that isn't shared-readable", async () => {
@@ -293,7 +307,7 @@ describe("shared scope (§3.3)", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("writes a shared-writable key, then reads it back", async () => {
+  it("creates a shared-writable key with If-None-Match: *, then reads it back", async () => {
     const edge = buildDataEdge({
       visibilityMode: "public",
       data: { ...SHARED, sharedRead: ["poll"] },
@@ -301,8 +315,10 @@ describe("shared scope (§3.3)", () => {
     const put = await req(edge, "PUT", "/_api/data/shared/poll", {
       token: null,
       payload: { yes: 1 },
+      headers: { "if-none-match": "*" },
     });
     expect(put.statusCode).toBe(200);
+    expect(put.headers.etag).toBe('"1"');
     const get = await req(edge, "GET", "/_api/data/shared/poll", { token: null });
     expect(get.json().value).toEqual({ yes: 1 });
   });
@@ -324,6 +340,204 @@ describe("shared scope (§3.3)", () => {
       payload: 1,
     });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("write concurrency (ADR-0041)", () => {
+  const SHARED_RW = {
+    user: false,
+    collections: [],
+    sharedRead: ["index"],
+    sharedWrite: ["index"],
+  };
+  const CREATE = { "if-none-match": "*" };
+
+  /** Seed a shared key directly at the store; returns its current version. */
+  async function seedShared(edge: DataEdge, value: unknown): Promise<string> {
+    const r = await edge.store.putShared(APP_ID, "index", value, "prod", { kind: "ifNoneMatch" });
+    if (r.kind !== "ok") throw new Error("seed failed");
+    return r.version;
+  }
+
+  it("GET emits ETag and a CAS write with that version succeeds and bumps it", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: SHARED_RW });
+    await seedShared(edge, ["alpha"]);
+
+    const get = await req(edge, "GET", "/_api/data/shared/index", { token: null });
+    expect(get.headers.etag).toBe('"1"');
+
+    const put = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["alpha", "beta"],
+      headers: { "if-match": '"1"' },
+    });
+    expect(put.statusCode).toBe(200);
+    // The new version comes back on the write too, so a follow-up write can
+    // chain without a re-read.
+    expect(put.headers.etag).toBe('"2"');
+
+    const after = await req(edge, "GET", "/_api/data/shared/index", { token: null });
+    expect(after.json().value).toEqual(["alpha", "beta"]);
+    expect(after.headers.etag).toBe('"2"');
+  });
+
+  it("two writers on the same base version: exactly one wins, the loser gets 412", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: SHARED_RW });
+    await seedShared(edge, ["alpha", "beta"]);
+
+    // The ADR's lost-update scenario: both tabs read v1, both write against it.
+    const a = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["alpha", "beta", "gamma"],
+      headers: { "if-match": '"1"' },
+    });
+    const b = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["alpha", "beta", "delta"],
+      headers: { "if-match": '"1"' },
+    });
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(412);
+    expect(b.json().error.code).toBe("conflict");
+    // "gamma" is NOT silently gone — the loser is told to re-read and retry.
+  });
+
+  it("412s If-Match against an absent key (the upsert-with-WHERE hole)", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: SHARED_RW });
+    const res = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["alpha"],
+      headers: { "if-match": '"1"' },
+    });
+    expect(res.statusCode).toBe(412);
+    // And it really did not create the key.
+    expect(await req(edge, "GET", "/_api/data/shared/index", { token: null })).toMatchObject({
+      statusCode: 404,
+    });
+  });
+
+  it("412s If-None-Match: * against an existing key", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: SHARED_RW });
+    await seedShared(edge, ["alpha"]);
+    const res = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["hijacked"],
+      headers: CREATE,
+    });
+    expect(res.statusCode).toBe(412);
+    const after = await req(edge, "GET", "/_api/data/shared/index", { token: null });
+    expect(after.json().value).toEqual(["alpha"]);
+  });
+
+  it("428s a shared write with no precondition — and neither meters nor charges it", async () => {
+    const edge = buildDataEdge({
+      visibilityMode: "public",
+      data: { ...SHARED_RW, writesPerDay: 100 },
+    });
+    const res = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["alpha"],
+    });
+    expect(res.statusCode).toBe(428);
+    expect(res.json().error.code).toBe("precondition_required");
+    // Decision 7: no gateway_calls row, and the daily budget is untouched.
+    expect(edge.usage.records).toHaveLength(0);
+    expect(await edge.usage.dataWritesToday()).toBe(0);
+  });
+
+  it("428s If-Match: * on shared — the one-character escape hatch stays closed", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: SHARED_RW });
+    const res = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["alpha"],
+      headers: { "if-match": "*" },
+    });
+    expect(res.statusCode).toBe(428);
+    expect(res.json().error.code).toBe("precondition_required");
+  });
+
+  it("a 412 loser is not metered and does not consume writesPerDay", async () => {
+    const edge = buildDataEdge({
+      visibilityMode: "public",
+      data: { ...SHARED_RW, writesPerDay: 5 },
+    });
+    await seedShared(edge, ["alpha"]);
+    const writesBefore = await edge.usage.dataWritesToday();
+    const res = await req(edge, "PUT", "/_api/data/shared/index", {
+      token: null,
+      payload: ["stale"],
+      headers: { "if-match": '"99"' },
+    });
+    expect(res.statusCode).toBe(412);
+    expect(edge.usage.records).toHaveLength(0);
+    expect(await edge.usage.dataWritesToday()).toBe(writesBefore);
+  });
+
+  it("400s malformed preconditions rather than silently downgrading to LWW", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: SHARED_RW });
+    await seedShared(edge, ["alpha"]);
+    const malformed: Record<string, string>[] = [
+      { "if-match": "1" }, // bare number, unquoted
+      { "if-match": 'W/"1"' }, // weak validator
+      { "if-match": '"1", "2"' }, // ETag list
+      { "if-match": '"abc"' }, // non-numeric
+      { "if-none-match": '"1"' }, // concrete If-None-Match
+      { "if-match": '"1"', "if-none-match": "*" }, // both headers
+    ];
+    for (const headers of malformed) {
+      const res = await req(edge, "PUT", "/_api/data/shared/index", {
+        token: null,
+        payload: ["x"],
+        headers,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe("validation_failed");
+    }
+  });
+
+  it("user scope keeps last-write-wins by default but honors a stated precondition", async () => {
+    const edge = buildDataEdge();
+    const token = await seedSession(edge.sessions, "alice");
+
+    // No precondition → today's unconditional upsert.
+    const plain = await req(edge, "PUT", "/_api/data/user/prefs", {
+      token,
+      payload: { theme: "dark" },
+    });
+    expect(plain.statusCode).toBe(200);
+    expect(plain.headers.etag).toBe('"1"');
+
+    // Stale stated version → 412, and the value did not move.
+    const stale = await req(edge, "PUT", "/_api/data/user/prefs", {
+      token,
+      payload: { theme: "light" },
+      headers: { "if-match": '"99"' },
+    });
+    expect(stale.statusCode).toBe(412);
+    const get = await req(edge, "GET", "/_api/data/user/prefs", { token });
+    expect(get.json().value).toEqual({ theme: "dark" });
+    expect(get.headers.etag).toBe('"1"');
+
+    // The current version → 200, bumping to 2.
+    const cas = await req(edge, "PUT", "/_api/data/user/prefs", {
+      token,
+      payload: { theme: "solarized" },
+      headers: { "if-match": '"1"' },
+    });
+    expect(cas.statusCode).toBe(200);
+    expect(cas.headers.etag).toBe('"2"');
+  });
+
+  it("400s If-Match: * on user scope too — not a supported value anywhere", async () => {
+    const edge = buildDataEdge();
+    const token = await seedSession(edge.sessions, "alice");
+    const res = await req(edge, "PUT", "/_api/data/user/prefs", {
+      token,
+      payload: { theme: "dark" },
+      headers: { "if-match": "*" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
   });
 });
 

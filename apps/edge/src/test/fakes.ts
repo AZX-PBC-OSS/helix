@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import type { LlmChatRequest, LlmUsage } from "@azx-pbc/shared";
+import type { LlmChatRequest, LlmUsage, Env } from "@azx-pbc/shared";
 import type { BlobGetOptions, BlobGetResult, BlobReader } from "../blob/client.js";
 import type {
   RegistryEntry,
@@ -9,7 +9,14 @@ import type {
 } from "../registry/projection.js";
 import type { LlmProvider, LlmStreamEvent } from "../gateway/provider.js";
 import type { GatewayCallRecord, LlmSpend, UsageStore } from "../gateway/usage.js";
-import type { AppDataStore, CollectionMeta, UserKeyMeta } from "../gateway/data.js";
+import type {
+  AppDataStore,
+  CollectionMeta,
+  PutResult,
+  SharedWritePrecondition,
+  UserKeyMeta,
+  WritePrecondition,
+} from "../gateway/data.js";
 import type { Session, SessionStore } from "../auth/sessions.js";
 import type {
   AuthorizeParams,
@@ -225,22 +232,54 @@ export class FakeUsageStore implements UsageStore {
  * keyed strictly by (appId, userOid, key), so a test can never accidentally
  * reach across the partition — the same property the RLS policy enforces in
  * Postgres. Like the real store, it has no collection-enumeration method.
+ *
+ * It also mirrors the real CAS semantics (ADR-0041): every row carries a
+ * version that starts at 1 and increments per write, `ifMatch` against an
+ * absent or moved row conflicts, and `ifNoneMatch` against an existing row
+ * conflicts. A fake that ignored preconditions would make every handler test
+ * assert a behaviour production does not have.
  */
 export class FakeAppDataStore implements AppDataStore {
-  readonly rows = new Map<string, { value: unknown; updatedAt: string }>();
+  readonly rows = new Map<string, { value: unknown; updatedAt: string; version: number }>();
 
   #k(appId: string, userOid: string, key: string): string {
     return `${appId} ${userOid} ${key}`;
   }
 
-  async getUserKey(appId: string, userOid: string, key: string): Promise<unknown> {
-    return this.rows.get(this.#k(appId, userOid, key))?.value ?? null;
+  async getUserKey(appId: string, userOid: string, key: string) {
+    const row = this.rows.get(this.#k(appId, userOid, key));
+    return row ? { value: row.value, version: String(row.version) } : null;
   }
 
-  async putUserKey(appId: string, userOid: string, key: string, value: unknown): Promise<string> {
+  #put(mapKey: string, value: unknown, precondition: WritePrecondition): PutResult {
+    const existing = this.rows.get(mapKey);
+    switch (precondition.kind) {
+      case "ifMatch":
+        if (!existing || String(existing.version) !== precondition.version) {
+          return { kind: "conflict" };
+        }
+        break;
+      case "ifNoneMatch":
+        if (existing) return { kind: "conflict" };
+        break;
+      case "none":
+        break;
+    }
+    const version = (existing?.version ?? 0) + 1;
     const updatedAt = new Date().toISOString();
-    this.rows.set(this.#k(appId, userOid, key), { value, updatedAt });
-    return updatedAt;
+    this.rows.set(mapKey, { value, updatedAt, version });
+    return { kind: "ok", version: String(version), updatedAt };
+  }
+
+  async putUserKey(
+    appId: string,
+    userOid: string,
+    key: string,
+    value: unknown,
+    _env: Env,
+    precondition: WritePrecondition,
+  ): Promise<PutResult> {
+    return this.#put(this.#k(appId, userOid, key), value, precondition);
   }
 
   async deleteUserKey(appId: string, userOid: string, key: string): Promise<boolean> {
@@ -279,14 +318,19 @@ export class FakeAppDataStore implements AppDataStore {
     return `${appId}  shared ${key}`;
   }
 
-  async getShared(appId: string, key: string): Promise<unknown> {
-    return this.rows.get(this.#sharedKey(appId, key))?.value ?? null;
+  async getShared(appId: string, key: string) {
+    const row = this.rows.get(this.#sharedKey(appId, key));
+    return row ? { value: row.value, version: String(row.version) } : null;
   }
 
-  async putShared(appId: string, key: string, value: unknown): Promise<string> {
-    const updatedAt = new Date().toISOString();
-    this.rows.set(this.#sharedKey(appId, key), { value, updatedAt });
-    return updatedAt;
+  async putShared(
+    appId: string,
+    key: string,
+    value: unknown,
+    _env: Env,
+    precondition: SharedWritePrecondition,
+  ): Promise<PutResult> {
+    return this.#put(this.#sharedKey(appId, key), value, precondition);
   }
 
   async close(): Promise<void> {}

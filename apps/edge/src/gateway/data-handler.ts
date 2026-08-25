@@ -7,7 +7,7 @@ import { ANON_USER_OID, type Caller, type CallerResolver } from "../auth/gate.js
 import type { RegistryEntry } from "../registry/projection.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
-import type { AppDataStore, CollectionMeta } from "./data.js";
+import type { AppDataStore, CollectionMeta, WritePrecondition } from "./data.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import type { UsageStore } from "./usage.js";
 
@@ -17,6 +17,14 @@ import type { UsageStore } from "./usage.js";
  * (`llm.ts`): resolve serving entry → resolve caller (gate, or anon on public
  * apps) → Origin/CSRF check on mutations → capability/scope check → body
  * validation → store call → meter. Reads send `cache-control: no-store`.
+ *
+ * Writes are compare-and-swap on an opaque `version` (ADR-0041): reads emit it
+ * as `ETag: "<version>"`, and a PUT states its assumption with
+ * `If-Match: "<version>"` (write if current) or `If-None-Match: *`
+ * (create-if-absent). Preconditions are MANDATORY on `shared` — a shared PUT
+ * carrying neither is 428 `precondition_required` — and optional on `user`,
+ * which keeps last-write-wins by default. A stated precondition that doesn't
+ * hold is 412 `conflict`; 412/428 are never metered or charged (decision 7).
  *
  * The §3.2 collection invariant is structural: there is no list/read verb for
  * collections here, and the store has no method to enumerate them — covered by
@@ -82,6 +90,43 @@ function keyParam(req: FastifyRequest): string | null {
 function nameParam(req: FastifyRequest): string | null {
   const name = (req.params as { name?: string }).name;
   return validKey(name) ? name : null;
+}
+
+/**
+ * The write's stated concurrency assumption (ADR-0041). `ifMatchAny` is
+ * `If-Match: *` — "any current representation" — which states NO assumption and
+ * is refused everywhere: on `shared` it is the one-character escape hatch
+ * around the mandate (decision 5, → 428); on `user` it is simply not a
+ * supported value (→ 400). RFC update-only-if-exists semantics are a
+ * deliberate non-goal until a real app asks.
+ */
+type ParsedPrecondition = WritePrecondition | { kind: "ifMatchAny" };
+
+/**
+ * Parse `If-Match` / `If-None-Match` into a {@link WritePrecondition}, strictly:
+ * exactly one strong ETag (`"<digits>"`) or the bare `*`. ETag lists, weak
+ * validators (`W/"…"`), a concrete `If-None-Match`, and duplicated headers are
+ * all `invalid` (400) — a lenient parse would silently downgrade a client's
+ * intended CAS into last-write-wins, the failure this feature exists to catch.
+ */
+function parsePrecondition(
+  req: FastifyRequest,
+): { kind: "ok"; precondition: ParsedPrecondition } | { kind: "invalid" } {
+  const ifMatch = req.headers["if-match"];
+  const ifNoneMatch = req.headers["if-none-match"];
+  if (Array.isArray(ifMatch) || Array.isArray(ifNoneMatch)) return { kind: "invalid" };
+  if (ifMatch !== undefined && ifNoneMatch !== undefined) return { kind: "invalid" };
+  if (ifMatch !== undefined) {
+    if (ifMatch === "*") return { kind: "ok", precondition: { kind: "ifMatchAny" } };
+    const m = /^"(\d+)"$/.exec(ifMatch);
+    if (!m || m[1] === undefined) return { kind: "invalid" };
+    return { kind: "ok", precondition: { kind: "ifMatch", version: m[1] } };
+  }
+  if (ifNoneMatch !== undefined) {
+    if (ifNoneMatch !== "*") return { kind: "invalid" };
+    return { kind: "ok", precondition: { kind: "ifNoneMatch" } };
+  }
+  return { kind: "ok", precondition: { kind: "none" } };
 }
 
 /**
@@ -227,17 +272,43 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", `value exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }
+      const parsed = parsePrecondition(req);
+      if (parsed.kind === "invalid" || parsed.precondition.kind === "ifMatchAny") {
+        sendApiError(
+          reply,
+          400,
+          "validation_failed",
+          'precondition must be If-Match: "<version>" or If-None-Match: *',
+        );
+        return;
+      }
       if (!(await admitWrite(reply, ctx.entry, oid, ctx.caller.env))) return;
       try {
-        const updatedAt = await rt.store!.putUserKey(
+        const result = await rt.store!.putUserKey(
           ctx.entry.appId,
           oid,
           key,
           value,
           ctx.caller.env,
+          parsed.precondition,
         );
+        if (result.kind === "conflict") {
+          // A stated precondition lost the race. NOT metered or charged
+          // (ADR-0041 decision 7): the write did not happen, and a contended
+          // retry loop must not consume the app's daily budget.
+          sendApiError(
+            reply,
+            412,
+            "conflict",
+            "the value changed since your read — re-read and retry",
+          );
+          return;
+        }
         meter(ctx.entry.appId, oid, "user.put", "ok", ctx.caller.env);
-        await reply.header("cache-control", "no-store").send({ key, updatedAt });
+        await reply
+          .header("cache-control", "no-store")
+          .header("etag", `"${result.version}"`)
+          .send({ key, updatedAt: result.updatedAt });
       } catch (err) {
         meter(ctx.entry.appId, oid, "user.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putUser failed");
@@ -256,13 +327,16 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         return;
       }
       try {
-        const value = await rt.store!.getUserKey(ctx.entry.appId, oid, key, ctx.caller.env);
+        const stored = await rt.store!.getUserKey(ctx.entry.appId, oid, key, ctx.caller.env);
         meter(ctx.entry.appId, oid, "user.get", "ok", ctx.caller.env);
-        if (value === null) {
+        if (stored === null) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
         }
-        await reply.header("cache-control", "no-store").send({ key, value });
+        await reply
+          .header("cache-control", "no-store")
+          .header("etag", `"${stored.version}"`)
+          .send({ key, value: stored.value });
       } catch (err) {
         meter(ctx.entry.appId, oid, "user.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getUser failed");
@@ -380,13 +454,16 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         return;
       }
       try {
-        const value = await rt.store!.getShared(ctx.entry.appId, key, ctx.caller.env);
+        const stored = await rt.store!.getShared(ctx.entry.appId, key, ctx.caller.env);
         meter(ctx.entry.appId, meterOid, "shared.get", "ok", ctx.caller.env);
-        if (value === null) {
+        if (stored === null) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
         }
-        await reply.header("cache-control", "no-store").send({ key, value });
+        await reply
+          .header("cache-control", "no-store")
+          .header("etag", `"${stored.version}"`)
+          .send({ key, value: stored.value });
       } catch (err) {
         meter(ctx.entry.appId, meterOid, "shared.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getShared failed");
@@ -397,7 +474,13 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     /**
      * `PUT /_api/data/shared/:key` (§3.3) — write app-shared state. Rare and
      * dangerous (every visitor could mutate it), so the key must be in the
-     * narrower `data.sharedWrite` grant. Last-write-wins (design doc §9).
+     * narrower `data.sharedWrite` grant. Preconditions are MANDATORY here
+     * (ADR-0041 decision 4): a shared write is a race between different,
+     * mutually unaware principals, so a PUT carrying neither `If-Match:
+     * "<version>"` nor `If-None-Match: *` is refused 428, and `If-Match: *` —
+     * last-write-wins dressed as a precondition — is refused the same way
+     * (decision 5). A lost race is 412 `conflict`; neither failure is metered
+     * or charged (decision 7).
      */
     async putShared(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: true });
@@ -421,11 +504,51 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", `value exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }
+      const parsed = parsePrecondition(req);
+      if (parsed.kind === "invalid") {
+        sendApiError(
+          reply,
+          400,
+          "validation_failed",
+          'precondition must be If-Match: "<version>" or If-None-Match: *',
+        );
+        return;
+      }
+      if (parsed.precondition.kind === "none" || parsed.precondition.kind === "ifMatchAny") {
+        // Fails on the app's FIRST shared write, in dev, with an error naming
+        // the fix — the timing that makes a mandatory precondition affordable
+        // (ADR-0041 decision 4). Not metered: nothing was written.
+        sendApiError(
+          reply,
+          428,
+          "precondition_required",
+          'shared writes require If-Match: "<version>" (from your last read) or If-None-Match: * (create-if-absent)',
+        );
+        return;
+      }
       if (!(await admitWrite(reply, ctx.entry, meterOid, ctx.caller.env))) return;
       try {
-        const updatedAt = await rt.store!.putShared(ctx.entry.appId, key, value, ctx.caller.env);
+        const result = await rt.store!.putShared(
+          ctx.entry.appId,
+          key,
+          value,
+          ctx.caller.env,
+          parsed.precondition,
+        );
+        if (result.kind === "conflict") {
+          sendApiError(
+            reply,
+            412,
+            "conflict",
+            "the value changed since your read — re-read and retry",
+          );
+          return;
+        }
         meter(ctx.entry.appId, meterOid, "shared.put", "ok", ctx.caller.env);
-        await reply.header("cache-control", "no-store").send({ key, updatedAt });
+        await reply
+          .header("cache-control", "no-store")
+          .header("etag", `"${result.version}"`)
+          .send({ key, updatedAt: result.updatedAt });
       } catch (err) {
         meter(ctx.entry.appId, meterOid, "shared.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putShared failed");
