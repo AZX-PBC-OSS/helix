@@ -14,7 +14,7 @@
     "dev:portal": "pnpm --filter @azx-pbc/portal dev",
     "dev:idp": "pnpm --filter @azx-pbc/dev-idp dev",
     "dev:web": "pnpm --filter @azx-pbc/portal-web dev",
-    "dev:clean": "node scripts/free-port.mjs 8080 8081 8082 3001 3002 5173",
+    "dev:clean": "node scripts/free-port.mjs $(node scripts/stack-env.mjs --ports)",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

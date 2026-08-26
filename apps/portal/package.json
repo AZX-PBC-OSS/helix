@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node ../../scripts/free-port.mjs 3001 && tsx watch src/server.ts",
+    "dev": "node ../../scripts/free-port.mjs ${PORTAL_PORT:-3001} && tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc",
     "postinstall": "pnpm db:generate",

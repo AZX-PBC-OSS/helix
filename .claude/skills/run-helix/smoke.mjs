@@ -11,13 +11,15 @@
  * See ./SKILL.md for prerequisites and the flag reference.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, openSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, openSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import * as httpsModule from "node:https";
 import * as httpModule from "node:http";
 import { launchBrowser, findChrome } from "./cdp.mjs";
+import { resolveStack } from "../../../scripts/stack-env.mjs";
+import { ensureDatabase } from "../../../scripts/ensure-db.mjs";
 
 const ROOT = new URL("../../../", import.meta.url).pathname.replace(/\/$/, "");
 const CA = join(ROOT, ".devcontainer/certs/caroot/rootCA.pem");
@@ -41,6 +43,20 @@ const only = argv.includes("--only") ? argv[argv.indexOf("--only") + 1] : null;
 const KEEP = has("--keep");
 const NO_BROWSER = has("--no-browser");
 const OUT = mkdtempSync(join(tmpdir(), "helix-smoke-"));
+
+/**
+ * This driver boots its OWN stack rather than borrowing the developer's.
+ * The default offset moves every port, the database and the blob container off
+ * the dev stack's, so a run can never kill `pnpm dev:*` or write to the dev
+ * database. `--offset 0` opts back into the shared dev ports.
+ */
+const OFFSET = argv.includes("--offset")
+  ? Number(argv[argv.indexOf("--offset") + 1])
+  : Number(process.env.HELIX_PORT_OFFSET ?? 1000);
+const STACK = resolveStack({ offset: OFFSET });
+/** Env every service in THIS stack boots with. */
+const SVC_ENV = { ...process.env, ...STACK.env };
+const PORTS = Object.values(STACK.ports);
 
 const GROUPS = ["idp", "portal", "edge", "egress", "spa", "browser", "cli"];
 const wanted = (g) => !only || only === g;
@@ -76,30 +92,47 @@ function eq(actual, expected, what) {
 // The edge's mkcert cert covers `*.local.helix.azxlabs.io` and the bare base
 // domain — NOT `localhost`. Probing it on localhost fails TLS verification even
 // though the socket is listening, so always address it by the base domain.
-const BASE_DOMAIN = process.env.EDGE_BASE_DOMAIN || "local.helix.azxlabs.io";
+const BASE_DOMAIN = STACK.baseDomain;
 
 const SERVICES = [
   {
     name: "dev-idp",
     script: "dev:idp",
-    port: 3002,
-    health: "http://localhost:3002/.well-known/openid-configuration",
+    port: STACK.ports.idp,
+    health: `http://localhost:${STACK.ports.idp}/.well-known/openid-configuration`,
   },
-  { name: "portal", script: "dev:portal", port: 3001, health: "http://localhost:3001/health" },
-  { name: "egress", script: "dev:egress", port: 8081, health: "http://localhost:8081/health" },
-  { name: "edge", script: "dev:edge", port: 8080, health: `https://${BASE_DOMAIN}:8080/health` },
+  {
+    name: "portal",
+    script: "dev:portal",
+    port: STACK.ports.portal,
+    health: `http://localhost:${STACK.ports.portal}/health`,
+  },
+  {
+    name: "egress",
+    script: "dev:egress",
+    port: STACK.ports.egress,
+    health: `http://localhost:${STACK.ports.egress}/health`,
+  },
+  {
+    name: "edge",
+    script: "dev:edge",
+    port: STACK.ports.edge,
+    health: `https://${BASE_DOMAIN}:${STACK.ports.edge}/health`,
+  },
 ];
 const procs = [];
 
+/**
+ * Release only THIS stack's ports. `pnpm dev:*` does not forward SIGTERM to its
+ * tsx child, so a killed run can orphan a listener that the next run must clear
+ * — but the list is the resolved stack, never the dev stack's literals, so at
+ * any non-zero offset this cannot reach a developer's server.
+ */
 function freePorts() {
-  spawnSync(
-    "node",
-    [join(ROOT, "scripts/free-port.mjs"), "8080", "8081", "8082", "3001", "3002", "5173"],
-    {
-      cwd: ROOT,
-      stdio: "ignore",
-    },
-  );
+  spawnSync("node", [join(ROOT, "scripts/free-port.mjs"), ...PORTS.map(String)], {
+    cwd: ROOT,
+    stdio: "ignore",
+  });
 }
 
 function startService(svc) {
@@ -107,7 +140,12 @@ function startService(svc) {
   const fd = openSync(log, "a");
   // detached so we can SIGTERM the whole process group: `pnpm dev:x` spawns
   // tsx as a child and does not forward signals to it.
-  const p = spawn("pnpm", [svc.script], { cwd: ROOT, stdio: ["ignore", fd, fd], detached: true });
+  const p = spawn("pnpm", [svc.script], {
+    cwd: ROOT,
+    stdio: ["ignore", fd, fd],
+    detached: true,
+    env: SVC_ENV,
+  });
   procs.push({ ...svc, proc: p, log });
   return p;
 }
@@ -148,8 +186,9 @@ function stopAll() {
 // ── http helpers ──────────────────────────────────────────────────────────
 const TOKEN = process.env.PORTAL_DEV_TOKEN;
 const auth = { Authorization: `Bearer ${TOKEN}` };
-const PORTAL = "http://localhost:3001";
-const EDGE = (host, path = "/") => `https://${host}.${BASE_DOMAIN}:8080${path}`;
+const PORTAL = `http://localhost:${STACK.ports.portal}`;
+const EDGE = (host, path = "/") => `https://${host}.${BASE_DOMAIN}:${STACK.ports.edge}${path}`;
+const EGRESS = `http://localhost:${STACK.ports.egress}`;
 
 /**
  * Raw HTTPS request with EXACT header control.
@@ -193,6 +232,84 @@ async function jget(url, init) {
     body = text;
   }
   return { status: r.status, headers: r.headers, body };
+}
+
+// ── seeding ───────────────────────────────────────────────────────────────
+const CLI_BIN = join(ROOT, "packages/cli/dist/helix.js");
+let cliBuild = null;
+
+/** Build the CLI bundle once per run — both the seed and the cli group need it. */
+function buildCli() {
+  if (cliBuild) return cliBuild;
+  const r = spawnSync("pnpm", ["--filter", "@azx-pbc/helix-cli", "build"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  assert(r.status === 0, `build failed:\n${(r.stderr || r.stdout || "").slice(-800)}`);
+  const m = (r.stdout || "").match(/dist\/helix\.js\s+([\d.]+\s*\w+)/);
+  cliBuild = m ? m[1] : "built";
+  return cliBuild;
+}
+
+/** Run the built CLI against THIS stack's portal. */
+function helix(...args) {
+  return spawnSync(process.execPath, [CLI_BIN, ...args], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: { ...SVC_ENV, HELIX_PORTAL_URL: PORTAL, HELIX_TOKEN: TOKEN },
+  });
+}
+
+/**
+ * An isolated stack starts with an empty registry, so the edge and CLI groups
+ * would find nothing live and silently SKIP — the coverage they used to get was
+ * borrowed from whatever the developer happened to have deployed, which is not
+ * something a test should depend on. Deploy one public and one internal app
+ * through the real CLI path instead. Slugs are fixed, so a second run against
+ * the same smoke database reuses them rather than accumulating rows.
+ */
+async function seedRegistry() {
+  group("seed");
+  console.log("\n\x1b[1mseed\x1b[0m — a live public + internal app for the edge to serve");
+
+  const dir = join(OUT, "seed-app");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "index.html"),
+    "<!doctype html><html><head><title>helix smoke</title></head>" +
+      "<body><h1>helix smoke fixture</h1></body></html>\n",
+  );
+
+  await check("cli bundle for seeding", () => buildCli());
+
+  for (const [slug, visibility] of [
+    ["smoke-public", "public"],
+    ["smoke-internal", "internal"],
+  ]) {
+    await check(`live ${visibility} app (${slug})`, async () => {
+      const { body: apps } = await jget(`${PORTAL}/api/v1/apps`, { headers: auth });
+      const existing = Array.isArray(apps) ? apps.find((a) => a.slug === slug) : null;
+      let how = "reused";
+      if (!existing?.currentVersionId) {
+        if (!existing) {
+          const c = helix("create", "--slug", slug, "--visibility", visibility);
+          assert(c.status === 0, `create: ${(c.stderr || c.stdout || "").slice(-300)}`);
+        }
+        const d = helix("deploy", "--slug", slug, "--dir", dir, "--promote");
+        assert(d.status === 0, `deploy: ${(d.stderr || d.stdout || "").slice(-400)}`);
+        how = "deployed";
+      }
+      // The edge learns about it over LISTEN/NOTIFY, not on the request path;
+      // wait for the projection so the edge group is not racing it.
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const { status } = await jget(EDGE(slug));
+        if (status !== 404) return how;
+        if (Date.now() > deadline) throw new Error("edge still 404s after 15s");
+        await sleep(250);
+      }
+    });
+  }
 }
 
 // ── the checks ────────────────────────────────────────────────────────────
@@ -268,7 +385,7 @@ async function checkEdge() {
   const internal = live.find((a) => a.visibility.mode === "internal");
 
   await check("health reports registry-projection freshness", async () => {
-    const { status, body } = await jget(`https://${BASE_DOMAIN}:8080/health`);
+    const { status, body } = await jget(`https://${BASE_DOMAIN}:${STACK.ports.edge}/health`);
     eq(status, 200, "status");
     const proj = body.checks?.find((c) => c.name === "registry-projection");
     assert(proj, "registry-projection check missing");
@@ -326,20 +443,20 @@ async function checkEgress() {
   console.log("\n\x1b[1megress\x1b[0m — mechanism plane (attested instruction verification)");
 
   await check("health is liveness-only", async () => {
-    const { status, body } = await jget("http://localhost:8081/health");
+    const { status, body } = await jget(`${EGRESS}/health`);
     eq(status, 200, "status");
     eq(body.status, "ok", "status field");
     assert(body.checks === undefined, "egress should report liveness only");
   });
 
   await check("missing instruction headers → 400", async () => {
-    const { status, body } = await jget("http://localhost:8081/proxy", { method: "POST" });
+    const { status, body } = await jget(`${EGRESS}/proxy`, { method: "POST" });
     eq(status, 400, "status");
     eq(body.code, "bad_target", "code");
   });
 
   await check("forged instruction is refused before dialing the target", async () => {
-    const { status, body } = await jget("http://localhost:8081/proxy", {
+    const { status, body } = await jget(`${EGRESS}/proxy`, {
       method: "POST",
       headers: {
         "x-helix-instruction": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.forged",
@@ -358,7 +475,7 @@ async function checkIdp() {
   group("idp");
   console.log("\n\x1b[1mdev-idp\x1b[0m — oidc-provider authorization_code + PKCE");
 
-  const IDP = "http://localhost:3002";
+  const IDP = `http://localhost:${STACK.ports.idp}`;
   const jar = new Map();
   const putCookies = (r) => {
     for (const c of r.headers.getSetCookie?.() ?? []) {
@@ -397,7 +514,9 @@ async function checkIdp() {
 
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
-  const redirectUri = `https://auth.${BASE_DOMAIN}:8080/callback`;
+  // Must equal what dev-idp registered for the edge client — the stack sets
+  // IDP_EDGE_REDIRECT_URIS, and this is its first (https) entry.
+  const redirectUri = `https://auth.${BASE_DOMAIN}:${STACK.ports.edge}/callback`;
   let code = null;
 
   await check("authorize → interaction → code", async () => {
@@ -500,7 +619,7 @@ async function checkBrowser() {
 
   let browser;
   try {
-    browser = await launchBrowser();
+    browser = await launchBrowser({ port: STACK.cdpPort });
   } catch (e) {
     return skip("SPA renders in a real browser", e.message);
   }
@@ -561,29 +680,13 @@ async function checkCli() {
   group("cli");
   console.log("\n\x1b[1mhelix CLI\x1b[0m — esbuild bundle driven against the live portal");
 
-  await check("esbuild bundle", async () => {
-    const r = spawnSync("pnpm", ["--filter", "@azx-pbc/helix-cli", "build"], {
-      cwd: ROOT,
-      encoding: "utf8",
-    });
-    assert(r.status === 0, `build failed:\n${(r.stderr || r.stdout || "").slice(-800)}`);
-    const m = (r.stdout || "").match(/dist\/helix\.js\s+([\d.]+\s*\w+)/);
-    return m ? m[1] : "built";
-  });
+  await check("esbuild bundle", () => buildCli());
 
   await check("CLI reads versions from the live portal", async () => {
     const { body: apps } = await jget(`${PORTAL}/api/v1/apps`, { headers: auth });
     const target = apps.find((a) => a.currentVersionId);
     assert(target, "no live app to query");
-    const r = spawnSync(
-      process.execPath,
-      [join(ROOT, "packages/cli/dist/helix.js"), "versions", "--slug", target.slug],
-      {
-        cwd: ROOT,
-        encoding: "utf8",
-        env: { ...process.env, HELIX_PORTAL_URL: PORTAL, HELIX_TOKEN: TOKEN },
-      },
-    );
+    const r = helix("versions", "--slug", target.slug);
     assert(r.status === 0, `cli exited ${r.status}: ${(r.stderr || r.stdout || "").slice(-400)}`);
     assert(/\blive\b/.test(r.stdout), `no live version in output:\n${r.stdout}`);
     return `${target.slug}: ${r.stdout.trim().split("\n").length - 1} versions`;
@@ -593,7 +696,7 @@ async function checkCli() {
 // ── cleanup of the throwaway registry row ─────────────────────────────────
 function cleanupThrowaway() {
   if (!createdAppId) return;
-  const url = process.env.DATABASE_URL;
+  const url = SVC_ENV.DATABASE_URL;
   if (!url) return console.log(`\n\x1b[33m! left behind app ${throwaway} (no DATABASE_URL)\x1b[0m`);
   const r = spawnSync(
     "psql",
@@ -616,7 +719,26 @@ async function main() {
     process.exit(2);
   }
 
-  console.log(`\x1b[1mHelix smoke test\x1b[0m   artifacts → ${OUT}\n`);
+  console.log(`\x1b[1mHelix smoke test\x1b[0m   artifacts → ${OUT}`);
+  console.log(
+    STACK.offset === 0
+      ? `\x1b[33m! offset 0 — sharing the dev stack's ports and database\x1b[0m\n`
+      : `\x1b[2misolated stack: offset ${STACK.offset}, ports ${PORTS.join(" ")}, db ${STACK.database}\x1b[0m\n`,
+  );
+
+  // Own database, so the throwaway app row and the shared rate-limit/login
+  // counters never land in the dev database. Idempotent; only the first run
+  // pays for the migrate.
+  if (STACK.offset !== 0) {
+    try {
+      const { name, created } = ensureDatabase(SVC_ENV.DATABASE_URL, { quiet: true });
+      console.log(`  \x1b[2m${created ? "created" : "reusing"} database ${name}\x1b[0m`);
+    } catch (err) {
+      console.error(`\n\x1b[31mcould not prepare the smoke database: ${err.message}\x1b[0m`);
+      process.exit(2);
+    }
+  }
+
   console.log("booting services…");
   freePorts();
   for (const svc of SERVICES) startService(svc);
@@ -628,6 +750,7 @@ async function main() {
     console.error("\n\x1b[31mservices did not come up — aborting\x1b[0m");
   } else {
     try {
+      if (wanted("edge") || wanted("cli")) await seedRegistry();
       if (wanted("idp")) await checkIdp();
       if (wanted("portal")) await checkPortal();
       if (wanted("edge")) await checkEdge();
@@ -654,7 +777,7 @@ async function main() {
 
   if (KEEP) {
     console.log(`\n\x1b[2mservices left running (--keep). Stop with:\x1b[0m`);
-    console.log(`  node scripts/free-port.mjs 8080 8081 8082 3001 3002 5173`);
+    console.log(`  node scripts/free-port.mjs ${PORTS.join(" ")}`);
   } else {
     stopAll();
   }

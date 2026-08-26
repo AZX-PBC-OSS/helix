@@ -3,13 +3,15 @@ name: run-helix
 description: Build, run, and drive the Helix platform locally — boots helix-edge, helix-portal, helix-egress, the dev IdP and the portal SPA, then exercises them end to end. Use when asked to run or start Helix, smoke-test a change, verify a dependency bump, screenshot the portal UI, or check that the apps still work after an edit.
 ---
 
-Helix is three services that only mean anything together: **edge** (data/policy plane, https on `:8080`), **portal** (control plane + SPA, `:3001`), **egress** (mechanism plane, `:8081`), plus **dev-idp** (`:3002`) and the **portal SPA**. Drive all of it with one command:
+Helix is three services that only mean anything together: **edge** (data/policy plane, https), **portal** (control plane + SPA), **egress** (mechanism plane), plus **dev-idp** and the **portal SPA**. Drive all of it with one command:
 
 ```bash
 node .claude/skills/run-helix/smoke.mjs
 ```
 
-That boots every service, waits for health, runs 31 checks against the running system (including a real Chromium render of the SPA), cleans up, and exits non-zero on any failure. Paths below are relative to the repo root.
+That boots every service, waits for health, runs 34 checks against the running system (including a real Chromium render of the SPA), cleans up, and exits non-zero on any failure. Paths below are relative to the repo root.
+
+**It boots its own stack and never touches yours.** By default everything runs at a `+1000` port offset (edge `9080`, egress `9081`, dev-gateway `9082`, portal `4001`, dev-idp `4002`, SPA `6173`) against its own `helix_smoke` database and `app-bundles-smoke` blob container. Run it with `pnpm dev:*` up and your servers keep running and your dev database stays clean. The whole stack is resolved by `scripts/stack-env.mjs`; `--offset 0` opts back into the shared dev ports and database.
 
 ## Prerequisites
 
@@ -28,19 +30,23 @@ node .claude/skills/run-helix/smoke.mjs                 # everything
 node .claude/skills/run-helix/smoke.mjs --only edge     # one group
 node .claude/skills/run-helix/smoke.mjs --no-browser    # skip Chromium
 node .claude/skills/run-helix/smoke.mjs --keep          # leave services up to poke by hand
+node .claude/skills/run-helix/smoke.mjs --offset 2000   # a different isolated stack
+node .claude/skills/run-helix/smoke.mjs --offset 0      # share the dev ports + database
 ```
 
 Groups: `idp`, `portal`, `edge`, `egress`, `spa`, `browser`, `cli`.
 
 Output is one line per check. Screenshots and per-service logs land in a printed temp dir (`/tmp/helix-smoke-*/`) — `signed-out.png`, `dashboard.png`, `apps-list.png`, and `edge.log`, `portal.log`, etc. **Look at the screenshots**; a mounted-but-blank page still passes the DOM assertion.
 
-After `--keep`, stop everything with:
+After `--keep`, stop everything with (the run prints this line with its own ports):
 
 ```bash
-node scripts/free-port.mjs 8080 8081 8082 3001 3002 5173
+node scripts/free-port.mjs $(node scripts/stack-env.mjs --ports --offset 1000)
 ```
 
 What it covers: OIDC authorization_code + PKCE through to an ID token; Prisma read + write + zod rejection; edge host routing, CSP injection, session gate (both branches), unknown-host 404; egress rejecting a forged instruction; the vite build served by the portal with hashed assets; the SPA rendering in real Chromium signed-out and signed-in; the esbuild CLI bundle querying the live portal.
+
+Because the stack starts with an empty registry, the run first **seeds** it — deploying a one-file fixture app twice (`smoke-public`, `smoke-internal`) through the real `helix create` / `helix deploy --promote` path, so the edge and CLI groups always have something live to exercise. The slugs are fixed, so later runs reuse them instead of accumulating rows. Nothing SKIPs any more just because you happened to have no apps deployed.
 
 The browser handle is `cdp.mjs` — a ~100-line Chrome DevTools Protocol client over Node 24's global `WebSocket`. It adds no dependency to the repo, which matters here (the edge is deliberately dependency-minimal). Reuse it for any new browser check.
 
@@ -71,12 +77,15 @@ Required to pass before calling any change done. The smoke test is complementary
 - **`apps/edge/.env.local` overrides the container env to real Entra.** `EDGE_OIDC_ISSUER` is `login.microsoftonline.com/...`, not `localhost:3002`, so the edge's login flow leaves the machine and **dev-idp is not in the edge's path**. The driver tests oidc-provider by driving `:3002` directly. Don't chase this as a bug.
 - **The session gate is content-negotiated.** 401 JSON for API-style requests, 302 to `auth.<base>/start` only for navigations. A bare `curl` against a gated app returns 401 and looks broken. It isn't.
 - **`pnpm dev:*` does not forward SIGTERM** to the `tsx` child it spawns. Kill the process group (`spawn(..., {detached:true})` then `process.kill(-pid)`) or just run `scripts/free-port.mjs`. Ports routinely survive a previous session.
+- **Every `dev` script frees its port before binding**, and the port it frees now comes from the env (`${EDGE_PORT:-8080}` and friends), not a literal. That is what makes a second stack safe: `env $(node scripts/stack-env.mjs --env --offset 1000) pnpm dev:portal` binds `:4001` and leaves `:3001` alone. Before this, any offset stack still SIGKILLed the base port.
 - **The SPA's token is per-tab `sessionStorage`,** key `azx.portal.token`, value `{"token":"..."}` (`apps/portal-web/src/auth/tokenStore.ts`). Seeding it with `PORTAL_DEV_TOKEN` is how the driver reaches authenticated screens without an interactive Entra login.
 - **There is no hard-delete API for apps** — only archive. The driver creates a `smoke-<uuid>` app to exercise a Prisma write and removes the row with `psql` afterwards. If a run is killed mid-flight, clean up with:
 
   ```bash
-  psql "$DATABASE_URL" -c "DELETE FROM apps WHERE slug LIKE 'smoke-%';"
+  psql "postgresql://helix:helix@db:5432/helix_smoke" -c "DELETE FROM apps WHERE slug LIKE 'smoke-%';"
   ```
+
+  Note the database: the run's rows live in `helix_smoke`, not your dev database. Dropping the whole thing (`DROP DATABASE helix_smoke`) is also safe — the next run recreates and migrates it in about a second.
 
 - **No browser driver ships in the repo** (no playwright, no `chromium-cli`), but a Chromium is cached at `~/.cache/ms-playwright/chromium-*/chrome-linux/chrome`. `cdp.mjs` finds it; override with `HELIX_SMOKE_CHROME`. If it's absent the browser group reports SKIP rather than failing.
 
@@ -86,7 +95,7 @@ Required to pass before calling any change done. The smoke test is complementary
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `edge never became healthy (fetch failed)` but `edge.log` says `Server listening` | You probed `localhost`. Use `https://local.helix.azxlabs.io:8080`.                                                    |
 | `session gate: expected 302, got 401`                                             | You used `fetch`, not `rawGet` — see the first gotcha.                                                                |
-| Health check hangs on every service                                               | Ports held by a previous run: `node scripts/free-port.mjs 8080 8081 8082 3001 3002 5173`.                             |
+| Health check hangs on every service                                               | Ports held by a previous run: `node scripts/free-port.mjs $(node scripts/stack-env.mjs --ports --offset 1000)`.       |
 | `portal` unhealthy, log mentions Prisma                                           | `pnpm --filter @azx-pbc/portal db:deploy`, then re-run.                                                               |
 | Browser group SKIPs                                                               | No cached Chromium. Set `HELIX_SMOKE_CHROME=/path/to/chrome`.                                                         |
 | `PORTAL_DEV_TOKEN is not set` (exit 2)                                            | You're outside the devcontainer.                                                                                      |

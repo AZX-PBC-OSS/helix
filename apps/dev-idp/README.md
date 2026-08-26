@@ -27,9 +27,17 @@ back-channel calls (edge, portal, CLI, tests).
 | `bob@azx.dev`     | `eng-team`                   |
 | `mallory@azx.dev` | _none_ (group-denial tests)  |
 
-Clients: `azx-cli` (public; device-code + refresh) and `helix-edge`
+Clients: `azx-cli` (public; device-code + refresh), `helix-edge`
 (confidential; code + PKCE + nonce; secret `edge-dev-secret`, override via
-`IDP_EDGE_CLIENT_SECRET`; redirect URIs via `IDP_EDGE_REDIRECT_URIS`).
+`IDP_EDGE_CLIENT_SECRET`; redirect URIs via `IDP_EDGE_REDIRECT_URIS`) and
+`azx-portal-web` (public SPA; code + PKCE; redirect URIs via
+`IDP_WEB_REDIRECT_URIS`).
+
+The two redirect-URI vars are comma-separated and default to the base stack's
+ports (`:8080` for the edge, `:5173`/`:3001` for the SPA). A second local stack
+sets them from its own ports — see `scripts/stack-env.mjs`; without them every
+login on that stack fails `redirect_uri` validation. `IDP_PORT` moves the
+listener, and the issuer follows the bound port.
 
 Behavior notes:
 
