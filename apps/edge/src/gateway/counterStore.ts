@@ -79,10 +79,14 @@ interface Bucket {
 }
 
 /**
- * In-memory counter for tests and single-process dev — the extracted `Map`
- * logic the two limiters used to hold privately. NOT multi-replica safe (the
- * whole point of {@link PgCounterStore} is a shared fleet-wide count), so it is
- * never wired in `server.ts`.
+ * In-memory counter — the extracted `Map` logic the two limiters used to hold
+ * privately. NOT multi-replica safe (the whole point of {@link PgCounterStore}
+ * is a shared fleet-wide count), so `server.ts` overrides it for the anon IP
+ * limiter and the login throttle, whose budgets are security controls.
+ *
+ * It is not unused in prod, though: `DenialThrottle` (`denialThrottle.ts`) runs
+ * on this deliberately, because it damps ledger write amplification rather than
+ * defending a limit — see that class's docblock.
  */
 export class InMemoryCounterStore implements CounterStore {
   readonly #buckets = new Map<string, Bucket>();

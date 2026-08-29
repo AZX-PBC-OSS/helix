@@ -295,10 +295,10 @@ export function toUsageSummary(input: {
   range: UsageRange;
   outcomes: UsageOutcomeRow[];
   models: UsageModelRow[];
-  /** (bucket, model) rows over the range — dense via generate_series. */
-  series: SeriesModelRow[];
-  /** Today-since-midnight (bucket, model) rows for the daily-cap gauge. */
-  today: ModelTokenRow[];
+  /** Per-bucket rows over the range — dense via generate_series. */
+  series: SeriesRow[];
+  /** Today-since-midnight totals for the daily-cap gauge (always one row). */
+  today: TokenCostRow[];
   /** 95th-percentile durationMs over the range; null when no timed calls. */
   latencyP95: SqlNum;
 }): UsageSummary {
@@ -363,6 +363,8 @@ export interface GatewayCallRow {
   statusCode: number | null;
   stopReason: string | null;
   errorDetail: string | null;
+  path: string | null;
+  method: string | null;
   createdAt: Date | string;
 }
 
@@ -388,56 +390,67 @@ export function toGatewayCall(row: GatewayCallRow): GatewayCall {
     statusCode: row.statusCode,
     stopReason: row.stopReason,
     errorDetail: row.errorDetail,
+    path: row.path,
+    method: row.method,
     outcome: row.outcome,
     createdAt: iso(row.createdAt),
   });
 }
 
 /**
- * Aggregate row carrying both token sums (for display) and the frozen
- * `costMicroUsd` sum (for dollars). Still grouped by model so token displays and
- * per-model breakdowns stay intact, but cost no longer depends on the model —
- * it's read straight from the column.
+ * Aggregate row carrying token sums (for display) and the frozen `costMicroUsd`
+ * sum (for dollars).
+ *
+ * It used to carry `model` too, and every query below grouped by it — a holdover
+ * from when cost was recomputed at read time from a rate table. Cost is frozen
+ * at write time now ({@link rowCost} just converts the column), and every
+ * consumer of these rows folds the model away again immediately, so the key was
+ * pure row amplification: `apps × distinct models` from Postgres, re-collapsed
+ * in JS. It also made the group key app-writable once fetch denials started
+ * recording an arbitrary origin. Only the per-app `byModel` breakdown genuinely
+ * needs `model`, and it has {@link UsageModelRow}.
+ *
+ * The `cacheRead`/`cacheCreation` sums went the same way: {@link rowTokens} is
+ * input+output only, so nothing ever read them off these rows. They remain on
+ * the `outcomes` query, which does surface them.
  */
-export interface ModelTokenRow {
-  model: string | null;
+export interface TokenCostRow {
   inputTokens: SqlNum;
   outputTokens: SqlNum;
-  cacheReadInputTokens: SqlNum;
-  cacheCreationInputTokens: SqlNum;
   costMicroUsd: SqlNum;
 }
 
-function rowCost(r: ModelTokenRow): number {
+function rowCost(r: TokenCostRow): number {
   return microToUsd(r.costMicroUsd);
 }
 
 /** Display "tokens" stays input+output (cache classes are 0 today, priced separately). */
-function rowTokens(r: ModelTokenRow): number {
+function rowTokens(r: TokenCostRow): number {
   return num(r.inputTokens) + num(r.outputTokens);
 }
 
-/** A dense (bucket, model) aggregate row from a generate_series trend query. */
-export interface SeriesModelRow extends ModelTokenRow {
+/** A dense per-bucket aggregate row from a generate_series trend query. */
+export interface SeriesRow extends TokenCostRow {
   bucket: Date | string;
   requests: SqlNum;
 }
-export interface PlatformAppRow extends ModelTokenRow {
+export interface PlatformAppRow extends TokenCostRow {
   appId: string;
   slug: string | null;
   requests: SqlNum;
 }
-export interface PlatformCapabilityRow extends ModelTokenRow {
+export interface PlatformCapabilityRow extends TokenCostRow {
   capability: string;
 }
-export type PlatformTotalsModelRow = ModelTokenRow;
 
 /**
- * Collapse (bucket, model) rows back to one priced {@link UsageSeriesPoint} per
- * bucket, preserving the oldest-first order the generate_series query emits.
+ * Map trend rows to {@link UsageSeriesPoint}s, preserving the oldest-first order
+ * the generate_series query emits. The query now aggregates per bucket, so this
+ * is one row in / one point out; the fold is kept because it is idempotent under
+ * pre-aggregation and is what guarantees the output stays one point per bucket.
  * Shared by the per-app and platform trends.
  */
-function collapseSeries(rows: SeriesModelRow[]): UsageSeriesPoint[] {
+function collapseSeries(rows: SeriesRow[]): UsageSeriesPoint[] {
   const order: string[] = [];
   const byBucket = new Map<string, { tokens: number; requests: number; cost: number }>();
   for (const r of rows) {
@@ -458,16 +471,17 @@ function collapseSeries(rows: SeriesModelRow[]): UsageSeriesPoint[] {
   });
 }
 
-/** Assemble the platform-wide {@link PlatformUsage} rollup from model-grouped rows. */
+/** Assemble the platform-wide {@link PlatformUsage} rollup. */
 export function toPlatformUsage(input: {
   range: PlatformRange;
-  series: SeriesModelRow[];
+  series: SeriesRow[];
   byApp: PlatformAppRow[];
-  totals: { tokens: SqlNum; requests: SqlNum; activeUsers: SqlNum };
-  totalsByModel: PlatformTotalsModelRow[];
+  totals: { tokens: SqlNum; requests: SqlNum; activeUsers: SqlNum; costMicroUsd: SqlNum };
   capabilityMix: PlatformCapabilityRow[];
 }): PlatformUsage {
-  // Per-app rollup: collapse (appId, model) rows by appId, then sort busiest-first.
+  // Per-app rollup, sorted busiest-first. The query aggregates per app now, so
+  // this fold is a straight map — kept because it is what enforces one entry
+  // per appId regardless of how the query groups.
   const byAppId = new Map<
     string,
     { slug: string | null; tokens: number; requests: number; cost: number }
@@ -486,7 +500,7 @@ export function toPlatformUsage(input: {
     .map((a) => ({ slug: a.slug, tokens: a.tokens, requests: a.requests, costUsd: a.cost }))
     .sort((a, b) => b.tokens - a.tokens);
 
-  // Capability mix: collapse (capability, model) rows by capability.
+  // Capability mix, one entry per capability.
   const byCapability = new Map<string, { tokens: number; cost: number }>();
   for (const r of input.capabilityMix) {
     let acc = byCapability.get(r.capability);
@@ -508,7 +522,7 @@ export function toPlatformUsage(input: {
     totals: {
       tokensMTD: num(input.totals.tokens),
       requestsMTD: num(input.totals.requests),
-      costMTD: input.totalsByModel.reduce((sum, r) => sum + rowCost(r), 0),
+      costMTD: microToUsd(input.totals.costMicroUsd),
       activeUsers: num(input.totals.activeUsers),
     },
     capabilityMix,

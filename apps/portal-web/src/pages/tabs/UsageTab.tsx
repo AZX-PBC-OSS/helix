@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { Button, Card, Center, Group, Loader, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { priceForModel, USAGE_RANGES, type App, type UsageRange } from "@azx-pbc/shared";
+import {
+  priceForModel,
+  USAGE_RANGES,
+  type App,
+  type GatewayOutcome,
+  type UsageRange,
+} from "@azx-pbc/shared";
 import { manifestQuery, usageQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Meter } from "../../components/charts";
@@ -11,17 +17,24 @@ import {
   UsageTrendChart,
   type UsageMetric,
 } from "../../components/usageCharts";
-import { Eyebrow, Hint, Stat, ToneBadge } from "../../components/primitives";
+import { Eyebrow, Hint, Stat, ToneBadge, type Tone } from "../../components/primitives";
 import { Icon } from "../../components/Icon";
 import { fmtCount, fmtUsd } from "../../lib/format";
 
-/** Outcome → badge tone, over the real gateway vocabulary. */
-const OUTCOME_TONE = {
+/**
+ * Outcome → badge tone. Typed `Record<GatewayOutcome, Tone>` so a new outcome is
+ * a compile error here rather than a silent grey badge — the same guarantee
+ * `OUT_META` gives on the audit page, and the point of making GATEWAY_OUTCOMES
+ * the single source of truth.
+ */
+const OUTCOME_TONE: Record<GatewayOutcome, Tone> = {
   ok: "live",
   error: "bad",
   refusal: "warn",
   quota_blocked: "warn",
-} as const;
+  conflict: "warn",
+  forbidden: "bad",
+};
 
 /** Per-app gateway metering over a selectable range. Real `gateway_calls` data. */
 export function UsageTab({ app }: { app: App }) {
@@ -151,7 +164,11 @@ export function UsageTab({ app }: { app: App }) {
               {Object.entries(u.byOutcome).map(([outcome, count]) => (
                 <ToneBadge
                   key={outcome}
-                  tone={OUTCOME_TONE[outcome as keyof typeof OUTCOME_TONE] ?? "neutral"}
+                  // `byOutcome` is string-keyed on the wire (z.record), not the
+                  // enum, so the runtime fallback stays: during a rolling deploy
+                  // the edge can write an outcome this build has never heard of.
+                  // The map's own exhaustiveness is enforced by its type above.
+                  tone={OUTCOME_TONE[outcome as GatewayOutcome] ?? "neutral"}
                 >
                   {outcome} · {count}
                 </ToneBadge>

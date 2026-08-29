@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { errorDetailOf } from "./usage.js";
+import { clampRecord, errorDetailOf, fetchPathOf, MODEL_MAX, PATH_MAX } from "./usage.js";
 import { EgressProviderError } from "./egressProvider.js";
 
 /**
@@ -55,5 +55,73 @@ describe("errorDetailOf", () => {
     (a as Error & { cause?: unknown }).cause = b;
 
     expect(() => errorDetailOf(b)).not.toThrow();
+  });
+});
+
+/**
+ * `fetchPathOf` — the `path` ledger column. Two invariants: the value is capped
+ * (it is attacker-controlled, and no role holds DELETE on `gateway_calls`), and
+ * a query string never reaches it (callers pass `URL.pathname`, so the target's
+ * credentials-bearing query is gone before this point).
+ */
+describe("fetchPathOf", () => {
+  it("passes an ordinary path through untouched", () => {
+    expect(fetchPathOf("/users/octocat")).toBe("/users/octocat");
+  });
+
+  it("truncates a pathological path to the ledger column budget", () => {
+    const path = fetchPathOf(`/${"a".repeat(PATH_MAX + 200)}`);
+
+    expect(path).toHaveLength(PATH_MAX + 1);
+    expect(path.endsWith("…")).toBe(true);
+  });
+});
+
+/**
+ * `clampRecord` — the store-level backstop. `path` arrives pre-capped via
+ * `fetchPathOf`, but `model` and `errorDetail` are built by call sites from
+ * `target.origin`, whose only bound is Node's `maxHeaderSize`. Shared by
+ * `PgUsageStore` and the test fake so both agree on what gets stored.
+ */
+describe("clampRecord", () => {
+  const base = {
+    appId: "a",
+    env: "prod" as const,
+    userOid: "u",
+    capability: "fetch",
+    model: "https://api.github.com",
+    inputTokens: 0,
+    outputTokens: 0,
+    outcome: "ok" as const,
+  };
+
+  it("leaves an ordinary record untouched", () => {
+    const r = clampRecord({ ...base, path: "/users/octocat", errorDetail: null });
+    expect(r.model).toBe("https://api.github.com");
+    expect(r.path).toBe("/users/octocat");
+  });
+
+  it("caps an absurd origin in `model`", () => {
+    const r = clampRecord({ ...base, model: `https://${"h".repeat(MODEL_MAX + 500)}` });
+    expect(r.model).toHaveLength(MODEL_MAX + 1);
+    expect(r.model.endsWith("…")).toBe(true);
+  });
+
+  it("caps `errorDetail` built by a call site rather than by errorDetailOf", () => {
+    const r = clampRecord({ ...base, errorDetail: `origin ${"x".repeat(4000)} is not proxied` });
+    expect(r.errorDetail).toHaveLength(301);
+  });
+
+  it("is idempotent on an already-capped path", () => {
+    const once = clampRecord({ ...base, path: fetchPathOf(`/${"a".repeat(PATH_MAX + 100)}`) });
+    const twice = clampRecord(once);
+    expect(twice.path).toEqual(once.path);
+    expect(twice.path).toHaveLength(PATH_MAX + 1);
+  });
+
+  it("leaves an absent path and errorDetail absent rather than nulling them", () => {
+    const r = clampRecord(base);
+    expect("path" in r).toBe(false);
+    expect("errorDetail" in r).toBe(false);
   });
 });

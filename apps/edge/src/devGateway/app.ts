@@ -9,6 +9,8 @@ import { openAiCodec } from "../gateway/openaiCodec.js";
 import { makeOpenAiModelsHandler } from "../gateway/openaiModels.js";
 import { makeDataHandlers } from "../gateway/data-handler.js";
 import { makeFetchHandler } from "../gateway/fetch.js";
+import { DenialThrottle } from "../gateway/denialThrottle.js";
+import { InMemoryCounterStore } from "../gateway/counterStore.js";
 import type { LlmProvider } from "../gateway/provider.js";
 import type { EgressProvider } from "../gateway/egressProvider.js";
 import type { UsageStore } from "../gateway/usage.js";
@@ -135,6 +137,9 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     resolveCaller,
     checkOrigin,
     anonLimiter: null,
+    // Single-process by construction, but the dev gateway writes to the same
+    // ledger as the edge, so the same denial cap applies.
+    denialThrottle: new DenialThrottle(new InMemoryCounterStore()),
     egress: deps.egress,
     usage: deps.usage,
     instructionKey: deps.instructionKey,

@@ -8,6 +8,7 @@ import type {
   RegistryReader,
 } from "../registry/projection.js";
 import type { LlmProvider, LlmStreamEvent } from "../gateway/provider.js";
+import { clampRecord } from "../gateway/usage.js";
 import type { GatewayCallRecord, LlmSpend, UsageStore } from "../gateway/usage.js";
 import type {
   AppDataStore,
@@ -216,12 +217,18 @@ export class FakeUsageStore implements UsageStore {
 
   async fetchRequestsToday(): Promise<number> {
     if (this.fetchToday !== undefined) return this.fetchToday;
-    return this.records.filter((r) => r.capability === "fetch" && r.outcome !== "quota_blocked")
-      .length;
+    // Mirrors PgUsageStore's predicate: the platform's own pre-egress refusals
+    // don't consume the budget. Keep the two in step — a fake that counts
+    // differently from the real store makes the unit tests lie.
+    return this.records.filter(
+      (r) => r.capability === "fetch" && r.outcome !== "quota_blocked" && r.outcome !== "forbidden",
+    ).length;
   }
 
-  async record(call: GatewayCallRecord): Promise<void> {
-    this.records.push(call);
+  async record(raw: GatewayCallRecord): Promise<void> {
+    // Clamp exactly as PgUsageStore does, so a test asserting on `records` sees
+    // what the real store would have written — including the length caps.
+    this.records.push(clampRecord(raw));
   }
 
   async close(): Promise<void> {}

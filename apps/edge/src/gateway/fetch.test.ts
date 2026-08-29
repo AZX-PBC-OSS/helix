@@ -17,6 +17,7 @@ import {
   registryEntry,
 } from "../test/fakes.js";
 import { deriveInstructionKey } from "./instruction.js";
+import { MODEL_MAX, PATH_MAX } from "./usage.js";
 import type { EgressProvider, EgressRequest, EgressResponse } from "./egressProvider.js";
 
 /**
@@ -197,6 +198,8 @@ describe("/_api/fetch", () => {
       expect.objectContaining({
         capability: "fetch",
         model: "https://api.github.com",
+        path: "/users/octocat",
+        method: "GET",
         outcome: "ok",
       }),
     );
@@ -226,8 +229,55 @@ describe("/_api/fetch", () => {
     await app.close();
   });
 
+  it("meters the path but never the target's query string", async () => {
+    // The query is forwarded upstream (above) and deliberately NOT persisted: an
+    // app-chosen third-party URL routinely carries a live credential there, and
+    // the ledger has no DELETE grant for any role. Same line the request-log
+    // serializer draws (`redactFetchTarget`).
+    const { app, usage } = buildFetchEdge();
+    await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/search?api_key=sk-live-must-not-persist",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    const record = usage.records.find((r) => r.capability === "fetch");
+    expect(record?.path).toBe("/search");
+    expect(JSON.stringify(usage.records)).not.toContain("sk-live-must-not-persist");
+    await app.close();
+  });
+
+  it("caps the origin it records for an absurd host", async () => {
+    // `model` carries `target.origin` on a fetch row, and on a denial that
+    // origin is whatever the app put in the URL — bounded only by Node's
+    // maxHeaderSize until the store clamps it. Asserted through the fake, which
+    // shares `clampRecord` with the real store.
+    const { app, usage } = buildFetchEdge();
+    await app.inject({
+      method: "GET",
+      url: `/_api/fetch/https://${"h".repeat(MODEL_MAX + 300)}.example.com/x`,
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    const record = usage.records.find((r) => r.capability === "fetch");
+    expect(record?.model).toHaveLength(MODEL_MAX + 1);
+    expect(record?.errorDetail?.length).toBeLessThanOrEqual(301);
+    await app.close();
+  });
+
+  it("caps a pathological path rather than storing it whole", async () => {
+    const { app, usage } = buildFetchEdge();
+    await app.inject({
+      method: "GET",
+      url: `/_api/fetch/https://api.github.com/${"a".repeat(PATH_MAX + 200)}`,
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    const record = usage.records.find((r) => r.capability === "fetch");
+    expect(record?.path).toHaveLength(PATH_MAX + 1);
+    expect(record?.path?.endsWith("…")).toBe(true);
+    await app.close();
+  });
+
   it("refuses an origin that is not a proxied origin (egress untouched)", async () => {
-    const { app, egress } = buildFetchEdge();
+    const { app, egress, usage } = buildFetchEdge();
     const res = await app.inject({
       method: "GET",
       url: "/_api/fetch/https://api.evil.com/steal",
@@ -235,6 +285,42 @@ describe("/_api/fetch", () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().code).toBe("forbidden");
+    expect(egress.calls).toHaveLength(0);
+    // The denial is the most audit-interesting event on this surface, and it
+    // used to leave no ledger trace at all.
+    expect(usage.records).toContainEqual(
+      expect.objectContaining({
+        capability: "fetch",
+        model: "https://api.evil.com",
+        path: "/steal",
+        method: "GET",
+        outcome: "forbidden",
+        statusCode: 403,
+      }),
+    );
+    await app.close();
+  });
+
+  it("caps how many denials it meters, while still refusing every one", async () => {
+    // The denial write is the one ledger append no other gate bounds: the
+    // per-IP limiter skips authenticated callers, the allowlist check returns
+    // before the daily budget, and `fetchRequestsToday` excludes `forbidden`.
+    // Uncapped, a retry loop against a typo'd host appends to a table with no
+    // DELETE grant at line rate.
+    const { app, egress, usage } = buildFetchEdge();
+    const attempts = 40;
+    for (let i = 0; i < attempts; i += 1) {
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/fetch/https://api.evil.com/steal",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      // Every one is still refused — the cap throttles metering, never authz.
+      expect(res.statusCode).toBe(403);
+    }
+    const denials = usage.records.filter((r) => r.outcome === "forbidden");
+    expect(denials.length).toBeGreaterThan(0);
+    expect(denials.length).toBeLessThan(attempts);
     expect(egress.calls).toHaveLength(0);
     await app.close();
   });
@@ -382,7 +468,9 @@ describe("/_api/fetch", () => {
     expect(res.statusCode).toBe(429);
     expect(egress.calls).toHaveLength(0);
     expect(usage.records).toContainEqual(
-      expect.objectContaining({ capability: "fetch", outcome: "quota_blocked" }),
+      // statusCode mirrors the 429 the handler answers, so an operator filtering
+      // the audit log for 429s to size a requestsPerDay bump actually finds them.
+      expect.objectContaining({ capability: "fetch", outcome: "quota_blocked", statusCode: 429 }),
     );
     await app.close();
   });

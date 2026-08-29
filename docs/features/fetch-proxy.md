@@ -76,9 +76,40 @@ plaintext secrets or the public internet:
 ### Metering
 
 The **edge** writes one `gateway_calls` row per call (`capability = "fetch"`,
-`model = <target origin>`, outcome mapped from the egress outcome header) — it
-holds the ledger grant and owns audit. Egress writes only `app_secrets.lastUsedAt`.
-The Audit/Usage pages light up for `fetch` with no extra work.
+`model = <target origin>`, `path` + `method` for the request line, outcome mapped
+from the egress outcome header) — it holds the ledger grant and owns audit.
+Egress writes only `app_secrets.lastUsedAt`. The Audit/Usage pages light up for
+`fetch` with no extra work.
+
+The **allowlist denial is metered too**, as `outcome = "forbidden"` — an app
+reaching for an origin its manifest never granted is the most audit-interesting
+event on this surface, and it is the one outcome here that never reaches egress.
+It is **rate-capped per (app, env)** (`DenialThrottle`): this is the one ledger
+write no other gate bounds — the per-IP limiter skips authenticated callers, the
+allowlist check returns before the quota gate, and the budget query excludes
+`forbidden` — so without a cap a retry loop against a typo'd host appends to an
+undeletable table at line rate. Past the cap the call is still refused; only the
+metering is dropped, with a summary log line. The first rows carry the whole
+audit signal. It does **not** count against `requestsPerDay`: that budget prices work done at
+the egress boundary, and a denial mints no instruction and dials nothing, exactly
+like `quota_blocked`. (Counting denials would not bound the ledger either — the
+allowlist check returns *before* the quota gate, so a denial loop never reaches
+it; counting would only starve the app's legitimate traffic.)
+
+`path` is the target's **pathname only — the query string is not recorded**,
+matching the line `redactFetchTarget` in `@azx-pbc/shared/logging` draws for
+request logs. That is where credentials are conventionally placed (`?api_key=`, a
+SAS `?sig=`).
+
+**It does not follow that `path` is credential-free.** Some APIs put the secret in
+a path segment (Telegram `/bot<TOKEN>/…`, Slack webhooks), and those are retained.
+No heuristic tries to spot one: a token segment and a REST resource id are the
+same shape, so any test that catches the former also eats `/customers/<uuid>/orders`
+— the value this column exists to capture. The mitigations are bounding rather
+than detection (truncation at write time, and the denial cap above), and
+retention is the real fix. Read ADR-0021 for the full position, including the
+asymmetry that matters most: log lines age out, ledger rows have no DELETE grant
+for any role.
 
 ## Try it
 

@@ -262,22 +262,16 @@ describe("row mappers validate against the shared schema", () => {
       series: [
         {
           bucket: NOW,
-          model: "claude-opus-4-8",
           inputTokens: 1000n,
           outputTokens: 2000n,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
           costMicroUsd: COST_MICRO,
           requests: 10,
         },
       ],
       today: [
         {
-          model: "claude-opus-4-8",
           inputTokens: 1000n,
           outputTokens: 2000n,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
           costMicroUsd: COST_MICRO,
         },
       ],
@@ -338,6 +332,8 @@ describe("row mappers validate against the shared schema", () => {
       statusCode: null,
       stopReason: "end_turn",
       errorDetail: null,
+      path: null,
+      method: null,
       createdAt: NOW,
     });
     expect(call).toMatchObject({
@@ -358,6 +354,41 @@ describe("row mappers validate against the shared schema", () => {
     expect(call.costUsd).toBeCloseTo(0.026, 9);
   });
 
+  it("carries the request line through for a proxied fetch row", () => {
+    const call = toGatewayCall({
+      id: "44444444-4444-4444-8444-444444444444",
+      appId: APP_ID,
+      slug: "cost-explorer",
+      userOid: "user-oid-1",
+      capability: "fetch",
+      // For `fetch`, `model` is the target origin and the path is its own column.
+      // A `forbidden` row's origin cleared no allowlist, which is why the usage
+      // rollup excludes that outcome rather than admitting it as a group key.
+      model: "https://api.github.com",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costMicroUsd: 0,
+      outcome: "forbidden",
+      durationMs: 0,
+      statusCode: 403,
+      stopReason: null,
+      errorDetail: "origin https://api.evil.com is not a proxied origin",
+      path: "/users/octocat",
+      method: "GET",
+      createdAt: NOW,
+    });
+    expect(call).toMatchObject({
+      capability: "fetch",
+      model: "https://api.github.com",
+      path: "/users/octocat",
+      method: "GET",
+      statusCode: 403,
+      outcome: "forbidden",
+    });
+  });
+
   it("tolerates a null slug (the ledger outlives deleted apps)", () => {
     const call = toGatewayCall({
       id: "33333333-3333-4333-8333-333333333333",
@@ -376,6 +407,8 @@ describe("row mappers validate against the shared schema", () => {
       statusCode: null,
       stopReason: "refusal",
       errorDetail: null,
+      path: null,
+      method: null,
       createdAt: NOW,
     });
     expect(call.slug).toBeNull();
@@ -388,21 +421,17 @@ describe("row mappers validate against the shared schema", () => {
       series: [
         {
           bucket: DAY2,
-          model: "claude-opus-4-8",
           inputTokens: 1000n,
           outputTokens: 2000n,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
           costMicroUsd: COST_MICRO,
           requests: 2,
         },
+        // An empty bucket: COUNT(gc.id) is 0 on the LEFT JOIN miss, which is
+        // what makes the generate_series grid dense.
         {
           bucket: NOW,
-          model: null,
           inputTokens: 0,
           outputTokens: 0,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
           costMicroUsd: 0,
           requests: 0,
         },
@@ -411,34 +440,21 @@ describe("row mappers validate against the shared schema", () => {
         {
           appId: APP_ID,
           slug: "cost-explorer",
-          model: "claude-opus-4-8",
           inputTokens: 1000n,
           outputTokens: 2000n,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
           costMicroUsd: COST_MICRO,
           requests: 2,
         },
       ],
-      totals: { tokens: 3000n, requests: 2, activeUsers: 1 },
-      totalsByModel: [
-        {
-          model: "claude-opus-4-8",
-          inputTokens: 1000n,
-          outputTokens: 2000n,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          costMicroUsd: COST_MICRO,
-        },
-      ],
+      // costMTD now rides on the same MTD aggregate as the other headline KPIs
+      // (it is a sum of the frozen cost column, so it never needed its own
+      // model-grouped query).
+      totals: { tokens: 3000n, requests: 2, activeUsers: 1, costMicroUsd: COST_MICRO },
       capabilityMix: [
         {
           capability: "llm",
-          model: "claude-opus-4-8",
           inputTokens: 1000n,
           outputTokens: 2000n,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
           costMicroUsd: COST_MICRO,
         },
       ],

@@ -32,6 +32,7 @@ import { openAiCodec } from "./gateway/openaiCodec.js";
 import { makeOpenAiModelsHandler } from "./gateway/openaiModels.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
+import { DenialThrottle } from "./gateway/denialThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
 import { CSP_REPORT_PATH, buildAppCsp } from "./serving/csp.js";
@@ -184,6 +185,10 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   const fallbackCounters = new InMemoryCounterStore();
   const anonRateLimiter =
     deps.anonRateLimiter ?? new IpRateLimiter(config.anonRateLimit, fallbackCounters);
+  // Always in-memory, including in prod (see the class docblock): this damps
+  // ledger write amplification, it is not a security budget, so a per-replica
+  // count is fine and a DB round-trip on the abusive path would be self-defeating.
+  const denialThrottle = new DenialThrottle(fallbackCounters);
   const serveAsset = makeAssetHandler({ ...deps, gate });
 
   const handleStart = authRuntime ? makeStartHandler(authRuntime) : null;
@@ -257,6 +262,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           resolveCaller,
           checkOrigin,
           anonLimiter: anonRateLimiter,
+          denialThrottle,
           egress: deps.egress ?? null,
           usage: deps.usage ?? null,
           instructionKey: deps.instructionKey ?? null,

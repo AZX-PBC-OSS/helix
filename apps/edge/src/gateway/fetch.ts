@@ -14,9 +14,10 @@ import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
+import type { DenialThrottle } from "./denialThrottle.js";
 import { EgressProviderError, type EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
-import { errorDetailOf, type GatewayOutcome, type UsageStore } from "./usage.js";
+import { errorDetailOf, fetchPathOf, type GatewayOutcome, type UsageStore } from "./usage.js";
 
 /**
  * `/_api/fetch/<url>` — the fetch-proxy policy plane (fetch-proxy design §7).
@@ -24,7 +25,12 @@ import { errorDetailOf, type GatewayOutcome, type UsageStore } from "./usage.js"
  * signed attested instruction, and forwards the call to `azx-egress` — which
  * holds the secrets and the internet route the edge deliberately lacks. The
  * upstream response streams straight back. Every call is metered into
- * `gateway_calls` (capability `fetch`, model = target origin).
+ * `gateway_calls` (capability `fetch`, model = target origin, plus the request
+ * `path` and `method`) — including the allowlist denial, which is recorded as
+ * `forbidden` and is the one outcome here that never reaches egress. The
+ * target's query string is never persisted (that is where credentials are
+ * conventionally placed) — but the path is, and a path can carry a secret too:
+ * see `fetchPathOf` in `usage.ts` for why no heuristic tries to spot one.
  */
 
 export interface FetchGatewayRuntime {
@@ -34,6 +40,8 @@ export interface FetchGatewayRuntime {
   /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */
   checkOrigin: OriginCheck;
   anonLimiter: IpRateLimiter | null;
+  /** Caps metered allowlist denials per (app, env). null ⇒ uncapped (tests). */
+  denialThrottle: DenialThrottle | null;
   /** null ⇒ EDGE_EGRESS_URL unset; the capability 503s. */
   egress: EgressProvider | null;
   usage: UsageStore | null;
@@ -101,6 +109,9 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       sendFetchError(reply, 503, "upstream_error", "fetch capability is not configured");
       return;
     }
+    // Bound once, above the allowlist denial — both it and the quota gate below
+    // meter through this, and the 503 guard has already narrowed it.
+    const usage = rt.usage;
 
     const target = parseFetchTarget(req.raw.url ?? "");
     if (!target) {
@@ -111,13 +122,60 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     // Authz: the target origin must be a proxied origin in this app's manifest.
     // The lookup is on the canonical origin, so percent-encoding can't bypass it.
     if (!entry.fetch.connections.has(target.origin)) {
+      // Meter the denial — an app reaching for an origin its manifest never
+      // granted is the most audit-interesting event on this surface, and it used
+      // to leave no trace at all: the request log kept it for 30 days and the
+      // ledger, which is what the Audit page reads, knew nothing.
+      //
+      // Capped per (app, env). This is the one write on the handler that no
+      // other gate bounds — the per-IP limiter skips authenticated callers, this
+      // check returns before the daily budget, and `fetchRequestsToday` excludes
+      // `forbidden` — so without the throttle a retry loop against a typo'd host
+      // appends to an undeletable table at line rate. The first N per window
+      // carry the whole audit signal ("this app reached for an origin it doesn't
+      // have"); the rest are dropped with a magnitude summary on the log.
+      const decision = rt.denialThrottle
+        ? await rt.denialThrottle.admit(entry.appId, caller.env)
+        : { meter: true as const, suppressedAt: undefined };
+      if (decision.suppressedAt !== undefined) {
+        req.log.warn(
+          {
+            appId: entry.appId,
+            env: caller.env,
+            origin: target.origin,
+            attempts: decision.suppressedAt,
+          },
+          "allowlist-denial metering suppressed — this app is over its denial budget for the window",
+        );
+      }
+      if (decision.meter) {
+        // Deliberately not awaited: `record` opens a transaction
+        // (`withPartition`) held across four round-trips on the pool that also
+        // serves the budget checks. The 403 must not wait on that, and the
+        // throttle above is what bounds how many can be in flight.
+        void usage
+          .record({
+            appId: entry.appId,
+            env: caller.env,
+            userOid,
+            capability: "fetch",
+            model: target.origin,
+            inputTokens: 0,
+            outputTokens: 0,
+            outcome: "forbidden",
+            statusCode: 403,
+            path: fetchPathOf(target.pathname),
+            method: req.method,
+            errorDetail: `origin ${target.origin} is not a proxied origin`,
+          })
+          .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
+      }
       sendFetchError(reply, 403, "forbidden", `origin ${target.origin} is not a proxied origin`);
       return;
     }
     const connection = entry.fetch.connections.get(target.origin) ?? null;
 
     // Quota (block-new): the per-app daily request budget from the manifest.
-    const usage = rt.usage;
     const budget = entry.fetch.requestsPerDay;
     if (budget !== null) {
       const usedToday = await usage.fetchRequestsToday(entry.appId, caller.env);
@@ -132,8 +190,11 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
             inputTokens: 0,
             outputTokens: 0,
             outcome: "quota_blocked",
+            statusCode: 429,
+            path: fetchPathOf(target.pathname),
+            method: req.method,
           })
-          .catch(() => {});
+          .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
         sendFetchError(reply, 429, "rate_limited", "daily fetch budget exhausted");
         return;
       }
@@ -212,6 +273,10 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
           durationMs: Math.round(performance.now() - startedAt),
           statusCode: extra.statusCode ?? null,
           errorDetail: extra.errorDetail ?? null,
+          // `pathname` only — the query is dropped and the value is capped. See
+          // `fetchPathOf`; the same line is drawn by the log serializer.
+          path: fetchPathOf(target.pathname),
+          method: req.method,
         })
         .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
 

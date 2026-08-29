@@ -242,7 +242,9 @@ model GatewayCall {
   /// dollar figure the portal displays — token columns stay so cost is always
   /// re-derivable if rates are corrected. 0 for non-LLM and quota-blocked rows.
   costMicroUsd             BigInt   @default(0)
-  /// `ok` | `error` | `refusal` | `quota_blocked`.
+  /// `ok` | `error` | `refusal` | `quota_blocked` | `conflict` | `forbidden`.
+  /// Plain TEXT, not an enum — `GATEWAY_OUTCOMES` in `@azx-pbc/shared` is the
+  /// source of truth, and the edge imports its union from there.
   outcome                  String
   /// Upstream round-trip latency in ms (0 when not measured).
   durationMs               Int      @default(0)
@@ -252,6 +254,18 @@ model GatewayCall {
   stopReason               String?
   /// Short, truncated upstream error string; null on success.
   errorDetail              String?
+  /// Request path of a proxied call — set for `fetch`; null otherwise. The
+  /// target's query string is excluded (`redactFetchTarget` in
+  /// `@azx-pbc/shared/logging` draws the same line for logs) because that is
+  /// where credentials are conventionally placed. That does NOT make this column
+  /// credential-free: some APIs put the secret in a path segment, and no
+  /// heuristic tries to spot one — a token segment and a REST resource id are
+  /// the same shape. The edge caps the length at write time (the value is
+  /// app-controlled and no role holds DELETE here); retention is the real
+  /// mitigation. See ADR-0021 and apps/edge/src/gateway/usage.ts.
+  path                     String?
+  /// HTTP method of a proxied call — set for `fetch`; null otherwise.
+  method                   String?
   createdAt                DateTime @default(now())
 
   /// Per-app windowed reads (edge budget + portal usage tab) and the audit

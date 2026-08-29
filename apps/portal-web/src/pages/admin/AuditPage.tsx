@@ -25,6 +25,8 @@ const OUT_META: Record<GatewayOutcome, [Tone, string]> = {
   error: ["bad", "error"],
   refusal: ["warn", "refusal"],
   quota_blocked: ["warn", "quota"],
+  conflict: ["warn", "conflict"],
+  forbidden: ["bad", "forbidden"],
 };
 
 const AUDIT_LIMIT = 200;
@@ -44,20 +46,23 @@ export function AuditPage() {
     <PageHead
       eyebrow="Admin"
       title="Gateway Audit Log"
-      sub="Gateway calls: app, user, capability, model, tokens, outcome."
+      sub="Gateway calls: app, user, capability, target, tokens, outcome. Proxied fetch rows carry the request path; query strings are not recorded."
     />
   );
 
   const all = audit.data?.rows ?? [];
   const rows = all.filter((r) => {
     if (!q) return true;
-    return `${r.slug ?? ""}${r.userOid}${r.capability}${r.model}`
+    return `${r.slug ?? ""}${r.userOid}${r.capability}${r.model}${r.method ?? ""}${r.path ?? ""}`
       .toLowerCase()
       .includes(q.toLowerCase());
   });
   const totalTokens = rows.reduce((s, r) => s + r.inputTokens + r.outputTokens, 0);
   const totalCost = rows.reduce((s, r) => s + r.costUsd, 0);
-  const blocked = rows.filter((r) => r.outcome === "error" || r.outcome === "quota_blocked").length;
+  // Everything that did not deliver. Stated as "not ok" rather than a hand-kept
+  // list of failure outcomes, so a newly added outcome can't silently fall out
+  // of the count the way it would from an `=== "error" || …` chain.
+  const failed = rows.filter((r) => r.outcome !== "ok").length;
 
   return (
     <div className="az-stagger">
@@ -65,7 +70,7 @@ export function AuditPage() {
 
       <Group gap={10} mb={18} wrap="wrap">
         <TextInput
-          placeholder="Filter by app, user, capability, model…"
+          placeholder="Filter by app, user, capability, target, path…"
           leftSection={<Icon name="search" size={14} />}
           value={q}
           onChange={(e) => setQ(e.currentTarget.value)}
@@ -81,6 +86,8 @@ export function AuditPage() {
             { value: "error", label: "Error" },
             { value: "refusal", label: "Refusal" },
             { value: "quota_blocked", label: "Quota" },
+            { value: "forbidden", label: "Forbidden" },
+            { value: "conflict", label: "Conflict" },
           ]}
         />
       </Group>
@@ -97,9 +104,9 @@ export function AuditPage() {
         </Card>
         <Card p="14px 18px">
           <Stat
-            label="Error / quota"
-            value={blocked}
-            tone={blocked > 0 ? "var(--az-bad)" : undefined}
+            label="Not delivered"
+            value={failed}
+            tone={failed > 0 ? "var(--az-bad)" : undefined}
             icon="shield"
           />
         </Card>
@@ -151,7 +158,17 @@ export function AuditPage() {
                     </Table.Td>
                     <Table.Td c="dark.1">{r.userOid}</Table.Td>
                     <Table.Td>{r.capability}</Table.Td>
-                    <Table.Td c="dark.2">{r.model}</Table.Td>
+                    <Table.Td c="dark.2">
+                      {r.model}
+                      {/* `fetch` rows carry the request line too; `llm`/`data`
+                          rows have neither and simply render the model alone. */}
+                      {r.path !== null && (
+                        <Text component="div" className="az-mono" fz={11} c="dark.3">
+                          {r.method ? `${r.method} ` : ""}
+                          {r.path}
+                        </Text>
+                      )}
+                    </Table.Td>
                     <Table.Td className="az-tnum" style={{ textAlign: "right" }} c="dark.1">
                       {tokens ? tokens.toLocaleString() : "—"}
                     </Table.Td>

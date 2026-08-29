@@ -1,6 +1,6 @@
 import { type Pool } from "pg";
 
-import { type Env } from "@azx-pbc/shared";
+import { type Env, type GatewayOutcome } from "@azx-pbc/shared";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
@@ -25,7 +25,12 @@ import { withPartition } from "../db/partition.js";
  * metering hot path — an accepted cost for the fail-closed backstop.
  */
 
-export type GatewayOutcome = "ok" | "error" | "refusal" | "quota_blocked" | "conflict";
+// `GatewayOutcome` is imported from `@azx-pbc/shared`, not redeclared here. A
+// local union drifted from the shared one once already (`conflict`), and since
+// the portal parses every ledger row through `GatewayCallSchema`, the drift
+// turned each app-data 412 into a 500 on the audit route. Re-export so existing
+// importers of this module are unaffected.
+export type { GatewayOutcome };
 
 export interface GatewayCallRecord {
   appId: string;
@@ -51,10 +56,69 @@ export interface GatewayCallRecord {
   stopReason?: string | null;
   /** Short upstream error string; null/omitted on success. */
   errorDetail?: string | null;
+  /**
+   * Request path of a proxied `fetch` call, **query string excluded**; omitted
+   * for every other capability. Truncated to {@link PATH_MAX} by
+   * {@link fetchPathOf} — see the note there.
+   */
+  path?: string | null;
+  /** HTTP method of a proxied `fetch` call; omitted for other capabilities. */
+  method?: string | null;
 }
 
 /** Max length of the `errorDetail` ledger string, before the ellipsis. */
 const ERROR_DETAIL_MAX = 300;
+
+/** Max length of the `path` ledger column, before the ellipsis. */
+export const PATH_MAX = 512;
+
+/**
+ * Max length of the `model` ledger column, before the ellipsis.
+ *
+ * Deliberately **not** `ERROR_DETAIL_MAX`: `model` is a WHERE predicate, not free
+ * text. `dataWritesToday` matches it with `model = ANY($3)` against
+ * `DATA_WRITE_VERBS`, so the cap has to sit well clear of every real value or it
+ * would silently stop matching — the longest verb is 17 chars, the longest model
+ * id ~25, and a manifest origin is short. 200 leaves two orders of headroom over
+ * that floor while still bounding what an app can write: for `fetch` this column
+ * carries `target.origin`, whose only other bound is Node's `maxHeaderSize`.
+ * The column is plain TEXT (no `@db.VarChar`), so this is the only bound there is.
+ */
+export const MODEL_MAX = 200;
+
+/** Shared tail for the ledger's length caps. */
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/**
+ * Render a proxied call's pathname for the `path` ledger column.
+ *
+ * Two things this is load-bearing for:
+ *
+ *  - **The query string never arrives here.** Callers pass `URL.pathname`, so
+ *    the target's query is gone before this point — that is where credentials
+ *    are conventionally placed (`?api_key=`, a SAS `?sig=`), and the request-log
+ *    serializer draws the same line (`redactFetchTarget` in
+ *    `@azx-pbc/shared/logging`).
+ *
+ *    **This does not make the result credential-free**, and nothing should be
+ *    written as though it does. Plenty of APIs put the secret in a path segment
+ *    (Telegram `/bot<TOKEN>/…`, Slack webhooks `/services/T…/B…/<secret>`). No
+ *    heuristic is applied, deliberately: a token segment and a REST resource id
+ *    are the same shape, so any entropy test that catches `/bot<TOKEN>` also
+ *    eats `/customers/<uuid>/orders` — the value this column exists to capture.
+ *    Bounding is the mitigation, not detection, and retention is the real fix
+ *    (ADR-0021). The ledger is the stricter store of the two: log lines age out,
+ *    ledger rows have no DELETE grant for any role.
+ *  - **The length is capped.** The path is attacker-controlled — it is whatever
+ *    the hosted app put in the URL — and `gateway_calls` is append-only with no
+ *    DELETE grant for any role and no pruning job, so an app writing multi-KB
+ *    paths would be unfixable after the fact.
+ */
+export function fetchPathOf(pathname: string): string {
+  return truncate(pathname, PATH_MAX);
+}
 
 /** How far up the `cause` chain to walk. Deep enough for undici's wrapping. */
 const ERROR_CAUSE_DEPTH = 4;
@@ -93,8 +157,32 @@ export function errorDetailOf(err: unknown): string {
     cur = cur.cause;
   }
 
-  const detail = parts.join(": ");
-  return detail.length > ERROR_DETAIL_MAX ? `${detail.slice(0, ERROR_DETAIL_MAX)}…` : detail;
+  return truncate(parts.join(": "), ERROR_DETAIL_MAX);
+}
+
+/**
+ * Clamp every app-influenced string on a ledger record to its column budget.
+ *
+ * Applied by **both** `PgUsageStore` and the test fake, not inside the SQL layer:
+ * a cap that lives only in the Pg store is unreachable from every unit test, and
+ * the fake would then disagree with the real store about what it stores — the
+ * same class of drift the shared `fetchRequestsToday` predicate exists to avoid.
+ *
+ * `path` normally arrives pre-capped via {@link fetchPathOf}; re-clamping is
+ * idempotent (the same constant) and closes the gap for any future call site
+ * that forgets. `model` and `errorDetail` are the ones that actually needed it:
+ * both are built by call sites from `target.origin`, whose only bound is Node's
+ * `maxHeaderSize` — a 3.6 KB host produced a ~7 KB row before this existed.
+ */
+export function clampRecord(call: GatewayCallRecord): GatewayCallRecord {
+  return {
+    ...call,
+    model: truncate(call.model, MODEL_MAX),
+    ...(call.path != null ? { path: truncate(call.path, PATH_MAX) } : {}),
+    ...(call.errorDetail != null
+      ? { errorDetail: truncate(call.errorDetail, ERROR_DETAIL_MAX) }
+      : {}),
+  };
 }
 
 /** The two LLM spend windows the gate checks, in micro-USD (1e-6 USD). */
@@ -122,8 +210,15 @@ export interface UsageStore {
   /**
    * Count of admitted fetch-proxy calls today (fetch-proxy design §7) — the
    * per-app `requestsPerDay` budget window. "Admitted" means everything we
-   * recorded except the budget rejections themselves (`quota_blocked`), so a
-   * flood of failing calls still counts against the cap.
+   * recorded except **the platform's own pre-egress refusals** (`quota_blocked`
+   * and `forbidden`), so a flood of failing calls still counts against the cap.
+   *
+   * The budget prices work done on the app's behalf at the egress boundary: an
+   * `error` or `refusal` row dialled egress, a `forbidden` row (allowlist
+   * denial) mints no instruction and costs no third party. Counting denials
+   * would also be pointless as a bound — the allowlist check returns *before*
+   * this gate, so a denial loop never reaches it and writes rows either way;
+   * counting them would only starve the app's legitimate traffic.
    */
   fetchRequestsToday(appId: string, env: Env): Promise<number>;
   /** Append one call to the ledger. */
@@ -190,7 +285,8 @@ export class PgUsageStore implements UsageStore {
       const result = await client.query(
         `SELECT COUNT(*)::int AS n
          FROM gateway_calls
-         WHERE "appId" = $1 AND env = $2 AND capability = 'fetch' AND outcome <> 'quota_blocked'
+         WHERE "appId" = $1 AND env = $2 AND capability = 'fetch'
+           AND outcome NOT IN ('quota_blocked', 'forbidden')
            AND "createdAt" >= date_trunc('day', now())`,
         [appId, env],
       );
@@ -199,7 +295,8 @@ export class PgUsageStore implements UsageStore {
     });
   }
 
-  async record(call: GatewayCallRecord): Promise<void> {
+  async record(raw: GatewayCallRecord): Promise<void> {
+    const call = clampRecord(raw);
     await withPartition(this.#pool, call.appId, null, call.env, async (client) => {
       await client.query(
         // Prisma's @default(uuid()) is client-side, so the raw INSERT supplies
@@ -210,8 +307,9 @@ export class PgUsageStore implements UsageStore {
         `INSERT INTO gateway_calls
            (id, "appId", env, "userOid", capability, model, "inputTokens", "outputTokens",
             "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd", outcome,
-            "durationMs", "statusCode", "stopReason", "errorDetail")
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+            "durationMs", "statusCode", "stopReason", "errorDetail", path, method)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17)`,
         [
           call.appId,
           call.env,
@@ -228,6 +326,8 @@ export class PgUsageStore implements UsageStore {
           call.statusCode ?? null,
           call.stopReason ?? null,
           call.errorDetail ?? null,
+          call.path ?? null,
+          call.method ?? null,
         ],
       );
     });

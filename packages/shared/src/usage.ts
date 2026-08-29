@@ -14,11 +14,26 @@ import { z } from "zod";
  */
 
 /**
- * Gateway call outcomes — mirrors the edge's `GatewayOutcome`
- * (`apps/edge/src/gateway/usage.ts`) and the values written to
- * `gateway_calls.outcome`.
+ * Gateway call outcomes — the values written to `gateway_calls.outcome`, and
+ * the single source of truth for them. The edge **imports** `GatewayOutcome`
+ * from here rather than declaring its own union: the two drifted once already
+ * (`conflict` was added edge-side in 737da10 and never landed here, which made
+ * every app-data 412 a 500 on the portal's audit route, since `toGatewayCall`
+ * parses each row through `GatewayCallSchema`). Importing turns that class of
+ * drift into a compile error.
+ *
+ * `forbidden` is the fetch-proxy's allowlist denial — the app asked for an
+ * origin its manifest never granted. Like `quota_blocked` it is the platform's
+ * own pre-egress refusal: no instruction is minted and nothing is dialled.
  */
-export const GATEWAY_OUTCOMES = ["ok", "error", "refusal", "quota_blocked"] as const;
+export const GATEWAY_OUTCOMES = [
+  "ok",
+  "error",
+  "refusal",
+  "quota_blocked",
+  "conflict",
+  "forbidden",
+] as const;
 export const GatewayOutcomeSchema = z.enum(GATEWAY_OUTCOMES);
 export type GatewayOutcome = z.infer<typeof GatewayOutcomeSchema>;
 
@@ -71,7 +86,7 @@ export const UsageSummarySchema = z.object({
   latencyP95Ms: z.number().nonnegative().nullable(),
   /** Fraction of calls in the window whose outcome was not `ok` (0..1). */
   errorRate: z.number().min(0).max(1),
-  /** Count of calls keyed by outcome (`ok` / `error` / `refusal` / `quota_blocked`). */
+  /** Count of calls keyed by outcome — see {@link GATEWAY_OUTCOMES}. */
   byOutcome: z.record(z.string(), z.int().nonnegative()),
   byModel: z.array(
     z.object({
@@ -118,6 +133,15 @@ export const GatewayCallSchema = z.object({
   durationMs: z.int().nonnegative(),
   /** Upstream/egress HTTP status — set for `fetch`; null for streamed `llm`. */
   statusCode: z.int().nullable(),
+  /**
+   * Request path of the proxied call — set for `fetch`; null otherwise. The
+   * target's query string is excluded (see `redactFetchTarget` in `./logging.ts`)
+   * because that is where credentials are conventionally placed — but a path can
+   * carry one too, and nothing here detects that. See ADR-0021.
+   */
+  path: z.string().nullable(),
+  /** HTTP method of the proxied call — set for `fetch`; null otherwise. */
+  method: z.string().nullable(),
   /** LLM stop reason; null for non-LLM calls. */
   stopReason: z.string().nullable(),
   /** Short upstream error string; null on success. */

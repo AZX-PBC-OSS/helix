@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import {
+  GATEWAY_OUTCOMES,
   GatewayAuditPageSchema,
   PLATFORM_RANGES,
   USAGE_RANGES,
@@ -14,11 +15,10 @@ import {
   toPlatformUsage,
   toUsageSummary,
   type GatewayCallRow,
-  type ModelTokenRow,
   type PlatformAppRow,
   type PlatformCapabilityRow,
-  type PlatformTotalsModelRow,
-  type SeriesModelRow,
+  type SeriesRow,
+  type TokenCostRow,
   type UsageModelRow,
   type UsageOutcomeRow,
 } from "../db/mappers.js";
@@ -32,9 +32,20 @@ import {
  *
  * Trends use a selectable rolling `range`: a `generate_series` grid (hourly for
  * `24h`, daily otherwise) left-joined to the ledger so buckets are dense and
- * zero-filled, grouped by model so each bucket can be priced (rates differ per
- * model). The per-app daily-cap gauge stays calendar-day scoped (`today`).
+ * zero-filled. They are **not** grouped by model: cost is summed from the frozen
+ * `costMicroUsd` column the edge writes at call time, so there is nothing
+ * per-model left to do at read time — only the per-app `byModel` breakdown still
+ * needs the key. The per-app daily-cap gauge stays calendar-day scoped (`today`).
  */
+
+/**
+ * Cap on the per-app model breakdown. The group key is low-cardinality by
+ * construction (curated LLM ids, app-data verbs, manifest-approved fetch
+ * origins), so this should never bind — it is here so the response size is a
+ * property of this route rather than of whatever manifest someone approves.
+ * `ORDER BY tokens DESC` makes the truncation point meaningful.
+ */
+const MODEL_BREAKDOWN_LIMIT = 100;
 
 /** Clamp a `?limit=` query value to a sane positive integer. */
 function clampLimit(raw: unknown, fallback: number, max: number): number {
@@ -107,6 +118,21 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         WHERE "appId" = ${id}::uuid AND "createdAt" >= ${since}
         GROUP BY outcome`);
 
+      // The one query that still groups by `model` — everything else that used to
+      // was summing the frozen cost column and threw the key away.
+      //
+      // `outcome <> 'forbidden'` is what keeps this key low-cardinality, and the
+      // rollup meaningful. Every other fetch outcome is recorded downstream of
+      // the allowlist check, so its `model` is an origin that arrived through an
+      // approved manifest revision; a `forbidden` row's origin is whatever the
+      // app put in the URL and cleared no bar at all. It also has nothing to
+      // report here — a denial spends no tokens, no dollars and never reaches
+      // egress — so it would render as an `unpriced` 0% row. `byOutcome` still
+      // counts it, in the header of this very card.
+      //
+      // Keep this predicate OUTCOME-based. The top-level `costUsd` is a reduce
+      // over these rows (`toUsageSummary`), so a predicate that could drop a
+      // charged row would silently understate spend.
       const models = await app.prisma.$queryRaw<UsageModelRow[]>(Prisma.sql`
         SELECT model,
                COUNT(*)::int                                       AS requests,
@@ -114,8 +140,10 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
                COALESCE(SUM("costMicroUsd"), 0)::bigint            AS "costMicroUsd"
         FROM gateway_calls
         WHERE "appId" = ${id}::uuid AND "createdAt" >= ${since}
+          AND outcome <> 'forbidden'
         GROUP BY model
-        ORDER BY tokens DESC`);
+        ORDER BY tokens DESC
+        LIMIT ${MODEL_BREAKDOWN_LIMIT}`);
 
       // p95 upstream latency over the range (only timed calls — durationMs > 0).
       const latency = await app.prisma.$queryRaw<Array<{ p95: number | null }>>(Prisma.sql`
@@ -123,33 +151,29 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         FROM gateway_calls
         WHERE "appId" = ${id}::uuid AND "durationMs" > 0 AND "createdAt" >= ${since}`);
 
-      const series = await app.prisma.$queryRaw<SeriesModelRow[]>(Prisma.sql`
+      // `COUNT(gc.id)`, not `COUNT(*)`: that is what makes an empty bucket read 0
+      // rather than 1 on the LEFT JOIN, i.e. what makes the grid dense.
+      const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
         SELECT d                                                            AS bucket,
-               gc.model                                                     AS model,
                COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
-               COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
-               COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
                COALESCE(SUM(gc."costMicroUsd"), 0)::bigint                  AS "costMicroUsd",
                COUNT(gc.id)::int                                            AS requests
         FROM ${seriesGrid(plan)} AS d
         LEFT JOIN gateway_calls gc
           ON date_trunc(${plan.grain}::text, gc."createdAt") = d
          AND gc."appId" = ${id}::uuid
-        GROUP BY d, gc.model
+        GROUP BY d
         ORDER BY d ASC`);
 
-      // Today-since-midnight, by model — backs the daily-cap gauge (calendar-day).
-      const today = await app.prisma.$queryRaw<ModelTokenRow[]>(Prisma.sql`
-        SELECT model,
-               COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
+      // Today-since-midnight — backs the daily-cap gauge (calendar-day). No
+      // GROUP BY, so this always returns exactly one (COALESCE'd) row.
+      const today = await app.prisma.$queryRaw<TokenCostRow[]>(Prisma.sql`
+        SELECT COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
                COALESCE(SUM("outputTokens"), 0)::bigint            AS "outputTokens",
-               COALESCE(SUM("cacheReadInputTokens"), 0)::bigint     AS "cacheReadInputTokens",
-               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint AS "cacheCreationInputTokens",
                COALESCE(SUM("costMicroUsd"), 0)::bigint            AS "costMicroUsd"
         FROM gateway_calls
-        WHERE "appId" = ${id}::uuid AND "createdAt" >= date_trunc('day', now())
-        GROUP BY model`);
+        WHERE "appId" = ${id}::uuid AND "createdAt" >= date_trunc('day', now())`);
 
       return toUsageSummary({
         appId: id,
@@ -185,11 +209,26 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("validation_failed", "`before` must be an ISO-8601 timestamp");
     }
 
+    // Reject an unknown outcome rather than passing it to Prisma, where it
+    // matches nothing and renders as an empty audit log — indistinguishable
+    // from "no such calls" for anyone who mistypes a filter.
+    // `|| undefined`, not `!== undefined`: Fastify parses both `?outcome=` and a
+    // bare `?outcome` to the empty string, which used to mean "no filter" under
+    // the previous truthiness check. Rejecting that would break a scripted client
+    // that always appends the param.
+    const outcome = req.query.outcome || undefined;
+    if (outcome !== undefined && !(GATEWAY_OUTCOMES as readonly string[]).includes(outcome)) {
+      throw new AppError(
+        "validation_failed",
+        `\`outcome\` must be one of: ${GATEWAY_OUTCOMES.join(", ")}`,
+      );
+    }
+
     // Fetch one extra row to compute the next cursor without a count query.
     const rows = await app.prisma.gatewayCall.findMany({
       where: {
         ...(appId ? { appId } : {}),
-        ...(req.query.outcome ? { outcome: req.query.outcome } : {}),
+        ...(outcome ? { outcome } : {}),
         ...(before ? { createdAt: { lt: before } } : {}),
       },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -225,6 +264,8 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         statusCode: r.statusCode,
         stopReason: r.stopReason,
         errorDetail: r.errorDetail,
+        path: r.path,
+        method: r.method,
         createdAt: r.createdAt,
       }),
     );
@@ -246,70 +287,64 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
       const plan = PLATFORM_PLANS[range];
       const since = windowStart(plan);
 
-      const series = await app.prisma.$queryRaw<SeriesModelRow[]>(Prisma.sql`
+      const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
         SELECT d                                                            AS bucket,
-               gc.model                                                     AS model,
                COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
-               COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
-               COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
                COALESCE(SUM(gc."costMicroUsd"), 0)::bigint                  AS "costMicroUsd",
                COUNT(gc.id)::int                                            AS requests
         FROM ${seriesGrid(plan)} AS d
         LEFT JOIN gateway_calls gc ON date_trunc(${plan.grain}::text, gc."createdAt") = d
-        GROUP BY d, gc.model
+        GROUP BY d
         ORDER BY d ASC`);
 
       const byApp = await app.prisma.$queryRaw<PlatformAppRow[]>(Prisma.sql`
         SELECT gc."appId"                                                   AS "appId",
                a.slug                                                       AS slug,
-               gc.model                                                     AS model,
                COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
-               COALESCE(SUM(gc."cacheReadInputTokens"), 0)::bigint          AS "cacheReadInputTokens",
-               COALESCE(SUM(gc."cacheCreationInputTokens"), 0)::bigint      AS "cacheCreationInputTokens",
                COALESCE(SUM(gc."costMicroUsd"), 0)::bigint                  AS "costMicroUsd",
                COUNT(*)::int                                                AS requests
         FROM gateway_calls gc
         LEFT JOIN apps a ON a.id = gc."appId"
         WHERE gc."createdAt" >= ${since}
-        GROUP BY gc."appId", a.slug, gc.model`);
+        GROUP BY gc."appId", a.slug`);
 
-      // MTD headline KPIs — independent of the selected range.
+      // MTD headline KPIs — independent of the selected range. Cost folds in here
+      // rather than into a second model-grouped query: it is summed straight from
+      // the frozen `costMicroUsd` column, so there was never anything per-model
+      // to do with it.
       const totalsRows = await app.prisma.$queryRaw<
-        Array<{ tokens: bigint | number; requests: number; activeUsers: number }>
+        Array<{
+          tokens: bigint | number;
+          requests: number;
+          activeUsers: number;
+          costMicroUsd: bigint | number;
+        }>
       >`
         SELECT COALESCE(SUM("inputTokens" + "outputTokens"), 0)::bigint AS tokens,
                COUNT(*)::int                                            AS requests,
-               COUNT(DISTINCT "userOid")::int                           AS "activeUsers"
+               COUNT(DISTINCT "userOid")::int                           AS "activeUsers",
+               COALESCE(SUM("costMicroUsd"), 0)::bigint                 AS "costMicroUsd"
         FROM gateway_calls
         WHERE "createdAt" >= date_trunc('month', now())`;
-      const totals = totalsRows[0] ?? { tokens: 0, requests: 0, activeUsers: 0 };
-
-      const totalsByModel = await app.prisma.$queryRaw<PlatformTotalsModelRow[]>`
-        SELECT model,
-               COALESCE(SUM("inputTokens"), 0)::bigint                AS "inputTokens",
-               COALESCE(SUM("outputTokens"), 0)::bigint               AS "outputTokens",
-               COALESCE(SUM("cacheReadInputTokens"), 0)::bigint       AS "cacheReadInputTokens",
-               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint   AS "cacheCreationInputTokens",
-               COALESCE(SUM("costMicroUsd"), 0)::bigint               AS "costMicroUsd"
-        FROM gateway_calls
-        WHERE "createdAt" >= date_trunc('month', now())
-        GROUP BY model`;
+      const totals = totalsRows[0] ?? {
+        tokens: 0,
+        requests: 0,
+        activeUsers: 0,
+        costMicroUsd: 0,
+      };
 
       const capabilityMix = await app.prisma.$queryRaw<PlatformCapabilityRow[]>(Prisma.sql`
         SELECT capability,
-               model,
                COALESCE(SUM("inputTokens"), 0)::bigint                AS "inputTokens",
                COALESCE(SUM("outputTokens"), 0)::bigint               AS "outputTokens",
-               COALESCE(SUM("cacheReadInputTokens"), 0)::bigint       AS "cacheReadInputTokens",
-               COALESCE(SUM("cacheCreationInputTokens"), 0)::bigint   AS "cacheCreationInputTokens",
                COALESCE(SUM("costMicroUsd"), 0)::bigint               AS "costMicroUsd"
         FROM gateway_calls
         WHERE "createdAt" >= ${since}
-        GROUP BY capability, model`);
+        GROUP BY capability`);
 
-      return toPlatformUsage({ range, series, byApp, totals, totalsByModel, capabilityMix });
+      return toPlatformUsage({ range, series, byApp, totals, capabilityMix });
     },
   );
 }

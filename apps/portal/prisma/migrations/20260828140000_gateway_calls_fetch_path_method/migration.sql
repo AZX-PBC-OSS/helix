@@ -1,0 +1,37 @@
+-- Fetch-proxy audit depth: record *which endpoint* a proxied call hit, not just
+-- which origin. `gateway_calls.model` already carries the target origin for
+-- `capability = 'fetch'`; these two columns carry the rest of the request line.
+--
+-- They stay out of `model` because `model` is the group key of the per-app
+-- "Model breakdown" rollup, and that rollup is only meaningful while the key
+-- stays low-cardinality. For `fetch` the bound is not a numeric cap — nothing
+-- limits how many origins a manifest may list — but the fact that every origin
+-- had to arrive through an approved manifest revision. Rows that never cleared
+-- that bar (`outcome = 'forbidden'`) are excluded from the rollup for exactly
+-- this reason; see apps/portal/src/routes/usage.ts. Folding a path in would
+-- defeat the bound outright: every distinct URL would be its own group.
+--
+-- The target's QUERY STRING is not captured, because that is where credentials
+-- are conventionally placed (`?api_key=`, a SAS `?sig=`) and `redactFetchTarget`
+-- in @azx-pbc/shared/logging draws the same line for request logs.
+--
+-- That does NOT make `path` credential-free, and nothing here should be read as
+-- claiming it does. A real class of APIs puts the secret in a path segment
+-- (Telegram `/bot<TOKEN>/…`, Slack webhooks `/services/T…/B…/<secret>`). No
+-- heuristic is applied: a token segment and a REST resource id are the same
+-- shape, so any entropy test that catches `/bot<TOKEN>` also eats
+-- `/customers/<uuid>/orders`, which is the value this column exists to capture.
+-- The mitigations are bounding, not detection — the edge caps the length at
+-- write time (the value is app-controlled) and rate-limits the denial writer —
+-- and retention is the real fix. See ADR-0021.
+--
+-- Nullable: only `fetch` rows populate these, and every row predating this
+-- migration has no value to backfill.
+--
+-- Additive only. Grants on `gateway_calls` are table-level (`GRANT SELECT,
+-- INSERT ON gateway_calls TO helix_edge`, 20260616000001_edge_role_grants; the
+-- same holds for helix_dev in 20260722192440_dev_env_partition), so new columns
+-- are covered with no grant re-issue. No RLS policy changes: the gateway_calls
+-- policies key on "appId"/env, which are untouched.
+ALTER TABLE "gateway_calls" ADD COLUMN "path" TEXT;
+ALTER TABLE "gateway_calls" ADD COLUMN "method" TEXT;

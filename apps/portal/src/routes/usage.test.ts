@@ -23,6 +23,9 @@ async function seedApp(
     /** Frozen as-charged cost in micro-USD — what the edge would have written. */
     costMicroUsd?: number;
     outcome?: string;
+    /** Set on `fetch` rows only — the proxied request line. */
+    path?: string;
+    method?: string;
   }>,
 ): Promise<{ id: string; slug: string }> {
   const slug = uniqueSlug();
@@ -44,6 +47,8 @@ async function seedApp(
         outputTokens: c.outputTokens ?? 0,
         costMicroUsd: BigInt(c.costMicroUsd ?? 0),
         outcome: c.outcome ?? "ok",
+        path: c.path ?? null,
+        method: c.method ?? null,
       },
     });
   }
@@ -100,6 +105,55 @@ describe("GET /api/v1/apps/:slug/usage", () => {
     // No timed calls seeded → p95 is null.
     expect(body.latencyP95Ms).toBeNull();
   });
+
+  it("keeps the trend grid dense after dropping the model group key", async () => {
+    // The series query used to GROUP BY (bucket, model) and re-fold in JS. It
+    // now aggregates per bucket; the zero-fill comes from COUNT(gc.id) on the
+    // LEFT JOIN miss, and two models in one bucket must sum, not duplicate it.
+    const { slug } = await seedApp([
+      { model: "claude-opus-4-8", inputTokens: 10, outputTokens: 20, costMicroUsd: 500 },
+      { model: "claude-haiku-4-5", inputTokens: 30, outputTokens: 40, costMicroUsd: 200 },
+    ]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/usage?range=24h`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.series).toHaveLength(24);
+    // Exactly one point per bucket, and the two models landed in the same one.
+    const buckets = body.series.map((p: { bucket: string }) => p.bucket);
+    expect(new Set(buckets).size).toBe(24);
+    const live = body.series.filter((p: { requests: number }) => p.requests > 0);
+    expect(live).toHaveLength(1);
+    expect(live[0].requests).toBe(2);
+    expect(live[0].tokens).toBe(100);
+    expect(live[0].costUsd).toBeCloseTo(0.0007, 9);
+    // The daily-cap gauge sums the same rows.
+    expect(body.today.tokens).toBe(100);
+  });
+
+  it("keeps denied origins out of the model breakdown but counts them as outcomes", async () => {
+    // `byModel` is the one rollup still keyed on `model`. A forbidden row's
+    // origin cleared no allowlist, so admitting it would make the group key
+    // app-writable — and a denial has no usage to report anyway.
+    const { slug } = await seedApp([
+      { capability: "fetch", model: "https://api.github.com", outcome: "ok" },
+      { capability: "fetch", model: "https://api.evil.com", outcome: "forbidden" },
+    ]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/usage?range=24h`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.byModel.map((m: { model: string }) => m.model)).toEqual(["https://api.github.com"]);
+    // Still visible as an outcome — the badge sits above this very breakdown.
+    expect(body.byOutcome).toEqual({ ok: 1, forbidden: 1 });
+    expect(body.requests).toBe(2);
+  });
 });
 
 describe("GET /api/v1/gateway/audit", () => {
@@ -133,6 +187,71 @@ describe("GET /api/v1/gateway/audit", () => {
     expect(haiku.costUsd).toBeCloseTo(0.00023, 9);
     expect(opus).toMatchObject({ durationMs: 0, statusCode: null, stopReason: null });
     expect(opus.cacheReadInputTokens).toBe(0);
+    // The request line is fetch-only; an `llm` row carries neither.
+    expect(opus).toMatchObject({ path: null, method: null });
+  });
+
+  it("surfaces the request line on a proxied fetch row", async () => {
+    const { slug } = await seedApp([
+      {
+        capability: "fetch",
+        model: "https://api.github.com",
+        path: "/users/octocat",
+        method: "GET",
+      },
+    ]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/gateway/audit?app=${slug}`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().rows[0]).toMatchObject({
+      capability: "fetch",
+      model: "https://api.github.com",
+      path: "/users/octocat",
+      method: "GET",
+    });
+  });
+
+  it("serves a conflict row instead of 500ing on it", async () => {
+    // `conflict` is written by the app-data 412 path but was missing from
+    // GATEWAY_OUTCOMES, so `GatewayCallSchema.parse` threw and took the whole
+    // audit page down with it — for every app, until the row aged out.
+    const { slug } = await seedApp([
+      { capability: "data", model: "user.put", outcome: "conflict" },
+    ]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/gateway/audit?app=${slug}`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().rows[0]).toMatchObject({ outcome: "conflict" });
+  });
+
+  it("treats an empty outcome param as no filter, not as a bad one", async () => {
+    // Fastify parses `?outcome=` and bare `?outcome` to "". Under the previous
+    // truthiness check that meant "no filter"; the validation must not turn a
+    // scripted client that always appends the param into a 400.
+    const { slug } = await seedApp([{ outcome: "ok" }, { outcome: "error" }]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/gateway/audit?app=${slug}&outcome=`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().rows).toHaveLength(2);
+  });
+
+  it("rejects an unknown outcome filter rather than serving an empty page", async () => {
+    const { slug } = await seedApp([{ outcome: "ok" }]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/gateway/audit?app=${slug}&outcome=nonsense`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it("filters by outcome", async () => {

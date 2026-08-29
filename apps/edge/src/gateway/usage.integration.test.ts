@@ -120,10 +120,12 @@ describe("PgUsageStore", () => {
         statusCode: null,
         stopReason: "end_turn",
         errorDetail: null,
+        path: null,
+        method: null,
       });
       const { rows } = await pool.query(
         `SELECT "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd"::int AS "costMicroUsd",
-                "durationMs", "statusCode", "stopReason", "errorDetail"
+                "durationMs", "statusCode", "stopReason", "errorDetail", path, method
          FROM gateway_calls WHERE "appId" = $1`,
         [meteredAppId],
       );
@@ -135,9 +137,66 @@ describe("PgUsageStore", () => {
         statusCode: null,
         stopReason: "end_turn",
         errorDetail: null,
+        path: null,
+        method: null,
       });
     } finally {
       await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [meteredAppId]);
+    }
+  });
+
+  it("round-trips the fetch request line (path + method)", async () => {
+    const fetchAppId = randomUUID();
+    try {
+      await store.record({
+        appId: fetchAppId,
+        env: "prod",
+        userOid: "oid-alice",
+        capability: "fetch",
+        model: "https://api.github.com",
+        inputTokens: 0,
+        outputTokens: 0,
+        outcome: "ok",
+        statusCode: 200,
+        path: "/users/octocat",
+        method: "GET",
+      });
+      const { rows } = await pool.query(
+        `SELECT path, method FROM gateway_calls WHERE "appId" = $1`,
+        [fetchAppId],
+      );
+      expect(rows[0]).toEqual({ path: "/users/octocat", method: "GET" });
+    } finally {
+      await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [fetchAppId]);
+    }
+  });
+
+  it("excludes the platform's own pre-egress refusals from the fetch budget", async () => {
+    // `requestsPerDay` prices work done at the egress boundary. A `forbidden`
+    // row (allowlist denial) mints no instruction and dials nothing, exactly
+    // like `quota_blocked` — neither may consume the app's budget. Counting
+    // denials would not even bound the ledger: the allowlist check returns
+    // before the quota gate, so a denial loop never reaches it.
+    const budgetAppId = randomUUID();
+    try {
+      const base = {
+        appId: budgetAppId,
+        env: "prod" as const,
+        userOid: "oid-alice",
+        capability: "fetch",
+        model: "https://api.github.com",
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+      await store.record({ ...base, outcome: "ok" });
+      await store.record({ ...base, outcome: "error" });
+      await store.record({ ...base, outcome: "quota_blocked" });
+      await store.record({ ...base, outcome: "forbidden" });
+
+      // ok + error count; quota_blocked + forbidden do not.
+      expect(await store.fetchRequestsToday(budgetAppId, "prod")).toBe(2);
+    } finally {
+      await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [budgetAppId]);
     }
   });
 
