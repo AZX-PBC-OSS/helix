@@ -87,6 +87,7 @@ Required to pass before calling any change done. The smoke test is complementary
 
   Note the database: the run's rows live in `helix_smoke`, not your dev database. Dropping the whole thing (`DROP DATABASE helix_smoke`) is also safe — the next run recreates and migrates it in about a second.
 
+- **Rebuilding the SPA under a running portal serves stale routes.** `routes/spa.ts` registers `@fastify/static` with `wildcard: false`, which globs `apps/portal-web/dist` once at registration and registers a route per file. Run `pnpm --filter @azx-pbc/portal-web build` while `pnpm dev:portal` is up and the new hashed filenames match nothing — every asset falls through to the deep-link handler and returns `index.html` as `text/html`, so the page loads and React never mounts. Restart the portal after a build. `smoke.mjs` builds before it boots for this reason.
 - **No browser driver ships in the repo** (no playwright, no `chromium-cli`), but a Chromium is cached at `~/.cache/ms-playwright/chromium-*/chrome-linux/chrome`. `cdp.mjs` finds it; override with `HELIX_SMOKE_CHROME`. If it's absent the browser group reports SKIP rather than failing.
 
 ## Troubleshooting

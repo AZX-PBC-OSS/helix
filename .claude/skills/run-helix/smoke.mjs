@@ -251,6 +251,39 @@ function buildCli() {
   return cliBuild;
 }
 
+/**
+ * Build the SPA. Must run **before the portal boots**, which is why it lives
+ * here and not in `checkSpa()` with the assertions it feeds.
+ *
+ * `routes/spa.ts` registers @fastify/static with `wildcard: false`, and that
+ * option makes the plugin glob the dist directory once at registration and
+ * register one route per file it finds. A build that lands after boot leaves
+ * the portal routing the *previous* bundle's hashed filenames: the new ones
+ * match nothing, fall through to the deep-link handler, and every asset comes
+ * back as index.html with `content-type: text/html`. What that looks like from
+ * the outside is four unrelated failures — the asset content-type check, plus
+ * three "#root never mounted", because the browser was handed HTML where it
+ * asked for JavaScript. Production builds the image before it boots a
+ * container; so does this now.
+ *
+ * The result is reported later, in the `spa` group where it reads in order.
+ */
+const spaBuild = { detail: null, error: null };
+
+function buildSpa() {
+  try {
+    const r = spawnSync("pnpm", ["--filter", "@azx-pbc/portal-web", "build"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    assert(r.status === 0, `build failed:\n${(r.stderr || r.stdout || "").slice(-1200)}`);
+    const m = (r.stdout || "").match(/(\d+) modules transformed/);
+    spaBuild.detail = m ? `${m[1]} modules` : "built";
+  } catch (err) {
+    spaBuild.error = err;
+  }
+}
+
 /** Run the built CLI against THIS stack's portal. */
 function helix(...args) {
   return spawnSync(process.execPath, [CLI_BIN, ...args], {
@@ -569,14 +602,11 @@ async function checkSpa() {
   group("spa");
   console.log("\n\x1b[1mportal SPA\x1b[0m — vite build, served by the portal");
 
-  await check("vite production build", async () => {
-    const r = spawnSync("pnpm", ["--filter", "@azx-pbc/portal-web", "build"], {
-      cwd: ROOT,
-      encoding: "utf8",
-    });
-    assert(r.status === 0, `build failed:\n${(r.stderr || r.stdout || "").slice(-1200)}`);
-    const m = (r.stdout || "").match(/(\d+) modules transformed/);
-    return m ? `${m[1]} modules` : "built";
+  // Ran before the services came up — see buildSpa() for why that ordering is
+  // load-bearing rather than incidental.
+  await check("vite production build", () => {
+    if (spaBuild.error) throw spaBuild.error;
+    return spaBuild.detail;
   });
 
   let assets = [];
@@ -737,6 +767,14 @@ async function main() {
       console.error(`\n\x1b[31mcould not prepare the smoke database: ${err.message}\x1b[0m`);
       process.exit(2);
     }
+  }
+
+  // Before the services, not after: @fastify/static resolves the dist once at
+  // boot (see buildSpa()). Skipped for `--only` runs that never serve the SPA,
+  // so a targeted edge run stays fast.
+  if (wanted("spa") || wanted("browser")) {
+    console.log("building the SPA…");
+    buildSpa();
   }
 
   console.log("booting services…");
