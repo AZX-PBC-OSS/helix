@@ -27,6 +27,8 @@ function row(item: unknown, over: Partial<CollectionItem> = {}): CollectionItem 
     collection: "contacts",
     env: "prod",
     userOid: null,
+    userName: null,
+    userEmail: null,
     item,
     meta: null,
     createdAt: "2026-08-10T12:00:00.000Z",
@@ -193,14 +195,19 @@ describe("csvCell", () => {
 
 describe("collectionCsv", () => {
   const items = [
-    row({ email: "a@b.c", name: "Ann" }, { env: "prod", userOid: "oid-1" }),
+    row(
+      { email: "a@b.c", name: "Ann" },
+      { env: "prod", userOid: "oid-1", userName: "Ann Anders", userEmail: "ann@azx.dev" },
+    ),
     row({ email: "d@e.f" }, { env: "dev", meta: { ipHash: "abc123" } }),
   ];
 
   it("puts platform columns first, then namespaced app columns, then the raw JSON", () => {
     const { csv } = collectionCsv(items);
     const header = csv.slice(BOM.length).split("\n")[0];
-    expect(header).toBe("id,createdAt,env,userOid,item.email,item.name,item,meta");
+    expect(header).toBe(
+      "id,createdAt,env,userOid,userName,userEmail,item.email,item.name,item,meta",
+    );
   });
 
   it("anchors the platform columns to both ends, whatever the derived width", () => {
@@ -216,10 +223,17 @@ describe("collectionCsv", () => {
 
     for (const shape of [{ email: "a@b.c" }, { a: 1, b: 2, c: 3, d: 4, e: 5 }, "not an object"]) {
       const cols = headerOf(shape);
-      expect(cols.slice(0, 4)).toEqual(["id", "createdAt", "env", "userOid"]);
+      expect(cols.slice(0, 6)).toEqual([
+        "id",
+        "createdAt",
+        "env",
+        "userOid",
+        "userName",
+        "userEmail",
+      ]);
       expect(cols.slice(-2)).toEqual(["item", "meta"]);
       // Everything between the two anchors is derived, and nothing else is.
-      expect(cols.slice(4, -2).every((c) => c.startsWith("item."))).toBe(true);
+      expect(cols.slice(6, -2).every((c) => c.startsWith("item."))).toBe(true);
     }
   });
 
@@ -227,7 +241,7 @@ describe("collectionCsv", () => {
     // An app that posts {"env": "..."} must not shadow the platform's env column.
     const { csv } = collectionCsv([row({ env: "spoofed", id: "spoofed" })]);
     const header = csv.slice(BOM.length).split("\n")[0];
-    expect(header).toBe("id,createdAt,env,userOid,item.env,item.id,item,meta");
+    expect(header).toBe("id,createdAt,env,userOid,userName,userEmail,item.env,item.id,item,meta");
     expect(columnHeader("env")).toBe("item.env");
   });
 
@@ -247,9 +261,10 @@ describe("collectionCsv", () => {
   it("writes the row values, with an empty cell for a missing key", () => {
     const { csv } = collectionCsv(items);
     const lines = csv.slice(BOM.length).split("\n");
-    expect(lines[1]).toContain("prod,oid-1,a@b.c,Ann,");
-    // Second row has no `name`, and no userOid → two empty cells.
-    expect(lines[2]).toContain("dev,,d@e.f,,");
+    // The captured display half travels beside the id it labels.
+    expect(lines[1]).toContain("prod,oid-1,Ann Anders,ann@azx.dev,a@b.c,Ann,");
+    // Second row has no `name`, and no userOid — so no captured labels either.
+    expect(lines[2]).toContain("dev,,,,d@e.f,,");
   });
 
   it("carries the raw item JSON as a lossless fallback column", () => {
@@ -271,6 +286,8 @@ describe("collectionCsv", () => {
 
   it("emits a header-only file for an empty collection", () => {
     const { csv } = collectionCsv([]);
-    expect(csv.slice(BOM.length).split("\n")).toEqual(["id,createdAt,env,userOid,item,meta"]);
+    expect(csv.slice(BOM.length).split("\n")).toEqual([
+      "id,createdAt,env,userOid,userName,userEmail,item,meta",
+    ]);
   });
 });

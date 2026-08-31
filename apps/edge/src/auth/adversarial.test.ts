@@ -412,7 +412,13 @@ describe("attack: session fixation at /_auth/complete", () => {
 describe("attack: visibility bypass", () => {
   it("denies a group-mode app to a user outside the group, minting nothing", async () => {
     const edge = buildAuthEdge();
-    edge.oidc.identity = { oid: "oid-mallory", displayName: "Mallory", groups: [] };
+    edge.oidc.identity = {
+      oid: "oid-mallory",
+      displayName: "Mallory",
+      name: null,
+      email: null,
+      groups: [],
+    };
     const start = await edge.app.inject({ url: "/start?app=team&rd=/", headers: AUTH_HOST });
     const flowCookie = cookieValue(start, FLOW_COOKIE);
     const state = new URL(start.headers.location as string).searchParams.get("state");
@@ -527,7 +533,7 @@ describe("attack: the /_api/llm/chat gateway", () => {
     await sessions.createPending({
       id,
       appId,
-      user: { oid: "oid-alice", displayName: "Alice Anders", groups: [] },
+      user: { oid: "oid-alice", displayName: "Alice Anders", name: null, email: null, groups: [] },
       refreshDueAt: new Date(Date.now() + 60_000),
       expiresAt: new Date(Date.now() + 3_600_000),
     });

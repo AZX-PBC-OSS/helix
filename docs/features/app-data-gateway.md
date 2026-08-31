@@ -173,7 +173,7 @@ specification is `collectionTable.test.ts`; the rules are:
   `jsonb`'s canonical key order — Postgres normalises by key length then bytewise, so the order the
   app posted its fields in is already lost on write. Deterministic, but not authored.)
 - **Capped at 12**, with a `truncated` flag so the UI can say keys are missing.
-- **`item.`-namespaced** — `id,createdAt,env,userOid,item.email,…,item,meta`. This removes all
+- **`item.`-namespaced** — `id,createdAt,env,userOid,userName,userEmail,item.email,…,item,meta`. This removes all
   collision logic (an app posting `{"env":…}` cannot shadow the platform column), survives adding
   new platform columns, and neutralises formula injection in the header row for free.
 - **Null and missing both render empty** in CSV. CSV has no null and any sentinel re-imports as a
@@ -186,9 +186,12 @@ specification is `collectionTable.test.ts`; the rules are:
 The SPA derives from the rows on screen and the export from up to 10,000, so **the two column sets
 can legitimately differ**. Sharing the code buys one spec and one test suite, not identical output.
 
-**The CSV layout is anchored from both ends, not the left.** `id, createdAt, env, userOid` are
-always the first four columns and `item, meta` always the last two; only the derived block between
-them varies in width, so the raw columns land at a different absolute index per collection. The CSV
+**The CSV layout is anchored from both ends, not the left.** `id, createdAt, env, userOid,
+userName, userEmail` are always the first six columns and `item, meta` always the last two; only
+the derived block between them varies in width, so the raw columns land at a different absolute
+index per collection. (The prefix widened from four when the captured display half landed — which
+is exactly the "survives adding new platform columns" property the `item.` namespace buys, and why
+the promise below is about the *anchors*, not about absolute offsets.) The CSV
 is optimised to be *read* — derivation exists so the file opens to `email` and `name` rather than to
 JSON, and moving the raw blob left to win a fixed index would put a cell that can hold 64 KB ahead
 of the columns the owner opened it for. **Anything needing stable offsets should use

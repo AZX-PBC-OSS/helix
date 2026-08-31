@@ -121,6 +121,16 @@ export const GatewayCallSchema = z.object({
   /** App slug at read time; null when the app row no longer exists. */
   slug: z.string().nullable(),
   userOid: z.string(),
+  /**
+   * The caller's claims as captured when the call was made — the **display half**
+   * (`App.ownerName`/`ownerEmail` applied to the ledger). Render these; never
+   * compare them, and never join on them. Null for anonymous, shared-password and
+   * dev-token callers, and for rows predating the columns, in which case the UI
+   * falls back to `userOid` — which is Entra's pairwise `sub` and identifies
+   * nobody, so it is a last resort rather than a label.
+   */
+  userName: z.string().nullable(),
+  userEmail: z.string().nullable(),
   capability: z.string(),
   model: z.string(),
   inputTokens: z.int().nonnegative(),

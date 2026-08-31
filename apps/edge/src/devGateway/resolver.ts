@@ -67,6 +67,11 @@ export function makeDevTokenResolver(store: DevTokenStore): CallerResolver {
       authenticated: true,
       oid: row.developerOid,
       displayName: row.developerOid,
+      // `developerOid` is the portal actor's subject, which the portal verifier
+      // already collapses to `email ?? preferred_username ?? sub` — so it is
+      // usually readable on its own and needs no separate display half.
+      name: null,
+      email: null,
       groups: [],
       env: "dev",
     };

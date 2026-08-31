@@ -47,8 +47,51 @@ export const ANON_USER_OID = "anon";
  * (step 3) sets `'dev'`. It flows straight into `withPartition(..., env, ...)`.
  */
 export type Caller =
-  | { authenticated: true; oid: string; displayName: string; groups: string[]; env: Env }
+  | {
+      authenticated: true;
+      oid: string;
+      displayName: string;
+      name: string | null;
+      email: string | null;
+      groups: string[];
+      env: Env;
+    }
   | { authenticated: false; env: Env };
+
+/**
+ * How a call is attributed on the rows it writes — the gateway ledger
+ * (`gateway_calls`) and collection submissions (`app_collection_items`).
+ *
+ * Two halves, and keeping them apart is the point (the split `App.ownerId` vs
+ * `ownerName`/`ownerEmail` already draws on the control plane). `userOid` is the
+ * identity: compared, joined on, used as the RLS partition key — never rendered,
+ * because Entra's `sub` is pairwise and resolves to nobody. `userName`/`userEmail`
+ * are the display half: rendered, never compared, and captured at write time
+ * because `sessions` is the only id→name map there is and it is swept at expiry.
+ */
+export interface MeterIdentity {
+  userOid: string;
+  userName: string | null;
+  userEmail: string | null;
+}
+
+/**
+ * The one place a {@link Caller} becomes a metering identity.
+ *
+ * This exists as a function rather than an object literal at each call site
+ * because there are six such sites across `llm`, `fetch` and `data-handler`, and
+ * an attribution that is easy to forget at a seventh is an attribution that will
+ * be missing from exactly one surface. Callers that are not a person — the `anon`
+ * sentinel, a shared-password pseudonym, a dev token — carry no display half at
+ * all rather than a plausible-looking stand-in: a stored `"Guest"` reads as
+ * though it identified someone, whereas a null falls through to the raw
+ * principal, which is the honest statement.
+ */
+export function meterIdentity(caller: Caller): MeterIdentity {
+  return caller.authenticated
+    ? { userOid: caller.oid, userName: caller.name, userEmail: caller.email }
+    : { userOid: ANON_USER_OID, userName: null, userEmail: null };
+}
 
 /** Resolves the caller, or null after the underlying gate already responded. */
 export type CallerResolver = (
@@ -82,6 +125,8 @@ export function makeCallerResolver(gate: SessionGate, config: EdgeConfig): Calle
       authenticated: true,
       oid: session.user.oid,
       displayName: session.user.displayName,
+      name: session.user.name,
+      email: session.user.email,
       groups: session.user.groups,
       env: "prod",
     };

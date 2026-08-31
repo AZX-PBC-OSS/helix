@@ -56,7 +56,13 @@ async function seedSession(
   await sessions.createPending({
     id,
     appId: opts.appId ?? APP_ID,
-    user: { oid: "oid-alice", displayName: "Alice Anders", groups: opts.groups ?? [] },
+    user: {
+      oid: "oid-alice",
+      displayName: "Alice Anders",
+      name: null,
+      email: null,
+      groups: opts.groups ?? [],
+    },
     refreshDueAt: new Date(Date.now() + (opts.refreshDueInMs ?? 60_000)),
     expiresAt: new Date(Date.now() + (opts.expiresInMs ?? 3_600_000)),
   });

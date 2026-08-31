@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PgUsageStore } from "./usage.js";
+import { USER_NAME_MAX } from "../auth/identity.js";
 import { TEST_DATABASE_URL } from "../test/seed.js";
 
 /**
@@ -37,6 +38,8 @@ describe("PgUsageStore", () => {
       appId,
       env: "prod",
       userOid: "oid-alice",
+      userName: null,
+      userEmail: null,
       capability: "llm",
       model: "claude-opus-4-8",
       inputTokens: 100,
@@ -48,6 +51,8 @@ describe("PgUsageStore", () => {
       appId,
       env: "prod",
       userOid: "oid-alice",
+      userName: null,
+      userEmail: null,
       capability: "llm",
       model: "claude-opus-4-8",
       inputTokens: 10,
@@ -68,6 +73,8 @@ describe("PgUsageStore", () => {
       appId: otherAppId,
       env: "prod",
       userOid: "oid-bob",
+      userName: null,
+      userEmail: null,
       capability: "llm",
       model: "claude-opus-4-8",
       inputTokens: 999,
@@ -87,6 +94,8 @@ describe("PgUsageStore", () => {
       appId,
       env: "prod",
       userOid: "oid-alice",
+      userName: null,
+      userEmail: null,
       capability: "llm",
       model: "claude-opus-4-8",
       inputTokens: 0,
@@ -101,6 +110,67 @@ describe("PgUsageStore", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("round-trips the captured display half, and caps an oversized claim", async () => {
+    // This file exists because the raw INSERT names quoted camelCase columns, so
+    // a typo only surfaces at runtime — which makes it the only place a wrong
+    // "userName"/"userEmail" identifier is caught.
+    const labelledAppId = randomUUID();
+    try {
+      const longName = "N".repeat(USER_NAME_MAX + 40);
+      await store.record({
+        appId: labelledAppId,
+        env: "prod",
+        userOid: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
+        userName: longName,
+        userEmail: "alice@azx.dev",
+        capability: "llm",
+        model: "claude-opus-4-8",
+        inputTokens: 1,
+        outputTokens: 1,
+        outcome: "ok",
+      });
+      const { rows } = await pool.query(
+        `SELECT "userOid", "userName", "userEmail" FROM gateway_calls WHERE "appId" = $1`,
+        [labelledAppId],
+      );
+      expect(rows[0].userEmail).toBe("alice@azx.dev");
+      // The identity half is stored verbatim — it is a key, not a label.
+      expect(rows[0].userOid).toBe("VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA");
+      // The display half is bounded, with the ellipsis costing one character.
+      expect(rows[0].userName).toHaveLength(USER_NAME_MAX + 1);
+      expect(rows[0].userName.endsWith("…")).toBe(true);
+    } finally {
+      await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [labelledAppId]);
+    }
+  });
+
+  it("stores no display half for an anonymous caller", async () => {
+    const anonAppId = randomUUID();
+    try {
+      await store.record({
+        appId: anonAppId,
+        env: "prod",
+        userOid: "anon",
+        userName: null,
+        userEmail: null,
+        capability: "data",
+        model: "collection.append",
+        inputTokens: 0,
+        outputTokens: 0,
+        outcome: "ok",
+      });
+      const { rows } = await pool.query(
+        `SELECT "userName", "userEmail" FROM gateway_calls WHERE "appId" = $1`,
+        [anonAppId],
+      );
+      // Null, never a plausible-looking stand-in: a public visitor has no
+      // principal at all, and a label would imply one.
+      expect(rows[0]).toEqual({ userName: null, userEmail: null });
+    } finally {
+      await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [anonAppId]);
+    }
+  });
+
   it("round-trips the metering columns (latency, cache, status, stop reason, error)", async () => {
     const meteredAppId = randomUUID();
     try {
@@ -108,6 +178,8 @@ describe("PgUsageStore", () => {
         appId: meteredAppId,
         env: "prod",
         userOid: "oid-alice",
+        userName: null,
+        userEmail: null,
         capability: "llm",
         model: "claude-opus-4-8",
         inputTokens: 100,
@@ -152,6 +224,8 @@ describe("PgUsageStore", () => {
         appId: fetchAppId,
         env: "prod",
         userOid: "oid-alice",
+        userName: null,
+        userEmail: null,
         capability: "fetch",
         model: "https://api.github.com",
         inputTokens: 0,
@@ -183,6 +257,8 @@ describe("PgUsageStore", () => {
         appId: budgetAppId,
         env: "prod" as const,
         userOid: "oid-alice",
+        userName: null,
+        userEmail: null,
         capability: "fetch",
         model: "https://api.github.com",
         inputTokens: 0,
@@ -208,6 +284,8 @@ describe("PgUsageStore", () => {
         appId: defaultsAppId,
         env: "prod",
         userOid: "oid-bob",
+        userName: null,
+        userEmail: null,
         capability: "data",
         model: "user.put",
         inputTokens: 0,

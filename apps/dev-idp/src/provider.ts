@@ -88,10 +88,13 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
       if (!user) return undefined;
       return {
         accountId: user.sub,
+        // `name` is spread in only when the fixture has one: a tenant that sends
+        // no name claim is a real shape, and `name: undefined` would not
+        // reproduce it faithfully.
         claims: () => ({
           sub: user.sub,
           email: user.email,
-          name: user.name,
+          ...(user.name === undefined ? {} : { name: user.name }),
           groups: user.groups,
         }),
       };
@@ -118,7 +121,11 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
     async extraTokenClaims(_ctx, token) {
       const user = "accountId" in token ? findFixtureUser(token.accountId ?? "") : undefined;
       if (!user) return {};
-      return { email: user.email, name: user.name, groups: user.groups };
+      return {
+        email: user.email,
+        ...(user.name === undefined ? {} : { name: user.name }),
+        groups: user.groups,
+      };
     },
 
     // Dev IdP: consent is always auto-granted, so the only interaction that

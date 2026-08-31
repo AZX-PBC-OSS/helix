@@ -250,6 +250,17 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     expect(me.json()).toEqual({
       user: { id: "5f0d5d2a-9d3f-4b1e-8c5a-111111111111", displayName: "Alice Anders" },
     });
+
+    // The session row now carries alice@azx.dev (captured for the audit trail),
+    // so this is the request where it could leak to untrusted app code. Assert
+    // the KEY SET rather than the absence of one field: `toEqual` above would
+    // still pass if a future edit widened MeResponseSchema, and the strip that
+    // actually enforces this is `MeResponseSchema.parse` in appHost.ts — a
+    // "simplification" that sent the object literal directly would silently
+    // remove it. See packages/shared/src/auth.ts.
+    const body = me.json() as { user: Record<string, unknown> };
+    expect(Object.keys(body.user).sort()).toEqual(["displayName", "id"]);
+    expect(me.body).not.toContain("alice@azx.dev");
   });
 
   it("silently refreshes a due session via prompt=none on the live IdP", async () => {

@@ -221,7 +221,18 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       {
         id: newSessionId(),
         appId: entry.appId,
-        user: { oid: newPasswordPrincipal(), displayName: "Guest", groups: [] },
+        // No display half: a shared-password visitor is a fresh pseudonym per
+        // login and is unattributable across sessions by construction. Storing
+        // "Guest" as a captured name would render as an attribution on every
+        // audit row while identifying nobody, so the columns stay null and the
+        // portal falls back to showing the `pw_*` principal.
+        user: {
+          oid: newPasswordPrincipal(),
+          displayName: "Guest",
+          name: null,
+          email: null,
+          groups: [],
+        },
         refreshDueAt: expiresAt,
         expiresAt,
       },

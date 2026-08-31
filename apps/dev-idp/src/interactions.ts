@@ -12,7 +12,7 @@ import { FIXTURE_USERS, findFixtureUser } from "./fixtures.js";
 function pickerHtml(): string {
   const rows = FIXTURE_USERS.map(
     (u) =>
-      `<li><a href="?user=${encodeURIComponent(u.email)}">${u.name}</a>` +
+      `<li><a href="?user=${encodeURIComponent(u.email)}">${u.name ?? u.email}</a>` +
       ` &mdash; ${u.email} [${u.groups.join(", ") || "no groups"}]</li>`,
   ).join("\n");
   return `<!doctype html>

@@ -43,6 +43,27 @@ export function daysSince(iso: string): number {
   return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000));
 }
 
+/**
+ * The last-resort rendering of an app-user principal, used when no directory
+ * claims were captured for the row.
+ *
+ * Two of these are platform-minted sentinels rather than directory subjects, and
+ * spelling them out beats making a reader recognise a prefix convention: `anon`
+ * is a public-app visitor, who has no principal at all (there is no anonymous
+ * identity in the system), and `pw_<random>` is a shared-password session — a
+ * fresh pseudonym minted per login, so it is unattributable *across* sessions by
+ * construction rather than by omission.
+ *
+ * Anything else is the raw subject. Under Entra that is a pairwise `sub`, which
+ * names nobody; it is shown unchanged because it is at least stable enough to
+ * correlate rows by, which is all it was ever good for.
+ */
+export function principalLabel(userOid: string): string {
+  if (userOid === "anon") return "anonymous";
+  if (userOid.startsWith("pw_")) return "shared password";
+  return userOid;
+}
+
 // Deployment topology (apps base, dev-gateway base, spend cap) is NOT here: it
 // used to be burned in from `import.meta.env` at build time, which meant the
 // prebuilt bundle showed dev domains in every deployment. See lib/deployment.ts.

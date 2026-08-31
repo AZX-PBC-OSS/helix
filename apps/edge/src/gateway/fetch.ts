@@ -10,7 +10,7 @@ import {
 import { capBody } from "@azx-pbc/shared/bodyCap";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
-import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
+import { meterIdentity, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
@@ -92,7 +92,11 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
 
     const caller = await rt.resolveCaller(req, reply, entry);
     if (!caller) return;
-    const userOid = caller.authenticated ? caller.oid : ANON_USER_OID;
+    const identity = meterIdentity(caller);
+    // Kept as its own binding on purpose: `userOid` alone crosses the egress
+    // trust boundary below, and the captured labels must not follow it there —
+    // AttestedInstructionSchema is deliberately the opaque id and nothing more.
+    const { userOid } = identity;
 
     if (await anonRateLimited(rt.anonLimiter, req, entry, caller)) {
       sendFetchError(reply, 429, "rate_limited", "per-IP request budget exhausted");
@@ -157,7 +161,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
           .record({
             appId: entry.appId,
             env: caller.env,
-            userOid,
+            ...identity,
             capability: "fetch",
             model: target.origin,
             inputTokens: 0,
@@ -184,7 +188,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
           .record({
             appId: entry.appId,
             env: caller.env,
-            userOid,
+            ...identity,
             capability: "fetch",
             model: target.origin,
             inputTokens: 0,
@@ -215,6 +219,9 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     const instruction = await mintInstruction(
       {
         appId: entry.appId,
+        // The opaque id ONLY. The captured labels stop at the edge: egress is a
+        // separate trust boundary and AttestedInstructionSchema deliberately
+        // carries no display half.
         userOid,
         capability: "fetch",
         origin: target.origin,
@@ -264,7 +271,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         .record({
           appId: entry.appId,
           env: caller.env,
-          userOid,
+          ...identity,
           capability: "fetch",
           model: target.origin,
           inputTokens: 0,

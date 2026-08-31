@@ -87,9 +87,21 @@ upstream stream — the edge never blocks the event loop buffering a response (p
 ### Metering
 
 Every call records exactly once (`recordOnce`) into `gateway_calls` via
-`apps/edge/src/gateway/usage.ts`: `{appId, userOid, capability: "llm", model, inputTokens,
-outputTokens, outcome}` where outcome is `ok` / `error` / `quota_blocked` (the column also admits
-`refusal`, reserved for content-policy stops; M4 emits the three above). The portal reads this
+`apps/edge/src/gateway/usage.ts`: `{appId, userOid, userName, userEmail, capability: "llm", model,
+inputTokens, outputTokens, outcome}` where outcome is `ok` / `error` / `quota_blocked` (the column
+also admits `refusal`, reserved for content-policy stops; M4 emits the three above).
+
+`userOid` and the two label columns are the **identity half and the display half** of the caller,
+and the split is the point. `userOid` is Entra's pairwise `sub` — stable, compared, joined on, and
+an attribution dead end, because it is a different value per app registration and resolves through
+no directory lookup we hold. `userName`/`userEmail` are the claims *captured at the moment of the
+call* (`apps/edge/src/auth/identity.ts`), rendered but never compared. They are captured rather than
+resolved because the only id→name map the platform has is the `sessions` row, which is swept at
+expiry, while these rows are append-only — and because "who this was at the time" is the correct
+audit semantic. They are null for anonymous, shared-password and dev-token callers, which have no
+directory identity to capture rather than an unknown one. The single seam that produces all three
+is `meterIdentity(caller)` in `apps/edge/src/auth/gate.ts`; note it must **not** be spread into
+`mintInstruction` or `provider.stream`, which cross to egress carrying the opaque id alone. The portal reads this
 ledger (see [registry-and-deploys.md](./registry-and-deploys.md) and `packages/shared/src/usage.ts`).
 
 What the ledger captures is deliberately narrow — **tokens, request count, outcome, capability,

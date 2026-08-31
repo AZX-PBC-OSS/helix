@@ -4,6 +4,7 @@ import { type Env, type GatewayOutcome } from "@azx-pbc/shared";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
+import { USER_EMAIL_MAX, USER_NAME_MAX, truncate } from "../auth/identity.js";
 
 /**
  * The gateway call ledger (architecture §6.1/§6.3, §8) — metering + audit and
@@ -37,6 +38,14 @@ export interface GatewayCallRecord {
   /** Partition tier (dev-mode design §5.1) — keeps budgets/usage per-env. */
   env: Env;
   userOid: string;
+  /**
+   * The display half of the caller (`MeterIdentity` in auth/gate.ts, which this
+   * shape is structurally compatible with so `...meterIdentity(caller)` spreads
+   * straight in). Rendered by the portal, never compared. Null for `anon`,
+   * shared-password and dev-token principals.
+   */
+  userName: string | null;
+  userEmail: string | null;
   /** Capability invoked — `llm` in M4. */
   capability: string;
   model: string;
@@ -72,6 +81,22 @@ const ERROR_DETAIL_MAX = 300;
 /** Max length of the `path` ledger column, before the ellipsis. */
 export const PATH_MAX = 512;
 
+/*
+ * The captured-label caps (`USER_NAME_MAX`, `USER_EMAIL_MAX`) live in
+ * `../auth/identity.js`, which is also where they are applied at capture time.
+ *
+ * Note the threat differs from every other cap in this file, so don't read
+ * ADR-0021's reasoning onto them: `path` and `model` are **app**-controlled, and
+ * their caps bound what untrusted hosted code can write into an append-only
+ * table. The labels are **directory**-controlled — they arrive in a signed ID
+ * token the hosted app cannot influence. That cap is row-size hygiene, not a
+ * containment boundary.
+ *
+ * Re-applying it here anyway is deliberate and idempotent: `clampRecord` is
+ * shared by `PgUsageStore` and the test fake, so a cap enforced only at capture
+ * would be invisible to every unit test of the store.
+ */
+
 /**
  * Max length of the `model` ledger column, before the ellipsis.
  *
@@ -85,11 +110,6 @@ export const PATH_MAX = 512;
  * The column is plain TEXT (no `@db.VarChar`), so this is the only bound there is.
  */
 export const MODEL_MAX = 200;
-
-/** Shared tail for the ledger's length caps. */
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max)}…` : value;
-}
 
 /**
  * Render a proxied call's pathname for the `path` ledger column.
@@ -178,6 +198,8 @@ export function clampRecord(call: GatewayCallRecord): GatewayCallRecord {
   return {
     ...call,
     model: truncate(call.model, MODEL_MAX),
+    userName: call.userName === null ? null : truncate(call.userName, USER_NAME_MAX),
+    userEmail: call.userEmail === null ? null : truncate(call.userEmail, USER_EMAIL_MAX),
     ...(call.path != null ? { path: truncate(call.path, PATH_MAX) } : {}),
     ...(call.errorDetail != null
       ? { errorDetail: truncate(call.errorDetail, ERROR_DETAIL_MAX) }
@@ -305,15 +327,18 @@ export class PgUsageStore implements UsageStore {
         // helix_dev WITH CHECK (env='dev') — the default 'prod' would fail it.
         // Optional metering columns fall back to their column defaults / NULL.
         `INSERT INTO gateway_calls
-           (id, "appId", env, "userOid", capability, model, "inputTokens", "outputTokens",
+           (id, "appId", env, "userOid", "userName", "userEmail", capability, model,
+            "inputTokens", "outputTokens",
             "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd", outcome,
             "durationMs", "statusCode", "stopReason", "errorDetail", path, method)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                 $16, $17)`,
+                 $16, $17, $18, $19)`,
         [
           call.appId,
           call.env,
           call.userOid,
+          call.userName,
+          call.userEmail,
           call.capability,
           call.model,
           call.inputTokens,

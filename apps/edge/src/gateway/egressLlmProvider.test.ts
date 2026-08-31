@@ -68,6 +68,8 @@ const opts = {
   signal: new AbortController().signal,
   appId: "app-1",
   userOid: "user-1",
+  userName: null,
+  userEmail: null,
   requestId: "req-1",
   env: "prod" as const,
 };

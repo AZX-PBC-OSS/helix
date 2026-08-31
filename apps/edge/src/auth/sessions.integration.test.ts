@@ -17,7 +17,13 @@ function pendingSession(overrides: Partial<Session> = {}): Session {
   return {
     id: randomUUID(),
     appId,
-    user: { oid: "oid-1", displayName: "Alice Anders", groups: ["eng-team"] },
+    user: {
+      oid: "oid-1",
+      displayName: "Alice Anders",
+      name: "Alice Anders",
+      email: "alice@azx.dev",
+      groups: ["eng-team"],
+    },
     refreshDueAt: new Date(Date.now() + 60 * 60 * 1000),
     expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
     ...overrides,
@@ -59,7 +65,7 @@ describe("PgSessionStore", () => {
 
   it("createActive inserts an immediately-live session (the password flow)", async () => {
     const session = pendingSession({
-      user: { oid: "pw_abc123", displayName: "Guest", groups: [] },
+      user: { oid: "pw_abc123", displayName: "Guest", name: null, email: null, groups: [] },
     });
     const token = newSessionToken();
     const hash = hashSessionToken(token);
@@ -67,7 +73,13 @@ describe("PgSessionStore", () => {
     // No redeem needed — it's live on the next lookup.
     const found = await store.lookup(hash, appId);
     expect(found?.id).toBe(session.id);
-    expect(found?.user).toEqual({ oid: "pw_abc123", displayName: "Guest", groups: [] });
+    expect(found?.user).toEqual({
+      oid: "pw_abc123",
+      displayName: "Guest",
+      name: null,
+      email: null,
+      groups: [],
+    });
   });
 
   it("refuses a second redeem of the same id (replay)", async () => {

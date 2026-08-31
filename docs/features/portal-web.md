@@ -89,7 +89,14 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     already denied this request"_ rather than as a failure; every decision mutation invalidates
     `onSettled`, so the queue refetches on conflict too and the row shows the decision that landed.
     Withdraw exists on the API (the requester's verb) but has no UI yet.
-  - **Audit Log** (`/admin/audit`) — `GET /api/v1/gateway/audit` over `gateway_calls`.
+  - **Audit Log** (`/admin/audit`) — `GET /api/v1/gateway/audit` over `gateway_calls`. The **User**
+    column renders `Principal` on the captured `userName`/`userEmail`, falling back to `userOid`
+    only when no claims were captured — the raw subject stays on the cell's `title` for
+    correlation, and the filter box matches all three. `anon` and `pw_*` render as "anonymous" and
+    "shared password" (`principalLabel` in `lib/format.ts`) rather than making the reader decode a
+    prefix convention. This is the same identity-vs-display split as the owner cells: **never
+    compare what the column renders** — see [llm-gateway.md](./llm-gateway.md#metering) for why
+    `userOid` alone identifies nobody.
   - **Platform** (`/admin/platform`) — system metering off `GET /api/v1/gateway/usage`.
   - **Secrets** (`/admin/secrets`) — global connection secrets, full CRUD + per-app grants off
     `GET /api/v1/secrets` (see [secrets-and-connections.md](./secrets-and-connections.md)).

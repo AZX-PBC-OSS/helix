@@ -69,7 +69,7 @@ async function seedSession(sessions: FakeSessionStore): Promise<string> {
   await sessions.createPending({
     id,
     appId: APP_ID,
-    user: { oid: "oid-alice", displayName: "Alice Anders", groups: [] },
+    user: { oid: "oid-alice", displayName: "Alice Anders", name: null, email: null, groups: [] },
     refreshDueAt: new Date(Date.now() + 60_000),
     expiresAt: new Date(Date.now() + 3_600_000),
   });

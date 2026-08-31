@@ -3,7 +3,12 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ApiErrorCode, Env } from "@azx-pbc/shared";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
-import { ANON_USER_OID, type Caller, type CallerResolver } from "../auth/gate.js";
+import {
+  meterIdentity,
+  type Caller,
+  type CallerResolver,
+  type MeterIdentity,
+} from "../auth/gate.js";
 import type { RegistryEntry } from "../registry/projection.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
@@ -202,7 +207,20 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
   }
 
   /** User scope (§3.1) requires an authenticated principal — public apps 403. */
-  function requireUser(reply: FastifyReply, entry: RegistryEntry, caller: Caller): string | null {
+  /**
+   * The caller as a metering identity, or null after responding.
+   *
+   * Returns the whole {@link MeterIdentity} rather than the bare oid so that
+   * every `meter()` below carries the display half automatically. The oid is
+   * still what addresses storage — destructure `identity.userOid` for that, and
+   * never let the labels reach `app_data`, which is per-user scoped storage and
+   * not an audit table.
+   */
+  function requireUser(
+    reply: FastifyReply,
+    entry: RegistryEntry,
+    caller: Caller,
+  ): MeterIdentity | null {
     if (!entry.data?.user) {
       sendApiError(reply, 403, "forbidden", "this app has no user-scoped data grant");
       return null;
@@ -216,12 +234,12 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
       );
       return null;
     }
-    return caller.oid;
+    return meterIdentity(caller);
   }
 
   function meter(
     appId: string,
-    userOid: string,
+    identity: MeterIdentity,
     model: string,
     outcome: "ok" | "error" | "quota_blocked" | "conflict",
     env: Env,
@@ -230,7 +248,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
       ?.record({
         appId,
         env,
-        userOid,
+        ...identity,
         capability: "data",
         model,
         inputTokens: 0,
@@ -251,14 +269,14 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
   async function admitWrite(
     reply: FastifyReply,
     entry: RegistryEntry,
-    meterOid: string,
+    identity: MeterIdentity,
     env: Env,
   ): Promise<boolean> {
     const budget = entry.data?.writesPerDay;
     if (budget === undefined) return true;
     const used = rt.usage ? await rt.usage.dataWritesToday(entry.appId, env) : 0;
     if (used >= budget) {
-      meter(entry.appId, meterOid, "quota", "quota_blocked", env);
+      meter(entry.appId, identity, "quota", "quota_blocked", env);
       sendApiError(reply, 429, "quota_exceeded", "daily write budget exhausted");
       return false;
     }
@@ -269,8 +287,8 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     async putUser(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: true });
       if (!ctx) return;
-      const oid = requireUser(reply, ctx.entry, ctx.caller);
-      if (oid === null) return;
+      const identity = requireUser(reply, ctx.entry, ctx.caller);
+      if (identity === null) return;
       const key = keyParam(req);
       if (!key) {
         sendApiError(reply, 400, "validation_failed", "invalid key");
@@ -297,11 +315,11 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         );
         return;
       }
-      if (!(await admitWrite(reply, ctx.entry, oid, ctx.caller.env))) return;
+      if (!(await admitWrite(reply, ctx.entry, identity, ctx.caller.env))) return;
       try {
         const result = await rt.store!.putUserKey(
           ctx.entry.appId,
-          oid,
+          identity.userOid,
           key,
           value,
           ctx.caller.env,
@@ -314,7 +332,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           // leaves a conflict row per attempt, not silence. `currentVersion`
           // lets the loser recover in-band — for a sharedWrite-only key it is
           // the ONLY way to learn what to CAS against (review finding 2).
-          meter(ctx.entry.appId, oid, "user.put", "conflict", ctx.caller.env);
+          meter(ctx.entry.appId, identity, "user.put", "conflict", ctx.caller.env);
           sendApiError(
             reply,
             412,
@@ -324,13 +342,13 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           );
           return;
         }
-        meter(ctx.entry.appId, oid, "user.put", "ok", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "user.put", "ok", ctx.caller.env);
         await reply
           .header("cache-control", "no-store")
           .header("etag", `"${result.version}"`)
           .send({ key, updatedAt: result.updatedAt });
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.put", "error", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "user.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putUser failed");
         sendApiError(reply, 502, "internal", "failed to store value");
       }
@@ -339,16 +357,21 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     async getUser(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: false });
       if (!ctx) return;
-      const oid = requireUser(reply, ctx.entry, ctx.caller);
-      if (oid === null) return;
+      const identity = requireUser(reply, ctx.entry, ctx.caller);
+      if (identity === null) return;
       const key = keyParam(req);
       if (!key) {
         sendApiError(reply, 400, "validation_failed", "invalid key");
         return;
       }
       try {
-        const stored = await rt.store!.getUserKey(ctx.entry.appId, oid, key, ctx.caller.env);
-        meter(ctx.entry.appId, oid, "user.get", "ok", ctx.caller.env);
+        const stored = await rt.store!.getUserKey(
+          ctx.entry.appId,
+          identity.userOid,
+          key,
+          ctx.caller.env,
+        );
+        meter(ctx.entry.appId, identity, "user.get", "ok", ctx.caller.env);
         if (stored === null) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
@@ -358,7 +381,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           .header("etag", `"${stored.version}"`)
           .send({ key, value: stored.value });
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.get", "error", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "user.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getUser failed");
         sendApiError(reply, 502, "internal", "failed to read value");
       }
@@ -367,23 +390,28 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     async deleteUser(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: true });
       if (!ctx) return;
-      const oid = requireUser(reply, ctx.entry, ctx.caller);
-      if (oid === null) return;
+      const identity = requireUser(reply, ctx.entry, ctx.caller);
+      if (identity === null) return;
       const key = keyParam(req);
       if (!key) {
         sendApiError(reply, 400, "validation_failed", "invalid key");
         return;
       }
       try {
-        const deleted = await rt.store!.deleteUserKey(ctx.entry.appId, oid, key, ctx.caller.env);
-        meter(ctx.entry.appId, oid, "user.delete", "ok", ctx.caller.env);
+        const deleted = await rt.store!.deleteUserKey(
+          ctx.entry.appId,
+          identity.userOid,
+          key,
+          ctx.caller.env,
+        );
+        meter(ctx.entry.appId, identity, "user.delete", "ok", ctx.caller.env);
         if (!deleted) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
         }
         await reply.status(204).header("cache-control", "no-store").send();
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.delete", "error", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "user.delete", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data deleteUser failed");
         sendApiError(reply, 502, "internal", "failed to delete value");
       }
@@ -392,14 +420,18 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     async listUser(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: false });
       if (!ctx) return;
-      const oid = requireUser(reply, ctx.entry, ctx.caller);
-      if (oid === null) return;
+      const identity = requireUser(reply, ctx.entry, ctx.caller);
+      if (identity === null) return;
       try {
-        const keys = await rt.store!.listUserKeys(ctx.entry.appId, oid, ctx.caller.env);
-        meter(ctx.entry.appId, oid, "user.list", "ok", ctx.caller.env);
+        const keys = await rt.store!.listUserKeys(
+          ctx.entry.appId,
+          identity.userOid,
+          ctx.caller.env,
+        );
+        meter(ctx.entry.appId, identity, "user.list", "ok", ctx.caller.env);
         await reply.header("cache-control", "no-store").send({ keys });
       } catch (err) {
-        meter(ctx.entry.appId, oid, "user.list", "error", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "user.list", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data listUser failed");
         sendApiError(reply, 502, "internal", "failed to list keys");
       }
@@ -432,23 +464,28 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", `item exceeds ${MAX_VALUE_BYTES} bytes`);
         return;
       }
-      const userOid = ctx.caller.authenticated ? ctx.caller.oid : null;
-      const meterOid = userOid ?? ANON_USER_OID;
-      if (!(await admitWrite(reply, ctx.entry, meterOid, ctx.caller.env))) return;
+      const identity = meterIdentity(ctx.caller);
+      if (!(await admitWrite(reply, ctx.entry, identity, ctx.caller.env))) return;
       try {
         await rt.store!.appendCollection(
           ctx.entry.appId,
           name,
           item,
-          userOid,
+          // The ledger and this table disagree about anonymity on purpose:
+          // `gateway_calls.userOid` is NOT NULL and uses the `"anon"` sentinel,
+          // while `app_collection_items.userOid` is nullable and a public
+          // submission genuinely has no submitter. So pass null rather than
+          // the sentinel — and all three columns or none, which is why this is
+          // one argument instead of three.
+          ctx.caller.authenticated ? identity : null,
           triageMeta(req),
           ctx.caller.env,
         );
-        meter(ctx.entry.appId, meterOid, "collection.append", "ok", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "collection.append", "ok", ctx.caller.env);
         // 201, no body — the writer gets no row id and certainly no read-back.
         await reply.status(201).header("cache-control", "no-store").send();
       } catch (err) {
-        meter(ctx.entry.appId, meterOid, "collection.append", "error", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "collection.append", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data appendCollection failed");
         sendApiError(reply, 502, "internal", "failed to append item");
       }
@@ -463,7 +500,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     async getShared(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: false });
       if (!ctx) return;
-      const meterOid = ctx.caller.authenticated ? ctx.caller.oid : ANON_USER_OID;
+      const identity = meterIdentity(ctx.caller);
       const key = keyParam(req);
       if (!key) {
         sendApiError(reply, 400, "validation_failed", "invalid key");
@@ -475,7 +512,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
       }
       try {
         const stored = await rt.store!.getShared(ctx.entry.appId, key, ctx.caller.env);
-        meter(ctx.entry.appId, meterOid, "shared.get", "ok", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "shared.get", "ok", ctx.caller.env);
         if (stored === null) {
           sendApiError(reply, 404, "not_found", "no value for that key");
           return;
@@ -485,7 +522,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           .header("etag", `"${stored.version}"`)
           .send({ key, value: stored.value });
       } catch (err) {
-        meter(ctx.entry.appId, meterOid, "shared.get", "error", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "shared.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getShared failed");
         sendApiError(reply, 502, "internal", "failed to read value");
       }
@@ -505,7 +542,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     async putShared(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: true });
       if (!ctx) return;
-      const meterOid = ctx.caller.authenticated ? ctx.caller.oid : ANON_USER_OID;
+      const identity = meterIdentity(ctx.caller);
       const key = keyParam(req);
       if (!key) {
         sendApiError(reply, 400, "validation_failed", "invalid key");
@@ -546,7 +583,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         );
         return;
       }
-      if (!(await admitWrite(reply, ctx.entry, meterOid, ctx.caller.env))) return;
+      if (!(await admitWrite(reply, ctx.entry, identity, ctx.caller.env))) return;
       try {
         const result = await rt.store!.putShared(
           ctx.entry.appId,
@@ -556,7 +593,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           parsed.precondition,
         );
         if (result.kind === "conflict") {
-          meter(ctx.entry.appId, meterOid, "shared.put", "conflict", ctx.caller.env);
+          meter(ctx.entry.appId, identity, "shared.put", "conflict", ctx.caller.env);
           sendApiError(
             reply,
             412,
@@ -566,13 +603,13 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           );
           return;
         }
-        meter(ctx.entry.appId, meterOid, "shared.put", "ok", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "shared.put", "ok", ctx.caller.env);
         await reply
           .header("cache-control", "no-store")
           .header("etag", `"${result.version}"`)
           .send({ key, updatedAt: result.updatedAt });
       } catch (err) {
-        meter(ctx.entry.appId, meterOid, "shared.put", "error", ctx.caller.env);
+        meter(ctx.entry.appId, identity, "shared.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putShared failed");
         sendApiError(reply, 502, "internal", "failed to store value");
       }

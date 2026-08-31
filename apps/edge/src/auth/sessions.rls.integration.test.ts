@@ -43,7 +43,7 @@ function makeSession(appId: string): Session {
   return {
     id: newSessionId(),
     appId,
-    user: { oid: "oid-alice", displayName: "Alice", groups: [] },
+    user: { oid: "oid-alice", displayName: "Alice", name: null, email: null, groups: [] },
     refreshDueAt: new Date(Date.now() + hour),
     expiresAt: new Date(Date.now() + hour),
   };

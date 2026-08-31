@@ -79,7 +79,7 @@ async function seedSession(sessions: FakeSessionStore, oid: string): Promise<str
   await sessions.createPending({
     id,
     appId: APP_ID,
-    user: { oid, displayName: oid, groups: [] },
+    user: { oid, displayName: oid, name: null, email: null, groups: [] },
     refreshDueAt: new Date(Date.now() + 60_000),
     expiresAt: new Date(Date.now() + 3_600_000),
   });
@@ -243,7 +243,7 @@ describe("collection append (§3.2)", () => {
     expect(edge.store.collectionItems).toHaveLength(1);
     expect(edge.store.collectionItems[0]?.item).toEqual({ email: "lead@example.com" });
     // No anon identity — the row is unattributed; metered as anon.
-    expect(edge.store.collectionItems[0]?.userOid).toBeNull();
+    expect(edge.store.collectionItems[0]?.submitter?.userOid ?? null).toBeNull();
     expect(edge.usage.records.at(-1)).toMatchObject({ capability: "data", userOid: "anon" });
     // Server-stamped triage metadata, never echoed to the client.
     expect(res.body).toBe("");
@@ -257,7 +257,7 @@ describe("collection append (§3.2)", () => {
       payload: { email: "alice@example.com" },
     });
     expect(res.statusCode).toBe(201);
-    expect(edge.store.collectionItems[0]?.userOid).toBe("alice");
+    expect(edge.store.collectionItems[0]?.submitter?.userOid ?? null).toBe("alice");
   });
 
   it("403s an undeclared collection name", async () => {

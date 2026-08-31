@@ -18,6 +18,7 @@ import type {
   UserKeyMeta,
   WritePrecondition,
 } from "../gateway/data.js";
+import type { MeterIdentity } from "../auth/gate.js";
 import type { Session, SessionStore } from "../auth/sessions.js";
 import type {
   AuthorizeParams,
@@ -311,7 +312,7 @@ export class FakeAppDataStore implements AppDataStore {
     appId: string;
     collection: string;
     item: unknown;
-    userOid: string | null;
+    submitter: MeterIdentity | null;
     meta: CollectionMeta;
   }[] = [];
 
@@ -319,10 +320,10 @@ export class FakeAppDataStore implements AppDataStore {
     appId: string,
     collection: string,
     item: unknown,
-    userOid: string | null,
+    submitter: MeterIdentity | null,
     meta: CollectionMeta,
   ): Promise<void> {
-    this.collectionItems.push({ appId, collection, item, userOid, meta });
+    this.collectionItems.push({ appId, collection, item, submitter, meta });
   }
 
   #sharedKey(appId: string, key: string): string {
@@ -355,7 +356,13 @@ export class FakeAppDataStore implements AppDataStore {
 export class FakeOidcClient implements OidcClient {
   ready = true;
   /** Identity a successful exchange yields. */
-  identity: OidcIdentity = { oid: "oid-alice", displayName: "Alice Anders", groups: ["eng-team"] };
+  identity: OidcIdentity = {
+    oid: "oid-alice",
+    displayName: "Alice Anders",
+    name: "Alice Anders",
+    email: "alice@azx.dev",
+    groups: ["eng-team"],
+  };
   /** When set, exchangeCode returns this unconditionally. */
   forcedOutcome: ExchangeOutcome | null = null;
   readonly authorizeRequests: AuthorizeParams[] = [];

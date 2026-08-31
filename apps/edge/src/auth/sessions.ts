@@ -17,9 +17,22 @@ import { withPartition } from "../db/partition.js";
  */
 
 export interface SessionUser {
-  /** IdP subject (Entra object id shaped). */
+  /**
+   * IdP subject — Entra's **pairwise** `sub`, not the directory object id the
+   * field name suggests (see `OidcIdentity.oid`). The identity half: compared,
+   * never rendered.
+   */
   oid: string;
+  /** Non-empty, for `GET /_api/me`; falls back to {@link oid}. */
   displayName: string;
+  /**
+   * The display half — captured claims, rendered but never compared. Stamped onto
+   * the gateway ledger and collection rows so those stay attributable after this
+   * session is swept. Null for password/anonymous principals, and whenever the
+   * IdP sent no such claim.
+   */
+  name: string | null;
+  email: string | null;
   /** Group-id snapshot taken at login/refresh. */
   groups: string[];
 }
@@ -94,13 +107,15 @@ export class PgSessionStore implements SessionStore {
     // only ever be minted in its own app's partition.
     await withPartition(this.#pool, session.appId, null, "prod", (client) =>
       client.query(
-        `INSERT INTO sessions (id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO sessions (id, "appId", "userOid", "displayName", "userName", "userEmail", groups, "refreshDueAt", "expiresAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           session.id,
           session.appId,
           session.user.oid,
           session.user.displayName,
+          session.user.name,
+          session.user.email,
           JSON.stringify(session.user.groups),
           session.refreshDueAt,
           session.expiresAt,
@@ -112,14 +127,16 @@ export class PgSessionStore implements SessionStore {
   async createActive(session: Session, tokenHash: string): Promise<void> {
     await withPartition(this.#pool, session.appId, null, "prod", (client) =>
       client.query(
-        `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", groups, "activatedAt", "refreshDueAt", "expiresAt")
-       VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8)`,
+        `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", "userName", "userEmail", groups, "activatedAt", "refreshDueAt", "expiresAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10)`,
         [
           session.id,
           tokenHash,
           session.appId,
           session.user.oid,
           session.user.displayName,
+          session.user.name,
+          session.user.email,
           JSON.stringify(session.user.groups),
           session.refreshDueAt,
           session.expiresAt,
@@ -152,7 +169,7 @@ export class PgSessionStore implements SessionStore {
     // enumerate the table directly (RLS scopes a bare SELECT to zero rows). The
     // function applies the same (tokenHash, appId, expiresAt > now()) filter.
     const result = await this.#pool.query(
-      `SELECT id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt"
+      `SELECT id, "appId", "userOid", "displayName", "userName", "userEmail", groups, "refreshDueAt", "expiresAt"
        FROM session_lookup($1, $2)`,
       [tokenHash, appId],
     );
@@ -162,6 +179,8 @@ export class PgSessionStore implements SessionStore {
           appId: string;
           userOid: string;
           displayName: string;
+          userName: string | null;
+          userEmail: string | null;
           groups: unknown;
           refreshDueAt: Date;
           expiresAt: Date;
@@ -171,7 +190,16 @@ export class PgSessionStore implements SessionStore {
     return {
       id: row.id,
       appId: row.appId,
-      user: { oid: row.userOid, displayName: row.displayName, groups: toGroups(row.groups) },
+      user: {
+        oid: row.userOid,
+        displayName: row.displayName,
+        // Read back as stored. Deliberately NOT derived from `displayName`:
+        // that would resurrect "Guest" as a captured name on every
+        // shared-password row.
+        name: row.userName,
+        email: row.userEmail,
+        groups: toGroups(row.groups),
+      },
       refreshDueAt: row.refreshDueAt,
       expiresAt: row.expiresAt,
     };

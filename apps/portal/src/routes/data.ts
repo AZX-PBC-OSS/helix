@@ -73,6 +73,8 @@ interface ItemRow {
   collection: string;
   env: string;
   userOid: string | null;
+  userName: string | null;
+  userEmail: string | null;
   item: unknown;
   meta: unknown;
   createdAt: Date;
@@ -84,6 +86,8 @@ function toCollectionItem(r: ItemRow): CollectionItem {
     collection: r.collection,
     env: EnvSchema.parse(r.env),
     userOid: r.userOid,
+    userName: r.userName,
+    userEmail: r.userEmail,
     item: r.item,
     meta: r.meta ?? null,
     createdAt: r.createdAt.toISOString(),

@@ -145,6 +145,21 @@ model Session {
   app          App       @relation(fields: [appId], references: [id], onDelete: Cascade)
   userOid      String
   displayName  String
+  /// The captured directory claims, as they read at login. Distinct from
+  /// `displayName` on purpose: that is the `/_api/me` contract value (non-null,
+  /// with a fallback ladder, and platform-minted "Guest" for a shared-password
+  /// visitor), whereas these are the claims themselves and are null when the IdP
+  /// sent none. They coincide for an ordinary SSO login and diverge exactly where
+  /// it matters, which is why one is not derived from the other.
+  userName     String?
+  /// The email/UPN claim as it read at login (`email ?? preferred_username`).
+  /// **Display half — rendered, never compared**, exactly like `App.ownerEmail`.
+  /// Captured so the gateway ledger and collection rows can carry an attributable
+  /// label; `displayName` alone cannot disambiguate two people with one name.
+  /// Null for shared-password, anonymous and dev-token principals, and for every
+  /// row predating the column. **Never exposed to app code** — `GET /_api/me`
+  /// returns `{id, displayName}` only (`packages/shared/src/auth.ts`).
+  userEmail    String?
   /// Group-id snapshot at login/refresh (refresh re-evaluates membership).
   groups       Json      @default("[]")
   createdAt    DateTime  @default(now())
@@ -224,6 +239,15 @@ model GatewayCall {
   /// naturally per-env — the env-literal RLS (§5.3) scopes every SUM to one tier.
   env                      String   @default("prod")
   userOid                  String
+  /// The caller's claims as they read when the call was made. **Display half —
+  /// rendered, never compared** (the identity is `userOid`), mirroring the
+  /// `App.ownerName`/`ownerEmail` split. Captured rather than resolved: `userOid`
+  /// is Entra's pairwise `sub` and resolves to nobody, and the only id→name map
+  /// in the system (`sessions`) is swept at expiry while these rows are
+  /// append-only. Null for `anon`, `pw_*` and dev-token callers, and for rows
+  /// predating the columns — the portal falls back to rendering `userOid`.
+  userName                 String?
+  userEmail                String?
   /// Capability invoked — `llm` in M4.
   capability               String
   /// Model the request asked for (post-allowlist).
@@ -387,6 +411,12 @@ model AppCollectionItem {
   collection String
   /// The visitor who submitted, if authenticated; null on public/anon apps (§6).
   userOid    String?
+  /// The submitter's captured claims — **display half, never compared**; see
+  /// `GatewayCall.userName`. Null whenever `userOid` is (anonymous submissions)
+  /// and for password/dev-token principals. Surfaced in the owner's drain UI and
+  /// as columns 5-6 of the CSV export.
+  userName   String?
+  userEmail  String?
   item       Json
   /// Coarse abuse-triage metadata (hashed IP, UA) — never exposed to the app.
   meta       Json?

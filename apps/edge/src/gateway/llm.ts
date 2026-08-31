@@ -9,7 +9,7 @@ import {
 } from "@azx-pbc/shared";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
-import { ANON_USER_OID, type CallerResolver } from "../auth/gate.js";
+import { meterIdentity, type CallerResolver } from "../auth/gate.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
@@ -86,7 +86,11 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
     // apps the caller is anonymous and the gate is skipped (app-data §6).
     const caller = await rt.resolveCaller(req, reply, entry);
     if (!caller) return;
-    const userOid = caller.authenticated ? caller.oid : ANON_USER_OID;
+    const identity = meterIdentity(caller);
+    // Kept as its own binding on purpose: `userOid` alone crosses the egress
+    // trust boundary below, and the captured labels must not follow it there —
+    // AttestedInstructionSchema is deliberately the opaque id and nothing more.
+    const { userOid } = identity;
 
     // Per-IP cap for the anonymous tier (public apps): an anonymous caller has
     // no per-user budget, so cap by IP (app-data design §7). Not metered — a
@@ -174,7 +178,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
           .record({
             appId: entry.appId,
             env: caller.env,
-            userOid,
+            ...identity,
             capability: "llm",
             model: chat.model,
             inputTokens: 0,
@@ -238,7 +242,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
         .record({
           appId: entry.appId,
           env: caller.env,
-          userOid,
+          ...identity,
           capability: "llm",
           model: chat.model,
           inputTokens: finalUsage.inputTokens,
@@ -270,6 +274,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
     const events = rt.provider.stream(chat, {
       signal: abort.signal,
       appId: entry.appId,
+      // The opaque id ONLY — this reaches egress via the attested instruction.
       userOid,
       requestId,
       env: caller.env,

@@ -37,6 +37,8 @@ function item(over: Partial<CollectionItem> = {}): CollectionItem {
     collection: "signups",
     env: "prod",
     userOid: null,
+    userName: null,
+    userEmail: null,
     item: { email: `lead${seq}@example.com`, name: `Lead ${seq}` },
     meta: { ipHash: "abc123" },
     createdAt: new Date().toISOString(),

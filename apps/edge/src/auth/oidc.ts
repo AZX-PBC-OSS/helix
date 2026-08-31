@@ -2,6 +2,7 @@ import { X509Certificate } from "node:crypto";
 import * as oidc from "openid-client";
 import { importPKCS8 } from "jose";
 import type { AuthClientCredential, AuthConfig } from "../config.js";
+import { captureEmail, captureName } from "./identity.js";
 
 /**
  * The edge's view of the IdP, behind a narrow interface (the fake in
@@ -21,9 +22,25 @@ export interface AuthorizeParams {
 
 /** What a completed login tells us about the user — nothing else leaves. */
 export interface OidcIdentity {
-  /** IdP subject (Entra: the object id). */
+  /**
+   * IdP subject — Entra's `sub`, which is **pairwise per client id**: a different
+   * value for the same human in every app registration, and not resolvable
+   * through Graph. It is emphatically NOT the directory object id (`oid`), which
+   * this field's name has implied since M3 and does not hold; re-basing onto the
+   * real claim is TODO.md's `private`-visibility item. Compare it, never render
+   * it — `name`/`email` below are the half that is fit to display.
+   */
   oid: string;
+  /** Non-empty, for `GET /_api/me`. Falls back to {@link oid} when no claim. */
   displayName: string;
+  /**
+   * The display half, captured at login and written onto every audit/collection
+   * row the session goes on to produce. Null when the claim is absent — and
+   * deliberately NOT falling back to {@link oid}, because a stored label that is
+   * the opaque subject renders as an attribution while attributing nothing.
+   */
+  name: string | null;
+  email: string | null;
   groups: string[];
 }
 
@@ -270,11 +287,20 @@ export class OpenIdConnectClient implements OidcClient {
             "so every group-scoped app will deny this session",
         );
       }
-      const displayName =
-        [claims.name, claims.preferred_username, claims.email].find(
-          (v): v is string => typeof v === "string" && v.length > 0,
-        ) ?? claims.sub;
-      return { kind: "ok", identity: { oid: claims.sub, displayName, groups } };
+      const name = captureName(claims.name);
+      // `email` first — it is semantically the address. `preferred_username` is
+      // the UPN, which for an ordinary user is the same string, and for a B2B
+      // guest is their *home tenant* address (the mangled `…#EXT#@…` form lives in
+      // `upn`, which is never read). `captureEmail` rejects either if it isn't
+      // actually addressable, so the order only decides between two valid ones.
+      const email = captureEmail(claims.email) ?? captureEmail(claims.preferred_username);
+      // `displayName` keeps the subject fallback because `/_api/me` promises a
+      // non-empty string, and because dropping the email rung here would be a
+      // silent behaviour change for tenants that send no `name` claim — those
+      // apps already receive the address as the display label today.
+      // `name`/`email` must NOT have the fallback (see OidcIdentity).
+      const displayName = name ?? email ?? claims.sub;
+      return { kind: "ok", identity: { oid: claims.sub, displayName, name, email, groups } };
     } catch (err) {
       if (
         err instanceof oidc.AuthorizationResponseError &&

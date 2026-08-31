@@ -19,6 +19,13 @@ export const CollectionItemSchema = z.object({
   env: EnvSchema,
   /** The submitting user, if authenticated; null for anonymous/public visitors. */
   userOid: z.string().nullable(),
+  /**
+   * The submitter's captured claims — display half, rendered but never compared
+   * (see `GatewayCallSchema.userName`). Null whenever `userOid` is, and for
+   * password/dev-token principals.
+   */
+  userName: z.string().nullable(),
+  userEmail: z.string().nullable(),
   item: z.unknown(),
   /** Hashed IP / truncated UA for abuse triage; null if not captured. */
   meta: z.unknown().nullable(),

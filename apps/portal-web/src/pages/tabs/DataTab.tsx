@@ -25,13 +25,13 @@ import {
 import { collectionItemsQuery, collectionsIndexQuery, manifestQuery } from "../../api/queries";
 import { useDeleteCollectionItem } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
-import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
+import { Eyebrow, Hint, Principal, ToneBadge } from "../../components/primitives";
 import { Icon } from "../../components/Icon";
 import { ScrollFade } from "../../components/ScrollFade";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
 import { fetchText } from "../../api/client";
 import { downloadText } from "../../lib/download";
-import { fmtCount, timeAgo } from "../../lib/format";
+import { fmtCount, principalLabel, timeAgo } from "../../lib/format";
 
 /**
  * The owner's read side of a write-only collection (app-data design §3.2).
@@ -477,9 +477,22 @@ function RawDetail({ item }: { item: CollectionItem }) {
         <Group gap={24} wrap="wrap">
           <Box>
             <Eyebrow mb={4}>Submitted by</Eyebrow>
-            <Text className="az-mono" fz={12} c={item.userOid ? "dark.1" : "dark.3"}>
-              {item.userOid ?? "anonymous"}
-            </Text>
+            {item.userOid === null ? (
+              <Text className="az-mono" fz={12} c="dark.3">
+                anonymous
+              </Text>
+            ) : (
+              // Same split as the audit log: captured claims lead, the raw
+              // subject is the fallback and stays on `title` for correlation.
+              <Box title={item.userOid}>
+                <Principal
+                  name={item.userName ?? undefined}
+                  email={item.userEmail ?? undefined}
+                  id={principalLabel(item.userOid)}
+                  fz={12}
+                />
+              </Box>
+            )}
           </Box>
           <Box>
             <Eyebrow mb={4}>Collected</Eyebrow>

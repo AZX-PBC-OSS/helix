@@ -252,6 +252,8 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         appId: r.appId,
         slug: slugById.get(r.appId) ?? null,
         userOid: r.userOid,
+        userName: r.userName,
+        userEmail: r.userEmail,
         capability: r.capability,
         model: r.model,
         inputTokens: r.inputTokens,

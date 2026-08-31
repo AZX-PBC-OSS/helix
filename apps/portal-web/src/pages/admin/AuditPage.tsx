@@ -16,8 +16,8 @@ import type { GatewayOutcome } from "@azx-pbc/shared";
 import { gatewayAuditQuery } from "../../api/queries";
 import { Icon } from "../../components/Icon";
 import { ScrollFade } from "../../components/ScrollFade";
-import { Hint, PageHead, Stat, ToneBadge, type Tone } from "../../components/primitives";
-import { fmtCount, fmtUsd, timeAgo } from "../../lib/format";
+import { Hint, PageHead, Principal, Stat, ToneBadge, type Tone } from "../../components/primitives";
+import { fmtCount, fmtUsd, principalLabel, timeAgo } from "../../lib/format";
 
 /** The M4 gateway audit log: (app, user, capability, model, tokens, cost, latency, outcome). */
 
@@ -77,7 +77,10 @@ export function AuditPage() {
   const all = audit.data?.rows ?? [];
   const rows = all.filter((r) => {
     if (!q) return true;
-    return `${r.slug ?? ""}${r.userOid}${r.capability}${r.model}${r.method ?? ""}${r.path ?? ""}`
+    // Match the captured labels as well as the raw id: an operator looking for a
+    // colleague types their name, and the id they would otherwise have to paste
+    // is precisely the thing this screen no longer makes them read.
+    return `${r.slug ?? ""}${r.userOid}${r.userName ?? ""}${r.userEmail ?? ""}${r.capability}${r.model}${r.method ?? ""}${r.path ?? ""}`
       .toLowerCase()
       .includes(q.toLowerCase());
   });
@@ -187,7 +190,17 @@ export function AuditPage() {
                           {r.slug ?? "—"}
                         </Text>
                       </Table.Td>
-                      <Table.Td c="dark.1">{r.userOid}</Table.Td>
+                      {/* The raw subject stays on `title` — it is what the row
+                        is keyed by and what a support thread would quote, but it
+                        identifies nobody, so it is not what the cell leads with. */}
+                      <Table.Td c="dark.1" title={r.userOid}>
+                        <Principal
+                          name={r.userName ?? undefined}
+                          email={r.userEmail ?? undefined}
+                          id={principalLabel(r.userOid)}
+                          fz={12}
+                        />
+                      </Table.Td>
                       <Table.Td>{r.capability}</Table.Td>
                       {/* The only cell whose content is app-controlled and
                         variable-length, so the one that has to be bounded in

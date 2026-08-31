@@ -6,10 +6,20 @@
  */
 
 export interface FixtureUser {
-  /** Stable GUID, like an Entra object id. */
+  /**
+   * The subject claim. The first three are readable GUIDs, which is convenient
+   * but NOT what Entra sends: Entra's `sub` is pairwise per client id, 32 random
+   * bytes base64url, and resolves to nobody. `dana` below carries that shape on
+   * purpose — see the note on the fixture list.
+   */
   sub: string;
   email: string;
-  name: string;
+  /**
+   * Optional, because a real tenant need not send a `name` claim — and a user
+   * who has none is the case where the captured display half falls back to the
+   * address rather than to the opaque subject.
+   */
+  name?: string;
   groups: string[];
 }
 
@@ -36,6 +46,26 @@ export const FIXTURE_USERS: FixtureUser[] = [
     email: "mallory@azx.dev",
     name: "Mallory Moor",
     groups: [],
+  },
+  {
+    /*
+     * The Entra-shaped user, and the reason this fixture exists.
+     *
+     * The three above are convenient in a way real life is not: readable GUID
+     * subjects and a `name` claim on every login. That combination means the
+     * local stack never reproduces what a deployment actually shows — a
+     * 43-character pairwise `sub` that resolves to nobody, and a tenant that
+     * sends no name — so the whole class of "the id is unattributable" bug is
+     * invisible until it reaches Entra. This user makes both reproducible: the
+     * captured display half has to fall back to the address, and every screen
+     * that renders a principal has to cope with an opaque one.
+     *
+     * Additive on purpose — the other three keep their ids so existing
+     * assertions and dev muscle memory are untouched.
+     */
+    sub: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
+    email: "dana@azx.dev",
+    groups: [GROUP_ENG_TEAM],
   },
 ];
 

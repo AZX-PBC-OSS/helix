@@ -1,0 +1,85 @@
+-- The display half of app-user attribution, captured at write time.
+--
+-- `userOid` is Entra's `sub`, which the edge stores under a field named `oid`
+-- (apps/edge/src/auth/oidc.ts). Entra issues `sub` PAIRWISE PER CLIENT ID: it is
+-- a different value for the same human in every app registration and is not
+-- resolvable through Graph. So an audit row identifies a person only in the sense
+-- that it is stable — nothing can turn `VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA`
+-- back into a colleague. Resolving it is doubly blocked: the id is pairwise, and
+-- `GroupMember.Read.All` (our only Graph grant, ADR-0040 decision 2) confers no
+-- `/users` read regardless.
+--
+-- So the label is CAPTURED, not resolved — the same answer, and the same split,
+-- the control plane already reached for app owners in 20260819214211: `ownerId`
+-- is the identity half (compared, never rendered), `ownerName`/`ownerEmail` the
+-- display half (rendered, never compared). These columns are the display half for
+-- app users. Never compare them.
+--
+-- Capturing is not merely the cheaper option, it is the correct one. The only
+-- id -> name mapping in the system is `sessions.displayName`, and `session_sweep()`
+-- deletes it at expiry; audit rows outlive sessions, so a read-time join would
+-- silently revert to opaque as history aged out. A captured label is also the
+-- right audit semantic: who the caller was AT THE TIME OF THE CALL, not who that
+-- id resolves to today.
+--
+-- Nullable throughout: rows predating this migration, anonymous callers (`anon`),
+-- shared-password visitors (`pw_*`, unattributable across sessions by
+-- construction) and dev-token callers all legitimately carry no captured claim,
+-- and the portal falls back to rendering the raw id.
+--
+-- NOTE this puts directly-identifying PII in `gateway_calls`, which has no DELETE
+-- grant for ANY role (20260721120000_gateway_calls_portal_readonly, ADR-0021).
+-- These labels are therefore unerasable by design. Retention is the open question
+-- and is filed in TODO.md, not answered here.
+--
+-- Additive only. Grants on all three tables are TABLE-level -- `GRANT SELECT,
+-- INSERT ON gateway_calls TO helix_edge` and `GRANT INSERT ON
+-- app_collection_items TO helix_edge` (20260616000001_edge_role_grants,
+-- 20260616231730_app_collection_items), the helix_dev equivalents in
+-- 20260722192440_dev_env_partition -- so new columns are covered with no grant
+-- re-issue, and helix_portal stays REVOKEd from writing gateway_calls. No RLS
+-- policy changes: every policy on these tables keys on "appId"/"env", which are
+-- untouched (and CREATE POLICY has no column-list form). No session_lookup
+-- change: it is `RETURNS SETOF sessions`, a composite rowtype reference, so the
+-- new column flows through the SECURITY DEFINER function automatically.
+-- Two columns on `sessions`, not one, and NOT derived from `displayName`.
+-- `displayName` is the `/_api/me` contract value: non-null, with a fallback
+-- ladder, and sometimes platform-minted ("Guest" for a shared-password visitor).
+-- `userName` is the captured directory claim, null when there wasn't one. They
+-- coincide for an ordinary SSO login and diverge exactly where it matters, so
+-- inverting one to recover the other is wrong for the password flow — which is
+-- the case that would otherwise stamp "Guest" onto every audit row as though it
+-- named someone.
+ALTER TABLE "sessions" ADD COLUMN "userName" TEXT;
+ALTER TABLE "sessions" ADD COLUMN "userEmail" TEXT;
+ALTER TABLE "gateway_calls" ADD COLUMN "userName" TEXT;
+ALTER TABLE "gateway_calls" ADD COLUMN "userEmail" TEXT;
+ALTER TABLE "app_collection_items" ADD COLUMN "userName" TEXT;
+ALTER TABLE "app_collection_items" ADD COLUMN "userEmail" TEXT;
+
+-- NO BACKFILL HERE, deliberately — the same call 20260819214211 made for
+-- `App.ownerName`/`ownerEmail`. Two reasons, one of value and one of risk.
+--
+-- Value: `sessions` is swept at `expiresAt < now() - 1 day` against an 8 h TTL,
+-- so it holds ~32 hours of principals at most, and `sessions.userEmail` is NULL
+-- on every row predating this migration — a backfill could name only users
+-- active since yesterday, and only their name half.
+--
+-- Risk: neither `sessions` nor `gateway_calls` is indexed on "userOid", so the
+-- join is a sequential scan plus a row rewrite of the largest table in the
+-- schema, inside `migrate deploy` — which the edge deploy must wait behind
+-- (the edge's session lookup names "userEmail" explicitly, so it has to ship
+-- after the migration, never before).
+--
+-- For `app_collection_items` the recovery is still worth having, just not here:
+-- it ships as the operator script `apps/portal/scripts/backfill-user-labels.ts`
+-- (`db:backfill-user-labels`, --dry-run), alongside `backfill-app-owners.ts`.
+--
+-- For `gateway_calls` there is no backfill at all, anywhere, and that is a
+-- property rather than an omission. The ledger is append-only BY GRANT —
+-- helix_edge holds INSERT only, helix_portal was REVOKEd from INSERT/UPDATE/
+-- DELETE in 20260721120000 (ADR-0021) — so no application role can rewrite an
+-- attribution after the fact. Doing it here, as the owner, would be the one
+-- write that bypasses the guarantee the grant set exists to make. Old rows keep
+-- rendering their raw `userOid`: nobody captured a label at the time, and
+-- inventing one later is not a repair.

@@ -9,7 +9,7 @@ Every gateway call (LLM, data, fetch) must be metered, audited, and budget-enfor
 
 ## Decision
 
-One **append-only** `gateway_calls` row per call: `(appId, userOid, capability, model, inputTokens, outputTokens, outcome)` plus a **frozen, as-charged `costMicroUsd`** priced at write time from a **code-resident rate table** (`@azx-pbc/shared/pricing.ts`). `helix_edge` has **INSERT-only** (+ `SELECT` for budget sums) — no `UPDATE`/`DELETE` — so integrity rests on the DB grant set, not a hash chain.
+One **append-only** `gateway_calls` row per call: `(appId, userOid, userName, userEmail, capability, model, inputTokens, outputTokens, outcome)` plus a **frozen, as-charged `costMicroUsd`** priced at write time from a **code-resident rate table** (`@azx-pbc/shared/pricing.ts`). `helix_edge` has **INSERT-only** (+ `SELECT` for budget sums) — no `UPDATE`/`DELETE` — so integrity rests on the DB grant set, not a hash chain.
 
 - **Daily budgets are token/request-denominated** (`tokensPerDay`, `requestsPerDay`), not USD — a coarse, predictable ceiling.
 - **Quota is block-new / finish-in-flight:** an admitted request always runs to completion; the *next* request is the one blocked once the budget is crossed.
@@ -83,3 +83,56 @@ substitute for retention:
 unbounded growth on a table with no `DELETE` grant for any role and no pruning
 job. Retention (sequenced fix 3, and the deferred item in `TODO.md`) remains the
 actual fix; nothing in the fetch-path work closes it.
+
+## Amendment (2026-08-31) — the captured display half, and what it does to this table
+
+`gateway_calls` gained `userName`/`userEmail`: the caller's directory claims as
+captured at the moment of the call. The reason is that `userOid` never attributed
+anything. It is Entra's `sub`, which is **pairwise per client id** — a different
+value for the same person in every app registration — so it resolves through no
+lookup we hold, and `GroupMember.Read.All` (ADR-0040 decision 2) grants no
+`/users` read even if it did. An audit log whose subject column names nobody is
+an audit log in shape only. The claims are *captured* rather than resolved
+because the only id→name map the platform holds is the `sessions` row, swept at
+expiry, while these rows are forever — and because "who this was at the time" is
+the correct audit semantic anyway. It is the `App.ownerId` vs
+`ownerName`/`ownerEmail` split, one table over.
+
+**Two consequences worth stating plainly, because they cut against this ADR.**
+
+**1. This table now holds directly-identifying personal data.** Everything the
+2026-08-28 amendment says about the `path` column was still about data that was
+*pseudonymous* at the subject level: `userOid` is a pairwise pseudonymous
+identifier, and that unresolvability — the defect this amendment fixes — was also
+what kept the ledger's subject column at arm's length from a person. An email
+address is a direct identifier. That is a change in kind, not degree, on a table
+with **no `DELETE` grant for any role** and no pruning job, which means these
+labels are unerasable by design. Nothing here closes that; retention (sequenced
+fix 3) is still the actual fix, and this strengthens the case for it —
+crypto-shredding now looks clearly preferable to arguing a retention basis.
+
+**2. There is no backfill, and there must not be.** Rows predating the columns
+keep rendering their raw `userOid`. A maintenance script cannot fix them —
+`helix_portal` is REVOKEd from `INSERT`/`UPDATE`/`DELETE` here (migration
+`20260721120000`), so it gets `permission denied`, which is this ADR's
+append-only-by-grant property doing precisely its job. It could only be done as
+the schema owner inside a migration, and that would be the one write that
+bypasses the guarantee the grant set exists to make: a tool able to retroactively
+edit attributions on the audit log is exactly what "integrity rests on the DB
+grant set" promises does not exist. Nobody captured a label at the time; inventing
+one later is not a repair. (`app_collection_items` is different in kind — an
+owner's own submitted data, which the portal already exports and deletes — so
+`helix_portal` holds `UPDATE` there and the operator script
+`backfill-user-labels.ts` covers that table alone.)
+
+The labels are truncated in `clampRecord` like the other free-text columns, but
+for a **different reason**, and the distinction matters for anyone reading the
+cap as a security control: `path`, `model` and `errorDetail` are app-controlled,
+and their caps bound what untrusted hosted code can append. `userName`/`userEmail`
+arrive in a signed ID token the hosted app cannot influence at all, so their cap
+(`apps/edge/src/auth/identity.ts`) is row-size hygiene against an absurd
+directory attribute, not a containment boundary.
+
+Finally: the labels stop at the edge. `mintInstruction` and `LlmProvider.stream`
+carry the opaque `userOid` alone, because egress is a separate trust boundary and
+`AttestedInstructionSchema` deliberately conveys no display half.

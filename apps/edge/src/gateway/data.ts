@@ -4,6 +4,7 @@ import { type Env } from "@azx-pbc/shared";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
+import type { MeterIdentity } from "../auth/gate.js";
 
 /**
  * App data storage (architecture §6.1, app-data design §3) — the gateway's
@@ -107,13 +108,17 @@ export interface AppDataStore {
   /**
    * Append one item to a collection (§3.2). Write-only by construction — the
    * edge role has INSERT and no SELECT, so there is intentionally no method to
-   * read or enumerate a collection here. `userOid` is null for anon visitors.
+   * read or enumerate a collection here.
+   *
+   * `submitter` is null for anon visitors — the whole identity, not just its oid,
+   * because the display half is only meaningful attached to the id it labels and
+   * "some columns but not the others" should be unrepresentable.
    */
   appendCollection(
     appId: string,
     collection: string,
     item: unknown,
-    userOid: string | null,
+    submitter: MeterIdentity | null,
     meta: CollectionMeta,
     env: Env,
   ): Promise<void>;
@@ -336,7 +341,7 @@ export class PgAppDataStore implements AppDataStore {
     appId: string,
     collection: string,
     item: unknown,
-    userOid: string | null,
+    submitter: MeterIdentity | null,
     meta: CollectionMeta,
     env: Env,
   ): Promise<void> {
@@ -349,9 +354,19 @@ export class PgAppDataStore implements AppDataStore {
     // GUC; the row's own `userOid` column still records the submitter.
     await withPartition(this.#pool, appId, null, env, async (client) => {
       await client.query(
-        `INSERT INTO app_collection_items (id, "appId", env, collection, "userOid", item, meta)
-           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
-        [appId, env, collection, userOid, JSON.stringify(item), JSON.stringify(meta)],
+        `INSERT INTO app_collection_items
+           (id, "appId", env, collection, "userOid", "userName", "userEmail", item, meta)
+           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+        [
+          appId,
+          env,
+          collection,
+          submitter?.userOid ?? null,
+          submitter?.userName ?? null,
+          submitter?.userEmail ?? null,
+          JSON.stringify(item),
+          JSON.stringify(meta),
+        ],
       );
     });
   }

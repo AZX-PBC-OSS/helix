@@ -334,7 +334,7 @@ describe("export + delete", () => {
       headers: authHeader(),
     });
     expect(res.body.slice(BOM.length).split("\n")[0]).toBe(
-      "id,createdAt,env,userOid,item.alpha,item.beta,item,meta",
+      "id,createdAt,env,userOid,userName,userEmail,item.alpha,item.beta,item,meta",
     );
   });
 
@@ -352,7 +352,7 @@ describe("export + delete", () => {
     expect(res.headers["cache-control"]).toBe("no-store");
     // Platform columns, then `item.`-namespaced app keys, then the raw JSON.
     expect(res.body.slice(BOM.length).split("\n")[0]).toBe(
-      "id,createdAt,env,userOid,item.email,item,meta",
+      "id,createdAt,env,userOid,userName,userEmail,item.email,item,meta",
     );
   });
 
@@ -375,7 +375,9 @@ describe("export + delete", () => {
       headers: authHeader(),
     });
     expect(res.statusCode).toBe(200);
-    expect(res.body.slice(BOM.length).split("\n")[0]).toBe("id,createdAt,env,userOid,item,meta");
+    expect(res.body.slice(BOM.length).split("\n")[0]).toBe(
+      "id,createdAt,env,userOid,userName,userEmail,item,meta",
+    );
   });
 
   it("reports column truncation on CSV, but not on JSON", async () => {
