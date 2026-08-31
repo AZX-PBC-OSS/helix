@@ -26,15 +26,31 @@ import { createPrismaClient } from "../src/db/client.js";
  * **It still reaches very little, by design, and that is why this is a script and
  * not a migration.** `session_sweep()` deletes sessions at `expiresAt < now() -
  * 1 day` against an 8 h TTL, so the table holds at most ~32 hours of principals:
- * this can name users active since yesterday, and no one else. It also recovers
- * only the *name* half — `sessions.userEmail` is null on every row that predates
- * the same migration. Run it by hand if recent history matters; skip it happily.
+ * this can name users active since yesterday, and no one else. Run it by hand if
+ * recent history matters; skip it happily.
  *
- * Two exclusions are load-bearing (see the WHERE below): a `displayName` equal to
- * the `userOid` is the old capture-time fallback to `claims.sub` — copying it
- * forward would poison the new column with the exact bug the column exists to
- * fix — and `pw_*` principals carry the platform-minted label "Guest", which
- * would render as though it named someone.
+ * Three rules in the SQL below are load-bearing, and each is a way an earlier
+ * version of this script got it wrong:
+ *
+ *  1. **Read `sessions.userName`/`userEmail` first.** Inverting `displayName` is
+ *     what the first version did, because it was written before those columns
+ *     existed — one file over, on the same branch. `displayName` is
+ *     `name ?? email ?? sub`, so for a tenant that sends no `name` it IS the
+ *     address: the script copied `dana@azx.dev` into `userName` and left
+ *     `userEmail` null, *with the address sitting in the session row beside it*.
+ *     The `position('@' ...)` test keeps a non-claim out of the name column,
+ *     preserving on the maintenance path the invariant `captureEmail` protects
+ *     on the capture path.
+ *  2. **Fill both halves, guarded on either being null.** Guarding on `userName`
+ *     alone meant that once a row was named, a later run skipped it entirely and
+ *     the email could never be recovered — permanent, after one run.
+ *  3. **Exclude password principals by `userKind`, not by a `pw_` prefix.** Entra
+ *     subjects share base64url's alphabet with that prefix, so a shape test also
+ *     excludes roughly one real principal in 262,144 from recovery.
+ *
+ * A `displayName` equal to the `userOid` is still skipped: that is the old
+ * capture-time fallback to `claims.sub`, and copying it forward would write the
+ * opaque subject into a label column — the exact defect the columns exist to fix.
  *
  * Only ever fills nulls, so it is safe to re-run and can never overwrite a label
  * captured properly at write time.
@@ -63,35 +79,53 @@ async function main(): Promise<void> {
   const prisma = createPrismaClient();
 
   try {
-    const [{ count: recoverable }] = await prisma.$queryRaw<{ count: bigint }[]>`
-      SELECT count(DISTINCT "userOid") AS count FROM sessions
-       WHERE "displayName" <> "userOid" AND "userOid" NOT LIKE 'pw\\_%'`;
-    console.log(`${recoverable} principal(s) nameable from surviving sessions.`);
+    // ONE candidate set, shared by the preview and the write, so `--dry-run`
+    // cannot claim work the real run will not do — the previous version counted
+    // every unlabelled row rather than the ones that actually join to a session.
+    const candidates = `
+      SELECT DISTINCT ON ("userOid")
+             "userOid",
+             -- The captured claim first; displayName only as a fallback, and
+             -- only when it is not an address (rule 1 in the header).
+             COALESCE("userName",
+                      CASE WHEN position('@' in "displayName") = 0 THEN "displayName" END) AS name,
+             "userEmail" AS email,
+             "userKind"  AS kind
+        FROM sessions
+       WHERE "displayName" <> "userOid"
+         AND "userKind" IS DISTINCT FROM 'password'
+       ORDER BY "userOid", "createdAt" DESC`;
 
     for (const table of TABLES) {
-      const [{ count: pending }] = await prisma.$queryRawUnsafe<{ count: bigint }[]>(
-        `SELECT count(*) AS count FROM "${table}"
-          WHERE "userName" IS NULL AND "userOid" IS NOT NULL`,
+      // A row is recoverable when the session can supply something it lacks —
+      // any of the three columns, not just the name.
+      const fillable = `
+             (t."userName"  IS NULL AND s.name  IS NOT NULL)
+          OR (t."userEmail" IS NULL AND s.email IS NOT NULL)
+          OR (t."userKind"  IS NULL AND s.kind  IS NOT NULL)`;
+
+      const [{ count: matches }] = await prisma.$queryRawUnsafe<{ count: bigint }[]>(
+        `SELECT count(*) AS count
+           FROM "${table}" t
+           JOIN (${candidates}) s ON t."userOid" = s."userOid"
+          WHERE ${fillable}`,
       );
 
       if (dryRun) {
-        console.log(`  ${table}: ${pending} unlabelled row(s) — no writes made (--dry-run).`);
+        console.log(`  ${table}: ${matches} row(s) recoverable — no writes made (--dry-run).`);
         continue;
       }
 
-      // DISTINCT ON takes the newest capture per principal. `userName IS NULL`
-      // in the outer WHERE means a label written at call time always wins.
       const updated = await prisma.$executeRawUnsafe(
         `UPDATE "${table}" t
-            SET "userName" = s."displayName"
-           FROM (SELECT DISTINCT ON ("userOid") "userOid", "displayName"
-                   FROM sessions
-                  WHERE "displayName" <> "userOid"
-                    AND "userOid" NOT LIKE 'pw\\_%'
-                  ORDER BY "userOid", "createdAt" DESC) s
-          WHERE t."userOid" = s."userOid" AND t."userName" IS NULL`,
+            SET "userName"  = COALESCE(t."userName",  s.name),
+                "userEmail" = COALESCE(t."userEmail", s.email),
+                "userKind"  = COALESCE(t."userKind",  s.kind)
+           FROM (${candidates}) s
+          WHERE t."userOid" = s."userOid"
+            AND (${fillable})`,
       );
-      console.log(`  ${table}: labelled ${updated} of ${pending} unlabelled row(s).`);
+      console.log(`  ${table}: filled ${updated} of ${matches} recoverable row(s).`);
     }
   } finally {
     await prisma.$disconnect();

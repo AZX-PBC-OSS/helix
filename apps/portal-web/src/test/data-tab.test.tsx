@@ -39,6 +39,7 @@ function item(over: Partial<CollectionItem> = {}): CollectionItem {
     userOid: null,
     userName: null,
     userEmail: null,
+    userKind: null,
     item: { email: `lead${seq}@example.com`, name: `Lead ${seq}` },
     meta: { ipHash: "abc123" },
     createdAt: new Date().toISOString(),

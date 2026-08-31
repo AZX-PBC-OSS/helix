@@ -353,6 +353,7 @@ export interface GatewayCallRow {
   userOid: string;
   userName: string | null;
   userEmail: string | null;
+  userKind: string | null;
   capability: string;
   model: string;
   inputTokens: SqlNum;
@@ -383,6 +384,7 @@ export function toGatewayCall(row: GatewayCallRow): GatewayCall {
     userOid: row.userOid,
     userName: row.userName,
     userEmail: row.userEmail,
+    userKind: row.userKind,
     capability: row.capability,
     model: row.model,
     inputTokens,

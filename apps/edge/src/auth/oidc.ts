@@ -294,12 +294,17 @@ export class OpenIdConnectClient implements OidcClient {
       // `upn`, which is never read). `captureEmail` rejects either if it isn't
       // actually addressable, so the order only decides between two valid ones.
       const email = captureEmail(claims.email) ?? captureEmail(claims.preferred_username);
-      // `displayName` keeps the subject fallback because `/_api/me` promises a
-      // non-empty string, and because dropping the email rung here would be a
-      // silent behaviour change for tenants that send no `name` claim — those
-      // apps already receive the address as the display label today.
-      // `name`/`email` must NOT have the fallback (see OidcIdentity).
-      const displayName = name ?? email ?? claims.sub;
+      // `displayName` has a THIRD rung the label columns deliberately lack: any
+      // non-empty `preferred_username`, address-shaped or not.
+      //
+      // Routing that claim only through `captureEmail` is right for `userEmail`,
+      // which a reader acts on — but it silently regressed `displayName`, which
+      // is merely a non-empty contract value for `/_api/me`. An issuer that sends
+      // no `name`, no `email` and a bare-username UPN (a sAMAccountName, a
+      // Keycloak or Okta login) went from showing `alice` to showing the opaque
+      // subject. The two ladders want different strictness, so they are written
+      // separately rather than one being derived from the other.
+      const displayName = name ?? email ?? captureName(claims.preferred_username) ?? claims.sub;
       return { kind: "ok", identity: { oid: claims.sub, displayName, name, email, groups } };
     } catch (err) {
       if (

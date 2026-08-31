@@ -1,3 +1,5 @@
+import type { PrincipalKind } from "@azx-pbc/shared";
+
 /** Small display formatters shared across pages. */
 
 /** 14200 → "14.2k", 1340000 → "1.34M". */
@@ -47,20 +49,29 @@ export function daysSince(iso: string): number {
  * The last-resort rendering of an app-user principal, used when no directory
  * claims were captured for the row.
  *
- * Two of these are platform-minted sentinels rather than directory subjects, and
- * spelling them out beats making a reader recognise a prefix convention: `anon`
- * is a public-app visitor, who has no principal at all (there is no anonymous
- * identity in the system), and `pw_<random>` is a shared-password session — a
- * fresh pseudonym minted per login, so it is unattributable *across* sessions by
- * construction rather than by omission.
+ * Two of the four kinds are platform-minted sentinels rather than directory
+ * subjects, and spelling them out beats making a reader recognise a convention:
+ * a public visitor has no principal at all (there is no anonymous identity in
+ * the system), and a shared-password session is a fresh pseudonym minted per
+ * login, so it is unattributable *across* sessions by construction rather than
+ * by omission.
  *
- * Anything else is the raw subject. Under Entra that is a pairwise `sub`, which
- * names nobody; it is shown unchanged because it is at least stable enough to
- * correlate rows by, which is all it was ever good for.
+ * **It reads the recorded kind and parses nothing.** The previous version tested
+ * `userOid.startsWith("pw_")`, which is unsound: Entra's `sub` is 32 random
+ * bytes in base64url, an alphabet that includes `_`, so roughly one real subject
+ * in 262,144 begins `pw_` — and for a tenant that also sends no name or address
+ * (the `dana` fixture's shape) that person's calls were rendered as an anonymous
+ * shared-password visitor. A wrong attribution in an audit log is worse than an
+ * opaque one, which is the whole reason the labels exist.
+ *
+ * `userOid === "anon"` is still matched directly: that one is an exact sentinel,
+ * not a prefix guess, so it safely labels rows written before `userKind` did.
+ * Any other pre-column row falls through to the raw subject — unlabelled, never
+ * mislabelled.
  */
-export function principalLabel(userOid: string): string {
-  if (userOid === "anon") return "anonymous";
-  if (userOid.startsWith("pw_")) return "shared password";
+export function principalLabel(userOid: string, userKind?: PrincipalKind | null): string {
+  if (userKind === "anon" || userOid === "anon") return "anonymous";
+  if (userKind === "password") return "shared password";
   return userOid;
 }
 

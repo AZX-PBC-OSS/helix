@@ -72,6 +72,7 @@ export function makeDevTokenResolver(store: DevTokenStore): CallerResolver {
       // usually readable on its own and needs no separate display half.
       name: null,
       email: null,
+      kind: "dev",
       groups: [],
       env: "dev",
     };

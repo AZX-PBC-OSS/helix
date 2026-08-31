@@ -14,6 +14,7 @@ const AUTHED: Caller = {
   displayName: "U",
   name: null,
   email: null,
+  kind: "user",
   groups: [],
   env: "prod",
 };

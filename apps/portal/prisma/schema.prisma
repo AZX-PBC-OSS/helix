@@ -152,6 +152,10 @@ model Session {
   /// sent none. They coincide for an ordinary SSO login and diverge exactly where
   /// it matters, which is why one is not derived from the other.
   userName     String?
+  /// Which code path minted this principal: `user` | `password` | `dev`
+  /// (`PRINCIPAL_KINDS` in `@azx-pbc/shared`). Carried so the edge does not have
+  /// to re-derive it from `userOid`'s shape after a lookup — see the migration.
+  userKind     String?
   /// The email/UPN claim as it read at login (`email ?? preferred_username`).
   /// **Display half — rendered, never compared**, exactly like `App.ownerEmail`.
   /// Captured so the gateway ledger and collection rows can carry an attributable
@@ -248,6 +252,11 @@ model GatewayCall {
   /// predating the columns — the portal falls back to rendering `userOid`.
   userName                 String?
   userEmail                String?
+  /// The principal's kind (`PRINCIPAL_KINDS`): `user` | `password` | `anon` |
+  /// `dev`. Written at capture because it cannot be soundly inferred — Entra's
+  /// `sub` shares the base64url alphabet with the `pw_` pseudonym prefix, so a
+  /// shape test mislabels ~1 real subject in 262,144. Null on rows predating it.
+  userKind                 String?
   /// Capability invoked — `llm` in M4.
   capability               String
   /// Model the request asked for (post-allowlist).
@@ -417,6 +426,9 @@ model AppCollectionItem {
   /// as columns 5-6 of the CSV export.
   userName   String?
   userEmail  String?
+  /// The submitter's kind (`PRINCIPAL_KINDS`); null whenever `userOid` is, and on
+  /// rows predating the column. See `GatewayCall.userKind`.
+  userKind   String?
   item       Json
   /// Coarse abuse-triage metadata (hashed IP, UA) — never exposed to the app.
   meta       Json?

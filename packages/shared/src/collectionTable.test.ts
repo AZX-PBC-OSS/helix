@@ -29,6 +29,7 @@ function row(item: unknown, over: Partial<CollectionItem> = {}): CollectionItem 
     userOid: null,
     userName: null,
     userEmail: null,
+    userKind: null,
     item,
     meta: null,
     createdAt: "2026-08-10T12:00:00.000Z",

@@ -22,6 +22,7 @@ function pendingSession(overrides: Partial<Session> = {}): Session {
       displayName: "Alice Anders",
       name: "Alice Anders",
       email: "alice@azx.dev",
+      kind: "user",
       groups: ["eng-team"],
     },
     refreshDueAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -65,7 +66,14 @@ describe("PgSessionStore", () => {
 
   it("createActive inserts an immediately-live session (the password flow)", async () => {
     const session = pendingSession({
-      user: { oid: "pw_abc123", displayName: "Guest", name: null, email: null, groups: [] },
+      user: {
+        oid: "pw_abc123",
+        displayName: "Guest",
+        name: null,
+        email: null,
+        kind: "user",
+        groups: [],
+      },
     });
     const token = newSessionToken();
     const hash = hashSessionToken(token);
@@ -78,6 +86,7 @@ describe("PgSessionStore", () => {
       displayName: "Guest",
       name: null,
       email: null,
+      kind: "user",
       groups: [],
     });
   });

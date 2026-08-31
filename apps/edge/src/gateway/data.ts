@@ -355,8 +355,8 @@ export class PgAppDataStore implements AppDataStore {
     await withPartition(this.#pool, appId, null, env, async (client) => {
       await client.query(
         `INSERT INTO app_collection_items
-           (id, "appId", env, collection, "userOid", "userName", "userEmail", item, meta)
-           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+           (id, "appId", env, collection, "userOid", "userName", "userEmail", "userKind", item, meta)
+           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)`,
         [
           appId,
           env,
@@ -364,6 +364,7 @@ export class PgAppDataStore implements AppDataStore {
           submitter?.userOid ?? null,
           submitter?.userName ?? null,
           submitter?.userEmail ?? null,
+          submitter?.userKind ?? null,
           JSON.stringify(item),
           JSON.stringify(meta),
         ],

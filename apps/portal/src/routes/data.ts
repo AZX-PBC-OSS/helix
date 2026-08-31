@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { PrincipalKindSchema } from "@azx-pbc/shared";
 import {
   CollectionItemsPageSchema,
   CollectionSummarySchema,
@@ -75,6 +76,7 @@ interface ItemRow {
   userOid: string | null;
   userName: string | null;
   userEmail: string | null;
+  userKind: string | null;
   item: unknown;
   meta: unknown;
   createdAt: Date;
@@ -88,6 +90,7 @@ function toCollectionItem(r: ItemRow): CollectionItem {
     userOid: r.userOid,
     userName: r.userName,
     userEmail: r.userEmail,
+    userKind: PrincipalKindSchema.nullable().parse(r.userKind),
     item: r.item,
     meta: r.meta ?? null,
     createdAt: r.createdAt.toISOString(),

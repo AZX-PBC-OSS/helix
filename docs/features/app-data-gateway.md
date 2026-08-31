@@ -197,6 +197,13 @@ JSON, and moving the raw blob left to win a fixed index would put a cell that ca
 of the columns the owner opened it for. **Anything needing stable offsets should use
 `?format=json`**, whose shape does not depend on what was collected.
 
+> **Changed 2026-08-31 — the prefix widened from four columns to six.** `userName` and `userEmail`
+> were inserted after `userOid`, so every derived `item.*` column and both raw JSON columns shifted
+> right by two. A script doing `cut -d, -f5` on an export reads a different column after its next
+> run, with no error to notice. This is the format working as documented rather than a break — the
+> `item.` namespace exists so platform columns can be added — but it is the only place an owner
+> would find out, so it is recorded here rather than left to be discovered downstream.
+
 ### The role split is the real boundary
 
 | Table | `helix_edge` | `helix_portal` |

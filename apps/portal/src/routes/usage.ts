@@ -7,7 +7,7 @@ import {
   type PlatformRange,
   type UsageRange,
 } from "@azx-pbc/shared";
-import { authenticate } from "../plugins/auth.js";
+import { authenticate, requireAdmin } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { Prisma } from "../db/client.js";
 import {
@@ -26,9 +26,25 @@ import {
 /**
  * Read-side metering routes over the `gateway_calls` ledger (M4, architecture
  * §6.1/§8). The **edge writes** the ledger; these endpoints only **read** it for
- * display. Unlike the other portal reads they require a bearer token — usage and
- * audit data is "who called what, on whose behalf" (per-app RBAC is a v1
- * feature; for now any authenticated portal principal may read).
+ * display.
+ *
+ * **The two usage routes and the audit route are gated differently, on purpose.**
+ * Usage is aggregate — bucket sums, a model breakdown, `COUNT(DISTINCT userOid)`
+ * — so it answers "how much", and any authenticated portal principal may read it
+ * (per-app RBAC is a v1 feature; that openness is the pre-existing gap tracked in
+ * TODO.md, not a decision made here).
+ *
+ * The **audit log is `requireAdmin`**, because it answers "who". It was once
+ * equally open, on the reasoning that its subject column was `userOid` — Entra's
+ * pairwise `sub`, which resolves to nobody and so disclosed nobody. Capturing
+ * `userName`/`userEmail` onto the ledger removed that premise: the same rows now
+ * carry a real name and address for every app user of every hosted app, and the
+ * route takes no `?app=` filter by default. So the gate is not a late patch on an
+ * oversight — it is the openness being withdrawn because the thing it was
+ * predicated on is gone. Collection items carry the same two columns and are
+ * already `[authenticate, ownsApp]` in `data.ts`; this brings the ledger into
+ * line. Letting an app's *owner* read their own app's audit rows is the reasonable
+ * next step and needs the per-app RBAC work, not a looser gate here.
  *
  * Trends use a selectable rolling `range`: a `generate_series` grid (hourly for
  * `24h`, daily otherwise) left-joined to the ledger so buckets are dense and
@@ -188,10 +204,15 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // Gateway audit log: recent calls newest-first, cursor-paginated on createdAt.
-  // Cross-app (admin); optional ?app= (slug) and ?outcome= filters. Bearer-gated.
+  // Cross-app; optional ?app= (slug) and ?outcome= filters.
   app.get<{
     Querystring: { app?: string; outcome?: string; limit?: string; before?: string };
   }>("/api/v1/gateway/audit", { preHandler: authenticate }, async (req) => {
+    // First statement, ahead of any parse or DB read — the idiom `approvals.ts`,
+    // `csp.ts` and `secrets.ts` use, and what `usage.test.ts` pins. This route
+    // serves captured directory claims for every app user of every app; see the
+    // gating note at the top of this file for why it is admin-only.
+    requireAdmin(req);
     const limit = clampLimit(req.query.limit, 50, 200);
 
     // Resolve an optional slug filter to its appId (the ledger keys on appId).
@@ -254,6 +275,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         userOid: r.userOid,
         userName: r.userName,
         userEmail: r.userEmail,
+        userKind: r.userKind,
         capability: r.capability,
         model: r.model,
         inputTokens: r.inputTokens,

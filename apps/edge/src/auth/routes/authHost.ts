@@ -172,6 +172,7 @@ export function makeCallbackHandler(rt: AuthHostRuntime) {
         displayName: outcome.identity.displayName,
         name: outcome.identity.name,
         email: outcome.identity.email,
+        kind: "user",
         groups: outcome.identity.groups,
       },
       refreshDueAt: new Date(now + rt.auth.refreshAfterMs),

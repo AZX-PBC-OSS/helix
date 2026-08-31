@@ -4,6 +4,7 @@ import { type Env, type GatewayOutcome } from "@azx-pbc/shared";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
+import type { PrincipalKind } from "@azx-pbc/shared";
 import { USER_EMAIL_MAX, USER_NAME_MAX, truncate } from "../auth/identity.js";
 
 /**
@@ -46,6 +47,8 @@ export interface GatewayCallRecord {
    */
   userName: string | null;
   userEmail: string | null;
+  /** Which kind of principal this was — recorded, never inferred from `userOid`. */
+  userKind: PrincipalKind | null;
   /** Capability invoked — `llm` in M4. */
   capability: string;
   model: string;
@@ -327,18 +330,19 @@ export class PgUsageStore implements UsageStore {
         // helix_dev WITH CHECK (env='dev') — the default 'prod' would fail it.
         // Optional metering columns fall back to their column defaults / NULL.
         `INSERT INTO gateway_calls
-           (id, "appId", env, "userOid", "userName", "userEmail", capability, model,
+           (id, "appId", env, "userOid", "userName", "userEmail", "userKind", capability, model,
             "inputTokens", "outputTokens",
             "cacheReadInputTokens", "cacheCreationInputTokens", "costMicroUsd", outcome,
             "durationMs", "statusCode", "stopReason", "errorDetail", path, method)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                 $16, $17, $18, $19)`,
+                 $16, $17, $18, $19, $20)`,
         [
           call.appId,
           call.env,
           call.userOid,
           call.userName,
           call.userEmail,
+          call.userKind,
           call.capability,
           call.model,
           call.inputTokens,

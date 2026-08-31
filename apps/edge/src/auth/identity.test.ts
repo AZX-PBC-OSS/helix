@@ -59,7 +59,9 @@ describe("the capture ladder as oidc.ts applies it", () => {
   const capture = (claims: { name?: unknown; email?: unknown; preferred_username?: unknown }) => {
     const name = captureName(claims.name);
     const email = captureEmail(claims.email) ?? captureEmail(claims.preferred_username);
-    return { name, email, displayName: name ?? email ?? "sub-value" };
+    // The display ladder has a third rung the label columns lack — see oidc.ts.
+    const displayName = name ?? email ?? captureName(claims.preferred_username) ?? "sub-value";
+    return { name, email, displayName };
   };
 
   it("prefers the email claim, then the UPN", () => {
@@ -74,6 +76,17 @@ describe("the capture ladder as oidc.ts applies it", () => {
     expect(name).toBeNull();
     expect(displayName).toBe("a@x.dev");
     expect(email).toBe("a@x.dev");
+  });
+
+  it("keeps a bare-username UPN as the display label, though not as an address", () => {
+    // The regression this row exists to pin: routing `preferred_username` only
+    // through `captureEmail` (right for the address column) also stripped it from
+    // `displayName`, so a no-`name`, no-`email`, bare-UPN issuer went from
+    // `alice` to the opaque subject. `userEmail` still refuses it.
+    const { name, email, displayName } = capture({ preferred_username: "alice" });
+    expect(name).toBeNull();
+    expect(email).toBeNull();
+    expect(displayName).toBe("alice");
   });
 
   it("NEVER captures the subject as a label, even when no claim is present", () => {

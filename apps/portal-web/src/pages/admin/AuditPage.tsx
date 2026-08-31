@@ -197,7 +197,7 @@ export function AuditPage() {
                         <Principal
                           name={r.userName ?? undefined}
                           email={r.userEmail ?? undefined}
-                          id={principalLabel(r.userOid)}
+                          id={principalLabel(r.userOid, r.userKind)}
                           fz={12}
                         />
                       </Table.Td>

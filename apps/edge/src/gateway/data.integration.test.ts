@@ -87,6 +87,7 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
           userOid: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
           userName: "Alice Anders",
           userEmail: "alice@azx.dev",
+          userKind: "user" as const,
         },
         { ipHash: "abc" },
         "prod",
@@ -94,7 +95,7 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
       // Raw SQL as the owner, because the quoted camelCase identifiers in the
       // INSERT are only validated at runtime.
       const r = await owner.query(
-        `SELECT "userOid", "userName", "userEmail"
+        `SELECT "userOid", "userName", "userEmail", "userKind"
            FROM app_collection_items WHERE "appId" = $1 AND collection = 'labelled'`,
         [APP],
       );
@@ -102,6 +103,7 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
         userOid: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
         userName: "Alice Anders",
         userEmail: "alice@azx.dev",
+        userKind: "user",
       });
     } finally {
       await owner.query(`DELETE FROM app_collection_items WHERE "appId" = $1`, [APP]);
@@ -142,18 +144,22 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
       const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
       try {
         const r = await owner.query(
-          `SELECT item, "userOid", "userName", "userEmail", meta FROM app_collection_items WHERE "appId" = $1`,
+          `SELECT item, "userOid", "userName", "userEmail", "userKind", meta
+             FROM app_collection_items WHERE "appId" = $1`,
           [APP],
         );
         expect(r.rows).toHaveLength(1);
         expect((r.rows[0] as { item: unknown }).item).toEqual({ email: "lead@x.z" });
         expect((r.rows[0] as { userOid: string | null }).userOid).toBeNull();
-        // A null submitter means no display half either — all three columns or
-        // none, which is why `appendCollection` takes one argument, not three.
-        expect(r.rows[0] as { userName: string | null; userEmail: string | null }).toMatchObject({
-          userName: null,
-          userEmail: null,
-        });
+        // A null submitter means no display half and no kind either — all of them
+        // or none, which is why `appendCollection` takes one argument, not four.
+        expect(
+          r.rows[0] as {
+            userName: string | null;
+            userEmail: string | null;
+            userKind: string | null;
+          },
+        ).toMatchObject({ userName: null, userEmail: null, userKind: null });
       } finally {
         await owner.end();
       }

@@ -20,6 +20,7 @@ export * from "./data.js";
 export * from "./collectionTable.js";
 export * from "./secrets.js";
 export * from "./env.js";
+export * from "./principal.js";
 export * from "./devTokens.js";
 export * from "./instruction.js";
 export * from "./fetch.js";

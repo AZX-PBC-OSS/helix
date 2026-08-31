@@ -68,7 +68,14 @@ async function seedSession(sessions: FakeSessionStore, appId = APP_ID): Promise<
   await sessions.createPending({
     id,
     appId,
-    user: { oid: "oid-alice", displayName: "Alice Anders", name: null, email: null, groups: [] },
+    user: {
+      oid: "oid-alice",
+      displayName: "Alice Anders",
+      name: null,
+      email: null,
+      kind: "user",
+      groups: [],
+    },
     refreshDueAt: new Date(Date.now() + 60_000),
     expiresAt: new Date(Date.now() + 3_600_000),
   });
@@ -121,6 +128,7 @@ describe("happy paths", () => {
       userOid: "oid-alice",
       userName: null,
       userEmail: null,
+      userKind: "user" as const,
       capability: "llm",
       model: MODEL,
       inputTokens: 5,

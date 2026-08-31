@@ -57,6 +57,32 @@ ALTER TABLE "gateway_calls" ADD COLUMN "userEmail" TEXT;
 ALTER TABLE "app_collection_items" ADD COLUMN "userName" TEXT;
 ALTER TABLE "app_collection_items" ADD COLUMN "userEmail" TEXT;
 
+-- WHAT KIND of principal each row came from: 'user' | 'password' | 'anon' |
+-- 'dev' (PRINCIPAL_KINDS in @azx-pbc/shared is the source of truth; plain TEXT
+-- rather than an enum type for the same reason `outcome` is, so adding a kind
+-- needs no migration).
+--
+-- Recorded rather than inferred, because the inference is unsound. Reading the
+-- kind off `userOid`'s shape looks free — a shared-password pseudonym is `pw_`
+-- plus 12 base64url chars — but Entra's `sub` is 32 random bytes in that SAME
+-- alphabet, and base64url includes `_`. So about one real subject in 262,144
+-- begins `pw_`, and a prefix test then tells an operator that a named person's
+-- calls came from an anonymous visitor. A wrong attribution in an audit log is
+-- worse than an opaque one.
+--
+-- On `sessions` too, not just the two ledger tables: without it the edge cannot
+-- tell a password session from an SSO one after a lookup round-trip, and would
+-- have to re-derive the kind from exactly the prefix this column exists to stop
+-- anyone deriving anything from.
+--
+-- Nullable, like the labels: rows predating the column carry no kind, and the
+-- portal renders those from `userOid` alone rather than inventing one. That is
+-- strictly safer than the prefix test it replaces — an old row can no longer be
+-- MIS-labelled, only left unlabelled.
+ALTER TABLE "sessions" ADD COLUMN "userKind" TEXT;
+ALTER TABLE "gateway_calls" ADD COLUMN "userKind" TEXT;
+ALTER TABLE "app_collection_items" ADD COLUMN "userKind" TEXT;
+
 -- NO BACKFILL HERE, deliberately — the same call 20260819214211 made for
 -- `App.ownerName`/`ownerEmail`. Two reasons, one of value and one of risk.
 --

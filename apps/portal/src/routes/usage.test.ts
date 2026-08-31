@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 let t: TestApp;
@@ -265,6 +265,70 @@ describe("GET /api/v1/gateway/audit", () => {
     const body = res.json();
     expect(body.rows).toHaveLength(2);
     expect(body.rows.every((r: { outcome: string }) => r.outcome === "error")).toBe(true);
+  });
+});
+
+/**
+ * The audit log is admin-only, and the usage rollup deliberately is not.
+ *
+ * `PORTAL_DEV_ACTOR_GROUPS` is what puts groups on the dev token's actor, and the
+ * devcontainer *and* CI both set it to `platform-admin` — so every other test in
+ * this file is silently running as an admin, and a gate test that inherited that
+ * would assert nothing while looking thorough. Stub it empty and rebuild: the
+ * verifier chain is built during `buildApp`, so the stub has to precede it. Same
+ * idiom, and the same reason, as `directory.test.ts`.
+ */
+describe("gateway audit admin gate", () => {
+  async function withActorGroups(groups: string, fn: (t: TestApp) => Promise<void>): Promise<void> {
+    vi.stubEnv("PORTAL_DEV_ACTOR_GROUPS", groups);
+    const scoped = buildTestApp();
+    await scoped.app.ready();
+    try {
+      await fn(scoped);
+    } finally {
+      await scoped.close();
+      vi.unstubAllEnvs();
+    }
+  }
+
+  it("refuses the audit log to an authenticated non-admin", async () => {
+    // The regression this pins: before the captured display half, the ledger's
+    // subject column was a pairwise `sub` that identified nobody, so any
+    // authenticated principal could read it. These rows now carry a real name
+    // and address for every app user of every app.
+    await withActorGroups("", async (scoped) => {
+      const res = await scoped.app.inject({
+        method: "GET",
+        url: "/api/v1/gateway/audit",
+        headers: authHeader(),
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  it("admits an admin", async () => {
+    await withActorGroups("platform-admin", async (scoped) => {
+      const res = await scoped.app.inject({
+        method: "GET",
+        url: "/api/v1/gateway/audit",
+        headers: authHeader(),
+      });
+      expect(res.statusCode).toBe(200);
+    });
+  });
+
+  it("still lets a non-admin read the aggregate usage rollup", async () => {
+    // Not an oversight in the gate above: usage answers "how much" (bucket sums,
+    // a model breakdown, COUNT(DISTINCT userOid)) and discloses no principal. Its
+    // openness is the pre-existing per-app RBAC gap, tracked in TODO.md.
+    await withActorGroups("", async (scoped) => {
+      const res = await scoped.app.inject({
+        method: "GET",
+        url: "/api/v1/gateway/usage",
+        headers: authHeader(),
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 });
 

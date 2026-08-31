@@ -322,6 +322,7 @@ describe("row mappers validate against the shared schema", () => {
       userOid: "user-oid-1",
       userName: "Alice Anders",
       userEmail: "alice@azx.dev",
+      userKind: "user",
       capability: "llm",
       model: "claude-opus-4-8",
       inputTokens: "1200",
@@ -346,6 +347,7 @@ describe("row mappers validate against the shared schema", () => {
       // portal joins on, these are what it renders.
       userName: "Alice Anders",
       userEmail: "alice@azx.dev",
+      userKind: "user",
       model: "claude-opus-4-8",
       inputTokens: 1200,
       outputTokens: 800,
@@ -368,6 +370,7 @@ describe("row mappers validate against the shared schema", () => {
       userOid: "user-oid-1",
       userName: null,
       userEmail: null,
+      userKind: "user",
       capability: "fetch",
       // For `fetch`, `model` is the target origin and the path is its own column.
       // A `forbidden` row's origin cleared no allowlist, which is why the usage
@@ -405,6 +408,7 @@ describe("row mappers validate against the shared schema", () => {
       userOid: "u",
       userName: null,
       userEmail: null,
+      userKind: "user",
       capability: "llm",
       model: "claude-opus-4-8",
       inputTokens: 0,

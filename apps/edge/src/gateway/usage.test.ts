@@ -90,6 +90,7 @@ describe("clampRecord", () => {
     userOid: "u",
     userName: null,
     userEmail: null,
+    userKind: "user" as const,
     capability: "fetch",
     model: "https://api.github.com",
     inputTokens: 0,

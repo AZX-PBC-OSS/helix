@@ -70,6 +70,7 @@ const opts = {
   userOid: "user-1",
   userName: null,
   userEmail: null,
+  userKind: "user" as const,
   requestId: "req-1",
   env: "prod" as const,
 };

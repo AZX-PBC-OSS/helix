@@ -27,6 +27,7 @@ function call(over: Partial<GatewayCall> = {}): GatewayCall {
     userOid: OPAQUE,
     userName: "Alice Anders",
     userEmail: "alice@azx.dev",
+    userKind: "user",
     capability: "llm",
     model: "claude-opus-4-8",
     inputTokens: 10 * seq,
@@ -87,23 +88,61 @@ describe("AuditPage user attribution", () => {
   it("falls back to the subject when no claims were captured", async () => {
     // Rows written before the columns existed, and any principal the IdP gave no
     // claims for. Showing the raw id is a last resort, not a label.
-    stubFetch([call({ userName: null, userEmail: null })]);
+    stubFetch([call({ userName: null, userEmail: null, userKind: "user" })]);
     renderAudit();
     expect(await screen.findByText(OPAQUE)).toBeDefined();
   });
 
   it("names the platform-minted principals instead of making the reader decode them", async () => {
     stubFetch([
-      call({ userOid: "anon", userName: null, userEmail: null }),
-      call({ userOid: "pw_AbC7xQ9z", userName: null, userEmail: null }),
+      call({ userOid: "anon", userName: null, userEmail: null, userKind: "anon" }),
+      call({ userOid: "pw_AbC7xQ9z", userName: null, userEmail: null, userKind: "password" }),
     ]);
     renderAudit();
     expect(await screen.findByText("anonymous")).toBeDefined();
     expect(screen.getByText("shared password")).toBeDefined();
   });
 
+  it("does NOT call a real subject a shared-password visitor just because it starts with pw_", async () => {
+    // The regression this branch would otherwise have shipped. Entra's `sub` is
+    // 32 random bytes in base64url, an alphabet that includes `_`, so ~1 subject
+    // in 262,144 begins `pw_` — verified by drawing real-shaped subjects until
+    // one did. The old `startsWith("pw_")` test rendered that person's calls as
+    // an anonymous shared-password visitor. Reading the recorded kind is what
+    // makes the shape of the id irrelevant.
+    const collider = "pw_3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA";
+    stubFetch([
+      call({ userOid: collider, userName: "Dana Doe", userEmail: null, userKind: "user" }),
+    ]);
+    renderAudit();
+    expect(await screen.findByText("Dana Doe")).toBeDefined();
+    expect(screen.queryByText("shared password")).toBeNull();
+  });
+
+  it("leaves a pre-userKind row unlabelled rather than mislabelled", async () => {
+    // Historical rows carry no kind. Falling through to the raw subject is the
+    // point: an old row can no longer be MIS-labelled, only left opaque. `anon`
+    // still resolves, because that one is an exact sentinel, not a prefix guess.
+    stubFetch([
+      call({
+        userOid: "pw_3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
+        userName: null,
+        userEmail: null,
+        userKind: null,
+      }),
+      call({ userOid: "anon", userName: null, userEmail: null, userKind: null }),
+    ]);
+    renderAudit();
+    expect(await screen.findByText("pw_3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA")).toBeDefined();
+    expect(screen.getByText("anonymous")).toBeDefined();
+    expect(screen.queryByText("shared password")).toBeNull();
+  });
+
   it("filters on the captured label, not only the id", async () => {
-    stubFetch([call(), call({ userOid: "other", userName: "Bob Builder", userEmail: null })]);
+    stubFetch([
+      call(),
+      call({ userOid: "other", userName: "Bob Builder", userEmail: null, userKind: "user" }),
+    ]);
     renderAudit();
     expect(await screen.findByText("Alice Anders")).toBeDefined();
 

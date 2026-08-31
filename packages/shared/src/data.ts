@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PrincipalKindSchema } from "./principal.js";
 import { EnvSchema } from "./env.js";
 
 /**
@@ -26,6 +27,8 @@ export const CollectionItemSchema = z.object({
    */
   userName: z.string().nullable(),
   userEmail: z.string().nullable(),
+  /** The submitter's kind; null whenever `userOid` is, and on pre-column rows. */
+  userKind: PrincipalKindSchema.nullable(),
   item: z.unknown(),
   /** Hashed IP / truncated UA for abuse triage; null if not captured. */
   meta: z.unknown().nullable(),

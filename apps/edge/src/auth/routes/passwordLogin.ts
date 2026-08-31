@@ -231,6 +231,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
           displayName: "Guest",
           name: null,
           email: null,
+          kind: "password",
           groups: [],
         },
         refreshDueAt: expiresAt,

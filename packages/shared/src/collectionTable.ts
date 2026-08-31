@@ -150,8 +150,9 @@ export function csvCell(rendered: string): string {
  * The owner's CSV: platform columns, the derived app columns, then the raw
  * `item`/`meta` JSON as a lossless fallback for copy-paste and scripting.
  *
- * **The layout is anchored from both ends.** `id, createdAt, env, userOid` are
- * always the first four columns and `item, meta` are always the last two; only
+ * **The layout is anchored from both ends.** `id, createdAt, env, userOid,
+ * userName, userEmail` are always the first six columns and `item, meta` are
+ * always the last two; only
  * the derived block in between varies in width, so the raw columns sit at a
  * different absolute index for every collection. That is deliberate rather than
  * incidental: this file is meant to be *read*, and derivation exists so the owner

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PrincipalKindSchema } from "./principal.js";
 
 /**
  * Read-side metering contracts over the `gateway_calls` ledger (architecture
@@ -131,6 +132,12 @@ export const GatewayCallSchema = z.object({
    */
   userName: z.string().nullable(),
   userEmail: z.string().nullable(),
+  /**
+   * Which kind of principal made the call. Read this instead of parsing
+   * `userOid` — see {@link PrincipalKindSchema} for why the obvious shape test is
+   * unsound. Null on rows written before the column, which render from `userOid`.
+   */
+  userKind: PrincipalKindSchema.nullable(),
   capability: z.string(),
   model: z.string(),
   inputTokens: z.int().nonnegative(),

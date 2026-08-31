@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { Env } from "@azx-pbc/shared";
+import type { Env, PrincipalKind } from "@azx-pbc/shared";
 import type { AuthConfig, EdgeConfig } from "../config.js";
 import { publicOrigin } from "../config.js";
 import type { RegistryEntry } from "../registry/projection.js";
@@ -53,6 +53,8 @@ export type Caller =
       displayName: string;
       name: string | null;
       email: string | null;
+      /** Which path minted the principal; null only for a pre-column session. */
+      kind: PrincipalKind | null;
       groups: string[];
       env: Env;
     }
@@ -73,6 +75,15 @@ export interface MeterIdentity {
   userOid: string;
   userName: string | null;
   userEmail: string | null;
+  /**
+   * Which kind of principal this is, recorded rather than inferred. The portal
+   * used to derive it from `userOid`'s shape, which is unsound: a shared-password
+   * pseudonym is `pw_` + 12 base64url chars and Entra's `sub` is 32 random bytes
+   * in the same alphabet — `_` included — so ~1 real subject in 262,144 begins
+   * `pw_` and got rendered as an anonymous visitor. Null only while a session
+   * predating the column is still alive (hours, then swept).
+   */
+  userKind: PrincipalKind | null;
 }
 
 /**
@@ -89,8 +100,13 @@ export interface MeterIdentity {
  */
 export function meterIdentity(caller: Caller): MeterIdentity {
   return caller.authenticated
-    ? { userOid: caller.oid, userName: caller.name, userEmail: caller.email }
-    : { userOid: ANON_USER_OID, userName: null, userEmail: null };
+    ? {
+        userOid: caller.oid,
+        userName: caller.name,
+        userEmail: caller.email,
+        userKind: caller.kind,
+      }
+    : { userOid: ANON_USER_OID, userName: null, userEmail: null, userKind: "anon" };
 }
 
 /** Resolves the caller, or null after the underlying gate already responded. */
@@ -127,6 +143,7 @@ export function makeCallerResolver(gate: SessionGate, config: EdgeConfig): Calle
       displayName: session.user.displayName,
       name: session.user.name,
       email: session.user.email,
+      kind: session.user.kind,
       groups: session.user.groups,
       env: "prod",
     };

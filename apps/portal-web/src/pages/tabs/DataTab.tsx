@@ -488,7 +488,7 @@ function RawDetail({ item }: { item: CollectionItem }) {
                 <Principal
                   name={item.userName ?? undefined}
                   email={item.userEmail ?? undefined}
-                  id={principalLabel(item.userOid)}
+                  id={principalLabel(item.userOid, item.userKind)}
                   fz={12}
                 />
               </Box>

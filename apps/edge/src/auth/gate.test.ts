@@ -61,6 +61,7 @@ async function seedSession(
       displayName: "Alice Anders",
       name: null,
       email: null,
+      kind: "user",
       groups: opts.groups ?? [],
     },
     refreshDueAt: new Date(Date.now() + (opts.refreshDueInMs ?? 60_000)),
