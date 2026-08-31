@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { AppListItem } from "@azx-pbc/shared";
 import { platformUsageQuery } from "../api/queries";
 import { Icon } from "./Icon";
+import { ScrollFade } from "./ScrollFade";
 import { Principal, StatusLine, VisibilityBadge } from "./primitives";
 import { fmtUsd, timeAgo } from "../lib/format";
 import { useDeployment } from "../lib/deployment";
@@ -159,7 +160,7 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
     >
       {/* Seven columns is wider than a phone: let the table scroll inside its
           own frame rather than the page scrolling sideways. */}
-      <Table.ScrollContainer minWidth={880}>
+      <ScrollFade minWidth={880}>
         {/* `table-layout: fixed` is what makes the widths below authoritative and
             the App cell's `truncate` actually engage. On `auto` a long display
             name sets its column's minimum from its own content and the table
@@ -192,7 +193,7 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
             ))}
           </Table.Tbody>
         </Table>
-      </Table.ScrollContainer>
+      </ScrollFade>
     </Box>
   );
 }

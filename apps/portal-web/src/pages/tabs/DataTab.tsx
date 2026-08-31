@@ -27,6 +27,7 @@ import { useDeleteCollectionItem } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
 import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
 import { Icon } from "../../components/Icon";
+import { ScrollFade } from "../../components/ScrollFade";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
 import { fetchText } from "../../api/client";
 import { downloadText } from "../../lib/download";
@@ -311,7 +312,10 @@ export function DataTab({ app }: { app: App }) {
             background: "var(--mantine-color-dark-7)",
           }}
         >
-          <Box style={{ overflowX: "auto" }}>
+          {/* A collection's columns come from the submitted data, so there is
+              no width to design against — whatever the app writes, the table
+              scrolls inside its frame rather than pushing the page sideways. */}
+          <ScrollFade>
             <Table verticalSpacing={10} horizontalSpacing="lg" className="az-mono" fz={12}>
               <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
                 <Table.Tr>
@@ -400,7 +404,7 @@ export function DataTab({ app }: { app: App }) {
                 )}
               </Table.Tbody>
             </Table>
-          </Box>
+          </ScrollFade>
         </Box>
       )}
 

@@ -220,3 +220,54 @@
     animation-duration: 0.001s !important;
   }
 }
+
+/* ---- Scroll shadows: the frosted edge on a table that scrolls sideways ----
+   A table wider than its frame gives no sign of it but a thin scrollbar, so
+   whichever edge still has content behind it gets a frosted gradient, and loses
+   it once you have scrolled to that end. ScrollFade.tsx owns the two data
+   attributes; everything you can see is here. */
+.az-scrollfade {
+  position: relative;
+}
+.az-scrollfade-viewport {
+  overflow-x: auto;
+}
+.az-scrollfade::before,
+.az-scrollfade::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 44px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  /* The strips lie over the table, so they must not eat clicks on the cells
+     under them — the last column is where the row actions live. */
+  pointer-events: none;
+  /* Frost, not a flat colour wash: the header band (dark-6), the body (dark-7)
+     and a highlighted live row all pass under this strip, and a gradient to any
+     one of those colours smears over the other two. Blurring whatever is behind
+     reads correctly against all three. */
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+/* The mask fades the strip out toward the middle of the table — the blur with
+   it, since a mask applies to the backdrop filter too, which is what keeps the
+   frost from ending on a visible seam. */
+.az-scrollfade::before {
+  left: 0;
+  background: linear-gradient(to right, rgba(4, 6, 10, 0.55), rgba(4, 6, 10, 0));
+  -webkit-mask-image: linear-gradient(to right, #000, transparent);
+  mask-image: linear-gradient(to right, #000, transparent);
+}
+.az-scrollfade::after {
+  right: 0;
+  background: linear-gradient(to left, rgba(4, 6, 10, 0.55), rgba(4, 6, 10, 0));
+  -webkit-mask-image: linear-gradient(to left, #000, transparent);
+  mask-image: linear-gradient(to left, #000, transparent);
+}
+.az-scrollfade[data-fade-left]::before,
+.az-scrollfade[data-fade-right]::after {
+  opacity: 1;
+}

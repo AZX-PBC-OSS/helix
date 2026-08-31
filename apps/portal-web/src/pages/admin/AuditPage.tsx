@@ -15,6 +15,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { GatewayOutcome } from "@azx-pbc/shared";
 import { gatewayAuditQuery } from "../../api/queries";
 import { Icon } from "../../components/Icon";
+import { ScrollFade } from "../../components/ScrollFade";
 import { Hint, PageHead, Stat, ToneBadge, type Tone } from "../../components/primitives";
 import { fmtCount, fmtUsd, timeAgo } from "../../lib/format";
 
@@ -158,7 +159,7 @@ export function AuditPage() {
               this stays on `auto` layout — an operator reading an audit row
               wants the whole origin, not a truncated one, and the only
               unbounded cell is constrained below instead. */}
-          <Table.ScrollContainer minWidth={MIN_TABLE_WIDTH} type="native">
+          <ScrollFade minWidth={MIN_TABLE_WIDTH}>
             <Table verticalSpacing={10} horizontalSpacing="lg" className="az-mono" fz={12}>
               <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
                 <Table.Tr>
@@ -246,7 +247,7 @@ export function AuditPage() {
                 )}
               </Table.Tbody>
             </Table>
-          </Table.ScrollContainer>
+          </ScrollFade>
         </Box>
       )}
 

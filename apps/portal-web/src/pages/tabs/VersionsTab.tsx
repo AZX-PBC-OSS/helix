@@ -3,6 +3,7 @@ import { Box, Button, Group, Table, Text, Tooltip } from "@mantine/core";
 import type { App, DeployReport, Version } from "@azx-pbc/shared";
 import { usePromoteVersion, useRollback } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
+import { ScrollFade } from "../../components/ScrollFade";
 import { Hint, ToneBadge, type Tone } from "../../components/primitives";
 import { timeAgo } from "../../lib/format";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
@@ -70,89 +71,94 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
           background: "var(--mantine-color-dark-7)",
         }}
       >
-        <Table verticalSpacing="sm" horizontalSpacing="lg">
-          <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
-            <Table.Tr>
-              <Table.Th>Version</Table.Th>
-              <Table.Th>Status</Table.Th>
-              <Table.Th>Deployed</Table.Th>
-              <Table.Th>Blob prefix</Table.Th>
-              <Table.Th style={{ textAlign: "right" }}>Action</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {versions.length === 0 && (
+        {/* Five columns, one of them an unbounded blob prefix: on the app
+            detail pane's width that overflows, so it scrolls in its frame like
+            every other table rather than stretching the page. */}
+        <ScrollFade>
+          <Table verticalSpacing="sm" horizontalSpacing="lg">
+            <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
               <Table.Tr>
-                <Table.Td colSpan={5}>
-                  <Text c="dark.2" size="sm" ta="center" py={24}>
-                    No versions yet — <span className="az-mono">helix deploy</span> creates v1.
-                  </Text>
-                </Table.Td>
+                <Table.Th>Version</Table.Th>
+                <Table.Th>Status</Table.Th>
+                <Table.Th>Deployed</Table.Th>
+                <Table.Th>Blob prefix</Table.Th>
+                <Table.Th style={{ textAlign: "right" }}>Action</Table.Th>
               </Table.Tr>
-            )}
-            {versions.map((v) => {
-              const isLive = v.id === app.currentVersionId;
-              return (
-                <Table.Tr
-                  key={v.id}
-                  style={isLive ? { background: "var(--az-acc-dim)" } : undefined}
-                >
-                  <Table.Td>
-                    <Group gap={8}>
-                      <Text className="az-mono" fw={600} fz={13}>
-                        v{v.number}
-                      </Text>
-                      {isLive && (
-                        <ToneBadge tone="live" style={{ padding: "1px 6px", fontSize: 9.5 }}>
-                          LIVE
-                        </ToneBadge>
-                      )}
-                      <SalvageBadge report={v.deployReport} />
-                    </Group>
-                  </Table.Td>
-                  <Table.Td>
-                    <ToneBadge tone={STATUS_TONE[v.status]}>{v.status}</ToneBadge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text className="az-mono" fz={12} c="dark.1">
-                      {timeAgo(v.createdAt)}
+            </Table.Thead>
+            <Table.Tbody>
+              {versions.length === 0 && (
+                <Table.Tr>
+                  <Table.Td colSpan={5}>
+                    <Text c="dark.2" size="sm" ta="center" py={24}>
+                      No versions yet — <span className="az-mono">helix deploy</span> creates v1.
                     </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text className="az-mono" fz={12} c="dark.2">
-                      {v.blobPrefix}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td style={{ textAlign: "right" }}>
-                    {isLive ? (
-                      <Text className="az-mono" fz={11} c="dark.3">
-                        serving
-                      </Text>
-                    ) : app.archivedAt ? (
-                      <Text className="az-mono" fz={11} c="dark.3">
-                        app archived
-                      </Text>
-                    ) : (
-                      <Button
-                        variant="default"
-                        size="compact-sm"
-                        disabled={!authenticated}
-                        onClick={() =>
-                          setPending({
-                            kind: v.status === "preview" ? "promote" : "rollback",
-                            version: v,
-                          })
-                        }
-                      >
-                        {v.status === "preview" ? "Promote" : "Rollback to"}
-                      </Button>
-                    )}
                   </Table.Td>
                 </Table.Tr>
-              );
-            })}
-          </Table.Tbody>
-        </Table>
+              )}
+              {versions.map((v) => {
+                const isLive = v.id === app.currentVersionId;
+                return (
+                  <Table.Tr
+                    key={v.id}
+                    style={isLive ? { background: "var(--az-acc-dim)" } : undefined}
+                  >
+                    <Table.Td>
+                      <Group gap={8}>
+                        <Text className="az-mono" fw={600} fz={13}>
+                          v{v.number}
+                        </Text>
+                        {isLive && (
+                          <ToneBadge tone="live" style={{ padding: "1px 6px", fontSize: 9.5 }}>
+                            LIVE
+                          </ToneBadge>
+                        )}
+                        <SalvageBadge report={v.deployReport} />
+                      </Group>
+                    </Table.Td>
+                    <Table.Td>
+                      <ToneBadge tone={STATUS_TONE[v.status]}>{v.status}</ToneBadge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text className="az-mono" fz={12} c="dark.1">
+                        {timeAgo(v.createdAt)}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text className="az-mono" fz={12} c="dark.2">
+                        {v.blobPrefix}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td style={{ textAlign: "right" }}>
+                      {isLive ? (
+                        <Text className="az-mono" fz={11} c="dark.3">
+                          serving
+                        </Text>
+                      ) : app.archivedAt ? (
+                        <Text className="az-mono" fz={11} c="dark.3">
+                          app archived
+                        </Text>
+                      ) : (
+                        <Button
+                          variant="default"
+                          size="compact-sm"
+                          disabled={!authenticated}
+                          onClick={() =>
+                            setPending({
+                              kind: v.status === "preview" ? "promote" : "rollback",
+                              version: v,
+                            })
+                          }
+                        >
+                          {v.status === "preview" ? "Promote" : "Rollback to"}
+                        </Button>
+                      )}
+                    </Table.Td>
+                  </Table.Tr>
+                );
+              })}
+            </Table.Tbody>
+          </Table>
+        </ScrollFade>
       </Box>
 
       <ConfirmDialog
