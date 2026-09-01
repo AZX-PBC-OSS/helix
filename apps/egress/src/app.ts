@@ -66,7 +66,7 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
   // deliberate refusal already returns through the proxy's own `fail()`, so
   // reaching here at all means an unhandled throw.
   app.setErrorHandler((err, req, reply) => {
-    req.log.error({ err }, "unhandled error in egress");
+    req.log.error({ err, event: "egress.unhandled_error" }, "unhandled error in egress");
     reply.header(OUTCOME_HEADER, "error");
     reply.code(500).send({ code: "upstream_error", message: "egress request failed" });
   });

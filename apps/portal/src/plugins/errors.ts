@@ -74,6 +74,18 @@ export const errorsPlugin = fp(
 
     app.setErrorHandler((err: FastifyError, req, reply) => {
       if (err instanceof AppError) {
+        // Typed 4xx stay silent on purpose — logging every 401/403/404 turns a
+        // scanner into a flood, and the 404 branch includes the SPA deep-link
+        // fallback. A typed **5xx** is different: `internal` and
+        // `capability_unavailable` mean the platform failed, and until now they
+        // returned a 500 with no log line anywhere, so the only evidence was the
+        // caller's screenshot.
+        if (err.statusCode >= 500) {
+          req.log.error(
+            { err, event: "portal.unhandled_error", code: err.code, status: err.statusCode },
+            "portal returned a server error",
+          );
+        }
         reply.status(err.statusCode).send(envelope(err.code, err.message, err.details));
         return;
       }
@@ -97,7 +109,7 @@ export const errorsPlugin = fp(
         return;
       }
 
-      req.log.error({ err }, "unhandled error");
+      req.log.error({ err, event: "portal.unhandled_error", status: 500 }, "unhandled error");
       reply.status(500).send(envelope("internal", "internal server error"));
     });
   },

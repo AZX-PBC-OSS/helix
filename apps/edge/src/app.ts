@@ -7,7 +7,7 @@ import type { RegistryFreshnessReader, RegistryReader } from "./registry/project
 import { registryFreshnessCheck } from "./registry/health.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { makeAssetHandler } from "./serving/assets.js";
-import { sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
+import { edgeErrorHandler, sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
 import { normalizeRequestPath } from "./serving/paths.js";
 import { deriveAuthKeys } from "./auth/secrets.js";
 import type { OidcClient } from "./auth/oidc.js";
@@ -289,6 +289,10 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // dispatch instead of find-my-way host constraints: the fallback semantics
   // between constrained and unconstrained routes are non-obvious, and this
   // way the boundary is one readable hook.
+  // The unhandled-throw handler (`errors.ts`). Registered before any route so
+  // nothing can be added outside it.
+  app.setErrorHandler(edgeErrorHandler);
+
   app.decorateRequest("hostClass");
   app.addHook("onRequest", async (req) => {
     req.hostClass = classifyHost(req.headers.host, config.baseDomain);
