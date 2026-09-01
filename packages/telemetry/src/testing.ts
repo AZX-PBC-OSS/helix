@@ -35,33 +35,48 @@ import {
  * and the never-block-the-event-loop rule that forbids Simple in the services
  * has nothing to say about a test process.
  *
- * **Start ONE recording per test file.** A module-level
+ * **Lifecycle differs for spans and metrics, and getting it backwards breaks
+ * things quietly in both directions.**
+ *
+ * *Span* assertions want **one recording per file**. A module-level
  * `const tracer = trace.getTracer(…)` is a `ProxyTracer`, and once it resolves
  * a delegate it caches it (`ProxyTracer._getTracer`) — so a tracer captured at
  * import time keeps pointing at the first provider that was registered, even
  * after {@link RecordingTelemetry.restore} unregisters it. A second
  * `startRecordingTelemetry()` in the same file therefore records **nothing**,
- * silently, and every assertion after the first case fails on an empty array.
- * Use `beforeAll`/`afterAll` for the lifecycle and
- * {@link RecordingTelemetry.reset} in `afterEach`.
+ * silently, and every assertion after the first fails on an empty array. Use
+ * `beforeAll`/`afterAll` with {@link RecordingTelemetry.reset} in `afterEach`.
  *
- * Harmless in production, where exactly one provider is ever registered. Metric
- * instruments do not have the problem at all: `instruments()` is keyed on
- * provider identity precisely so it rebuilds.
+ * *Metric* assertions want the opposite: **a fresh recording per test.**
+ * `reset()` clears the exported batches, but CUMULATIVE accumulation lives in
+ * the `MeterProvider`, not the exporter — so a counter incremented in one case
+ * is still counted in the next. Only a new provider gives clean isolation, and
+ * metric instruments have no caching problem to prevent it: `instruments()` is
+ * keyed on provider identity precisely so it rebuilds.
+ *
+ * A file asserting both should use one recording and expect counters to
+ * accumulate across its cases.
+ *
+ * Neither hazard exists in production, where exactly one provider is ever
+ * registered.
  */
 export interface RecordingTelemetry {
   /** Spans ended so far, oldest first. */
   spans(): ReadableSpan[];
-  /** Flush the metric reader and return every data point recorded so far. */
+  /**
+   * Flush the metric reader and return the current value of every data point.
+   *
+   * Idempotent: calling it twice reports the same numbers, so a test may poll
+   * it in a loop without the polling itself moving the total.
+   */
   metrics(): Promise<RecordedMetric[]>;
   /**
    * Drop everything recorded so far, keeping the providers registered.
    *
-   * This is what an `afterEach` should call. A file that instead starts a
-   * *second* recording silently records nothing: a module-level
-   * `trace.getTracer()` is a `ProxyTracer` that caches its delegate on first
-   * use, so it keeps writing into the first provider — which `restore()` has
-   * shut down. One registration per file, reset between cases.
+   * What a span-asserting file's `afterEach` should call. It does **not** reset
+   * a counter's cumulative total — that lives in the `MeterProvider` — so a
+   * metric-asserting file wants a fresh recording per test instead. See the
+   * lifecycle note on this module.
    */
   reset(): void;
   /** Unregister both globals and shut the providers down. Always safe twice. */
@@ -116,26 +131,28 @@ export function startRecordingTelemetry(serviceName = "test-service"): Recording
     metrics: async () => {
       await metricReader.forceFlush();
       const out: RecordedMetric[] = [];
-      for (const resourceMetric of metricExporter.getMetrics()) {
-        for (const scope of resourceMetric.scopeMetrics) {
-          for (const metric of scope.metrics) {
-            for (const point of metric.dataPoints) {
-              const value = point.value;
-              if (typeof value === "number") {
-                out.push({
-                  name: metric.descriptor.name,
-                  attributes: point.attributes,
-                  value,
-                });
-              } else {
-                // Histogram: `count` is the observation count, `sum` the total.
-                out.push({
-                  name: metric.descriptor.name,
-                  attributes: point.attributes,
-                  value: value.count,
-                  sum: value.sum ?? 0,
-                });
-              }
+      // ONLY the last snapshot. `InMemoryMetricExporter` appends every batch it
+      // is handed (`_metrics.push`) and `getMetrics()` returns the whole array,
+      // while CUMULATIVE temporality means each batch already carries the
+      // running total. Flattening all of them makes this non-idempotent —
+      // successive calls report double, then triple — and that silently
+      // defeats any test that polls until a total grows, because the polling
+      // itself grows it.
+      const latest = metricExporter.getMetrics().at(-1);
+      for (const scope of latest?.scopeMetrics ?? []) {
+        for (const metric of scope.metrics) {
+          for (const point of metric.dataPoints) {
+            const value = point.value;
+            if (typeof value === "number") {
+              out.push({ name: metric.descriptor.name, attributes: point.attributes, value });
+            } else {
+              // Histogram: `count` is the observation count, `sum` the total.
+              out.push({
+                name: metric.descriptor.name,
+                attributes: point.attributes,
+                value: value.count,
+                sum: value.sum ?? 0,
+              });
             }
           }
         }

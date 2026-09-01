@@ -98,13 +98,17 @@ describe("registry telemetry", () => {
           .filter((p) => p.name === INSTR_REGISTRY_LOAD_FAILURES)
           .reduce((sum, p) => sum + p.value, 0);
       };
+      // `metrics()` is idempotent, so polling cannot inflate the total — the
+      // number this loop waits for is the number the counter actually reached.
+      // Before that was true this assertion passed against a counter that fired
+      // exactly once, i.e. against the regression it exists to catch.
       let total = 0;
       const deadline = Date.now() + 2000;
-      while (Date.now() < deadline && total <= 1) {
+      while (total <= 1 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 10));
         total = await failureTotal();
       }
-      // Cumulative, so a rule can alert on a streak rather than a single blip.
+      // Cumulative, so a rule can alert on a sustained streak rather than a blip.
       expect(total).toBeGreaterThan(1);
     } finally {
       await registry.stop();
