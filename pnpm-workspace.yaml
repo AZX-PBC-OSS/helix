@@ -82,6 +82,11 @@ catalog:
   # the two exporters are 0.x, where `^` is minor-locked. That is deliberate:
   # the experimental packages break at minor and must not float.
   "@opentelemetry/api": ^1.9.1
+  # Already a transitive dependency of the SDK packages below; named here
+  # because `propagation.ts` imports the W3C propagators directly, and an
+  # implicit dependency on a version the SDK happens to hoist is the kind of
+  # thing that breaks on an unrelated bump. Must track the sdk-* versions.
+  "@opentelemetry/core": ^2.10.0
   "@opentelemetry/sdk-trace-node": ^2.10.0
   "@opentelemetry/sdk-metrics": ^2.10.0
   "@opentelemetry/exporter-trace-otlp-http": ^0.221.0

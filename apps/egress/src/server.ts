@@ -53,7 +53,15 @@ loadDotEnvLocal();
 
 // Inert unless an OTLP endpoint is configured (ADR-0037). Mirrors the edge:
 // after the dotenv load, before anything else comes up.
-const telemetry = startTelemetry(SERVICE_NAME);
+//
+// `propagation: "full"` — egress is the ONE service that extracts trace context
+// (ADR-0037 decision 7). Every other service is inject-only, because its callers
+// are untrusted app code; egress's only caller is the edge, over a hop whose
+// authority already comes from the signed attested instruction (ADR-0013). The
+// `traceparent` rides alongside that instruction as correlation and is never
+// read for policy — extracting it is what makes the edge → egress seam a single
+// trace instead of two unjoinable halves in two Log Analytics workspaces.
+const telemetry = startTelemetry(SERVICE_NAME, { propagation: "full" });
 
 const config = loadConfig();
 const instructionKey = deriveInstructionKey(config.instructionSecret);

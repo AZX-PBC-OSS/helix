@@ -45,6 +45,9 @@ catalogs:
     '@opentelemetry/api':
       specifier: ^1.9.1
       version: 1.9.1
+    '@opentelemetry/core':
+      specifier: ^2.10.0
+      version: 2.10.0
     '@opentelemetry/exporter-metrics-otlp-http':
       specifier: ^0.221.0
       version: 0.221.0
@@ -601,6 +604,9 @@ importers:
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1
+      '@opentelemetry/core':
+        specifier: 'catalog:'
+        version: 2.10.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/exporter-metrics-otlp-http':
         specifier: 'catalog:'
         version: 0.221.0(@opentelemetry/api@1.9.1)

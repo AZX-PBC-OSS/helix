@@ -14,9 +14,12 @@ import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk
 import { BatchSpanProcessor, NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import { resolveTelemetryConfig } from "./config.js";
+import { propagatorFor, type PropagationMode } from "./propagation.js";
 
 export { resolveTelemetryConfig } from "./config.js";
 export type { TelemetryConfig } from "./config.js";
+export { injectOnly, defaultPropagator, propagatorFor } from "./propagation.js";
+export type { PropagationMode } from "./propagation.js";
 
 /**
  * @azx-pbc/telemetry — the one place any OpenTelemetry **SDK** import lives
@@ -55,6 +58,14 @@ export interface StartTelemetryOptions {
    * themselves, and that is deliberate — see `config.ts`'s `signalUrl`.
    */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Which direction this service may propagate trace context in (ADR-0037
+   * decision 7). Defaults to `inject-only`, the safe direction: a service that
+   * forgets to pass this cannot accidentally start honouring a `traceparent`
+   * from untrusted code. Only egress passes `full`, and it has a comment
+   * saying why.
+   */
+  propagation?: PropagationMode;
 }
 
 const INERT: TelemetryHandle = Object.freeze({
@@ -192,13 +203,19 @@ export function startTelemetry(
       resource,
       spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: config.tracesUrl }))],
     });
-    // Registers the global tracer provider, plus a context manager and the W3C
-    // propagator. Nothing extracts context yet — and when propagation lands, it
-    // runs INWARD ONLY (edge → egress). The edge never takes `traceparent` from an
-    // app-user request as a parent: it is unauthenticated metadata from untrusted
-    // code, and honouring it would let an app graft itself onto platform traces
-    // (ADR-0037 decision 7).
-    tracerProvider.register();
+    // Registers the global tracer provider, plus a context manager and the
+    // propagator. Propagation runs INWARD ONLY (edge → egress): the edge never
+    // takes `traceparent` from an app-user request as a parent, because it is
+    // unauthenticated metadata from untrusted code and honouring it would let
+    // an app graft itself onto platform traces (ADR-0037 decision 7).
+    //
+    // `register()` with no propagator installs W3C trace-context + baggage and
+    // would make an inbound `traceparent` extractable. `propagatorFor` wraps
+    // that same default so `extract` is the identity everywhere but egress —
+    // the edge starts a fresh root for every app-user request, and an extract
+    // call added later is inert rather than a silent trust-boundary crossing
+    // (ADR-0037 decision 7, `propagation.ts`).
+    tracerProvider.register({ propagator: propagatorFor(options.propagation ?? "inject-only") });
 
     meterProvider = new MeterProvider({
       resource,

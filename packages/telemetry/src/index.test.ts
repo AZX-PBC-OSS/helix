@@ -155,6 +155,18 @@ describe("startTelemetry, misconfigured", () => {
     expect(stderr.lines()).toContain("Could not parse user-provided export URL");
     expect(stderr.lines()).not.toContain("{}");
   });
+
+  it("stays inert whichever propagation mode is asked for", () => {
+    // The option reaches `register()`, which the inert branch never calls — so
+    // this is really asserting that adding an option did not add a path around
+    // the inertness gate. Both modes, because egress passes the non-default one
+    // and its boot is the one that would break.
+    for (const propagation of ["inject-only", "full"] as const) {
+      const handle = startTelemetry("helix-egress", { env: { NODE_ENV: "test" }, propagation });
+      expect(handle.enabled).toBe(false);
+      expect(globalTracerIsUnregistered()).toBe(true);
+    }
+  });
 });
 
 describe("shutdownTelemetry", () => {
