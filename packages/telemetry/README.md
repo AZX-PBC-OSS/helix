@@ -91,8 +91,40 @@ immediately and the hook does not run. Graceful drain is tracked in
 [`TODO.md`](../../TODO.md); until it lands, treat the last batch before a deploy
 as lost.
 
+## Locally
+
+The devcontainer runs **Jaeger all-in-one** as the `otel-collector` compose
+service, and `OTEL_EXPORTER_OTLP_ENDPOINT` already points at it — so the OTLP
+path is exercised locally rather than first discovered in Azure, where its
+failure mode is silence rather than an error. The trace UI is on
+**<http://localhost:27686>**.
+
+Drive an `/_api/fetch` call through a deployed app and you should see **one
+trace spanning edge → egress**, with the app-user leg as a fresh root. That is
+the thing ADR-0037's context paragraph says cannot be seen today.
+
+Jaeger accepts metrics on the same endpoint and drops them — it stores traces
+only. Assert metrics in tests (`@azx-pbc/telemetry/testing`), not here.
+
+To get the platform's **default** state back — telemetry entirely inert, no
+provider constructed, which is what a deployment with no collector runs —
+comment out `OTEL_EXPORTER_OTLP_ENDPOINT` in
+`.devcontainer/docker-compose.yml`, or set `OTEL_SDK_DISABLED=1`. Worth doing
+occasionally so "works locally" does not quietly come to depend on an exporter.
+
 ## What is deliberately not here yet
 
-Spans, metrics, span-attribute redaction (ADR-0037 decision 6 — a live credential
-in a 30-day-retained backend is the failure mode), and edge → egress trace-context
-propagation (decision 7). Each lands as its own reviewed change.
+Phase 1 is complete: spans and metrics on the three services, attribute
+redaction (decision 6), and edge → egress propagation (decision 7).
+
+Still deferred, each on its own merits (decision 11): the OpenTelemetry **log**
+bridge — logs stay pino → stdout, and decision 9 holds it until decision 6's
+redaction is demonstrated on that path with tests; browser/RUM telemetry for
+`apps/portal-web`; per-app telemetry for hosted apps; tail sampling and
+trace-based alerting; and `pg`/`undici` instrumentation depth beyond the
+hand-placed seams.
+
+The **alert rules themselves** are also still to build. This package makes them
+possible — `helix.registry.stale_for_ms` is one threshold rule instead of KQL
+string-matching over log messages — but nothing consumes the metrics yet
+(`TODO.md`).
