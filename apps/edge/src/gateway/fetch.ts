@@ -17,7 +17,13 @@ import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import type { DenialThrottle } from "./denialThrottle.js";
 import { EgressProviderError, type EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
-import { errorDetailOf, fetchPathOf, type GatewayOutcome, type UsageStore } from "./usage.js";
+import {
+  errorDetailOf,
+  fetchPathOf,
+  meterGatewayCall,
+  type GatewayOutcome,
+  type UsageStore,
+} from "./usage.js";
 
 /**
  * `/_api/fetch/<url>` — the fetch-proxy policy plane (fetch-proxy design §7).
@@ -152,6 +158,21 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
           "allowlist-denial metering suppressed — this app is over its denial budget for the window",
         );
       }
+      // The metric is NOT gated on `decision.meter`, and that divergence is
+      // deliberate. The throttle is a write-amplification defence on an
+      // append-only table with no DELETE grant — it exists to stop an app
+      // filling the ledger, not to hide the event. "An app is hammering an
+      // origin it was never granted" is precisely what an operator wants to
+      // see, and past N the ledger is blind to it by design.
+      //
+      // This makes `helix.gateway.calls` and `gateway_calls` provably differ,
+      // which strengthens ADR-0037 decision 9 rather than bending it: the two
+      // can now never be reconciled, so nobody will try.
+      meterGatewayCall({
+        appId: entry.appId,
+        capability: "fetch",
+        outcome: "forbidden",
+      });
       if (decision.meter) {
         // Deliberately not awaited: `record` opens a transaction
         // (`withPartition`) held across four round-trips on the pool that also
@@ -184,6 +205,8 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     if (budget !== null) {
       const usedToday = await usage.fetchRequestsToday(entry.appId, caller.env);
       if (usedToday >= budget) {
+        // No `durationMs`: refused before anything was dialled.
+        meterGatewayCall({ appId: entry.appId, capability: "fetch", outcome: "quota_blocked" });
         await usage
           .record({
             appId: entry.appId,
@@ -266,8 +289,10 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     const record = (
       outcome: GatewayOutcome,
       extra: { statusCode?: number; errorDetail?: string } = {},
-    ): Promise<void> =>
-      usage
+    ): Promise<void> => {
+      const durationMs = Math.round(performance.now() - startedAt);
+      meterGatewayCall({ appId: entry.appId, capability: "fetch", outcome, durationMs });
+      return usage
         .record({
           appId: entry.appId,
           env: caller.env,
@@ -277,7 +302,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
           inputTokens: 0,
           outputTokens: 0,
           outcome,
-          durationMs: Math.round(performance.now() - startedAt),
+          durationMs,
           statusCode: extra.statusCode ?? null,
           errorDetail: extra.errorDetail ?? null,
           // `pathname` only — the query is dropped and the value is capped. See
@@ -285,7 +310,19 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
           path: fetchPathOf(target.pathname),
           method: req.method,
         })
-        .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
+        .catch((err: unknown) =>
+          req.log.warn(
+            {
+              err,
+              event: "gateway.usage_record_failed",
+              appId: entry.appId,
+              capability: "fetch",
+              outcome,
+            },
+            "gateway usage record failed",
+          ),
+        );
+    };
 
     try {
       const res = await rt.egress.proxy({

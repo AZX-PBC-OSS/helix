@@ -15,7 +15,7 @@ import type { OriginCheck } from "../auth/validate.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
 import { nativeCodec, type LlmWireCodec, type LlmWireContext } from "./llmCodec.js";
-import { errorDetailOf, type GatewayOutcome, type UsageStore } from "./usage.js";
+import { errorDetailOf, meterGatewayCall, type GatewayOutcome, type UsageStore } from "./usage.js";
 
 /**
  * `POST /_api/llm/chat` — the gateway's LLM capability (architecture §6.1,
@@ -174,6 +174,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
       const overDay = todayMicro >= capMicro;
       const overBurst = hourMicro >= capMicro * BURST_BUDGET_FRACTION;
       if (overDay || overBurst) {
+        meterGatewayCall({ appId: entry.appId, capability: "llm", outcome: "quota_blocked" });
         await usage
           .record({
             appId: entry.appId,
@@ -234,6 +235,11 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
     ): Promise<void> => {
       if (recorded) return;
       recorded = true;
+      const durationMs = Math.round(performance.now() - startedAt);
+      // `recordOnce` runs after the stream has drained (the handler drives the
+      // `for await` itself), so this duration is the real end-to-end time, not
+      // time-to-first-header.
+      meterGatewayCall({ appId: entry.appId, capability: "llm", outcome, durationMs });
       // Freeze the as-charged cost at write time (micro-USD) from the final
       // token counts + the requested model's current rate. This is what both
       // the spend gate and the portal dollar figures read back.
@@ -251,12 +257,23 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
           cacheCreationInputTokens: finalUsage.cacheCreationInputTokens,
           costMicroUsd,
           outcome,
-          durationMs: Math.round(performance.now() - startedAt),
+          durationMs,
           // LLM streams over a 200; the stop reason is the useful signal here.
           stopReason: finalStopReason,
           errorDetail: extra.errorDetail ?? null,
         })
-        .catch((err: unknown) => req.log.warn({ err }, "gateway usage record failed"));
+        .catch((err: unknown) =>
+          req.log.warn(
+            {
+              err,
+              event: "gateway.usage_record_failed",
+              appId: entry.appId,
+              capability: "llm",
+              outcome,
+            },
+            "gateway usage record failed",
+          ),
+        );
     };
 
     // Two distinct ids: `requestId` is internal — it correlates the egress call

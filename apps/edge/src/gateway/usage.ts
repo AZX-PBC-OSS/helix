@@ -6,6 +6,8 @@ import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
 import type { PrincipalKind } from "@azx-pbc/shared";
 import { USER_EMAIL_MAX, USER_NAME_MAX, truncate } from "../auth/identity.js";
+import { ATTR_APP_ID, ATTR_CAPABILITY, ATTR_OUTCOME } from "@azx-pbc/shared/telemetry";
+import { instruments } from "../telemetry.js";
 
 /**
  * The gateway call ledger (architecture §6.1/§6.3, §8) — metering + audit and
@@ -364,5 +366,59 @@ export class PgUsageStore implements UsageStore {
 
   async close(): Promise<void> {
     await this.#pool.end();
+  }
+}
+
+/**
+ * Record the operational metrics for one gateway terminal (ADR-0037 decision 8).
+ *
+ * **Beside the ledger write, never inside `PgUsageStore.record`.** Three
+ * reasons, in order of how much they matter:
+ *
+ *  1. `record` can fail, and every call site swallows that with a `.catch`. A
+ *     DB blip must not also blind the operational counter — those are exactly
+ *     the minutes an operator is looking at it.
+ *  2. `PgUsageStore` is one of two `UsageStore` implementations (the other is
+ *     the test fake). Metrics placed inside it would be invisible to every unit
+ *     test and absent from the dev gateway.
+ *  3. ADR-0037 decision 9 says this counter is **never reconciled against the
+ *     ledger, never used to bill, and never presented as the authority.**
+ *     Keeping the two adjacent-but-independent makes that structural rather
+ *     than a comment: a dropped span costs a data point, a dropped ledger row
+ *     costs money and an audit trail.
+ *
+ * They still share a call site, so the `outcome` vocabulary cannot drift.
+ */
+export function meterGatewayCall(call: {
+  appId: string;
+  capability: string;
+  outcome: GatewayOutcome;
+  durationMs?: number;
+}): void {
+  const { gatewayCalls, gatewayDuration } = instruments();
+
+  gatewayCalls.add(1, {
+    [ATTR_CAPABILITY]: call.capability,
+    [ATTR_OUTCOME]: call.outcome,
+    [ATTR_APP_ID]: call.appId,
+  });
+
+  // **Only when the call actually measured a round trip.** `quota_blocked` and
+  // `forbidden` are refused before anything is dialled, and the app-data path
+  // does not time itself — recording `0` for those would drag every percentile
+  // toward zero and make the histogram say the platform is fast when what it
+  // really did was refuse. That is the same failure ADR-0037 decision 5 names
+  // about a span ended at response headers: worse than no metric, because it
+  // looks like data.
+  //
+  // Read before `PgUsageStore.record` coerces the column with `?? 0`.
+  if (call.durationMs !== undefined) {
+    gatewayDuration.record(call.durationMs, {
+      // No `appId`: per decision 8's table, the counter carries the per-app
+      // breakdown and the histogram does not — a bucket set per app multiplies
+      // the series count by the tenant's app count for a question nobody asks.
+      [ATTR_CAPABILITY]: call.capability,
+      [ATTR_OUTCOME]: call.outcome,
+    });
   }
 }

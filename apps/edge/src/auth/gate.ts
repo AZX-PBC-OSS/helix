@@ -3,7 +3,9 @@ import type { Env, PrincipalKind } from "@azx-pbc/shared";
 import type { AuthConfig, EdgeConfig } from "../config.js";
 import { publicOrigin } from "../config.js";
 import type { RegistryEntry } from "../registry/projection.js";
+import { ATTR_REASON, type SessionDenialReason } from "@azx-pbc/shared/telemetry";
 import { sendForbidden } from "../errors.js";
+import { instruments } from "../telemetry.js";
 import { SESSION_COOKIE, parseCookieHeader } from "./cookies.js";
 import { hashSessionToken, type Session, type SessionStore } from "./sessions.js";
 import { validateReturnPath, visibilityAllows, visibilityModeAllowed } from "./validate.js";
@@ -129,6 +131,7 @@ export function makeCallerResolver(gate: SessionGate, config: EdgeConfig): Calle
     // resolves a caller — the anonymous short-circuit below would otherwise
     // hand a public app's `/_api/*` calls to an anon caller.
     if (!visibilityModeAllowed(entry.visibilityMode, config)) {
+      countDenial("mode_forbidden");
       sendForbidden(reply);
       return null;
     }
@@ -247,12 +250,29 @@ function isApiPath(rawUrl: string): boolean {
   return pathname === "/_api" || pathname.startsWith("/_api/");
 }
 
+/**
+ * Count a gate denial (ADR-0037 decision 8).
+ *
+ * The *response* is unchanged and must stay so: `errors.ts`'s senders are
+ * deliberately indistinguishable, and the three denial paths here already
+ * collapse to the same 401 or the same redirect on purpose, so a caller cannot
+ * tell which guard fired. This records the reason where only an operator can
+ * read it. `reason` is bounded by `SESSION_DENIAL_REASONS`; `appId` is not a
+ * dimension here — the gate fires before authorization and per-app breakdown of
+ * denials is not worth the cardinality when the interesting question is "which
+ * guard, how often".
+ */
+function countDenial(reason: SessionDenialReason): void {
+  instruments().sessionGateDenied.add(1, { [ATTR_REASON]: reason });
+}
+
 export function makeSessionGate(deps: SessionGateDeps): SessionGate {
   return async function requireSession(req, reply, entry): Promise<Session | null> {
     const token = parseCookieHeader(req.headers.cookie).get(SESSION_COOKIE);
     const session = token ? await deps.sessions.lookup(hashSessionToken(token), entry.appId) : null;
 
     if (!session) {
+      countDenial("no_session");
       // No session (or hard-expired — lookup filters those): interactive
       // login for navigations, 401 for everything else.
       if (isNavigation(req)) {
@@ -269,6 +289,7 @@ export function makeSessionGate(deps: SessionGateDeps): SessionGate {
     // re-snapshots groups at the IdP; a user who truly lacks the group ends
     // on the callback's 403, so this cannot loop.
     if (!visibilityAllows(entry, session.user.groups)) {
+      countDenial("visibility_denied");
       if (isNavigation(req)) {
         redirectToRefresh(req, reply, deps, entry);
       } else {
@@ -284,13 +305,18 @@ export function makeSessionGate(deps: SessionGateDeps): SessionGate {
     // on old groups. Passive assets stay lenient until hard expiry.
     if (session.refreshDueAt.getTime() <= Date.now()) {
       if (isNavigation(req)) {
+        countDenial("refresh_required");
         redirectToRefresh(req, reply, deps, entry);
         return null;
       }
       if (isApiPath(req.raw.url ?? "/")) {
+        countDenial("refresh_required");
         sendRefreshRequired(reply);
         return null;
       }
+      // Passive assets stay lenient until hard expiry — not a denial, so not
+      // counted. Counting it would make the metric say "denied" about a
+      // request that was served.
     }
 
     return session;

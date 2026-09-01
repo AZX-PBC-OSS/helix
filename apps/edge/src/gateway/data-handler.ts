@@ -14,7 +14,7 @@ import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
 import type { AppDataStore, CollectionMeta, WritePrecondition } from "./data.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
-import type { UsageStore } from "./usage.js";
+import { meterGatewayCall, type UsageStore } from "./usage.js";
 
 /**
  * `/_api/data/*` — the gateway's app-data capability (architecture §6.1,
@@ -244,6 +244,10 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     outcome: "ok" | "error" | "quota_blocked" | "conflict",
     env: Env,
   ): void {
+    // Counter only — this path does not time itself, and `meterGatewayCall`
+    // omits the histogram observation rather than recording a zero that would
+    // drag every percentile down.
+    meterGatewayCall({ appId, capability: "data", outcome });
     rt.usage
       ?.record({
         appId,
