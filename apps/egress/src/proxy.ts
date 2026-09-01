@@ -534,9 +534,11 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     const parent = propagation.extract(context.active(), req.headers);
     const span = tracer.startSpan(SPAN_EGRESS_PROXY, { kind: SpanKind.SERVER }, parent);
     const startedAt = performance.now();
+    let threw = false;
     try {
       return await context.with(trace.setSpan(parent, span), () => runProxy(req, reply));
     } catch (err) {
+      threw = true;
       // Deliberately NOT `span.recordException(err)`. On this plane an error
       // message can embed credential material — the same reason `app.ts`
       // returns a fixed opaque body and the injection `catch` below binds
@@ -545,12 +547,30 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       span.setStatus({ code: SpanStatusCode.ERROR });
       throw err;
     } finally {
-      const outcome = String(reply.getHeader(OUTCOME_HEADER) ?? "ok");
+      // **Nothing below may be read off `reply` on the throw path.** Fastify's
+      // error handler (`app.ts`) runs *after* this handler's promise rejects,
+      // so at this point an unhandled throw has touched none of it: the outcome
+      // header is unset, `statusCode` is still 200, and `writableEnded` is
+      // false. Read naively that records "a successful 200 the app hung up on"
+      // — a plausible, complete fiction, on the one plane where "the client
+      // gave up" and "we broke" send an operator down different paths.
+      const outcome = threw ? "error" : String(reply.getHeader(OUTCOME_HEADER) ?? "ok");
+
+      // A refusal returns normally through `fail()`, so the `catch` above never
+      // sees it and the span would otherwise end UNSET — including on a 5xx.
+      // Grade from what was actually answered. 4xx stays UNSET on purpose: a
+      // blocked SSRF target or a replayed jti is this service working.
+      if (!threw && reply.statusCode >= 500) {
+        span.setStatus({ code: SpanStatusCode.ERROR });
+      }
+
       span.setAttributes(
         egressSpanAttributes({
           [ATTR_OUTCOME]: outcome,
-          [ATTR_UPSTREAM_STATUS]: reply.statusCode,
-          [ATTR_CLIENT_DISCONNECTED]: reply.raw.writableEnded ? undefined : true,
+          // Omitted rather than guessed when we threw — the status the caller
+          // will actually see is written by the error handler, later.
+          [ATTR_UPSTREAM_STATUS]: threw ? undefined : reply.statusCode,
+          [ATTR_CLIENT_DISCONNECTED]: !threw && !reply.raw.writableEnded ? true : undefined,
         }),
       );
       instruments().proxyDuration.record(performance.now() - startedAt, {

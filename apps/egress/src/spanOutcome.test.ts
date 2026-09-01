@@ -1,0 +1,164 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import { SignJWT } from "jose";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
+import {
+  INSTRUCTION_AUDIENCE,
+  INSTRUCTION_HEADER,
+  INSTRUCTION_JWT_TYP,
+  TARGET_HEADER,
+} from "@azx-pbc/shared";
+import { deriveInstructionKey } from "./instruction.js";
+import type { InstructionBurnStore } from "./burn.js";
+import { buildApp } from "./app.js";
+import type { EgressConfig } from "./config.js";
+
+/**
+ * What an egress span says happened, on the paths that are not a clean 200.
+ *
+ * Two failures the span used to get wrong, both silent:
+ *  - an **unhandled throw** recorded `outcome: "ok"`, `upstream.status: 200`
+ *    and `client_disconnected: true`, because Fastify's error handler runs
+ *    *after* this handler's promise rejects and so nothing had touched `reply`
+ *    yet. That triple reads as "a successful 200 the app hung up on";
+ *  - a **deliberate refusal** returns normally through `fail()`, so the `catch`
+ *    never saw it and the span ended UNSET — 5xx included. Any backend's
+ *    built-in error view showed those as successful traces.
+ */
+
+let recording: RecordingTelemetry;
+
+beforeAll(() => {
+  recording = startRecordingTelemetry();
+});
+afterEach(() => {
+  recording.reset();
+});
+afterAll(async () => {
+  await recording.restore();
+});
+
+const key = deriveInstructionKey(randomBytes(32));
+
+function makeApp(burnStore: InstructionBurnStore | null = null): ReturnType<typeof buildApp> {
+  const config = {
+    limits: { maxBodyBytes: 1024 * 1024, timeoutMs: 5000 },
+    allowPrivate: false,
+    allowInsecureConnection: false,
+  } as EgressConfig;
+  return buildApp({ config, resolver: null, instructionKey: key, burnStore });
+}
+
+async function mint(origin: string): Promise<string> {
+  const requestId = randomUUID();
+  return new SignJWT({
+    appId: "app-1",
+    userOid: "user-1",
+    capability: "fetch",
+    origin,
+    requestId,
+  })
+    .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
+    .setJti(requestId)
+    .setAudience(INSTRUCTION_AUDIENCE)
+    .setIssuedAt()
+    .setExpirationTime("30s")
+    .sign(key);
+}
+
+/** The one span each request produces. */
+function theSpan(): ReturnType<RecordingTelemetry["spans"]>[number] {
+  const spans = recording.spans();
+  expect(spans).toHaveLength(1);
+  return spans[0]!;
+}
+
+describe("an unhandled throw", () => {
+  it("is not recorded as a successful, client-abandoned 200", async () => {
+    // The burn is awaited inside `runProxy` with no try/catch, so a DB failure
+    // there is a genuine unhandled throw on the real code path — not a hook
+    // firing outside the span.
+    const app = makeApp({
+      burn: () => Promise.reject(new Error("burn store unreachable")),
+      sweep: () => Promise.resolve(),
+      close: () => Promise.resolve(),
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint("https://api.vendor.test"),
+        [TARGET_HEADER]: "https://api.vendor.test/v1",
+      },
+    });
+    expect(res.statusCode).toBe(500);
+    await app.close();
+
+    const span = theSpan();
+    expect(span.attributes["helix.outcome"]).not.toBe("ok");
+    expect(span.attributes["helix.outcome"]).toBe("error");
+    // The status the caller sees is written later, by the error handler.
+    expect(span.attributes["helix.upstream.status"]).toBeUndefined();
+    // Nobody hung up. Naming a condition that did not happen is worse than
+    // naming none, on the plane where that distinction changes the diagnosis.
+    expect(span.attributes["helix.client_disconnected"]).toBeUndefined();
+    expect(span.status.code).toBe(2); // ERROR
+  });
+});
+
+describe("a deliberate refusal", () => {
+  it("marks a 5xx span ERROR even though the handler returned normally", async () => {
+    // A secret-bound instruction with no resolver configured: egress fails
+    // closed with a 502 through `fail()`, which returns void.
+    const app = makeApp();
+    const requestId = randomUUID();
+    const token = await new SignJWT({
+      appId: "app-1",
+      userOid: "user-1",
+      capability: "fetch",
+      origin: "https://api.vendor.test",
+      requestId,
+      connection: "vendor-key",
+    })
+      .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
+      .setJti(requestId)
+      .setAudience(INSTRUCTION_AUDIENCE)
+      .setIssuedAt()
+      .setExpirationTime("30s")
+      .sign(key);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        [TARGET_HEADER]: "https://api.vendor.test/v1",
+      },
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(500);
+    await app.close();
+
+    const span = theSpan();
+    expect(span.status.code).toBe(2); // ERROR
+    expect(span.attributes["helix.upstream.status"]).toBe(res.statusCode);
+  });
+
+  it("leaves a 4xx span UNSET — a refusal is this service working", async () => {
+    const app = makeApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: "not-a-jwt",
+        [TARGET_HEADER]: "https://api.vendor.test/v1",
+      },
+    });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+
+    const span = theSpan();
+    expect(span.status.code).toBe(0); // UNSET
+    expect(span.attributes["helix.outcome"]).not.toBe("ok");
+  });
+});

@@ -410,6 +410,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
       SPAN_LLM,
       { [ATTR_CAPABILITY]: "llm", [ATTR_APP_SLUG]: slug, "http.route": ROUTE_LLM },
       () => handleLlmChat(req, reply, slug),
+      { reply },
     );
 }
 

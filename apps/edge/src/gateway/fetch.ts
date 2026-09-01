@@ -415,5 +415,6 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         ...spanUrlAttributes(req.url),
       },
       () => handleFetch(req, reply, slug),
+      { reply },
     );
 }

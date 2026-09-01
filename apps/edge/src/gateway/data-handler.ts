@@ -200,6 +200,7 @@ function withDataSpans<T extends Record<string, DataVerbHandler>>(handlers: T): 
           "http.route": ROUTE_DATA,
         },
         () => handler(req, reply, slug),
+        { reply },
       );
   }
   return wrapped as T;

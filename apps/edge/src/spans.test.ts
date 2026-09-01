@@ -161,3 +161,54 @@ describe("withRootSpan starts a ROOT span", () => {
     expect(inner?.spanContext().traceId).not.toBe(outer?.spanContext().traceId);
   });
 });
+
+describe("span status is graded from the response, not from control flow", () => {
+  /** A minimal stand-in for the reply a real handler would pass through. */
+  function replyStub(statusCode: number): Parameters<typeof withRootSpan>[3] {
+    return { reply: { statusCode } as never };
+  }
+
+  it("marks a 5xx ERROR even though the handler returned normally", async () => {
+    // This is how the gateway signals failure: `gateway/fetch.ts` catches its
+    // error, meters it, and calls `sendFetchError(reply, 502, …)`. Nothing
+    // throws, so a span graded only from a `catch` records a clean success —
+    // and a backend's built-in error view keys on span status, not on our
+    // custom `helix.outcome` attribute.
+    await withRootSpan("test.route", {}, async () => {}, replyStub(502));
+
+    expect(recording.spans()[0]?.status.code).toBe(2); // ERROR
+  });
+
+  it("leaves a 4xx UNSET — a refusal is the platform working", async () => {
+    // A 401 from the session gate or a 403 from the manifest allowlist is the
+    // designed behaviour of a public endpoint. Marking those ERROR would bury
+    // real faults under the ordinary background of things being refused.
+    await withRootSpan("test.route", {}, async () => {}, replyStub(403));
+
+    expect(recording.spans()[0]?.status.code).toBe(0); // UNSET
+  });
+
+  it("leaves a 2xx UNSET", async () => {
+    await withRootSpan("test.route", {}, async () => {}, replyStub(200));
+
+    expect(recording.spans()[0]?.status.code).toBe(0);
+  });
+
+  it("keeps ERROR from a throw even when no response was written", async () => {
+    // The grading only ever raises; a span already failed in the `catch` must
+    // not be quietly downgraded by a `statusCode` the error handler has not
+    // touched yet.
+    await expect(
+      withRootSpan(
+        "test.route",
+        {},
+        async () => {
+          throw new Error("boom");
+        },
+        replyStub(200),
+      ),
+    ).rejects.toThrow("boom");
+
+    expect(recording.spans()[0]?.status.code).toBe(2);
+  });
+});

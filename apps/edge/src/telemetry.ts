@@ -155,6 +155,7 @@ export function withRootSpan<T>(
   name: string,
   attributes: Attributes,
   fn: (span: Span) => Promise<T>,
+  options: { reply?: FastifyReply } = {},
 ): Promise<T> {
   return tracer.startActiveSpan(
     name,
@@ -166,10 +167,34 @@ export function withRootSpan<T>(
         failSpan(span, err);
         throw err;
       } finally {
+        gradeFromResponse(span, options.reply);
         span.end();
       }
     },
   );
+}
+
+/**
+ * Mark a span failed when the response says so, not only when the handler threw.
+ *
+ * Every HTTP call site must pass `reply`, because **this codebase signals
+ * failure by returning normally.** `gateway/fetch.ts` catches its error, meters
+ * it, and calls `sendFetchError(reply, 502, …)`; the app-data verbs do the same
+ * through `sendApiError`. A span graded only from a `catch` therefore records
+ * every 502 as a success, and a backend's built-in error view — which keys on
+ * span status, not on our custom `helix.outcome` attribute — shows a clean
+ * trace for the requests an operator most wants to find.
+ *
+ * **5xx only. A 4xx stays UNSET, deliberately**: a 401 from the session gate or
+ * a 403 from the manifest allowlist is the platform working exactly as
+ * designed, and marking those ERROR would bury real faults under the ordinary
+ * background of a public endpoint refusing things.
+ *
+ * Only ever *raises* to ERROR — a span already failed in the `catch` keeps that
+ * status even when no response was written.
+ */
+function gradeFromResponse(span: Span, reply: FastifyReply | undefined): void {
+  if (reply && reply.statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
 }
 
 /**
@@ -190,5 +215,5 @@ export function spanRoute<A extends unknown[]>(
   handler: (req: FastifyRequest, reply: FastifyReply, ...rest: A) => Promise<void>,
 ): (req: FastifyRequest, reply: FastifyReply, ...rest: A) => Promise<void> {
   return (req, reply, ...rest) =>
-    withRootSpan(name, attributes(req), () => handler(req, reply, ...rest));
+    withRootSpan(name, attributes(req), () => handler(req, reply, ...rest), { reply });
 }
