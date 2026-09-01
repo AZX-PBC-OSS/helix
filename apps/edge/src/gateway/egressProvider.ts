@@ -1,6 +1,7 @@
 import type { Readable } from "node:stream";
 import { Agent, request } from "undici";
 import { INSTRUCTION_HEADER, METHOD_HEADER, OUTCOME_HEADER, TARGET_HEADER } from "@azx-pbc/shared";
+import { context, propagation } from "@opentelemetry/api";
 import { REQUEST_ID_HEADER } from "@azx-pbc/shared/logging";
 
 /**
@@ -69,6 +70,19 @@ export class HttpEgressProvider implements EgressProvider {
   }
 
   async proxy(req: EgressRequest): Promise<EgressResponse> {
+    // Trace context, inward only (ADR-0037 decision 7). `propagation.inject`
+    // writes nothing when no SDK is registered — the platform's default state —
+    // so this is a no-op delta until a collector is configured.
+    //
+    // Built as its own object rather than written straight into the header
+    // literal so it can be spread AFTER `req.headers`: those are the safelisted
+    // headers forwarded from the app's own request, and an app that sends
+    // `traceparent` must not be able to shadow ours. (It also never reaches
+    // here — `traceparent` is not on `REQUEST_HEADER_SAFELIST` — but the
+    // ordering is the guarantee that does not depend on that list.)
+    const traceContext: Record<string, string> = {};
+    propagation.inject(context.active(), traceContext);
+
     try {
       const res = await request(`${this.#base}/proxy`, {
         method: "POST",
@@ -81,6 +95,7 @@ export class HttpEgressProvider implements EgressProvider {
           [TARGET_HEADER]: req.target,
           [METHOD_HEADER]: req.method,
           [REQUEST_ID_HEADER]: req.correlationId,
+          ...traceContext,
         },
         body: req.body ?? undefined,
         signal: req.signal,

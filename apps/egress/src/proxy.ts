@@ -1,4 +1,5 @@
 import { type IncomingHttpHeaders } from "node:http";
+import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import { Agent, buildConnector, request } from "undici";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -17,6 +18,21 @@ import { hmacTimestampNow, renderHmacAuth, signTimestamp, substitute } from "./h
 import { verifyInstruction } from "./instruction.js";
 import { RecipeDriftError, type SecretResolver } from "./secrets.js";
 import { type InstructionBurnStore } from "./burn.js";
+import {
+  ATTR_APP_ID,
+  ATTR_CAPABILITY,
+  ATTR_CLIENT_DISCONNECTED,
+  ATTR_CONNECTION,
+  ATTR_ENV,
+  ATTR_METHOD,
+  ATTR_OUTCOME,
+  ATTR_TARGET_ORIGIN,
+  ATTR_TARGET_PATH,
+  ATTR_UPSTREAM_STATUS,
+  SPAN_EGRESS_PROXY,
+} from "@azx-pbc/shared/telemetry";
+import { instruments, tracer } from "./telemetry.js";
+import { egressSpanAttributes } from "./spanAttributes.js";
 import { SsrfBlockedError, resolveAndValidate } from "./ssrf.js";
 
 /**
@@ -218,7 +234,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     bodyTimeout: deps.limits.timeoutMs,
   });
 
-  async function proxyHandler(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  async function runProxy(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     const token = req.headers[INSTRUCTION_HEADER];
     const targetRaw = req.headers[TARGET_HEADER];
     const method = (req.headers[METHOD_HEADER] ?? "GET").toString().toUpperCase();
@@ -236,6 +252,21 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     if (deps.burnStore && !(await deps.burnStore.burn(instruction.requestId))) {
       return fail(reply, 409, "replay", "attested instruction already used");
     }
+
+    // Edge-signed claims only: the edge matched this origin against the app's
+    // manifest allowlist before signing, so these are values the operator
+    // granted rather than values the app chose.
+    trace.getActiveSpan()?.setAttributes(
+      egressSpanAttributes({
+        [ATTR_APP_ID]: instruction.appId,
+        [ATTR_ENV]: instruction.env,
+        [ATTR_CAPABILITY]: instruction.capability,
+        [ATTR_TARGET_ORIGIN]: instruction.origin,
+        [ATTR_TARGET_PATH]: instruction.path,
+        [ATTR_METHOD]: method,
+        [ATTR_CONNECTION]: instruction.connection,
+      }),
+    );
 
     let target: URL;
     try {
@@ -480,6 +511,52 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         "upstream request failed",
       );
       return fail(reply, 502, "upstream_error", "upstream request failed");
+    }
+  }
+
+  /**
+   * The egress span, and the one place in the platform that **extracts** trace
+   * context (ADR-0037 decision 7).
+   *
+   * Extracting here is what makes a `/_api/fetch` call one trace instead of two
+   * unjoinable halves in two Log Analytics workspaces — the thing the ADR names
+   * as unseeable today. It is sound precisely here and nowhere else: the caller
+   * is the edge, over a hop whose authority already comes from the signed
+   * attested instruction (ADR-0013). The `traceparent` rides alongside that
+   * instruction as correlation only; it is never read for policy, and the
+   * verifier does not know it exists.
+   *
+   * The duration is recorded in the same `finally` as the span end, so the two
+   * can never disagree — and both land after the response body has drained,
+   * because Fastify's `Reply` is thenable (see `apps/edge/src/telemetry.ts`).
+   */
+  async function proxyHandler(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const parent = propagation.extract(context.active(), req.headers);
+    const span = tracer.startSpan(SPAN_EGRESS_PROXY, { kind: SpanKind.SERVER }, parent);
+    const startedAt = performance.now();
+    try {
+      return await context.with(trace.setSpan(parent, span), () => runProxy(req, reply));
+    } catch (err) {
+      // Deliberately NOT `span.recordException(err)`. On this plane an error
+      // message can embed credential material — the same reason `app.ts`
+      // returns a fixed opaque body and the injection `catch` below binds
+      // nothing. A span is a retained backend; the status code is the signal,
+      // and the detail stays on the log line that already redacts for it.
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw err;
+    } finally {
+      const outcome = String(reply.getHeader(OUTCOME_HEADER) ?? "ok");
+      span.setAttributes(
+        egressSpanAttributes({
+          [ATTR_OUTCOME]: outcome,
+          [ATTR_UPSTREAM_STATUS]: reply.statusCode,
+          [ATTR_CLIENT_DISCONNECTED]: reply.raw.writableEnded ? undefined : true,
+        }),
+      );
+      instruments().proxyDuration.record(performance.now() - startedAt, {
+        [ATTR_OUTCOME]: outcome,
+      });
+      span.end();
     }
   }
 
