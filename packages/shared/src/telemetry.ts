@@ -75,6 +75,9 @@ export const SPAN_FETCH = "helix.gateway.fetch";
 export const SPAN_DATA = "helix.gateway.data";
 export const SPAN_EGRESS_PROXY = "helix.egress.proxy";
 export const SPAN_REGISTRY_LOAD = "helix.registry.load";
+export const SPAN_AUTH_START = "helix.auth.oidc.start";
+export const SPAN_AUTH_CALLBACK = "helix.auth.oidc.callback";
+export const SPAN_AUTH_COMPLETE = "helix.auth.handoff.complete";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -84,6 +87,9 @@ export const SPAN_REGISTRY_LOAD = "helix.registry.load";
 export const ROUTE_LLM = "/_api/llm/chat";
 export const ROUTE_FETCH = "/_api/fetch/*";
 export const ROUTE_DATA = "/_api/data/*";
+export const ROUTE_AUTH_START = "/start";
+export const ROUTE_AUTH_CALLBACK = "/callback";
+export const ROUTE_AUTH_COMPLETE = "/_auth/complete";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037

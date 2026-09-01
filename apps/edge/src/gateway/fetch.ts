@@ -17,6 +17,19 @@ import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import type { DenialThrottle } from "./denialThrottle.js";
 import { EgressProviderError, type EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
+import { trace } from "@opentelemetry/api";
+import { spanUrlAttributes } from "@azx-pbc/shared/logging";
+import {
+  ATTR_APP_SLUG,
+  ATTR_CAPABILITY,
+  ATTR_CONNECTION,
+  ATTR_METHOD,
+  ATTR_TARGET_ORIGIN,
+  ATTR_TARGET_PATH,
+  ROUTE_FETCH,
+  SPAN_FETCH,
+} from "@azx-pbc/shared/telemetry";
+import { withRootSpan } from "../telemetry.js";
 import {
   errorDetailOf,
   fetchPathOf,
@@ -88,7 +101,7 @@ function toOutcome(egressOutcome: string): GatewayOutcome {
 }
 
 export function makeFetchHandler(rt: FetchGatewayRuntime) {
-  return async function handleFetch(
+  async function handleFetch(
     req: FastifyRequest,
     reply: FastifyReply,
     slug: string,
@@ -199,6 +212,16 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       return;
     }
     const connection = entry.fetch.connections.get(target.origin) ?? null;
+
+    // Recorded only now: the origin has been matched against the manifest
+    // allowlist, so it is a value the operator granted rather than one the app
+    // chose. `fetchPathOf` is the ledger's own cap — reusing it means the span
+    // attribute and the `path` column cannot draw the line in different places.
+    trace.getActiveSpan()?.setAttributes({
+      [ATTR_TARGET_ORIGIN]: target.origin,
+      [ATTR_TARGET_PATH]: fetchPathOf(target.pathname),
+      ...(connection ? { [ATTR_CONNECTION]: connection } : {}),
+    });
 
     // Quota (block-new): the per-app daily request budget from the manifest.
     const budget = entry.fetch.requestsPerDay;
@@ -368,5 +391,29 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       }
       sendFetchError(reply, 502, "upstream_error", "fetch failed");
     }
-  };
+  }
+
+  /**
+   * The one gateway route whose URL is attacker-controlled: `/_api/fetch/<target>`
+   * splices the app's chosen target in unencoded, so *its* query string becomes
+   * ours — and that is conventionally where an API key or an Azure SAS `sig`
+   * lives (ADR-0037 decision 6). `spanUrlAttributes` runs `redactUrl` and then
+   * drops the query wholesale, so no parameter-name list has to be right.
+   *
+   * Per-target attributes are added inside the handler, once the target has been
+   * parsed and matched against the manifest allowlist — an origin that failed
+   * that check is not a value worth recording under a stable key.
+   */
+  return (req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> =>
+    withRootSpan(
+      SPAN_FETCH,
+      {
+        [ATTR_CAPABILITY]: "fetch",
+        [ATTR_APP_SLUG]: slug,
+        [ATTR_METHOD]: req.method,
+        "http.route": ROUTE_FETCH,
+        ...spanUrlAttributes(req.url),
+      },
+      () => handleFetch(req, reply, slug),
+    );
 }

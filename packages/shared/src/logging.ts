@@ -340,3 +340,27 @@ export function requestIdOptions({ trustInbound = false }: { trustInbound?: bool
       (trustInbound ? parseRequestId(req.headers[REQUEST_ID_HEADER]) : null) ?? randomUUID(),
   };
 }
+
+/**
+ * The `url.path` span attribute for a request, with the query gone (ADR-0037
+ * decision 6).
+ *
+ * **Two layers, deliberately, and the second is the one that matters.**
+ * {@link redactUrl} runs first — it is what handles `/_api/fetch/<target>`,
+ * where the app-chosen target URL *is* the path and its own query rides along
+ * unencoded. Then the query is dropped **wholesale**, not scanned. So even a
+ * credential under a parameter name `SENSITIVE_PARAMS` has never heard of never
+ * reaches a span attribute, which is a stronger guarantee than the log line
+ * gets and is the right trade here: a log line's query string is occasionally
+ * useful for debugging, whereas nothing about a span needs it.
+ *
+ * Never returns `url.full`, `http.url` or `http.target`. Those are precisely the
+ * semantic-convention keys that carry a whole URL, and a span attribute lands in
+ * the same 30-day-retained backend a log line does. An ESLint rule bans them and
+ * `FORBIDDEN_URL_ATTRS` (`@azx-pbc/shared/telemetry`) is the shared list.
+ */
+export function spanUrlAttributes(rawUrl: string): { "url.path": string } {
+  const redacted = redactUrl(rawUrl);
+  const q = redacted.indexOf("?");
+  return { "url.path": q === -1 ? redacted : redacted.slice(0, q) };
+}

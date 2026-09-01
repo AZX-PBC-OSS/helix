@@ -14,6 +14,9 @@ import type { SessionGate } from "../gate.js";
 import { verifyHandoffToken } from "../handoff.js";
 import { hashSessionToken, newSessionToken, type SessionStore } from "../sessions.js";
 import { isSameOrigin, resolveAppForAuth, validateReturnPath } from "../validate.js";
+import { spanUrlAttributes } from "@azx-pbc/shared/logging";
+import { ROUTE_AUTH_COMPLETE, SPAN_AUTH_COMPLETE } from "@azx-pbc/shared/telemetry";
+import { spanRoute } from "../../telemetry.js";
 
 /**
  * App-host side of auth (architecture Appendix A.1 step 8 + A.6): handoff
@@ -30,62 +33,68 @@ export interface AppHostAuthRuntime {
 }
 
 export function makeAuthCompleteHandler(rt: AppHostAuthRuntime) {
-  return async function handleAuthComplete(
-    req: FastifyRequest,
-    reply: FastifyReply,
-    slug: string,
-  ): Promise<void> {
-    const resolved = resolveAppForAuth(rt.registry, slug);
-    if (resolved.kind === "registry-unavailable") {
-      sendUnavailable(reply, "Registry unavailable; try again shortly.");
-      return;
-    }
-    if (resolved.kind !== "ok") {
-      sendNotFound(reply);
-      return;
-    }
-    const entry = resolved.entry;
+  return spanRoute(
+    SPAN_AUTH_COMPLETE,
+    // The Appendix A handoff token is in this URL — the single most sensitive
+    // query string the platform mints. The query is dropped wholesale.
+    (req) => ({ "http.route": ROUTE_AUTH_COMPLETE, ...spanUrlAttributes(req.url) }),
+    async function handleAuthComplete(
+      req: FastifyRequest,
+      reply: FastifyReply,
+      slug: string,
+    ): Promise<void> {
+      const resolved = resolveAppForAuth(rt.registry, slug);
+      if (resolved.kind === "registry-unavailable") {
+        sendUnavailable(reply, "Registry unavailable; try again shortly.");
+        return;
+      }
+      if (resolved.kind !== "ok") {
+        sendNotFound(reply);
+        return;
+      }
+      const entry = resolved.entry;
 
-    const url = new URL(req.raw.url ?? "/", "http://app.invalid");
-    const token = url.searchParams.get("token");
-    if (!token) {
-      sendNotFound(reply);
-      return;
-    }
+      const url = new URL(req.raw.url ?? "/", "http://app.invalid");
+      const token = url.searchParams.get("token");
+      if (!token) {
+        sendNotFound(reply);
+        return;
+      }
 
-    // Audience check #1: the JWS `aud` must be THIS host's appId.
-    const claims = await verifyHandoffToken(token, entry.appId, rt.keys.handoffKey, {
-      ttlSec: rt.auth.handoffTtlSec,
-      clockToleranceSec: rt.auth.clockToleranceSec,
-    });
-    if (!claims) {
-      sendForbidden(reply);
-      return;
-    }
+      // Audience check #1: the JWS `aud` must be THIS host's appId.
+      const claims = await verifyHandoffToken(token, entry.appId, rt.keys.handoffKey, {
+        ttlSec: rt.auth.handoffTtlSec,
+        clockToleranceSec: rt.auth.clockToleranceSec,
+      });
+      if (!claims) {
+        sendForbidden(reply);
+        return;
+      }
 
-    // A fresh random cookie value — never the URL-borne token, and never an
-    // attacker-supplied pre-set cookie (fixation: incoming cookies are simply
-    // not read here). Burn-then-cookie: audience check #2 lives in the
-    // store's atomic UPDATE (appId predicate), which also kills replays.
-    const sessionToken = newSessionToken();
-    const redeemed = await rt.sessions.redeem(
-      claims.sessionId,
-      entry.appId,
-      hashSessionToken(sessionToken),
-    );
-    if (!redeemed) {
-      sendForbidden(reply);
-      return;
-    }
+      // A fresh random cookie value — never the URL-borne token, and never an
+      // attacker-supplied pre-set cookie (fixation: incoming cookies are simply
+      // not read here). Burn-then-cookie: audience check #2 lives in the
+      // store's atomic UPDATE (appId predicate), which also kills replays.
+      const sessionToken = newSessionToken();
+      const redeemed = await rt.sessions.redeem(
+        claims.sessionId,
+        entry.appId,
+        hashSessionToken(sessionToken),
+      );
+      if (!redeemed) {
+        sendForbidden(reply);
+        return;
+      }
 
-    // rd is signature-covered; re-validate anyway — defense in depth.
-    const rd = validateReturnPath(claims.rd) ?? "/";
-    reply
-      .header("set-cookie", serializeSessionCookie(sessionToken, rt.auth.sessionTtlMs / 1000))
-      .header("cache-control", "no-store")
-      .header("referrer-policy", "no-referrer")
-      .redirect(rd, 302);
-  };
+      // rd is signature-covered; re-validate anyway — defense in depth.
+      const rd = validateReturnPath(claims.rd) ?? "/";
+      reply
+        .header("set-cookie", serializeSessionCookie(sessionToken, rt.auth.sessionTtlMs / 1000))
+        .header("cache-control", "no-store")
+        .header("referrer-policy", "no-referrer")
+        .redirect(rd, 302);
+    },
+  );
 }
 
 /** Shared app-resolution ladder for the session-backed app-host routes. */

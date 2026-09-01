@@ -20,6 +20,7 @@ import {
   INSTR_SESSION_GATE_DENIED,
 } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
 /**
  * The edge's tracer and instruments.
@@ -169,4 +170,25 @@ export function withRootSpan<T>(
       }
     },
   );
+}
+
+/**
+ * Wrap a route handler in a root span, preserving its arity.
+ *
+ * The app-host handlers take a trailing `slug`; the auth-host ones do not.
+ * Wrapping generically keeps the three credential-bearing routes
+ * (`/_auth/complete`, the OIDC start and its callback) from each growing their
+ * own copy of the attribute set — which is exactly the drift ADR-0037's
+ * consequences call "the most likely way the decision decays."
+ *
+ * `attributes` is a function of the request so a caller can reach
+ * `spanUrlAttributes(req.url)` without the wrapper knowing about URLs.
+ */
+export function spanRoute<A extends unknown[]>(
+  name: string,
+  attributes: (req: FastifyRequest) => Attributes,
+  handler: (req: FastifyRequest, reply: FastifyReply, ...rest: A) => Promise<void>,
+): (req: FastifyRequest, reply: FastifyReply, ...rest: A) => Promise<void> {
+  return (req, reply, ...rest) =>
+    withRootSpan(name, attributes(req), () => handler(req, reply, ...rest));
 }
