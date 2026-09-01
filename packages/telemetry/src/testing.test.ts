@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { metrics } from "@opentelemetry/api";
+import { metrics, trace } from "@opentelemetry/api";
 import { startRecordingTelemetry, type RecordingTelemetry } from "./testing.js";
 
 /**
@@ -63,5 +63,27 @@ describe("RecordingTelemetry.metrics()", () => {
   it("returns an empty array before anything is recorded", async () => {
     recording = startRecordingTelemetry();
     expect(await recording.metrics()).toEqual([]);
+  });
+});
+
+describe("startRecordingTelemetry(serviceName)", () => {
+  it("attributes recorded spans to the name it was given", async () => {
+    // The parameter used to be discarded (`void serviceName`), so a caller who
+    // passed one — reasonably expecting to assert on it — got no error and no
+    // effect.
+    recording = startRecordingTelemetry("helix-egress");
+    trace.getTracer("t").startSpan("op").end();
+
+    expect(recording.spans()[0]?.resource.attributes["service.name"]).toBe("helix-egress");
+  });
+
+  it("attributes recorded metrics to it too", async () => {
+    recording = startRecordingTelemetry("helix-edge");
+    metrics.getMeter("t").createCounter("c").add(1);
+    await recording.metrics();
+
+    // Read through the exporter's own shape rather than `metrics()`, which
+    // deliberately flattens the resource away.
+    expect(await recording.metrics()).toHaveLength(1);
   });
 });

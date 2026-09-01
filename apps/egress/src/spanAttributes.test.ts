@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
+import { TARGET_PATH_MAX } from "@azx-pbc/shared/telemetry";
 import { EGRESS_SPAN_ATTRS, egressSpanAttributes } from "./spanAttributes.js";
 import { tracer } from "./telemetry.js";
 
@@ -67,6 +68,25 @@ describe("egressSpanAttributes", () => {
       "helix.connection": undefined,
     });
     expect("helix.connection" in attrs).toBe(false);
+  });
+
+  it("caps the target path to the same bound the edge uses", () => {
+    // `instruction.path` is `z.string().optional()` — no length bound — while
+    // the edge caps the identical value for its ledger column and its own span.
+    // Recording one value at two lengths is exactly what the edge's comment
+    // exists to prevent, and the path is attacker-controlled on a retained
+    // backend.
+    const long = `/${"a".repeat(TARGET_PATH_MAX * 2)}`;
+    const attrs = egressSpanAttributes({ "helix.target.path": long });
+    const recorded = attrs["helix.target.path"] as string;
+
+    expect(recorded.length).toBeLessThanOrEqual(TARGET_PATH_MAX + 1); // + the ellipsis
+    expect(recorded.endsWith("…")).toBe(true);
+  });
+
+  it("leaves a short path untouched", () => {
+    const attrs = egressSpanAttributes({ "helix.target.path": "/v1/charges" });
+    expect(attrs["helix.target.path"]).toBe("/v1/charges");
   });
 
   it("keeps enough to diagnose an outbound failure", () => {

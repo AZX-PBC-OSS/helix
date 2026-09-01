@@ -152,6 +152,33 @@ export type RegistryLoadOutcome = (typeof REGISTRY_LOAD_OUTCOMES)[number];
  * healthy because it cannot represent the tail is worse than none, the same
  * argument ADR-0037 decision 5 makes about a span ended at response headers.
  */
+/**
+ * Max length of a recorded target path, before the ellipsis.
+ *
+ * The **same** bound the `gateway_calls.path` ledger column uses. Both planes
+ * record `helix.target.path` for the same call, so a value that is capped on
+ * the edge and raw on egress is one value with two lengths — and the edge's
+ * comment at the span attribute says exactly why that must not happen: "the
+ * span attribute and the `path` column cannot draw the line in different
+ * places."
+ *
+ * The path is attacker-controlled — whatever the hosted app put in the URL —
+ * and a span is a retained backend, so bounding it is the mitigation. It is
+ * **not** sanitisation: plenty of APIs put a secret in a path segment
+ * (Telegram `/bot<TOKEN>/…`), and no heuristic is applied, deliberately —
+ * see `fetchPathOf` in `apps/edge/src/gateway/usage.ts` for the full reasoning.
+ */
+export const TARGET_PATH_MAX = 512;
+
+/**
+ * Apply {@link TARGET_PATH_MAX}. Kept here rather than in either plane so the
+ * one definition is reachable from both — this module imports nothing, which is
+ * what lets egress use it without reaching into `apps/edge`.
+ */
+export function capTargetPath(pathname: string): string {
+  return pathname.length > TARGET_PATH_MAX ? `${pathname.slice(0, TARGET_PATH_MAX)}…` : pathname;
+}
+
 export const DURATION_BUCKETS_MS = [
   0, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000,
 ] as const;

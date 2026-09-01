@@ -10,6 +10,7 @@ import {
   ATTR_TARGET_ORIGIN,
   ATTR_TARGET_PATH,
   ATTR_UPSTREAM_STATUS,
+  capTargetPath,
 } from "@azx-pbc/shared/telemetry";
 
 /**
@@ -71,7 +72,12 @@ export function egressSpanAttributes(
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined) continue;
     if (!ALLOWED.has(key)) continue;
-    out[key] = value;
+    // The one value with a length bound, applied here so the allowlist is also
+    // where the cap lives. `instruction.path` arrives from a signed claim whose
+    // schema is `z.string().optional()` — no length limit — while the edge caps
+    // the same value for its ledger column and for its own span. One value
+    // recorded at two lengths is what the edge's comment exists to prevent.
+    out[key] = key === ATTR_TARGET_PATH && typeof value === "string" ? capTargetPath(value) : value;
   }
   return out;
 }

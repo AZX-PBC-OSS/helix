@@ -62,7 +62,7 @@
     },
     {
       "label": "dev:devgw",
-      "detail": "azx-dev-gateway (:8082, HTTPS — cross-origin dev surface, helix_dev/env=dev)",
+      "detail": "helix-dev-gateway (:8082, HTTPS — cross-origin dev surface, helix_dev/env=dev)",
       "type": "shell",
       "command": "pnpm dev:devgw",
       "isBackground": true,

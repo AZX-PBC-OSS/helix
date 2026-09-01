@@ -20,7 +20,7 @@ import { makeDevTokenResolver } from "./resolver.js";
 import type { DevTokenStore } from "./devTokenStore.js";
 
 /**
- * azx-dev-gateway (dev-mode design §3, §5.4) — the cross-origin surface a
+ * helix-dev-gateway (dev-mode design §3, §5.4) — the cross-origin surface a
  * foreign app (Lovable, a cloud IDE) calls to reach an app's `env=dev` partition.
  * A SEPARATE process from the edge, running as `helix_dev` only, so a compromise
  * here can never touch a prod row (the isolation thesis, §5.3). It reuses the
@@ -35,7 +35,7 @@ import type { DevTokenStore } from "./devTokenStore.js";
  * reflects it in its own hijacked writeHead — see llm.ts).
  */
 
-const SERVICE_NAME = "azx-dev-gateway";
+export const SERVICE_NAME = "helix-dev-gateway";
 // Must cover every verb the routes accept, incl. the fetch-proxy's PATCH, or a
 // browser dev app's proxied PATCH fails preflight before reaching the handler.
 const ALLOWED_METHODS = "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";

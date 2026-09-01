@@ -6,7 +6,13 @@ import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
 import type { PrincipalKind } from "@azx-pbc/shared";
 import { USER_EMAIL_MAX, USER_NAME_MAX, truncate } from "../auth/identity.js";
-import { ATTR_APP_ID, ATTR_CAPABILITY, ATTR_OUTCOME } from "@azx-pbc/shared/telemetry";
+import {
+  ATTR_APP_ID,
+  ATTR_CAPABILITY,
+  ATTR_OUTCOME,
+  capTargetPath,
+  TARGET_PATH_MAX,
+} from "@azx-pbc/shared/telemetry";
 import { instruments } from "../telemetry.js";
 
 /**
@@ -83,8 +89,14 @@ export interface GatewayCallRecord {
 /** Max length of the `errorDetail` ledger string, before the ellipsis. */
 const ERROR_DETAIL_MAX = 300;
 
-/** Max length of the `path` ledger column, before the ellipsis. */
-export const PATH_MAX = 512;
+/**
+ * Max length of the `path` ledger column, before the ellipsis.
+ *
+ * Re-exported from `@azx-pbc/shared/telemetry` rather than defined here: egress
+ * records the same value as a span attribute and cannot import from `apps/edge`,
+ * so the number lives where both planes can reach it.
+ */
+export const PATH_MAX = TARGET_PATH_MAX;
 
 /*
  * The captured-label caps (`USER_NAME_MAX`, `USER_EMAIL_MAX`) live in
@@ -142,7 +154,7 @@ export const MODEL_MAX = 200;
  *    paths would be unfixable after the fact.
  */
 export function fetchPathOf(pathname: string): string {
-  return truncate(pathname, PATH_MAX);
+  return capTargetPath(pathname);
 }
 
 /** How far up the `cause` chain to walk. Deep enough for undici's wrapping. */

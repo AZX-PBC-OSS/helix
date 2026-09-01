@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { buildDevGateway } from "./app.js";
+import { startTelemetry } from "@azx-pbc/telemetry";
+import { buildDevGateway, SERVICE_NAME } from "./app.js";
 import { loadDevGatewayConfig, type DevGatewayConfig } from "../config.js";
 import { LiveRegistry, type RegistryLogger } from "../registry/listener.js";
 import { EgressLlmProvider } from "../gateway/egressLlmProvider.js";
@@ -14,7 +15,7 @@ import { PgDevTokenStore } from "./devTokenStore.js";
 import type { PoolClientErrorPhase } from "../db/pool.js";
 
 /**
- * azx-dev-gateway entrypoint (dev-mode design §3, §11 step 3). A SEPARATE process
+ * helix-dev-gateway entrypoint (dev-mode design §3, §11 step 3). A SEPARATE process
  * from the edge, running as the least-privilege `helix_dev` role — all stores +
  * the registry projection connect on `EDGE_DEV_DATABASE_URL`, so this process
  * physically cannot read a prod (`env='prod'`) row (the env-literal RLS pins
@@ -57,7 +58,7 @@ let config: DevGatewayConfig;
 try {
   config = loadDevGatewayConfig();
 } catch (err) {
-  console.error(`azx-dev-gateway: refusing to start — ${(err as Error).message}`);
+  console.error(`helix-dev-gateway: refusing to start — ${(err as Error).message}`);
   process.exit(1);
 }
 
@@ -65,11 +66,23 @@ try {
 // validity so a not-enabled deployment reads clearly rather than as a gap.
 if (!config.devGateway.allowDevMode) {
   console.error(
-    "azx-dev-gateway: refusing to start — set EDGE_ALLOW_DEV_MODE=true to enable the dev surface.",
+    "helix-dev-gateway: refusing to start — set EDGE_ALLOW_DEV_MODE=true to enable the dev surface.",
   );
   process.exit(1);
 }
 const devDatabaseUrl = config.devGateway.databaseUrl;
+
+// Inert unless an OTLP endpoint is configured (ADR-0037). The fourth server
+// entrypoint: the ADR's decision 3 says "only the three `server.ts` files", and
+// this is the one it does not count. It is dev-only but it IS a deployed
+// surface when `deployDevGateway` is on, and it already carried
+// `traceContextMixin` and an `OTEL_EXPORTER_OTLP_ENDPOINT` in Bicep — both of
+// which did nothing without this line.
+//
+// `inject-only` by default, like the edge: it terminates the same untrusted
+// app traffic, on a cross-origin surface, so an inbound `traceparent` must
+// never become a parent (decision 7).
+const telemetry = startTelemetry(SERVICE_NAME);
 
 let https: { cert: Buffer; key: Buffer } | null = null;
 if (config.tls) {
@@ -166,14 +179,23 @@ app.addHook("onClose", async () => {
   await devTokens.close();
   await egress?.close();
   await llmProvider?.close();
+  // Last, after everything that could still record.
+  await telemetry.shutdown();
 });
 
 try {
   await registry.start();
   await app.listen({ port: config.devGateway.port, host });
   app.log.info(
-    { baseDomain: config.baseDomain, port: config.devGateway.port, tls: https !== null },
-    "azx-dev-gateway serving",
+    {
+      event: "boot.serving",
+      service: SERVICE_NAME,
+      port: config.devGateway.port,
+      baseDomain: config.baseDomain,
+      tls: https !== null,
+      telemetry: telemetry.enabled,
+    },
+    `${SERVICE_NAME} serving`,
   );
 } catch (err) {
   app.log.error(err);

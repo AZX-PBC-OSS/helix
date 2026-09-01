@@ -200,15 +200,19 @@ export default defineConfig([
     // The SDK boundary (ADR-0037 decision 3), which the ADR's own Consequences
     // section admits has no automated gate and ADR-0003's challenge outcome
     // asks for. `server.ts` is where the impure boot work already lives, so it
-    // is the one file per service allowed to reach for the SDK; tests are
-    // exempt because the in-memory recording provider is how decision 10's
-    // adversarial cases are written at all, and a devDependency ships nowhere.
+    // is the file allowed to reach for the SDK; tests are exempt because the
+    // in-memory recording provider is how decision 10's adversarial cases are
+    // written at all, and a devDependency ships nowhere.
+    //
+    // Matched at ANY depth, not `apps/*/src/server.ts`: there are FOUR server
+    // entrypoints, not three — `apps/edge/src/devGateway/server.ts` is the one
+    // the ADR undercounts (Amendment 2), and it is instrumented too.
     //
     // Subpaths of @azx-pbc/telemetry are deliberately NOT banned: the pino
     // trace-correlation mixin is one, and its module graph is the API facade
     // only. The root specifier is what pulls the SDK.
     files: ["apps/*/src/**/*.ts"],
-    ignores: ["apps/*/src/server.ts", "apps/*/src/**/*.test.ts", "apps/*/src/test/**"],
+    ignores: ["apps/*/src/**/server.ts", "apps/*/src/**/*.test.ts", "apps/*/src/test/**"],
     rules: {
       "no-restricted-imports": [
         "error",

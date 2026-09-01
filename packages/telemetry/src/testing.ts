@@ -11,6 +11,8 @@ import {
   SimpleSpanProcessor,
   type ReadableSpan,
 } from "@opentelemetry/sdk-trace-node";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
 /**
  * A recording telemetry provider pair, for tests.
@@ -102,8 +104,15 @@ export interface RecordedMetric {
  * `startTelemetry`'s shutdown path guards against.
  */
 export function startRecordingTelemetry(serviceName = "test-service"): RecordingTelemetry {
+  // Honour `serviceName` rather than discarding it: recorded spans and metrics
+  // carry `service.name`, so a test can assert the edge and egress halves of a
+  // trace are attributed to different services — the join this whole package
+  // exists to enable.
+  const resource = resourceFromAttributes({ [ATTR_SERVICE_NAME]: serviceName });
+
   const spanExporter = new InMemorySpanExporter();
   const tracerProvider = new NodeTracerProvider({
+    resource,
     spanProcessors: [new SimpleSpanProcessor(spanExporter)],
   });
   tracerProvider.register();
@@ -116,11 +125,10 @@ export function startRecordingTelemetry(serviceName = "test-service"): Recording
     exporter: metricExporter,
     exportIntervalMillis: 2 ** 30,
   });
-  const meterProvider = new MeterProvider({ readers: [metricReader] });
+  const meterProvider = new MeterProvider({ resource, readers: [metricReader] });
   metrics.setGlobalMeterProvider(meterProvider);
 
   let stopped = false;
-  void serviceName;
 
   return {
     spans: () => spanExporter.getFinishedSpans(),
