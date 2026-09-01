@@ -347,3 +347,61 @@ most likely way the decision decays." The countermeasures are mechanical —
 uses a hardcoded attribute allowlist, an ESLint rule bans the whole-URL keys,
 and the redaction tests scan *every attribute of every span* rather than
 checking one field.
+
+### Amendment 7 — decision 2's preferred route does not work for us (verified 2026-09-01)
+
+Decision 2 names the Container Apps **managed OpenTelemetry agent** as the first
+choice, "which requires moving `aca-environment.bicep` off `2024-03-01` to an
+API version that carries those properties — **verify availability and
+destination support against current ACA docs before committing to it**."
+
+Verified. It is not viable for this platform, for two independent reasons, and
+**either one alone is disqualifying**:
+
+1. **The Application Insights destination does not accept metrics.** Microsoft's
+   own destination table lists App Insights as Logs ✅ / Traces ✅ / **Metrics
+   ❌**, and the known-limitations section says it outright. Our near-term payoff
+   — the ADR-0025 staleness alert — *is* a metric
+   (`helix.registry.stale_for_ms`). The managed agent plus App Insights delivers
+   traces and nothing this ADR was written to unblock.
+
+2. **The managed agent only speaks gRPC.** It injects
+   `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and its docs state "the managed agent only
+   supports `grpc`". `packages/telemetry` uses the OTLP/**HTTP** exporters.
+   Switching means `@opentelemetry/exporter-*-otlp-grpc` and the `@grpc/grpc-js`
+   tree in the trusted path — a much larger dependency-surface increase than the
+   one ADR-0003 already grudgingly accepted here, taken to reach a destination
+   that still cannot store our metrics.
+
+Also relevant, though not disqualifying on their own: the feature is **preview**
+(`2024-10-02-preview`), against a topology currently pinned to a GA API version;
+configuration is environment-level so it cannot be split per app (we have two
+environments and would configure both); and secrets must be inline in templates
+with no Key Vault integration.
+
+**So the fallback becomes the plan**: an `otel-collector` container app in the
+apps environment, which accepts OTLP/HTTP unchanged, and fans out per signal.
+Decision 2 anticipated this and stated the important half — **the service-side
+code is byte-identical either way**, which is exactly why this reversal costs
+nothing already written.
+
+Two things it now forces, which decision 2 did not anticipate because it assumed
+App Insights could take everything:
+
+- **A metrics destination has to be chosen.** App Insights is out. The options
+  are an Azure Monitor workspace (Prometheus-compatible, which is what Azure
+  metric alert rules key on), or a non-Azure backend, or the collector
+  translating metrics into Log Analytics. This is an open decision, recorded in
+  `TODO.md` — and it is the one that gates the staleness alert, so it is not
+  optional.
+- **The firewall rule is now certain, not conditional.** Decision 2's egress
+  note said a self-hosted collector "therefore needs an explicit firewall rule"
+  while the managed agent "likely does not". With the self-hosted route chosen,
+  that rule is required. `snet-apps` is deny-by-default outbound and the absence
+  of a rule *is* the enforcement, so **this fails as silence** — it must be
+  verified end to end against the live environment, never inferred from a green
+  deploy.
+
+Everything in `apps/` and `packages/` stands unchanged. That is the OTLP-only
+boundary (decision 1) doing precisely the job it was written for: the vendor
+question moved and no service code moved with it.
