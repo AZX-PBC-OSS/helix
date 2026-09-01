@@ -63,6 +63,11 @@ export const ATTR_STREAM = "helix.stream";
 export const ATTR_APP_SLUG = "helix.app.slug";
 /** Which app-data verb — `putUser`, `getShared`, … Bounded by the handler set. */
 export const ATTR_DATA_VERB = "helix.data.verb";
+/** How many apps the registry projection loaded. Bounded by the tenant. */
+export const ATTR_REGISTRY_APPS = "helix.registry.apps";
+/** Files in a deployed bundle, and CSP lint warnings raised on it. */
+export const ATTR_DEPLOY_FILE_COUNT = "helix.deploy.file_count";
+export const ATTR_DEPLOY_WARNING_COUNT = "helix.deploy.warning_count";
 
 /**
  * Span names. Like the instrument names these are queried by humans and by
@@ -78,6 +83,9 @@ export const SPAN_REGISTRY_LOAD = "helix.registry.load";
 export const SPAN_AUTH_START = "helix.auth.oidc.start";
 export const SPAN_AUTH_CALLBACK = "helix.auth.oidc.callback";
 export const SPAN_AUTH_COMPLETE = "helix.auth.handoff.complete";
+export const SPAN_DEPLOY_BUNDLE = "helix.deploy.bundle";
+export const SPAN_DEPLOY_VALIDATE = "helix.deploy.validate";
+export const SPAN_DEPLOY_UPLOAD = "helix.deploy.upload";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —

@@ -13,6 +13,16 @@ import { blobPrefixFor } from "../db/mappers.js";
 import { AppError } from "../plugins/errors.js";
 import { contentTypeFor } from "./mime.js";
 import { normalizeEntryPath, validateBundle } from "./validate.js";
+import { SpanStatusCode, type Span } from "@opentelemetry/api";
+import {
+  ATTR_APP_ID,
+  ATTR_DEPLOY_FILE_COUNT,
+  ATTR_DEPLOY_WARNING_COUNT,
+  SPAN_DEPLOY_BUNDLE,
+  SPAN_DEPLOY_UPLOAD,
+  SPAN_DEPLOY_VALIDATE,
+} from "@azx-pbc/shared/telemetry";
+import { tracer } from "../telemetry.js";
 
 export interface SpooledUpload {
   zipPath: string;
@@ -57,26 +67,77 @@ export async function deployBundle(opts: {
 }): Promise<DeployResult> {
   const { prisma, blobStore, appId, actor, zipPath, deployReport } = opts;
 
-  const { entries, warnings } = await validateBundle(zipPath);
-
-  const version = await allocateVersion(prisma, appId, deployReport);
-  await uploadEntries(zipPath, blobStore, version.blobPrefix);
-
-  await prisma.auditEvent.create({
-    data: {
-      appId,
-      actor,
-      action: "version.upload",
-      metadata: {
-        number: version.number,
-        fileCount: entries.length,
-        warningCount: warnings.length,
-        ...(deployReport ? { salvageOutcome: deployReport.outcome } : {}),
-      },
+  return tracer.startActiveSpan(
+    SPAN_DEPLOY_BUNDLE,
+    { attributes: { [ATTR_APP_ID]: appId } },
+    async (span) => {
+      try {
+        return await runDeploy(span);
+      } catch (err) {
+        span.recordException(err instanceof Error ? err : new Error(String(err)));
+        span.setStatus({ code: SpanStatusCode.ERROR });
+        throw err;
+      } finally {
+        span.end();
+      }
     },
-  });
+  );
 
-  return { version, warnings };
+  /**
+   * The deploy path's three phases as child spans (ADR-0037 decision 4).
+   *
+   * This is the control plane, so the interesting signal is *shape* rather than
+   * rate: a deploy that got slow is almost always slow in exactly one of
+   * validate / upload / record, and the whole point of instrumenting a
+   * multi-second operation is being able to say which. No metric here — the
+   * portal's throughput is low enough that a counter would answer nothing a
+   * span search does not.
+   */
+  async function runDeploy(parentSpan: Span): Promise<DeployResult> {
+    const { entries, warnings } = await inChildSpan(SPAN_DEPLOY_VALIDATE, () =>
+      validateBundle(zipPath),
+    );
+    parentSpan.setAttributes({
+      [ATTR_DEPLOY_FILE_COUNT]: entries.length,
+      [ATTR_DEPLOY_WARNING_COUNT]: warnings.length,
+    });
+
+    const version = await allocateVersion(prisma, appId, deployReport);
+    await inChildSpan(SPAN_DEPLOY_UPLOAD, () =>
+      uploadEntries(zipPath, blobStore, version.blobPrefix),
+    );
+
+    await prisma.auditEvent.create({
+      data: {
+        appId,
+        actor,
+        action: "version.upload",
+        metadata: {
+          number: version.number,
+          fileCount: entries.length,
+          warningCount: warnings.length,
+          ...(deployReport ? { salvageOutcome: deployReport.outcome } : {}),
+        },
+      },
+    });
+
+    return { version, warnings };
+  }
+}
+
+/** A child span around one deploy phase; ends when the phase settles. */
+function inChildSpan<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  return tracer.startActiveSpan(name, async (span) => {
+    try {
+      return await fn();
+    } catch (err) {
+      span.recordException(err instanceof Error ? err : new Error(String(err)));
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
 }
 
 /**

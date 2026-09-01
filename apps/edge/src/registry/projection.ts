@@ -22,6 +22,9 @@ import {
   type VisibilityMode,
 } from "@azx-pbc/shared";
 import { normalizeRequestPath } from "../serving/paths.js";
+import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { ATTR_OUTCOME, ATTR_REGISTRY_APPS, SPAN_REGISTRY_LOAD } from "@azx-pbc/shared/telemetry";
+import { tracer } from "../telemetry.js";
 
 /** The edge's per-app view of the fetch-proxy grant (fetch-proxy design §7). */
 export interface FetchProxyGrant {
@@ -419,8 +422,14 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
     // At most one of these is ever set.
     let recovery: RegistryLoadRecovery | null = null;
     let failure: RegistryLoadFailure | null = null;
+    // INTERNAL, and NOT a root span: a reload triggered by a NOTIFY has no
+    // parent, but one triggered from within a request should nest under it.
+    // Unlike the gateway handlers there is no untrusted caller here to graft a
+    // trace from — the trigger is the portal's own LISTEN channel or our timer.
+    const span = tracer.startSpan(SPAN_REGISTRY_LOAD, { kind: SpanKind.INTERNAL });
     try {
       const { rows } = await this.#querier.query(this.#sql);
+      span.setAttribute(ATTR_REGISTRY_APPS, rows.length);
       // Build fresh, swap atomically (single assignment — no torn reads).
       const next = new Map<string, RegistryEntry>();
       for (const row of rows) {
@@ -442,6 +451,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
       }
       this.#map = next;
       this.#loaded = true;
+      span.setAttribute(ATTR_OUTCOME, "ok");
       // Freshness bookkeeping: capture the pre-swap state before restamping, so
       // a recovery can report how long the stale copy was served.
       const failures = this.#consecutiveLoadFailures;
@@ -463,6 +473,14 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
         staleForMs: this.#staleForMs(),
         lastSuccessfulLoadAt: this.#lastSuccessIso,
       };
+      span.setAttribute(ATTR_OUTCOME, this.#loaded ? "failed" : "never_loaded");
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      span.recordException(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      // Ended before the observers run, for the same reason they run outside
+      // the try: nothing in the reporting path may change or delay the load's
+      // own outcome.
+      span.end();
     }
     // Observers run OUTSIDE the try, through a non-throwing boundary, so they
     // can never change the load's outcome. They used to run inside it, where a
