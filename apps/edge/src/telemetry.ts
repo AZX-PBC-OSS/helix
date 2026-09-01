@@ -1,10 +1,14 @@
 import {
   metrics,
+  SpanKind,
+  SpanStatusCode,
   trace,
+  type Attributes,
   type Counter,
   type Histogram,
   type MeterProvider,
   type ObservableGauge,
+  type Span,
   type Tracer,
 } from "@opentelemetry/api";
 import {
@@ -103,4 +107,66 @@ export function instruments(): EdgeInstruments {
     }),
   };
   return cached;
+}
+
+/**
+ * Record a thrown value on a span and mark it failed.
+ *
+ * The message reaches the span, which is a retained backend — acceptable here
+ * and nowhere near egress, whose error text can embed credential material
+ * (`apps/egress/src/proxy.ts`'s deliberately empty `catch`). Edge errors are our
+ * own.
+ */
+function failSpan(span: Span, err: unknown): void {
+  span.recordException(err instanceof Error ? err : new Error(String(err)));
+  span.setStatus({ code: SpanStatusCode.ERROR });
+}
+
+/**
+ * Run a handler inside a fresh **root** server span, ended when the handler
+ * settles.
+ *
+ * `root: true` is ADR-0037 decision 7 belt-and-braces: the inject-only
+ * propagator already makes an inbound `traceparent` unextractable, and this
+ * makes the span parentless even if something did put one in the active
+ * context. Every request into the edge originates from untrusted app code, so a
+ * platform trace must never be graftable from outside.
+ *
+ * **The span ends at stream close, which is what ADR-0037 decision 5 requires**
+ * — and it does so for both streaming shapes in this codebase, which is worth
+ * stating because the obvious reading of that decision says otherwise:
+ *
+ *  - `gateway/llm.ts` drives its own `for await` over the upstream events, so
+ *    its promise plainly does not settle until the last byte is written;
+ *  - `gateway/fetch.ts` and `apps/egress/src/proxy.ts` end with
+ *    `return reply.send(stream)`, which *looks* like it resolves as soon as the
+ *    pipe is wired. It does not: Fastify's `Reply` is thenable, and awaiting it
+ *    resolves when the response finishes. Measured against Fastify 5.12.0 — a
+ *    ~90 ms body yields a ~98 ms awaited handler and a thenable that settles at
+ *    the same instant `reply.raw` emits `close`.
+ *
+ * So one helper covers both, and `apps/edge/src/spans.test.ts` pins the
+ * property with a deliberately slow body. That test is the guard: if a future
+ * Fastify makes `send` resolve early, every streamed span collapses to ~0 ms —
+ * which the ADR rightly calls worse than no metric, because it looks like data.
+ */
+export function withRootSpan<T>(
+  name: string,
+  attributes: Attributes,
+  fn: (span: Span) => Promise<T>,
+): Promise<T> {
+  return tracer.startActiveSpan(
+    name,
+    { root: true, kind: SpanKind.SERVER, attributes },
+    async (span) => {
+      try {
+        return await fn(span);
+      } catch (err) {
+        failSpan(span, err);
+        throw err;
+      } finally {
+        span.end();
+      }
+    },
+  );
 }

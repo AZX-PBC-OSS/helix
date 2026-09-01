@@ -16,6 +16,15 @@ import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
 import { nativeCodec, type LlmWireCodec, type LlmWireContext } from "./llmCodec.js";
 import { errorDetailOf, meterGatewayCall, type GatewayOutcome, type UsageStore } from "./usage.js";
+import { trace } from "@opentelemetry/api";
+import {
+  ATTR_APP_SLUG,
+  ATTR_CAPABILITY,
+  ATTR_CLIENT_DISCONNECTED,
+  ROUTE_LLM,
+  SPAN_LLM,
+} from "@azx-pbc/shared/telemetry";
+import { withRootSpan } from "../telemetry.js";
 
 /**
  * `POST /_api/llm/chat` — the gateway's LLM capability (architecture §6.1,
@@ -73,7 +82,7 @@ export interface LlmGatewayRuntime {
  * codec backs `/_api/openai/v1/chat/completions`. Same runtime, same guarantees.
  */
 export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nativeCodec) {
-  return async function handleLlmChat(
+  async function handleLlmChat(
     req: FastifyRequest,
     reply: FastifyReply,
     slug: string,
@@ -218,6 +227,11 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
       if (reply.raw.writableEnded) return;
       clientGone = true;
       abort.abort();
+      // Mark the span so an abandoned stream is filterable. Read off the active
+      // context rather than threaded in: the span is opened by the wrapper at
+      // the bottom of this factory, and this listener already closes over
+      // enough.
+      trace.getActiveSpan()?.setAttribute(ATTR_CLIENT_DISCONNECTED, true);
     });
 
     const startedAt = performance.now();
@@ -379,7 +393,24 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
       // the code stays within the shared set.
       codec.error(reply, status, code, message, param);
     }
-  };
+  }
+
+  /**
+   * The span wraps the whole handler, including the pre-admission refusals, so
+   * a 401/403/429 is visible as a short span rather than as nothing at all.
+   *
+   * {@link withRootSpan} and not {@link withStreamedRootSpan}: this handler
+   * drives its own `for await` over the upstream events, so its promise does
+   * not settle until the last byte is written. The span therefore already ends
+   * at stream close, which is what ADR-0037 decision 5 requires — the
+   * fetch-proxy is the path that needs the other helper.
+   */
+  return (req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> =>
+    withRootSpan(
+      SPAN_LLM,
+      { [ATTR_CAPABILITY]: "llm", [ATTR_APP_SLUG]: slug, "http.route": ROUTE_LLM },
+      () => handleLlmChat(req, reply, slug),
+    );
 }
 
 /** A clean completion whose stop reason is a refusal meters as `refusal`, not `ok`. */

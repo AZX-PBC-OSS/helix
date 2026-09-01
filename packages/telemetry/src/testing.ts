@@ -35,21 +35,35 @@ import {
  * and the never-block-the-event-loop rule that forbids Simple in the services
  * has nothing to say about a test process.
  *
- * **One caveat `restore()` cannot fix.** A module-level
+ * **Start ONE recording per test file.** A module-level
  * `const tracer = trace.getTracer(…)` is a `ProxyTracer`, and once it resolves
  * a delegate it caches it (`ProxyTracer._getTracer`) — so a tracer captured at
  * import time keeps pointing at the first provider that was registered, even
- * after this unregisters it. Harmless in production, where exactly one provider
- * is ever registered; in a test file that starts a second recording, read spans
- * from the *first* handle or take a fresh tracer inside the case. Metric
- * instruments do not have this problem: `instruments()` is keyed on provider
- * identity precisely so it rebuilds.
+ * after {@link RecordingTelemetry.restore} unregisters it. A second
+ * `startRecordingTelemetry()` in the same file therefore records **nothing**,
+ * silently, and every assertion after the first case fails on an empty array.
+ * Use `beforeAll`/`afterAll` for the lifecycle and
+ * {@link RecordingTelemetry.reset} in `afterEach`.
+ *
+ * Harmless in production, where exactly one provider is ever registered. Metric
+ * instruments do not have the problem at all: `instruments()` is keyed on
+ * provider identity precisely so it rebuilds.
  */
 export interface RecordingTelemetry {
   /** Spans ended so far, oldest first. */
   spans(): ReadableSpan[];
   /** Flush the metric reader and return every data point recorded so far. */
   metrics(): Promise<RecordedMetric[]>;
+  /**
+   * Drop everything recorded so far, keeping the providers registered.
+   *
+   * This is what an `afterEach` should call. A file that instead starts a
+   * *second* recording silently records nothing: a module-level
+   * `trace.getTracer()` is a `ProxyTracer` that caches its delegate on first
+   * use, so it keeps writing into the first provider — which `restore()` has
+   * shut down. One registration per file, reset between cases.
+   */
+  reset(): void;
   /** Unregister both globals and shut the providers down. Always safe twice. */
   restore(): Promise<void>;
 }
@@ -95,6 +109,10 @@ export function startRecordingTelemetry(serviceName = "test-service"): Recording
 
   return {
     spans: () => spanExporter.getFinishedSpans(),
+    reset: () => {
+      spanExporter.reset();
+      metricExporter.reset();
+    },
     metrics: async () => {
       await metricReader.forceFlush();
       const out: RecordedMetric[] = [];

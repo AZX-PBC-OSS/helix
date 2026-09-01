@@ -14,6 +14,14 @@ import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
 import type { AppDataStore, CollectionMeta, WritePrecondition } from "./data.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
+import {
+  ATTR_APP_SLUG,
+  ATTR_CAPABILITY,
+  ATTR_DATA_VERB,
+  ROUTE_DATA,
+  SPAN_DATA,
+} from "@azx-pbc/shared/telemetry";
+import { withRootSpan } from "../telemetry.js";
 import { meterGatewayCall, type UsageStore } from "./usage.js";
 
 /**
@@ -162,6 +170,41 @@ function triageMeta(req: FastifyRequest): CollectionMeta {
   return meta;
 }
 
+/** Every app-data verb has this shape, which is what makes one wrapper enough. */
+type DataVerbHandler = (req: FastifyRequest, reply: FastifyReply, slug: string) => Promise<void>;
+
+/**
+ * Wrap each app-data verb in a root span (ADR-0037 decision 4).
+ *
+ * Done generically rather than as seven near-identical edits: the verbs share a
+ * signature, and the only thing that differs is the name — so a wrapper cannot
+ * drift the way seven copies would, and a verb added later is instrumented by
+ * construction instead of by remembering.
+ *
+ * {@link withRootSpan} is the right helper here: these handlers `await
+ * reply.send(...)` a materialised body rather than piping a stream, so the
+ * promise settles after the response is written. The one exception is the
+ * collection export, which is documented as materialising the whole CSV
+ * (`TODO.md`) — it is still in-handler, so it is still measured correctly.
+ */
+function withDataSpans<T extends Record<string, DataVerbHandler>>(handlers: T): T {
+  const wrapped: Record<string, DataVerbHandler> = {};
+  for (const [verb, handler] of Object.entries(handlers)) {
+    wrapped[verb] = (req, reply, slug) =>
+      withRootSpan(
+        SPAN_DATA,
+        {
+          [ATTR_CAPABILITY]: "data",
+          [ATTR_APP_SLUG]: slug,
+          [ATTR_DATA_VERB]: verb,
+          "http.route": ROUTE_DATA,
+        },
+        () => handler(req, reply, slug),
+      );
+  }
+  return wrapped as T;
+}
+
 export function makeDataHandlers(rt: DataGatewayRuntime) {
   /**
    * Shared preamble for every data verb. Returns the resolved entry + caller, or
@@ -287,7 +330,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     return true;
   }
 
-  return {
+  return withDataSpans({
     async putUser(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: true });
       if (!ctx) return;
@@ -618,7 +661,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 502, "internal", "failed to store value");
       }
     },
-  };
+  });
 }
 
 export type DataHandlers = ReturnType<typeof makeDataHandlers>;

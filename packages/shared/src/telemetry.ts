@@ -53,6 +53,37 @@ export const ATTR_CONNECTION = "helix.connection";
 export const ATTR_UPSTREAM_STATUS = "helix.upstream.status";
 export const ATTR_CLIENT_DISCONNECTED = "helix.client_disconnected";
 export const ATTR_STREAM = "helix.stream";
+/**
+ * The app's slug. Bounded by the tenant like {@link ATTR_APP_ID}, and the half
+ * a human recognises — kept as a SPAN attribute only. `appId` remains the
+ * metric dimension, because a slug can be reused after an app is deleted while
+ * the uuid cannot, and a metric series that silently changes meaning is worse
+ * than one that is hard to read.
+ */
+export const ATTR_APP_SLUG = "helix.app.slug";
+/** Which app-data verb — `putUser`, `getShared`, … Bounded by the handler set. */
+export const ATTR_DATA_VERB = "helix.data.verb";
+
+/**
+ * Span names. Like the instrument names these are queried by humans and by
+ * dashboards, so they are constants rather than string literals at the call
+ * site — a typo in one of ~14 hand-placed spans is otherwise invisible until
+ * someone notices a trace view is missing a step.
+ */
+export const SPAN_LLM = "helix.gateway.llm";
+export const SPAN_FETCH = "helix.gateway.fetch";
+export const SPAN_DATA = "helix.gateway.data";
+export const SPAN_EGRESS_PROXY = "helix.egress.proxy";
+export const SPAN_REGISTRY_LOAD = "helix.registry.load";
+
+/**
+ * `http.route` values. The literal route pattern, never the request URL —
+ * ADR-0037 decision 6 forbids `url.full`/`http.url`, and on these routes there
+ * is nothing variable to record anyway.
+ */
+export const ROUTE_LLM = "/_api/llm/chat";
+export const ROUTE_FETCH = "/_api/fetch/*";
+export const ROUTE_DATA = "/_api/data/*";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
