@@ -147,8 +147,16 @@ ContainerAppConsoleLogs_CL
           by bin(TimeGenerated, 5m), tostring(p.event), ContainerAppName_s
 ```
 
-No such rule exists yet — until one is created the degradation is only visible to a human polling
-`/health`. `event` is a new field convention in this repo; follow it for the next log-based metric.
+**Prefer the metric.** Since ADR-0037 the edge also emits
+`helix.registry.stale_for_ms` (an observable gauge — absent until the first successful load, so a
+cold start reads as missing rather than as zero) and `helix.registry.load_failures{outcome}`. That
+makes the alert **one threshold rule** rather than the KQL above, which is the reason it kept not
+getting built. The query stays useful for the detail you read once the rule fires, and as the
+fallback for a deployment with no OTLP endpoint configured.
+
+No such rule exists yet either way — until one is created the degradation is only visible to a
+human polling `/health` (`TODO.md`). `event` is a repo-wide convention; see
+[`docs/design/logging.md`](../../docs/design/logging.md) before adding another.
 
 **Note the verbose body is unauthenticated.** Any unrecognised `Host` classifies as `platform`, and
 the auth host is internet-facing, so `lastSuccessAt` / `staleForSeconds` / `consecutiveLoadFailures`

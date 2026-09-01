@@ -50,6 +50,7 @@ grant on app connection secrets and any arbitrary outbound route (ADR-0001).
 | [portal-web.md](./portal-web.md) | The React/Mantine portal SPA | `apps/portal-web` |
 | [onboarding.md](./onboarding.md) | The in-app "How to develop" guide + the downloadable agent skill | `packages/deploy-skill`, `apps/portal-web` |
 | [dev-idp.md](./dev-idp.md) | The local OIDC issuer used in dev/test | `apps/dev-idp` |
+| [observability.md](./observability.md) | Logs, traces and metrics about the platform itself; the OTLP-only boundary | all three services, `packages/telemetry` |
 | [examples.md](./examples.md) | Reference apps you can `helix deploy` | `examples/` |
 
 ## Milestone map (project plan §4)

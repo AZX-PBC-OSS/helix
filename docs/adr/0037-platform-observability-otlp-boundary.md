@@ -2,7 +2,13 @@
 
 ## Status
 
-Proposed — needs sign-off. Covers observability of **the platform itself** (edge,
+Accepted. Phase 1 (decision 11) is implemented: traces and metrics on the three
+services, attribute redaction, edge → egress propagation, and the adversarial
+tests. See the **Amendments** section at the end for six things the
+implementation found that this text got wrong or under-specified — read those
+alongside the decisions they touch.
+
+Covers observability of **the platform itself** (edge,
 portal, egress); hosted apps are explicitly out of scope. Relates to
 [ADR-0003](0003-dependency-minimal-edge.md) (the dependency rule this must satisfy
 to touch the edge at all), [ADR-0021](0021-metering-ledger.md) (the ledger this must
@@ -267,3 +273,77 @@ the trust boundary almost exactly.
   (no automatic dependency map without instrumenting the calls we choose to
   instrument). The return is that changing backends is a Bicep edit, which under
   ADR-0028's customer-deployed model is not a hypothetical.
+
+## Amendments (2026-09-01, from implementing phase 1)
+
+Six things this ADR got wrong or left under-specified. Each is recorded here
+rather than edited into the decision above, so the reasoning that produced the
+original text stays legible.
+
+1. **Decision 5's streamed-span rule invites the wrong fix.** The text says
+   spans over streamed responses must "end on stream close, not on response
+   headers", which reads as though a handler ending with
+   `return reply.send(stream)` needs special handling — and the implementation
+   plan duly specified two helpers, one per streaming shape.
+
+   That is unnecessary. **Fastify's `Reply` is thenable and resolves when the
+   response finishes**, so an async handler returning `reply.send(stream)`
+   already awaits the whole transfer. Measured against the pinned Fastify
+   5.12.0: a ~90 ms body gives a ~98 ms awaited handler, and the thenable
+   settles at the same instant `reply.raw` emits `close`. One `try/finally`
+   helper is correct for both shapes.
+
+   The rule still matters — a span ended at headers really would record every
+   proxied call at ~0 ms — but it is a property of a *dependency*, not of our
+   code, so it is pinned by a test with a deliberately slow body
+   (`apps/edge/src/spans.test.ts`) rather than by a comment.
+
+2. **Decision 3 says "only the three `server.ts` files". There are four server
+   entrypoints.** `apps/edge/src/devGateway/server.ts` builds a full app and
+   never calls `startTelemetry`. Leaving the dev-only plane uninstrumented is
+   right; the count is a tripwire for the next reader.
+
+3. **Decision 3's boundary is a rule about _shipped_ code, and decision 10 is
+   unimplementable without saying so.** The adversarial tests need a real
+   in-memory provider — the API facade no-ops when unregistered, so a test that
+   drives a handler and asks "what did the span carry?" otherwise gets nothing
+   and passes while proving nothing. The SDK import lives in
+   `@azx-pbc/telemetry/testing` and the apps take `@opentelemetry/sdk-*` as
+   **devDependencies**; an ESLint rule encodes the line. Similarly
+   `@azx-pbc/telemetry/correlation` is importable from `buildApp()` because its
+   module graph is the API facade only — the *root* specifier is what pulls the
+   SDK, and that is what the rule bans.
+
+4. **Decision 8's instrument table needs units and bucket boundaries.**
+   OpenTelemetry's default explicit-bucket histogram tops out at 10 000 ms and
+   an LLM stream routinely runs longer, so on the defaults every slow call lands
+   in the overflow bucket and p95/p99 answer nothing. Both duration histograms
+   carry `unit: "ms"` and an explicit boundary list
+   (`DURATION_BUCKETS_MS`). A latency metric that cannot represent its own tail
+   is the same failure decision 5 describes, arriving by a different route.
+
+5. **`helix.registry.stale_for_ms` must be an _observable_ gauge, and must
+   report nothing before the first successful load.** ADR-0025 grades staleness
+   on two conditions because they catch different faults, and the age rule
+   exists to catch "loads stopped being *attempted* at all" — a fault in which a
+   gauge recorded at each load attempt is silent, its last value sitting there
+   looking healthy. A callback is read at collection time. And a gauge reading
+   `0` for "never loaded" would say "perfectly fresh" when every app host is
+   serving 503; that state is `load_failures{outcome:"never_loaded"}` instead.
+
+6. **Decision 9 should say the counter is deliberately _not_ denial-throttled.**
+   `gateway_calls` suppresses allowlist-denial rows past a per-window budget
+   (`denialThrottle`) — a write-amplification defence on an append-only table.
+   `helix.gateway.calls` is **not** suppressed there, because "an app is
+   hammering an origin it was never granted" is exactly what an operator wants
+   to see and the ledger is blind to it by design. This strengthens the decision
+   rather than bending it: the two now provably differ, so nobody can reconcile
+   them.
+
+One thing the ADR got exactly right and is worth repeating: the consequence that
+decision 6 "is a rule someone must keep applying at each new span" and is "the
+most likely way the decision decays." The countermeasures are mechanical —
+`spanUrlAttributes` drops the query wholesale rather than scanning it, egress
+uses a hardcoded attribute allowlist, an ESLint rule bans the whole-URL keys,
+and the redaction tests scan *every attribute of every span* rather than
+checking one field.
