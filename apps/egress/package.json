@@ -12,6 +12,7 @@
     "@azx-pbc/secret-store": "workspace:*",
     "@azx-pbc/shared": "workspace:*",
     "@azx-pbc/telemetry": "workspace:*",
+    "@opentelemetry/api": "catalog:",
     "fastify": "catalog:",
     "jose": "catalog:",
     "pg": "catalog:",
@@ -19,6 +20,8 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@opentelemetry/sdk-metrics": "catalog:",
+    "@opentelemetry/sdk-trace-node": "catalog:",
     "@types/pg": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"

@@ -13,6 +13,7 @@
   "dependencies": {
     "@azx-pbc/shared": "workspace:*",
     "@azx-pbc/telemetry": "workspace:*",
+    "@opentelemetry/api": "catalog:",
     "fastify": "catalog:",
     "jose": "catalog:",
     "openid-client": "catalog:",
@@ -22,6 +23,8 @@
   },
   "devDependencies": {
     "@azx-pbc/dev-idp": "workspace:*",
+    "@opentelemetry/sdk-metrics": "catalog:",
+    "@opentelemetry/sdk-trace-node": "catalog:",
     "@types/pg": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"

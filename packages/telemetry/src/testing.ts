@@ -1,0 +1,140 @@
+import { metrics, trace, type Attributes } from "@opentelemetry/api";
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from "@opentelemetry/sdk-metrics";
+import {
+  InMemorySpanExporter,
+  NodeTracerProvider,
+  SimpleSpanProcessor,
+  type ReadableSpan,
+} from "@opentelemetry/sdk-trace-node";
+
+/**
+ * A recording telemetry provider pair, for tests.
+ *
+ * **Why this exists at all.** The whole suite runs under `NODE_ENV=test`, where
+ * `startTelemetry` is inert by design, and `@opentelemetry/api` no-ops when no
+ * provider is registered. So a test that drives a handler and asks "what did
+ * the span carry?" gets nothing — which is exactly the shape of a test that
+ * passes while proving nothing. ADR-0037 decision 10's adversarial tests (no
+ * raw URL on any attribute, no inbound `traceparent` as a parent, no header on
+ * an egress span) are unimplementable without a real in-memory provider.
+ *
+ * **Why it lives here rather than in each app's `src/test/`.** Decision 3 keeps
+ * every OpenTelemetry SDK import in this package. That rule is about *shipped*
+ * code — a test-only import ships nowhere — but the cheapest way to keep it
+ * true without arguing the exception at every call site is to put the SDK
+ * import in the package that already owns one. The apps take
+ * `@opentelemetry/sdk-*` as devDependencies to reach this module's types; the
+ * ESLint boundary rule encodes where a runtime import is allowed.
+ *
+ * `SimpleSpanProcessor`, not `Batch`: a test wants the span the moment it ends,
+ * and the never-block-the-event-loop rule that forbids Simple in the services
+ * has nothing to say about a test process.
+ *
+ * **One caveat `restore()` cannot fix.** A module-level
+ * `const tracer = trace.getTracer(…)` is a `ProxyTracer`, and once it resolves
+ * a delegate it caches it (`ProxyTracer._getTracer`) — so a tracer captured at
+ * import time keeps pointing at the first provider that was registered, even
+ * after this unregisters it. Harmless in production, where exactly one provider
+ * is ever registered; in a test file that starts a second recording, read spans
+ * from the *first* handle or take a fresh tracer inside the case. Metric
+ * instruments do not have this problem: `instruments()` is keyed on provider
+ * identity precisely so it rebuilds.
+ */
+export interface RecordingTelemetry {
+  /** Spans ended so far, oldest first. */
+  spans(): ReadableSpan[];
+  /** Flush the metric reader and return every data point recorded so far. */
+  metrics(): Promise<RecordedMetric[]>;
+  /** Unregister both globals and shut the providers down. Always safe twice. */
+  restore(): Promise<void>;
+}
+
+/** One metric data point, flattened to what an assertion actually reads. */
+export interface RecordedMetric {
+  name: string;
+  attributes: Attributes;
+  /** Counter/gauge value, or a histogram's observation count. */
+  value: number;
+  /** Present for histograms only. */
+  sum?: number;
+}
+
+/**
+ * Register in-memory trace and metric providers as the OTel globals.
+ *
+ * Call `restore()` in an `afterEach`. Registering twice without restoring is a
+ * no-op on the second call (`registerGlobal` defaults to `allowOverride: false`)
+ * and would silently record into the *first* provider — the same drift
+ * `startTelemetry`'s shutdown path guards against.
+ */
+export function startRecordingTelemetry(serviceName = "test-service"): RecordingTelemetry {
+  const spanExporter = new InMemorySpanExporter();
+  const tracerProvider = new NodeTracerProvider({
+    spanProcessors: [new SimpleSpanProcessor(spanExporter)],
+  });
+  tracerProvider.register();
+
+  const metricExporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  // A very long interval: tests drive collection through `forceFlush` rather
+  // than waiting on a timer, and an interval that fires mid-assertion would
+  // make counts racy.
+  const metricReader = new PeriodicExportingMetricReader({
+    exporter: metricExporter,
+    exportIntervalMillis: 2 ** 30,
+  });
+  const meterProvider = new MeterProvider({ readers: [metricReader] });
+  metrics.setGlobalMeterProvider(meterProvider);
+
+  let stopped = false;
+  void serviceName;
+
+  return {
+    spans: () => spanExporter.getFinishedSpans(),
+    metrics: async () => {
+      await metricReader.forceFlush();
+      const out: RecordedMetric[] = [];
+      for (const resourceMetric of metricExporter.getMetrics()) {
+        for (const scope of resourceMetric.scopeMetrics) {
+          for (const metric of scope.metrics) {
+            for (const point of metric.dataPoints) {
+              const value = point.value;
+              if (typeof value === "number") {
+                out.push({
+                  name: metric.descriptor.name,
+                  attributes: point.attributes,
+                  value,
+                });
+              } else {
+                // Histogram: `count` is the observation count, `sum` the total.
+                out.push({
+                  name: metric.descriptor.name,
+                  attributes: point.attributes,
+                  value: value.count,
+                  sum: value.sum ?? 0,
+                });
+              }
+            }
+          }
+        }
+      }
+      return out;
+    },
+    restore: async () => {
+      if (stopped) return;
+      stopped = true;
+      // Disable before shutdown, mirroring `startTelemetry`'s teardown: a span
+      // taken after this point should no-op rather than queue into a provider
+      // on its way down.
+      trace.disable();
+      metrics.disable();
+      await Promise.allSettled([tracerProvider.shutdown(), meterProvider.shutdown()]);
+      spanExporter.reset();
+      metricExporter.reset();
+    },
+  };
+}
