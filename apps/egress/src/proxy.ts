@@ -1,8 +1,16 @@
 import { type IncomingHttpHeaders } from "node:http";
-import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  context,
+  propagation,
+  ROOT_CONTEXT,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 import { Agent, buildConnector, request } from "undici";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
+  type AttestedInstruction,
   type FetchErrorCode,
   type InjectionRecipe,
   INSTRUCTION_HEADER,
@@ -214,6 +222,24 @@ function makeValidatingConnector(
   };
 }
 
+/** What `proxyHandler` establishes before it decides the span's parent. */
+interface AuthenticatedRequest {
+  instruction: AttestedInstruction;
+  targetRaw: string;
+  method: string;
+}
+
+/**
+ * Authentication result, carrying the refusal rather than collapsing every
+ * failure to one status: a *missing* instruction or target is a malformed
+ * request (400 `bad_target`), while a present-but-unverifiable one is a
+ * rejection (401 `forbidden`). The two are different signals to whoever is
+ * debugging the edge, and `proxy.test.ts` pins both.
+ */
+type AuthOutcome =
+  | { ok: true; value: AuthenticatedRequest }
+  | { ok: false; status: number; code: FetchErrorCode; message: string };
+
 export interface ProxyHandler {
   handler: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
   /** The shared dispatcher — close it on app teardown to drain pooled sockets. */
@@ -234,16 +260,51 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     bodyTimeout: deps.limits.timeoutMs,
   });
 
-  async function runProxy(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  /**
+   * Header reads + instruction verification, and nothing else.
+   *
+   * `null` means "not authenticated" — the caller turns that into the 401. Kept
+   * separate from {@link runProxy} so the span's parent can be decided on the
+   * result, which is the whole point of the split.
+   */
+  async function authenticate(req: FastifyRequest): Promise<AuthOutcome> {
     const token = req.headers[INSTRUCTION_HEADER];
     const targetRaw = req.headers[TARGET_HEADER];
-    const method = (req.headers[METHOD_HEADER] ?? "GET").toString().toUpperCase();
     if (typeof token !== "string" || typeof targetRaw !== "string") {
-      return fail(reply, 400, "bad_target", "missing instruction or target");
+      return {
+        ok: false,
+        status: 400,
+        code: "bad_target",
+        message: "missing instruction or target",
+      };
     }
 
     const instruction = await verifyInstruction(token, deps.instructionKey);
-    if (!instruction) return fail(reply, 401, "forbidden", "invalid attested instruction");
+    if (!instruction) {
+      return { ok: false, status: 401, code: "forbidden", message: "invalid attested instruction" };
+    }
+
+    return {
+      ok: true,
+      value: {
+        instruction,
+        targetRaw,
+        method: (req.headers[METHOD_HEADER] ?? "GET").toString().toUpperCase(),
+      },
+    };
+  }
+
+  /**
+   * The authorized half. Everything here runs with a verified instruction —
+   * authentication happened in `proxyHandler`, which is also what decides
+   * whether this call is allowed to join the edge's trace (see there).
+   */
+  async function runProxy(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    authenticated: AuthenticatedRequest,
+  ): Promise<void> {
+    const { instruction, targetRaw, method } = authenticated;
 
     // One-time use: burn the jti before doing any work, so a captured
     // instruction re-POSTed inside its TTL is refused before the secret is
@@ -531,12 +592,34 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
    * because Fastify's `Reply` is thenable (see `apps/edge/src/telemetry.ts`).
    */
   async function proxyHandler(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const parent = propagation.extract(context.active(), req.headers);
-    const span = tracer.startSpan(SPAN_EGRESS_PROXY, { kind: SpanKind.SERVER }, parent);
     const startedAt = performance.now();
+
+    // Authenticate BEFORE deciding the parent. ADR-0037 decision 7 permits
+    // extraction here *because* "the caller is the edge, over a hop whose
+    // authority already comes from the signed attested instruction" — so that
+    // authority has to be established first, or the justification is not true
+    // at the line that relies on it. Extracting earlier let anything able to
+    // reach `/proxy` choose the parent trace of the resulting span even when
+    // the instruction was missing, forged or replayed.
+    const auth = await authenticate(req);
+
+    // Parent from the caller only once verified; otherwise a fresh root.
+    // Refusals still get a span — a forged instruction or a replayed jti is
+    // exactly the thing worth seeing — they are simply not joined to a trace
+    // chosen by whoever sent them.
+    const parent = auth.ok ? propagation.extract(context.active(), req.headers) : ROOT_CONTEXT;
+    const span = tracer.startSpan(
+      SPAN_EGRESS_PROXY,
+      { kind: SpanKind.SERVER, root: !auth.ok },
+      parent,
+    );
+
     let threw = false;
     try {
-      return await context.with(trace.setSpan(parent, span), () => runProxy(req, reply));
+      if (!auth.ok) return fail(reply, auth.status, auth.code, auth.message);
+      return await context.with(trace.setSpan(parent, span), () =>
+        runProxy(req, reply, auth.value),
+      );
     } catch (err) {
       threw = true;
       // Deliberately NOT `span.recordException(err)`. On this plane an error

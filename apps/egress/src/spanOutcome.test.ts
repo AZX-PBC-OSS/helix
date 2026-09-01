@@ -162,3 +162,65 @@ describe("a deliberate refusal", () => {
     expect(span.attributes["helix.outcome"]).not.toBe("ok");
   });
 });
+
+describe("an unverified caller cannot choose the trace parent", () => {
+  const FORGED_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736";
+  const FORGED_TRACEPARENT = `00-${FORGED_TRACE}-00f067aa0ba902b7-01`;
+
+  it("ignores traceparent when the instruction does not verify", async () => {
+    // ADR-0037 decision 7 permits egress to extract *because* "the caller is
+    // the edge, over a hop whose authority already comes from the signed
+    // attested instruction". Extraction therefore has to happen after that
+    // authority is established, or the justification is not true at the line
+    // relying on it.
+    const app = makeApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: "forged",
+        [TARGET_HEADER]: "https://api.vendor.test/v1",
+        traceparent: FORGED_TRACEPARENT,
+      },
+    });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+
+    const span = theSpan();
+    expect(span.spanContext().traceId).not.toBe(FORGED_TRACE);
+    expect(span.parentSpanContext).toBeUndefined();
+  });
+
+  it("still records a span for the refusal, so a replay is visible", async () => {
+    // Refusals are exactly what an operator wants to see; they are simply not
+    // joined to a trace the sender picked.
+    const app = makeApp();
+    await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: { [INSTRUCTION_HEADER]: "forged", [TARGET_HEADER]: "https://api.vendor.test/v1" },
+    });
+    await app.close();
+
+    expect(theSpan().name).toBe("helix.egress.proxy");
+  });
+
+  it("DOES adopt traceparent once the instruction verifies", async () => {
+    // The other half — this is the join the whole branch exists to produce.
+    const app = makeApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint("https://api.vendor.test"),
+        [TARGET_HEADER]: "https://api.vendor.test/v1",
+        traceparent: FORGED_TRACEPARENT,
+      },
+    });
+    // Blocked by SSRF/DNS, which is fine — the parent decision happens first.
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    await app.close();
+
+    expect(theSpan().spanContext().traceId).toBe(FORGED_TRACE);
+  });
+});
