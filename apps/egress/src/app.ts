@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema, OUTCOME_HEADER } from "@azx-pbc/shared";
+import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
@@ -35,7 +36,7 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
   // in a header and the target in another — so this is for the next route, not
   // a live leak.
   const app = Fastify({
-    logger: loggerOption(undefined, { prefix: "EGRESS" }),
+    logger: loggerOption(undefined, { prefix: "EGRESS", mixin: traceContextMixin }),
     // The ONE service that adopts its caller's request id. Its only caller is
     // the edge, over a hop whose authority comes from the signed instruction
     // (ADR-0013) — and adopting it is what joins the two halves of a

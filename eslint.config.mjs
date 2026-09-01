@@ -57,6 +57,25 @@ const PROPAGATION_EXTRACT = {
 const OTEL_SDK_MESSAGE =
   "The OpenTelemetry SDK is confined to @azx-pbc/telemetry and the three `server.ts` files (ADR-0037 decisions 3 and 4). From `buildApp()` inward, import `@opentelemetry/api` — the facade is dependency-free and no-ops when unregistered, which is what keeps `buildApp()` pure and lets tests inject requests without an exporter. An SDK import here also puts require-time monkey-patching machinery in the process that terminates untrusted traffic.";
 
+const LOG_URL_MESSAGE =
+  "A URL reaching a log call must be redacted. The `@azx-pbc/shared/logging` guarantee is scoped to the pino `req.url` FIELD (see that module's docblock), and several platform URLs carry a live credential in the query string — the Appendix A handoff `token`, the OIDC `code`, and the fetch-proxy target's own query, which may hold an app's API key or an Azure SAS `sig`. In Azure this stdout is retained for 30 days. Two ways out: log it under the top-level key `url`, which `loggerOption`'s serializer redacts automatically, or wrap it yourself — `redactUrl(req.url)`. (issue #20 residual b)";
+// Two shapes, matched where the value reaches the log UNWRAPPED. Note what
+// passes naturally and needs no escape hatch: `redactUrl(req.url)` puts the
+// member expression under an intervening CallExpression, so it is neither a
+// direct argument nor a Property whose value is the member expression.
+// Deliberately coarse, matched on NAME — the same coarseness the RLS rule above
+// documents. It cannot see a URL laundered through a variable, and says so.
+const LOG_URL_DIRECT = {
+  selector:
+    'CallExpression[callee.property.name=/^(trace|debug|info|warn|error|fatal)$/][callee.object.property.name="log"] > MemberExpression[property.name=/^(url|href|originalUrl)$/]',
+  message: LOG_URL_MESSAGE,
+};
+const LOG_URL_PROPERTY = {
+  selector:
+    'CallExpression[callee.property.name=/^(trace|debug|info|warn|error|fatal)$/][callee.object.property.name="log"] ObjectExpression > Property[key.name!="url"][value.type="MemberExpression"][value.property.name=/^(url|href|originalUrl)$/]',
+  message: LOG_URL_MESSAGE,
+};
+
 export default defineConfig([
   globalIgnores([
     "**/dist/**",
@@ -124,6 +143,8 @@ export default defineConfig([
         POOL_CONNECT_FIELD,
         URL_ATTR_LITERAL,
         PROPAGATION_EXTRACT,
+        LOG_URL_DIRECT,
+        LOG_URL_PROPERTY,
       ],
     },
   },
@@ -144,6 +165,8 @@ export default defineConfig([
         POOL_CONNECT_FIELD,
         URL_ATTR_LITERAL,
         PROPAGATION_EXTRACT,
+        LOG_URL_DIRECT,
+        LOG_URL_PROPERTY,
       ],
     },
   },
@@ -157,14 +180,20 @@ export default defineConfig([
     files: ["apps/portal/src/**/*.ts"],
     ignores: ["apps/portal/src/**/*.test.ts"],
     rules: {
-      "no-restricted-syntax": ["error", URL_ATTR_LITERAL, PROPAGATION_EXTRACT],
+      "no-restricted-syntax": [
+        "error",
+        URL_ATTR_LITERAL,
+        PROPAGATION_EXTRACT,
+        LOG_URL_DIRECT,
+        LOG_URL_PROPERTY,
+      ],
     },
   },
   {
     files: ["apps/egress/src/**/*.ts"],
     ignores: ["apps/egress/src/**/*.test.ts"],
     rules: {
-      "no-restricted-syntax": ["error", URL_ATTR_LITERAL],
+      "no-restricted-syntax": ["error", URL_ATTR_LITERAL, LOG_URL_DIRECT, LOG_URL_PROPERTY],
     },
   },
   {

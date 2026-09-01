@@ -226,7 +226,7 @@ export interface LoggerOptions {
    * correlation mixin lives in `@azx-pbc/telemetry/correlation` and is passed
    * in by each service's `app.ts`.
    */
-  mixin?: () => Record<string, unknown>;
+  mixin?: () => object;
 }
 
 /**
@@ -249,6 +249,18 @@ export function loggerOption(
     level: resolveLogLevel(options.prefix, options.env),
     ...(options.mixin ? { mixin: options.mixin } : {}),
     serializers: {
+      /**
+       * Any top-level `url` field, redacted — `req.log.warn({ url }, "…")` is
+       * covered automatically.
+       *
+       * This is what turns issue #20 residual (b) from a negative rule ("don't
+       * forget `redactUrl`") into a positive one anybody can remember: **log a
+       * URL under the key `url`.** pino applies serializers by top-level key
+       * name, which is also the honest limit — `{ ctx: { url } }` is still
+       * unprotected, and no serializer can reach it. A lint rule covers the
+       * common shapes; the residual is documented rather than papered over.
+       */
+      url: redactUrl,
       req(req: LoggableRequest) {
         const version = req.headers["accept-version"];
         return {

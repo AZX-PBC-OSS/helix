@@ -1,6 +1,7 @@
 import { Writable } from "node:stream";
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
+import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption } from "@azx-pbc/shared/logging";
 
 /**
@@ -115,5 +116,56 @@ describe("the edge log level", () => {
     const text = JSON.stringify(lines);
     expect(text).not.toContain("dropped");
     expect(text).toContain("kept");
+  });
+});
+
+describe("the url serializer", () => {
+  it("redacts a hand-logged URL under the top-level `url` key", async () => {
+    // Issue #20 residual (b): the guarantee used to be scoped to `req.url`, so a
+    // hand-rolled log call was on the honour system. The rule is now positive —
+    // log a URL under the key `url` — and this is what makes it true.
+    const { lines, stream } = captureLogs();
+    const option = loggerOption("production", { env: {} });
+    if (option === false) throw new Error("unreachable");
+    const app = Fastify({ logger: { ...option, stream } });
+
+    const token = "eyJhbGciOiJIUzI1NiJ9.PLANTED.signature";
+    app.log.warn({ url: `/_auth/complete?token=${token}&rd=/` }, "hand-rolled");
+    await app.close();
+
+    const text = JSON.stringify(lines);
+    expect(text).not.toContain(token);
+    expect(text).toContain("/_auth/complete?token=REDACTED&rd=/");
+  });
+
+  it("covers the fetch-proxy target, which no parameter list could", async () => {
+    const { lines, stream } = captureLogs();
+    const option = loggerOption("production", { env: {} });
+    if (option === false) throw new Error("unreachable");
+    const app = Fastify({ logger: { ...option, stream } });
+
+    const key = "sk-PLANTED-UPSTREAM-KEY";
+    app.log.warn({ url: `/_api/fetch/https://api.vendor.test/v1?api_key=${key}` }, "proxied");
+    await app.close();
+
+    expect(JSON.stringify(lines)).not.toContain(key);
+  });
+});
+
+describe("trace correlation on log lines", () => {
+  it("adds nothing when no SDK is registered — the platform default", async () => {
+    const { lines, stream } = captureLogs();
+    const option = loggerOption("production", { env: {}, mixin: traceContextMixin });
+    if (option === false) throw new Error("unreachable");
+    const app = Fastify({ logger: { ...option, stream } });
+
+    app.log.info({ marker: 1 }, "no tracing configured");
+    await app.close();
+
+    const line = lines.find(
+      (l): l is Record<string, unknown> => typeof l === "object" && l !== null && "marker" in l,
+    );
+    expect(line).toBeDefined();
+    expect("trace_id" in (line ?? {})).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { HealthStatusSchema } from "@azx-pbc/shared";
+import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { PrismaClient } from "./db/client.js";
 import type { BlobStore } from "./blob/store.js";
@@ -71,7 +72,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
     // origin (routes/spa.ts serves it as a deep link), so the portal logs the
     // same shape of credential the edge does — same stdout, same Log Analytics
     // retention. Redact it (issue #20 — `@azx-pbc/shared/logging`).
-    logger: loggerOption(undefined, { prefix: "PORTAL" }),
+    logger: loggerOption(undefined, { prefix: "PORTAL", mixin: traceContextMixin }),
     ...requestIdOptions(),
   });
 

@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema, isValidServiceWorkerScope, worstHealthState } from "@azx-pbc/shared";
+import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
@@ -148,7 +149,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     // Quiet during tests; structured JSON logs otherwise, with the handoff
     // token / OIDC code / fetch-proxy target redacted out of the logged URL
     // (issue #20 — `@azx-pbc/shared/logging`).
-    logger: loggerOption(undefined, { prefix: "EDGE" }),
+    logger: loggerOption(undefined, { prefix: "EDGE", mixin: traceContextMixin }),
     // A fresh UUID per request, never the caller's: every request here comes
     // from untrusted app code (ADR-0019).
     ...requestIdOptions(),

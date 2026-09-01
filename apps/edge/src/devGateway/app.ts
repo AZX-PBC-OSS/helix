@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema, worstHealthState } from "@azx-pbc/shared";
+import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryFreshnessReader, RegistryReader } from "../registry/projection.js";
@@ -97,7 +98,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     // Same redacting serializer as the edge (issue #20). No handoff token
     // reaches this process, but it serves `/:slug/_api/fetch/<url>` — where the
     // app-chosen target URL, credentials and all, becomes our query string.
-    logger: loggerOption(undefined, { prefix: "EDGE" }),
+    logger: loggerOption(undefined, { prefix: "EDGE", mixin: traceContextMixin }),
     ...requestIdOptions(),
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
