@@ -23,7 +23,7 @@
     },
     {
       "label": "dev:portal",
-      "detail": "azx-portal (:3001, registry + deploy API)",
+      "detail": "helix-portal (:3001, registry + deploy API)",
       "type": "shell",
       "command": "pnpm dev:portal",
       "isBackground": true,
@@ -36,7 +36,7 @@
     },
     {
       "label": "dev:edge",
-      "detail": "azx-edge (:8080, HTTPS)",
+      "detail": "helix-edge (:8080, HTTPS)",
       "type": "shell",
       "command": "pnpm dev:edge",
       "isBackground": true,
@@ -49,7 +49,7 @@
     },
     {
       "label": "dev:egress",
-      "detail": "azx-egress (:8081, mechanism plane — fetch-proxy + secret injection)",
+      "detail": "helix-egress (:8081, mechanism plane — fetch-proxy + secret injection)",
       "type": "shell",
       "command": "pnpm dev:egress",
       "isBackground": true,

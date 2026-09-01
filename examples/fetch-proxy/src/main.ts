@@ -41,7 +41,7 @@ async function probeProxyRate(): Promise<ProbeResult> {
     if (res.status === 403)
       return { status: "denied", detail: "403 — grant capabilities.fetch.origins for api.github.com" };
     if (res.status === 503)
-      return { status: "denied", detail: "503 — fetch capability not configured (is azx-egress up?)" };
+      return { status: "denied", detail: "503 — fetch capability not configured (is helix-egress up?)" };
     if (!res.ok) return { status: "error", detail: `HTTP ${res.status}` };
     return { status: "ok", detail: rateText(await res.json()) };
   } catch (e) {

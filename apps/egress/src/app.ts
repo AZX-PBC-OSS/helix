@@ -5,18 +5,19 @@ import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
 import type { InstructionBurnStore } from "./burn.js";
 import { makeProxyHandler } from "./proxy.js";
+import { SERVICE_NAME } from "./serviceName.js";
 
 /**
- * azx-egress — the mechanism plane (architecture §3). Internal-only: it answers
+ * helix-egress — the mechanism plane (architecture §3). Internal-only: it answers
  * the edge's `/proxy` calls, never app users. It is the one component that holds
  * plaintext secrets and a route to the public internet; everything else about it
  * is deliberately tiny.
- *
- * `SERVICE_NAME` is exported for `server.ts`'s `startTelemetry` call, so the
- * OTel `service.name` resource attribute and the `/health` `service` field
- * below cannot drift apart (ADR-0037).
  */
-export const SERVICE_NAME = "azx-egress";
+
+// Re-exported so `server.ts` keeps its single `./app.js` import. The constant
+// itself lives in its own module to keep `telemetry.ts` out of this one's
+// import graph (ADR-0037 decision 3).
+export { SERVICE_NAME };
 
 export interface EgressDeps {
   config: EgressConfig;

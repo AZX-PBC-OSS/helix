@@ -12,7 +12,7 @@ import type { GetVaultToken } from "./token.js";
  *
  * **Transport.** Hand-rolled Key Vault data-plane REST over Node's global
  * `fetch`, not `@azure/keyvault-secrets`. This package is consumed by
- * `azx-egress` — the mechanism plane, the one process holding plaintext — and
+ * `helix-egress` — the mechanism plane, the one process holding plaintext — and
  * ADR-0031 asks that the edge's dependency-minimal reasoning extend to egress by
  * degree, so the package stays **zero-dependency**. The same REST call already
  * has a precedent at `apps/portal/scripts/migrate-deploy.ts`. The credential is

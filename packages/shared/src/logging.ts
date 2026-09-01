@@ -149,7 +149,7 @@ interface LoggableRequest {
 }
 
 /**
- * Fastify's `logger` option, uniform across azx-edge, azx-portal, azx-egress
+ * Fastify's `logger` option, uniform across helix-edge, helix-portal, helix-egress
  * and the dev gateway: quiet in tests, otherwise the stock request serializer
  * with a redacted `url`. Mirrors Fastify 5's default field-for-field
  * (`lib/logger-pino.js:46-56`) so log consumers see the same shape; Fastify

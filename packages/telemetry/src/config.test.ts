@@ -24,12 +24,14 @@ describe("resolveTelemetryConfig", () => {
   }
 
   it("is null under NODE_ENV=test even with an endpoint configured", () => {
-    expect(resolveTelemetryConfig("azx-edge", { ...LIVE, NODE_ENV: "test" })).toBeNull();
+    expect(resolveTelemetryConfig("helix-edge", { ...LIVE, NODE_ENV: "test" })).toBeNull();
   });
 
   it("is null when OTEL_SDK_DISABLED is set", () => {
     for (const value of ["1", "true", "TRUE", " true "]) {
-      expect(resolveTelemetryConfig("azx-edge", { ...LIVE, OTEL_SDK_DISABLED: value })).toBeNull();
+      expect(
+        resolveTelemetryConfig("helix-edge", { ...LIVE, OTEL_SDK_DISABLED: value }),
+      ).toBeNull();
     }
   });
 
@@ -38,25 +40,25 @@ describe("resolveTelemetryConfig", () => {
     // none: an operator setting it that way means "leave it on".
     for (const value of ["0", "false", "", "no"]) {
       expect(
-        resolveTelemetryConfig("azx-edge", { ...LIVE, OTEL_SDK_DISABLED: value }),
+        resolveTelemetryConfig("helix-edge", { ...LIVE, OTEL_SDK_DISABLED: value }),
       ).not.toBeNull();
     }
   });
 
   it("is null when no OTLP endpoint is configured — the platform's default state", () => {
-    expect(resolveTelemetryConfig("azx-edge", { NODE_ENV: "production" })).toBeNull();
+    expect(resolveTelemetryConfig("helix-edge", { NODE_ENV: "production" })).toBeNull();
   });
 
   it("appends the signal path to a base endpoint", () => {
-    expect(resolveTelemetryConfig("azx-edge", LIVE)).toEqual({
-      serviceName: "azx-edge",
+    expect(resolveTelemetryConfig("helix-edge", LIVE)).toEqual({
+      serviceName: "helix-edge",
       tracesUrl: "http://collector:4318/v1/traces",
       metricsUrl: "http://collector:4318/v1/metrics",
     });
   });
 
   it("does not double the slash on a base endpoint with a trailing one", () => {
-    const config = resolveTelemetryConfig("azx-portal", {
+    const config = resolveTelemetryConfig("helix-portal", {
       ...LIVE,
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318//",
     });
@@ -67,7 +69,7 @@ describe("resolveTelemetryConfig", () => {
   it("uses a signal-specific endpoint verbatim, per the OTLP spec", () => {
     // Verbatim, NOT suffixed: a signal endpoint already names its own path, and
     // suffixing it would POST traces somewhere that 404s in silence.
-    const config = resolveTelemetryConfig("azx-egress", {
+    const config = resolveTelemetryConfig("helix-egress", {
       ...LIVE,
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector:4318/custom/traces",
     });
@@ -78,13 +80,13 @@ describe("resolveTelemetryConfig", () => {
 
   it("resolves from signal-specific endpoints alone, with no base", () => {
     expect(
-      resolveTelemetryConfig("azx-egress", {
+      resolveTelemetryConfig("helix-egress", {
         NODE_ENV: "production",
         OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://a/v1/traces",
         OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://b/v1/metrics",
       }),
     ).toEqual({
-      serviceName: "azx-egress",
+      serviceName: "helix-egress",
       tracesUrl: "http://a/v1/traces",
       metricsUrl: "http://b/v1/metrics",
     });
@@ -93,7 +95,7 @@ describe("resolveTelemetryConfig", () => {
   it("is null when only one signal resolves — there is no half-on state", () => {
     const stderr = captureStderr();
     expect(
-      resolveTelemetryConfig("azx-egress", {
+      resolveTelemetryConfig("helix-egress", {
         NODE_ENV: "production",
         OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://a/v1/traces",
       }),
@@ -109,7 +111,7 @@ describe("resolveTelemetryConfig", () => {
   it("names the signal that DID resolve, so the missing one is obvious", () => {
     const stderr = captureStderr();
     expect(
-      resolveTelemetryConfig("azx-edge", {
+      resolveTelemetryConfig("helix-edge", {
         NODE_ENV: "production",
         OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://b/v1/metrics",
       }),
@@ -121,15 +123,15 @@ describe("resolveTelemetryConfig", () => {
     // The default state of the platform. A warn line here would fire on every
     // boot of every service and train everyone to ignore the channel.
     const stderr = captureStderr();
-    expect(resolveTelemetryConfig("azx-portal", { NODE_ENV: "production" })).toBeNull();
-    expect(resolveTelemetryConfig("azx-portal", { ...LIVE, NODE_ENV: "test" })).toBeNull();
-    expect(resolveTelemetryConfig("azx-portal", { ...LIVE, OTEL_SDK_DISABLED: "1" })).toBeNull();
+    expect(resolveTelemetryConfig("helix-portal", { NODE_ENV: "production" })).toBeNull();
+    expect(resolveTelemetryConfig("helix-portal", { ...LIVE, NODE_ENV: "test" })).toBeNull();
+    expect(resolveTelemetryConfig("helix-portal", { ...LIVE, OTEL_SDK_DISABLED: "1" })).toBeNull();
     expect(stderr.lines()).toBe("");
   });
 
   it("carries the service name through unchanged", () => {
     // `service.name` is each service's SERVICE_NAME, so it cannot drift from
     // the `/health` `service` field.
-    expect(resolveTelemetryConfig("azx-portal", LIVE)?.serviceName).toBe("azx-portal");
+    expect(resolveTelemetryConfig("helix-portal", LIVE)?.serviceName).toBe("helix-portal");
   });
 });

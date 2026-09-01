@@ -9,7 +9,7 @@ import {
 } from "@azx-pbc/shared";
 
 /**
- * Mint the attested instruction the edge hands to `azx-egress` (secrets design
+ * Mint the attested instruction the edge hands to `helix-egress` (secrets design
  * §4). The edge is the only minter; egress verifies. The key derivation here is
  * identical to the egress verify side (`apps/egress/src/instruction.ts`) — same
  * HKDF info string off the shared `HELIX_INSTRUCTION_SECRET` — so the symmetric

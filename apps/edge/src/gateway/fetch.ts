@@ -22,7 +22,7 @@ import { errorDetailOf, fetchPathOf, type GatewayOutcome, type UsageStore } from
 /**
  * `/_api/fetch/<url>` — the fetch-proxy policy plane (fetch-proxy design §7).
  * The edge authorizes (gate, CSRF, manifest allowlist, per-app budget), mints a
- * signed attested instruction, and forwards the call to `azx-egress` — which
+ * signed attested instruction, and forwards the call to `helix-egress` — which
  * holds the secrets and the internet route the edge deliberately lacks. The
  * upstream response streams straight back. Every call is metered into
  * `gateway_calls` (capability `fetch`, model = target origin, plus the request

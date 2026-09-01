@@ -11,7 +11,7 @@ import type { EgressProvider } from "./egressProvider.js";
 import { mintInstruction } from "./instruction.js";
 
 /**
- * The LLM provider that routes through `azx-egress` (secrets design §1, §4). It
+ * The LLM provider that routes through `helix-egress` (secrets design §1, §4). It
  * keeps the edge out of the credential path entirely: the vendor key is a
  * `platform`-scoped secret egress resolves and injects, so the edge never holds
  * it and rotation in the portal needs no edge restart.

@@ -45,21 +45,22 @@ import {
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
+import { SERVICE_NAME } from "./serviceName.js";
 
 /**
- * azx-edge — the data plane (architecture §3). Stateless; terminates all
+ * helix-edge — the data plane (architecture §3). Stateless; terminates all
  * `*.azx.helix.azxlabs.io` traffic. **Hard rule: dependency-minimal** — every npm
  * package here is code inside the trusted path, so additions need review
  * (project plan §6).
  *
  * M2: host routing, registry projection, asset streaming, baseline CSP.
  * Sessions/OIDC (M3) and the `/_api/*` gateway (M4) come later.
- *
- * `SERVICE_NAME` is exported for `server.ts`'s `startTelemetry` call, so the
- * OTel `service.name` resource attribute and the `/health` `service` field
- * below cannot drift apart (ADR-0037).
  */
-export const SERVICE_NAME = "azx-edge";
+
+// Re-exported so `server.ts` keeps its single `./app.js` import. The constant
+// itself lives in its own module to keep `telemetry.ts` out of this one's
+// import graph (ADR-0037 decision 3).
+export { SERVICE_NAME };
 
 export interface EdgeDeps {
   config: EdgeConfig;

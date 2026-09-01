@@ -61,7 +61,7 @@ sub-check, the registry projection's freshness (ADR-0025):
 ```json
 {
   "status": "degraded",
-  "service": "azx-edge",
+  "service": "helix-edge",
   "uptime": 812,
   "checks": [
     {

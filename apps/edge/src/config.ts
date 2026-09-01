@@ -165,14 +165,14 @@ export interface GatewayConfig {
   };
   /**
    * Fetch-proxy wiring (M4.5). The policy plane authorizes a `/_api/fetch` call
-   * and hands a signed attested instruction to `azx-egress`. The capability is
+   * and hands a signed attested instruction to `helix-egress`. The capability is
    * enabled only when BOTH `egressUrl` and `instructionSecret` are present —
    * otherwise `/_api/fetch` 503s (fail-closed, like the LLM key).
    */
   fetch: {
     /** Internal URL of the egress service; null disables the capability. */
     egressUrl: string | null;
-    /** Shared with azx-egress; HKDF-derived into the instruction signing key. */
+    /** Shared with helix-egress; HKDF-derived into the instruction signing key. */
     instructionSecret: Buffer | null;
     /** Timeout for the egress round-trip. */
     timeoutMs: number;

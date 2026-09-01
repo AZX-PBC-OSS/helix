@@ -4,8 +4,8 @@ import { EnvSchema } from "./env.js";
 
 /**
  * The attested instruction (architecture §3, §6.2; secrets design §4) — the
- * signed boundary between the policy plane (`azx-edge`) and the mechanism plane
- * (`azx-egress`).
+ * signed boundary between the policy plane (`helix-edge`) and the mechanism plane
+ * (`helix-egress`).
  *
  * The edge resolves identity/authz/quota for a `/_api/fetch` call, then mints a
  * short-lived JWT carrying this payload and hands it to egress. Egress *trusts*

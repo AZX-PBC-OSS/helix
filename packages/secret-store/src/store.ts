@@ -2,7 +2,7 @@
  * The `SecretStore` custody seam (design `docs/design/secrets-and-connections.md`
  * §3/§4, ADR-0006). It is intentionally **low-level**: the one thing that must
  * stay byte-for-byte identical between the portal (which writes a secret) and the
- * `azx-egress` service (which reads it back to inject) is how a plaintext value
+ * `helix-egress` service (which reads it back to inject) is how a plaintext value
  * becomes the stored `material` token and back. DB-row management (the
  * `app_secrets` / `app_secret_grants` rows, grants, metadata) stays in each
  * service — the portal via Prisma, egress via hand-written SQL under its own

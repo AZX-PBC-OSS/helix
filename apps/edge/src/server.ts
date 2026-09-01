@@ -169,7 +169,7 @@ const anonRateLimiter = new IpRateLimiter(config.anonRateLimit, counterStore);
 const loginThrottle = new LoginThrottle(counterStore);
 
 // Fetch-proxy + LLM (M4.5): the edge is the policy plane and forwards authorized
-// calls to azx-egress over the EgressProvider seam. The capability is enabled
+// calls to helix-egress over the EgressProvider seam. The capability is enabled
 // only when both the egress URL and the shared instruction secret are present
 // (otherwise /_api/fetch and the egress LLM path 503 — fail-closed).
 const egress: EgressProvider | null = config.fetch.egressUrl
@@ -278,7 +278,7 @@ try {
       allowUnauthenticated: config.allowUnauthenticated,
       tls: https !== null,
     },
-    "azx-edge serving",
+    "helix-edge serving",
   );
   if (config.allowUnauthenticated) {
     app.log.warn("EDGE_DEV_ALLOW_UNAUTHENTICATED is set — app content is served without sessions");

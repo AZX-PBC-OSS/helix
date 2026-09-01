@@ -1,7 +1,7 @@
 /**
  * Managed-identity AAD token acquisition for Key Vault (ADR-0006).
  *
- * `@azx-pbc/secret-store` is consumed by **`azx-egress`**, the mechanism plane —
+ * `@azx-pbc/secret-store` is consumed by **`helix-egress`**, the mechanism plane —
  * the one process that holds plaintext connection secrets. ADR-0031 asks that the
  * edge's dependency-minimal reasoning extend to egress by degree, so this package
  * stays **zero-dependency**: on Container Apps the user-assigned identity's token
@@ -13,7 +13,7 @@
  * and the transport is global `fetch` + `AbortSignal` instead of an undici Agent,
  * so no runtime dependency is added.
  *
- * The privileged control plane (`azx-portal`) already depends on `@azure/identity`
+ * The privileged control plane (`helix-portal`) already depends on `@azure/identity`
  * for Blob writes (ADR-0027) and injects a `DefaultAzureCredential`-backed
  * {@link GetVaultToken} instead — that also lets operator scripts run under
  * `az login`. Both paths satisfy the same one-function seam.

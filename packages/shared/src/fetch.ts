@@ -6,7 +6,7 @@ import { z } from "zod";
  * Apps call `fetch('/_api/fetch/https://api.example.com/...')` — same-origin, so
  * it satisfies `connect-src 'self'` with no CSP widening; method, safelisted
  * headers, and body pass through, and the response streams back unchanged
- * (§3.1). The edge enforces policy and forwards to `azx-egress` over an internal
+ * (§3.1). The edge enforces policy and forwards to `helix-egress` over an internal
  * HTTP seam carrying the attested instruction; egress performs the call. The
  * shapes here are the small pieces both services (and tests) share — there is no
  * JSON envelope, because the proxy is transparent and streaming.

@@ -14,12 +14,12 @@ afterAll(async () => {
   await app.close();
 });
 
-it("GET /health returns a valid health status for azx-portal", async () => {
+it("GET /health returns a valid health status for helix-portal", async () => {
   const res = await app.inject({ method: "GET", url: "/health" });
 
   expect(res.statusCode).toBe(200);
   const parsed = HealthStatusSchema.parse(res.json());
-  expect(parsed.service).toBe("azx-portal");
+  expect(parsed.service).toBe("helix-portal");
 });
 
 /**

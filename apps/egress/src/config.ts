@@ -1,5 +1,5 @@
 /**
- * azx-egress configuration, resolved once at boot (mirrors the edge's config
+ * helix-egress configuration, resolved once at boot (mirrors the edge's config
  * discipline — handlers never read process.env). The egress service is the
  * mechanism plane: it needs the DB (as `helix_egress`), the shared instruction
  * secret (to verify what the edge minted), a secret-store custody config, and

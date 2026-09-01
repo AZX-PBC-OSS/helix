@@ -105,7 +105,7 @@ services:
       EDGE_TLS_CERT_FILE: /workspace/.devcontainer/certs/local-helix.pem
       EDGE_TLS_KEY_FILE: /workspace/.devcontainer/certs/local-helix-key.pem
       NODE_EXTRA_CA_CERTS: /workspace/.devcontainer/certs/caroot/rootCA.pem
-      # M4.5 azx-egress mechanism plane (`pnpm dev:egress`, :8081). It connects
+      # M4.5 helix-egress mechanism plane (`pnpm dev:egress`, :8081). It connects
       # as the least-privilege helix_egress role (created by db-init/01-roles.sql)
       # — the only role that may read app_secrets.material.
       EGRESS_DATABASE_URL: postgresql://helix_egress:helix_egress@db:5432/helix

@@ -8,7 +8,7 @@ import { EnvSchema } from "./env.js";
  * A **secret** is opaque credential material (an API key, PAT, bearer token)
  * the platform holds so an app never does. The app references it by name from a
  * proxy connection (manifest `capabilities.fetch.origins[].connection`); the
- * `azx-egress` service resolves it to plaintext and injects it server-side on
+ * `helix-egress` service resolves it to plaintext and injects it server-side on
  * the outbound hop (§4). Secrets are **write-only / rotate-only** — the value is
  * never returned to anyone after it is set (§3), so the shapes here carry
  * metadata only; the value travels in the create/rotate request bodies and

@@ -28,17 +28,18 @@ import { catalogueRoutes } from "./routes/catalogue.js";
 import { directoryRoutes } from "./routes/directory.js";
 import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
 import { assertDeploymentConfig } from "./deployment.js";
+import { SERVICE_NAME } from "./serviceName.js";
 
 /**
- * azx-portal — the control plane (architecture §3, §7). Privileged: registry
+ * helix-portal — the control plane (architecture §3, §7). Privileged: registry
  * writes, deploy endpoint, capability approvals. Not routable from app
  * subdomains. Owns the Postgres schema and migrations (Prisma).
- *
- * `SERVICE_NAME` is exported for `server.ts`'s `startTelemetry` call, so the
- * OTel `service.name` resource attribute and the `/health` `service` field
- * below cannot drift apart (ADR-0037).
  */
-export const SERVICE_NAME = "azx-portal";
+
+// Re-exported so `server.ts` keeps its single `./app.js` import. The constant
+// itself lives in its own module to keep `telemetry.ts` out of this one's
+// import graph (ADR-0037 decision 3).
+export { SERVICE_NAME };
 
 export interface BuildAppOptions {
   /** Inject a PrismaClient and BlobStore (tests). Defaults build real ones. */

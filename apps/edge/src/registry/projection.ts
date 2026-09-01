@@ -81,7 +81,7 @@ export interface RegistryEntry {
   externalOrigins: string[];
   /**
    * The fetch-proxy grant (manifest `capabilities.fetch`): the **proxied**
-   * origins the edge will route through `azx-egress`, with their secret
+   * origins the edge will route through `helix-egress`, with their secret
    * connections, plus the per-app budget and shim flag. Always present (empty
    * allowlist when the app has no fetch capability). Parsed fail-closed.
    */

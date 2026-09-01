@@ -64,6 +64,6 @@ describe("portal serves the built SPA", () => {
   it("health stays JSON", async () => {
     const res = await t.app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ status: "ok", service: "azx-portal" });
+    expect(res.json()).toMatchObject({ status: "ok", service: "helix-portal" });
   });
 });

@@ -82,7 +82,7 @@ resource ruleCollectionGroup 'Microsoft.Network/firewallPolicies/ruleCollectionG
     ruleCollections: [
       {
         // The egress zone: snet-egress reaches the whole internet over HTTP(S).
-        // This is azx-egress doing its job (governed outbound for the fetch-proxy).
+        // This is helix-egress doing its job (governed outbound for the fetch-proxy).
         ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
         name: 'egress-internet'
         priority: 100

@@ -53,7 +53,7 @@ export type DataCapability = z.infer<typeof DataCapabilitySchema>;
 
 /**
  * A proxied outbound origin (fetch-proxy design §4/§5). An origin listed here is
- * reached **through `/_api/fetch`** (the `azx-egress` mechanism plane) — audited,
+ * reached **through `/_api/fetch`** (the `helix-egress` mechanism plane) — audited,
  * metered, SSRF-controlled — as opposed to a `direct` browser call widened into
  * CSP via `externalOrigins`. `connection` names a stored secret
  * (`docs/design/secrets-and-connections.md`) injected server-side; absent ⇒ a

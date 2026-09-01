@@ -38,19 +38,19 @@ function globalTracerIsUnregistered(): boolean {
 
 describe("startTelemetry", () => {
   it("is inert under NODE_ENV=test", () => {
-    const handle = startTelemetry("azx-edge", { env: { ...LIVE, NODE_ENV: "test" } });
+    const handle = startTelemetry("helix-edge", { env: { ...LIVE, NODE_ENV: "test" } });
     expect(handle.enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
   });
 
   it("is inert under OTEL_SDK_DISABLED=1", () => {
-    const handle = startTelemetry("azx-portal", { env: { ...LIVE, OTEL_SDK_DISABLED: "1" } });
+    const handle = startTelemetry("helix-portal", { env: { ...LIVE, OTEL_SDK_DISABLED: "1" } });
     expect(handle.enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
   });
 
   it("is inert when no OTLP endpoint is configured", () => {
-    const handle = startTelemetry("azx-egress", { env: { NODE_ENV: "production" } });
+    const handle = startTelemetry("helix-egress", { env: { NODE_ENV: "production" } });
     expect(handle.enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
   });
@@ -58,12 +58,12 @@ describe("startTelemetry", () => {
   it("is inert with no options at all — the suite's own ambient env", () => {
     // Belt and braces: the services call `startTelemetry(SERVICE_NAME)` with no
     // second argument, and that call must stay quiet in CI.
-    expect(startTelemetry("azx-edge").enabled).toBe(false);
+    expect(startTelemetry("helix-edge").enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
   });
 
   it("resolves shutdown on an inert handle without throwing", async () => {
-    const handle = startTelemetry("azx-edge", { env: { NODE_ENV: "production" } });
+    const handle = startTelemetry("helix-edge", { env: { NODE_ENV: "production" } });
     await expect(handle.shutdown()).resolves.toBeUndefined();
     // Twice, because Fastify's `onClose` can run more than once in tests.
     await expect(handle.shutdown()).resolves.toBeUndefined();
@@ -115,7 +115,7 @@ describe("startTelemetry, misconfigured", () => {
     // OTLPTraceExporter validates its URL in the constructor. Not exotic: it is
     // what you get from pasting a host:port with the scheme left off.
     const stderr = captureStderr();
-    const handle = startTelemetry("azx-edge", {
+    const handle = startTelemetry("helix-edge", {
       env: { NODE_ENV: "production", OTEL_EXPORTER_OTLP_ENDPOINT: "//collector:4318" },
     });
     expect(handle.enabled).toBe(false);
@@ -129,7 +129,7 @@ describe("startTelemetry, misconfigured", () => {
     // is the shape that leaves a globally-registered provider with no owner:
     // `current` is never assigned, so `shutdownTelemetry()` could not reach it.
     const stderr = captureStderr();
-    const handle = startTelemetry("azx-egress", {
+    const handle = startTelemetry("helix-egress", {
       env: {
         NODE_ENV: "production",
         OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.invalid:4318/v1/traces",
@@ -149,7 +149,7 @@ describe("startTelemetry, misconfigured", () => {
     // all non-enumerable. OTel hands every export failure to `diag.error(msg,
     // error)`, so a sink that stringifies naively explains nothing, forever.
     const stderr = captureStderr();
-    startTelemetry("azx-portal", {
+    startTelemetry("helix-portal", {
       env: { NODE_ENV: "production", OTEL_EXPORTER_OTLP_ENDPOINT: "//collector:4318" },
     });
     expect(stderr.lines()).toContain("Could not parse user-provided export URL");
@@ -163,7 +163,7 @@ describe("shutdownTelemetry", () => {
   });
 
   it("resolves after an inert start", async () => {
-    startTelemetry("azx-egress", { env: { NODE_ENV: "test" } });
+    startTelemetry("helix-egress", { env: { NODE_ENV: "test" } });
     await expect(shutdownTelemetry()).resolves.toBeUndefined();
   });
 });

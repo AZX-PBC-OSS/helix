@@ -22,10 +22,10 @@
   "forwardPorts": [5173, 3001, 3002, 8080, 8081, 10000],
   "portsAttributes": {
     "5173": { "label": "portal-web (Vite)" },
-    "3001": { "label": "azx-portal API" },
+    "3001": { "label": "helix-portal API" },
     "3002": { "label": "dev-idp (OIDC)" },
-    "8080": { "label": "azx-edge" },
-    "8081": { "label": "azx-egress" },
+    "8080": { "label": "helix-edge" },
+    "8081": { "label": "helix-egress" },
     "10000": { "label": "Azurite Blob" }
   },
 

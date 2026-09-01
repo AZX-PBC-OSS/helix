@@ -99,7 +99,7 @@ describe("platform hosts", () => {
   it("serves /health with the shared health contract", async () => {
     const res = await edge.app.inject({ url: "/health", headers: { host: "localhost:8080" } });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ status: "ok", service: "azx-edge" });
+    expect(res.json()).toMatchObject({ status: "ok", service: "helix-edge" });
     // The registry-freshness sub-check is part of the contract an alert keys on.
     expect(res.json().checks?.[0]?.name).toBe("registry-projection");
     expect(res.json().checks?.[0]?.status).toBe("ok");
