@@ -9,7 +9,8 @@
     "./bundlePlan": "./src/bundlePlan.ts",
     "./bundleFixtures": "./src/bundleFixtures.ts",
     "./devToken": "./src/devToken.ts",
-    "./logging": "./src/logging.ts"
+    "./logging": "./src/logging.ts",
+    "./telemetry": "./src/telemetry.ts"
   },
   "scripts": {
     "typecheck": "tsc"
