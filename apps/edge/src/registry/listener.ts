@@ -1,5 +1,8 @@
 import pg from "pg";
+import type { ObservableCallback } from "@opentelemetry/api";
+import { ATTR_OUTCOME } from "@azx-pbc/shared/telemetry";
 import { createEdgePool, DEFAULT_STATEMENT_TIMEOUT_MS } from "../db/pool.js";
+import { instruments } from "../telemetry.js";
 import { safeInterval, STALE_ERROR_INTERVALS } from "./health.js";
 import {
   RegistryProjection,
@@ -73,6 +76,8 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
   #notifyTimer: NodeJS.Timeout | null = null;
   #backoffMs = BACKOFF_INITIAL_MS;
   #stopped = false;
+  /** The attached gauge callback, so `stop()` can detach exactly it. */
+  #staleObserver: ObservableCallback | null = null;
   /** The load `stop()` waits out, so a teardown can't race a live query. */
   #inFlightLoad: Promise<void> | null = null;
   /** Whether the "crossed the /health error line" escalation has already fired. */
@@ -169,6 +174,15 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
       ? "registry projection has never loaded; app hosts are serving 503"
       : "registry projection load failed; serving stale";
 
+    // The metric rides alongside the log, never replacing it (ADR-0037
+    // decision 9). Same `failed` / `never_loaded` split the event names already
+    // make, so a threshold rule and a KQL query cannot disagree about what
+    // happened. Recovery is deliberately not counted: the gauge falling is what
+    // closes an alert, and a "recovered" counter would only ever go up.
+    instruments().registryLoadFailures.add(1, {
+      [ATTR_OUTCOME]: neverLoaded ? "never_loaded" : "failed",
+    });
+
     if (info.consecutiveLoadFailures === 1) {
       this.#log.error(fields, msg);
       return;
@@ -202,9 +216,36 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
    * boot must not hang on a down DB; the retry machinery takes over from here.
    */
   async start(): Promise<void> {
+    this.#observeStaleness();
     await this.#load();
     await this.#connectListener();
     this.#scheduleReconcile();
+  }
+
+  /**
+   * Attach the `helix.registry.stale_for_ms` callback (ADR-0037 decision 8).
+   *
+   * **Observable, not a value pushed at each load, and that is the whole
+   * point.** ADR-0025 grades staleness on two independent conditions because
+   * they catch two different faults, and the age rule is the one that catches
+   * "loads stopped being *attempted* at all" — a stalled or cleared reconcile
+   * timer produces zero failures, forever. A gauge recorded at each load
+   * attempt is silent in exactly that fault: the last value it wrote just sits
+   * there looking healthy. A callback is read at collection time, so the age
+   * keeps climbing whether or not anything is still trying.
+   *
+   * **Reports nothing while `staleForMs` is null** (never loaded). A gauge
+   * saying `0` there would read as "perfectly fresh" when the truth is that
+   * every app host is serving 503 — the worst possible direction to be wrong
+   * in. That state is `load_failures{outcome:"never_loaded"}` instead, and
+   * `/health` grades it `error`.
+   */
+  #observeStaleness(): void {
+    this.#staleObserver = (result) => {
+      const { staleForMs } = this.#projection.freshness();
+      if (staleForMs !== null) result.observe(staleForMs);
+    };
+    instruments().registryStaleForMs.addCallback(this.#staleObserver);
   }
 
   /**
@@ -237,6 +278,13 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
 
   async stop(): Promise<void> {
     this.#stopped = true;
+    if (this.#staleObserver) {
+      // Detach before the pool goes: a callback left attached would keep this
+      // instance (and its projection) alive on the meter provider, and in tests
+      // it would observe a torn-down registry on the next collection.
+      instruments().registryStaleForMs.removeCallback(this.#staleObserver);
+      this.#staleObserver = null;
+    }
     for (const timer of [this.#reconcileTimer, this.#reconnectTimer, this.#notifyTimer]) {
       if (timer) clearTimeout(timer);
     }
