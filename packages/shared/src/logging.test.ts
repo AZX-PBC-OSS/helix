@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loggerOption, redactUrl, resolveLogLevel } from "./logging.js";
+import { REQUEST_HEADER_SAFELIST } from "./fetch.js";
+import {
+  loggerOption,
+  parseRequestId,
+  redactUrl,
+  REQUEST_ID_HEADER,
+  requestIdOptions,
+  resolveLogLevel,
+} from "./logging.js";
 
 describe("redactUrl — platform-minted credentials", () => {
   it("redacts the Appendix A handoff token", () => {
@@ -307,5 +315,78 @@ describe("loggerOption levels", () => {
     if (option === false) throw new Error("unreachable");
     expect(option.mixin).toBe(mixin);
     expect(mixin).not.toHaveBeenCalled();
+  });
+});
+
+describe("parseRequestId", () => {
+  const VALID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+  it("accepts a UUID, normalising case and whitespace", () => {
+    expect(parseRequestId(VALID)).toBe(VALID);
+    expect(parseRequestId(` ${VALID.toUpperCase()} `)).toBe(VALID);
+  });
+
+  it("rejects anything that is not UUID-shaped", () => {
+    // The value lands on every log line for the request and is retained for 30
+    // days, so the rejections that matter are the ones that would forge a log
+    // entry or bloat the field — not merely "wrong format".
+    expect(parseRequestId("a\nb")).toBeNull();
+    expect(parseRequestId(`${VALID}\ninjected`)).toBeNull();
+    expect(parseRequestId("x".repeat(8192))).toBeNull();
+    expect(parseRequestId("\u001b[31mred")).toBeNull();
+    expect(parseRequestId("not-a-uuid")).toBeNull();
+    expect(parseRequestId("")).toBeNull();
+  });
+
+  it("rejects a repeated header, which arrives as an array", () => {
+    expect(parseRequestId([VALID, VALID])).toBeNull();
+    expect(parseRequestId(undefined)).toBeNull();
+    expect(parseRequestId(42)).toBeNull();
+  });
+});
+
+describe("requestIdOptions", () => {
+  const VALID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+  it("never sets requestIdHeader, in either mode", () => {
+    // A drift guard: Fastify 5 already defaults this to false, but the obvious
+    // next edit is `requestIdHeader: "x-request-id"`, and on the edge that
+    // would take an id straight from untrusted app code.
+    expect(requestIdOptions().requestIdHeader).toBe(false);
+    expect(requestIdOptions({ trustInbound: true }).requestIdHeader).toBe(false);
+  });
+
+  it("mints a fresh id and ignores the caller's, by default", () => {
+    const { genReqId } = requestIdOptions();
+    const id = genReqId({ headers: { [REQUEST_ID_HEADER]: VALID } });
+    expect(id).not.toBe(VALID);
+    expect(parseRequestId(id)).toBe(id);
+  });
+
+  it("mints a distinct id per request", () => {
+    // Fastify's own generator is a per-process counter, so two replicas both
+    // start at `req-1` and every restart resets.
+    const { genReqId } = requestIdOptions();
+    const ids = new Set(Array.from({ length: 50 }, () => genReqId({ headers: {} })));
+    expect(ids.size).toBe(50);
+  });
+
+  it("adopts a valid inbound id under trustInbound — the egress case", () => {
+    const { genReqId } = requestIdOptions({ trustInbound: true });
+    expect(genReqId({ headers: { [REQUEST_ID_HEADER]: VALID } })).toBe(VALID);
+  });
+
+  it("mints a fresh id rather than adopting a malformed one, even under trustInbound", () => {
+    const { genReqId } = requestIdOptions({ trustInbound: true });
+    const id = genReqId({ headers: { [REQUEST_ID_HEADER]: "a\nb" } });
+    expect(id).not.toContain("\n");
+    expect(parseRequestId(id)).toBe(id);
+  });
+
+  it("keeps the correlation header off the upstream safelist", () => {
+    // `REQUEST_HEADER_SAFELIST` is what egress forwards to a third-party
+    // upstream. Our internal request id is nobody else's business, and this is
+    // one word away from regressing.
+    expect(REQUEST_HEADER_SAFELIST).not.toContain(REQUEST_ID_HEADER);
   });
 });

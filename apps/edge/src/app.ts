@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema, isValidServiceWorkerScope, worstHealthState } from "@azx-pbc/shared";
-import { loggerOption } from "@azx-pbc/shared/logging";
+import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
 import type { RegistryFreshnessReader, RegistryReader } from "./registry/projection.js";
@@ -149,6 +149,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     // token / OIDC code / fetch-proxy target redacted out of the logged URL
     // (issue #20 — `@azx-pbc/shared/logging`).
     logger: loggerOption(undefined, { prefix: "EDGE" }),
+    // A fresh UUID per request, never the caller's: every request here comes
+    // from untrusted app code (ADR-0019).
+    ...requestIdOptions(),
     // How many proxy hops to trust for `req.ip` (the rate-limit / login-throttle
     // key). Default false = the socket peer. Behind Container Apps' Envoy ingress
     // that peer is the ingress, so per-client limits need EDGE_TRUST_PROXY set to

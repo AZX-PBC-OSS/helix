@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema, worstHealthState } from "@azx-pbc/shared";
-import { loggerOption } from "@azx-pbc/shared/logging";
+import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryFreshnessReader, RegistryReader } from "../registry/projection.js";
 import { registryFreshnessCheck } from "../registry/health.js";
@@ -98,6 +98,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     // reaches this process, but it serves `/:slug/_api/fetch/<url>` — where the
     // app-chosen target URL, credentials and all, becomes our query string.
     logger: loggerOption(undefined, { prefix: "EDGE" }),
+    ...requestIdOptions(),
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;

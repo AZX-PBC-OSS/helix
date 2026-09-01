@@ -16,6 +16,7 @@ const OPTS: LlmStreamOpts = {
   appId: "app-1",
   userOid: "user-1",
   requestId: "req-1",
+  correlationId: "req-corr-test",
   env: "prod",
 };
 

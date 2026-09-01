@@ -539,6 +539,48 @@ describe("/_api/fetch", () => {
       expect(got).toBeLessThan(320); // the full body never reached the app
     });
   });
+
+  it("forwards its own request id to egress, distinct from the instruction jti", async () => {
+    // The point of the whole correlation change: the edge's log line and
+    // egress's land on one value, in two different Log Analytics workspaces.
+    const { app, egress } = buildFetchEdge();
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/users/octocat",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const call = egress.calls[0];
+    expect(call?.correlationId).toBeTruthy();
+
+    // NOT the jti. That is a single-use replay nonce burned by egress before it
+    // resolves a secret (ADR-0013); ADR-0037 decision 7 says it must not be
+    // refactored into a tracing concern, and a shared value would make an
+    // operational id load-bearing for a security control.
+    const claims = await decode(call?.instruction ?? "");
+    expect(call?.correlationId).not.toBe(claims.jti);
+    await app.close();
+  });
+
+  it("does not let an app shadow the correlation id with its own header", async () => {
+    // `x-helix-request-id` is not on REQUEST_HEADER_SAFELIST, so it never
+    // reaches `EgressRequest.headers` — and the platform headers are applied
+    // after that spread besides. Two independent reasons; assert the outcome.
+    const { app, egress } = buildFetchEdge();
+    const forged = "00000000-0000-4000-8000-000000000000";
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/users/octocat",
+      headers: { ...HOST, origin: ORIGIN, "x-helix-request-id": forged },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const call = egress.calls[0];
+    expect(call?.correlationId).not.toBe(forged);
+    expect(call?.headers["x-helix-request-id"]).toBeUndefined();
+    await app.close();
+  });
 });
 
 /**

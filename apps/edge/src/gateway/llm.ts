@@ -277,6 +277,8 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
       // The opaque id ONLY — this reaches egress via the attested instruction.
       userOid,
       requestId,
+      // The log correlation id, NOT the jti above — see `LlmStreamOpts`.
+      correlationId: String(req.id),
       env: caller.env,
     });
 

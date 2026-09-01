@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { FETCH_PROXY_PREFIX, parseFetchTarget } from "./fetch.js";
 
 /**
@@ -263,5 +264,79 @@ export function loggerOption(
         };
       },
     },
+  };
+}
+
+/**
+ * The correlation id's header on the edge → egress hop.
+ *
+ * **Internal only.** It must never appear in `REQUEST_HEADER_SAFELIST`
+ * (`./fetch.ts`) — that list is what egress forwards to a third-party upstream,
+ * and our request id is nobody else's business. A test pins the exclusion,
+ * because it is one word away from regressing.
+ */
+export const REQUEST_ID_HEADER = "x-helix-request-id";
+
+/** A v4-shaped UUID, the only thing {@link parseRequestId} will accept. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Validate an inbound correlation id, or `null`.
+ *
+ * Deliberately shape-checked rather than merely length-capped. The value lands
+ * on every log line for the request and is retained for 30 days, so an
+ * unvalidated header is a place to put a newline (forging a second log entry),
+ * 8 KB of padding, or ANSI escapes for whoever greps it later. A UUID or
+ * nothing removes the whole class.
+ *
+ * Note what this is *not*: authentication. Egress's authority comes from the
+ * signed attested instruction (ADR-0013), and a caller who cannot mint one can
+ * do nothing with a forged request id but mislabel its own log lines.
+ */
+export function parseRequestId(raw: unknown): string | null {
+  if (typeof raw !== "string") return null; // covers a repeated header (string[])
+  const value = raw.trim().toLowerCase();
+  return UUID_RE.test(value) ? value : null;
+}
+
+/** The subset of a request {@link requestIdOptions} reads. */
+interface RequestIdSource {
+  headers: Record<string, string | string[] | undefined>;
+}
+
+/**
+ * Fastify's request-id options: a fresh UUID per request, and — on the one hop
+ * where it is sound — continuity with the caller's id.
+ *
+ * **Why this exists at all.** Fastify's default generator is a per-process
+ * counter (`req-1`, `req-2`, …). Two replicas both start at `req-1`, every
+ * restart resets, and nothing connects the edge's line to egress's — which
+ * matters more here than in most systems, because the two planes ship stdout to
+ * *different* Log Analytics workspaces. Correlating a `/_api/fetch` call today
+ * means matching on app id, origin and timestamp by eye.
+ *
+ * **`requestIdHeader` is always `false`, in both modes.** Fastify 5 already
+ * defaults it that way, so this is a drift guard rather than a fix — but it is
+ * a load-bearing one: the obvious next edit is `requestIdHeader: "x-request-id"`,
+ * and on the edge that would take an id straight from untrusted app code. The
+ * inbound path lives inside `genReqId` instead, so there is exactly one code
+ * path and {@link parseRequestId} is on it.
+ *
+ * @param trustInbound Adopt a valid {@link REQUEST_ID_HEADER} from the caller.
+ *   **Egress only.** Never on the edge, the portal or the dev gateway: every
+ *   request they answer originates from app code, and honouring an app-supplied
+ *   id would let it collide ids deliberately to poison a search, or forge
+ *   correlation between unrelated requests. Same reasoning as ADR-0037
+ *   decision 7 for `traceparent`, and for the same reason — unauthenticated
+ *   metadata cannot carry authority.
+ */
+export function requestIdOptions({ trustInbound = false }: { trustInbound?: boolean } = {}): {
+  requestIdHeader: false;
+  genReqId: (req: RequestIdSource) => string;
+} {
+  return {
+    requestIdHeader: false,
+    genReqId: (req) =>
+      (trustInbound ? parseRequestId(req.headers[REQUEST_ID_HEADER]) : null) ?? randomUUID(),
   };
 }

@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { HealthStatusSchema, OUTCOME_HEADER } from "@azx-pbc/shared";
-import { loggerOption } from "@azx-pbc/shared/logging";
+import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
 import type { InstructionBurnStore } from "./burn.js";
@@ -34,7 +34,17 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
   // here is query-borne today — `POST /proxy` carries the attested instruction
   // in a header and the target in another — so this is for the next route, not
   // a live leak.
-  const app = Fastify({ logger: loggerOption(undefined, { prefix: "EGRESS" }) });
+  const app = Fastify({
+    logger: loggerOption(undefined, { prefix: "EGRESS" }),
+    // The ONE service that adopts its caller's request id. Its only caller is
+    // the edge, over a hop whose authority comes from the signed instruction
+    // (ADR-0013) — and adopting it is what joins the two halves of a
+    // fetch-proxy call, which today land in two different Log Analytics
+    // workspaces with nothing in common. The id is still shape-validated:
+    // egress has `external: true` ingress, so a forged header must not be
+    // able to put a newline or 8KB into a retained log field.
+    ...requestIdOptions({ trustInbound: true }),
+  });
 
   // The proxy re-streams arbitrary request bodies; never buffer/parse them.
   // `removeAllContentTypeParsers` is essential: Fastify's BUILT-IN

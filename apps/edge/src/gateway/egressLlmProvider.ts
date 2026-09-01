@@ -65,6 +65,7 @@ export class EgressLlmProvider implements LlmProvider {
       // Readable.from(string): that is an object-mode char stream → empty body.
       body: this.#vendor.buildBody(req),
       signal: opts.signal,
+      correlationId: opts.correlationId,
     });
 
     if (res.status !== 200) {

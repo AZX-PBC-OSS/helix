@@ -72,6 +72,7 @@ const opts = {
   userEmail: null,
   userKind: "user" as const,
   requestId: "req-1",
+  correlationId: "req-corr-test",
   env: "prod" as const,
 };
 

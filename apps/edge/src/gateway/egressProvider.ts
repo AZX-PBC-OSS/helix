@@ -1,6 +1,7 @@
 import type { Readable } from "node:stream";
 import { Agent, request } from "undici";
 import { INSTRUCTION_HEADER, METHOD_HEADER, OUTCOME_HEADER, TARGET_HEADER } from "@azx-pbc/shared";
+import { REQUEST_ID_HEADER } from "@azx-pbc/shared/logging";
 
 /**
  * The edge → egress seam (fetch-proxy design §7), shaped like the `LlmProvider`:
@@ -26,6 +27,17 @@ export interface EgressRequest {
    */
   body: Readable | Buffer | string | null;
   signal: AbortSignal;
+  /**
+   * The edge's own request id, so both halves of this call land on one value in
+   * two different Log Analytics workspaces.
+   *
+   * **Not** the instruction's `jti`/`requestId`, which is a single-use replay
+   * nonce and must stay one (ADR-0037 decision 7 says so in as many words).
+   * Two ids, two jobs; keeping them visibly separate — including in the field
+   * name — is what stops a future "make the id survive a retry" from becoming a
+   * replay bug.
+   */
+  correlationId: string;
 }
 
 export interface EgressResponse {
@@ -60,11 +72,15 @@ export class HttpEgressProvider implements EgressProvider {
     try {
       const res = await request(`${this.#base}/proxy`, {
         method: "POST",
+        // Platform headers go AFTER the spread: `req.headers` is the
+        // safelisted set forwarded from the app's own request, and an app that
+        // sends `x-helix-request-id` must not be able to shadow ours.
         headers: {
           ...req.headers,
           [INSTRUCTION_HEADER]: req.instruction,
           [TARGET_HEADER]: req.target,
           [METHOD_HEADER]: req.method,
+          [REQUEST_ID_HEADER]: req.correlationId,
         },
         body: req.body ?? undefined,
         signal: req.signal,

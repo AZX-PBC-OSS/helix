@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { HealthStatusSchema } from "@azx-pbc/shared";
-import { loggerOption } from "@azx-pbc/shared/logging";
+import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { PrismaClient } from "./db/client.js";
 import type { BlobStore } from "./blob/store.js";
 import type { SecretStore } from "@azx-pbc/secret-store";
@@ -72,6 +72,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
     // same shape of credential the edge does — same stdout, same Log Analytics
     // retention. Redact it (issue #20 — `@azx-pbc/shared/logging`).
     logger: loggerOption(undefined, { prefix: "PORTAL" }),
+    ...requestIdOptions(),
   });
 
   app.register(errorsPlugin);

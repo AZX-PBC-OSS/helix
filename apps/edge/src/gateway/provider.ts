@@ -28,7 +28,21 @@ export interface LlmStreamOpts {
   signal: AbortSignal;
   appId: string;
   userOid: string;
+  /**
+   * The attested instruction's `jti` — a single-use replay nonce, burned by
+   * egress before it resolves a secret (ADR-0013). **Not a correlation id**;
+   * see {@link LlmStreamOpts.correlationId}, which is, and which is deliberately
+   * a second field rather than a second use of this one.
+   */
   requestId: string;
+  /**
+   * The edge's log correlation id (`reqId`), forwarded to egress so both halves
+   * of the call are greppable as one. Distinct from `requestId` on purpose:
+   * ADR-0037 decision 7 says the instruction's replay defence "must not be
+   * refactored into" a tracing concern, and collapsing these two would make an
+   * operational id load-bearing for a security control.
+   */
+  correlationId: string;
   /**
    * Partition tier (dev-mode design §6). The routing (egress) provider stamps it
    * into the attested instruction so egress env-scopes secret resolution; the

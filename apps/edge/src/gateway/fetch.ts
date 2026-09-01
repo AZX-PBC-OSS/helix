@@ -295,6 +295,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         headers: safeRequestHeaders(req.headers),
         body: requestBody,
         signal: abort.signal,
+        correlationId: String(req.id),
       });
 
       await record(toOutcome(res.outcome), { statusCode: res.status });
