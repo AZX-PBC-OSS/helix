@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { buildApp } from "./app.js";
+import { startTelemetry } from "@azx-pbc/telemetry";
+import { buildApp, SERVICE_NAME } from "./app.js";
 
 /**
  * Dev convenience: load `apps/portal/.env.local` (gitignored) into process.env
@@ -35,10 +36,21 @@ function loadDotEnvLocal(): void {
 
 loadDotEnvLocal();
 
+// Inert unless an OTLP endpoint is configured (ADR-0037). Mirrors the edge:
+// after the dotenv load, before the app is built.
+const telemetry = startTelemetry(SERVICE_NAME);
+
 const port = Number(process.env.PORTAL_PORT ?? process.env.PORT ?? 3001);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const app = buildApp();
+
+// `buildApp()`'s plugins already close Prisma (`plugins/prisma.ts`) and the
+// directory client (`plugins/directory.ts`) in this hook; this adds the
+// telemetry flush to it (ADR-0037 decision 5).
+app.addHook("onClose", async () => {
+  await telemetry.shutdown();
+});
 
 try {
   await app.listen({ port, host });
