@@ -40,6 +40,23 @@ const POOL_CONNECT_FIELD = {
   message: POOL_CONNECT_MESSAGE,
 };
 
+const URL_ATTR_MESSAGE =
+  "This is a span/metric attribute key that carries a WHOLE URL (ADR-0037 decision 6). Several platform URLs carry a live credential in the query string — the Appendix A handoff `token`, the OIDC `code`, and (uncoverable by any name list) the fetch-proxy target's own query, which may hold an app's API key or an Azure SAS `sig` — and a span attribute lands in the same 30-day-retained backend a log line does. Record `url.path` and `http.route` instead, and put anything URL-shaped through `redactUrl` (@azx-pbc/shared/logging) first. The list lives in FORBIDDEN_URL_ATTRS (@azx-pbc/shared/telemetry).";
+const URL_ATTR_LITERAL = {
+  selector: "Literal[value=/^(url\\.full|http\\.url|http\\.target|url\\.query)$/]",
+  message: URL_ATTR_MESSAGE,
+};
+
+const PROPAGATION_EXTRACT_MESSAGE =
+  "`propagation.extract` continues a trace from an inbound `traceparent`. The edge and the portal must never do that (ADR-0037 decision 7): every request into the edge originates from untrusted app code, so honouring it would let an app graft itself onto platform traces, forge parentage between unrelated requests, and mint unbounded trace ids at no cost. Propagation runs inward only, on the edge → egress hop — egress is the one service that extracts, and it is not covered by this rule. `injectOnly` (@azx-pbc/telemetry) already makes such a call inert; this is the half that says so at the call site.";
+const PROPAGATION_EXTRACT = {
+  selector: 'CallExpression[callee.property.name="extract"][callee.object.name="propagation"]',
+  message: PROPAGATION_EXTRACT_MESSAGE,
+};
+
+const OTEL_SDK_MESSAGE =
+  "The OpenTelemetry SDK is confined to @azx-pbc/telemetry and the three `server.ts` files (ADR-0037 decisions 3 and 4). From `buildApp()` inward, import `@opentelemetry/api` — the facade is dependency-free and no-ops when unregistered, which is what keeps `buildApp()` pure and lets tests inject requests without an exporter. An SDK import here also puts require-time monkey-patching machinery in the process that terminates untrusted traffic.";
+
 export default defineConfig([
   globalIgnores([
     "**/dist/**",
@@ -105,6 +122,8 @@ export default defineConfig([
         RLS_TEMPLATE,
         POOL_CONNECT_IDENT,
         POOL_CONNECT_FIELD,
+        URL_ATTR_LITERAL,
+        PROPAGATION_EXTRACT,
       ],
     },
   },
@@ -119,7 +138,79 @@ export default defineConfig([
       "apps/edge/src/auth/sessions.ts",
     ],
     rules: {
-      "no-restricted-syntax": ["error", POOL_CONNECT_IDENT, POOL_CONNECT_FIELD],
+      "no-restricted-syntax": [
+        "error",
+        POOL_CONNECT_IDENT,
+        POOL_CONNECT_FIELD,
+        URL_ATTR_LITERAL,
+        PROPAGATION_EXTRACT,
+      ],
+    },
+  },
+  {
+    // ADR-0037 decisions 6 and 7 on the other two planes. Separate blocks
+    // because the selector sets differ: egress is the ONE service allowed to
+    // extract trace context (its caller is the edge, over a hop whose authority
+    // comes from the signed instruction), so PROPAGATION_EXTRACT does not apply
+    // to it. Tests are exempt — the adversarial suites name these very keys in
+    // order to assert they are absent.
+    files: ["apps/portal/src/**/*.ts"],
+    ignores: ["apps/portal/src/**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": ["error", URL_ATTR_LITERAL, PROPAGATION_EXTRACT],
+    },
+  },
+  {
+    files: ["apps/egress/src/**/*.ts"],
+    ignores: ["apps/egress/src/**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": ["error", URL_ATTR_LITERAL],
+    },
+  },
+  {
+    // The SDK boundary (ADR-0037 decision 3), which the ADR's own Consequences
+    // section admits has no automated gate and ADR-0003's challenge outcome
+    // asks for. `server.ts` is where the impure boot work already lives, so it
+    // is the one file per service allowed to reach for the SDK; tests are
+    // exempt because the in-memory recording provider is how decision 10's
+    // adversarial cases are written at all, and a devDependency ships nowhere.
+    //
+    // Subpaths of @azx-pbc/telemetry are deliberately NOT banned: the pino
+    // trace-correlation mixin is one, and its module graph is the API facade
+    // only. The root specifier is what pulls the SDK.
+    files: ["apps/*/src/**/*.ts"],
+    ignores: ["apps/*/src/server.ts", "apps/*/src/**/*.test.ts", "apps/*/src/test/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          // `paths`, not `patterns`, for the two @azx-pbc specifiers: a
+          // `patterns.group` entry is gitignore-style and prefix-matches, so
+          // "@azx-pbc/telemetry" there would also ban every subpath — including
+          // the trace-correlation mixin, whose whole design is that it is
+          // importable from `buildApp()` because its module graph is the API
+          // facade only. `paths` matches the exact specifier and nothing else.
+          paths: [
+            { name: "@azx-pbc/telemetry", message: OTEL_SDK_MESSAGE },
+            {
+              name: "@azx-pbc/telemetry/testing",
+              message:
+                "The recording telemetry provider is test-only — it registers real in-memory SDK providers as the OTel globals. Importing it from shipped code would start recording spans into a buffer nothing drains.",
+            },
+          ],
+          patterns: [
+            {
+              group: [
+                "@opentelemetry/sdk-*",
+                "@opentelemetry/exporter-*",
+                "@opentelemetry/core",
+                "@opentelemetry/resources",
+              ],
+              message: OTEL_SDK_MESSAGE,
+            },
+          ],
+        },
+      ],
     },
   },
 ]);
