@@ -259,8 +259,28 @@ export function loggerOption(
        * name, which is also the honest limit — `{ ctx: { url } }` is still
        * unprotected, and no serializer can reach it. A lint rule covers the
        * common shapes; the residual is documented rather than papered over.
+       *
+       * **Total by construction — a non-string must never throw.** pino does
+       * not wrap serializers (the `req` serializer below says the same thing
+       * about `req.socket`), so a throw here escapes the log call, and in a
+       * Fastify handler that is a 500. Since the whole point of this serializer
+       * is that people are *told* to put URLs under `url`, the value it gets
+       * will not always be a string — a `URL` instance is the obvious thing to
+       * reach for, and the lint rule matching `.url`/`.href` member expressions
+       * would not flag it. The most common place to log a URL is a `catch`, so
+       * a throwing serializer turns a handled error into an unhandled one, in
+       * the process that terminates untrusted traffic.
+       *
+       * `URL` gets redacted like a string; anything else passes through
+       * untouched rather than being coerced — a number or an object under this
+       * key is a caller mistake, and quietly stringifying it would hide that
+       * while pretending the value had been redacted.
        */
-      url: redactUrl,
+      url: (value: unknown): unknown => {
+        if (typeof value === "string") return redactUrl(value);
+        if (value instanceof URL) return redactUrl(value.href);
+        return value;
+      },
       req(req: LoggableRequest) {
         const version = req.headers["accept-version"];
         return {

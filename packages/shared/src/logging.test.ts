@@ -390,3 +390,37 @@ describe("requestIdOptions", () => {
     expect(REQUEST_HEADER_SAFELIST).not.toContain(REQUEST_ID_HEADER);
   });
 });
+
+describe("the url serializer is total", () => {
+  /** Pull the serializer out of the option object the services actually use. */
+  function urlSerializer(): (value: unknown) => unknown {
+    const option = loggerOption("production", { env: {} });
+    if (option === false) throw new Error("unreachable");
+    return option.serializers.url;
+  }
+
+  it("redacts a string and a URL instance identically", () => {
+    const raw = "/_auth/complete?token=SECRET&rd=/";
+    expect(urlSerializer()(raw)).toBe("/_auth/complete?token=REDACTED&rd=/");
+    expect(urlSerializer()(new URL(`https://h.test${raw}`))).toBe(
+      "https://h.test/_auth/complete?token=REDACTED&rd=/",
+    );
+  });
+
+  it("never throws, whatever it is handed", () => {
+    // pino does not wrap serializers, so a throw here becomes a 500 on the
+    // plane that terminates untrusted traffic.
+    for (const value of [42, null, undefined, true, {}, [], Symbol("s"), () => {}]) {
+      expect(() => urlSerializer()(value)).not.toThrow();
+    }
+  });
+
+  it("passes a non-URL value through unchanged rather than coercing it", () => {
+    // Coercing would hide a caller mistake while implying the value had been
+    // redacted.
+    const obj = { nested: "shape" };
+    expect(urlSerializer()(42)).toBe(42);
+    expect(urlSerializer()(null)).toBe(null);
+    expect(urlSerializer()(obj)).toBe(obj);
+  });
+});

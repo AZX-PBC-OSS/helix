@@ -138,6 +138,60 @@ describe("the url serializer", () => {
     expect(text).toContain("/_auth/complete?token=REDACTED&rd=/");
   });
 
+  it("redacts a URL instance without throwing out of the log call", async () => {
+    // pino does not wrap serializers, so a throw here is a 500 — and a `URL` is
+    // the obvious thing to reach for when told to "log it under `url`". The
+    // lint rule, which matches `.url`/`.href` member expressions, would not
+    // flag it either.
+    const { lines, stream } = captureLogs();
+    const option = loggerOption("production", { env: {} });
+    if (option === false) throw new Error("unreachable");
+    const app = Fastify({ logger: { ...option, stream } });
+
+    const key = "sk-PLANTED-IN-A-URL-OBJECT";
+    app.get("/boom", async (req, reply) => {
+      req.log.warn({ url: new URL(`https://up.example/v1?api_key=${key}`) }, "upstream call");
+      return reply.send("ok");
+    });
+
+    const res = await app.inject({ method: "GET", url: "/boom" });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+
+    const text = JSON.stringify(lines);
+    expect(text).not.toContain(key);
+    // Redacted, not merely survived — a pass-through would leak the key.
+    expect(text).toContain("api_key=REDACTED");
+  });
+
+  it("passes a non-URL value through instead of throwing", async () => {
+    // A number or an object under this key is a caller mistake. It must not
+    // take the request down, and it must not be quietly stringified as though
+    // it had been redacted.
+    const { lines, stream } = captureLogs();
+    const option = loggerOption("production", { env: {} });
+    if (option === false) throw new Error("unreachable");
+    const app = Fastify({ logger: { ...option, stream } });
+
+    app.get("/odd", async (req, reply) => {
+      req.log.warn({ url: 42 }, "a number");
+      req.log.warn({ url: null }, "a null");
+      req.log.warn({ url: { nested: "shape" } }, "an object");
+      req.log.warn({ url: undefined }, "undefined");
+      return reply.send("ok");
+    });
+
+    const res = await app.inject({ method: "GET", url: "/odd" });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+
+    const values = lines
+      .filter((l): l is { url: unknown } => typeof l === "object" && l !== null && "url" in l)
+      .map((l) => l.url);
+    expect(values).toContain(42);
+    expect(values).toContain(null);
+  });
+
   it("covers the fetch-proxy target, which no parameter list could", async () => {
     const { lines, stream } = captureLogs();
     const option = loggerOption("production", { env: {} });
