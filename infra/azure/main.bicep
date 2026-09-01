@@ -147,6 +147,10 @@ param deployDevGateway bool = false
 @description('Deploy the Azure Firewall that enforces the egress-only network zone (ADR-0001) — the PRIMARY SSRF/egress control per ADR-0005. Default true (secure by default). Setting false SKIPS the firewall + its forced-tunnel routes to save ~$900/mo: the apps subnet then gets default internet egress, so a compromised edge can reach the internet and the only remaining outbound control is the egress app-level denylist (defense-in-depth). Data services stay private (private endpoints) either way. Only disable for dev / smoketest / trusted single-tenant installs — NOT production or untrusted-app hosting. See README "Optional: the egress firewall".')
 param deployFirewall bool = true
 
+@description('Log verbosity for all four services (pino levels: fatal|error|warn|info|debug|trace|silent). Sets LOG_LEVEL, which every service reads unless its own <PREFIX>_LOG_LEVEL overrides it — so this one line raises the whole platform, and a per-service override raises just the noisy one. Applied per revision: changing it rolls a new ACA revision rather than taking effect on the running one. NOTE debug/trace on the edge is a data-exposure decision as much as a volume one — this stdout is retained in Log Analytics for 30 days.')
+@allowed(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+param logLevel string = 'info'
+
 @description('Deploy the certbot wildcard-TLS automation job (apps/certbot, ADR-0029): a scheduled Container Apps Job that issues/renews the *.<appsDomain> Let\'s Encrypt cert via DNS-01 and binds the edge wildcard custom domain. Requires acmeEmail. Only takes effect with deployApps=true.')
 param deployCertbot bool = true
 
@@ -409,6 +413,7 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'LOG_LEVEL', value: logLevel }
       { name: 'EGRESS_PORT', value: '8081' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
@@ -446,6 +451,7 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'LOG_LEVEL', value: logLevel }
       { name: 'PORT', value: '8080' }
       { name: 'HOST', value: '0.0.0.0' }
       // The port the edge LISTENS on (PORT, above) is not the port the world
@@ -518,6 +524,7 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'LOG_LEVEL', value: logLevel }
       { name: 'PORTAL_PORT', value: '3001' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'BLOB_CONTAINER', value: blobContainerName }
@@ -595,6 +602,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'LOG_LEVEL', value: logLevel }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'EDGE_DEV_GATEWAY_PORT', value: '8082' }
       // The per-plane opt-in; the dev-gateway entrypoint exits unless this is true.

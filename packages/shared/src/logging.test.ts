@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { loggerOption, redactUrl } from "./logging.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { loggerOption, redactUrl, resolveLogLevel } from "./logging.js";
 
 describe("redactUrl — platform-minted credentials", () => {
   it("redacts the Appendix A handoff token", () => {
@@ -224,5 +224,88 @@ describe("loggerOption", () => {
     expect(
       serialize({ method: "GET", url: "/", headers: { "accept-version": ["1.x", "2.x"] } }).version,
     ).toBeUndefined();
+  });
+});
+
+describe("resolveLogLevel", () => {
+  /** Swallow the warn line so a passing test doesn't print to the suite's stderr. */
+  function captureStderr(): { text: () => string } {
+    const spy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    return { text: () => spy.mock.calls.map((c) => String(c[0])).join("") };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defaults to info when nothing is set", () => {
+    expect(resolveLogLevel("EDGE", {})).toBe("info");
+  });
+
+  it("prefers the service-prefixed var over the shared one", () => {
+    // The point of the two-step fallback: raise the edge without raising the
+    // portal and egress with it.
+    expect(resolveLogLevel("EDGE", { EDGE_LOG_LEVEL: "debug", LOG_LEVEL: "warn" })).toBe("debug");
+    expect(resolveLogLevel("PORTAL", { EDGE_LOG_LEVEL: "debug", LOG_LEVEL: "warn" })).toBe("warn");
+  });
+
+  it("falls through to the shared var", () => {
+    expect(resolveLogLevel("EGRESS", { LOG_LEVEL: "trace" })).toBe("trace");
+  });
+
+  it("tolerates case and surrounding whitespace", () => {
+    expect(resolveLogLevel("EDGE", { LOG_LEVEL: "  DEBUG " })).toBe("debug");
+  });
+
+  it("accepts silent", () => {
+    expect(resolveLogLevel("EDGE", { LOG_LEVEL: "silent" })).toBe("silent");
+  });
+
+  it("treats an empty value as unset rather than invalid", () => {
+    const stderr = captureStderr();
+    expect(resolveLogLevel("EDGE", { LOG_LEVEL: "" })).toBe("info");
+    expect(stderr.text()).toBe("");
+  });
+
+  it("falls back LOUDLY on an unknown level, and does not throw", () => {
+    // The boot-safety property. pino throws synchronously on an unknown level
+    // and `Fastify({ logger })` runs at module scope, so throwing here would
+    // mean a typo in an env var stops the service booting.
+    const stderr = captureStderr();
+    expect(() => resolveLogLevel("EDGE", { LOG_LEVEL: "infoo" })).not.toThrow();
+    expect(resolveLogLevel("EDGE", { LOG_LEVEL: "infoo" })).toBe("info");
+    expect(stderr.text()).toContain('"event":"log.level_invalid"');
+    expect(stderr.text()).toContain('"value":"infoo"');
+  });
+});
+
+describe("loggerOption levels", () => {
+  it("stays quiet under test whatever the level says", () => {
+    // The test-quiet branch wins: a LOG_LEVEL in the ambient env must not turn
+    // the suite's logging back on.
+    expect(loggerOption("test", { env: { LOG_LEVEL: "debug" } })).toBe(false);
+  });
+
+  it("carries the resolved level to pino", () => {
+    const option = loggerOption("production", { prefix: "EDGE", env: { EDGE_LOG_LEVEL: "warn" } });
+    expect(option).not.toBe(false);
+    if (option === false) throw new Error("unreachable");
+    expect(option.level).toBe("warn");
+  });
+
+  it("omits `mixin` entirely when none is supplied, rather than passing undefined", () => {
+    const option = loggerOption("production", { env: {} });
+    if (option === false) throw new Error("unreachable");
+    expect("mixin" in option).toBe(false);
+  });
+
+  it("forwards a supplied mixin by reference and never calls it", () => {
+    // `loggerOption` must stay free of any OpenTelemetry import — it hands the
+    // function to pino and has no opinion about what it returns.
+    const mixin = vi.fn(() => ({ trace_id: "abc" }));
+    const option = loggerOption("production", { env: {}, mixin });
+    if (option === false) throw new Error("unreachable");
+    expect(option.mixin).toBe(mixin);
+    expect(mixin).not.toHaveBeenCalled();
   });
 });

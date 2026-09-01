@@ -148,7 +148,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     // Quiet during tests; structured JSON logs otherwise, with the handoff
     // token / OIDC code / fetch-proxy target redacted out of the logged URL
     // (issue #20 — `@azx-pbc/shared/logging`).
-    logger: loggerOption(),
+    logger: loggerOption(undefined, { prefix: "EDGE" }),
     // How many proxy hops to trust for `req.ip` (the rate-limit / login-throttle
     // key). Default false = the socket peer. Behind Container Apps' Envoy ingress
     // that peer is the ingress, so per-client limits need EDGE_TRUST_PROXY set to

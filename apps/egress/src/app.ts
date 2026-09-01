@@ -34,7 +34,7 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
   // here is query-borne today — `POST /proxy` carries the attested instruction
   // in a header and the target in another — so this is for the next route, not
   // a live leak.
-  const app = Fastify({ logger: loggerOption() });
+  const app = Fastify({ logger: loggerOption(undefined, { prefix: "EGRESS" }) });
 
   // The proxy re-streams arbitrary request bodies; never buffer/parse them.
   // `removeAllContentTypeParsers` is essential: Fastify's BUILT-IN

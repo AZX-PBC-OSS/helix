@@ -97,3 +97,23 @@ describe("the edge request serializer", () => {
     expect(JSON.stringify(lines)).not.toContain(secret);
   });
 });
+
+describe("the edge log level", () => {
+  it("reaches pino, so a raised level actually changes what is emitted", async () => {
+    // The shared suite proves the level is *parsed*. This proves it is
+    // *applied* — `loggerOption` returns a pino option object, and a level that
+    // never reaches the constructor would be an entirely silent no-op.
+    const { lines, stream } = captureLogs();
+    const option = loggerOption("production", { prefix: "EDGE", env: { EDGE_LOG_LEVEL: "warn" } });
+    if (option === false) throw new Error("loggerOption('production') must carry the serializer");
+    const app = Fastify({ logger: { ...option, stream } });
+
+    app.log.info({ marker: "dropped" }, "below the level");
+    app.log.warn({ marker: "kept" }, "at the level");
+    await app.close();
+
+    const text = JSON.stringify(lines);
+    expect(text).not.toContain("dropped");
+    expect(text).toContain("kept");
+  });
+});

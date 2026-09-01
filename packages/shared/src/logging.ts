@@ -148,6 +148,86 @@ interface LoggableRequest {
   socket?: { remotePort?: number | undefined };
 }
 
+/** pino's levels, plus `silent`. */
+export const LOG_LEVELS = ["fatal", "error", "warn", "info", "debug", "trace", "silent"] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+/** Today's behaviour — pino's own default. Setting nothing changes nothing. */
+const DEFAULT_LOG_LEVEL: LogLevel = "info";
+
+function isLogLevel(value: string): value is LogLevel {
+  return (LOG_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * Resolve the log level: `<PREFIX>_LOG_LEVEL`, else `LOG_LEVEL`, else `info`.
+ *
+ * The two-step fallback is the shape this repo already uses for ports
+ * (`EDGE_PORT ?? PORT`) and DSNs (`EDGE_DATABASE_URL ?? DATABASE_URL`), so it
+ * needs no new convention — and it buys the thing you actually want at 3am: one
+ * line in `main.bicep` turns the whole platform to `debug`, and one prefixed
+ * override turns up only the edge, which is the noisy one you would otherwise
+ * never dare raise.
+ *
+ * **An unrecognised value falls back and says so; it never throws.** pino
+ * validates the level in its constructor and throws synchronously, and
+ * `Fastify({ logger })` runs at module scope in every `server.ts` — so a typo'd
+ * `LOG_LEVEL=infoo` would mean the service does not boot. That is the wrong
+ * failure mode for a verbosity knob, and the same call the telemetry config
+ * already makes ("a typo in an env var must not be able to stop the edge").
+ *
+ * The precedent that looks like it cuts the other way — `EGRESS_ALLOW_PRIVATE`
+ * and the bundle limits both boot-fail on a bad value — is distinguishable:
+ * those are security seams where a wrong value silently weakens a control. The
+ * worst case here is "logs are at info, which is what they were yesterday", and
+ * the fallback announces itself.
+ *
+ * Exported so the fallback is assertable without constructing pino.
+ */
+export function resolveLogLevel(
+  prefix: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): LogLevel {
+  const raw = (prefix ? env[`${prefix}_LOG_LEVEL`] : undefined) ?? env.LOG_LEVEL;
+  if (raw === undefined) return DEFAULT_LOG_LEVEL;
+
+  const value = raw.trim().toLowerCase();
+  if (value === "") return DEFAULT_LOG_LEVEL;
+  if (isLogLevel(value)) return value;
+
+  // Written straight to stderr, in the same shape `@azx-pbc/telemetry`'s config
+  // resolution uses, and for the same reason: this runs while Fastify's logger
+  // is being constructed, so there is no logger to report through. One precedent for
+  // "config resolution has no logger", not two.
+  process.stderr.write(
+    `${JSON.stringify({
+      level: "warn",
+      event: "log.level_invalid",
+      value: raw,
+      fallback: DEFAULT_LOG_LEVEL,
+    })}\n`,
+  );
+  return DEFAULT_LOG_LEVEL;
+}
+
+/** Per-service knobs for {@link loggerOption}. */
+export interface LoggerOptions {
+  /**
+   * Service env prefix — makes `<PREFIX>_LOG_LEVEL` win over `LOG_LEVEL`.
+   * Omitted (the dev gateway aside) only by callers that want the shared knob.
+   */
+  prefix?: "EDGE" | "PORTAL" | "EGRESS";
+  /** Injected for tests; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Extra fields on every log line. Forwarded to pino verbatim and never called
+   * here, so this module stays free of any OpenTelemetry import — the trace
+   * correlation mixin lives in `@azx-pbc/telemetry/correlation` and is passed
+   * in by each service's `app.ts`.
+   */
+  mixin?: () => Record<string, unknown>;
+}
+
 /**
  * Fastify's `logger` option, uniform across helix-edge, helix-portal, helix-egress
  * and the dev gateway: quiet in tests, otherwise the stock request serializer
@@ -159,9 +239,14 @@ interface LoggableRequest {
  * test-quiet branch is assertable — otherwise nothing catches a service that
  * silently reverts to `logger: true`.
  */
-export function loggerOption(env: string | undefined = process.env.NODE_ENV) {
+export function loggerOption(
+  env: string | undefined = process.env.NODE_ENV,
+  options: LoggerOptions = {},
+) {
   if (env === "test") return false as const;
   return {
+    level: resolveLogLevel(options.prefix, options.env),
+    ...(options.mixin ? { mixin: options.mixin } : {}),
     serializers: {
       req(req: LoggableRequest) {
         const version = req.headers["accept-version"];

@@ -71,7 +71,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
     // origin (routes/spa.ts serves it as a deep link), so the portal logs the
     // same shape of credential the edge does — same stdout, same Log Analytics
     // retention. Redact it (issue #20 — `@azx-pbc/shared/logging`).
-    logger: loggerOption(),
+    logger: loggerOption(undefined, { prefix: "PORTAL" }),
   });
 
   app.register(errorsPlugin);
