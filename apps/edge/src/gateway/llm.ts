@@ -399,11 +399,12 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
    * The span wraps the whole handler, including the pre-admission refusals, so
    * a 401/403/429 is visible as a short span rather than as nothing at all.
    *
-   * {@link withRootSpan} and not {@link withStreamedRootSpan}: this handler
-   * drives its own `for await` over the upstream events, so its promise does
-   * not settle until the last byte is written. The span therefore already ends
-   * at stream close, which is what ADR-0037 decision 5 requires — the
-   * fetch-proxy is the path that needs the other helper.
+   * {@link withRootSpan} ends the span when the handler settles, which for
+   * both streaming shapes in this codebase is after the last byte: this one
+   * drives its own `for await` over the upstream events, and the fetch-proxy's
+   * `return reply.send(stream)` resolves through Fastify's thenable `Reply`
+   * only once the response finishes. One helper covers both — see the note on
+   * `withRootSpan` for the measurement, and `spans.test.ts` for the guard.
    */
   return (req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> =>
     withRootSpan(

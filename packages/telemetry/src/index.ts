@@ -121,10 +121,17 @@ function formatDiagArg(arg: unknown): string {
  * body** (ADR-0037 decision 5) — telemetry that can take the platform down is
  * worse than no telemetry.
  *
- * Note for the decision-6 follow-up: this is the one log path in the repo that
- * does NOT go through `packages/shared/src/logging.ts`'s redacting serializer.
- * Nothing carrying request data reaches it today (there are no spans yet), but
- * the redaction work has to cover it too.
+ * **The one log path in the repo that does NOT go through
+ * `packages/shared/src/logging.ts`'s redacting serializer.** The original
+ * argument for that being safe — "there are no spans yet" — expired the moment
+ * spans landed, so here is the one that replaces it: OTel's diagnostics report
+ * exporter failures, endpoint URLs and batch counts, never span payloads, so no
+ * request data reaches this sink even now that ~14 spans exist.
+ *
+ * That is a property of the SDK rather than of our code, which is the weak part
+ * of it. If a future OTel version logs rejected span content on an export
+ * failure, this is where it would surface unredacted — so a diag line that ever
+ * starts carrying attributes needs `redactUrl` here, not a note somewhere else.
  */
 function diagSink(serviceName: string): DiagLogger {
   const emit = (level: "warn", args: unknown[]): void => {

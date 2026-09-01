@@ -62,6 +62,23 @@ terminates untrusted traffic (decision 4).
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained
 metrics backend.
 
+### Two things to know before writing an alert on these
+
+- **`gate_denied{reason="no_session"}` has a permanent baseline.** It fires on
+  every first, anonymous navigation to a non-public app — the ordinary
+  pre-login redirect — so it tracks normal traffic, not anomalies. It is a
+  useful *ratio* against total requests and a useless absolute threshold. An
+  "unexpected denials" signal needs the navigation-redirect case split out
+  first.
+- **`helix.app.slug` is unbounded on spans.** The root span opens before the app
+  is resolved, so a request to a well-formed but nonexistent subdomain still
+  produces one, and an unauthenticated scanner can mint arbitrary distinct slug
+  values into a retained backend. `SLUG_PATTERN` bounds the shape, not the
+  cardinality. This is consistent with ADR-0037 deferring tail sampling
+  (decision 11), and it is a span attribute rather than a metric label, so it
+  costs retention rather than time series — but it is the first thing to revisit
+  if span volume becomes a cost question.
+
 ## The rules that are easy to break
 
 - **No `url.full`, `http.url`, `http.target` or `url.query`, ever.** Several

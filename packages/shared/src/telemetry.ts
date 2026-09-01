@@ -85,7 +85,9 @@ export const SPAN_AUTH_CALLBACK = "helix.auth.oidc.callback";
 export const SPAN_AUTH_COMPLETE = "helix.auth.handoff.complete";
 export const SPAN_DEPLOY_BUNDLE = "helix.deploy.bundle";
 export const SPAN_DEPLOY_VALIDATE = "helix.deploy.validate";
+export const SPAN_DEPLOY_ALLOCATE = "helix.deploy.allocate";
 export const SPAN_DEPLOY_UPLOAD = "helix.deploy.upload";
+export const SPAN_DEPLOY_RECORD = "helix.deploy.record";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —

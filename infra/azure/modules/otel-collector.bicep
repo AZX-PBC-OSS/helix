@@ -126,6 +126,6 @@ module collector 'containerapp.bicep' = {
   }
 }
 
-@description('The OTLP/HTTP base endpoint services set as OTEL_EXPORTER_OTLP_ENDPOINT. Internal ingress terminates TLS, but http:// over the VNet is what the app-to-app convention here already uses (see EDGE_EGRESS_URL).')
+@description('The OTLP/HTTP base endpoint services set as OTEL_EXPORTER_OTLP_ENDPOINT. https:// — ACA internal ingress terminates TLS, and this matches the app-to-app convention already used for EDGE_EGRESS_URL. Do not "simplify" it to http://: internal ingress does not serve plaintext, and an export failure here is silent.')
 output otlpEndpoint string = 'https://${collector.outputs.fqdn}'
 output collectorFqdn string = collector.outputs.fqdn

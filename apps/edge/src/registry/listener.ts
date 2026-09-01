@@ -1,5 +1,5 @@
 import pg from "pg";
-import type { ObservableCallback } from "@opentelemetry/api";
+import type { ObservableCallback, ObservableGauge } from "@opentelemetry/api";
 import { ATTR_OUTCOME } from "@azx-pbc/shared/telemetry";
 import { createEdgePool, DEFAULT_STATEMENT_TIMEOUT_MS } from "../db/pool.js";
 import { instruments } from "../telemetry.js";
@@ -76,8 +76,20 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
   #notifyTimer: NodeJS.Timeout | null = null;
   #backoffMs = BACKOFF_INITIAL_MS;
   #stopped = false;
-  /** The attached gauge callback, so `stop()` can detach exactly it. */
+  /**
+   * The attached gauge callback and the instrument it went on, so `stop()` can
+   * detach exactly it from exactly that instrument.
+   *
+   * Both, not just the callback: `instruments()` is memoized on meter-provider
+   * identity, so resolving the gauge again at `stop()` would return a
+   * *different* `ObservableGauge` if a provider had been swapped in between —
+   * and `removeCallback` on the wrong instrument silently leaves the original
+   * attached. Not reachable in production (one provider, and `server.ts` stops
+   * the registry before shutting telemetry down), but it is the kind of latent
+   * hazard that only shows up in a test doing something reasonable.
+   */
   #staleObserver: ObservableCallback | null = null;
+  #staleGauge: ObservableGauge | null = null;
   /** The load `stop()` waits out, so a teardown can't race a live query. */
   #inFlightLoad: Promise<void> | null = null;
   /** Whether the "crossed the /health error line" escalation has already fired. */
@@ -245,7 +257,8 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
       const { staleForMs } = this.#projection.freshness();
       if (staleForMs !== null) result.observe(staleForMs);
     };
-    instruments().registryStaleForMs.addCallback(this.#staleObserver);
+    this.#staleGauge = instruments().registryStaleForMs;
+    this.#staleGauge.addCallback(this.#staleObserver);
   }
 
   /**
@@ -282,8 +295,9 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
       // Detach before the pool goes: a callback left attached would keep this
       // instance (and its projection) alive on the meter provider, and in tests
       // it would observe a torn-down registry on the next collection.
-      instruments().registryStaleForMs.removeCallback(this.#staleObserver);
+      this.#staleGauge?.removeCallback(this.#staleObserver);
       this.#staleObserver = null;
+      this.#staleGauge = null;
     }
     for (const timer of [this.#reconcileTimer, this.#reconnectTimer, this.#notifyTimer]) {
       if (timer) clearTimeout(timer);

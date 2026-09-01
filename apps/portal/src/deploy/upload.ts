@@ -18,7 +18,9 @@ import {
   ATTR_APP_ID,
   ATTR_DEPLOY_FILE_COUNT,
   ATTR_DEPLOY_WARNING_COUNT,
+  SPAN_DEPLOY_ALLOCATE,
   SPAN_DEPLOY_BUNDLE,
+  SPAN_DEPLOY_RECORD,
   SPAN_DEPLOY_UPLOAD,
   SPAN_DEPLOY_VALIDATE,
 } from "@azx-pbc/shared/telemetry";
@@ -84,14 +86,19 @@ export async function deployBundle(opts: {
   );
 
   /**
-   * The deploy path's three phases as child spans (ADR-0037 decision 4).
+   * The deploy path's phases as child spans (ADR-0037 decision 4).
    *
    * This is the control plane, so the interesting signal is *shape* rather than
-   * rate: a deploy that got slow is almost always slow in exactly one of
-   * validate / upload / record, and the whole point of instrumenting a
-   * multi-second operation is being able to say which. No metric here — the
-   * portal's throughput is low enough that a counter would answer nothing a
-   * span search does not.
+   * rate: a deploy that got slow is almost always slow in exactly one phase,
+   * and the whole point of instrumenting a multi-second operation is being able
+   * to say which. So **every** phase gets one — validate, allocate, upload and
+   * record. An untraced phase is invisible in the flame graph but still counted
+   * in the parent's duration, which reads as unexplained overhead and is worse
+   * than a span nobody looks at.
+   *
+   * No metric here — the portal's throughput is low enough that a counter would
+   * answer nothing a span search does not, which is why decision 8's table
+   * gives it none.
    */
   async function runDeploy(parentSpan: Span): Promise<DeployResult> {
     const { entries, warnings } = await inChildSpan(SPAN_DEPLOY_VALIDATE, () =>
@@ -102,24 +109,28 @@ export async function deployBundle(opts: {
       [ATTR_DEPLOY_WARNING_COUNT]: warnings.length,
     });
 
-    const version = await allocateVersion(prisma, appId, deployReport);
+    const version = await inChildSpan(SPAN_DEPLOY_ALLOCATE, () =>
+      allocateVersion(prisma, appId, deployReport),
+    );
     await inChildSpan(SPAN_DEPLOY_UPLOAD, () =>
       uploadEntries(zipPath, blobStore, version.blobPrefix),
     );
 
-    await prisma.auditEvent.create({
-      data: {
-        appId,
-        actor,
-        action: "version.upload",
-        metadata: {
-          number: version.number,
-          fileCount: entries.length,
-          warningCount: warnings.length,
-          ...(deployReport ? { salvageOutcome: deployReport.outcome } : {}),
+    await inChildSpan(SPAN_DEPLOY_RECORD, () =>
+      prisma.auditEvent.create({
+        data: {
+          appId,
+          actor,
+          action: "version.upload",
+          metadata: {
+            number: version.number,
+            fileCount: entries.length,
+            warningCount: warnings.length,
+            ...(deployReport ? { salvageOutcome: deployReport.outcome } : {}),
+          },
         },
-      },
-    });
+      }),
+    );
 
     return { version, warnings };
   }

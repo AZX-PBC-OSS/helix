@@ -340,6 +340,17 @@ original text stays legible.
    rather than bending it: the two now provably differ, so nobody can reconcile
    them.
 
+7. **Decision 7's justification for egress extraction needed the code to catch
+   up with it.** The decision permits extraction there *because* "the caller is
+   the edge, over a hop whose authority already comes from the signed attested
+   instruction" — but the first implementation extracted at the top of the
+   handler, before the instruction was verified, so anything able to reach
+   `/proxy` chose the parent trace even when the instruction was forged or
+   replayed. `proxyHandler` now authenticates first and parents from the caller
+   only on success, taking a fresh root otherwise. Refusals are still traced;
+   they are simply not joined to a trace the sender picked. The decision's text
+   is unchanged because it was right — the code was not.
+
 One thing the ADR got exactly right and is worth repeating: the consequence that
 decision 6 "is a rule someone must keep applying at each new span" and is "the
 most likely way the decision decays." The countermeasures are mechanical —
