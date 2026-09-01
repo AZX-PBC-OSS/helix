@@ -9,7 +9,7 @@ import {
 } from "@opentelemetry/api";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { resourceFromAttributes } from "@opentelemetry/resources";
+import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources";
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BatchSpanProcessor, NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
@@ -46,7 +46,14 @@ export interface TelemetryHandle {
 
 /** Options exist for the same reason `loggerOption` takes an `env`: testability. */
 export interface StartTelemetryOptions {
-  /** Injectable for tests — the suite itself runs under `NODE_ENV=test`. */
+  /**
+   * Injectable for tests — the suite itself runs under `NODE_ENV=test`.
+   *
+   * **Reaches endpoint resolution only.** The OTLP exporters read the rest of
+   * their configuration (`OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT`,
+   * `_COMPRESSION`, the certificate vars) from the ambient `process.env`
+   * themselves, and that is deliberate — see `config.ts`'s `signalUrl`.
+   */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -164,7 +171,17 @@ export function startTelemetry(
   let meterProvider: MeterProvider | undefined;
 
   try {
-    const resource = resourceFromAttributes({ [ATTR_SERVICE_NAME]: config.serviceName });
+    // A supplied resource REPLACES the SDK default in OTel JS 2.x — both
+    // providers are `options.resource ?? defaultResource()` — so merging is not
+    // tidiness: without it every span and metric the platform ever exports
+    // carries `service.name` and no `telemetry.sdk.*` at all, which backends key
+    // language grouping, SDK-version filtering and ingestion shims off. Nothing
+    // breaks loudly; it is permanently degraded metadata. `resourceFromAttributes`
+    // wins on conflict, so `service.name` still comes from SERVICE_NAME and the
+    // no-drift guarantee above holds.
+    const resource = defaultResource().merge(
+      resourceFromAttributes({ [ATTR_SERVICE_NAME]: config.serviceName }),
+    );
 
     // BatchSpanProcessor, never Simple: bounded queue, asynchronous flush. A
     // synchronous exporter in the edge would put a network round-trip on the
@@ -196,18 +213,36 @@ export function startTelemetry(
     metrics.setGlobalMeterProvider(meterProvider);
   } catch (err) {
     diag.warn("telemetry failed to start; continuing without it", err);
-    // Undo the half-built pipeline. The metrics exporter is constructed AFTER
-    // `tracerProvider.register()`, so the common shape of this failure is a
-    // globally-registered tracer provider with no owner: `current` is never
-    // assigned, so `shutdownTelemetry()` could not reach it, and its processor
-    // and exporter would outlive the failure. Disabling the API globals first
-    // means any span the service takes later no-ops rather than queueing into a
-    // provider that is on its way down.
-    trace.disable();
-    context.disable();
-    propagation.disable();
-    metrics.disable();
+    // Undo the half-built pipeline — but ONLY the half that got installed. There
+    // are two throw shapes and they leave different amounts standing:
+    //
+    //  - the trace exporter's constructor throws while the `spanProcessors`
+    //    array is being evaluated, i.e. before `register()`, so no global exists;
+    //  - the metrics exporter's throws after it, leaving a globally-registered
+    //    tracer provider with no owner — `current` is never assigned, so
+    //    `shutdownTelemetry()` could not reach it and its processor and exporter
+    //    would outlive the failure.
+    //
+    // Disabling unconditionally would, in the first shape, reset a context
+    // manager, propagator and meter provider that some *other* component
+    // installed and still owns. Nothing else in the repo registers OTel globals
+    // today; the day something does, that bug reads as "context propagation
+    // randomly stopped working" and points at the wrong file entirely. Each
+    // provider variable is assigned only once its own construction succeeded, so
+    // it doubles as the record of what was registered.
+    //
+    // Disabling before the async shutdown means any span the service takes later
+    // no-ops rather than queueing into a provider that is on its way down.
+    if (tracerProvider) {
+      trace.disable();
+      context.disable();
+      propagation.disable();
+    }
+    if (meterProvider) metrics.disable();
     void Promise.allSettled([tracerProvider?.shutdown(), meterProvider?.shutdown()]);
+    // Last, so the warn above still lands: a failed start must not leave the
+    // stderr diag sink installed for the life of the process.
+    diag.disable();
     return INERT;
   }
 
@@ -228,6 +263,18 @@ export function startTelemetry(
           diag.warn("telemetry shutdown failed", r.reason);
         }
       }
+      // Deregister the API globals too, mirroring the failure path above.
+      // `registerGlobal` defaults to `allowOverride = false` and `trace`,
+      // `context`, `propagation` and `metrics` all call it that way, so leaving
+      // them installed makes a *restart* silently inert: a second
+      // `startTelemetry` sees `current === null`, proceeds, builds a second
+      // provider pair, and `register()` refuses it. The handle it returns says
+      // `enabled: true` while every span goes to the dead first provider — the
+      // exact drift {@link TelemetryHandle} exists to prevent.
+      trace.disable();
+      context.disable();
+      propagation.disable();
+      metrics.disable();
       current = null;
     },
   };

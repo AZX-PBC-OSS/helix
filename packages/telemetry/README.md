@@ -60,7 +60,16 @@ Otherwise it reads the standard OTLP env:
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | Signal-specific override, used **verbatim**.       |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Likewise.                                          |
 
-Both signals must resolve, or telemetry stays off — there is no half-on state.
+Both signals must resolve, or telemetry stays off — there is no half-on state. A
+half-configured endpoint is the one case that also writes a `otel.config` warn
+line to stderr: refusing to run half-on is the decision, refusing silently was a
+bug. Configured nowhere at all stays quiet, because that is the default state.
+
+The spec's per-signal switches `OTEL_TRACES_EXPORTER` and `OTEL_METRICS_EXPORTER`
+are **deliberately not honoured** — the both-or-nothing rule above is the same
+decision seen from the other side, and supporting `none` for one signal would
+reintroduce exactly the half-on state it exists to prevent. `OTEL_SDK_DISABLED`
+is the supported off switch, and it covers both.
 
 ## Failure is never a request's failure
 
@@ -76,9 +85,11 @@ top-level exception and the service does not boot. A misconfigured endpoint —
 a `warn`, and anything half-built is unregistered and shut down on the way out.
 A typo in one env var must not be able to stop the edge.
 
-Each `server.ts` closes the app on `SIGTERM`/`SIGINT`, which is what makes the
-`onClose` flush reachable: Node's default signal handler exits immediately, so
-without it the last batch — and every other teardown in that hook — is dropped.
+The `onClose` hook is where the final flush belongs, but **no service installs a
+`SIGTERM`/`SIGINT` handler yet**, so on a real stop Node's default handler exits
+immediately and the hook does not run. Graceful drain is tracked in
+[`TODO.md`](../../TODO.md); until it lands, treat the last batch before a deploy
+as lost.
 
 ## What is deliberately not here yet
 

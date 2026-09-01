@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveTelemetryConfig } from "./config.js";
 
 /**
@@ -13,6 +13,16 @@ const LIVE = {
 } satisfies NodeJS.ProcessEnv;
 
 describe("resolveTelemetryConfig", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Swallow the warn line so a passing test doesn't print to the suite's stderr. */
+  function captureStderr(): { lines: () => string } {
+    const spy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    return { lines: () => spy.mock.calls.map((c) => String(c[0])).join("") };
+  }
+
   it("is null under NODE_ENV=test even with an endpoint configured", () => {
     expect(resolveTelemetryConfig("azx-edge", { ...LIVE, NODE_ENV: "test" })).toBeNull();
   });
@@ -81,12 +91,40 @@ describe("resolveTelemetryConfig", () => {
   });
 
   it("is null when only one signal resolves — there is no half-on state", () => {
+    const stderr = captureStderr();
     expect(
       resolveTelemetryConfig("azx-egress", {
         NODE_ENV: "production",
         OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://a/v1/traces",
       }),
     ).toBeNull();
+    // ...and it SAYS so. Returning null here happens before `startTelemetry`
+    // installs a diag logger, so without this line an operator who set one
+    // endpoint gets a service that boots, reports `/health: ok`, and never
+    // exports — with no diagnostic anywhere to tell them why.
+    expect(stderr.lines()).toContain('"event":"otel.config"');
+    expect(stderr.lines()).toContain("only the traces endpoint resolved");
+  });
+
+  it("names the signal that DID resolve, so the missing one is obvious", () => {
+    const stderr = captureStderr();
+    expect(
+      resolveTelemetryConfig("azx-edge", {
+        NODE_ENV: "production",
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://b/v1/metrics",
+      }),
+    ).toBeNull();
+    expect(stderr.lines()).toContain("only the metrics endpoint resolved");
+  });
+
+  it("stays silent when telemetry is simply unconfigured", () => {
+    // The default state of the platform. A warn line here would fire on every
+    // boot of every service and train everyone to ignore the channel.
+    const stderr = captureStderr();
+    expect(resolveTelemetryConfig("azx-portal", { NODE_ENV: "production" })).toBeNull();
+    expect(resolveTelemetryConfig("azx-portal", { ...LIVE, NODE_ENV: "test" })).toBeNull();
+    expect(resolveTelemetryConfig("azx-portal", { ...LIVE, OTEL_SDK_DISABLED: "1" })).toBeNull();
+    expect(stderr.lines()).toBe("");
   });
 
   it("carries the service name through unchanged", () => {

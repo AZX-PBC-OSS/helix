@@ -79,8 +79,10 @@ describe("startTelemetry", () => {
  */
 describe("startTelemetry, misconfigured", () => {
   afterEach(() => {
-    // The failure path installs a diag logger before it knows construction will
-    // fail; drop it so later suites don't inherit a stderr sink.
+    // Belt and braces. `startTelemetry`'s failure path now drops the diag sink
+    // and unregisters whatever it installed itself — the assertions below check
+    // that — but a *new* failure shape that forgets to must not leak a stderr
+    // sink or a stale global into every suite that runs after this file.
     diag.disable();
     trace.disable();
     context.disable();
@@ -95,6 +97,19 @@ describe("startTelemetry, misconfigured", () => {
     return { lines: () => spy.mock.calls.map((c) => String(c[0])).join("") };
   }
 
+  /**
+   * The diag sink is installed before construction is known to fail, so a
+   * failure that leaves it up owns the process's stderr for the life of the
+   * process. The API has no "is a logger installed" query, so probe it through
+   * the capture already in place: `diag.warn` reaches the sink, and therefore
+   * writes, only while one is registered.
+   */
+  function diagSinkIsUninstalled(stderr: { lines: () => string }): boolean {
+    const before = stderr.lines().length;
+    diag.warn("post-failure probe");
+    return stderr.lines().length === before;
+  }
+
   it("degrades to inert instead of throwing on an unparseable endpoint", () => {
     // `new URL("//collector:4318/v1/traces")` throws with no base, and
     // OTLPTraceExporter validates its URL in the constructor. Not exotic: it is
@@ -106,6 +121,7 @@ describe("startTelemetry, misconfigured", () => {
     expect(handle.enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
     expect(stderr.lines()).toContain("telemetry failed to start");
+    expect(diagSinkIsUninstalled(stderr)).toBe(true);
   });
 
   it("unregisters the tracer provider when only the metrics endpoint is bad", async () => {
@@ -123,6 +139,7 @@ describe("startTelemetry, misconfigured", () => {
     expect(handle.enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
     expect(stderr.lines()).toContain("telemetry failed to start");
+    expect(diagSinkIsUninstalled(stderr)).toBe(true);
     // And nothing was memoized, so the next start is not short-circuited.
     await expect(shutdownTelemetry()).resolves.toBeUndefined();
   });

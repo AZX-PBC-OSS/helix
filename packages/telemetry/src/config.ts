@@ -68,6 +68,33 @@ function signalUrl(
 }
 
 /**
+ * Say out loud that a half-configured endpoint turned telemetry off.
+ *
+ * Refusing to run half-on is the decision; refusing *silently* was the bug. An
+ * operator who sets `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and nothing else — the
+ * commonest OTLP setting after the base endpoint, and the one most vendor
+ * quickstarts hand you — otherwise gets a service that boots normally, reports
+ * `/health: ok`, and never exports a span, with no diagnostic anywhere: this
+ * returns `null` and `startTelemetry` returns its inert handle *before* it
+ * installs the diag logger, so there is not even a sink to log through.
+ *
+ * Written straight to stderr in the same shape as `diagSink`'s line, for the
+ * same reason: config resolution runs before `buildApp()`, so there is no
+ * Fastify logger to borrow. Only the asymmetric case is noisy — telemetry
+ * configured nowhere at all is the platform's default state and stays quiet.
+ */
+function warnAsymmetric(serviceName: string, resolved: "traces" | "metrics"): void {
+  process.stderr.write(
+    `${JSON.stringify({
+      level: "warn",
+      service: serviceName,
+      event: "otel.config",
+      msg: `only the ${resolved} endpoint resolved; telemetry stays off (both signals or neither)`,
+    })}\n`,
+  );
+}
+
+/**
  * Resolve the telemetry config for a service, or `null` when telemetry must
  * stay off. `null` for any of:
  *
@@ -80,7 +107,8 @@ function signalUrl(
  * A partial endpoint config (traces but not metrics, or vice versa) is honoured
  * per signal only when the *other* signal also resolves; a base endpoint covers
  * both. Anything less than both signals resolving is treated as unconfigured,
- * so there is no half-on state to reason about at 3am.
+ * so there is no half-on state to reason about at 3am — but the *asymmetric*
+ * case says so on stderr first; see {@link warnAsymmetric}.
  */
 export function resolveTelemetryConfig(
   serviceName: string,
@@ -92,7 +120,11 @@ export function resolveTelemetryConfig(
   const base = env.OTEL_EXPORTER_OTLP_ENDPOINT;
   const tracesUrl = signalUrl(base, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, "/v1/traces");
   const metricsUrl = signalUrl(base, env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT, "/v1/metrics");
-  if (!tracesUrl || !metricsUrl) return null;
+  if (!tracesUrl || !metricsUrl) {
+    // One signal resolved and the other did not: that is a typo, not a default.
+    if (tracesUrl || metricsUrl) warnAsymmetric(serviceName, tracesUrl ? "traces" : "metrics");
+    return null;
+  }
 
   return { serviceName, tracesUrl, metricsUrl };
 }

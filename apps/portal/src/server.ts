@@ -45,8 +45,9 @@ const host = process.env.HOST ?? "0.0.0.0";
 
 const app = buildApp();
 
-// The portal's only teardown is the telemetry flush today; the hook exists so
-// the final batch lands on a graceful stop (ADR-0037 decision 5).
+// `buildApp()`'s plugins already close Prisma (`plugins/prisma.ts`) and the
+// directory client (`plugins/directory.ts`) in this hook; this adds the
+// telemetry flush to it (ADR-0037 decision 5).
 app.addHook("onClose", async () => {
   await telemetry.shutdown();
 });
