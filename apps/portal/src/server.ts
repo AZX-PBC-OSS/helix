@@ -54,6 +54,19 @@ app.addHook("onClose", async () => {
 
 try {
   await app.listen({ port, host });
+  // The portal used to boot in silence, so the first question in any incident —
+  // "did the new revision come up, and with what config?" — had no answer for
+  // it at all. Its `assertDeploymentConfig()` and `assertBundleLimits()` gates
+  // succeed invisibly; this is where that becomes visible.
+  app.log.info(
+    {
+      event: "boot.serving",
+      service: SERVICE_NAME,
+      port,
+      telemetry: telemetry.enabled,
+    },
+    `${SERVICE_NAME} serving`,
+  );
 } catch (err) {
   app.log.error(err);
   process.exit(1);

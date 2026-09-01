@@ -145,8 +145,16 @@ app.addHook("onClose", async () => {
 try {
   await app.listen({ port: config.port, host: config.host });
   app.log.info(
-    { port: config.port, secretStore: custody, allowPrivate: config.allowPrivate },
-    "helix-egress serving",
+    {
+      event: "boot.serving",
+      service: SERVICE_NAME,
+      port: config.port,
+      secretStore: custody,
+      allowPrivate: config.allowPrivate,
+      allowInsecureConnection: config.allowInsecureConnection,
+      telemetry: telemetry.enabled,
+    },
+    `${SERVICE_NAME} serving`,
   );
   if (config.allowPrivate) {
     app.log.warn("EGRESS_ALLOW_PRIVATE is set — private/loopback targets are NOT blocked");

@@ -126,9 +126,11 @@ const sessions = config.auth
   : null;
 const oidc = config.auth
   ? new OpenIdConnectClient(config.auth, `${publicOrigin(config, "auth")}/callback`, {
-      // The OIDC client's logger seam is narrower (a bare message on info); the
-      // late-bound ref underneath is the registry's, so adapt rather than widen.
-      info: (msg) => logRef.current.info({}, msg),
+      // Straight through to the late-bound registry ref. `info` used to take a
+      // bare message and interpolate the issuer into it; it takes an object now
+      // so discovery carries an `event` a rule can key on, like every other
+      // boot-path signal.
+      info: (obj, msg) => logRef.current.info({ ...obj }, msg),
       warn: (obj, msg) => logRef.current.warn({ ...obj }, msg),
     })
   : null;
@@ -274,11 +276,20 @@ try {
   await app.listen({ port, host });
   app.log.info(
     {
+      event: "boot.serving",
+      service: SERVICE_NAME,
+      port,
       baseDomain: config.baseDomain,
       allowUnauthenticated: config.allowUnauthenticated,
+      allowPublicApps: config.allowPublicApps,
+      allowPasswordApps: config.allowPasswordApps,
       tls: https !== null,
+      // Free, and it answers "why do I have no traces" without an exec into
+      // the container — the commonest first question about a telemetry
+      // pipeline that is off by default (ADR-0037 decision 5).
+      telemetry: telemetry.enabled,
     },
-    "helix-edge serving",
+    `${SERVICE_NAME} serving`,
   );
   if (config.allowUnauthenticated) {
     app.log.warn("EDGE_DEV_ALLOW_UNAUTHENTICATED is set — app content is served without sessions");

@@ -174,7 +174,10 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
       await store().destroy(material);
     } catch (err) {
       const ref = material.startsWith("kv:") ? material : undefined;
-      app.log.error({ err, ...ctx, ref }, "secret destroy failed — vault entry may be stranded");
+      app.log.error(
+        { event: "secret.destroy_failed", err, ...ctx, ref },
+        "secret destroy failed — vault entry may be stranded",
+      );
       await audit(ctx.appId, ctx.actor, "secret.destroy_failed", {
         scope: ctx.scope,
         env: ctx.env,
@@ -182,7 +185,10 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         reason: ctx.reason,
         ...(ref ? { ref } : {}),
       }).catch((auditErr: unknown) => {
-        app.log.error({ err: auditErr }, "could not record secret.destroy_failed");
+        app.log.error(
+          { event: "secret.audit_write_failed", err: auditErr },
+          "could not record secret.destroy_failed",
+        );
       });
     }
   };

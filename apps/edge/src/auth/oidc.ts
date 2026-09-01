@@ -152,7 +152,7 @@ export function summarizeExchangeError(err: unknown): object {
 }
 
 export interface OidcLogger {
-  info(msg: string): void;
+  info(obj: object, msg: string): void;
   warn(obj: object, msg: string): void;
 }
 
@@ -221,9 +221,15 @@ export class OpenIdConnectClient implements OidcClient {
         this.#clientAuth.clientAuth,
         this.#auth.allowInsecureIdp ? { execute: [oidc.allowInsecureRequests] } : undefined,
       );
-      this.#log.info(`OIDC discovery complete for ${this.#auth.issuerUrl}`);
+      this.#log.info(
+        { event: "auth.oidc_discovery_ready", issuer: this.#auth.issuerUrl },
+        "OIDC discovery complete",
+      );
     } catch (err) {
-      this.#log.warn({ err }, `OIDC discovery failed for ${this.#auth.issuerUrl}; retrying in 5s`);
+      this.#log.warn(
+        { event: "auth.oidc_discovery_failed", err, issuer: this.#auth.issuerUrl },
+        "OIDC discovery failed; retrying in 5s",
+      );
       if (!this.#stopped) {
         this.#retry = setTimeout(() => void this.#discoverOnce(), 5000);
         this.#retry.unref();
@@ -315,7 +321,10 @@ export class OpenIdConnectClient implements OidcClient {
       }
       // Everything else — bad state, bad nonce, bad code, IdP down — is one
       // opaque failure to the caller; detail goes to logs only.
-      this.#log.warn(summarizeExchangeError(err), "OIDC code exchange failed");
+      this.#log.warn(
+        { event: "auth.code_exchange_failed", ...summarizeExchangeError(err) },
+        "OIDC code exchange failed",
+      );
       return { kind: "invalid" };
     }
   }
