@@ -144,6 +144,9 @@ param deployApps bool = false
 @description('Opt-in dev-gateway (dev-mode design §3): the cross-origin dev surface on dev-api.<appsDomain>, run as helix_dev. Off by default — enabling it needs the helix_dev role + password (README step 4) and the pre-deploy riders in docs/features/dev-mode.md. Only takes effect together with deployApps=true.')
 param deployDevGateway bool = false
 
+@description('Deploy the OpenTelemetry collector + Application Insights (ADR-0037). Off leaves every service exporting nowhere — `startTelemetry` returns its inert handle — which is the platform\'s documented default state and exactly how it ran before this existed.')
+param deployTelemetry bool = true
+
 @description('Deploy the Azure Firewall that enforces the egress-only network zone (ADR-0001) — the PRIMARY SSRF/egress control per ADR-0005. Default true (secure by default). Setting false SKIPS the firewall + its forced-tunnel routes to save ~$900/mo: the apps subnet then gets default internet egress, so a compromised edge can reach the internet and the only remaining outbound control is the egress app-level denylist (defense-in-depth). Data services stay private (private endpoints) either way. Only disable for dev / smoketest / trusted single-tenant installs — NOT production or untrusted-app hosting. See README "Optional: the egress firewall".')
 param deployFirewall bool = true
 
@@ -363,6 +366,63 @@ module egressEnv 'modules/aca-environment.bicep' = {
   ]
 }
 
+// ---------------------------------------------------------------------------
+// Telemetry destination (ADR-0037)
+// ---------------------------------------------------------------------------
+// Services speak OTLP and only OTLP; the Azure knowledge lives here. The ACA
+// managed OpenTelemetry agent was the ADR's first choice and was verified and
+// rejected (Amendment 7): its App Insights destination cannot store metrics,
+// and it only speaks gRPC while the services export OTLP/HTTP. So: a
+// self-hosted collector per environment, both exporting to one App Insights.
+//
+// TRACES ONLY for now. App Insights cannot accept OTel metrics at all, and the
+// metrics destination is an open decision (TODO.md) — the collector accepts and
+// discards them meanwhile, which keeps `helix.registry.stale_for_ms` emitted
+// but unstored. The staleness alert stays blocked on that decision.
+
+// Workspace-based, attached to the workspace the apps environment already ships
+// stdout to: one place to correlate a trace with the log lines around it, and
+// no second retention setting to keep in sync.
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (deployTelemetry && deployApps) {
+  name: '${namePrefix}-appi'
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: appsEnv.outputs.logAnalyticsWorkspaceId
+    // The collector authenticates with the connection string, which requires
+    // local auth. Entra-only auth would need the collector to hold a credential
+    // and is a separate change (see the Microsoft Entra authentication note in
+    // the ACA OpenTelemetry docs).
+    DisableLocalAuth: false
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
+module appsCollector 'modules/otel-collector.bicep' = if (deployTelemetry && deployApps) {
+  name: 'otel-collector-apps'
+  params: {
+    location: location
+    name: '${namePrefix}-otel-apps'
+    environmentId: appsEnv.outputs.environmentId
+    userAssignedIdentityId: identity.outputs.edgeIdentityId
+    appInsightsConnectionString: appInsights!.properties.ConnectionString
+  }
+}
+
+module egressCollector 'modules/otel-collector.bicep' = if (deployTelemetry && deployApps) {
+  name: 'otel-collector-egress'
+  params: {
+    location: location
+    name: '${namePrefix}-otel-egress'
+    environmentId: egressEnv.outputs.environmentId
+    userAssignedIdentityId: identity.outputs.egressIdentityId
+    appInsightsConnectionString: appInsights!.properties.ConnectionString
+  }
+}
+
+
 // The egress environment is internal, and a workload-profiles environment does
 // not get an auto-created private DNS zone — without this, its apps' internal
 // FQDNs resolve nowhere in the VNet and the edge→egress hop dies at DNS. See
@@ -414,6 +474,13 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'LOG_LEVEL', value: logLevel }
+      // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
+      // leaves `startTelemetry` inert — the platform's documented default state,
+      // not a broken one.
+      {
+        name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+        value: deployTelemetry ? egressCollector!.outputs.otlpEndpoint : ''
+      }
       { name: 'EGRESS_PORT', value: '8081' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
@@ -452,6 +519,13 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'LOG_LEVEL', value: logLevel }
+      // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
+      // leaves `startTelemetry` inert — the platform's documented default state,
+      // not a broken one.
+      {
+        name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+        value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
+      }
       { name: 'PORT', value: '8080' }
       { name: 'HOST', value: '0.0.0.0' }
       // The port the edge LISTENS on (PORT, above) is not the port the world
@@ -525,6 +599,13 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'LOG_LEVEL', value: logLevel }
+      // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
+      // leaves `startTelemetry` inert — the platform's documented default state,
+      // not a broken one.
+      {
+        name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+        value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
+      }
       { name: 'PORTAL_PORT', value: '3001' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'BLOB_CONTAINER', value: blobContainerName }
@@ -603,6 +684,13 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
       { name: 'LOG_LEVEL', value: logLevel }
+      // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
+      // leaves `startTelemetry` inert — the platform's documented default state,
+      // not a broken one.
+      {
+        name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+        value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
+      }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'EDGE_DEV_GATEWAY_PORT', value: '8082' }
       // The per-plane opt-in; the dev-gateway entrypoint exits unless this is true.

@@ -434,6 +434,54 @@ this container, so it is no longer one of the riders (issue #13).
   resolve the DNS-01 TXT in the Azure zone publicly, so a cert issued before the
   NS records propagate will fail validation.
 
+## Telemetry (ADR-0037)
+
+Services speak **OTLP and nothing else**; the Azure knowledge lives entirely in
+this directory. `deployTelemetry` (default `true`, requires `deployApps`) adds:
+
+- a **workspace-based Application Insights** component attached to the apps
+  environment's existing Log Analytics workspace, so a trace and the log lines
+  around it are in one place with one retention setting;
+- an **`otel-collector` container app per managed environment** — internal
+  ingress, OTLP/HTTP on 4318 — both exporting to that one component, so a trace
+  crossing edge → egress still lands together.
+
+Each service gets `OTEL_EXPORTER_OTLP_ENDPOINT` pointing at its own
+environment's collector. With `deployTelemetry=false` the var is empty and
+`startTelemetry` returns its inert handle — the platform's documented default
+state, not a broken one.
+
+### Two things to know before you touch this
+
+**The managed OpenTelemetry agent was rejected, not overlooked.** ADR-0037
+decision 2 preferred it; it was verified on 2026-09-01 and fails on two counts
+(ADR Amendment 7): its Application Insights destination does not accept metrics,
+and it only speaks gRPC while the services export OTLP/HTTP. Re-proposing it
+means arguing with that.
+
+**Metrics are accepted and discarded, deliberately and temporarily.** App
+Insights cannot store OTel metrics at all, so the collector routes them to a
+`nop` exporter. The `nop` is not an omission — with no metrics pipeline the OTLP
+receiver would reject every POST and each service would log an export warning
+once per interval forever. Choosing the real destination is an open decision in
+`TODO.md`, and **it is what gates the registry-staleness alert.**
+
+### Verifying it, which you must do explicitly
+
+`snet-apps` is deny-by-default outbound and the **absence** of an allow rule
+_is_ the enforcement, so a missing FQDN drops every span with no error anywhere.
+`*.monitoring.azure.com` does **not** cover App Insights ingestion —
+`*.in.applicationinsights.azure.com` is a separate entry in `firewall.bicep`.
+
+**This fails as silence.** A green deploy proves nothing. Drive a request
+through a deployed app, then look for the trace in Application Insights →
+Transaction search. If it is absent, check the collector's own logs first
+(`az containerapp logs show -n <prefix>-otel-apps`) — the collector reports an
+export failure even when the services cannot.
+
+Same discipline as the Key Vault private-DNS gotcha below, and for the same
+reason: the failure is invisible in every place you would naturally look.
+
 ## Operator steps NOT done by this template
 
 - **Entra app registrations** — create the three registrations (or use the

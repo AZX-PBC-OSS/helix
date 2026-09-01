@@ -63,3 +63,5 @@ output environmentId string = managedEnvironment.id
 output environmentName string = managedEnvironment.name
 output defaultDomain string = managedEnvironment.properties.defaultDomain
 output staticIp string = managedEnvironment.properties.staticIp
+@description('Log Analytics workspace id — so a workspace-based Application Insights component can attach to the workspace this environment already ships stdout to, rather than provisioning a second one.')
+output logAnalyticsWorkspaceId string = logAnalytics.id

@@ -18,6 +18,15 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Azure CLI ────────────────────────────────────────────────
+# `infra/azure` is Bicep and is the source of truth for the deployed topology,
+# so a template change should be checkable here rather than only at apply time:
+# `az bicep build --file infra/azure/main.bicep` compiles and lints it, and
+# `az deployment group what-if` previews against a live subscription. Also the
+# tool the runbooks in docs/runbooks/ tell an operator to run.
+RUN curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # ── pnpm via corepack ────────────────────────────────────────

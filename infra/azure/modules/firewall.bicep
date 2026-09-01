@@ -47,6 +47,17 @@ param acaPlatformFqdns array = [
   #disable-next-line no-hardcoded-env-urls
   '*.blob.core.windows.net'
   '*.monitoring.azure.com'
+  // Application Insights ingestion, for the self-hosted OpenTelemetry collector
+  // (ADR-0037). `*.monitoring.azure.com` above does NOT cover this — the ADR
+  // says so explicitly, and it is the trap worth knowing: `snet-apps` is
+  // deny-by-default outbound and the ABSENCE of a rule is the enforcement, so a
+  // missing entry here drops every span with no error anywhere. It fails as
+  // silence. Verify a trace actually arrives; never infer it from a green deploy.
+  '*.in.applicationinsights.azure.com'
+  // Live Metrics. The azuremonitor exporter reaches for it; without the rule it
+  // retries and logs rather than failing, but the noise is not worth saving one
+  // allowlist line.
+  '*.livediagnostics.monitor.azure.com'
   #disable-next-line no-hardcoded-env-urls
   'login.microsoftonline.com'
   'packages.microsoft.com'
