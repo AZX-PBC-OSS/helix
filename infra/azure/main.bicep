@@ -222,40 +222,29 @@ module network 'modules/network.bicep' = {
 // default, so an operator who deliberately blanks this still gets it off.
 var trustProxyRaw = trim(edgeTrustProxy)
 
-// Every value the edge can use is an address -- a dotted IPv4/CIDR (exactly four
-// '.'-separated octets, the last carrying any '/prefix') or an IPv6 literal
-// (carries ':') -- or one of proxy-addr's presets / the two booleans. Anything
-// else is most likely a hop count left over from before fastify 5.12.1 deleted
-// that form (a stale HELIX_EDGE_TRUST_PROXY=1 still exported in a deploy
-// pipeline), and it would flow all the way to parseTrustProxy and throw at
-// container boot.
+// Reject a stale hop count (a HELIX_EDGE_TRUST_PROXY=1 still exported by a
+// deploy pipeline) in front of the operator: it would otherwise reach
+// parseTrustProxy and throw at container boot, which under activeRevisionsMode
+// 'Single' is a rollout that silently never takes. fail() sits in the untaken
+// branch of a ternary, which ARM evaluates lazily -- and only on an apply that
+// deploys the apps, since both EDGE_TRUST_PROXY sites are deployApps-conditional
+// (README step 1 gives the operator an `echo` for the infra-only phase).
 //
-// The octet count is load-bearing, not decoration: a laxer 'contains a dot' test
-// passes '10.0.2', and proxy-addr does NOT reject that -- ipaddr.js reads legacy
-// short-form IPv4, so it compiles to the single host 10.0.0.2, matches nothing
-// the ingress presents, and silently collapses req.ip to the ingress with
-// /health green. parseTrustProxy validates the same shape with zod so a
-// customer-run install (ADR-0028) that never applies this template still fails
-// closed; this is the copy that keeps the failure in front of the operator.
-// Under activeRevisionsMode 'Single' that surfaces as a rollout that silently
-// never takes, so reject it here instead: fail() sits in the untaken branch of a
-// ternary (which ARM evaluates lazily) and aborts `az deployment group ...` in
-// front of the operator -- but only on an apply that deploys the apps: the
-// guard rides the two EDGE_TRUST_PROXY sites, both inside deployApps-conditional
-// resources, so the infra-only what-if never evaluates it (README step 1 says so
-// explicitly). Presets are matched per comma-separated part, because fastify
-// splits the string and hands proxy-addr the list -- 'loopback,uniquelocal' is a
-// legal value and must not be mistaken for a hop count. The booleans stay whole
-// values: parseTrustProxy maps them to a real boolean, and proxy-addr would
-// choke on 'true' as an address. Add to the preset list if proxy-addr gains one.
-// The match is case-SENSITIVE on purpose: parseTrustProxy and proxy-addr both
-// are, so blessing 'LOOPBACK' here would only move the boot failure it causes.
+// Deliberately coarse: a usable value carries '.' (IPv4/CIDR) or ':' (IPv6), or
+// is a preset or a boolean. Catching a typo that passes that ('10.0.2', which
+// proxy-addr reads as the single host 10.0.0.2) is parseTrustProxy's zod check --
+// the copy a customer-run install (ADR-0028) gets anyway, and the only one that
+// can hold a precise grammar without drifting from proxy-addr's. Presets match
+// per comma-separated part, since fastify splits the list before proxy-addr sees
+// it; the booleans stay whole values, because parseTrustProxy maps them to a real
+// boolean and proxy-addr would choke on 'true' as an address. Case-SENSITIVE,
+// like both of those.
 var trustProxyPresets = ['loopback', 'linklocal', 'uniquelocal']
 var trustProxyParts = map(split(trustProxyRaw, ','), part => trim(part))
-var trustProxyIsAddress = contains(['true', 'false'], trustProxyRaw) || empty(filter(
-  trustProxyParts,
-  part => !(contains(trustProxyPresets, part) || contains(part, ':') || length(split(part, '.')) == 4)
-))
+var trustProxyIsAddress = contains(trustProxyRaw, '.') || contains(trustProxyRaw, ':') || contains(
+  ['true', 'false'],
+  trustProxyRaw
+) || empty(filter(trustProxyParts, part => !contains(trustProxyPresets, part)))
 var effectiveEdgeTrustProxy = trustProxyRaw == 'auto'
   ? network.outputs.appsSubnetPrefix
   : (empty(trustProxyRaw) || trustProxyIsAddress)

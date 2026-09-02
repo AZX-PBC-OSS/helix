@@ -117,18 +117,14 @@ export interface GatewayConfig {
    */
   statementTimeoutMs: number;
   /**
-   * Fastify `trustProxy` — how `req.ip` is derived behind a proxy, which is the
+   * Fastify `trustProxy` — how `req.ip` is derived behind a proxy, and so the
    * rate-limit / login-throttle key. Default `false` (the socket peer). Behind
-   * Container Apps' Envoy ingress that peer is the ingress, collapsing all
-   * clients into one bucket, so per-client limits need EDGE_TRUST_PROXY set to
-   * the **address** of the trusted ingress: a CIDR/IP list (the ACA
-   * infrastructure subnet — `infra/azure` passes `appsSubnetPrefix`), one of
-   * proxy-addr's presets (`loopback`/`linklocal`/`uniquelocal`), or
-   * `"true"`/`"false"`. A hop **count** is no longer accepted — see
-   * {@link parseTrustProxy}. A too-trusting value makes X-Forwarded-For
-   * spoofable, so it is opt-in — verify the value against the live ingress
-   * before relying on per-client limits (issue #13). The dev-gateway inherits
-   * this residual (dev-mode design §5.4).
+   * Container Apps' Envoy ingress that peer *is* the ingress, collapsing every
+   * client into one bucket, so per-client limits need EDGE_TRUST_PROXY to name
+   * the **address** of the trusted ingress — {@link parseTrustProxy} has the
+   * accepted forms. Too broad a value makes X-Forwarded-For spoofable, so it
+   * stays opt-in and wants verifying against the live ingress (issue #13); the
+   * dev-gateway inherits that residual (dev-mode design §5.4).
    */
   trustProxy: boolean | string;
   /**
@@ -493,56 +489,34 @@ const TRUST_PROXY_PRESETS = new Set(["loopback", "linklocal", "uniquelocal"]);
 const TrustProxyAddress = z.union([z.cidrv4(), z.cidrv6(), z.ipv4(), z.ipv6()]);
 
 /**
- * Parse EDGE_TRUST_PROXY into a Fastify `trustProxy` value. Unset/empty →
- * `false` (trust nothing — the socket peer is the client). `"true"`/`"false"` →
- * boolean; anything else must be a comma-separated list whose every part is an
- * IP, a CIDR, or one of proxy-addr's presets (`loopback`, `linklocal`,
- * `uniquelocal`) — validated here, then passed through verbatim for Fastify to
- * compile.
+ * Parse EDGE_TRUST_PROXY into a Fastify `trustProxy` value: unset/empty →
+ * `false` (trust nothing — the socket peer is the client), `"true"`/`"false"` →
+ * boolean, anything else a comma-separated list whose every part must be an IP,
+ * a CIDR, or a proxy-addr preset — validated here, then passed through verbatim
+ * for Fastify to compile.
  *
- * That validation is not belt-and-braces over what proxy-addr already checks:
- * it covers a gap proxy-addr cannot. proxy-addr parses through ipaddr.js, which
- * accepts **legacy short-form IPv4** — `"10.0.2"` is not rejected, it is read as
- * `10.0.0.2`. So one dropped octet in the ACA subnet compiles cleanly, matches
- * nothing the ingress presents, and silently collapses `req.ip` to the ingress
- * address with `/health` green throughout: the exact failure mode below, and
- * the one form of it a malformed value can still reach. A malformed value that
- * ipaddr.js *rejects* (`"foo.bar"`, `"10.0.2.0/33"`) already throws inside
- * `Fastify()`, so it was never the risk. Note the check is deliberately a
- * *second, stricter* grammar rather than a call into proxy-addr: asking the
- * real parser cannot detect a value it accepts and reinterprets.
- *
- * One deliberate narrowing: a zone-suffixed literal (`fe80::1%eth0`) is refused
- * though proxy-addr would take it. A zone id is host-local scope and means
- * nothing in a trusted-proxy allowlist.
- *
- * A bare integer is **rejected**, with one exception below. It used to mean
- * "trust this many proxy hops", but that form trusts by position and so
- * structurally ignores the address it is handed — which is precisely
- * GHSA-3m5p-2c4r-xxw2: anyone who reached the origin directly is "hop 0" and
- * gets believed, making X-Forwarded-* spoofable. Fastify 5.12.1 removed it,
- * compiling a number to a predicate that trusts nothing, and dropped `number`
- * from the option's type.
- *
- * The exception is `0`, which is read as `false`. It was never a trust
- * decision: Fastify branches on `if (trustProxy)`, so a numeric `0` was falsy
- * and behaved exactly like unset. Rejecting it would turn a safe no-op into a
- * boot failure for no security gain — see the note on the check itself.
- *
- * We throw rather than coerce because every symptom of the silent form is a
- * quiet one: `req.ip` collapses to the ingress address, and with it the anon
- * rate limiter (`gateway/ipRateLimiter.ts`), the shared-password login throttle
+ * Every rejection throws rather than coercing, because a wrong value is silent:
+ * `req.ip` collapses to the ingress address, taking the anon rate limiter
+ * (`gateway/ipRateLimiter.ts`), the shared-password login throttle
  * (`auth/routes/passwordLogin.ts`) and the collection audit hash
- * (`gateway/data-handler.ts`) all degrade to a single bucket per app while
- * still reading green — the failure mode issue #13 exists to prevent. Naming
- * the trusted address instead validates the immediate peer, which is strictly
- * stronger than the hop count it replaces, and yields the same `req.ip` behind
- * a single ingress hop.
+ * (`gateway/data-handler.ts`) down to one bucket per app with `/health` green —
+ * the failure mode issue #13 exists to prevent.
  *
- * `"auto"` is rejected too. It is the `infra/azure` `edgeTrustProxy` sentinel,
- * resolved to the ACA infrastructure subnet by the template — reaching the
- * container it means the deployment did not resolve it, and Fastify would fail
- * on it later and less legibly (proxy-addr rejects it as an IP address).
+ * The list is checked against a second, stricter grammar than proxy-addr's, and
+ * deliberately not by calling into it: the dangerous values are the ones
+ * proxy-addr *accepts and reinterprets*. It parses through ipaddr.js, which
+ * reads legacy short-form IPv4, so one dropped octet turns "10.0.2.0/23" into
+ * "10.0.2" → the single host 10.0.0.2, which compiles cleanly and matches
+ * nothing the ingress presents. What it rejects ("foo.bar", "10.0.2.0/33")
+ * already throws inside `Fastify()` and was never the risk. One narrowing of
+ * our own: a zone-suffixed literal ("fe80::1%eth0") is host-local scope and
+ * means nothing in a trusted-proxy allowlist.
+ *
+ * A bare integer is rejected. It meant "trust this many hops", which trusts by
+ * position and so ignores the address it is handed (GHSA-3m5p-2c4r-xxw2);
+ * fastify 5.12.1 removed the form. `0` is the exception, read as `false` — see
+ * the note on it below. `"auto"` is rejected as the `infra/azure` sentinel the
+ * template should have resolved before the container saw it.
  */
 function parseTrustProxy(raw: string | undefined): boolean | string {
   if (!raw) return false;
@@ -550,16 +524,10 @@ function parseTrustProxy(raw: string | undefined): boolean | string {
   if (v === "true") return true;
   if (v === "false") return false;
   if (/^\d+$/.test(v)) {
-    // `0` is the one count that never claimed any trust: Fastify's
-    // `buildRequest` branches on `if (trustProxy)`, so a numeric 0 was falsy and
-    // resolved `req.ip` from the socket peer, exactly like unset. Throwing on it
-    // would buy nothing and cost an outage — a deployment whose pipeline still
-    // exports it gets a container that will not boot, and under Container Apps'
-    // `activeRevisionsMode: 'Single'` that surfaces as a rollout which silently
-    // never takes. `infra/azure` catches a stale count before the container, but
-    // a customer-run install applies its own IaC (ADR-0028) and never sees that
-    // guard. So keep `0` meaning what it has always meant; only a count of 1 or
-    // more ever asserted trust, and that is the form worth refusing.
+    // `0` was never a trust decision: fastify branched on `if (trustProxy)`, so
+    // it was falsy and behaved exactly like unset. Refusing it would turn a safe
+    // no-op into a boot failure, and under Container Apps' 'Single' revision mode
+    // a boot failure is a rollout that silently never takes.
     if (Number(v) === 0) return false;
     throw new Error(
       `EDGE_TRUST_PROXY no longer accepts a proxy hop count (got ${JSON.stringify(v)}). ` +
