@@ -69,10 +69,14 @@ param portalExternal = false
 param allowPublicApps = false
 param allowPasswordApps = false
 
-// Fastify trustProxy for the edge — the ACA Envoy ingress hop count. "1" is the
-// single-hop value and is verified correct against a live ACA external ingress
-// (issue #13). Re-verify only if something else fronts the edge (CDN, WAF).
-param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', '1')
+// Fastify trustProxy for the edge — the ACA Envoy ingress ADDRESS, not a hop
+// count (fastify 5.12.1 removed the count form; GHSA-3m5p-2c4r-xxw2). 'auto'
+// resolves to the ACA infrastructure subnet the edge runs in, which is the peer
+// ingress connects from (issue #13); '' means trust nothing. Set this only if
+// something else fronts the edge (CDN, WAF), and verify req.ip against the live
+// deployment when you do. A stale HELIX_EDGE_TRUST_PROXY=1 left over from the
+// hop-count era is REJECTED by main.bicep — unset it rather than deploying it.
+param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', 'auto')
 
 // Secrets — sourced from environment variables, never committed. Generate the
 // symmetric ones with `openssl rand -base64 48`.

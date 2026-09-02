@@ -1,3 +1,4 @@
+import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { loadConfig, loadDevGatewayConfig, parseConnectionString, publicOrigin } from "./config.js";
 
@@ -127,6 +128,99 @@ describe("loadConfig", () => {
         EDGE_RECONCILE_INTERVAL_MS: "abc",
       }),
     ).toThrow(/EDGE_RECONCILE_INTERVAL_MS must be a positive number/);
+  });
+
+  // A hop count trusts by position, so it structurally ignores the peer address
+  // and lets anyone reaching the origin directly spoof X-Forwarded-*
+  // (GHSA-3m5p-2c4r-xxw2). Fastify 5.12.1 compiles a number to "trust nothing"
+  // silently, which would collapse req.ip — and with it the anon limiter, the
+  // login throttle and the audit hash — to the ingress address while everything
+  // still read green. Fail the boot instead, the same posture the reconcile
+  // interval takes above.
+  it("refuses a hop count for EDGE_TRUST_PROXY instead of silently trusting nothing", () => {
+    for (const hops of ["1", "2", " 3 "]) {
+      expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: hops })).toThrow(
+        /EDGE_TRUST_PROXY no longer accepts a proxy hop count/,
+      );
+    }
+    // The dev-gateway shares the parse, so it fails closed identically.
+    expect(() =>
+      loadDevGatewayConfig({
+        ...ENV,
+        EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+        EDGE_TRUST_PROXY: "1",
+      }),
+    ).toThrow(/EDGE_TRUST_PROXY no longer accepts a proxy hop count/);
+  });
+
+  // "auto" is the infra/azure sentinel for "the ACA infrastructure subnet", and
+  // main.bicep resolves it before the container sees it. If one ever arrives the
+  // deployment did not resolve it, which is worth saying plainly here rather than
+  // letting proxy-addr fail on it as a malformed IP inside buildApp.
+  it("refuses the infra sentinel EDGE_TRUST_PROXY=auto", () => {
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "auto" })).toThrow(
+      /EDGE_TRUST_PROXY does not accept "auto"/,
+    );
+  });
+
+  it("accepts the address forms of EDGE_TRUST_PROXY, and defaults to trusting nothing", () => {
+    // Unset/blank → the socket peer is the client (opt-in, not defaulted on).
+    // Blank is load-bearing: infra/azure spells "the subnet" as 'auto', so an
+    // operator who deliberately blanks edgeTrustProxy still gets trust nothing.
+    expect(loadConfig({ ...ENV }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "" }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "false" }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "true" }).trustProxy).toBe(true);
+    // `0` is the one count that is not refused: fastify branched on
+    // `if (trustProxy)`, so it was falsy and meant trust nothing — the same as
+    // unset. It keeps that meaning rather than failing the boot for no gain.
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0" }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: " 00 " }).trustProxy).toBe(false);
+    // A CIDR (what infra/azure passes: the ACA infrastructure subnet), a list,
+    // and a proxy-addr preset all pass through verbatim for Fastify to compile.
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23" }).trustProxy).toBe("10.0.2.0/23");
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23,10.0.4.0/23" }).trustProxy).toBe(
+      "10.0.2.0/23,10.0.4.0/23",
+    );
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "uniquelocal" }).trustProxy).toBe("uniquelocal");
+  });
+
+  // The value is only worth anything if Fastify derives the req.ip we expect
+  // from it, so drive the parsed config through the option the way app.ts does.
+  // `app.inject` presents a loopback socket peer, which is what distinguishes a
+  // trusted ingress from an untrusted direct caller here.
+  describe("the parsed value drives req.ip as intended", () => {
+    const ipFrom = async (trustProxyEnv: string | undefined, xff: string) => {
+      const { trustProxy } = loadConfig(
+        trustProxyEnv === undefined ? { ...ENV } : { ...ENV, EDGE_TRUST_PROXY: trustProxyEnv },
+      );
+      const app = Fastify({ trustProxy });
+      app.get("/", (req) => ({ ip: req.ip }));
+      const res = await app.inject({
+        method: "GET",
+        url: "/",
+        headers: { "x-forwarded-for": xff },
+      });
+      await app.close();
+      return res.json<{ ip: string }>().ip;
+    };
+
+    it("ignores X-Forwarded-For from an untrusted peer", async () => {
+      // Default (trust nothing) and a CIDR that does not cover the loopback peer
+      // both refuse to believe the header — this is the anti-spoofing property.
+      expect(await ipFrom(undefined, "203.0.113.7")).toBe("127.0.0.1");
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7")).toBe("127.0.0.1");
+    });
+
+    it("resolves the real client through a trusted proxy address", async () => {
+      // A CIDR naming the peer is what the deployed edge gets (the ACA
+      // infrastructure subnet); loopback stands in for it under inject.
+      expect(await ipFrom("127.0.0.0/8", "203.0.113.7")).toBe("203.0.113.7");
+      expect(await ipFrom("loopback", "203.0.113.7")).toBe("203.0.113.7");
+      // Chained proxies: the walk stops at the first address the list doesn't
+      // cover, so an app-supplied prefix can't push a spoofed value through.
+      expect(await ipFrom("127.0.0.0/8", "203.0.113.7, 198.51.100.9")).toBe("198.51.100.9");
+    });
   });
 
   it("throws a clear error on missing requirements", () => {

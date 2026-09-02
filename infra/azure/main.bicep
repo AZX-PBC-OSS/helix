@@ -181,8 +181,8 @@ param allowPublicApps bool = false
 @description('Permit `password` (shared-passphrase) apps on this install. Sets the matched pair EDGE_ALLOW_PASSWORD_APPS + PORTAL_ALLOW_PASSWORD_APPS — same paired-planes reasoning as allowPublicApps; when false the edge 403s the assets and the /_auth/login challenge 404s. Default false (deny).')
 param allowPasswordApps bool = false
 
-@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY). Behind ACA Envoy ingress req.ip is the ingress hop unless this names the hop count, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Default "1" (one Envoy hop) — verified correct against a live ACA external ingress. Re-verify if anything else fronts the edge (CDN, WAF, second proxy): too low collapses every client into one bucket, too high makes X-Forwarded-For spoofable.')
-param edgeTrustProxy string = '1'
+@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY) — the ADDRESS of the trusted ingress, as a CIDR/IP list or a proxy-addr preset ("uniquelocal"). Behind ACA Envoy ingress req.ip is the ingress hop unless this names it, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Three cases: "auto" (the default) resolves to the ACA infrastructure subnet the edge runs in, which is the trusted peer; EMPTY or "false" trusts nothing (the socket peer is the client), matching the code default; anything else passes through verbatim. A hop COUNT is no longer valid: fastify 5.12.1 removed it (GHSA-3m5p-2c4r-xxw2) because trusting by position ignores the peer address, the edge refuses to boot on one, and this template rejects one before it deploys. Re-verify if anything else fronts the edge (CDN, WAF, second proxy): too narrow collapses every client into one bucket, too broad makes X-Forwarded-For spoofable.')
+param edgeTrustProxy string = 'auto'
 
 @description('ACA custom-domain verification id (asuid TXT). Empty = skip.')
 param domainVerificationId string = ''
@@ -210,6 +210,49 @@ module network 'modules/network.bicep' = {
     egressRouteTableId: routing.outputs.egressRouteTableId
   }
 }
+
+// The trusted-proxy address handed to the edge and the dev-gateway. Fastify
+// derives req.ip by walking [socket peer, ...x-forwarded-for reversed] and
+// stopping at the first address this does NOT match, so it must name the ACA
+// ingress — which reaches the container from inside its own infrastructure
+// subnet. 'auto' resolves to that subnet rather than hardcoding a CIDR, which
+// keeps it correct if the address space is ever re-planned in network.bicep.
+// Override edgeTrustProxy when something else fronts the edge (CDN, WAF, second
+// proxy). EMPTY is not 'auto': it means trust nothing, the same as the code
+// default, so an operator who deliberately blanks this still gets it off.
+var trustProxyRaw = trim(edgeTrustProxy)
+
+// Every value the edge can use is an address — IPv4/CIDR/list carries '.', IPv6
+// carries ':' — or one of proxy-addr's presets / the two booleans. Anything else
+// is most likely a hop count left over from before fastify 5.12.1 deleted that
+// form (a stale HELIX_EDGE_TRUST_PROXY=1 still exported in a deploy pipeline),
+// and it would flow all the way to parseTrustProxy and throw at container boot.
+// Under activeRevisionsMode 'Single' that surfaces as a rollout that silently
+// never takes, so reject it here instead: fail() sits in the untaken branch of a
+// ternary (which ARM evaluates lazily) and aborts `az deployment group ...` in
+// front of the operator -- but only on an apply that deploys the apps: the
+// guard rides the two EDGE_TRUST_PROXY sites, both inside deployApps-conditional
+// resources, so the infra-only what-if never evaluates it (README step 1 says so
+// explicitly). Presets are matched per comma-separated part, because fastify
+// splits the string and hands proxy-addr the list -- 'loopback,uniquelocal' is a
+// legal value and must not be mistaken for a hop count. The booleans stay whole
+// values: parseTrustProxy maps them to a real boolean, and proxy-addr would
+// choke on 'true' as an address. Add to the preset list if proxy-addr gains one.
+// The match is case-SENSITIVE on purpose: parseTrustProxy and proxy-addr both
+// are, so blessing 'LOOPBACK' here would only move the boot failure it causes.
+var trustProxyPresets = ['loopback', 'linklocal', 'uniquelocal']
+var trustProxyParts = map(split(trustProxyRaw, ','), part => trim(part))
+var trustProxyIsAddress = contains(trustProxyRaw, '.') || contains(trustProxyRaw, ':') || contains(
+  ['true', 'false'],
+  trustProxyRaw
+) || empty(filter(trustProxyParts, part => !contains(trustProxyPresets, part)))
+var effectiveEdgeTrustProxy = trustProxyRaw == 'auto'
+  ? network.outputs.appsSubnetPrefix
+  : (empty(trustProxyRaw) || trustProxyIsAddress)
+      ? trustProxyRaw
+      : fail(
+          'edgeTrustProxy names the ADDRESS of the trusted ingress, not a hop count (got "${trustProxyRaw}"). Fastify 5.12.1 removed the hop-count form (GHSA-3m5p-2c4r-xxw2) and the edge no longer honours one (it refuses to boot on a count of 1 or more; "0" it reads as its old meaning, trust nothing). Leave it "auto" (or unset HELIX_EDGE_TRUST_PROXY) to trust the ACA infrastructure subnet, pass a CIDR/IP list or a proxy-addr preset such as "uniquelocal" to name a different ingress, or "" / "false" to trust nothing.'
+        )
 
 // The egress-zone enforcement point (ADR-0001 / ADR-0005). Optional: when
 // deployFirewall=false the firewall and its forced-tunnel default routes are
@@ -592,9 +635,10 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EDGE_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
       { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
       // Behind ACA's Envoy ingress the socket peer is the ingress, so the
-      // per-IP anon rate limiter and the password-login throttle need the hop
-      // count to recover the real client IP (issue #13). See edgeTrustProxy.
-      { name: 'EDGE_TRUST_PROXY', value: edgeTrustProxy }
+      // per-IP anon rate limiter and the password-login throttle need the
+      // ingress address named to recover the real client IP (issue #13). See
+      // edgeTrustProxy / effectiveEdgeTrustProxy.
+      { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
       { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
       { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
       // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
@@ -685,8 +729,8 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
 // (a CORS surface for Lovable / cloud IDEs), reachable only when BOTH deployApps
 // and deployDevGateway are set. See docs/features/dev-mode.md for the riders
 // (a short-window throttle on the dev-gateway; a distinct dev LLM budget) before
-// enabling. EDGE_TRUST_PROXY is no longer a rider — the hop count is verified and
-// passed to this container below, so a throttle here keys on the real client IP.
+// enabling. EDGE_TRUST_PROXY is no longer a rider — the trusted ingress address
+// is passed to this container below, so a throttle here keys on the real client IP.
 //
 // It never holds the helix_edge pool or a blob credential: loadDevGatewayConfig
 // reads ONLY the dev-gateway's own env (the helix_dev DSN + shared gateway
@@ -728,7 +772,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
       // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
       // dev throttle keys on the real client IP behind ingress too.
-      { name: 'EDGE_TRUST_PROXY', value: edgeTrustProxy }
+      { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
       // The one DSN it holds — the least-privilege helix_dev role.
       { name: 'EDGE_DEV_DATABASE_URL', secretRef: 'edge-dev-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }

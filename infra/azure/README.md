@@ -270,6 +270,24 @@ az deployment group what-if \
   -g <rg> -f main.bicep -p main.bicepparam        # preview
 ```
 
+**Check your environment for a stale `HELIX_EDGE_TRUST_PROXY`.** It used to hold
+the ACA ingress **hop count** (`1`); fastify 5.12.1 deleted that form
+(GHSA-3m5p-2c4r-xxw2, ADR-0011's 2026-09 amendment) and `edgeTrustProxy` now
+names the ingress **address**. A count still exported here is rejected by the
+template — but check it by eye now (`echo "$HELIX_EDGE_TRUST_PROXY"`; anything
+numeric is the stale form), because **the `what-if` above will not catch it**.
+The guard sits in the expression feeding the two `EDGE_TRUST_PROXY` sites, and
+both are inside `deployApps`-conditional resources, so an infra-only pass
+(`deployApps=false`, the bicepparam default) never evaluates it: the deployment
+aborts at **step 5**, after you have built images and run migrations. That is
+still ahead of the container, which is the point: left unvalidated the count
+would reach `EDGE_TRUST_PROXY` and crash the edge at boot, and under
+`activeRevisionsMode: 'Single'` the old revision keeps serving a rollout that
+never takes. Unset it (or set it to `auto`) to trust the ACA
+infrastructure subnet the edge runs in; set an address only when something else
+fronts the edge (CDN, WAF), and verify `req.ip` against the live deployment when
+you do.
+
 ### 2. Phase 1 — infra only (`deployApps=false`)
 
 Set the secret env vars, then deploy. The apps are skipped on this pass.
@@ -415,7 +433,7 @@ Before enabling it on a real deployment, read the riders in
 [`docs/features/dev-mode.md`](../../docs/features/dev-mode.md): a **short-window
 throttle** on the dev-gateway itself, a **distinct dev LLM budget** (the vendor
 key is env-agnostic), and the `dev-api` DNS/TLS binding (step 6, added when this
-flag is set). The `edgeTrustProxy` hop count is verified and already passed to
+flag is set). The `edgeTrustProxy` trusted-ingress address is already passed to
 this container, so it is no longer one of the riders (issue #13).
 
 ### 6. DNS + TLS
