@@ -56,3 +56,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0039](0039-no-approval-request-expiry.md) | Pending approval requests do not expire | Accepted |
 | [0040](0040-entra-group-visibility-directory-seam.md) | Group visibility: security groups, one Graph permission, behind a directory seam | Accepted |
 | [0041](0041-app-data-write-concurrency.md) | App-data write concurrency: CAS on an opaque version, mandatory on `shared` | Accepted |
+| [0042](0042-shared-prefix-grants-and-list-verb.md) | Prefix grants on `shared` app-data, with a list verb | Proposed |
