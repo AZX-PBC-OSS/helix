@@ -444,7 +444,9 @@ this directory. `deployTelemetry` (default `true`, requires `deployApps`) adds:
   around it are in one place with one retention setting;
 - an **`otel-collector` container app per managed environment** — internal
   ingress, OTLP/HTTP on 4318 — both exporting to that one component, so a trace
-  crossing edge → egress still lands together.
+  crossing edge → egress still lands together;
+- **two alert rules** (`deployAlerts`, default `true`) that consume it — see
+  "Alerting" below.
 
 Each service gets `OTEL_EXPORTER_OTLP_ENDPOINT` pointing at its own
 environment's collector. With `deployTelemetry=false` the var is empty and
@@ -459,12 +461,49 @@ decision 2 preferred it; it was verified on 2026-09-01 and fails on two counts
 and it only speaks gRPC while the services export OTLP/HTTP. Re-proposing it
 means arguing with that.
 
-**Metrics are accepted and discarded, deliberately and temporarily.** App
-Insights cannot store OTel metrics at all, so the collector routes them to a
-`nop` exporter. The `nop` is not an omission — with no metrics pipeline the OTLP
-receiver would reject every POST and each service would log an export warning
-once per interval forever. Choosing the real destination is an open decision in
-`TODO.md`, and **it is what gates the registry-staleness alert.**
+**Metrics go to Application Insights too, in `customMetrics`.** Amendment 7
+originally said App Insights could not store them; that was true of the
+**managed agent's** destination and over-generalised (Amendment 8). The
+collector's own `azuremonitor` exporter handles all three signals, so the
+metrics pipeline exports there and the `nop` is gone. An Azure Monitor
+workspace remains the better long-term store — metric alert rules and Grafana
+key on a Prometheus store rather than a log-based table — and is tracked in
+`TODO.md` as a strictly additive change. It is not free: it authenticates with
+Entra, which would turn the collector's image-pull identity into an
+authorization principal and widen the **edge's** identity unless the collector
+gets its own.
+
+## Alerting (`deployAlerts`, `alertEmails`)
+
+`modules/alerts.bicep` is the consumer ADR-0025 was waiting for. Two rules, on
+**different signals on purpose**:
+
+| Rule                           | Reads                                                       | Why not the other signal                                                                                                                 |
+| ------------------------------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `-alert-registry-stale`        | the `helix.registry.stale_for_ms` metric, over `AppMetrics` | An age wants a threshold; this is what replaced KQL over log messages                                                                    |
+| `-alert-registry-never-loaded` | the `registry.never_loaded` log event                       | The gauge is _absent_ in that state by design, and the counter that reports it is cumulative — a threshold on it would never stop firing |
+
+Both scope to the apps environment's Log Analytics workspace, which holds the
+container stdout **and** the metrics (the component is workspace-based onto it).
+Note the metric rule queries `AppMetrics`, not `customMetrics`: same table, two
+schemas, and a workspace-scoped rule sees the workspace one. The workspace
+schema also **dropped the `value` column** — rows carry `Sum`/`ItemCount`/
+`Min`/`Max` — so a query written against `value` matches nothing, silently.
+
+```bash
+# multiple recipients; each becomes its own email receiver on one action group
+az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
+  --parameters deployApps=true \
+               alertEmails='["ops@example.com","oncall@example.com"]'
+```
+
+`registryStalenessThresholdMs` defaults to `1200000` — the ADR-0025 **error**
+line (20× the 60 s reconcile interval). Drop it to `300000` to fire at the
+_degraded_ line instead, and expect noise from transient DB blips.
+
+**With `alertEmails` empty the rules still deploy and still fire — at nobody.**
+That state looks identical to working alerting, so the deployment emits an
+`alertsNotify` output saying which one you got. Read it.
 
 ### Verifying it, which you must do explicitly
 

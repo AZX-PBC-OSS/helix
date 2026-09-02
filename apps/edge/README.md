@@ -93,9 +93,11 @@ report-only.
 > copy, turning the serve-stale stance into the outage it exists to prevent. Nothing in
 > `infra/azure` probes `/health` today.
 
-**The log is the metric channel.** The platform has no metrics pipeline (no `/metrics`, no
-OTel/App Insights — `gateway_calls` is a metering primitive, not an observability sink), and adding
-a client library would be a new runtime dependency in the trusted path (ADR-0003). So load failures
+**The log is also a metric channel.** Since ADR-0037 there is an OTel pipeline (see "Prefer the
+metric" below), but the log events predate it, remain the detail an operator reads once an alert
+fires, and are the only signal at all in a deployment with no OTLP endpoint configured — which is
+still the platform's default state. `gateway_calls` is a metering primitive either way, not an
+observability sink. So load failures
 carry a stable `event` field for a log-based metric — the first failure at `error` level, one more
 `error` when the copy crosses the 20× line, `warn` in between (~1 per reconcile interval), and one
 `info` on recovery:
@@ -154,9 +156,12 @@ makes the alert **one threshold rule** rather than the KQL above, which is the r
 getting built. The query stays useful for the detail you read once the rule fires, and as the
 fallback for a deployment with no OTLP endpoint configured.
 
-No such rule exists yet either way — until one is created the degradation is only visible to a
-human polling `/health` (`TODO.md`). `event` is a repo-wide convention; see
-[`docs/design/logging.md`](../../docs/design/logging.md) before adding another.
+**Both rules now exist** in `infra/azure/modules/alerts.bicep`: staleness reads the metric above,
+and _never loaded_ reads the `registry.never_loaded` log event — because the gauge is deliberately
+absent in that state and the counter that reports it is cumulative, so a threshold on it would
+never stop firing (ADR-0037 Amendment 8). They are optional (`deployAlerts`) and notify a
+parameterized address list; with none set they fire into nothing. `event` is a repo-wide
+convention; see [`docs/design/logging.md`](../../docs/design/logging.md) before adding another.
 
 **Note the verbose body is unauthenticated.** Any unrecognised `Host` classifies as `platform`, and
 the auth host is internet-facing, so `lastSuccessAt` / `staleForSeconds` / `consecutiveLoadFailures`

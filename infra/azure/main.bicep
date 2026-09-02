@@ -147,6 +147,15 @@ param deployDevGateway bool = false
 @description('Deploy the OpenTelemetry collector + Application Insights (ADR-0037). Off leaves every service exporting nowhere — `startTelemetry` returns its inert handle — which is the platform\'s documented default state and exactly how it ran before this existed.')
 param deployTelemetry bool = true
 
+@description('Deploy the alert rules that consume the platform\'s own observability — the registry projection stale + never-loaded rules (ADR-0025 residual, ADR-0037). Default true: they are the near-term payoff of the telemetry work and cost cents. The stale rule reads a metric so it needs deployTelemetry; the never-loaded rule is log-based and deploys either way. NOTE with alertEmails empty the rules still deploy and still fire — into nothing. Set alertEmails, or set this false; a rule nobody is told about is worse than no rule, because it looks like coverage.')
+param deployAlerts bool = true
+
+@description('Addresses notified when an alert fires. SEVERAL ARE SUPPORTED — each becomes its own email receiver on one shared action group, e.g. \'["a@x.io","b@x.io"]\' (or `--parameters alertEmails="[\'a@x.io\']"` from the CLI). Empty means the rules notify nobody.')
+param alertEmails array = []
+
+@description('Registry staleness that fires the alert, in ms. Default 1200000 (20 min) is the ADR-0025 `error` line — 20x the 60s default reconcile interval, the point the edge itself stops calling the projection merely degraded. 300000 fires at the `degraded` line instead, at the cost of noise from transient DB blips.')
+param registryStalenessThresholdMs int = 1200000
+
 @description('Deploy the Azure Firewall that enforces the egress-only network zone (ADR-0001) — the PRIMARY SSRF/egress control per ADR-0005. Default true (secure by default). Setting false SKIPS the firewall + its forced-tunnel routes to save ~$900/mo: the apps subnet then gets default internet egress, so a compromised edge can reach the internet and the only remaining outbound control is the egress app-level denylist (defense-in-depth). Data services stay private (private endpoints) either way. Only disable for dev / smoketest / trusted single-tenant installs — NOT production or untrusted-app hosting. See README "Optional: the egress firewall".')
 param deployFirewall bool = true
 
@@ -375,10 +384,14 @@ module egressEnv 'modules/aca-environment.bicep' = {
 // and it only speaks gRPC while the services export OTLP/HTTP. So: a
 // self-hosted collector per environment, both exporting to one App Insights.
 //
-// TRACES ONLY for now. App Insights cannot accept OTel metrics at all, and the
-// metrics destination is an open decision (TODO.md) — the collector accepts and
-// discards them meanwhile, which keeps `helix.registry.stale_for_ms` emitted
-// but unstored. The staleness alert stays blocked on that decision.
+// TRACES AND METRICS, both to that one component. Amendment 7's "App Insights
+// cannot accept OTel metrics" was true of the managed agent's destination and
+// over-generalised: the contrib `azuremonitor` exporter stores metrics in
+// `customMetrics` (Amendment 8), so the instruments the services already emit
+// have a home, and `alerts.bicep` below is the consumer ADR-0025 was waiting
+// for. An Azure Monitor workspace is still the better long-term store — it is
+// what metric alert rules and Grafana key on — and is tracked in TODO.md as a
+// strictly additive change.
 
 // Workspace-based, attached to the workspace the apps environment already ships
 // stdout to: one place to correlate a trace with the log lines around it, and
@@ -422,6 +435,21 @@ module egressCollector 'modules/otel-collector.bicep' = if (deployTelemetry && d
   }
 }
 
+// The consumer for all of the above. Scoped to the apps environment's Log
+// Analytics workspace, which holds both the container stdout and — because the
+// component above is workspace-based onto it — the metrics. See
+// modules/alerts.bicep for why one rule reads a metric and the other a log.
+module alerts 'modules/alerts.bicep' = if (deployAlerts && deployApps) {
+  name: 'platform-alerts'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    workspaceId: appsEnv.outputs.logAnalyticsWorkspaceId
+    alertEmails: alertEmails
+    includeMetricRule: deployTelemetry
+    registryStalenessThresholdMs: registryStalenessThresholdMs
+  }
+}
 
 // The egress environment is internal, and a workload-profiles environment does
 // not get an auto-created private DNS zone — without this, its apps' internal
@@ -799,6 +827,9 @@ output edgeFqdn string = edgeApp.?outputs.fqdn ?? ''
 output egressFqdn string = egressApp.?outputs.fqdn ?? ''
 output portalFqdn string = portalApp.?outputs.fqdn ?? ''
 output devGatewayFqdn string = devGatewayApp.?outputs.fqdn ?? ''
+
+@description('False when the alert rules deployed but reach nobody (alertEmails was empty) — the state that looks like coverage and is not. Read it after every deploy that touches alerting.')
+output alertsNotify bool = alerts.?outputs.notifies ?? false
 // Feeds `portalIdentityPrincipalId` on the SIBLING ../entra stack, whose second pass
 // grants this identity GroupMember.Read.All on Microsoft Graph (ADR-0040 decision 4).
 // The two stacks deploy in the order entra -> azure -> entra: this output is the only

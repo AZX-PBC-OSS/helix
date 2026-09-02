@@ -105,10 +105,27 @@ adversarial suites (`spanRedaction.test.ts`, `traceBoundary.test.ts`,
 rather than checking one field, so a span added later without thought fails a
 test instead of leaking quietly.
 
-## Not built yet
+## What consumes it
 
-- **The alert rules.** This is the gap that matters: the signals exist and
-  nothing consumes them. `TODO.md` carries it.
+On Azure, both collectors export to one workspace-based Application Insights
+component, so traces and metrics land in the same Log Analytics workspace the
+environment already ships stdout to. Metrics arrive in `customMetrics`
+(`AppMetrics` under the workspace schema — the two names are the same table).
+
+Two alert rules read that, and they read **different signals on purpose**
+(`infra/azure/modules/alerts.bicep`):
+
+| Rule | Signal | Why that one |
+| --- | --- | --- |
+| projection stale | `helix.registry.stale_for_ms` metric | An age needs a threshold, and this is the metric that made it one rule instead of KQL over log messages |
+| projection never loaded | `registry.never_loaded` log event | The gauge is *absent* in this state by design, and the counter that reports it is cumulative, so a threshold on it never stops firing |
+
+Both are optional (`deployAlerts`) and notify a parameterized list of addresses
+(`alertEmails`). **With no addresses they still deploy and still fire, into
+nothing** — the deployment's `alertsNotify` output says which, because a rule
+nobody hears from looks exactly like coverage.
+
+## Not built yet
 - **Nothing probes `/health`.** It always answers 200 by design (a non-200 would
   let a liveness probe restart a replica serving correctly from a stale copy), so
   a probe has to read the body.

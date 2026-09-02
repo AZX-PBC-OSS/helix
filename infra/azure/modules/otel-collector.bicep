@@ -50,15 +50,24 @@ param maxReplicas int = 2
   custom image, which would mean a second image to build, tag and publish for a
   file that is nine lines of YAML.
 
-  METRICS ARE ACCEPTED AND DISCARDED, on purpose and temporarily. Application
-  Insights cannot store OTel metrics at all (ADR Amendment 7), and choosing the
-  real destination — an Azure Monitor workspace, a non-Azure backend, or a
-  translation into Log Analytics — is an open decision tracked in TODO.md. The
-  `nop` exporter is deliberate rather than an omission: with no metrics pipeline
-  the OTLP receiver rejects every metrics POST, and each service would log an
-  export warning once per interval forever. Discarding quietly here is honest
-  about the state and quiet in the logs; the pipeline is the one line to change
-  once the destination exists.
+  BOTH SIGNALS GO TO APPLICATION INSIGHTS. Traces land as traces; metrics land
+  in the `customMetrics` table (`AppMetrics` under the workspace schema, which
+  is what `alerts.bicep` queries).
+
+  Metrics being storable here at all corrects what ADR-0037 Amendment 7
+  originally claimed. The verified limitation is narrower than the ADR's first
+  wording: it is the Container Apps **managed agent** whose App Insights
+  destination refuses metrics. This exporter is a different code path — the
+  contrib `azuremonitor` exporter is `beta: traces, metrics, logs` — so the
+  metrics we already emit had a destination the whole time. See Amendment 8.
+
+  An Azure Monitor workspace remains the better long-term home, because Azure
+  metric alert rules and Grafana key on a Prometheus store rather than on a
+  log-based table (TODO.md). It is a strictly additive change — add an exporter,
+  add resources — and it costs a dedicated collector identity, which is the
+  reason it is not here yet: the identity below is image-pull only today, and
+  Entra-authenticated metrics publishing would turn it into an authorization
+  principal, widening the EDGE's identity (see `rbac.bicep`'s grant matrix).
 */
 var collectorConfig = '''
 receivers:
@@ -77,7 +86,6 @@ processors:
 exporters:
   azuremonitor:
     connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
-  nop: {}
 service:
   telemetry:
     logs:
@@ -89,8 +97,8 @@ service:
       exporters: [azuremonitor]
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter]
-      exporters: [nop]
+      processors: [memory_limiter, batch]
+      exporters: [azuremonitor]
 '''
 
 module collector 'containerapp.bicep' = {

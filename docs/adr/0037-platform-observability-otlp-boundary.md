@@ -416,3 +416,57 @@ App Insights could take everything:
 Everything in `apps/` and `packages/` stands unchanged. That is the OTLP-only
 boundary (decision 1) doing precisely the job it was written for: the vendor
 question moved and no service code moved with it.
+
+### Amendment 8 — Amendment 7 over-generalised, and metrics have a destination (2026-09-02)
+
+Amendment 7's second consequence said flatly: "**A metrics destination has to be
+chosen.** App Insights is out." That was wrong, and wrong in the direction that
+cost the most — it parked a working destination as an open decision and left the
+staleness alert blocked behind it.
+
+The verified limitation is narrower than the sentence it produced. What
+Microsoft documents is that the Container Apps **managed agent's** Application
+Insights destination does not accept metrics ("The Application Insights endpoint
+doesn't accept metrics", in that feature's known limitations). That is a property
+of the managed agent's pipeline, not of Application Insights. The collector's
+own `azuremonitor` exporter — which this deployment already runs, for traces —
+is `beta: traces, metrics, logs` and stores metrics in the `customMetrics`
+table. Metrics had a home the whole time.
+
+Re-verified the same day against the current ACA docs: **both** of Amendment 7's
+disqualifying findings for the managed agent still stand verbatim, and the page
+had not changed since before that verification. The managed agent remains
+rejected. Two facts it did not record: the managed agent runs as a single
+non-scalable replica and exposes no health of its own (worse than a collector
+whose logs we can read, given decision 5 makes export failures silent), and it
+runs at no compute cost, which is the one real thing the self-hosted route gives
+up.
+
+**Decision:** the collector's metrics pipeline exports to Application Insights
+(`nop` removed), and `infra/azure/modules/alerts.bicep` consumes it. This closes
+the ADR-0025 residual that the metrics work existed to unblock.
+
+An Azure Monitor workspace is still the better long-term store — Azure metric
+alert rules and Grafana key on a Prometheus store, not on a log-based table — and
+stays in `TODO.md` as a **strictly additive** change rather than a migration.
+Two things make it more than an exporter swap, and they are why it is not here:
+
+- **It needs a dedicated collector identity.** Native OTLP ingestion
+  authenticates with Entra, which turns the collector's managed identity from an
+  image-pull detail into an authorization principal. The apps collector
+  currently borrows `edgeIdentity`, so granting it Monitoring Metrics Publisher
+  would widen the **edge's** identity and add a row to `rbac.bicep`'s grant
+  matrix. That matrix exists so the blast radius is readable in one file.
+- **It requires delta temporality and exponential histograms.** Keep that
+  collector-side with a `cumulativetodelta` processor rather than changing the
+  SDK config, or decision 1's "no service code moves with the vendor" property
+  takes its first real exception.
+
+One consequence of the log-based table to record, because it shapes the rules:
+counters arrive **cumulative**, so a threshold on
+`helix.registry.load_failures{outcome:"never_loaded"}` would fire forever after
+one early failure. The never-loaded rule therefore reads the
+`registry.never_loaded` log event instead, and only the gauge-based staleness
+rule reads a metric. Amendment 5's "must report nothing before the first load"
+is what forces that split: there is no gauge value to threshold in exactly the
+state that matters most.
