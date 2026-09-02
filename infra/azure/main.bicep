@@ -222,11 +222,21 @@ module network 'modules/network.bicep' = {
 // default, so an operator who deliberately blanks this still gets it off.
 var trustProxyRaw = trim(edgeTrustProxy)
 
-// Every value the edge can use is an address — IPv4/CIDR/list carries '.', IPv6
-// carries ':' — or one of proxy-addr's presets / the two booleans. Anything else
-// is most likely a hop count left over from before fastify 5.12.1 deleted that
-// form (a stale HELIX_EDGE_TRUST_PROXY=1 still exported in a deploy pipeline),
-// and it would flow all the way to parseTrustProxy and throw at container boot.
+// Every value the edge can use is an address -- a dotted IPv4/CIDR (exactly four
+// '.'-separated octets, the last carrying any '/prefix') or an IPv6 literal
+// (carries ':') -- or one of proxy-addr's presets / the two booleans. Anything
+// else is most likely a hop count left over from before fastify 5.12.1 deleted
+// that form (a stale HELIX_EDGE_TRUST_PROXY=1 still exported in a deploy
+// pipeline), and it would flow all the way to parseTrustProxy and throw at
+// container boot.
+//
+// The octet count is load-bearing, not decoration: a laxer 'contains a dot' test
+// passes '10.0.2', and proxy-addr does NOT reject that -- ipaddr.js reads legacy
+// short-form IPv4, so it compiles to the single host 10.0.0.2, matches nothing
+// the ingress presents, and silently collapses req.ip to the ingress with
+// /health green. parseTrustProxy validates the same shape with zod so a
+// customer-run install (ADR-0028) that never applies this template still fails
+// closed; this is the copy that keeps the failure in front of the operator.
 // Under activeRevisionsMode 'Single' that surfaces as a rollout that silently
 // never takes, so reject it here instead: fail() sits in the untaken branch of a
 // ternary (which ARM evaluates lazily) and aborts `az deployment group ...` in
@@ -242,10 +252,10 @@ var trustProxyRaw = trim(edgeTrustProxy)
 // are, so blessing 'LOOPBACK' here would only move the boot failure it causes.
 var trustProxyPresets = ['loopback', 'linklocal', 'uniquelocal']
 var trustProxyParts = map(split(trustProxyRaw, ','), part => trim(part))
-var trustProxyIsAddress = contains(trustProxyRaw, '.') || contains(trustProxyRaw, ':') || contains(
-  ['true', 'false'],
-  trustProxyRaw
-) || empty(filter(trustProxyParts, part => !contains(trustProxyPresets, part)))
+var trustProxyIsAddress = contains(['true', 'false'], trustProxyRaw) || empty(filter(
+  trustProxyParts,
+  part => !(contains(trustProxyPresets, part) || contains(part, ':') || length(split(part, '.')) == 4)
+))
 var effectiveEdgeTrustProxy = trustProxyRaw == 'auto'
   ? network.outputs.appsSubnetPrefix
   : (empty(trustProxyRaw) || trustProxyIsAddress)

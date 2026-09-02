@@ -486,12 +486,35 @@ function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
   };
 }
 
+/** proxy-addr's built-in range aliases, accepted verbatim alongside addresses. */
+const TRUST_PROXY_PRESETS = new Set(["loopback", "linklocal", "uniquelocal"]);
+
+/** One part of an EDGE_TRUST_PROXY list: an IP or a CIDR, v4 or v6. */
+const TrustProxyAddress = z.union([z.cidrv4(), z.cidrv6(), z.ipv4(), z.ipv6()]);
+
 /**
  * Parse EDGE_TRUST_PROXY into a Fastify `trustProxy` value. Unset/empty →
  * `false` (trust nothing — the socket peer is the client). `"true"`/`"false"` →
- * boolean; anything else → passed through verbatim (Fastify accepts a
- * comma-separated IP/CIDR allowlist plus the presets `loopback`, `linklocal`
- * and `uniquelocal`).
+ * boolean; anything else must be a comma-separated list whose every part is an
+ * IP, a CIDR, or one of proxy-addr's presets (`loopback`, `linklocal`,
+ * `uniquelocal`) — validated here, then passed through verbatim for Fastify to
+ * compile.
+ *
+ * That validation is not belt-and-braces over what proxy-addr already checks:
+ * it covers a gap proxy-addr cannot. proxy-addr parses through ipaddr.js, which
+ * accepts **legacy short-form IPv4** — `"10.0.2"` is not rejected, it is read as
+ * `10.0.0.2`. So one dropped octet in the ACA subnet compiles cleanly, matches
+ * nothing the ingress presents, and silently collapses `req.ip` to the ingress
+ * address with `/health` green throughout: the exact failure mode below, and
+ * the one form of it a malformed value can still reach. A malformed value that
+ * ipaddr.js *rejects* (`"foo.bar"`, `"10.0.2.0/33"`) already throws inside
+ * `Fastify()`, so it was never the risk. Note the check is deliberately a
+ * *second, stricter* grammar rather than a call into proxy-addr: asking the
+ * real parser cannot detect a value it accepts and reinterprets.
+ *
+ * One deliberate narrowing: a zone-suffixed literal (`fe80::1%eth0`) is refused
+ * though proxy-addr would take it. A zone id is host-local scope and means
+ * nothing in a trusted-proxy allowlist.
  *
  * A bare integer is **rejected**, with one exception below. It used to mean
  * "trust this many proxy hops", but that form trusts by position and so
@@ -552,6 +575,20 @@ function parseTrustProxy(raw: string | undefined): boolean | string {
         `sentinel, which main.bicep resolves to the ACA infrastructure subnet before it ` +
         `reaches the container. Pass the resolved CIDR, or leave EDGE_TRUST_PROXY unset to ` +
         `trust nothing (the socket peer is the client).`,
+    );
+  }
+  // Fastify splits on "," and hands proxy-addr the list, so validate per part.
+  const bad = v
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => !TRUST_PROXY_PRESETS.has(part) && !TrustProxyAddress.safeParse(part).success);
+  if (bad.length > 0) {
+    throw new Error(
+      `EDGE_TRUST_PROXY is not a trusted-proxy address list (bad: ${bad.map((b) => JSON.stringify(b)).join(", ")}). ` +
+        `Every comma-separated part must be an IP ("10.0.2.4"), a CIDR ("10.0.2.0/23"), or a ` +
+        `proxy-addr preset (${[...TRUST_PROXY_PRESETS].join("/")}). Watch for a dropped octet: ` +
+        `"10.0.2" is not "10.0.2.0/23" — proxy-addr would read it as the single host 10.0.0.2, ` +
+        `match nothing the ingress presents, and silently collapse req.ip to the ingress address.`,
     );
   }
   return v;

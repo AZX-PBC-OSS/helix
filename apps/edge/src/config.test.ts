@@ -163,6 +163,33 @@ describe("loadConfig", () => {
     );
   });
 
+  // The gap a validator has to close, and the reason it cannot just call into
+  // proxy-addr: these are values proxy-addr ACCEPTS and reinterprets. ipaddr.js
+  // reads legacy short-form IPv4, so "10.0.2" compiles to the single host
+  // 10.0.0.2 — it matches nothing the ingress presents, req.ip collapses to the
+  // ingress address, and /health stays green. A malformed value proxy-addr
+  // rejects was never the risk: that already throws inside `Fastify()`.
+  it("refuses an address proxy-addr would silently reinterpret", () => {
+    for (const raw of ["10.0.2", "1.2.3", "10.0", "010.0.2.0", "10.0.2.0/23,10.0.4"]) {
+      expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: raw })).toThrow(
+        /EDGE_TRUST_PROXY is not a trusted-proxy address list/,
+      );
+    }
+    // The error names the offending part, not the whole list, so an operator
+    // reading a deploy log sees which entry to fix.
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23,10.0.4" })).toThrow(
+      /bad: "10\.0\.4"/,
+    );
+    // The dev-gateway shares the parse, so it fails closed identically.
+    expect(() =>
+      loadDevGatewayConfig({
+        ...ENV,
+        EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+        EDGE_TRUST_PROXY: "10.0.2",
+      }),
+    ).toThrow(/EDGE_TRUST_PROXY is not a trusted-proxy address list/);
+  });
+
   it("accepts the address forms of EDGE_TRUST_PROXY, and defaults to trusting nothing", () => {
     // Unset/blank → the socket peer is the client (opt-in, not defaulted on).
     // Blank is load-bearing: infra/azure spells "the subnet" as 'auto', so an
@@ -190,7 +217,7 @@ describe("loadConfig", () => {
   // `app.inject` presents a loopback socket peer, which is what distinguishes a
   // trusted ingress from an untrusted direct caller here.
   describe("the parsed value drives req.ip as intended", () => {
-    const ipFrom = async (trustProxyEnv: string | undefined, xff: string) => {
+    const ipFrom = async (trustProxyEnv: string | undefined, xff: string, peer?: string) => {
       const { trustProxy } = loadConfig(
         trustProxyEnv === undefined ? { ...ENV } : { ...ENV, EDGE_TRUST_PROXY: trustProxyEnv },
       );
@@ -200,6 +227,7 @@ describe("loadConfig", () => {
         method: "GET",
         url: "/",
         headers: { "x-forwarded-for": xff },
+        ...(peer ? { remoteAddress: peer } : {}),
       });
       await app.close();
       return res.json<{ ip: string }>().ip;
@@ -220,6 +248,40 @@ describe("loadConfig", () => {
       // Chained proxies: the walk stops at the first address the list doesn't
       // cover, so an app-supplied prefix can't push a spoofed value through.
       expect(await ipFrom("127.0.0.0/8", "203.0.113.7, 198.51.100.9")).toBe("198.51.100.9");
+    });
+
+    // The pin that keeps the validator honest against the parser it guards.
+    // `parseTrustProxy` is deliberately a second, stricter grammar than
+    // proxy-addr's, so the two can drift: too strict and a workable value fails
+    // the boot, too loose and the silent case returns. Assert the property that
+    // matters instead of the grammar — a value we accept trusts the range as
+    // WRITTEN, using a real ACA-shaped peer rather than inject's loopback.
+    it("trusts the range as written, for every form the parse accepts", async () => {
+      // Inside the written subnet → the header is believed.
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "10.0.2.5")).toBe("203.0.113.7");
+      expect(await ipFrom("uniquelocal", "203.0.113.7", "10.0.2.5")).toBe("203.0.113.7");
+      expect(await ipFrom("10.0.2.4", "203.0.113.7", "10.0.2.4")).toBe("203.0.113.7");
+      // Outside it → not believed, even though the peer is private.
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "10.0.9.5")).toBe("10.0.9.5");
+      // ACA presents the peer as an IPv4-mapped v6 address; the v4 CIDR must
+      // still match it, or every client collapses into one bucket.
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "::ffff:10.0.2.5")).toBe("203.0.113.7");
+    });
+
+    // ...and the concrete failure the validator exists to prevent: were "10.0.2"
+    // to reach Fastify it would compile without complaint and resolve req.ip to
+    // the ingress, which is why loadConfig refuses it above rather than here.
+    it("would silently collapse req.ip on a dropped octet, hence the refusal", async () => {
+      const app = Fastify({ trustProxy: "10.0.2" });
+      app.get("/", (req) => ({ ip: req.ip }));
+      const res = await app.inject({
+        method: "GET",
+        url: "/",
+        headers: { "x-forwarded-for": "203.0.113.7" },
+        remoteAddress: "10.0.2.5",
+      });
+      await app.close();
+      expect(res.json<{ ip: string }>().ip).toBe("10.0.2.5");
     });
   });
 
