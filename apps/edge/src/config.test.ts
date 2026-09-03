@@ -1,3 +1,4 @@
+import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { loadConfig, loadDevGatewayConfig, parseConnectionString, publicOrigin } from "./config.js";
 
@@ -127,6 +128,215 @@ describe("loadConfig", () => {
         EDGE_RECONCILE_INTERVAL_MS: "abc",
       }),
     ).toThrow(/EDGE_RECONCILE_INTERVAL_MS must be a positive number/);
+  });
+
+  // A hop count trusts by position, so it structurally ignores the peer address
+  // and lets anyone reaching the origin directly spoof X-Forwarded-*
+  // (GHSA-3m5p-2c4r-xxw2). Fastify 5.12.1 compiles a number to "trust nothing"
+  // silently, which would collapse req.ip — and with it the anon limiter, the
+  // login throttle and the audit hash — to the ingress address while everything
+  // still read green. Fail the boot instead, the same posture the reconcile
+  // interval takes above.
+  it("refuses a hop count for EDGE_TRUST_PROXY instead of silently trusting nothing", () => {
+    for (const hops of ["1", "2", " 3 "]) {
+      expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: hops })).toThrow(
+        /EDGE_TRUST_PROXY no longer accepts a proxy hop count/,
+      );
+    }
+    // The dev-gateway shares the parse, so it fails closed identically.
+    expect(() =>
+      loadDevGatewayConfig({
+        ...ENV,
+        EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+        EDGE_TRUST_PROXY: "1",
+      }),
+    ).toThrow(/EDGE_TRUST_PROXY no longer accepts a proxy hop count/);
+  });
+
+  // "auto" is the infra/azure sentinel for "the ACA infrastructure subnet", and
+  // main.bicep resolves it before the container sees it. If one ever arrives the
+  // deployment did not resolve it, which is worth saying plainly here rather than
+  // letting proxy-addr fail on it as a malformed IP inside buildApp.
+  it("refuses the infra sentinel EDGE_TRUST_PROXY=auto", () => {
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "auto" })).toThrow(
+      /EDGE_TRUST_PROXY does not accept "auto"/,
+    );
+  });
+
+  // The gap a validator has to close, and the reason it cannot just call into
+  // proxy-addr: these are values proxy-addr ACCEPTS and reinterprets. ipaddr.js
+  // reads legacy short-form IPv4, so "10.0.2" compiles to the single host
+  // 10.0.0.2 — it matches nothing the ingress presents, req.ip collapses to the
+  // ingress address, and /health stays green. A malformed value proxy-addr
+  // rejects was never the risk: that already throws inside `Fastify()`.
+  it("refuses an address proxy-addr would silently reinterpret", () => {
+    for (const raw of ["10.0.2", "1.2.3", "10.0", "010.0.2.0", "10.0.2.0/23,10.0.4"]) {
+      expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: raw })).toThrow(
+        /EDGE_TRUST_PROXY is not a trusted-proxy address list/,
+      );
+    }
+    // The error names the offending part, not the whole list, so an operator
+    // reading a deploy log sees which entry to fix.
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23,10.0.4" })).toThrow(
+      /bad: "10\.0\.4"/,
+    );
+    // The dev-gateway shares the parse, so it fails closed identically.
+    expect(() =>
+      loadDevGatewayConfig({
+        ...ENV,
+        EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+        EDGE_TRUST_PROXY: "10.0.2",
+      }),
+    ).toThrow(/EDGE_TRUST_PROXY is not a trusted-proxy address list/);
+  });
+
+  // The one overlap where zod is LOOSER than proxy-addr: cidrv4/cidrv6 accept a
+  // /0 prefix (even the non-canonical "10.0.2.0/0"), and Fastify() then throws
+  // on it at construction — a boot crash, which under Container Apps' 'Single'
+  // revision mode is a rollout that silently never takes. "0.0.0.0/0" is also
+  // the natural spelling of "trust any proxy", so it will be written someday.
+  // Refusing it at the parse is the same boot-time failure with an error that
+  // names what to write instead.
+  it("refuses a zero-prefix CIDR, which is 'trust any peer' by another spelling", () => {
+    for (const raw of ["0.0.0.0/0", "::/0", "10.0.2.0/0", "10.0.2.0/24,0.0.0.0/0"]) {
+      expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: raw })).toThrow(
+        /EDGE_TRUST_PROXY is not a trusted-proxy address list/,
+      );
+    }
+    // The advice names broad-but-still-peer-validating spellings — and not
+    // "true": the infra template rejects it, so recommending it here would
+    // point the operator at a deploy-time dead end.
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0.0.0.0/0" })).toThrow(/uniquelocal/);
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0.0.0.0/0" })).toThrow(/10\.0\.0\.0\/16/);
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0.0.0.0/0" })).not.toThrow(/"true"/);
+    // The dev-gateway shares the parse, so it fails closed identically.
+    expect(() =>
+      loadDevGatewayConfig({
+        ...ENV,
+        EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+        EDGE_TRUST_PROXY: "::/0",
+      }),
+    ).toThrow(/EDGE_TRUST_PROXY is not a trusted-proxy address list/);
+  });
+
+  // The dotted-netmask CIDR is the reverse overlap: proxy-addr reads it exactly
+  // as written ("10.0.2.0/255.255.254.0" compiles and covers the same /23), but
+  // the grammar here is deliberately a strict subset, so this is a named
+  // narrowing, not an oversight — and the error says how to convert it.
+  it("refuses the dotted-netmask CIDR form, naming the prefix-length spelling", () => {
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/255.255.254.0" })).toThrow(
+      /EDGE_TRUST_PROXY is not a trusted-proxy address list/,
+    );
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/255.255.254.0" })).toThrow(
+      /"10\.0\.2\.0\/255\.255\.254\.0" is "10\.0\.2\.0\/23"/,
+    );
+  });
+
+  it("accepts the address forms of EDGE_TRUST_PROXY, and defaults to trusting nothing", () => {
+    // Unset/blank → the socket peer is the client (opt-in, not defaulted on).
+    // Blank is load-bearing: infra/azure spells "the subnet" as 'auto', so an
+    // operator who deliberately blanks edgeTrustProxy still gets trust nothing.
+    expect(loadConfig({ ...ENV }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "" }).trustProxy).toBe(false);
+    // Whitespace-only counts as unset, the same rule requirePositiveMs applies
+    // to every other env duration — compose and CI pass blank strings for vars
+    // that are declared but not set.
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "   " }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "false" }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "true" }).trustProxy).toBe(true);
+    // `0` is the one count that is not refused: fastify branched on
+    // `if (trustProxy)`, so it was falsy and meant trust nothing — the same as
+    // unset. It keeps that meaning rather than failing the boot for no gain.
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0" }).trustProxy).toBe(false);
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: " 00 " }).trustProxy).toBe(false);
+    // A CIDR (what infra/azure passes: the ACA infrastructure subnet), a list,
+    // and a proxy-addr preset all pass through verbatim for Fastify to compile.
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23" }).trustProxy).toBe("10.0.2.0/23");
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23,10.0.4.0/23" }).trustProxy).toBe(
+      "10.0.2.0/23,10.0.4.0/23",
+    );
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "uniquelocal" }).trustProxy).toBe("uniquelocal");
+  });
+
+  // The value is only worth anything if Fastify derives the req.ip we expect
+  // from it, so drive the parsed config through the option the way app.ts does.
+  // `app.inject` presents a loopback socket peer, which is what distinguishes a
+  // trusted ingress from an untrusted direct caller here.
+  describe("the parsed value drives req.ip as intended", () => {
+    const ipFrom = async (trustProxyEnv: string | undefined, xff: string, peer?: string) => {
+      const { trustProxy } = loadConfig(
+        trustProxyEnv === undefined ? { ...ENV } : { ...ENV, EDGE_TRUST_PROXY: trustProxyEnv },
+      );
+      const app = Fastify({ trustProxy });
+      app.get("/", (req) => ({ ip: req.ip }));
+      const res = await app.inject({
+        method: "GET",
+        url: "/",
+        headers: { "x-forwarded-for": xff },
+        ...(peer ? { remoteAddress: peer } : {}),
+      });
+      await app.close();
+      return res.json<{ ip: string }>().ip;
+    };
+
+    it("ignores X-Forwarded-For from an untrusted peer", async () => {
+      // Default (trust nothing) and a CIDR that does not cover the loopback peer
+      // both refuse to believe the header — this is the anti-spoofing property.
+      expect(await ipFrom(undefined, "203.0.113.7")).toBe("127.0.0.1");
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7")).toBe("127.0.0.1");
+    });
+
+    it("resolves the real client through a trusted proxy address", async () => {
+      // A CIDR naming the peer is what the deployed edge gets (the ACA
+      // infrastructure subnet); loopback stands in for it under inject.
+      expect(await ipFrom("127.0.0.0/8", "203.0.113.7")).toBe("203.0.113.7");
+      expect(await ipFrom("loopback", "203.0.113.7")).toBe("203.0.113.7");
+      // Chained proxies: the walk stops at the first address the list doesn't
+      // cover, so an app-supplied prefix can't push a spoofed value through.
+      expect(await ipFrom("127.0.0.0/8", "203.0.113.7, 198.51.100.9")).toBe("198.51.100.9");
+    });
+
+    // The pin that keeps the validator honest against the parser it guards.
+    // `parseTrustProxy` is deliberately a second, stricter grammar than
+    // proxy-addr's, so the two can drift: too strict and a workable value fails
+    // the boot, too loose and the silent case returns. Assert the property that
+    // matters instead of the grammar — a value we accept trusts the range as
+    // WRITTEN, using a real ACA-shaped peer rather than inject's loopback.
+    it("trusts the range as written, for every form the parse accepts", async () => {
+      // Inside the written subnet → the header is believed.
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "10.0.2.5")).toBe("203.0.113.7");
+      expect(await ipFrom("uniquelocal", "203.0.113.7", "10.0.2.5")).toBe("203.0.113.7");
+      expect(await ipFrom("10.0.2.4", "203.0.113.7", "10.0.2.4")).toBe("203.0.113.7");
+      // Outside it → not believed, even though the peer is private.
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "10.0.9.5")).toBe("10.0.9.5");
+      // ACA presents the peer as an IPv4-mapped v6 address; the v4 CIDR must
+      // still match it, or every client collapses into one bucket.
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "::ffff:10.0.2.5")).toBe("203.0.113.7");
+    });
+
+    // ...and the concrete failure the validator exists to prevent: were "10.0.2"
+    // to reach Fastify it would compile without complaint and resolve req.ip to
+    // the ingress, which is why loadConfig refuses it above rather than here.
+    it("would silently collapse req.ip on a dropped octet, hence the refusal", async () => {
+      const app = Fastify({ trustProxy: "10.0.2" });
+      app.get("/", (req) => ({ ip: req.ip }));
+      const res = await app.inject({
+        method: "GET",
+        url: "/",
+        headers: { "x-forwarded-for": "203.0.113.7" },
+        remoteAddress: "10.0.2.5",
+      });
+      await app.close();
+      expect(res.json<{ ip: string }>().ip).toBe("10.0.2.5");
+    });
+
+    // ...and the one value zod passes that Fastify cannot compile at all: a /0
+    // throws inside Fastify() at construction, with proxy-addr's own cryptic
+    // "invalid range" error. Pinned so the refusal in the parse suite above is
+    // visibly pre-empting a real crash, not a hypothetical one.
+    it("would throw inside Fastify() on a zero prefix, hence the refusal", () => {
+      expect(() => Fastify({ trustProxy: "0.0.0.0/0" })).toThrow(/invalid range/);
+    });
   });
 
   it("throws a clear error on missing requirements", () => {

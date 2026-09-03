@@ -122,10 +122,13 @@ Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 > makes the login throttle **reserve-first** (closing the check-then-increment TOCTOU), and one
 > interval sweep in `server.ts` GCs it (the old never-scheduled `sweep()` is gone). Scrypt cost is
 > at OWASP's `N=2^17` (ISSUE-08). `trustProxy` is a config knob (`EDGE_TRUST_PROXY`, default off in
-> code) and the Container Apps ingress hop count is now **verified and set in the deployments**, so
-> `req.ip` is the real client and the per-client limits are per-client (issue #13). That value
-> belongs to a deployment's ingress topology, not to Helix — front the edge with a CDN or WAF and it
-> must be re-verified there.
+> code) naming the **address** of the trusted ingress, and the deployments set it to the ACA
+> infrastructure subnet, so `req.ip` is the real client and the per-client limits are per-client
+> (issue #13) — **not yet confirmed against the live ingress**: that the ACA peer falls inside that
+> subnet is inferred from the old hop-count check, not verified (ADR-0011's 2026-09 amendment). A hop count is no longer accepted — fastify 5.12.1 removed that form
+> (GHSA-3m5p-2c4r-xxw2) because it trusts by position without checking the peer, and the edge now
+> refuses to boot on one. That value belongs to a deployment's ingress topology, not to Helix —
+> front the edge with a CDN or WAF and it must be re-verified there.
 
 ### Crypto + key material
 

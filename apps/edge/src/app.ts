@@ -153,12 +153,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     // A fresh UUID per request, never the caller's: every request here comes
     // from untrusted app code (ADR-0019).
     ...requestIdOptions(),
-    // How many proxy hops to trust for `req.ip` (the rate-limit / login-throttle
-    // key). Default false = the socket peer. Behind Container Apps' Envoy ingress
-    // that peer is the ingress, so per-client limits need EDGE_TRUST_PROXY set to
-    // the real ingress hop count — verify against the live deployment before
-    // relying on it (issue #13). A too-trusting value makes X-Forwarded-For
-    // spoofable, so it is opt-in, not defaulted on.
+    // Which proxy addresses to trust when deriving `req.ip` (the rate-limit /
+    // login-throttle key). Default false = the socket peer. Behind Container
+    // Apps' Envoy ingress that peer is the ingress, so per-client limits need
+    // EDGE_TRUST_PROXY set to the ingress subnet CIDR — verify against the live
+    // deployment before relying on it (issue #13). A too-trusting value makes
+    // X-Forwarded-For spoofable, so it is opt-in, not defaulted on. A hop count
+    // is not accepted (GHSA-3m5p-2c4r-xxw2); see config.ts `parseTrustProxy`.
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;

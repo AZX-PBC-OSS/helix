@@ -17,9 +17,8 @@ import type { CounterStore } from "./counterStore.js";
  * and the login throttle can share one store without colliding.
  *
  * Client IP is Fastify's `req.ip`; behind Container Apps' ingress that is the
- * real client only when `EDGE_TRUST_PROXY` is configured for the ingress hop
- * count (else it may collapse to the ingress address) — see `config.ts` and
- * issue #13.
+ * real client only when `EDGE_TRUST_PROXY` names the ingress address (else it
+ * may collapse to the ingress address) — see `config.ts` and issue #13.
  */
 
 export interface IpRateLimiterOptions {

@@ -38,7 +38,7 @@ overrides:
 # so a bump happens in exactly one place. https://pnpm.io/catalogs
 catalog:
   # ── Runtime ──
-  fastify: ^5.12.0
+  fastify: ^5.12.1
   zod: ^4.4.3
   "@fastify/multipart": ^10.0.0 # bundle upload (M1)
   # Registry persistence — portal only (the edge stays dependency-minimal and
