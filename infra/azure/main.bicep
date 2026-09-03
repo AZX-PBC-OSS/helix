@@ -181,7 +181,7 @@ param allowPublicApps bool = false
 @description('Permit `password` (shared-passphrase) apps on this install. Sets the matched pair EDGE_ALLOW_PASSWORD_APPS + PORTAL_ALLOW_PASSWORD_APPS — same paired-planes reasoning as allowPublicApps; when false the edge 403s the assets and the /_auth/login challenge 404s. Default false (deny).')
 param allowPasswordApps bool = false
 
-@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY) — the ADDRESS of the trusted ingress, as a CIDR/IP list or a proxy-addr preset ("uniquelocal"). Behind ACA Envoy ingress req.ip is the ingress hop unless this names it, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). Three cases: "auto" (the default) resolves to the ACA infrastructure subnet the edge runs in, which is the trusted peer; EMPTY or "false" trusts nothing (the socket peer is the client), matching the code default; anything else passes through verbatim. A hop COUNT is no longer valid: fastify 5.12.1 removed it (GHSA-3m5p-2c4r-xxw2) because trusting by position ignores the peer address, the edge refuses to boot on one, and this template rejects one before it deploys. Re-verify if anything else fronts the edge (CDN, WAF, second proxy): too narrow collapses every client into one bucket, too broad makes X-Forwarded-For spoofable.')
+@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY) — the ADDRESS of the trusted ingress, as a CIDR/IP list or a proxy-addr preset ("uniquelocal"). Behind ACA Envoy ingress req.ip is the ingress hop unless this names it, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). "auto" (the default) resolves to the ACA infrastructure subnet the edge runs in, which is the trusted peer; EMPTY, "false" or a stale "0" trusts nothing (the socket peer is the client), matching the code default; anything else passes to the edge validator, which additionally refuses a /0 range ("0.0.0.0/0" trusts every peer — the GHSA-3m5p-2c4r-xxw2 shape) and the dotted-netmask form ("10.0.2.0/255.255.254.0" — spell the prefix length, "10.0.2.0/23"). A hop COUNT is refused at deploy: fastify 5.12.1 removed the form (GHSA-3m5p-2c4r-xxw2), the edge refuses to boot on one, and this template rejects it before it deploys. "true" is refused with it — it trusts every peer, so anyone reaching the edge directly sets its own req.ip. Re-verify if anything else fronts the edge (CDN, WAF, second proxy): too narrow collapses every client into one bucket, too broad makes X-Forwarded-For spoofable.')
 param edgeTrustProxy string = 'auto'
 
 @description('ACA custom-domain verification id (asuid TXT). Empty = skip.')
@@ -218,8 +218,11 @@ module network 'modules/network.bicep' = {
 // subnet. 'auto' resolves to that subnet rather than hardcoding a CIDR, which
 // keeps it correct if the address space is ever re-planned in network.bicep.
 // Override edgeTrustProxy when something else fronts the edge (CDN, WAF, second
-// proxy). EMPTY is not 'auto': it means trust nothing, the same as the code
-// default, so an operator who deliberately blanks this still gets it off.
+// proxy). An EMPTY param value is not 'auto': it means trust nothing, the same
+// as the code default, so an operator who passes "" (or 'false') still gets it
+// off. A blank ENV VAR is different -- main.bicepparam normalizes that to
+// 'auto', because the one-keystroke "remove the export" in a sourced .env is
+// HELIX_EDGE_TRUST_PROXY=, which must not silently mean trust nothing.
 var trustProxyRaw = trim(edgeTrustProxy)
 
 // Reject a stale hop count (a HELIX_EDGE_TRUST_PROXY=1 still exported by a
@@ -231,27 +234,39 @@ var trustProxyRaw = trim(edgeTrustProxy)
 // (README step 1 gives the operator an `echo` for the infra-only phase).
 //
 // Deliberately coarse: a usable value carries '.' (IPv4/CIDR) or ':' (IPv6), or
-// is a preset or a boolean. Catching a typo that passes that ('10.0.2', which
-// proxy-addr reads as the single host 10.0.0.2) is parseTrustProxy's zod check --
-// the copy a customer-run install (ADR-0028) gets anyway, and the only one that
-// can hold a precise grammar without drifting from proxy-addr's. Presets match
-// per comma-separated part, since fastify splits the list before proxy-addr sees
-// it; the booleans stay whole values, because parseTrustProxy maps them to a real
-// boolean and proxy-addr would choke on 'true' as an address. Case-SENSITIVE,
-// like both of those.
+// is a preset. Catching a typo that passes that ('10.0.2', which proxy-addr
+// reads as the single host 10.0.0.2) is parseTrustProxy's zod check -- the copy
+// a customer-run install (ADR-0028) gets anyway, and the only one that can hold
+// a precise grammar without drifting from proxy-addr's. Presets match per
+// comma-separated part, since fastify splits the list before proxy-addr sees
+// it. Case-SENSITIVE, like both of those. Three values get arms of their own:
+//   '0' passes through with its old meaning, trust nothing (parseTrustProxy
+//       maps it to false; refusing it here would abort a deploy over a value
+//       the container handles fine), normalized to '' so the live env never
+//       shows a numeric.
+//   'false' stays a whole value, because parseTrustProxy maps it to a real
+//       boolean and proxy-addr would choke on it as an address.
+//   'true' is REFUSED: it trusts every peer, so anyone who reaches the edge
+//       directly sets its own req.ip -- the same spoofing GHSA-3m5p-2c4r-xxw2
+//       is about, in the one spelling the hop-count guard otherwise closed.
 var trustProxyPresets = ['loopback', 'linklocal', 'uniquelocal']
 var trustProxyParts = map(split(trustProxyRaw, ','), part => trim(part))
-var trustProxyIsAddress = contains(trustProxyRaw, '.') || contains(trustProxyRaw, ':') || contains(
-  ['true', 'false'],
-  trustProxyRaw
-) || empty(filter(trustProxyParts, part => !contains(trustProxyPresets, part)))
+var trustProxyIsAddress = contains(trustProxyRaw, '.') || contains(trustProxyRaw, ':') || empty(
+  filter(trustProxyParts, part => !contains(trustProxyPresets, part))
+)
 var effectiveEdgeTrustProxy = trustProxyRaw == 'auto'
   ? network.outputs.appsSubnetPrefix
-  : (empty(trustProxyRaw) || trustProxyIsAddress)
-      ? trustProxyRaw
-      : fail(
-          'edgeTrustProxy names the ADDRESS of the trusted ingress, not a hop count (got "${trustProxyRaw}"). Fastify 5.12.1 removed the hop-count form (GHSA-3m5p-2c4r-xxw2) and the edge no longer honours one (it refuses to boot on a count of 1 or more; "0" it reads as its old meaning, trust nothing). Leave it "auto" (or unset HELIX_EDGE_TRUST_PROXY) to trust the ACA infrastructure subnet, pass a CIDR/IP list or a proxy-addr preset such as "uniquelocal" to name a different ingress, or "" / "false" to trust nothing.'
-        )
+  : (empty(trustProxyRaw) || trustProxyRaw == '0')
+      ? ''
+      : trustProxyRaw == 'true'
+          ? fail(
+              'edgeTrustProxy "true" trusts every peer, so anyone who reaches the edge directly sets its own req.ip -- the spoofing GHSA-3m5p-2c4r-xxw2 is about, in the one spelling the hop-count guard otherwise closed. Name the ingress instead: "auto" (or unset/blank HELIX_EDGE_TRUST_PROXY) trusts the ACA infrastructure subnet, and a CIDR/IP list or a proxy-addr preset such as "uniquelocal" names a different one.'
+            )
+          : (trustProxyRaw == 'false' || trustProxyIsAddress)
+              ? trustProxyRaw
+              : fail(
+                  'edgeTrustProxy names the ADDRESS of the trusted ingress, not a hop count (got "${trustProxyRaw}"). Fastify 5.12.1 removed the hop-count form (GHSA-3m5p-2c4r-xxw2) and the edge refuses to boot on one. Leave it "auto" (or unset/blank HELIX_EDGE_TRUST_PROXY) to trust the ACA infrastructure subnet, pass a CIDR/IP list or a proxy-addr preset such as "uniquelocal" to name a different ingress, or "" / "false" to trust nothing.'
+                )
 
 // The egress-zone enforcement point (ADR-0001 / ADR-0005). Optional: when
 // deployFirewall=false the firewall and its forced-tunnel default routes are

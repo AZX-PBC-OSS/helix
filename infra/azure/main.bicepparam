@@ -72,11 +72,17 @@ param allowPasswordApps = false
 // Fastify trustProxy for the edge — the ACA Envoy ingress ADDRESS, not a hop
 // count (fastify 5.12.1 removed the count form; GHSA-3m5p-2c4r-xxw2). 'auto'
 // resolves to the ACA infrastructure subnet the edge runs in, which is the peer
-// ingress connects from (issue #13); '' means trust nothing. Set this only if
-// something else fronts the edge (CDN, WAF), and verify req.ip against the live
-// deployment when you do. A stale HELIX_EDGE_TRUST_PROXY=1 left over from the
-// hop-count era is REJECTED by main.bicep — unset it rather than deploying it.
-param edgeTrustProxy = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', 'auto')
+// ingress connects from (issue #13); 'false' (or an explicitly-empty param)
+// means trust nothing. Set this only if something else fronts the edge (CDN,
+// WAF), and verify req.ip against the live deployment when you do. A stale
+// HELIX_EDGE_TRUST_PROXY=1 left over from the hop-count era is REJECTED by
+// main.bicep — unset it rather than deploying it. The blank normalization below
+// is load-bearing: readEnvironmentVariable falls back only on UNDEFINED, so a
+// sourced .env's one-keystroke "remove the export" (HELIX_EDGE_TRUST_PROXY=)
+// would otherwise land as '' = trust nothing, with /health green. Blank reads
+// as "not set" here; 'false' is the explicit off switch.
+var trustProxyEnv = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', 'auto')
+param edgeTrustProxy = trustProxyEnv == '' ? 'auto' : trustProxyEnv
 
 // Secrets — sourced from environment variables, never committed. Generate the
 // symmetric ones with `openssl rand -base64 48`.

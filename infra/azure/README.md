@@ -275,18 +275,24 @@ the ACA ingress **hop count** (`1`); fastify 5.12.1 deleted that form
 (GHSA-3m5p-2c4r-xxw2, ADR-0011's 2026-09 amendment) and `edgeTrustProxy` now
 names the ingress **address**. A count still exported here is rejected by the
 template — but check it by eye now (`echo "$HELIX_EDGE_TRUST_PROXY"`; anything
-numeric is the stale form), because **the `what-if` above will not catch it**.
-The guard sits in the expression feeding the two `EDGE_TRUST_PROXY` sites, and
-both are inside `deployApps`-conditional resources, so an infra-only pass
+numeric is the stale form — `0` is tolerated with its old meaning, trust
+nothing, but clean it up anyway), because **the `what-if` above will not catch
+it**. The guard sits in the expression feeding the two `EDGE_TRUST_PROXY` sites,
+and both are inside `deployApps`-conditional resources, so an infra-only pass
 (`deployApps=false`, the bicepparam default) never evaluates it: the deployment
 aborts at **step 5**, after you have built images and run migrations. That is
 still ahead of the container, which is the point: left unvalidated the count
 would reach `EDGE_TRUST_PROXY` and crash the edge at boot, and under
 `activeRevisionsMode: 'Single'` the old revision keeps serving a rollout that
-never takes. Unset it (or set it to `auto`) to trust the ACA
-infrastructure subnet the edge runs in; set an address only when something else
-fronts the edge (CDN, WAF), and verify `req.ip` against the live deployment when
-you do.
+never takes. `true` is rejected at deploy alongside the counts — it trusts
+every peer, so anyone reaching the edge directly sets its own `req.ip`, the
+spoofing the hop-count removal closed. Remove a stale export with the literal
+`unset HELIX_EDGE_TRUST_PROXY`, not a blank `HELIX_EDGE_TRUST_PROXY=` line in a
+sourced `.env` — a blank export resolves to `auto` too (the bicepparam
+normalizes it), so that spelling is harmless, but unset is the clean state — or
+set it to `auto` to trust the ACA infrastructure subnet the edge runs in; set an
+address only when something else fronts the edge (CDN, WAF), and verify `req.ip`
+against the live deployment when you do.
 
 ### 2. Phase 1 — infra only (`deployApps=false`)
 
