@@ -160,15 +160,16 @@ describe("shared prefix grants (ADR-0042)", () => {
     expect(CapabilitiesParse({ data: { sharedWritePrefixes: [""] } }).success).toBe(false);
   });
 
-  it("rejects a prefix over 256 UTF-8 bytes, counting multibyte correctly", () => {
-    // 128 CJK chars = 384 UTF-8 bytes but only 128 UTF-16 code units — the same
-    // undercounting issue #12 fixed for values, applied to the grant itself.
-    const wide = "漢".repeat(128);
-    expect(CapabilitiesParse({ data: { sharedReadPrefixes: [wide] } }).success).toBe(false);
-    // 85 CJK chars = 255 bytes — one under the cap, still legal.
-    expect(CapabilitiesParse({ data: { sharedReadPrefixes: ["漢".repeat(85)] } }).success).toBe(
-      true,
-    );
+  // ADR-0043: keys, prefixes, and collection names are printable-ASCII
+  // identifiers. The old "no control characters" blocklist passed every one of
+  // these — which is the argument for the allowlist in one test.
+  it("rejects the Unicode esoterica a control-character blocklist misses", () => {
+    const RLO = "\u202e"; // bidi right-to-left override — reorders a rendered diff
+    const ZWSP = "\u200b"; // zero-width space — invisible in an approval queue
+    const NBSP = "\u00a0"; // non-breaking space — not the ASCII space it resembles
+    for (const bad of [`re${RLO}cord:`, `re${ZWSP}cord:`, `re${NBSP}cord:`, "record:漢"]) {
+      expect(CapabilitiesParse({ data: { sharedReadPrefixes: [bad] } }).success, bad).toBe(false);
+    }
   });
 
   it("rejects control characters — CR/LF here is header/URL-borne injection surface", () => {
@@ -180,11 +181,34 @@ describe("shared prefix grants (ADR-0042)", () => {
     }
   });
 
-  it("leaves the literal arrays at their historical lenience — no retroactive tightening", () => {
-    // The literal arrays predate the prefix fields and carry only `min(1)`; the
-    // stricter key rules are for the NEW fields only, so a live manifest that
-    // was legal yesterday cannot start failing validation today.
-    expect(CapabilitiesParse({ data: { sharedRead: ["漢".repeat(128)] } }).success).toBe(true);
+  it("caps length at 256 characters — which are bytes, under the ASCII rule", () => {
+    expect(CapabilitiesParse({ data: { sharedReadPrefixes: ["a".repeat(256)] } }).success).toBe(
+      true,
+    );
+    expect(CapabilitiesParse({ data: { sharedReadPrefixes: ["a".repeat(257)] } }).success).toBe(
+      false,
+    );
+  });
+
+  it("rejects space-padded and all-space grants — invisible at a diff's edges", () => {
+    for (const bad of [" ", "  ", " record:", "record: ", "\trecord:"]) {
+      expect(CapabilitiesParse({ data: { sharedWritePrefixes: [bad] } }).success, bad).toBe(false);
+    }
+    // Interior space is fine — "my records:" is a legal namespace (read array,
+    // so no budget refine muddies the assertion).
+    expect(CapabilitiesParse({ data: { sharedReadPrefixes: ["my records:"] } }).success).toBe(true);
+  });
+
+  it("the literal arrays and collection names carry the same rule — one identifier contract", () => {
+    // ADR-0043 tightened these WITH the prefixes, not beside them: every grant
+    // string renders in the same approval diff, so they share one character
+    // set. Safe in one step because the live databases were swept first (zero
+    // non-ASCII keys, grants, or collection names — the ADR's compatibility
+    // note records the check).
+    expect(CapabilitiesParse({ data: { sharedRead: ["設定"] } }).success).toBe(false);
+    expect(CapabilitiesParse({ data: { sharedWrite: ["k\u202e"] } }).success).toBe(false);
+    expect(CapabilitiesParse({ data: { collections: ["réponses"] } }).success).toBe(false);
+    expect(CapabilitiesParse({ data: { collections: ["signups"] } }).success).toBe(true);
   });
 
   // Review finding 3: before prefixes, the literal sharedWrite array bounded

@@ -151,6 +151,14 @@ describe("RegistryProjection", () => {
             slug: "bad-prefix",
             capabilities: { data: { sharedReadPrefixes: [""] } },
           },
+          // ADR-0043: same fail-closed path for a non-printable-ASCII grant —
+          // a row the portal can no longer write (a homoglyph or bidi control
+          // in a grant string), projected closed rather than served.
+          {
+            ...ROW,
+            slug: "non-ascii-grant",
+            capabilities: { data: { sharedRead: ["設定"] } },
+          },
           // A write prefix without its writesPerDay bound fails the same way —
           // a row the portal can no longer write, projected closed.
           {
@@ -175,6 +183,7 @@ describe("RegistryProjection", () => {
     expect(projection.getApp("bad-json")?.data).toBeNull();
     expect(projection.getApp("bad-data")?.data).toBeNull();
     expect(projection.getApp("bad-prefix")?.data).toBeNull();
+    expect(projection.getApp("non-ascii-grant")?.data).toBeNull();
     expect(projection.getApp("unbounded-write-prefix")?.data).toBeNull();
   });
 

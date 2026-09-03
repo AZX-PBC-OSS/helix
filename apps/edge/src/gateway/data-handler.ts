@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Span } from "@opentelemetry/api";
-import type { ApiErrorCode, Env } from "@azx-pbc/shared";
+import { isValidDataKey, type ApiErrorCode, type Env } from "@azx-pbc/shared";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import {
@@ -75,11 +75,6 @@ export interface DataGatewayRuntime {
 
 /** Max stored value size — opaque app JSON, size-capped (app-data design §9). */
 const MAX_VALUE_BYTES = 64 * 1024;
-/** Key constraints: non-empty, bounded, no control chars (it is a path segment). */
-const MAX_KEY_LENGTH = 256;
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
-
 function sendApiError(
   reply: FastifyReply,
   status: number,
@@ -103,13 +98,16 @@ function jsonByteLength(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
+/**
+ * The ONE key/prefix/collection-name rule, imported from where the manifest and
+ * the SPA editor already run it (ADR-0043): printable ASCII, 1–256 chars, no
+ * leading/trailing space. Request time, manifest time, and the editor must not
+ * disagree about the accepted set — two validators that drift is the bug class
+ * `isValidServiceWorkerScope`'s double validation exists to avoid. Values stay
+ * arbitrary Unicode JSON; only the identifiers are ASCII.
+ */
 function validKey(key: unknown): key is string {
-  return (
-    typeof key === "string" &&
-    key.length > 0 &&
-    Buffer.byteLength(key, "utf8") <= MAX_KEY_LENGTH &&
-    !CONTROL_CHARS.test(key)
-  );
+  return typeof key === "string" && isValidDataKey(key);
 }
 
 function keyParam(req: FastifyRequest): string | null {

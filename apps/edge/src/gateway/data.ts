@@ -360,11 +360,10 @@ export class PgAppDataStore implements AppDataStore {
       // escaping to get wrong. The sort and the cursor predicate pin `COLLATE
       // "C"` deliberately: the database's default collation is an environment
       // property (dev container vs Azure need not agree), and bytewise UTF-8
-      // order is a single well-defined ordering — which agrees with JS
-      // code-unit comparison for BMP keys (the in-memory fake's comparator, so
-      // tests and prod share one ordering there). The fake compares the UTF-8
-      // BYTES directly rather than JS code units, so the two agree even for
-      // astral-plane keys, where code-unit and code-point order differ.
+      // order is a single well-defined ordering. Keys are printable ASCII
+      // (ADR-0043), so code-unit, bytewise, and collation order coincide by
+      // construction; the in-memory fake compares UTF-8 bytes directly anyway,
+      // so even an out-of-band non-ASCII row pages identically in both.
       // `LIMIT` is cap+1: one lookahead row is how the next page's
       // existence is detected without a COUNT.
       const r = await client.query(

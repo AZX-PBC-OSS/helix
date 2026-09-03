@@ -45,54 +45,80 @@ export type LlmCapability = z.infer<typeof LlmCapabilitySchema>;
  *    array is fixed at deploy time, so creating a record meant editing the
  *    manifest and redeploying. Prefix-only (`startsWith`, no pattern language);
  *    elevated at approval time because one element covers unboundedly many keys.
+ *
+ * Every grant string in this block — collection names, literal keys, prefixes —
+ * is a printable-ASCII identifier (ADR-0043, `isValidDataKey`); the VALUES an
+ * app stores remain arbitrary Unicode JSON.
  * `writesPerDay` / `bytesPerDay` bound abuse on the open append surface (§7).
  */
 
-/** Key constraints (the edge enforces the same rule at request time). */
-const KEY_MAX_BYTES = 256;
-// eslint-disable-next-line no-control-regex
-const KEY_CONTROL_CHARS = /[\x00-\x1f\x7f]/;
-
-/** UTF-8 byte length without `Buffer` — this module is in the browser barrel. */
-const encoder = new TextEncoder();
+/** Key length cap. With the printable-ASCII rule below, chars ARE bytes. */
+const KEY_MAX_CHARS = 256;
 
 /**
- * A shared-scope **prefix** grant (ADR-0042 decision 1). Validated like a key —
- * non-empty, ≤ 256 bytes, no control characters — and `min(1)` is load-bearing:
- * an empty prefix would grant the whole scope. Only the prefix fields carry this
- * refinement; the literal arrays keep their historical `min(1)`-only shape so a
- * stricter rule can never retroactively reject a live manifest.
+ * Printable ASCII, the whole of it — `0x20` (space) through `0x7E` (`~`).
+ * A positive allowlist, not a blocklist: a blocklist has to anticipate the
+ * whole of Unicode's esoterica, and it already missed the Cf format
+ * characters (bidi controls, zero-width joiners) that this rule exists to
+ * keep out of grant strings.
  */
-const SharedPrefixSchema = z
-  .string()
-  .min(1)
-  .refine((p) => encoder.encode(p).length <= KEY_MAX_BYTES, {
-    message: `prefix exceeds ${KEY_MAX_BYTES} bytes`,
-  })
-  .refine((p) => !KEY_CONTROL_CHARS.test(p), {
-    message: "prefix must not contain control characters",
-  });
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
 
 /**
- * Is this a legal shared-scope prefix? Exported so the SPA's editor can run the
- * IDENTICAL rule client-side (the `isValidServiceWorkerScope` pattern) — an
- * ad-hoc client check drifts from the server in both directions and turns into
- * either a surprise 400 or a wrongly disabled Save (review finding 8).
+ * Is this a legal app-data key, prefix, or collection name? (ADR-0043.)
+ *
+ * **Printable ASCII, 1–256 characters, no leading/trailing space.** Keys are
+ * *identifiers* — `record:<id>`, `stock`, `prefs` — and identifiers don't need
+ * the rest of Unicode; VALUES are where human language lives, and they stay
+ * arbitrary JSON. Four things make the character set a security decision
+ * rather than a style one:
+ *
+ *  - a key is used in four trusted places — URL path segment, authorization
+ *    grant, approval-delta path, admin-facing diff — and the old "no control
+ *    characters" blocklist passed Cf *format* characters: a bidi control
+ *    (U+202E) in a `sharedReadPrefixes` grant can visually reorder the diff an
+ *    admin reads, and a zero-width space hides entirely. Same reasoning as
+ *    `isValidServiceWorkerScope`'s allowlist, which the edge adopted for
+ *    exactly this class of value;
+ *  - homoglyph grants (a Cyrillic `а` in `record:`) are invisible to a human
+ *    reviewer and authorize different bytes than they appear to;
+ *  - un-normalized Unicode encodes one visual key several ways (precomposed
+ *    `é` vs `e`+combining accent) — distinct keys, identical to every reader;
+ *  - every string ordering (JS code-unit, UTF-8 bytewise, any collation)
+ *    coincides on ASCII, which removes the astral-plane keyset divergence
+ *    class at the root instead of compensating for it.
+ *
+ * The no-edge-space rule also refuses the all-space and padded grants that
+ * are invisible in a diff.
  */
-export function isValidSharedPrefix(p: string): boolean {
-  return SharedPrefixSchema.safeParse(p).success;
+export function isValidDataKey(key: string): boolean {
+  return (
+    key.length > 0 &&
+    key.length <= KEY_MAX_CHARS &&
+    PRINTABLE_ASCII.test(key) &&
+    // After the ASCII test this can only be a leading/trailing 0x20 — but it
+    // is the one character in the allowlist that is invisible at a grant's
+    // edges, so it gets its own rule.
+    key === key.trim()
+  );
 }
+
+const DATA_KEY_RULE =
+  "must be 1–256 printable ASCII characters (0x20–0x7E) with no leading or trailing space";
+
+/** The zod form of {@link isValidDataKey} — every grant string in the data block. */
+const DataKeySchema = z.string().refine(isValidDataKey, { message: DATA_KEY_RULE });
 
 export const DataCapabilitySchema = z
   .object({
     user: z.boolean().default(false),
-    collections: z.array(z.string().min(1)).default([]),
-    sharedRead: z.array(z.string().min(1)).default([]),
-    sharedWrite: z.array(z.string().min(1)).default([]),
+    collections: z.array(DataKeySchema).default([]),
+    sharedRead: z.array(DataKeySchema).default([]),
+    sharedWrite: z.array(DataKeySchema).default([]),
     /** ADR-0042: authorize every key starting with one of these prefixes (read). */
-    sharedReadPrefixes: z.array(SharedPrefixSchema).default([]),
+    sharedReadPrefixes: z.array(DataKeySchema).default([]),
     /** ADR-0042: authorize every key starting with one of these prefixes (write). */
-    sharedWritePrefixes: z.array(SharedPrefixSchema).default([]),
+    sharedWritePrefixes: z.array(DataKeySchema).default([]),
     writesPerDay: z.int().positive().optional(),
     bytesPerDay: z.int().positive().optional(),
   })

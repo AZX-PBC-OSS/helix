@@ -37,6 +37,15 @@ Capabilities = {
 AppManifest = { app: slug; visibility: Visibility; capabilities: Capabilities }
 ```
 
+Every grant string in the `data` block — collection names, literal keys, prefixes — is a
+**printable-ASCII identifier** (`0x20`–`0x7E`, 1–256 chars, no leading/trailing space), one
+shared rule (`isValidDataKey`) run by the manifest schema, the edge's request-time validation,
+and the SPA's editor. The character set is a security decision, not a style one: those strings
+render in the admin approval diff, and a blocklist passes Unicode's format characters (bidi
+controls, zero-width spaces, homoglyphs) that can make a diff lie. See
+[ADR-0043](../adr/0043-app-data-identifiers-printable-ascii.md). Stored VALUES stay arbitrary
+Unicode JSON.
+
 `externalOrigins` (direct browser call, widened into CSP) and `fetch.origins` (routed through the
 `/_api/fetch` proxy + `helix-egress`, where a secret can be injected server-side) are the "one knob,
 two settings" — same mental model, different `mode`. See [edge-serving.md](./edge-serving.md) and

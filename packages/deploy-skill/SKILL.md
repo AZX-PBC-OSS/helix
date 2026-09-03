@@ -266,7 +266,9 @@ still work fine for plain text chat.
 ### 3.2 App data — `/_api/data/*`
 
 Three named access patterns, not a symmetric key-value store. Values are opaque
-JSON up to **64 KiB**; keys are ≤ 256 characters with no control characters.
+JSON up to **64 KiB**; keys, prefixes, and collection names are printable-ASCII
+identifiers — `0x20`–`0x7E`, 1–256 characters, no leading/trailing space. Identifiers, not
+prose: put human language in the VALUE, which can be any JSON.
 
 ```
 PUT    /_api/data/user/:key          store a value for the signed-in user

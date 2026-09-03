@@ -341,11 +341,12 @@ export class FakeAppDataStore implements AppDataStore {
   /**
    * Mirrors `PgAppDataStore.listShared` (ADR-0042): prefix filter, keyset
    * cursor, cap+1 lookahead. Sort and cursor predicate both compare the UTF-8
-   * BYTES (`Buffer.compare`), not JS code units — the two orders disagree for
-   * astral-plane characters (a surrogate pair sorts before high-BMP chars by
-   * code unit, after them by bytes), and the real store pins `COLLATE "C"`,
-   * which is bytewise. Comparing bytes here keeps a page sequence asserted
-   * against the fake from asserting boundaries production does not have.
+   * BYTES (`Buffer.compare`), not JS code units. Keys are printable ASCII
+   * (ADR-0043), so the two orders coincide for anything creatable through the
+   * API — the bytewise comparator is the backstop for out-of-band rows (seeded
+   * straight at the store by tests, or written by a future bug), where
+   * code-unit and bytewise order diverge above the BMP and the real store's
+   * `COLLATE "C"` keyset is bytewise.
    */
   async listShared(appId: string, prefix: string, afterKey: string | null): Promise<SharedKeyPage> {
     // `#sharedKey(appId, "")` IS the shared-row key prefix for this app.

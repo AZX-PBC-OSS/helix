@@ -94,7 +94,7 @@ the version is a per-row counter, so `DELETE` + recreate restarts it at 1 and a 
 the race is one person's own tabs — and the fix (a row-birth nonce in the ETag) is due the
 day a shared delete verb lands, not before (ADR-0041 non-goals).
 
-Validation knobs: keys ≤ 256 chars with no control chars; values size-capped at **64 KiB** of
+Validation knobs: keys, prefixes, and collection names are **printable-ASCII identifiers** (`0x20`–`0x7E`, 1–256 chars, no leading/trailing space — [ADR-0043](../adr/0043-app-data-identifiers-printable-ascii.md), one shared `isValidDataKey` rule across manifest, edge, and SPA); values size-capped at **64 KiB** of
 opaque app JSON (`MAX_VALUE_BYTES`). Writes (`user.put`, `collection.append`, `shared.put`) go
 through `admitWrite` — a per-app daily `writesPerDay` budget, block-new like the LLM
 `dollarsPerDay` (over budget → `429` + a `quota_blocked` meter row). Every verb meters into
@@ -112,8 +112,8 @@ enumerate tomorrow's ids in today's manifest, so creating a record meant a manif
 redeploy. `sharedReadPrefixes`/`sharedWritePrefixes` (own manifest fields, not a sigil inside the
 literal arrays — `*` is a legal key character) authorize every key that **starts with** the
 prefix. `startsWith` only: no globs, no regex, no interior wildcards. Prefixes are validated like
-keys (non-empty, ≤ 256 bytes, no control chars — `min(1)` is load-bearing; an empty prefix would
-grant the whole scope).
+keys — printable ASCII, 1–256 chars, no edge spaces (ADR-0043) — and an empty prefix is refused
+outright: it would grant the whole scope.
 
 A key is authorized if it matches a literal **or** a prefix, independently for read and write
 (`sharedKeyAllowed` in `data-handler.ts`). At approval time the two forms are distinct categories:
@@ -147,9 +147,10 @@ GET /_api/data/shared?prefix=<p>[&cursor=<opaque>]
 - **No new database privilege** (ADR-0042 decision 6): `listShared` rides the same `SELECT` on
   `app_data` that `getShared` does — `starts_with(key, $n)` (parameterized, no LIKE
   metacharacters), `ORDER BY key COLLATE "C"`: bytewise UTF-8 order, a single well-defined
-  ordering independent of the deployment's default collation. It agrees with JS code-unit
-  comparison for BMP keys, and the in-memory fake compares the UTF-8 bytes directly, so the
-  two agree even for astral-plane keys (where code-unit and code-point order differ).
+  ordering independent of the deployment's default collation. Since keys are printable ASCII
+  (ADR-0043), code-unit, bytewise, and collation order all coincide by construction; the fake
+  still compares UTF-8 bytes directly, so even an out-of-band non-ASCII row pages identically
+  in tests and production.
 - **The deny path is metered `forbidden`** (model `shared.list`) — the fetch-proxy allowlist
   precedent — so enumeration probing is audit-visible, and distinguishable from an empty result
   (`ok`, `keys: []`) on the same ledger column. The span carries `helix.data.match_count` and,

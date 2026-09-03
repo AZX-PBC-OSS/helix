@@ -458,6 +458,46 @@ describe("shared prefix grants + list verb (ADR-0042)", () => {
     expect(control.statusCode).toBe(400);
   });
 
+  it("400s non-ASCII keys and prefixes — identifiers are printable ASCII (ADR-0043)", async () => {
+    // User-scope cases need an internal app with the user grant (public apps
+    // have no user scope at all); shared/list cases need the public app so the
+    // anonymous caller passes the gate. Both refuse at the same validation line
+    // the manifest and the SPA run — no layer disagrees about the accepted set.
+    const userEdge = buildDataEdge({ data: { ...PREFIXED, user: true } });
+    const token = await seedSession(userEdge.sessions, "alice");
+    const cjk = await req(userEdge, "PUT", `/_api/data/user/${encodeURIComponent("設定")}`, {
+      token,
+      payload: 1,
+    });
+    expect(cjk.statusCode).toBe(400);
+    // Interior space is legal — "my prefs" is a fine identifier…
+    const spaced = await req(userEdge, "PUT", "/_api/data/user/my%20prefs", { token, payload: 1 });
+    expect(spaced.statusCode).toBe(200);
+    // …but an invisible space at an edge is not.
+    const padded = await req(userEdge, "PUT", `/_api/data/user/${encodeURIComponent(" prefs")}`, {
+      token,
+      payload: 1,
+    });
+    expect(padded.statusCode).toBe(400);
+
+    const publicEdge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    // A zero-width space hidden in a shared key, and a non-ASCII listing prefix.
+    const hidden = await req(
+      publicEdge,
+      "GET",
+      `/_api/data/shared/${encodeURIComponent("record:\u200bx")}`,
+      { token: null },
+    );
+    expect(hidden.statusCode).toBe(400);
+    const listed = await req(
+      publicEdge,
+      "GET",
+      `/_api/data/shared?prefix=${encodeURIComponent("record:漢")}`,
+      { token: null },
+    );
+    expect(listed.statusCode).toBe(400);
+  });
+
   it("403s an uncovered listing prefix with a forbidden ledger row; an empty result is ok", async () => {
     const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
     const denied = await req(edge, "GET", "/_api/data/shared?prefix=secret:", { token: null });
@@ -598,9 +638,10 @@ describe("shared prefix grants + list verb (ADR-0042)", () => {
   it('orders astral-plane keys bytewise — the fake agrees with COLLATE "C" production', async () => {
     // JS code-unit order and bytewise UTF-8 order disagree exactly here: a
     // surrogate pair (U+1F600) sorts BEFORE U+FFFD by code unit, AFTER it by
-    // bytes. The fake must follow the bytes, because the real store's keyset is
-    // `COLLATE \"C\"` — a code-unit fake would assert page boundaries production
-    // does not have (review finding 7).
+    // bytes. ADR-0043 means such keys can no longer be CREATED through the API
+    // (identifiers are printable ASCII), so this seeds them straight at the
+    // store: an out-of-band row must still page identically in the fake and in
+    // the real store's `COLLATE "C"` keyset, so the fake follows the bytes.
     const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
     const ASTRAL = "record:\u{1F600}"; // 4 UTF-8 bytes, F0-9F-98-80
     const HIGH_BMP = "record:\uFFFD"; // 3 UTF-8 bytes, EF-BF-BD

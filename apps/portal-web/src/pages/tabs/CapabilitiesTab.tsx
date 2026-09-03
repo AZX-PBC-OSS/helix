@@ -19,8 +19,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   BASELINE_DOLLARS_PER_DAY,
   BASELINE_WRITES_PER_DAY,
+  isValidDataKey,
   isValidServiceWorkerScope,
-  isValidSharedPrefix,
   type App,
   type Capabilities,
   type FetchConnection,
@@ -305,13 +305,14 @@ export function CapabilitiesTab({ app }: { app: App }) {
   // rather than a 400 on save.
   const scopeInvalid =
     draft.offlineScope !== undefined && !isValidServiceWorkerScope(draft.offlineScope);
-  // Prefixes validate against the SHARED rule (review finding 8): the server's
-  // own schema, not an ad-hoc string check that drifts in both directions —
-  // too strict (a legal single space disabled Save) and too lax (a >256-byte
-  // prefix reached the server as a raw 400).
-  const prefixError = "not a valid prefix — non-empty, ≤ 256 bytes, no control characters";
-  const readPrefixInvalid = draft.sharedReadPrefixes.some((p) => !isValidSharedPrefix(p));
-  const writePrefixInvalid = draft.sharedWritePrefixes.some((p) => !isValidSharedPrefix(p));
+  // Prefixes (and every other grant string) validate against the SHARED rule
+  // (review finding 8): the server's own predicate, not an ad-hoc string check
+  // that drifts in both directions. ADR-0043 tightened the rule itself to
+  // printable ASCII.
+  const prefixError =
+    "not a valid prefix — printable ASCII (letters, digits, punctuation, space), 1–256 characters, no leading/trailing space";
+  const readPrefixInvalid = draft.sharedReadPrefixes.some((p) => !isValidDataKey(p));
+  const writePrefixInvalid = draft.sharedWritePrefixes.some((p) => !isValidDataKey(p));
   const prefixInvalid = readPrefixInvalid || writePrefixInvalid;
   // A write-prefix grant requires its bound (ADR-0042 review finding 3): the
   // schema refuses `sharedWritePrefixes` without `writesPerDay`, so the editor
