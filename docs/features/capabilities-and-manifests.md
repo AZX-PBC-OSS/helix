@@ -23,7 +23,8 @@ Capabilities = {
            sharedRead: string[]       // world-readable-within-gate keys
            sharedWrite: string[]      // narrower; write never implies read
            sharedReadPrefixes: string[]   // ADR-0042: every key starting with these (read)
-           sharedWritePrefixes: string[]  // same, write; approval-elevated — unboundedly many keys
+           sharedWritePrefixes: string[]  // same, write — REQUIRES writesPerDay (unbounded row
+                                          // creation: the grant and its bound approve together)
            writesPerDay?: int; bytesPerDay?: int }
   mcp: string[]                        // platform-registered MCP servers (default [])
   externalOrigins: URL[]               // extra CSP connect-src for DIRECT calls (default [])
@@ -108,7 +109,7 @@ SPA's pre-submit warning never drift:
 |---|---|---|---|
 | LLM models | `CURATED_LLM_MODELS` (= every model in `MODEL_PRICING`: the `claude-*` family plus the OpenAI `gpt-*`/`o*` models) | any other model | med |
 | LLM budget | `dollarsPerDay ≤ BASELINE_DOLLARS_PER_DAY` ($50) | above threshold | med |
-| data scopes | user store, collections, shared keys (literal) | shared read/write **prefixes** (ADR-0042 — one element covers unboundedly many runtime-chosen keys) | low |
+| data scopes | user store, collections, shared keys (literal) | shared read/write **prefixes** (ADR-0042 — one element covers unboundedly many runtime-chosen keys; a write prefix is refused without a `writesPerDay` budget, so the grant and its bound approve together) | low |
 | data budgets | writes/bytes ≤ thresholds | above threshold | med |
 | mcp | `CURATED_MCP_ALLOWLIST` (**empty** ⇒ *every* MCP grant elevates) | any MCP server | high |
 | externalOrigins | — | any origin added | med |

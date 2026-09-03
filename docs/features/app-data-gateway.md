@@ -146,14 +146,26 @@ GET /_api/data/shared?prefix=<p>[&cursor=<opaque>]
   (`TODO.md`) learned the hard way. An undecodable cursor is `400`, never a silent first page.
 - **No new database privilege** (ADR-0042 decision 6): `listShared` rides the same `SELECT` on
   `app_data` that `getShared` does — `starts_with(key, $n)` (parameterized, no LIKE
-  metacharacters), `ORDER BY key COLLATE "C"` so the SQL keyset and the in-memory fake's
-  code-unit comparison agree whatever the deployment's default collation is.
+  metacharacters), `ORDER BY key COLLATE "C"`: bytewise UTF-8 order, a single well-defined
+  ordering independent of the deployment's default collation. It agrees with JS code-unit
+  comparison for BMP keys, and the in-memory fake compares the UTF-8 bytes directly, so the
+  two agree even for astral-plane keys (where code-unit and code-point order differ).
 - **The deny path is metered `forbidden`** (model `shared.list`) — the fetch-proxy allowlist
   precedent — so enumeration probing is audit-visible, and distinguishable from an empty result
-  (`ok`, `keys: []`) on the same ledger column. The span carries `url.path` (query dropped — the
-  prefix lives there) and `helix.data.match_count`, never the prefix value or the matched keys
+  (`ok`, `keys: []`) on the same ledger column. The span carries `helix.data.match_count` and,
+  on a deny, `helix.reason` — never the prefix value or the matched keys, and no `url.path` on
+  any data span: four data routes carry an app-chosen key as the path's last segment, and
+  prefix grants make those keys unbounded, so the wrapper records `http.route` + verb only
   (`DATA_LIST_DENIAL_REASONS` / `ATTR_DATA_MATCH_COUNT` in `@azx-pbc/shared/telemetry`;
-  adversarial suite: `apps/edge/src/gateway/dataTelemetry.test.ts`).
+  adversarial suites: `dataTelemetry.test.ts`, plus `spanRedaction.test.ts`'s planted-key
+  case on the key-addressed verbs).
+- **A write-prefix grant requires a `writesPerDay` budget** (schema-level, ADR-0042 review
+  finding 3). Before prefixes, the literal `sharedWrite` array bounded the rows an app could
+  ever hold; a prefix allows creating a new row per `If-None-Match: *` PUT, and there is no
+  shared DELETE to reclaim any of it — so the manifest refuses `sharedWritePrefixes` without
+  `writesPerDay`, making the grant and its bound one approval decision (read prefixes are
+  exempt: they cannot create rows, and listing is page-capped). A per-app shared-row cap on
+  the create path is the stronger, deferred version — `TODO.md`.
 
 The honest cost is **guessing vs enumeration**: today an app user can read any shared key whose
 name they can guess; with a list verb they can read any key whose prefix the owner granted.

@@ -1,8 +1,23 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
+import { DataCapabilitySchema } from "@azx-pbc/shared";
 import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import { FORBIDDEN_URL_ATTRS } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
+import { buildApp } from "./app.js";
+import { SESSION_COOKIE } from "./auth/cookies.js";
+import { hashSessionToken, newSessionToken } from "./auth/sessions.js";
+import { testAuthConfig, testEdgeConfig } from "./test/config.js";
+import {
+  FakeAppDataStore,
+  FakeBlobReader,
+  FakeOidcClient,
+  FakeRegistry,
+  FakeSessionStore,
+  FakeUsageStore,
+  registryEntry,
+} from "./test/fakes.js";
 
 /**
  * ADR-0037 decision 10's redaction case — the direct sibling of
@@ -109,5 +124,127 @@ describe("span attributes never carry a credential", () => {
       async () => {},
     );
     expect(recording.spans()[0]?.attributes["url.path"]).toBe("/_auth/complete");
+  });
+
+  /**
+   * ADR-0042 review finding 1's regression guard. The data routes are the
+   * first parameterized routes `spanUrlAttributes` was ever pointed at, and
+   * four of them carry an app-chosen KEY as the path's last segment — under
+   * prefix grants those keys are unbounded and attacker-choosable, so an
+   * `url.path` there is app data written into a retained backend (it fires even
+   * on a 404, so an unauthenticated prober chooses the strings). The wrapper
+   * (`withDataSpans`) therefore records no path at all — `http.route` plus
+   * `helix.data.verb` identify the route. This drives the REAL handlers with a
+   * planted key in the URL and scans every attribute of every span, so
+   * re-adding a path attribute fails here rather than leaking quietly.
+   */
+  describe("the app-data gateway's parameterized routes (ADR-0042 finding 1)", () => {
+    const APP_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const HOST = "notes.local.helix.azxlabs.io";
+    // The edge's Origin check is exact same-origin, port included (as in
+    // `data.test.ts` — the host header omits it, the Origin must carry it).
+    const ORIGIN = `https://${HOST}:8080`;
+    /** A key an app might plausibly derive from a person — the leak case. */
+    const PLANTED_KEY = "PLANTED-PATIENT-ssn-123";
+
+    function buildDataEdge() {
+      const app = buildApp({
+        config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
+        registry: new FakeRegistry([
+          registryEntry({
+            appId: APP_ID,
+            slug: "notes",
+            blobPrefix: "apps/c/1/",
+            visibilityMode: "public",
+            data: DataCapabilitySchema.parse({
+              user: false,
+              sharedReadPrefixes: ["record:"],
+            }),
+          }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions: new FakeSessionStore(),
+        oidc: new FakeOidcClient(),
+        usage: new FakeUsageStore(),
+        appData: new FakeAppDataStore(),
+      });
+      return app;
+    }
+
+    it("never puts the app-chosen key on a span — not even on a 404 probe", async () => {
+      const app = buildDataEdge();
+      const res = await app.inject({
+        method: "GET",
+        // 404 (nothing seeded): the span still fires — that is the point.
+        url: `/_api/data/shared/record:${PLANTED_KEY}`,
+        headers: { host: HOST },
+      });
+      expect(res.statusCode).toBe(404);
+      await app.close();
+
+      expect(recording.spans().length).toBeGreaterThan(0);
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      expect(dump, "an app-data span leaked the requested key").not.toContain(PLANTED_KEY);
+      // And the route is identified without any path at all.
+      for (const span of recording.spans()) {
+        expect(span.attributes["url.path"]).toBeUndefined();
+      }
+    });
+
+    it("never puts the key on a successful write's span either", async () => {
+      // A user-scope PUT that SUCCEEDS (the authenticated happy path) — the
+      // strongest case, because the key is real stored data, not a probe.
+      const sessions = new FakeSessionStore();
+      const token = newSessionToken();
+      const id = randomUUID();
+      await sessions.createPending({
+        id,
+        appId: APP_ID,
+        user: {
+          oid: "alice",
+          displayName: "Alice",
+          name: null,
+          email: null,
+          kind: "user",
+          groups: [],
+        },
+        refreshDueAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+      await sessions.redeem(id, APP_ID, hashSessionToken(token));
+      const app = buildApp({
+        config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
+        registry: new FakeRegistry([
+          registryEntry({
+            appId: APP_ID,
+            slug: "notes",
+            blobPrefix: "apps/c/1/",
+            visibilityMode: "internal",
+            data: DataCapabilitySchema.parse({ user: true }),
+          }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions,
+        oidc: new FakeOidcClient(),
+        usage: new FakeUsageStore(),
+        appData: new FakeAppDataStore(),
+      });
+      const put = await app.inject({
+        method: "PUT",
+        url: `/_api/data/user/draft:${PLANTED_KEY}`,
+        headers: {
+          host: HOST,
+          origin: ORIGIN,
+          "content-type": "application/json",
+          cookie: `${SESSION_COOKIE}=${token}`,
+        },
+        payload: { note: "x" },
+      });
+      expect(put.statusCode).toBe(200);
+      await app.close();
+
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      expect(dump, "an app-data span leaked the written key").not.toContain(PLANTED_KEY);
+    });
   });
 });

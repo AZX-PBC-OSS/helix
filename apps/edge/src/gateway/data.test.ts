@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { buildApp } from "../app.js";
+import { encodeListCursor } from "./data.js";
 import { SESSION_COOKIE } from "../auth/cookies.js";
 import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
@@ -562,6 +563,53 @@ describe("shared prefix grants + list verb (ADR-0042)", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe("validation_failed");
+  });
+
+  it("400s a repeated cursor parameter — an array must not degrade to the first page", async () => {
+    // Fastify parses ?cursor=x&cursor=x into an array; falling through to
+    // `afterKey = null` would silently replay page 1 forever (review finding 4).
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    for (const key of ["record:a", "record:b", "record:c"]) {
+      await edge.store.putShared(APP_ID, key, 1, "prod", { kind: "ifNoneMatch" });
+    }
+    // An empty cursor param is simply "no cursor" — the documented first page.
+    const first = await req(edge, "GET", "/_api/data/shared?prefix=record:&cursor=", {
+      token: null,
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().keys).toHaveLength(3);
+    const cursor = encodeListCursor("record:a");
+    const repeated = await req(
+      edge,
+      "GET",
+      `/_api/data/shared?prefix=record:&cursor=${cursor}&cursor=${cursor}`,
+      { token: null },
+    );
+    expect(repeated.statusCode).toBe(400);
+    expect(repeated.json().error.code).toBe("validation_failed");
+    // The single-parameter form of the same cursor still pages correctly.
+    const single = await req(edge, "GET", `/_api/data/shared?prefix=record:&cursor=${cursor}`, {
+      token: null,
+    });
+    expect(single.statusCode).toBe(200);
+    expect(single.json().keys.map((k: { key: string }) => k.key)).toEqual(["record:b", "record:c"]);
+  });
+
+  it('orders astral-plane keys bytewise — the fake agrees with COLLATE "C" production', async () => {
+    // JS code-unit order and bytewise UTF-8 order disagree exactly here: a
+    // surrogate pair (U+1F600) sorts BEFORE U+FFFD by code unit, AFTER it by
+    // bytes. The fake must follow the bytes, because the real store's keyset is
+    // `COLLATE \"C\"` — a code-unit fake would assert page boundaries production
+    // does not have (review finding 7).
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    const ASTRAL = "record:\u{1F600}"; // 4 UTF-8 bytes, F0-9F-98-80
+    const HIGH_BMP = "record:\uFFFD"; // 3 UTF-8 bytes, EF-BF-BD
+    const ASCII = "record:a"; // 1 byte
+    for (const key of [ASTRAL, HIGH_BMP, ASCII]) {
+      await edge.store.putShared(APP_ID, key, 1, "prod", { kind: "ifNoneMatch" });
+    }
+    const res = await req(edge, "GET", "/_api/data/shared?prefix=record:", { token: null });
+    expect(res.json().keys.map((k: { key: string }) => k.key)).toEqual([ASCII, HIGH_BMP, ASTRAL]);
   });
 });
 

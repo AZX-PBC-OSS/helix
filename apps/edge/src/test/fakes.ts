@@ -340,25 +340,30 @@ export class FakeAppDataStore implements AppDataStore {
 
   /**
    * Mirrors `PgAppDataStore.listShared` (ADR-0042): prefix filter, keyset
-   * cursor, cap+1 lookahead. Sort and cursor predicate both use plain code-unit
-   * comparison — the same ordering as the real store's `COLLATE "C"` — so a
-   * page sequence asserted here cannot skip or replay rows against Postgres.
+   * cursor, cap+1 lookahead. Sort and cursor predicate both compare the UTF-8
+   * BYTES (`Buffer.compare`), not JS code units — the two orders disagree for
+   * astral-plane characters (a surrogate pair sorts before high-BMP chars by
+   * code unit, after them by bytes), and the real store pins `COLLATE "C"`,
+   * which is bytewise. Comparing bytes here keeps a page sequence asserted
+   * against the fake from asserting boundaries production does not have.
    */
   async listShared(appId: string, prefix: string, afterKey: string | null): Promise<SharedKeyPage> {
     // `#sharedKey(appId, "")` IS the shared-row key prefix for this app.
     const base = this.#sharedKey(appId, "");
+    const bytewise = (a: string, b: string): number =>
+      Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
     const matched: SharedKeyMeta[] = [];
     for (const [k, v] of this.rows) {
       if (!k.startsWith(base)) continue;
       const key = k.slice(base.length);
       if (!key.startsWith(prefix)) continue;
-      if (afterKey !== null && !(key > afterKey)) continue;
+      if (afterKey !== null && bytewise(key, afterKey) <= 0) continue;
       matched.push({ key, version: String(v.version), updatedAt: v.updatedAt });
     }
-    matched.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    matched.sort((a, b) => bytewise(a.key, b.key));
     const keys = matched.slice(0, SHARED_LIST_PAGE);
     return matched.length > SHARED_LIST_PAGE
-      ? { keys, nextCursor: encodeListCursor(keys[SHARED_LIST_PAGE - 1]!.key) }
+      ? { keys, nextCursor: encodeListCursor(keys.at(-1)!.key) }
       : { keys };
   }
 

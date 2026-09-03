@@ -37,6 +37,9 @@ const OTHER_APP = randomUUID();
 // tests' `record:`-prefixed rows under APP would be indistinguishable pollution.
 const PAGING_APP = randomUUID();
 const ORDER_APP = randomUUID();
+// The two row-level listShared tests get one too — they seed `record:*` keys
+// and assert exact contents, which must not depend on file execution order.
+const LIST_APP = randomUUID();
 let store: PgAppDataStore | null = null;
 
 afterAll(async () => {
@@ -45,7 +48,7 @@ afterAll(async () => {
   const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
   try {
     await owner.query(`DELETE FROM app_data WHERE "appId" = ANY($1::uuid[])`, [
-      [APP, OTHER_APP, PAGING_APP, ORDER_APP],
+      [APP, OTHER_APP, PAGING_APP, ORDER_APP, LIST_APP],
     ]);
     await owner.query(`DELETE FROM app_collection_items WHERE "appId" = ANY($1::uuid[])`, [
       [APP, OTHER_APP],
@@ -325,16 +328,18 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
       // row, and an out-of-prefix shared key: none of them may be listed.
       await s.putUserKey(APP, "alice", "record:mine", 1, "prod", { kind: "none" });
       await s.putShared(OTHER_APP, "record:theirs", 1, "prod", { kind: "ifNoneMatch" });
-      await s.putShared(APP, "journal:1", 1, "prod", { kind: "ifNoneMatch" });
-      await s.putShared(APP, "record:b", { v: 2 }, "prod", { kind: "ifNoneMatch" });
-      const first = await s.putShared(APP, "record:a", { v: 1 }, "prod", { kind: "ifNoneMatch" });
+      await s.putShared(LIST_APP, "journal:1", 1, "prod", { kind: "ifNoneMatch" });
+      await s.putShared(LIST_APP, "record:b", { v: 2 }, "prod", { kind: "ifNoneMatch" });
+      const first = await s.putShared(LIST_APP, "record:a", { v: 1 }, "prod", {
+        kind: "ifNoneMatch",
+      });
       expect(first).toMatchObject({ kind: "ok", version: "1" });
-      await s.putShared(APP, "record:a", { v: 1.1 }, "prod", {
+      await s.putShared(LIST_APP, "record:a", { v: 1.1 }, "prod", {
         kind: "ifMatch",
         version: "1",
       });
 
-      const page = await s.listShared(APP, "record:", null, "prod");
+      const page = await s.listShared(LIST_APP, "record:", null, "prod");
       expect(page.nextCursor).toBeUndefined();
       expect(page.keys).toHaveLength(2);
       expect(page.keys.map((k) => k.key)).toEqual(["record:a", "record:b"]);
@@ -356,9 +361,9 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
       // With a LIKE-built predicate, `record:100_` would also match
       // `record:100Xc` (the underscore is a one-char wildcard). `starts_with`
       // has no metacharacters — the whole reason it was chosen.
-      await s.putShared(APP, "record:100_pc", 1, "prod", { kind: "ifNoneMatch" });
-      await s.putShared(APP, "record:100Xc", 2, "prod", { kind: "ifNoneMatch" });
-      const page = await s.listShared(APP, "record:100_", null, "prod");
+      await s.putShared(LIST_APP, "record:100_pc", 1, "prod", { kind: "ifNoneMatch" });
+      await s.putShared(LIST_APP, "record:100Xc", 2, "prod", { kind: "ifNoneMatch" });
+      const page = await s.listShared(LIST_APP, "record:100_", null, "prod");
       expect(page.keys.map((k) => k.key)).toEqual(["record:100_pc"]);
     } finally {
       await s.close();

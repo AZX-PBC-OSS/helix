@@ -18,7 +18,9 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import {
   BASELINE_DOLLARS_PER_DAY,
+  BASELINE_WRITES_PER_DAY,
   isValidServiceWorkerScope,
+  isValidSharedPrefix,
   type App,
   type Capabilities,
   type FetchConnection,
@@ -102,6 +104,8 @@ interface Draft {
   sharedReadPrefixes: string[];
   /** ADR-0042: every key starting with one of these prefixes is shared-writable. */
   sharedWritePrefixes: string[];
+  /** Per-app daily data-write budget; required alongside write prefixes (ADR-0042 review finding 3). */
+  dataWritesPerDay: number | undefined;
   mcp: string[];
   externalOrigins: string[];
   /** Fetch-proxy: proxied origins (each with an optional secret connection). */
@@ -125,6 +129,7 @@ function toDraft(c: Capabilities): Draft {
     sharedWrite: c.data?.sharedWrite ?? [],
     sharedReadPrefixes: c.data?.sharedReadPrefixes ?? [],
     sharedWritePrefixes: c.data?.sharedWritePrefixes ?? [],
+    dataWritesPerDay: c.data?.writesPerDay,
     mcp: c.mcp,
     externalOrigins: c.externalOrigins,
     fetchOrigins: c.fetch?.origins ?? [],
@@ -141,7 +146,8 @@ function hasDataGrant(d: Draft): boolean {
     d.sharedRead.length > 0 ||
     d.sharedWrite.length > 0 ||
     d.sharedReadPrefixes.length > 0 ||
-    d.sharedWritePrefixes.length > 0
+    d.sharedWritePrefixes.length > 0 ||
+    d.dataWritesPerDay !== undefined
   );
 }
 
@@ -165,6 +171,7 @@ function fromDraft(d: Draft): Capabilities {
             sharedWrite: d.sharedWrite,
             sharedReadPrefixes: d.sharedReadPrefixes,
             sharedWritePrefixes: d.sharedWritePrefixes,
+            ...(d.dataWritesPerDay !== undefined ? { writesPerDay: d.dataWritesPerDay } : {}),
           },
         }
       : {}),
@@ -211,6 +218,8 @@ function renderYaml(app: App, d: Draft): string {
       lines.push(`    shared_read_prefixes: [${d.sharedReadPrefixes.join(", ")}]`);
     if (d.sharedWritePrefixes.length)
       lines.push(`    shared_write_prefixes: [${d.sharedWritePrefixes.join(", ")}]`);
+    if (d.dataWritesPerDay !== undefined)
+      lines.push(`    writes_per_day: ${d.dataWritesPerDay.toLocaleString()}`);
   }
   lines.push(`  mcp: [${d.mcp.join(", ")}]`);
   lines.push(`  external_origins: [${d.externalOrigins.join(", ")}]`);
@@ -296,11 +305,19 @@ export function CapabilitiesTab({ app }: { app: App }) {
   // rather than a 400 on save.
   const scopeInvalid =
     draft.offlineScope !== undefined && !isValidServiceWorkerScope(draft.offlineScope);
-  // An empty prefix would grant the whole `shared` scope (ADR-0042: `min(1)` is
-  // load-bearing) — the server rejects it on save; catch it here first.
-  const prefixInvalid = [...draft.sharedReadPrefixes, ...draft.sharedWritePrefixes].some(
-    (p) => p.trim() === "",
-  );
+  // Prefixes validate against the SHARED rule (review finding 8): the server's
+  // own schema, not an ad-hoc string check that drifts in both directions —
+  // too strict (a legal single space disabled Save) and too lax (a >256-byte
+  // prefix reached the server as a raw 400).
+  const prefixError = "not a valid prefix — non-empty, ≤ 256 bytes, no control characters";
+  const readPrefixInvalid = draft.sharedReadPrefixes.some((p) => !isValidSharedPrefix(p));
+  const writePrefixInvalid = draft.sharedWritePrefixes.some((p) => !isValidSharedPrefix(p));
+  const prefixInvalid = readPrefixInvalid || writePrefixInvalid;
+  // A write-prefix grant requires its bound (ADR-0042 review finding 3): the
+  // schema refuses `sharedWritePrefixes` without `writesPerDay`, so the editor
+  // states the requirement instead of letting the save 400.
+  const budgetMissing =
+    draft.sharedWritePrefixes.length > 0 && draft.dataWritesPerDay === undefined;
 
   return (
     <Stack gap={18}>
@@ -411,11 +428,7 @@ export function CapabilitiesTab({ app }: { app: App }) {
                   value={draft.sharedReadPrefixes}
                   onChange={(sharedReadPrefixes) => patch({ sharedReadPrefixes })}
                   classNames={{ input: "az-mono" }}
-                  error={
-                    draft.sharedReadPrefixes.some((p) => p.trim() === "")
-                      ? "a prefix cannot be empty — that would grant the whole scope"
-                      : undefined
-                  }
+                  error={readPrefixInvalid ? prefixError : undefined}
                 />
                 <TagsInput
                   label="Shared write prefixes — runtime-created keys"
@@ -424,11 +437,7 @@ export function CapabilitiesTab({ app }: { app: App }) {
                   value={draft.sharedWritePrefixes}
                   onChange={(sharedWritePrefixes) => patch({ sharedWritePrefixes })}
                   classNames={{ input: "az-mono" }}
-                  error={
-                    draft.sharedWritePrefixes.some((p) => p.trim() === "")
-                      ? "a prefix cannot be empty — that would grant the whole scope"
-                      : undefined
-                  }
+                  error={writePrefixInvalid ? prefixError : undefined}
                 />
                 {(draft.sharedRead.length > 0 || draft.sharedWrite.length > 0) && (
                   <ToneBadge tone="violet" icon="shield">
@@ -440,6 +449,32 @@ export function CapabilitiesTab({ app }: { app: App }) {
                     prefix grants cover unboundedly many keys — saving opens an admin-approval
                     request (ADR-0042)
                   </ToneBadge>
+                )}
+                {draft.sharedWritePrefixes.length > 0 && (
+                  <>
+                    <Hint icon="shield" tone="warn">
+                      Write prefixes allow the app to create shared rows at runtime, and shared rows
+                      cannot be deleted yet — a daily write budget is required with the grant, so
+                      both are approved together.
+                    </Hint>
+                    <NumberInput
+                      label="Daily write budget (writesPerDay)"
+                      description={`Caps user/collection/shared writes per day. Over ${BASELINE_WRITES_PER_DAY.toLocaleString()}/day opens an approval request.`}
+                      value={draft.dataWritesPerDay ?? 10_000}
+                      onChange={(v) =>
+                        patch({
+                          dataWritesPerDay: typeof v === "number" ? v : Number(v) || 0,
+                        })
+                      }
+                      min={1}
+                      step={1_000}
+                      thousandSeparator=","
+                      w={220}
+                      size="xs"
+                      classNames={{ input: "az-mono" }}
+                      error={budgetMissing ? "a daily write budget is required" : undefined}
+                    />
+                  </>
                 )}
               </Stack>
             </CapBlock>
@@ -645,7 +680,7 @@ export function CapabilitiesTab({ app }: { app: App }) {
               <Button
                 fullWidth
                 mt={14}
-                disabled={!dirty || capMissing || scopeInvalid || prefixInvalid}
+                disabled={!dirty || capMissing || scopeInvalid || prefixInvalid || budgetMissing}
                 loading={setManifest.isPending}
                 leftSection={<Icon name="check" size={14} />}
                 onClick={() =>
@@ -657,10 +692,12 @@ export function CapabilitiesTab({ app }: { app: App }) {
                   : scopeInvalid
                     ? "Fix the worker scope to save"
                     : prefixInvalid
-                      ? "Fix the empty prefix to save"
-                      : dirty
-                        ? "Save manifest"
-                        : "Saved"}
+                      ? "Fix the invalid prefix to save"
+                      : budgetMissing
+                        ? "Set a write budget to save"
+                        : dirty
+                          ? "Save manifest"
+                          : "Saved"}
               </Button>
             )}
             {setManifest.isError && (

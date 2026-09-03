@@ -466,7 +466,20 @@ export function classifyVisibilityChange(
 
 // ── Applying deltas (route baseline write + approve elevated write) ───────────
 
-const ARRAY_PATH = /^(.*)\[([+-])(.*)\]$/;
+/**
+ * The closed set of array-valued delta paths `classifyChange` can emit, as a
+ * regex **anchored on the field names** (ADR-0042 review finding 5). The
+ * tempting `/^(.*)\[([+-])(.*)\]$/` is greedy on the field group, so it binds
+ * at the LAST `[+`/`[-` — and an array ITEM containing `[` (legal in keys and
+ * prefixes; free-form namespaces make it plausible) silently hijacked the
+ * parse: `data.sharedReadPrefixes[-cfg[-v2]]` read as field
+ * `data.sharedReadPrefixes[-cfg`, item `v2]`, and `applyArray`'s fall-through
+ * no-op'd it — the owner revoked a grant and got a 200 with the grant intact.
+ * Anchoring against the enumeration makes the split unambiguous (the field can
+ * never absorb a `[`) without restricting what items may contain.
+ */
+const ARRAY_PATH =
+  /^(mcp|externalOrigins|llm\.models|fetch\.origins|data\.(?:collections|sharedRead|sharedWrite|sharedReadPrefixes|sharedWritePrefixes))\[([+-])(.*)\]$/;
 
 /**
  * Apply capability deltas to a capabilities object, returning a fresh parsed
@@ -538,7 +551,14 @@ function applyArray(caps: Capabilities, field: string, op: "+" | "-", item: stri
       return;
     }
     default:
-      return;
+      // Unreachable by construction — ARRAY_PATH is anchored on exactly the
+      // case set above — but a silent fall-through here is the bug shape
+      // finding 5 exploited (a delta that "applies" while doing nothing), so
+      // the safety net fails loudly instead. Scalar paths keep their lenient
+      // no-op: a pending request filed by an older build can carry a retired
+      // scalar path, and applying nothing beats refusing to decide it forever
+      // (ADR-0039 — requests never expire).
+      throw new Error(`applyDeltas: unrecognized array field "${field}"`);
   }
 }
 
@@ -722,10 +742,39 @@ function canonicalSnapshotJson(value: unknown): string {
 }
 
 /**
+ * The stored half of one snapshot area, normalized the way the approve-time
+ * re-derivation is (ADR-0042 review finding 2).
+ *
+ * `captureSnapshot` parses through `CapabilitiesSchema`, so the fresh side
+ * carries every field the schema currently defaults. The STORED side is a jsonb
+ * column written when the request was filed — possibly by an older build, before
+ * a field existed — so a plain comparison reads a defaulted-but-unchanged field
+ * as a key-SET difference and every approve of a request that spans a deploy
+ * auto-bounces to `needs_changes`. (This is the same class as the key-ORDER bug
+ * {@link canonicalSnapshotJson} fixed: a representation difference read as a
+ * moved value.) Re-parsing the stored area through the same schema erases the
+ * difference for free, and keeps doing so for the NEXT field added to any
+ * capability — which is the actual regression test: a snapshot missing a field
+ * the schema now defaults must not conflict.
+ *
+ * `visibility` is exempt (it is the label, not a capabilities area), and a value
+ * that will not parse — `null` areas, or a snapshot older than the field's whole
+ * area — falls back to the raw value, preserving the pre-normalization
+ * comparison rather than inventing a conflict.
+ */
+function storedSnapshotArea(key: string, value: unknown): unknown {
+  if (key === "visibility" || value === null || typeof value !== "object") return value;
+  const parsed = CapabilitiesSchema.safeParse({ [key]: value });
+  return parsed.success ? parsed.data[key as keyof typeof parsed.data] : value;
+}
+
+/**
  * True if any snapshotted area no longer matches current effective state — the
  * diff is stale and approval must bounce to `needs_changes` rather than clobber.
  * Array reordering counts as a change (conservative, safe direction); object
- * key order does not (see {@link canonicalSnapshotJson}).
+ * key order does not (see {@link canonicalSnapshotJson}), and neither do
+ * schema-defaulted fields the stored snapshot predates (see
+ * {@link storedSnapshotArea}).
  */
 export function snapshotConflicts(
   baseSnapshot: unknown,
@@ -736,7 +785,12 @@ export function snapshotConflicts(
   const snap = baseSnapshot as Record<string, unknown>;
   const current = captureSnapshot(effective, visibility, Object.keys(snap) as Area[]);
   for (const key of Object.keys(snap)) {
-    if (canonicalSnapshotJson(snap[key]) !== canonicalSnapshotJson(current[key])) return true;
+    if (
+      canonicalSnapshotJson(storedSnapshotArea(key, snap[key])) !==
+      canonicalSnapshotJson(current[key])
+    ) {
+      return true;
+    }
   }
   return false;
 }

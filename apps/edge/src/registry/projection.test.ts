@@ -129,7 +129,15 @@ describe("RegistryProjection", () => {
             ...ROW,
             slug: "granted",
             capabilities: {
-              data: { user: true, collections: ["contacts"], sharedWritePrefixes: ["record:"] },
+              // The write prefix carries its bound (ADR-0042 review finding 3):
+              // the schema refuses one without the other, and this parse is
+              // that same schema — fail-closed below.
+              data: {
+                user: true,
+                collections: ["contacts"],
+                sharedWritePrefixes: ["record:"],
+                writesPerDay: 5000,
+              },
             },
           },
           { ...ROW, slug: "no-data", capabilities: { llm: { models: [] } } },
@@ -143,6 +151,13 @@ describe("RegistryProjection", () => {
             slug: "bad-prefix",
             capabilities: { data: { sharedReadPrefixes: [""] } },
           },
+          // A write prefix without its writesPerDay bound fails the same way —
+          // a row the portal can no longer write, projected closed.
+          {
+            ...ROW,
+            slug: "unbounded-write-prefix",
+            capabilities: { data: { sharedWritePrefixes: ["record:"] } },
+          },
         ],
       ]),
     );
@@ -154,11 +169,13 @@ describe("RegistryProjection", () => {
       sharedWrite: [],
       sharedReadPrefixes: [],
       sharedWritePrefixes: ["record:"],
+      writesPerDay: 5000,
     });
     expect(projection.getApp("no-data")?.data).toBeNull();
     expect(projection.getApp("bad-json")?.data).toBeNull();
     expect(projection.getApp("bad-data")?.data).toBeNull();
     expect(projection.getApp("bad-prefix")?.data).toBeNull();
+    expect(projection.getApp("unbounded-write-prefix")?.data).toBeNull();
   });
 
   it("parses capabilities.externalOrigins, failing closed to [] on junk", async () => {

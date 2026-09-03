@@ -145,8 +145,8 @@ you did not declare returns `403` — that is the expected failure, not a bug.
       "sharedRead": ["config"], // app-scoped world-readable keys
       "sharedWrite": [], // a write grant never implies a read grant
       "sharedReadPrefixes": ["record:"], // ADR-0042: every key starting with these
-      "sharedWritePrefixes": ["record:"], // → runtime-created keys; see §3.2
-      "writesPerDay": 10000,
+      "sharedWritePrefixes": ["record:"], // same, write — REQUIRES writesPerDay (below)
+      "writesPerDay": 10000, // the bound the write prefixes are approved against
       "bytesPerDay": 50000000
     },
     "mcp": [], // carried, not yet enforced — no transport exists
@@ -360,7 +360,7 @@ const page = await (await fetch("/_api/data/shared?prefix=record:")).json();
 // Pass nextCursor back as ?cursor=… until it's absent. The listed version is a
 // valid If-Match, so list → update needs no per-key read.
 for (const k of page.keys) {
-  const value = await (await fetch(`/_api/data/shared/${encodeURIComponent(k.key)}`)).json();
+  const { value } = await (await fetch(`/_api/data/shared/${encodeURIComponent(k.key)}`)).json();
 }
 ```
 
@@ -368,6 +368,13 @@ The prefix must itself be covered by a `sharedReadPrefixes` grant (equal or
 narrower), a literal `sharedRead` grant does not confer listing, and there is
 no prefix-less form. `403` on a list means the prefix wasn't granted — that is
 the enumeration boundary, and it's audited.
+
+**A write prefix requires a `writesPerDay` budget.** Before prefixes, the
+literal `sharedWrite` array bounded the rows an app could ever hold; a prefix
+allows creating a NEW row per call, and nothing can delete shared rows yet — so
+the manifest refuses `sharedWritePrefixes` without `writesPerDay` (a 400 naming
+the field). Read prefixes need no budget: they can't create rows, and listing
+is page-capped.
 
 ```js
 await fetch("/_api/data/user/prefs", {

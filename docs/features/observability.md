@@ -49,6 +49,17 @@ terminates untrusted traffic (decision 4).
 | `helix.registry.load` | the projection reload |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
 
+Per-span attributes beyond the semconv keys, so a new one has one place to be
+looked up:
+
+- `helix.gateway.data` spans carry `helix.data.verb` (the handler name, bounded
+  by the handler set), `helix.data.match_count` on the list verb (bounded by its
+  200-key page cap), and `helix.reason` = `prefix_not_granted` on a list deny —
+  never a `url.path`: four data routes carry an app-chosen **key** as the
+  path's last segment, and prefix grants (ADR-0042) make those keys unbounded
+  and attacker-choosable, so the wrapper records `http.route` + verb only.
+  Pinned by `spanRedaction.test.ts`'s planted-key case.
+
 | Instrument | Kind | Attributes |
 | --- | --- | --- |
 | `helix.registry.stale_for_ms` | observable gauge | — |
@@ -78,6 +89,13 @@ metrics backend.
   (decision 11), and it is a span attribute rather than a metric label, so it
   costs retention rather than time series — but it is the first thing to revisit
   if span volume becomes a cost question.
+- **The app-data gateway's spans carry no `url.path`, by decision.** Four of its
+  routes put an app-chosen key in the path's last segment, and prefix grants
+  (ADR-0042) exist so those keys are invented at runtime — a path attribute
+  there is unbounded, attacker-choosable app data in a retained backend (the
+  same reasoning as the slug bullet, but with data rather than noise). The
+  wrapper records `http.route` + `helix.data.verb` instead;
+  `spanRedaction.test.ts` fails if a path is re-added.
 
 ## The rules that are easy to break
 

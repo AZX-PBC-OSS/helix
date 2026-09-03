@@ -186,6 +186,23 @@ describe("shared prefix grants (ADR-0042)", () => {
     // was legal yesterday cannot start failing validation today.
     expect(CapabilitiesParse({ data: { sharedRead: ["漢".repeat(128)] } }).success).toBe(true);
   });
+
+  // Review finding 3: before prefixes, the literal sharedWrite array bounded
+  // the rows an app could ever hold. A write PREFIX allows runtime row
+  // creation, so the schema couples it to a writesPerDay budget — the grant
+  // and its bound are one decision. Read prefixes are exempt (they cannot
+  // create rows; listing is page-capped).
+  it("requires a writesPerDay budget with shared write prefixes", () => {
+    expect(CapabilitiesParse({ data: { sharedWritePrefixes: ["record:"] } }).success).toBe(false);
+    expect(
+      CapabilitiesParse({ data: { sharedWritePrefixes: ["record:"], writesPerDay: 10_000 } })
+        .success,
+    ).toBe(true);
+  });
+
+  it("read prefixes alone need no budget — they cannot create rows", () => {
+    expect(CapabilitiesParse({ data: { sharedReadPrefixes: ["record:"] } }).success).toBe(true);
+  });
 });
 
 // Small helper to keep the URL-rejection assertion readable.

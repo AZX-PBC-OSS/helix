@@ -13,7 +13,6 @@ import {
 import type { RegistryEntry } from "../registry/projection.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
-import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import type { AppDataStore, CollectionMeta, WritePrecondition } from "./data.js";
 import { decodeListCursor } from "./data.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
@@ -226,11 +225,15 @@ type DispatchedDataVerb = (req: FastifyRequest, reply: FastifyReply, slug: strin
  * collection export, which is documented as materialising the whole CSV
  * (`TODO.md`) — it is still in-handler, so it is still measured correctly.
  *
- * Attributes carry `url.path` (query dropped wholesale by `spanUrlAttributes` —
- * the `listShared` prefix and cursor live in the query, and neither belongs on
- * a span) and the span itself is passed to the handler so a verb can record
- * per-call facts (ADR-0042 decision 7: the list verb's match count and deny
- * reason) without each verb growing its own wrapper.
+ * **No `url.path` here, deliberately** (ADR-0042 review finding 1): five of the
+ * eight data routes carry an app-chosen KEY as the path's last segment, and
+ * prefix grants exist precisely so those keys are invented at runtime — an
+ * unbounded, attacker-choosable attribute value on a span is app data in a
+ * retained backend. `http.route` (`/_api/data/*`) plus `helix.data.verb`
+ * identify the route unambiguously; the span that needs per-call facts
+ * (`listShared`: match count, deny reason) receives the span itself below.
+ * `spanRedaction.test.ts` pins this with a planted key on the key-addressed
+ * verbs, so it cannot be re-added silently.
  */
 function withDataSpans<T extends Record<string, DataVerbHandler>>(
   handlers: T,
@@ -245,7 +248,6 @@ function withDataSpans<T extends Record<string, DataVerbHandler>>(
           [ATTR_APP_SLUG]: slug,
           [ATTR_DATA_VERB]: verb,
           "http.route": ROUTE_DATA,
-          ...spanUrlAttributes(req.url),
         },
         (span) => handler(req, reply, slug, span),
         { reply },
@@ -773,7 +775,15 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
       }
       // Opaque keyset cursor (ADR-0042 decision 3): the last served key,
       // base64url'd. Undecodable or not-a-key ⇒ 400 — never a silent first page,
-      // which would replay rows the caller already saw.
+      // which would replay rows the caller already saw. A REPEATED `cursor`
+      // parameter is the same refusal: Fastify parses it into an array, which
+      // must not fall through to `afterKey = null` (review finding 4) — a
+      // client appending cursors to a URL that already has one would page
+      // forever, re-serving and re-metering every row.
+      if (query.cursor !== undefined && typeof query.cursor !== "string") {
+        sendApiError(reply, 400, "validation_failed", "invalid cursor");
+        return;
+      }
       let afterKey: string | null = null;
       if (typeof query.cursor === "string" && query.cursor.length > 0) {
         afterKey = decodeListCursor(query.cursor);

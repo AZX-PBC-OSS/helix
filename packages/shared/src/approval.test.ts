@@ -134,12 +134,20 @@ describe("classifyChange — mcp / origins / data", () => {
     const r = classifyChange(EMPTY, {
       mcp: [],
       externalOrigins: [],
-      data: { sharedReadPrefixes: ["record:"], sharedWritePrefixes: ["record:"] },
+      // The schema couples write prefixes to a budget (review finding 3): the
+      // bound is a baseline reduction, so it commits immediately — in place
+      // BEFORE the elevated grant it bounds can activate.
+      data: {
+        sharedReadPrefixes: ["record:"],
+        sharedWritePrefixes: ["record:"],
+        writesPerDay: 10_000,
+      },
     });
     expect(paths(r.elevatedDeltas)).toEqual([
       "data.sharedReadPrefixes[+record:]",
       "data.sharedWritePrefixes[+record:]",
     ]);
+    expect(paths(r.baselineDeltas)).toContain("data.writesPerDay");
     // Low, not med/high: within the app's visibility gate a prefix is not
     // meaningfully more dangerous than the literal grant it generalizes.
     expect(r.risk).toBe("low");
@@ -173,9 +181,14 @@ describe("classifyChange — mcp / origins / data", () => {
     const r = classifyChange(EMPTY, {
       mcp: [],
       externalOrigins: [],
-      data: { sharedWritePrefixes: ["record:"] },
+      data: { sharedWritePrefixes: ["record:"], writesPerDay: 10_000 },
     });
-    const applied = applyDeltas(EMPTY, r.elevatedDeltas);
+    // The approve-time base always carries the budget: it was the baseline half
+    // of the same submission, committed at file time (the schema refuses the
+    // requested state without it). The elevated bundle carries only the grant.
+    const base = applyDeltas(EMPTY, r.baselineDeltas);
+    expect(base.data?.writesPerDay).toBe(10_000);
+    const applied = applyDeltas(base, r.elevatedDeltas);
     expect(applied.data?.sharedWritePrefixes).toEqual(["record:"]);
     // The literal arrays are untouched by a prefix delta — the two paths cannot
     // bleed into each other at approve time.
@@ -468,6 +481,49 @@ describe("applyDeltas", () => {
     const applied = applyDeltas(eff, r.elevatedDeltas);
     expect(applied.llm?.dollarsPerDay).toBeUndefined();
   });
+
+  // Review finding 5: `[` and `]` are legal in keys and prefixes, and the old
+  // greedy ARRAY_PATH bound its field group at the LAST `[+`/`[-` — so the
+  // REMOVAL delta for an item containing `[-` split as
+  // field "data.sharedReadPrefixes[-cfg", item "v2]" and applyArray's silent
+  // fall-through no-op'd it: the owner revoked the grant and got a 200 with the
+  // grant intact. The anchored field set makes the split unambiguous.
+  it("round-trips an item containing `[-` — the revoked grant actually goes", () => {
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      data: {
+        user: false,
+        collections: [],
+        sharedRead: [],
+        sharedWrite: [],
+        sharedReadPrefixes: ["cfg[-v2]", "plain:"],
+        sharedWritePrefixes: [],
+        writesPerDay: 10,
+      },
+    };
+    const r = classifyChange(eff, {
+      mcp: [],
+      externalOrigins: [],
+      data: { ...eff.data, sharedReadPrefixes: ["plain:"] },
+    });
+    expect(paths(r.baselineDeltas)).toEqual(["data.sharedReadPrefixes[-cfg[-v2]]"]);
+    const applied = applyDeltas(eff, r.baselineDeltas);
+    expect(applied.data?.sharedReadPrefixes).toEqual(["plain:"]);
+    // And the ADD direction lands too — both directions survive the bracket.
+    // (Adds are elevated — every prefix grant is; removals are the baseline
+    // privilege reductions asserted above.)
+    const add = classifyChange(applied, {
+      mcp: [],
+      externalOrigins: [],
+      data: { ...applied.data, sharedReadPrefixes: ["plain:", "cfg[-v2]"] },
+    });
+    expect(paths(add.elevatedDeltas)).toEqual(["data.sharedReadPrefixes[+cfg[-v2]]"]);
+    expect(applyDeltas(applied, add.elevatedDeltas).data?.sharedReadPrefixes).toEqual([
+      "plain:",
+      "cfg[-v2]",
+    ]);
+  });
 });
 
 describe("snapshot + conflict (optimistic concurrency)", () => {
@@ -504,7 +560,7 @@ describe("snapshot + conflict (optimistic concurrency)", () => {
   // commit blind if someone re-scoped it to `product` in the meantime: the
   // reviewer approved a specific before-state. A mode-only snapshot said "still
   // group" and let it through.
-  it("detects a group-set move under an open request", async () => {
+  it("detects a group-set move under an open request", () => {
     const snap = captureSnapshot(EMPTY, vis("group", "eng"), ["visibility"]);
     expect(snapshotConflicts(snap, EMPTY, vis("group", "product"))).toBe(true);
     expect(snapshotConflicts(snap, EMPTY, vis("group", "eng", "product"))).toBe(true);
@@ -578,6 +634,38 @@ describe("snapshot + conflict (optimistic concurrency)", () => {
         { ...applied, data: { ...applied.data!, sharedRead: ["leaderboard", "extra"] } },
         vis("public"),
       ),
+    ).toBe(true);
+  });
+
+  // Review finding 2: the stored snapshot is jsonb written when the request was
+  // FILED — possibly by a pre-0042 build, before `sharedReadPrefixes` existed —
+  // while the approve-time re-derivation parses through the schema, which now
+  // defaults those arrays. A defaulted-but-unchanged field is a key-SET
+  // difference, not a moved value, and requests never expire (ADR-0039), so a
+  // real queue is expected to hold snapshots across deploys. The stored side is
+  // normalized through the same schema before comparing — which also guards the
+  // NEXT field anyone adds to DataCapabilitySchema.
+  it("does not see a schema-defaulted field the stored snapshot predates as a moved value", () => {
+    // A snapshot exactly as a pre-0042 build wrote it: no prefix keys at all.
+    const preAdr42 = {
+      data: { user: true, collections: ["contacts"], sharedRead: [], sharedWrite: [] },
+    };
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      data: {
+        user: true,
+        collections: ["contacts"],
+        sharedRead: [],
+        sharedWrite: [],
+        sharedReadPrefixes: [],
+        sharedWritePrefixes: [],
+      },
+    };
+    expect(snapshotConflicts(preAdr42, eff, vis("internal"))).toBe(false);
+    // And a genuinely moved value still conflicts through the normalization.
+    expect(
+      snapshotConflicts(preAdr42, { ...eff, data: { ...eff.data!, user: false } }, vis("internal")),
     ).toBe(true);
   });
 });

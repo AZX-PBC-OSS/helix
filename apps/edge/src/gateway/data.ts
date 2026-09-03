@@ -360,10 +360,12 @@ export class PgAppDataStore implements AppDataStore {
       // escaping to get wrong. The sort and the cursor predicate pin `COLLATE
       // "C"` deliberately: the database's default collation is an environment
       // property (dev container vs Azure need not agree), and bytewise UTF-8
-      // order is the one ordering that matches JS code-unit comparison
-      // everywhere, so the keyset in SQL and the keyset in the in-memory fake
-      // (tests, dev gateway) can never disagree about which rows follow a
-      // cursor. `LIMIT` is cap+1: one lookahead row is how the next page's
+      // order is a single well-defined ordering — which agrees with JS
+      // code-unit comparison for BMP keys (the in-memory fake's comparator, so
+      // tests and prod share one ordering there). The fake compares the UTF-8
+      // BYTES directly rather than JS code units, so the two agree even for
+      // astral-plane keys, where code-unit and code-point order differ.
+      // `LIMIT` is cap+1: one lookahead row is how the next page's
       // existence is detected without a COUNT.
       const r = await client.query(
         `SELECT key, version, "updatedAt" FROM app_data
@@ -382,10 +384,7 @@ export class PgAppDataStore implements AppDataStore {
         updatedAt: row.updatedAt.toISOString(),
       }));
       return rows.length > SHARED_LIST_PAGE
-        ? {
-            keys,
-            nextCursor: encodeListCursor(keys[SHARED_LIST_PAGE - 1]!.key),
-          }
+        ? { keys, nextCursor: encodeListCursor(keys.at(-1)!.key) }
         : { keys };
     });
   }

@@ -73,18 +73,51 @@ const SharedPrefixSchema = z
     message: "prefix must not contain control characters",
   });
 
-export const DataCapabilitySchema = z.object({
-  user: z.boolean().default(false),
-  collections: z.array(z.string().min(1)).default([]),
-  sharedRead: z.array(z.string().min(1)).default([]),
-  sharedWrite: z.array(z.string().min(1)).default([]),
-  /** ADR-0042: authorize every key starting with one of these prefixes (read). */
-  sharedReadPrefixes: z.array(SharedPrefixSchema).default([]),
-  /** ADR-0042: authorize every key starting with one of these prefixes (write). */
-  sharedWritePrefixes: z.array(SharedPrefixSchema).default([]),
-  writesPerDay: z.int().positive().optional(),
-  bytesPerDay: z.int().positive().optional(),
-});
+/**
+ * Is this a legal shared-scope prefix? Exported so the SPA's editor can run the
+ * IDENTICAL rule client-side (the `isValidServiceWorkerScope` pattern) — an
+ * ad-hoc client check drifts from the server in both directions and turns into
+ * either a surprise 400 or a wrongly disabled Save (review finding 8).
+ */
+export function isValidSharedPrefix(p: string): boolean {
+  return SharedPrefixSchema.safeParse(p).success;
+}
+
+export const DataCapabilitySchema = z
+  .object({
+    user: z.boolean().default(false),
+    collections: z.array(z.string().min(1)).default([]),
+    sharedRead: z.array(z.string().min(1)).default([]),
+    sharedWrite: z.array(z.string().min(1)).default([]),
+    /** ADR-0042: authorize every key starting with one of these prefixes (read). */
+    sharedReadPrefixes: z.array(SharedPrefixSchema).default([]),
+    /** ADR-0042: authorize every key starting with one of these prefixes (write). */
+    sharedWritePrefixes: z.array(SharedPrefixSchema).default([]),
+    writesPerDay: z.int().positive().optional(),
+    bytesPerDay: z.int().positive().optional(),
+  })
+  /**
+   * A write-prefix grant REQUIRES a writesPerDay budget (ADR-0042 review
+   * finding 3). Before prefixes, the literal `sharedWrite` array bounded the
+   * rows an app could ever hold — a flood could overwrite N keys, never create
+   * new ones. With `sharedWritePrefixes`, every `If-None-Match: *` PUT mints a
+   * NEW row, there is no shared DELETE to reclaim any of it (TODO.md), and an
+   * unset budget is unlimited (`admitWrite`). Read prefixes are exempt: they
+   * cannot create rows, and listing is already bounded by the page cap —
+   * forcing a budget there would tax a capability the app cannot abuse this
+   * way. The parse-level coupling is what makes the grant and its bound one
+   * approval decision: the portal cannot store the one without the other.
+   */
+  .superRefine((d, ctx) => {
+    if (d.sharedWritePrefixes.length > 0 && d.writesPerDay === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["writesPerDay"],
+        message:
+          "a writesPerDay budget is required alongside sharedWritePrefixes — a prefix grant allows runtime row creation, so the grant and its bound are approved together (ADR-0042)",
+      });
+    }
+  });
 export type DataCapability = z.infer<typeof DataCapabilitySchema>;
 
 /**

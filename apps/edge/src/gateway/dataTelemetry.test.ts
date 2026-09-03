@@ -27,14 +27,20 @@ import {
  * the list verb to ADR-0037's rules with the same every-attribute scan the
  * other adversarial suites use:
  *
- *  - the span says WHICH route ran (`url.path`, query gone — the prefix and
- *    cursor live in the query) and HOW MANY keys matched, but never the prefix
- *    value and never a matched key — those are app data, and a span is a
- *    retained backend;
+ *  - the span says WHICH capability and verb ran, and HOW MANY keys matched,
+ *    but never the prefix value and never a matched key — those are app data,
+ *    and a span is a retained backend. There is deliberately no `url.path` on
+ *    ANY data span (review finding 1): the key-addressed verbs carry an
+ *    app-chosen KEY as the path's last segment, and prefix grants exist
+ *    precisely so those keys are unbounded and attacker-choosable — `http.route`
+ *    plus the verb identify the route without it;
  *  - the deny path is distinguishable from the empty result on both the span
  *    (`helix.reason` vs `helix.data.match_count: 0`) and the counter
  *    (`outcome=forbidden` vs `ok`);
  *  - `userOid` is nowhere (it is never a dimension — ADR-0037 decision 8).
+ *
+ * The key-addressed verbs' planted-key case lives in `spanRedaction.test.ts`,
+ * beside the credential-URL scans it already does.
  */
 
 const APP_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -86,7 +92,7 @@ function dataSpans() {
 }
 
 describe("the shared list verb's span (ADR-0042 decision 7)", () => {
-  it("records url.path, the verb and the match count — never the prefix or the keys", async () => {
+  it("records the verb and the match count — never the prefix, the keys, or a path", async () => {
     const { app, store } = buildListEdge(["record:"]);
     await store.putShared(APP_ID, "record:zzz", { secret: "PLANTED-VALUE" }, "prod", {
       kind: "ifNoneMatch",
@@ -103,9 +109,9 @@ describe("the shared list verb's span (ADR-0042 decision 7)", () => {
     const spans = dataSpans();
     expect(spans).toHaveLength(1);
     const attrs = spans[0]!.attributes;
-    expect(attrs["url.path"]).toBe("/_api/data/shared"); // the query — prefix and all — is gone
-    // The span's verb dimension is the handler name (bounded by the handler
-    // set); the ledger's `model` column carries the dotted form, `shared.list`.
+    // No url.path at all — the route is `http.route` + the verb, never a path
+    // that could carry an app-chosen key (review finding 1).
+    expect(attrs["url.path"]).toBeUndefined();
     expect(attrs[ATTR_DATA_VERB]).toBe("listShared");
     expect(attrs[ATTR_DATA_MATCH_COUNT]).toBe(1);
     expect(attrs[ATTR_REASON]).toBeUndefined(); // ok path carries no deny reason
@@ -115,7 +121,6 @@ describe("the shared list verb's span (ADR-0042 decision 7)", () => {
     const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
     expect(dump).not.toContain("record:zzz");
     expect(dump).not.toContain("PLANTED-VALUE");
-    expect(dump).not.toContain("?");
     // And no whole-URL attribute key, same rule as every other span.
     for (const key of Object.keys(attrs)) {
       expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
