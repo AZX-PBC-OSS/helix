@@ -144,6 +144,8 @@ you did not declare returns `403` — that is the expected failure, not a bug.
       "collections": ["signups"], // append-only, write-only from the app
       "sharedRead": ["config"], // app-scoped world-readable keys
       "sharedWrite": [], // a write grant never implies a read grant
+      "sharedReadPrefixes": ["record:"], // ADR-0042: every key starting with these
+      "sharedWritePrefixes": ["record:"], // → runtime-created keys; see §3.2
       "writesPerDay": 10000,
       "bytesPerDay": 50000000
     },
@@ -169,9 +171,10 @@ extraction, and short generation.
 ≤ ${{BASELINE_DOLLARS_PER_DAY}}/day of LLM, ≤ {{BASELINE_WRITES_PER_DAY}} writes/day,
 ≤ {{BASELINE_BYTES_PER_DAY}} bytes/day, ≤ {{BASELINE_FETCH_REQUESTS_PER_DAY}} proxied
 requests/day) applies immediately. Adding an `externalOrigins` entry, any `fetch.origins`
-entry, any `mcp` server, going `public`, or exceeding a baseline queues an **approval**
-for a platform admin. Plan for the wait; don't design around it by, say, hardcoding a
-key in the bundle.
+entry, any `mcp` server, any `sharedReadPrefixes`/`sharedWritePrefixes` entry (one
+prefix covers unboundedly many keys), going `public`, or exceeding a baseline queues
+an **approval** for a platform admin. Plan for the wait; don't design around it by,
+say, hardcoding a key in the bundle.
 
 `connection` names a secret the platform stores and injects server-side. You never
 see its value, and you never put credentials in app code or in the manifest.
@@ -273,6 +276,7 @@ GET    /_api/data/user               list this user's keys
 POST   /_api/data/collections/:name  append one item  → 201, empty body
 GET    /_api/data/shared/:key        app-scoped, readable by every user
 PUT    /_api/data/shared/:key        concurrency precondition REQUIRED — below
+GET    /_api/data/shared?prefix=p    list keys under a granted prefix (ADR-0042)
 ```
 
 - **`user`** is partitioned by the signed-in user by the database itself. A `public`
@@ -331,6 +335,40 @@ against: retry once with `if-match: "<error.details.currentVersion>"`. That is a
 **blind overwrite** — you never saw the value you're replacing — so prefer
 granting `sharedRead` on any key an app writes.
 
+**Prefix grants are how a shared namespace grows at runtime.** The literal
+`sharedRead`/`sharedWrite` arrays are fixed at deploy time — an app whose
+records are created by users (`record:<id>`, one per submission) cannot
+enumerate the ids in a manifest. `sharedReadPrefixes`/`sharedWritePrefixes`
+authorize every key that *starts with* the prefix (exact `startsWith`; no
+wildcards), and they unlock the list verb, which returns keys + versions —
+never values — paginated at 200 keys per page:
+
+```js
+// Create a record at a natural key: create-if-absent is the dedup. Two users
+// can never generate the same id, and if they somehow did, exactly one wins.
+const id = crypto.randomUUID();
+await fetch(`/_api/data/shared/record:${id}`, {
+  method: "PUT",
+  headers: { "content-type": "application/json", "if-none-match": "*" },
+  body: JSON.stringify(record),
+});
+
+// The index view: ONE list call. Do NOT keep a "record-index" key of your own —
+// it's a 64 KiB-capped value with a lost-update race on every creation.
+const page = await (await fetch("/_api/data/shared?prefix=record:")).json();
+// page = { keys: [{ key, version, updatedAt }, ...], nextCursor? }
+// Pass nextCursor back as ?cursor=… until it's absent. The listed version is a
+// valid If-Match, so list → update needs no per-key read.
+for (const k of page.keys) {
+  const value = await (await fetch(`/_api/data/shared/${encodeURIComponent(k.key)}`)).json();
+}
+```
+
+The prefix must itself be covered by a `sharedReadPrefixes` grant (equal or
+narrower), a literal `sharedRead` grant does not confer listing, and there is
+no prefix-less form. `403` on a list means the prefix wasn't granted — that is
+the enumeration boundary, and it's audited.
+
 ```js
 await fetch("/_api/data/user/prefs", {
   method: "PUT",
@@ -370,7 +408,7 @@ yourself in new code — it is explicit and it works without the shim.
 | ------ | ------------------------ | -------------------------------------------------------------------- |
 | 401    | —                        | Not signed in (a fetch after the session expired; reload to re-auth) |
 | 400    | `validation_failed`      | Bad request body — or a `responseFormat` this model can't enforce    |
-| 403    | `forbidden`              | The capability isn't in the manifest                                 |
+| 403    | `forbidden`              | Not in the manifest — or a key/prefix no grant covers (incl. list)   |
 | 403    | `model_not_allowed`      | Model isn't in `capabilities.llm.models`                             |
 | 412    | `conflict`               | Lost a shared-write race — re-read and retry with the new `ETag`     |
 | 428    | `precondition_required`  | Shared write without `If-Match`/`If-None-Match` — fix the code       |
@@ -485,6 +523,8 @@ the portal offers a reset for the throwaway dev partition.
 - [ ] User-specific state is in `/_api/data/user/*`, not in `shared`.
 - [ ] Every `shared` write goes through the read → `If-Match` → retry-on-`412`
       loop (or `If-None-Match: *` to create) — a plain shared PUT is refused.
+- [ ] No self-maintained "index" key over a growing shared namespace — the list
+      verb (`?prefix=…`) is the index (ADR-0042).
 - [ ] Nothing sensitive is written to a `shared` key or logged to the console.
 - [ ] The build output has an `index.html` at its root and deploys clean of CSP
       lint warnings.

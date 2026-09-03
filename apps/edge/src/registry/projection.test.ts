@@ -128,11 +128,21 @@ describe("RegistryProjection", () => {
           {
             ...ROW,
             slug: "granted",
-            capabilities: { data: { user: true, collections: ["contacts"] } },
+            capabilities: {
+              data: { user: true, collections: ["contacts"], sharedWritePrefixes: ["record:"] },
+            },
           },
           { ...ROW, slug: "no-data", capabilities: { llm: { models: [] } } },
           { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
           { ...ROW, slug: "bad-data", capabilities: { data: { collections: "nope" } } },
+          // ADR-0042: a prefix element that violates the key rules fails the
+          // whole data parse — the projection hands the gateway `null` and every
+          // data verb 403s, rather than serving a grant the schema refused.
+          {
+            ...ROW,
+            slug: "bad-prefix",
+            capabilities: { data: { sharedReadPrefixes: [""] } },
+          },
         ],
       ]),
     );
@@ -142,10 +152,13 @@ describe("RegistryProjection", () => {
       collections: ["contacts"],
       sharedRead: [],
       sharedWrite: [],
+      sharedReadPrefixes: [],
+      sharedWritePrefixes: ["record:"],
     });
     expect(projection.getApp("no-data")?.data).toBeNull();
     expect(projection.getApp("bad-json")?.data).toBeNull();
     expect(projection.getApp("bad-data")?.data).toBeNull();
+    expect(projection.getApp("bad-prefix")?.data).toBeNull();
   });
 
   it("parses capabilities.externalOrigins, failing closed to [] on junk", async () => {

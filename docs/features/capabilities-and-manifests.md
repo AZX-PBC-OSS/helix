@@ -22,6 +22,8 @@ Capabilities = {
            collections: string[]      // append-only; no app-facing read
            sharedRead: string[]       // world-readable-within-gate keys
            sharedWrite: string[]      // narrower; write never implies read
+           sharedReadPrefixes: string[]   // ADR-0042: every key starting with these (read)
+           sharedWritePrefixes: string[]  // same, write; approval-elevated — unboundedly many keys
            writesPerDay?: int; bytesPerDay?: int }
   mcp: string[]                        // platform-registered MCP servers (default [])
   externalOrigins: URL[]               // extra CSP connect-src for DIRECT calls (default [])
@@ -65,8 +67,10 @@ by the mappers.
 3. **Enforce** — each gateway handler checks the relevant grant per request:
    - LLM: `entry.llm` must exist and `chat.model ∈ entry.llm.models`; `dollarsPerDay` bounds the
      daily budget (see [llm-gateway.md](./llm-gateway.md)).
-   - Data: `entry.data` gates the scope, and `collections` / `sharedRead` / `sharedWrite` are
-     per-name allowlists; `writesPerDay` bounds writes (see [app-data-gateway.md](./app-data-gateway.md)).
+    - Data: `entry.data` gates the scope, and `collections` / `sharedRead` / `sharedWrite` are
+      per-name allowlists; the `*Prefixes` arrays widen those to prefix matches and gate the
+      shared list verb (ADR-0042); `writesPerDay` bounds writes (see
+      [app-data-gateway.md](./app-data-gateway.md)).
    - Fetch: `entry.fetch.origins` allowlists proxied origins; `requestsPerDay` bounds them (see
      [fetch-proxy.md](./fetch-proxy.md)).
    - CSP: `externalOrigins` extends `connect-src` at the edge (see [edge-serving.md](./edge-serving.md)).
@@ -104,7 +108,7 @@ SPA's pre-submit warning never drift:
 |---|---|---|---|
 | LLM models | `CURATED_LLM_MODELS` (= every model in `MODEL_PRICING`: the `claude-*` family plus the OpenAI `gpt-*`/`o*` models) | any other model | med |
 | LLM budget | `dollarsPerDay ≤ BASELINE_DOLLARS_PER_DAY` ($50) | above threshold | med |
-| data scopes | user store, collections, shared keys | — | low |
+| data scopes | user store, collections, shared keys (literal) | shared read/write **prefixes** (ADR-0042 — one element covers unboundedly many runtime-chosen keys) | low |
 | data budgets | writes/bytes ≤ thresholds | above threshold | med |
 | mcp | `CURATED_MCP_ALLOWLIST` (**empty** ⇒ *every* MCP grant elevates) | any MCP server | high |
 | externalOrigins | — | any origin added | med |
@@ -132,7 +136,12 @@ membership in `PORTAL_ADMIN_GROUP_ID` carried as a **group claim in the verified
 operator drive the loop. A sharp edge of the split model — baseline writes commit freely while a
 request is open — is handled by a `baseSnapshot` taken at request time and an optimistic-concurrency
 check at approve time that auto-bounces a stale request to `needs_changes` rather than clobbering.
-A pending request **never expires** — it waits for a human decision, by design ([ADR-0039](../adr/0039-no-approval-request-expiry.md)) — so the
+(The comparison canonicalizes object-key order: the snapshot is a jsonb column, which re-orders keys
+at rest, while the approve-time re-derivation emits them in schema order — the first data-area
+elevated grant, an ADR-0042 prefix, surfaced that a plain `JSON.stringify` comparison read the
+order difference as a moved value and bounced every data-area approve. Array order stays
+significant — grants are ordered.) A pending request **never expires** — it waits for a human
+decision, by design ([ADR-0039](../adr/0039-no-approval-request-expiry.md)) — so the
 queue instead shows how long each request has been pending and sorts oldest-first.
 
 **Two writers at once → `409`, never a silent overwrite** (`docs/design/approvals.md` §5). The

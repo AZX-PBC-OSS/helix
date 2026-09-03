@@ -40,9 +40,26 @@ interface DataEdge {
   usage: FakeUsageStore;
 }
 
+/**
+ * A `DataCapability` with every array defaulted (ADR-0042 added two more), so a
+ * test states only what it cares about and the literal noise stays out of the
+ * assertions.
+ */
+function dataCap(overrides: Partial<DataCapability> = {}): DataCapability {
+  return {
+    user: false,
+    collections: [],
+    sharedRead: [],
+    sharedWrite: [],
+    sharedReadPrefixes: [],
+    sharedWritePrefixes: [],
+    ...overrides,
+  };
+}
+
 function buildDataEdge(
   opts: {
-    data?: DataCapability | null;
+    data?: Partial<DataCapability> | null;
     visibilityMode?: "internal" | "public";
     withStore?: boolean;
   } = {},
@@ -52,8 +69,10 @@ function buildDataEdge(
   const usage = new FakeUsageStore();
   const data =
     opts.data === undefined
-      ? { user: true, collections: [], sharedRead: [], sharedWrite: [] }
-      : opts.data;
+      ? dataCap({ user: true })
+      : opts.data === null
+        ? null
+        : dataCap(opts.data);
   const app = buildApp({
     config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
     registry: new FakeRegistry([
@@ -341,6 +360,208 @@ describe("shared scope (§3.3)", () => {
       payload: 1,
     });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("shared prefix grants + list verb (ADR-0042)", () => {
+  const PREFIXED = {
+    user: false,
+    collections: [],
+    sharedRead: ["leaderboard"],
+    sharedWrite: [],
+    sharedReadPrefixes: ["record:"],
+    sharedWritePrefixes: ["record:"],
+  };
+  const CREATE = { "if-none-match": "*" };
+
+  it("reads and writes runtime-invented keys under a granted prefix", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    // Create-if-absent on a natural key — the cross-record dedup ADR-0041
+    // identified as a good fit but could not enable while grants were literal.
+    const put = await req(edge, "PUT", "/_api/data/shared/record:abc", {
+      token: null,
+      payload: { title: "first" },
+      headers: CREATE,
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.headers.etag).toBe('"1"');
+
+    const get = await req(edge, "GET", "/_api/data/shared/record:abc", { token: null });
+    expect(get.statusCode).toBe(200);
+    expect(get.json().value).toEqual({ title: "first" });
+  });
+
+  it("a second create on the same natural key loses the race (412 + currentVersion)", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    await req(edge, "PUT", "/_api/data/shared/record:abc", {
+      token: null,
+      payload: { title: "first" },
+      headers: CREATE,
+    });
+    const again = await req(edge, "PUT", "/_api/data/shared/record:abc", {
+      token: null,
+      payload: { title: "duplicate" },
+      headers: CREATE,
+    });
+    expect(again.statusCode).toBe(412);
+    expect(again.json().error.details).toEqual({ currentVersion: "1" });
+  });
+
+  it("403s an overlapping-but-uncovered key — startsWith is exact, not a fuzzy match", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    // "records:x" shares six characters with the "record:" grant but does not
+    // START with it — the difference between a namespace and a guess.
+    const get = await req(edge, "GET", "/_api/data/shared/records:x", { token: null });
+    expect(get.statusCode).toBe(403);
+    const put = await req(edge, "PUT", "/_api/data/shared/records:x", {
+      token: null,
+      payload: 1,
+      headers: CREATE,
+    });
+    expect(put.statusCode).toBe(403);
+  });
+
+  it("literals and prefixes compose — either grant suffices for its half", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    await edge.store.putShared(APP_ID, "leaderboard", ["ada"], "prod", { kind: "ifNoneMatch" });
+    // The literal grant still works untouched…
+    const literal = await req(edge, "GET", "/_api/data/shared/leaderboard", { token: null });
+    expect(literal.statusCode).toBe(200);
+    // …and the read prefix does not confer WRITE on anything (independence of
+    // the two grants is unchanged by prefixes — ADR-0042 decision 1 rides the
+    // ADR-0015 rule).
+    const write = await req(edge, "PUT", "/_api/data/shared/leaderboard", {
+      token: null,
+      payload: 1,
+      headers: CREATE,
+    });
+    expect(write.statusCode).toBe(403);
+  });
+
+  it("a literal grant does not confer listing — literals already say what exists", async () => {
+    const edge = buildDataEdge({
+      visibilityMode: "public",
+      data: { user: false, sharedRead: ["leaderboard"] },
+    });
+    const res = await req(edge, "GET", "/_api/data/shared?prefix=leaderboard", { token: null });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("400s a missing, empty or control-character prefix — there is no list-everything form", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    const missing = await req(edge, "GET", "/_api/data/shared", { token: null });
+    expect(missing.statusCode).toBe(400);
+    const empty = await req(edge, "GET", "/_api/data/shared?prefix=", { token: null });
+    expect(empty.statusCode).toBe(400);
+    const control = await req(edge, "GET", "/_api/data/shared?prefix=record%00", { token: null });
+    expect(control.statusCode).toBe(400);
+  });
+
+  it("403s an uncovered listing prefix with a forbidden ledger row; an empty result is ok", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    const denied = await req(edge, "GET", "/_api/data/shared?prefix=secret:", { token: null });
+    expect(denied.statusCode).toBe(403);
+    // The deny path is audit-visible (the fetch-proxy allowlist precedent) and
+    // distinguishable from an empty listing on the very same dimension.
+    expect(edge.usage.records.at(-1)).toMatchObject({
+      capability: "data",
+      model: "shared.list",
+      outcome: "forbidden",
+    });
+
+    const empty = await req(edge, "GET", "/_api/data/shared?prefix=record:", { token: null });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ keys: [] });
+    expect(edge.usage.records.at(-1)).toMatchObject({
+      capability: "data",
+      model: "shared.list",
+      outcome: "ok",
+    });
+  });
+
+  it("lists keys and versions under the granted prefix — never values, never other namespaces", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    // Seeded straight at the store: rows the handler would never have allowed
+    // are exactly the point — the listing must not become a way to discover them.
+    for (const [key, value] of [
+      ["record:2", { secret: "second-value" }],
+      ["record:1", { secret: "first-value" }],
+      ["secret:1", { secret: "out-of-grant" }],
+      ["other:1", { secret: "also-out-of-grant" }],
+    ] as const) {
+      await edge.store.putShared(APP_ID, key, value, "prod", { kind: "ifNoneMatch" });
+    }
+
+    const res = await req(edge, "GET", "/_api/data/shared?prefix=record:", { token: null });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.nextCursor).toBeUndefined();
+    expect(body.keys).toHaveLength(2);
+    // Ascending by key; each entry carries exactly the three metadata fields —
+    // the VALUES (12 MB at the pilot app's median) are fetched, never listed.
+    expect(body.keys.map((k: { key: string }) => k.key)).toEqual(["record:1", "record:2"]);
+    for (const entry of body.keys) {
+      expect(Object.keys(entry).sort()).toEqual(["key", "updatedAt", "version"]);
+      expect(entry.version).toBe("1");
+    }
+    // The out-of-grant keys and the stored values appear nowhere in the body.
+    const dump = JSON.stringify(body);
+    expect(dump).not.toContain("secret:1");
+    expect(dump).not.toContain("other:1");
+    expect(dump).not.toContain("first-value");
+  });
+
+  it("a narrower listing prefix than the grant is covered, and lists its subset", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    await edge.store.putShared(APP_ID, "record:ab", 1, "prod", { kind: "ifNoneMatch" });
+    await edge.store.putShared(APP_ID, "record:cd", 2, "prod", { kind: "ifNoneMatch" });
+    const res = await req(edge, "GET", "/_api/data/shared?prefix=record:ab", { token: null });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().keys.map((k: { key: string }) => k.key)).toEqual(["record:ab"]);
+  });
+
+  it("paginates at the page cap: 201 keys → 200 + cursor → 1, no overlap, no end cursor", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    // Zero-padded so lexicographic order matches numeric order.
+    for (let i = 0; i <= 200; i++) {
+      const r = await edge.store.putShared(
+        APP_ID,
+        `record:${String(i).padStart(3, "0")}`,
+        i,
+        "prod",
+        { kind: "ifNoneMatch" },
+      );
+      if (r.kind !== "ok") throw new Error("seed failed");
+    }
+
+    const page1 = await req(edge, "GET", "/_api/data/shared?prefix=record:", { token: null });
+    const body1 = page1.json();
+    expect(body1.keys).toHaveLength(200);
+    expect(body1.keys[0].key).toBe("record:000");
+    expect(body1.keys[199].key).toBe("record:199");
+    expect(typeof body1.nextCursor).toBe("string");
+
+    const page2 = await req(
+      edge,
+      "GET",
+      `/_api/data/shared?prefix=record:&cursor=${body1.nextCursor}`,
+      { token: null },
+    );
+    const body2 = page2.json();
+    expect(body2.keys).toHaveLength(1);
+    expect(body2.keys[0].key).toBe("record:200");
+    expect(body2.nextCursor).toBeUndefined();
+    // No replay across the boundary either.
+    expect(body2.keys[0].key > body1.keys[199].key).toBe(true);
+  });
+
+  it("400s a garbage cursor rather than silently restarting the page sequence", async () => {
+    const edge = buildDataEdge({ visibilityMode: "public", data: PREFIXED });
+    const res = await req(edge, "GET", "/_api/data/shared?prefix=record:&cursor=%21%21%21", {
+      token: null,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
   });
 });
 

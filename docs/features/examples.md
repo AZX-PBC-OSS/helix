@@ -13,7 +13,7 @@ only**; every dynamic capability flows through the edge gateway at `/_api/*`. Fu
 | `notes` | A realistic self-contained SPA (localStorage, multiple asset types). | — |
 | `chatbot` | Streams Claude through the gateway — no key in the app, manifest-granted, metered. | `/_api/llm/chat` |
 | `waitlist` | A **public** contact harvester: write-only collections + owner-seeded shared read. | `/_api/data/*` |
-| `oversell` | The write-concurrency contract (ADR-0041): CAS on shared keys, with one-click probes that force every failure. | `/_api/data/*` |
+| `oversell` | The write-concurrency contract (ADR-0041) and the growing-shared-namespace pattern (ADR-0042): CAS on shared keys, prefix grants + the list verb, with one-click probes that force every failure. | `/_api/data/*` |
 | `github-stars` | Calls a public API **directly** — CSP-blocked until an admin grants the origin (approval loop). | — (CSP) |
 | `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the transparent shim. | `/_api/fetch/*` |
 | `offline` | Cold-boots with no network on the platform's scope-confined service worker; six probes separate what the platform caches from what the app still owns. | — (`/_helix/sw.js`) |
@@ -52,6 +52,17 @@ every failure without a second tab: a stale-`If-Match` `412` (with the disclosed
 twice, and the refused `If-Match: *` escape hatch. The ledger half — `412`s recorded as
 non-charging `conflict` rows — is portal-side: see the app's Usage tab. See
 [app-data-gateway.md](./app-data-gateway.md).
+
+The second half demonstrates **ADR-0042** — a shared namespace that *grows at runtime*, which
+literal key grants cannot express. The waitlist writes `record:<id>` keys under a `record:`
+**prefix grant**, creating each record with `If-None-Match: *` on a natural key (create-if-absent
+is cross-record dedup for free), and renders the index view from **one list call**
+(`GET /_api/data/shared?prefix=record:`) — no self-maintained `record-index` key, so no
+lost-update race and no 64 KiB index ceiling. Probes drive the boundaries: CAS straight off the
+listed `version` (no per-key read), a list of a never-granted prefix (`403`, audited
+`forbidden`), a prefix-less list (`400`), and a key outside the grant (`403` — `startsWith` is
+exact). The prefix grants are approval-elevated, so the app's README routes the manifest set-up
+through the admin queue.
 
 ### `github-stars` — the CSP approval loop in practice
 

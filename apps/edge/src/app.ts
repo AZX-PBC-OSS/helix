@@ -491,13 +491,16 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // M4/M5 gateway: the app-data capability (app-data design §5.1). App hosts
   // only. NOTE the deliberate absence of any collection read/list/delete verb —
   // §3.2's write-only property is enforced by the route table AND the store
-  // type, and is covered by an adversarial test.
+  // type, and is covered by an adversarial test. The shared list verb
+  // (ADR-0042) is read-side only and requires a prefix-grant; collections stay
+  // unlistable regardless of grants.
   for (const [method, url, name] of [
     ["PUT", "/_api/data/user/:key", "putUser"],
     ["GET", "/_api/data/user/:key", "getUser"],
     ["DELETE", "/_api/data/user/:key", "deleteUser"],
     ["GET", "/_api/data/user", "listUser"],
     ["POST", "/_api/data/collections/:name", "postCollection"],
+    ["GET", "/_api/data/shared", "listShared"],
     ["GET", "/_api/data/shared/:key", "getShared"],
     ["PUT", "/_api/data/shared/:key", "putShared"],
   ] as const) {

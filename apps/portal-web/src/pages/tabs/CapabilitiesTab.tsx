@@ -98,6 +98,10 @@ interface Draft {
   sharedRead: string[];
   /** §3.3 app-writable shared keys. */
   sharedWrite: string[];
+  /** ADR-0042: every key starting with one of these prefixes is shared-readable. */
+  sharedReadPrefixes: string[];
+  /** ADR-0042: every key starting with one of these prefixes is shared-writable. */
+  sharedWritePrefixes: string[];
   mcp: string[];
   externalOrigins: string[];
   /** Fetch-proxy: proxied origins (each with an optional secret connection). */
@@ -119,6 +123,8 @@ function toDraft(c: Capabilities): Draft {
     collections: c.data?.collections ?? [],
     sharedRead: c.data?.sharedRead ?? [],
     sharedWrite: c.data?.sharedWrite ?? [],
+    sharedReadPrefixes: c.data?.sharedReadPrefixes ?? [],
+    sharedWritePrefixes: c.data?.sharedWritePrefixes ?? [],
     mcp: c.mcp,
     externalOrigins: c.externalOrigins,
     fetchOrigins: c.fetch?.origins ?? [],
@@ -130,7 +136,12 @@ function toDraft(c: Capabilities): Draft {
 
 function hasDataGrant(d: Draft): boolean {
   return (
-    d.dataUser || d.collections.length > 0 || d.sharedRead.length > 0 || d.sharedWrite.length > 0
+    d.dataUser ||
+    d.collections.length > 0 ||
+    d.sharedRead.length > 0 ||
+    d.sharedWrite.length > 0 ||
+    d.sharedReadPrefixes.length > 0 ||
+    d.sharedWritePrefixes.length > 0
   );
 }
 
@@ -152,6 +163,8 @@ function fromDraft(d: Draft): Capabilities {
             collections: d.collections,
             sharedRead: d.sharedRead,
             sharedWrite: d.sharedWrite,
+            sharedReadPrefixes: d.sharedReadPrefixes,
+            sharedWritePrefixes: d.sharedWritePrefixes,
           },
         }
       : {}),
@@ -194,6 +207,10 @@ function renderYaml(app: App, d: Draft): string {
     if (d.collections.length) lines.push(`    collections: [${d.collections.join(", ")}]`);
     if (d.sharedRead.length) lines.push(`    shared_read: [${d.sharedRead.join(", ")}]`);
     if (d.sharedWrite.length) lines.push(`    shared_write: [${d.sharedWrite.join(", ")}]`);
+    if (d.sharedReadPrefixes.length)
+      lines.push(`    shared_read_prefixes: [${d.sharedReadPrefixes.join(", ")}]`);
+    if (d.sharedWritePrefixes.length)
+      lines.push(`    shared_write_prefixes: [${d.sharedWritePrefixes.join(", ")}]`);
   }
   lines.push(`  mcp: [${d.mcp.join(", ")}]`);
   lines.push(`  external_origins: [${d.externalOrigins.join(", ")}]`);
@@ -279,6 +296,11 @@ export function CapabilitiesTab({ app }: { app: App }) {
   // rather than a 400 on save.
   const scopeInvalid =
     draft.offlineScope !== undefined && !isValidServiceWorkerScope(draft.offlineScope);
+  // An empty prefix would grant the whole `shared` scope (ADR-0042: `min(1)` is
+  // load-bearing) — the server rejects it on save; catch it here first.
+  const prefixInvalid = [...draft.sharedReadPrefixes, ...draft.sharedWritePrefixes].some(
+    (p) => p.trim() === "",
+  );
 
   return (
     <Stack gap={18}>
@@ -382,9 +404,41 @@ export function CapabilitiesTab({ app }: { app: App }) {
                   onChange={(sharedWrite) => patch({ sharedWrite })}
                   classNames={{ input: "az-mono" }}
                 />
+                <TagsInput
+                  label="Shared read prefixes — runtime-created keys"
+                  description="Every key starting with one of these prefixes becomes shared-readable, and listable via GET /_api/data/shared?prefix=… — the app can create records at runtime without editing this manifest."
+                  placeholder="add shared-read prefix — e.g. record:"
+                  value={draft.sharedReadPrefixes}
+                  onChange={(sharedReadPrefixes) => patch({ sharedReadPrefixes })}
+                  classNames={{ input: "az-mono" }}
+                  error={
+                    draft.sharedReadPrefixes.some((p) => p.trim() === "")
+                      ? "a prefix cannot be empty — that would grant the whole scope"
+                      : undefined
+                  }
+                />
+                <TagsInput
+                  label="Shared write prefixes — runtime-created keys"
+                  description="Every key starting with one of these prefixes becomes shared-writable (create via If-None-Match: *). Same warning as shared-write keys, unboundedly many of them."
+                  placeholder="add shared-write prefix — e.g. record:"
+                  value={draft.sharedWritePrefixes}
+                  onChange={(sharedWritePrefixes) => patch({ sharedWritePrefixes })}
+                  classNames={{ input: "az-mono" }}
+                  error={
+                    draft.sharedWritePrefixes.some((p) => p.trim() === "")
+                      ? "a prefix cannot be empty — that would grant the whole scope"
+                      : undefined
+                  }
+                />
                 {(draft.sharedRead.length > 0 || draft.sharedWrite.length > 0) && (
                   <ToneBadge tone="violet" icon="shield">
                     shared keys on a public app need admin approval (v1)
+                  </ToneBadge>
+                )}
+                {(draft.sharedReadPrefixes.length > 0 || draft.sharedWritePrefixes.length > 0) && (
+                  <ToneBadge tone="violet" icon="shield">
+                    prefix grants cover unboundedly many keys — saving opens an admin-approval
+                    request (ADR-0042)
                   </ToneBadge>
                 )}
               </Stack>
@@ -591,7 +645,7 @@ export function CapabilitiesTab({ app }: { app: App }) {
               <Button
                 fullWidth
                 mt={14}
-                disabled={!dirty || capMissing || scopeInvalid}
+                disabled={!dirty || capMissing || scopeInvalid || prefixInvalid}
                 loading={setManifest.isPending}
                 leftSection={<Icon name="check" size={14} />}
                 onClick={() =>
@@ -602,9 +656,11 @@ export function CapabilitiesTab({ app }: { app: App }) {
                   ? "Set a spend cap to save"
                   : scopeInvalid
                     ? "Fix the worker scope to save"
-                    : dirty
-                      ? "Save manifest"
-                      : "Saved"}
+                    : prefixInvalid
+                      ? "Fix the empty prefix to save"
+                      : dirty
+                        ? "Save manifest"
+                        : "Saved"}
               </Button>
             )}
             {setManifest.isError && (

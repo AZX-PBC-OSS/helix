@@ -39,13 +39,49 @@ export type LlmCapability = z.infer<typeof LlmCapabilitySchema>;
  *    the security property.
  *  - `sharedRead` / `sharedWrite`: app-scoped, world-readable keys (§3.3). Rare,
  *    explicit, and dangerous; a write grant never implies a read grant.
+ *  - `sharedReadPrefixes` / `sharedWritePrefixes` (ADR-0042): the same grants as
+ *    *prefixes* — a key is authorized if it matches a literal grant OR starts
+ *    with a granted prefix. What this buys is runtime-invented keys: a literal
+ *    array is fixed at deploy time, so creating a record meant editing the
+ *    manifest and redeploying. Prefix-only (`startsWith`, no pattern language);
+ *    elevated at approval time because one element covers unboundedly many keys.
  * `writesPerDay` / `bytesPerDay` bound abuse on the open append surface (§7).
  */
+
+/** Key constraints (the edge enforces the same rule at request time). */
+const KEY_MAX_BYTES = 256;
+// eslint-disable-next-line no-control-regex
+const KEY_CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+
+/** UTF-8 byte length without `Buffer` — this module is in the browser barrel. */
+const encoder = new TextEncoder();
+
+/**
+ * A shared-scope **prefix** grant (ADR-0042 decision 1). Validated like a key —
+ * non-empty, ≤ 256 bytes, no control characters — and `min(1)` is load-bearing:
+ * an empty prefix would grant the whole scope. Only the prefix fields carry this
+ * refinement; the literal arrays keep their historical `min(1)`-only shape so a
+ * stricter rule can never retroactively reject a live manifest.
+ */
+const SharedPrefixSchema = z
+  .string()
+  .min(1)
+  .refine((p) => encoder.encode(p).length <= KEY_MAX_BYTES, {
+    message: `prefix exceeds ${KEY_MAX_BYTES} bytes`,
+  })
+  .refine((p) => !KEY_CONTROL_CHARS.test(p), {
+    message: "prefix must not contain control characters",
+  });
+
 export const DataCapabilitySchema = z.object({
   user: z.boolean().default(false),
   collections: z.array(z.string().min(1)).default([]),
   sharedRead: z.array(z.string().min(1)).default([]),
   sharedWrite: z.array(z.string().min(1)).default([]),
+  /** ADR-0042: authorize every key starting with one of these prefixes (read). */
+  sharedReadPrefixes: z.array(SharedPrefixSchema).default([]),
+  /** ADR-0042: authorize every key starting with one of these prefixes (write). */
+  sharedWritePrefixes: z.array(SharedPrefixSchema).default([]),
   writesPerDay: z.int().positive().optional(),
   bytesPerDay: z.int().positive().optional(),
 });

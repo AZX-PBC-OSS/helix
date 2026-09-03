@@ -1,9 +1,10 @@
 # oversell
 
 A **public** AZX app (no login) that demonstrates **ADR-0041: compare-and-swap
-app-data writes** — preconditions mandatory on `shared`. The failure it makes
-visible is the classic lost update: two tabs read "1 widget left", both buy,
-and last-write-wins sells the same widget twice. Here every purchase is
+app-data writes** — preconditions mandatory on `shared` — and **ADR-0042:
+prefix grants + the list verb** on `shared` app-data. The failure ADR-0041
+makes visible is the classic lost update: two tabs read "1 widget left", both
+buy, and last-write-wins sells the same widget twice. Here every purchase is
 read → `ETag` → modify → `If-Match`, and the loser gets a loud `412`, re-reads,
 and sees an empty shelf.
 
@@ -14,6 +15,15 @@ tab A  PUT stock (if-match: "1") {count: 0} → 200 etag "2"   ✓ wins
 tab B  PUT stock (if-match: "1") {count: 0} → 412 conflict   ✗ told, not clobbered
        └─ error.details.currentVersion: "2"  (in-band recovery)
 ```
+
+The ADR-0042 half is the **waitlist**: a set of shared records that grows at
+runtime, which literal key grants cannot express (creating a record would mean
+editing the manifest and redeploying). Each join writes `record:<id>` under a
+`record:` **prefix grant**, created with `If-None-Match: *` on the natural key
+— create-if-absent is cross-record dedup for free — and the index view is one
+`GET /_api/data/shared?prefix=record:` call. No self-maintained `record-index`
+key: that index is a 64 KiB-capped value with a lost-update race on every
+record creation, and the list verb deletes the need for it.
 
 ## What it demonstrates
 
@@ -32,6 +42,14 @@ tab B  PUT stock (if-match: "1") {count: 0} → 412 conflict   ✗ told, not clo
     second claim `412`s with the winner's version.
   - *The `If-Match: *` escape hatch* → `428` (it asserts nothing, so it is
     refused like no header).
+- **Prefix grants & the list verb (ADR-0042)**, one click each:
+  - *Update a record with no read*: the list carries each key's `version`, so
+    list → `If-Match` the listed version needs no per-key GET.
+  - *List a prefix you were never granted* → `403` — enumeration is bounded by
+    the grant, and the deny is recorded in the audit ledger (`forbidden`).
+  - *List with no prefix at all* → `400` — there is no list-everything form.
+  - *Read a key outside the grant* → `403` — `startsWith` is exact; `record:`
+    grants a namespace, not a fuzzy match.
 - **The two-tab story**: restock to 1, buy in two tabs — one wins, the other
   retries into "sold out" instead of overselling.
 - **The ledger half** (portal-side, not in-app): each `412` records a
@@ -41,7 +59,9 @@ tab B  PUT stock (if-match: "1") {count: 0} → 412 conflict   ✗ told, not clo
 ## Grant the data capability
 
 After `helix create --visibility public`, set the manifest (use the portal API,
-like `waitlist`):
+like `waitlist`). The prefix arrays are the ADR-0042 half — note they are
+**approval-gated** (one prefix element covers unboundedly many keys), so the
+first save opens an admin request:
 
 ```bash
 curl -fsS -X PUT "http://localhost:3001/api/v1/apps/oversell/manifest" \
@@ -50,13 +70,17 @@ curl -fsS -X PUT "http://localhost:3001/api/v1/apps/oversell/manifest" \
   -d '{"capabilities":{"data":{
         "sharedRead":["stock","scratch"],
         "sharedWrite":["stock","scratch"],
+        "sharedReadPrefixes":["record:"],
+        "sharedWritePrefixes":["record:"],
         "writesPerDay":10000
       }}}'
 ```
 
 `stock` is the shelf; `scratch` is the probes' sandbox. Both are world-readable
 *and* world-writable by design — it's a demo of the concurrency contract, not
-of confidentiality (that's `waitlist`'s job).
+of confidentiality (that's `waitlist`'s job). `record:` is the waitlist's
+namespace: the app invents the ids at runtime, which is exactly what a prefix
+grant is for.
 
 ## Build & deploy
 

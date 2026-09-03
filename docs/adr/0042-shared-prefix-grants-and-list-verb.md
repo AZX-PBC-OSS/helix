@@ -1,6 +1,6 @@
 # 0042. Prefix grants on `shared` app-data, with a list verb
 
-**Status:** Proposed _(recorded 2026-09-02)_
+**Status:** Accepted _(proposed 2026-09-02; implemented 2026-09-03 — `sharedReadPrefixes`/`sharedWritePrefixes`, `GET /_api/data/shared?prefix=…`, the elevated/low approval category, and the `forbidden`-metered deny path; the maintained detail is `docs/features/app-data-gateway.md` → "Prefix grants + the list verb")_
 **Related:** ADR [0015](0015-app-data-three-scope-model.md) (the three scopes); ADR [0041](0041-app-data-write-concurrency.md) (CAS — this closes the "pattern grants" follow-up it deferred); ADR [0016](0016-capability-manifest-approval-classifier.md) (the classifier this extends); ADR [0010](0010-anonymous-shared-writes.md) (anonymous `shared` writes); `docs/design/app-data-storage.md` §3.3; `packages/shared/src/manifest.ts`, `packages/shared/src/approval.ts`, `apps/edge/src/gateway/data-handler.ts`, `apps/edge/src/gateway/data.ts`
 
 ## Context

@@ -39,6 +39,24 @@
         <p id="shop-status" class="status" aria-live="polite"></p>
       </section>
 
+      <section class="card">
+        <p class="log-title">
+          The waitlist <span class="muted">— a shared namespace that grows at runtime (ADR-0042)</span>
+        </p>
+        <p class="tagline" style="margin-bottom: 0.9rem">
+          Each join creates <code>record:&lt;id&gt;</code> under a <em>prefix grant</em> — no manifest
+          edit per record. The index view below is <strong>one list call</strong>
+          (<code>GET /_api/data/shared?prefix=record:</code>): the app keeps no
+          <code>record-index</code> key of its own, so there is no index to lose a write race on.
+        </p>
+        <div class="row">
+          <button id="join" type="button">Join the waitlist</button>
+        </div>
+        <ul id="records" class="records"></ul>
+        <p id="records-note" class="muted" style="font-size: 0.85rem"></p>
+        <p id="waitlist-status" class="status" aria-live="polite"></p>
+      </section>
+
       <details class="proof">
         <summary>Try to break it: the two-tab oversell</summary>
         <p>
@@ -62,6 +80,23 @@
           <button id="probe-star" type="button">Try the If-Match: * escape hatch</button>
         </div>
         <pre id="probe-out" class="prove-out" aria-live="polite"></pre>
+      </details>
+
+      <details class="proof">
+        <summary>Probes: prefix grants &amp; the list verb (ADR-0042)</summary>
+        <p>
+          A prefix grant authorizes every key that <em>starts with</em> it — unboundedly many, chosen
+          by the app at runtime, which is why the grant needs admin approval. The list verb ships
+          with it: without a list, a growing namespace forces the app to maintain its own index key.
+          These probes drive the boundaries.
+        </p>
+        <div class="probe-grid">
+          <button id="probe-cas-list" type="button">Update a record with no read</button>
+          <button id="probe-deny-list" type="button">List a prefix you were never granted</button>
+          <button id="probe-no-prefix" type="button">List with no prefix at all</button>
+          <button id="probe-guess" type="button">Read a key outside the grant</button>
+        </div>
+        <pre id="probe-out-records" class="prove-out" aria-live="polite"></pre>
       </details>
 
       <section class="card">

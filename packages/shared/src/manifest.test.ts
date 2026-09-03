@@ -23,6 +23,9 @@ describe("AppManifestSchema", () => {
     expect(parsed.capabilities.data?.collections).toEqual(["contacts"]);
     expect(parsed.capabilities.data?.sharedRead).toEqual([]);
     expect(parsed.capabilities.data?.sharedWrite).toEqual([]);
+    // ADR-0042: the prefix arrays default alongside the literal ones.
+    expect(parsed.capabilities.data?.sharedReadPrefixes).toEqual([]);
+    expect(parsed.capabilities.data?.sharedWritePrefixes).toEqual([]);
   });
 
   it("applies a baseline capabilities block when omitted entirely", () => {
@@ -138,6 +141,50 @@ describe("offline capability scope (ADR-0035 §3)", () => {
   it("is absent unless declared — no default grant", () => {
     const parsed = AppManifestSchema.parse({ app: "x", visibility: { mode: "internal" } });
     expect(parsed.capabilities.offline).toBeUndefined();
+  });
+});
+
+describe("shared prefix grants (ADR-0042)", () => {
+  it("parses both prefix arrays", () => {
+    const parsed = CapabilitiesParse({
+      data: { sharedReadPrefixes: ["record:", "cfg:public:"] },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.capabilities.data?.sharedReadPrefixes).toEqual(["record:", "cfg:public:"]);
+    }
+  });
+
+  it("rejects an empty prefix — it would grant the whole scope", () => {
+    expect(CapabilitiesParse({ data: { sharedReadPrefixes: [""] } }).success).toBe(false);
+    expect(CapabilitiesParse({ data: { sharedWritePrefixes: [""] } }).success).toBe(false);
+  });
+
+  it("rejects a prefix over 256 UTF-8 bytes, counting multibyte correctly", () => {
+    // 128 CJK chars = 384 UTF-8 bytes but only 128 UTF-16 code units — the same
+    // undercounting issue #12 fixed for values, applied to the grant itself.
+    const wide = "漢".repeat(128);
+    expect(CapabilitiesParse({ data: { sharedReadPrefixes: [wide] } }).success).toBe(false);
+    // 85 CJK chars = 255 bytes — one under the cap, still legal.
+    expect(CapabilitiesParse({ data: { sharedReadPrefixes: ["漢".repeat(85)] } }).success).toBe(
+      true,
+    );
+  });
+
+  it("rejects control characters — CR/LF here is header/URL-borne injection surface", () => {
+    const CR = String.fromCharCode(13);
+    const LF = String.fromCharCode(10);
+    const NUL = String.fromCharCode(0);
+    for (const bad of [`re${CR}cord:`, `re${LF}cord:`, `re${NUL}cord:`]) {
+      expect(CapabilitiesParse({ data: { sharedWritePrefixes: [bad] } }).success, bad).toBe(false);
+    }
+  });
+
+  it("leaves the literal arrays at their historical lenience — no retroactive tightening", () => {
+    // The literal arrays predate the prefix fields and carry only `min(1)`; the
+    // stricter key rules are for the NEW fields only, so a live manifest that
+    // was legal yesterday cannot start failing validation today.
+    expect(CapabilitiesParse({ data: { sharedRead: ["漢".repeat(128)] } }).success).toBe(true);
   });
 });
 

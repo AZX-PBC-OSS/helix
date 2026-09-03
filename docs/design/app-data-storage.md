@@ -129,12 +129,21 @@ Three decisions were open when the read side shipped API-only; building the port
 **Columns are derived, and the derivation is adversarial input handling.** Owner-declared item schemas stay deferred (§9), so the table and CSV derive columns from the rows themselves. Because `item` is anonymous-visitor JSON, **the column set is attacker-influenced**, which makes these formatting-looking rules into security rules: frequency ranking (so one 60-key junk row cannot evict `email`), scalar-only with a whole-key disqualification (so no column ever silently drops values from an export), a hard cap, `item.` namespacing (which removes collision logic *and* neutralises header-row formula injection), and spreadsheet-formula neutralisation on the CSV path only. Full rules and rationale: `docs/features/app-data-gateway.md` → "Derived columns"; the executable spec is `packages/shared/src/collectionTable.test.ts`.
 
 No ADR for the derivation: it is display-only and fully reversible — the raw `item` column is always present, so nothing is lost by changing or removing it — and a future declared schema would supersede it rather than conflict. Deriving from the loaded rows also means the table (200 rows) and the export (up to 10,000) can legitimately disagree about columns; sharing the code buys one spec, not identical output.
-
 ### 3.3 `shared` — app-scoped, world-readable (rare, explicit, dangerous)
+
 Truly shared state every user of the app may read: a public leaderboard, a shared document, a poll tally. Its blast radius is "any visitor reads everything," so it is **never a default** — it is a distinct grant the owner must request, and the manifest copy should say so in plain language.
 
 - Verbs: `GET /_api/data/shared/:key` (open to all who pass the app's visibility gate), writes are a *separate, narrower* grant (`shared:write` — usually off; if on, every visitor can mutate shared state, which is its own footgun, so prefer owner-seeded shared data).
 - Use only when the data is *intended* to be visible to every user of the app.
+
+> **Superseded in part by [ADR-0042](../adr/0042-shared-prefix-grants-and-list-verb.md) (2026-09):**
+> literal shared-key grants cannot hold a set of records that grows at runtime — the app would
+> have to edit the manifest per record. The ADR adds **prefix grants**
+> (`sharedReadPrefixes`/`sharedWritePrefixes`, exact `startsWith`, approval-elevated) and, as one
+> decision with them, a **list verb** (`GET /_api/data/shared?prefix=<p>` — keys + versions,
+> never values, keyset-paginated, the prefix itself covered by a read-prefix grant). What's
+> true today is in `docs/features/app-data-gateway.md`; this section remains the original
+> three-scope rationale.
 
 The single most important rule across all three: **a grant of write never implies a grant of read.** §3.2 is the proof that they must be independent.
 
@@ -199,8 +208,9 @@ capabilities:
 | `DELETE /_api/data/user/:key` | user | session user; own partition only |
 | `GET /_api/data/user` | user | lists caller's own keys |
 | `POST /_api/data/collections/:name` | collection | `:name` ∈ manifest `data.collections`; **append only** |
-| `GET /_api/data/shared/:key` | shared | `:key` ∈ `data.sharedRead`; passes visibility gate |
-| `PUT /_api/data/shared/:key` | shared | `:key` ∈ `data.sharedWrite` (rare) |
+| `GET /_api/data/shared/:key` | shared | `:key` ∈ `data.sharedRead` (literal or prefix — ADR-0042); passes visibility gate |
+| `PUT /_api/data/shared/:key` | shared | `:key` ∈ `data.sharedWrite` (literal or prefix — ADR-0042) |
+| `GET /_api/data/shared?prefix=p` | shared | ADR-0042: `p` covered by `data.sharedReadPrefixes`; keys + versions only |
 
 Every handler reuses the LLM gateway's preamble verbatim (`apps/edge/src/gateway/llm.ts`): `resolveServingEntry` → `gate()` (401/403) → `isSameOrigin` (CSRF 403) → capability/scope check (403 `forbidden`) → body validation (400 `validation_failed`). Errors use the existing `ApiErrorCode` set (`packages/shared/src/api.ts`); add `quota_exceeded`-style reuse for §7. Reads send `cache-control: no-store`. **There is no list/read verb for collections** — its absence is the security property, so it must be covered by an adversarial test (project plan §6) asserting `GET`/`DELETE` on a collection path 404s/405s.
 

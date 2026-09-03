@@ -63,6 +63,12 @@ export const ATTR_STREAM = "helix.stream";
 export const ATTR_APP_SLUG = "helix.app.slug";
 /** Which app-data verb — `putUser`, `getShared`, … Bounded by the handler set. */
 export const ATTR_DATA_VERB = "helix.data.verb";
+/**
+ * How many keys a `shared` list call matched (ADR-0042 decision 7). Bounded by
+ * the page cap, and deliberately the COUNT — the matched keys themselves are
+ * app data and never ride a span.
+ */
+export const ATTR_DATA_MATCH_COUNT = "helix.data.match_count";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
 /** Files in a deployed bundle, and CSP lint warnings raised on it. */
@@ -144,6 +150,17 @@ export type SessionDenialReason = (typeof SESSION_DENIAL_REASONS)[number];
  */
 export const REGISTRY_LOAD_OUTCOMES = ["failed", "never_loaded"] as const;
 export type RegistryLoadOutcome = (typeof REGISTRY_LOAD_OUTCOMES)[number];
+
+/**
+ * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the
+ * `helix.gateway.data` span, separating the deny path from an empty result
+ * (ADR-0042 decision 7). Bounded by construction: these are the authorization
+ * early-returns in `listShared` (`apps/edge/src/gateway/data-handler.ts`), and
+ * the *response* stays an ordinary 403 — this records the reason internally,
+ * like {@link SESSION_DENIAL_REASONS}, without changing a byte the caller sees.
+ */
+export const DATA_LIST_DENIAL_REASONS = ["prefix_not_granted"] as const;
+export type DataListDenialReason = (typeof DATA_LIST_DENIAL_REASONS)[number];
 
 /**
  * Duration-histogram bucket boundaries, in milliseconds.

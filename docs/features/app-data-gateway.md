@@ -1,6 +1,6 @@
 # App-data gateway
 
-> **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning) · [ADR-0041](../adr/0041-app-data-write-concurrency.md) (write concurrency: CAS on an opaque version, mandatory on `shared`).
+> **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning) · [ADR-0041](../adr/0041-app-data-write-concurrency.md) (write concurrency: CAS on an opaque version, mandatory on `shared`) · [ADR-0042](../adr/0042-shared-prefix-grants-and-list-verb.md) (shared prefix grants + the list verb)
 
 **What it is.** `/_api/data/*` — the gateway's second capability (architecture §6.1, app-data
 design [§3/§5](../design/app-data-storage.md)). Untrusted apps get persistent storage without a
@@ -12,7 +12,9 @@ writer can be different principals, so read and write are independent grants):
 - **`collections`** (§3.2) — **append-only** from the app; the owner drains them via the portal.
   There is deliberately **no app-facing read** — the absence is the security property.
 - **`shared`** (§3.3) — app-scoped, world-readable-within-the-gate keys. Rare and dangerous;
-  a `sharedWrite` grant never implies `sharedRead`.
+  a `sharedWrite` grant never implies `sharedRead`. Grants are literal keys or — since
+  [ADR-0042](../adr/0042-shared-prefix-grants-and-list-verb.md) — **prefixes** covering every
+  key that starts with them, which is how a shared namespace grows at runtime.
 
 Edge handler: `apps/edge/src/gateway/data-handler.ts` (`makeDataHandlers`). Store:
 `apps/edge/src/gateway/data.ts` (`PgAppDataStore`). Route table: `apps/edge/src/app.ts`
@@ -28,6 +30,7 @@ GET    /_api/data/user/:key          getUser        (emits ETag)
 DELETE /_api/data/user/:key          deleteUser
 GET    /_api/data/user               listUser
 POST   /_api/data/collections/:name  postCollection (append-only)
+GET    /_api/data/shared             listShared     (ADR-0042; ?prefix= required)
 GET    /_api/data/shared/:key        getShared      (emits ETag)
 PUT    /_api/data/shared/:key        putShared      (precondition MANDATORY)
 ```
@@ -35,7 +38,8 @@ PUT    /_api/data/shared/:key        putShared      (precondition MANDATORY)
 Note the **deliberate absence** of any collection list/read/delete verb. The §3.2 write-only
 invariant is carried into the route table **and** the store type — `AppDataStore` has no
 `listCollection`/`getCollection` method at all — and an adversarial test asserts those paths
-404/405.
+404/405. The shared list verb is read-side only and requires a prefix grant; collections stay
+unlistable regardless of grants.
 
 ### Shared preamble + per-verb checks
 
@@ -48,8 +52,10 @@ else 503) → app holds a `data` grant (`entry.data`, else 403). Then per verb:
 - **Collections** require the name to be in `entry.data.collections`; available to authenticated
   **and** anonymous callers (the harvester is a public app). The response is `201` with **no
   body** — the writer gets no row id and no read-back.
-- **Shared** requires the key to be in `entry.data.sharedRead` (read) or the narrower
-  `entry.data.sharedWrite` (write).
+- **Shared** requires the key to be covered by `data.sharedRead` (read) or the narrower
+  `data.sharedWrite` (write) — literally, or (ADR-0042) by starting with a granted
+  `sharedReadPrefixes`/`sharedWritePrefixes` prefix. Listing requires a prefix grant on the
+  listing prefix itself; see below.
 
 ### Optimistic concurrency (ADR-0041)
 
@@ -97,6 +103,64 @@ On `public` apps the **anonymous tier is also per-IP rate-limited** ahead of the
 shared preamble, before the size/budget checks): a fixed-window limiter keyed per IP+app
 (`ipRateLimiter.ts`) returns `429 rate_limited`. Rate-limited calls are deliberately **not**
 metered — a ledger row per throttled request would be its own write-amplification vector.
+
+### Prefix grants + the list verb (ADR-0042)
+
+`shared` grants come in two forms. The literal arrays (`sharedRead`/`sharedWrite`) are fixed at
+deploy time — an app whose records are created at runtime (`record:<id>` per submission) cannot
+enumerate tomorrow's ids in today's manifest, so creating a record meant a manifest edit and a
+redeploy. `sharedReadPrefixes`/`sharedWritePrefixes` (own manifest fields, not a sigil inside the
+literal arrays — `*` is a legal key character) authorize every key that **starts with** the
+prefix. `startsWith` only: no globs, no regex, no interior wildcards. Prefixes are validated like
+keys (non-empty, ≤ 256 bytes, no control chars — `min(1)` is load-bearing; an empty prefix would
+grant the whole scope).
+
+A key is authorized if it matches a literal **or** a prefix, independently for read and write
+(`sharedKeyAllowed` in `data-handler.ts`). At approval time the two forms are distinct categories:
+literal deltas stay baseline/low, while a prefix delta (`data.sharedWritePrefixes[+record:]`) is
+**elevated, risk `low`** — a human sees the unbounded grant once, without it outranking risk that
+matters more in the queue.
+
+**The list verb ships with the grant, as one decision.** With only literals, listing is
+redundant (the manifest already enumerates what exists); under a prefix the app can no longer know
+that, and a list-less prefix grant would force every app into a self-maintained `index` key — a
+64 KiB-capped value with a lost-update race on every creation (the pilot app's index measured
+21 KB at 99 records, capping out around 299).
+
+```
+GET /_api/data/shared?prefix=<p>[&cursor=<opaque>]
+  → { keys: [{ key, version, updatedAt }], nextCursor? }
+```
+
+- **Keys and versions, never values** — 300 records at the pilot's measured median would be a
+  12 MB response. The app lists, then fetches what it renders. The listed `version` is a valid
+  `If-Match`, so list → update needs no per-key read.
+- **The prefix is required and must be covered by a `sharedReadPrefixes` grant** (equal or
+  narrower). A listing never reveals keys outside the caller's grants; a literal `sharedRead`
+  grant confers nothing (literals already say what exists); there is no prefix-less
+  "list everything" form — missing/invalid prefix is `400`.
+- **Keyset-paginated on `key`, fixed page cap of 200** (`SHARED_LIST_PAGE`), so the response is
+  bounded independently of how many keys match. `nextCursor` is the opaque base64url of the last
+  served key — single-column and composite-safe from the start because `key` is unique within
+  `(appId, env, userOid IS NULL)`, the lesson the collection drain's `?before=` cursor
+  (`TODO.md`) learned the hard way. An undecodable cursor is `400`, never a silent first page.
+- **No new database privilege** (ADR-0042 decision 6): `listShared` rides the same `SELECT` on
+  `app_data` that `getShared` does — `starts_with(key, $n)` (parameterized, no LIKE
+  metacharacters), `ORDER BY key COLLATE "C"` so the SQL keyset and the in-memory fake's
+  code-unit comparison agree whatever the deployment's default collation is.
+- **The deny path is metered `forbidden`** (model `shared.list`) — the fetch-proxy allowlist
+  precedent — so enumeration probing is audit-visible, and distinguishable from an empty result
+  (`ok`, `keys: []`) on the same ledger column. The span carries `url.path` (query dropped — the
+  prefix lives there) and `helix.data.match_count`, never the prefix value or the matched keys
+  (`DATA_LIST_DENIAL_REASONS` / `ATTR_DATA_MATCH_COUNT` in `@azx-pbc/shared/telemetry`;
+  adversarial suite: `apps/edge/src/gateway/dataTelemetry.test.ts`).
+
+The honest cost is **guessing vs enumeration**: today an app user can read any shared key whose
+name they can guess; with a list verb they can read any key whose prefix the owner granted.
+`shared` is world-readable within the app's visibility gate by definition (§3.3), so this is a
+widening of convenience, not of confidentiality — which is what the elevated approval tier is
+for. `examples/oversell` demonstrates the whole pattern (natural-key create via
+`If-None-Match: *`, list-as-index, CAS off the listed version, and the 403/400 boundaries).
 
 ### Storage + the RLS partition
 
@@ -276,6 +340,14 @@ it via the portal export API. See [examples.md](./examples.md).
   anonymous tier (`ipRateLimiter.ts`) are enforced today; a shared (DB/Redis) per-IP counter to
   beat the per-process / N×instances limit is future hardening.
 - **Tighter edge grants (Phase 5)** per the design doc — further narrowing of `helix_edge`.
+- **A `shared` DELETE verb** is wanted more obviously now that prefix grants make a growing
+  shared namespace (reclaiming keys is a real need), and is still blocked: `version` is a
+  per-row counter, so delete-and-recreate restarts it at 1 and a stale `If-Match: "1"` can match
+  a value it never read (ABA). The precondition is a row-birth nonce folded into the ETag — the
+  next ADR in this line (ADR-0042 consequences).
+- **Listing is a read primitive with no read budget** — a signed-in caller polling the list
+  verb is bounded only by the page cap, same shape as the authenticated-412-flood item in
+  `TODO.md` (which now has a second call site because of it).
 - Collections stay intentionally write-only from the app; no app-facing read is planned.
 - **Owner-declared item schemas** stay deferred (app-data design §9). The derived columns are a
   *display convention*, not a schema: nothing is validated on write, the raw `item` column is always

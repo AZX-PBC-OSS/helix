@@ -5,7 +5,7 @@ import { buildDevGateway } from "./app.js";
 import type { DevTokenRow, DevTokenStore } from "./devTokenStore.js";
 import { testDevGatewayConfig } from "../test/config.js";
 import { FakeAppDataStore, FakeRegistry, FakeUsageStore, registryEntry } from "../test/fakes.js";
-import type { AppDataStore, PutResult, StoredValue } from "../gateway/data.js";
+import type { AppDataStore, PutResult, SharedKeyPage, StoredValue } from "../gateway/data.js";
 import type { Env } from "@azx-pbc/shared";
 
 /**
@@ -65,6 +65,9 @@ class EnvRecordingStore implements AppDataStore {
   async getShared(): Promise<StoredValue | null> {
     return null;
   }
+  async listShared(): Promise<SharedKeyPage> {
+    return { keys: [] };
+  }
   async putShared(): Promise<PutResult> {
     return { kind: "ok", version: "1", updatedAt: new Date().toISOString() };
   }
@@ -83,12 +86,26 @@ function build(devTokens: FakeDevTokenStore, store: AppDataStore = new FakeAppDa
     registryEntry({
       slug: "myapp",
       appId: APP_A,
-      data: { user: true, collections: [], sharedRead: [], sharedWrite: [] },
+      data: {
+        user: true,
+        collections: [],
+        sharedRead: [],
+        sharedWrite: [],
+        sharedReadPrefixes: [],
+        sharedWritePrefixes: [],
+      },
     }),
     registryEntry({
       slug: "otherapp",
       appId: APP_B,
-      data: { user: true, collections: [], sharedRead: [], sharedWrite: [] },
+      data: {
+        user: true,
+        collections: [],
+        sharedRead: [],
+        sharedWrite: [],
+        sharedReadPrefixes: [],
+        sharedWritePrefixes: [],
+      },
     }),
   ]);
   const app: FastifyInstance = buildDevGateway({
@@ -285,7 +302,14 @@ describe("dev-gateway CORS preflight", () => {
       registryEntry({
         slug: "myapp",
         appId: APP_A,
-        data: { user: true, collections: [], sharedRead: ["k"], sharedWrite: [] },
+        data: {
+          user: true,
+          collections: [],
+          sharedRead: ["k"],
+          sharedWrite: [],
+          sharedReadPrefixes: [],
+          sharedWritePrefixes: [],
+        },
       }),
     ]);
     const app: FastifyInstance = buildDevGateway({

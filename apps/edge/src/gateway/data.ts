@@ -32,6 +32,57 @@ export interface UserKeyMeta {
 }
 
 /**
+ * One entry of a `shared`-scope list page (ADR-0042 decision 3). Key, version
+ * and updatedAt — **never the value**: 300 records at the pilot app's measured
+ * median would be a 12 MB response, so the app lists and then fetches what it
+ * needs. `version` rides along so a caller can list and then CAS without a
+ * second round trip per key.
+ */
+export interface SharedKeyMeta {
+  key: string;
+  version: string;
+  updatedAt: string;
+}
+
+/** A page from `listShared`; `nextCursor` is present only when more keys match. */
+export interface SharedKeyPage {
+  keys: SharedKeyMeta[];
+  nextCursor?: string;
+}
+
+/**
+ * Fixed page size for `listShared` (ADR-0042 decision 3): the response is
+ * bounded independently of how many keys match. No client `?limit` — add one
+ * only if a real app asks, the same bar the ADR sets for a pattern language.
+ */
+export const SHARED_LIST_PAGE = 200;
+
+/**
+ * The keyset cursor: opaque base64url of the last served key (ADR-0042
+ * decision 3). Composite-safe **from the start** — the lesson of the collection
+ * drain's `?before=` (TODO.md): a cursor that is one column of a multi-column
+ * sort skips rows at page boundaries. Here the sort key is `key`, which is
+ * unique within `(appId, env, userOid IS NULL)`, so a single-column cursor is
+ * already the composite; and opaque means the encoding can change later
+ * without a client ever having depended on it.
+ */
+export function encodeListCursor(key: string): string {
+  return Buffer.from(key, "utf8").toString("base64url");
+}
+
+/**
+ * Inverse of {@link encodeListCursor}; null when the cursor is not something
+ * this platform issued. `base64url` decoding is lenient (invalid characters are
+ * skipped silently), so a byte-for-byte re-encode is the verification — garbage
+ * in, null out, and the handler answers 400 rather than silently paging from a
+ * key the caller never saw.
+ */
+export function decodeListCursor(cursor: string): string | null {
+  const key = Buffer.from(cursor, "base64url").toString("utf8");
+  return encodeListCursor(key) === cursor ? key : null;
+}
+
+/**
  * A stored value plus its opaque concurrency token (ADR-0041). `version` is a
  * BIGINT in Postgres and stays a STRING all the way out (pg returns BIGINT as
  * string): no Number precision question and no formatting step where the token
@@ -124,6 +175,18 @@ export interface AppDataStore {
   ): Promise<void>;
   /** Read an app-shared key (§3.3, userOid IS NULL; value + version); null if absent. */
   getShared(appId: string, key: string, env: Env): Promise<StoredValue | null>;
+  /**
+   * List the app-shared keys under `prefix` (ADR-0042 decision 3) — keys and
+   * versions, never values, one bounded page at a time. `afterKey` is the
+   * decoded keyset cursor (null = first page). No new database privilege: this
+   * is the same `SELECT` grant `getShared` rides (ADR-0042 decision 6).
+   */
+  listShared(
+    appId: string,
+    prefix: string,
+    afterKey: string | null,
+    env: Env,
+  ): Promise<SharedKeyPage>;
   /**
    * Write an app-shared key (§3.3) under a MANDATORY precondition (ADR-0041
    * decision 4): the handler refuses precondition-less shared writes with 428,
@@ -283,6 +346,47 @@ export class PgAppDataStore implements AppDataStore {
       );
       const row = r.rows[0] as { value: unknown; version: string } | undefined;
       return row ? { value: row.value, version: row.version } : null;
+    });
+  }
+
+  async listShared(
+    appId: string,
+    prefix: string,
+    afterKey: string | null,
+    env: Env,
+  ): Promise<SharedKeyPage> {
+    return withPartition(this.#pool, appId, "", env, async (client) => {
+      // `starts_with` over a parameterized prefix — no LIKE metacharacter
+      // escaping to get wrong. The sort and the cursor predicate pin `COLLATE
+      // "C"` deliberately: the database's default collation is an environment
+      // property (dev container vs Azure need not agree), and bytewise UTF-8
+      // order is the one ordering that matches JS code-unit comparison
+      // everywhere, so the keyset in SQL and the keyset in the in-memory fake
+      // (tests, dev gateway) can never disagree about which rows follow a
+      // cursor. `LIMIT` is cap+1: one lookahead row is how the next page's
+      // existence is detected without a COUNT.
+      const r = await client.query(
+        `SELECT key, version, "updatedAt" FROM app_data
+          WHERE "appId" = $1 AND env = $2 AND "userOid" IS NULL AND starts_with(key, $3)
+            ${afterKey === null ? "" : 'AND key COLLATE "C" > $4'}
+          ORDER BY key COLLATE "C"
+          LIMIT $${afterKey === null ? 4 : 5}`,
+        afterKey === null
+          ? [appId, env, prefix, SHARED_LIST_PAGE + 1]
+          : [appId, env, prefix, afterKey, SHARED_LIST_PAGE + 1],
+      );
+      const rows = r.rows as { key: string; version: string; updatedAt: Date }[];
+      const keys: SharedKeyMeta[] = rows.slice(0, SHARED_LIST_PAGE).map((row) => ({
+        key: row.key,
+        version: row.version,
+        updatedAt: row.updatedAt.toISOString(),
+      }));
+      return rows.length > SHARED_LIST_PAGE
+        ? {
+            keys,
+            nextCursor: encodeListCursor(keys[SHARED_LIST_PAGE - 1]!.key),
+          }
+        : { keys };
     });
   }
 

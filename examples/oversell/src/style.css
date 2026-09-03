@@ -210,6 +210,20 @@ code {
   font-weight: 600;
 }
 
+.records {
+  list-style: none;
+  margin: 0.9rem 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+}
+
+.records code {
+  font-size: 0.78em;
+}
+
 .log {
   margin: 0;
   max-height: 16rem;

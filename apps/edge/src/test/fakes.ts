@@ -14,10 +14,13 @@ import type {
   AppDataStore,
   CollectionMeta,
   PutResult,
+  SharedKeyMeta,
+  SharedKeyPage,
   SharedWritePrecondition,
   UserKeyMeta,
   WritePrecondition,
 } from "../gateway/data.js";
+import { SHARED_LIST_PAGE, encodeListCursor } from "../gateway/data.js";
 import type { MeterIdentity } from "../auth/gate.js";
 import type { Session, SessionStore } from "../auth/sessions.js";
 import type {
@@ -333,6 +336,30 @@ export class FakeAppDataStore implements AppDataStore {
   async getShared(appId: string, key: string) {
     const row = this.rows.get(this.#sharedKey(appId, key));
     return row ? { value: row.value, version: String(row.version) } : null;
+  }
+
+  /**
+   * Mirrors `PgAppDataStore.listShared` (ADR-0042): prefix filter, keyset
+   * cursor, cap+1 lookahead. Sort and cursor predicate both use plain code-unit
+   * comparison — the same ordering as the real store's `COLLATE "C"` — so a
+   * page sequence asserted here cannot skip or replay rows against Postgres.
+   */
+  async listShared(appId: string, prefix: string, afterKey: string | null): Promise<SharedKeyPage> {
+    // `#sharedKey(appId, "")` IS the shared-row key prefix for this app.
+    const base = this.#sharedKey(appId, "");
+    const matched: SharedKeyMeta[] = [];
+    for (const [k, v] of this.rows) {
+      if (!k.startsWith(base)) continue;
+      const key = k.slice(base.length);
+      if (!key.startsWith(prefix)) continue;
+      if (afterKey !== null && !(key > afterKey)) continue;
+      matched.push({ key, version: String(v.version), updatedAt: v.updatedAt });
+    }
+    matched.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const keys = matched.slice(0, SHARED_LIST_PAGE);
+    return matched.length > SHARED_LIST_PAGE
+      ? { keys, nextCursor: encodeListCursor(keys[SHARED_LIST_PAGE - 1]!.key) }
+      : { keys };
   }
 
   async putShared(

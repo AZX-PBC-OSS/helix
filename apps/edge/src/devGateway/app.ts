@@ -84,6 +84,7 @@ const DATA_ROUTES = [
   ["DELETE", "/_api/data/user/:key", "deleteUser"],
   ["GET", "/_api/data/user", "listUser"],
   ["POST", "/_api/data/collections/:name", "postCollection"],
+  ["GET", "/_api/data/shared", "listShared"],
   ["GET", "/_api/data/shared/:key", "getShared"],
   ["PUT", "/_api/data/shared/:key", "putShared"],
 ] as const;

@@ -15,7 +15,7 @@ shim, and `offline` exercises the offline capability (ADR-0035).
 | [`notes`](./notes)               | A realistic self-contained SPA (localStorage), multiple asset types.                                  |
 | [`chatbot`](./chatbot)           | Streams Claude through the gateway (`/_api/llm/chat`) — no key in the app, manifest-granted, metered. |
 | [`waitlist`](./waitlist)         | A **public** contact harvester: write-only collections + owner-seeded shared read (`/_api/data/*`).   |
-| [`oversell`](./oversell)         | Compare-and-swap shared writes (ADR-0041): ETags, mandatory preconditions, one-click 412/428 probes.  |
+| [`oversell`](./oversell)         | Compare-and-swap shared writes (ADR-0041) and prefix grants + the list verb (ADR-0042): ETags, mandatory preconditions, a runtime-growing waitlist, one-click 412/428/403 probes.  |
 | [`github-stars`](./github-stars) | Fetches a public API **directly** — CSP-blocked until an admin approves the origin (the approval loop). |
 | [`fetch-proxy`](./fetch-proxy)   | Reaches the GitHub API **through the fetch-proxy** — keyless, then secret-injected, then via the shim. |
 | [`offline`](./offline)           | Cold-boots with no network via the platform's scope-confined service worker, and shows what the app still owns. |

@@ -258,6 +258,34 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     for (const item of d.removed) push({ path: `${field}[-${item}]`, from: item }, false, "low");
   }
 
+  // ── data: shared prefix grants (ADR-0042 decision 4) ──
+  // Their OWN delta paths, distinct from the literal arrays above, because the
+  // human reading the diff must never have to notice that one
+  // `data.sharedWrite[+record:abc]` element means "one key" while one
+  // `data.sharedWritePrefixes[+record:]` means "unboundedly many keys, chosen by
+  // the app at runtime". Elevated on add — a human sees the unbounded grant once
+  // — but risk `low`, the same tier as the literal grant: `shared` is
+  // app-scoped and world-readable within the app's visibility gate by definition
+  // (§3.3), so the prefix is not meaningfully more dangerous than the literals it
+  // generalizes; `low` keeps the queue ordered by what actually matters.
+  // Removal is a privilege reduction, so it is baseline like every other removal.
+  for (const [field, before, after] of [
+    [
+      "data.sharedReadPrefixes",
+      eff.data?.sharedReadPrefixes ?? [],
+      req.data?.sharedReadPrefixes ?? [],
+    ],
+    [
+      "data.sharedWritePrefixes",
+      eff.data?.sharedWritePrefixes ?? [],
+      req.data?.sharedWritePrefixes ?? [],
+    ],
+  ] as const) {
+    const d = diffArray(before, after);
+    for (const item of d.added) push({ path: `${field}[+${item}]`, to: item }, true, "low");
+    for (const item of d.removed) push({ path: `${field}[-${item}]`, from: item }, false, "low");
+  }
+
   // ── data: budgets ──
   for (const [field, effVal, reqVal, threshold] of [
     ["data.writesPerDay", eff.data?.writesPerDay, req.data?.writesPerDay, BASELINE_WRITES_PER_DAY],
@@ -477,9 +505,23 @@ function applyArray(caps: Capabilities, field: string, op: "+" | "-", item: stri
       return;
     case "data.collections":
     case "data.sharedRead":
-    case "data.sharedWrite": {
-      const data = caps.data ?? { user: false, collections: [], sharedRead: [], sharedWrite: [] };
-      const key = field.slice("data.".length) as "collections" | "sharedRead" | "sharedWrite";
+    case "data.sharedWrite":
+    case "data.sharedReadPrefixes":
+    case "data.sharedWritePrefixes": {
+      const data = caps.data ?? {
+        user: false,
+        collections: [],
+        sharedRead: [],
+        sharedWrite: [],
+        sharedReadPrefixes: [],
+        sharedWritePrefixes: [],
+      };
+      const key = field.slice("data.".length) as
+        | "collections"
+        | "sharedRead"
+        | "sharedWrite"
+        | "sharedReadPrefixes"
+        | "sharedWritePrefixes";
       caps.data = { ...data, [key]: add(data[key]) };
       return;
     }
@@ -532,7 +574,16 @@ function applyScalar(caps: Capabilities, d: Delta): void {
 }
 
 function ensureData(caps: Capabilities) {
-  return caps.data ?? { user: false, collections: [], sharedRead: [], sharedWrite: [] };
+  return (
+    caps.data ?? {
+      user: false,
+      collections: [],
+      sharedRead: [],
+      sharedWrite: [],
+      sharedReadPrefixes: [],
+      sharedWritePrefixes: [],
+    }
+  );
 }
 
 function ensureFetch(caps: Capabilities) {
@@ -638,9 +689,43 @@ export function captureSnapshot(
 }
 
 /**
+ * Serialize a snapshot area with object keys sorted, recursively.
+ *
+ * The plain `JSON.stringify` this replaces is **key-order sensitive**, and the
+ * two sides of the comparison genuinely carry different orders: the stored
+ * `baseSnapshot` is a jsonb column, and Postgres re-orders object keys
+ * canonically at rest (by key length, then bytewise), while the approve-time
+ * re-derivation goes through `CapabilitiesSchema.parse`, and zod emits keys in
+ * **shape** order. For most areas the two orders coincide (llm: `models` <
+ * `dollarsPerDay`; fetch: `shim` < `origins` < `requestsPerDay`), which is why
+ * this slept — but the `data` area's shape order (`user, collections,
+ * sharedRead, sharedWrite, …`) differs from its jsonb order (`user,
+ * sharedRead, collections, sharedWrite, …`), so every data-area approve read a
+ * value that never moved as "changed" and auto-bounced to `needs_changes`. The
+ * first data-area elevated grant that anyone actually approved was a
+ * `sharedWritePrefixes` prefix (ADR-0042), which is what surfaced it.
+ *
+ * **Array order stays significant** — capability arrays are ordered grants
+ * where reordering is a real change — so only object keys are sorted.
+ */
+function canonicalSnapshotJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v) => {
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>).sort(([a], [b]) =>
+          a < b ? -1 : a > b ? 1 : 0,
+        ),
+      );
+    }
+    return v;
+  });
+}
+
+/**
  * True if any snapshotted area no longer matches current effective state — the
  * diff is stale and approval must bounce to `needs_changes` rather than clobber.
- * Array reordering counts as a change (conservative, safe direction).
+ * Array reordering counts as a change (conservative, safe direction); object
+ * key order does not (see {@link canonicalSnapshotJson}).
  */
 export function snapshotConflicts(
   baseSnapshot: unknown,
@@ -651,7 +736,7 @@ export function snapshotConflicts(
   const snap = baseSnapshot as Record<string, unknown>;
   const current = captureSnapshot(effective, visibility, Object.keys(snap) as Area[]);
   for (const key of Object.keys(snap)) {
-    if (JSON.stringify(snap[key]) !== JSON.stringify(current[key])) return true;
+    if (canonicalSnapshotJson(snap[key]) !== canonicalSnapshotJson(current[key])) return true;
   }
   return false;
 }

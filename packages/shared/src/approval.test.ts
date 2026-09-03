@@ -126,6 +126,71 @@ describe("classifyChange — mcp / origins / data", () => {
     });
     expect(paths(r.elevatedDeltas)).toEqual(["data.writesPerDay"]);
   });
+
+  // ADR-0042 decision 4: one prefix element covers unboundedly many keys chosen
+  // by the app at runtime, so it must not ride the literal arrays' baseline path
+  // OR their delta paths — a reviewer has to see it as its own kind of grant.
+  it("gates a shared prefix grant as elevated but low risk, on its own delta path", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      data: { sharedReadPrefixes: ["record:"], sharedWritePrefixes: ["record:"] },
+    });
+    expect(paths(r.elevatedDeltas)).toEqual([
+      "data.sharedReadPrefixes[+record:]",
+      "data.sharedWritePrefixes[+record:]",
+    ]);
+    // Low, not med/high: within the app's visibility gate a prefix is not
+    // meaningfully more dangerous than the literal grant it generalizes.
+    expect(r.risk).toBe("low");
+  });
+
+  it("prefix removal is baseline privilege reduction, and round-trips via applyDeltas", () => {
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      data: {
+        user: false,
+        collections: [],
+        sharedRead: [],
+        sharedWrite: [],
+        sharedReadPrefixes: ["record:", "cfg:"],
+        sharedWritePrefixes: [],
+      },
+    };
+    const r = classifyChange(eff, {
+      mcp: [],
+      externalOrigins: [],
+      data: { user: false, sharedReadPrefixes: ["record:"] },
+    });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["data.sharedReadPrefixes[-cfg:]"]);
+    const applied = applyDeltas(eff, r.baselineDeltas);
+    expect(applied.data?.sharedReadPrefixes).toEqual(["record:"]);
+  });
+
+  it("applyDeltas lands an approved prefix grant from the elevated bundle", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      data: { sharedWritePrefixes: ["record:"] },
+    });
+    const applied = applyDeltas(EMPTY, r.elevatedDeltas);
+    expect(applied.data?.sharedWritePrefixes).toEqual(["record:"]);
+    // The literal arrays are untouched by a prefix delta — the two paths cannot
+    // bleed into each other at approve time.
+    expect(applied.data?.sharedWrite).toEqual([]);
+  });
+
+  it("a literal shared grant stays baseline next to an elevated prefix grant", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      data: { sharedRead: ["leaderboard"], sharedReadPrefixes: ["record:"] },
+    });
+    expect(paths(r.baselineDeltas)).toEqual(["data.sharedRead[+leaderboard]"]);
+    expect(paths(r.elevatedDeltas)).toEqual(["data.sharedReadPrefixes[+record:]"]);
+  });
 });
 
 describe("classifyChange — fetch proxy", () => {
@@ -439,11 +504,81 @@ describe("snapshot + conflict (optimistic concurrency)", () => {
   // commit blind if someone re-scoped it to `product` in the meantime: the
   // reviewer approved a specific before-state. A mode-only snapshot said "still
   // group" and let it through.
-  it("detects a group-set move under an open request", () => {
+  it("detects a group-set move under an open request", async () => {
     const snap = captureSnapshot(EMPTY, vis("group", "eng"), ["visibility"]);
     expect(snapshotConflicts(snap, EMPTY, vis("group", "product"))).toBe(true);
     expect(snapshotConflicts(snap, EMPTY, vis("group", "eng", "product"))).toBe(true);
     expect(snapshotConflicts(snap, EMPTY, vis("group", "eng"))).toBe(false);
+  });
+
+  // The live failure the ADR-0042 prefix grants surfaced (2026-09-03): the
+  // first data-area elevated request anyone approved auto-bounced with "the
+  // effective state changed" when nothing had. The stored `baseSnapshot` is a
+  // jsonb column, which re-orders object keys canonically at rest
+  // (`user, sharedRead, collections, …`), while the approve-time re-derivation
+  // goes through zod, which emits keys in shape order
+  // (`user, collections, sharedRead, …`) — and the comparison was
+  // `JSON.stringify`, which is key-order sensitive. Other areas' shape and
+  // jsonb orders coincide, which is why only the data area bounced.
+  it("does not see a jsonb-vs-schema key-order difference as a moved value", () => {
+    // The live shape: an app whose baseline part (a literal sharedRead grant)
+    // already committed, filing a prefix grant as the elevated bundle.
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      data: {
+        user: false,
+        collections: [],
+        sharedRead: ["leaderboard"],
+        sharedWrite: [],
+        sharedReadPrefixes: [],
+        sharedWritePrefixes: [],
+      },
+    };
+    const requested = {
+      mcp: [],
+      externalOrigins: [],
+      // A complete draft, as the SPA always sends — the existing literals stay.
+      data: { ...eff.data, sharedReadPrefixes: ["record:"] },
+    };
+    const r = classifyChange(eff, requested);
+    expect(paths(r.elevatedDeltas)).toEqual(["data.sharedReadPrefixes[+record:]"]);
+    const applied = applyDeltas(eff, r.baselineDeltas);
+    expect(applied.data?.sharedRead).toEqual(["leaderboard"]);
+
+    // jsonb's canonical key order for the data area, as Postgres returns the
+    // stored snapshot: user(4) < sharedRead(10) < collections(11) = sharedWrite
+    // < the prefix arrays — NOT the schema's declaration order.
+    const jsonbOrdered = {
+      data: {
+        user: false,
+        sharedRead: ["leaderboard"],
+        collections: [],
+        sharedWrite: [],
+        sharedReadPrefixes: [],
+        sharedWritePrefixes: [],
+      },
+    };
+    // The bug this fix exists for, stated directly: the same value in the two
+    // orders must not conflict.
+    expect(snapshotConflicts(jsonbOrdered, applied, vis("public"))).toBe(false);
+
+    // A REAL move under the request still bounces (that is the feature).
+    expect(
+      snapshotConflicts(
+        jsonbOrdered,
+        { ...applied, data: { ...applied.data!, sharedWrite: ["poll"] } },
+        vis("public"),
+      ),
+    ).toBe(true);
+    // A grant added inside an area still counts — content, not just order.
+    expect(
+      snapshotConflicts(
+        jsonbOrdered,
+        { ...applied, data: { ...applied.data!, sharedRead: ["leaderboard", "extra"] } },
+        vis("public"),
+      ),
+    ).toBe(true);
   });
 });
 

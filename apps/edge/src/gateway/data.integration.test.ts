@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { PgAppDataStore } from "./data.js";
+import { PgAppDataStore, decodeListCursor } from "./data.js";
 import { TEST_DATABASE_URL } from "../test/seed.js";
 
 /**
@@ -32,6 +32,11 @@ async function edgeRoleAvailable(): Promise<boolean> {
 
 const APP = randomUUID();
 const OTHER_APP = randomUUID();
+// Dedicated partitions for the two listShared tests that seed a whole page of
+// `record:*` keys: the walk asserts exact counts/orderings, and the sibling
+// tests' `record:`-prefixed rows under APP would be indistinguishable pollution.
+const PAGING_APP = randomUUID();
+const ORDER_APP = randomUUID();
 let store: PgAppDataStore | null = null;
 
 afterAll(async () => {
@@ -39,7 +44,9 @@ afterAll(async () => {
   // Clean our rows as the owner (FORCE RLS would otherwise scope a bare delete).
   const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
   try {
-    await owner.query(`DELETE FROM app_data WHERE "appId" = ANY($1::uuid[])`, [[APP, OTHER_APP]]);
+    await owner.query(`DELETE FROM app_data WHERE "appId" = ANY($1::uuid[])`, [
+      [APP, OTHER_APP, PAGING_APP, ORDER_APP],
+    ]);
     await owner.query(`DELETE FROM app_collection_items WHERE "appId" = ANY($1::uuid[])`, [
       [APP, OTHER_APP],
     ]);
@@ -307,6 +314,126 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
       expect((r.rows[0] as { n: number }).n).toBe(0);
     } finally {
       await pool.end();
+    }
+  });
+
+  it("listShared: prefix-scoped, shared-only, this app only, values never selected (ADR-0042)", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const s = new PgAppDataStore(edgeUrl(), { max: 1 });
+    try {
+      // A user-scoped row whose KEY matches the prefix, a sibling app's shared
+      // row, and an out-of-prefix shared key: none of them may be listed.
+      await s.putUserKey(APP, "alice", "record:mine", 1, "prod", { kind: "none" });
+      await s.putShared(OTHER_APP, "record:theirs", 1, "prod", { kind: "ifNoneMatch" });
+      await s.putShared(APP, "journal:1", 1, "prod", { kind: "ifNoneMatch" });
+      await s.putShared(APP, "record:b", { v: 2 }, "prod", { kind: "ifNoneMatch" });
+      const first = await s.putShared(APP, "record:a", { v: 1 }, "prod", { kind: "ifNoneMatch" });
+      expect(first).toMatchObject({ kind: "ok", version: "1" });
+      await s.putShared(APP, "record:a", { v: 1.1 }, "prod", {
+        kind: "ifMatch",
+        version: "1",
+      });
+
+      const page = await s.listShared(APP, "record:", null, "prod");
+      expect(page.nextCursor).toBeUndefined();
+      expect(page.keys).toHaveLength(2);
+      expect(page.keys.map((k) => k.key)).toEqual(["record:a", "record:b"]);
+      // version is the bumped counter, still a string; updatedAt is ISO.
+      expect(page.keys[0]).toMatchObject({ key: "record:a", version: "2" });
+      expect(typeof page.keys[0]!.updatedAt).toBe("string");
+      // Keys-only: the VALUES column is never selected, and the projection
+      // cannot accidentally widen without this failing.
+      expect(Object.keys(page.keys[0]!).sort()).toEqual(["key", "updatedAt", "version"]);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("listShared: the prefix is a LITERAL starts_with, never LIKE metacharacters", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const s = new PgAppDataStore(edgeUrl(), { max: 1 });
+    try {
+      // With a LIKE-built predicate, `record:100_` would also match
+      // `record:100Xc` (the underscore is a one-char wildcard). `starts_with`
+      // has no metacharacters — the whole reason it was chosen.
+      await s.putShared(APP, "record:100_pc", 1, "prod", { kind: "ifNoneMatch" });
+      await s.putShared(APP, "record:100Xc", 2, "prod", { kind: "ifNoneMatch" });
+      const page = await s.listShared(APP, "record:100_", null, "prod");
+      expect(page.keys.map((k) => k.key)).toEqual(["record:100_pc"]);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it(
+    'listShared: keyset pagination walks every row exactly once, in COLLATE "C" order',
+    // 205 seeded writes, each a 4-round-trip partition transaction — comfortably
+    // over the 5s default, so the test owns its budget explicitly.
+    { timeout: 30_000 },
+    async () => {
+      if (!(await edgeRoleAvailable())) return;
+      const s = new PgAppDataStore(edgeUrl(), { max: 2 });
+      try {
+        // 205 rows: one full page (200), a 5-row tail, and a mid-walk boundary.
+        const total = 205;
+        for (let i = 0; i < total; i++) {
+          const r = await s.putShared(
+            PAGING_APP,
+            `record:${String(i).padStart(3, "0")}`,
+            i,
+            "prod",
+            {
+              kind: "ifNoneMatch",
+            },
+          );
+          if (r.kind !== "ok") throw new Error("seed failed");
+        }
+
+        const seen: string[] = [];
+        let afterKey: string | null = null;
+        let pages = 0;
+        for (;;) {
+          const page = await s.listShared(PAGING_APP, "record:", afterKey, "prod");
+          pages += 1;
+          expect(page.keys.length).toBeGreaterThan(0);
+          seen.push(...page.keys.map((k) => k.key));
+          if (page.nextCursor === undefined) break;
+          // Opaque: not the bare key, not readable as one.
+          expect(page.nextCursor).not.toContain("record:");
+          // The store's contract is the DECODED key (the handler owns the
+          // opaque-cursor decode); a cursor the store itself emitted must
+          // round-trip through the same decoder the handler uses.
+          afterKey = decodeListCursor(page.nextCursor);
+          if (afterKey === null) throw new Error("store emitted an undecodable cursor");
+        }
+
+        expect(pages).toBe(2);
+        expect(seen).toHaveLength(total);
+        // Exactly once, ascending — the composite-safe property the collection
+        // drain's `?before=` lacks (TODO.md): no skips, no replays at boundaries.
+        expect(new Set(seen).size).toBe(total);
+        expect([...seen].sort()).toEqual(seen);
+      } finally {
+        await s.close();
+      }
+    },
+  );
+
+  it('listShared: ordering is bytewise (COLLATE "C"), not the database\'s locale collation', async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const s = new PgAppDataStore(edgeUrl(), { max: 1 });
+    try {
+      for (const key of ["record:z", "record:A", "record:0", "record:a"]) {
+        await s.putShared(ORDER_APP, key, 1, "prod", { kind: "ifNoneMatch" });
+      }
+      const page = await s.listShared(ORDER_APP, "record:", null, "prod");
+      // Bytewise: digits before capitals before lowercase. A linguistic
+      // collation could reorder "A"/"a" — pinning this order is what keeps the
+      // SQL keyset and the in-memory fake's code-unit comparison in agreement,
+      // whatever collation the deployment's database happens to default to.
+      expect(page.keys.map((k) => k.key)).toEqual(["record:0", "record:A", "record:a", "record:z"]);
+    } finally {
+      await s.close();
     }
   });
 });

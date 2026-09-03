@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type { Span } from "@opentelemetry/api";
 import type { ApiErrorCode, Env } from "@azx-pbc/shared";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
@@ -12,14 +13,19 @@ import {
 import type { RegistryEntry } from "../registry/projection.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import type { OriginCheck } from "../auth/validate.js";
+import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import type { AppDataStore, CollectionMeta, WritePrecondition } from "./data.js";
+import { decodeListCursor } from "./data.js";
 import { anonRateLimited, type IpRateLimiter } from "./ipRateLimiter.js";
 import {
   ATTR_APP_SLUG,
   ATTR_CAPABILITY,
+  ATTR_DATA_MATCH_COUNT,
   ATTR_DATA_VERB,
+  ATTR_REASON,
   ROUTE_DATA,
   SPAN_DATA,
+  type DataListDenialReason,
 } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "../telemetry.js";
 import { meterGatewayCall, type UsageStore } from "./usage.js";
@@ -44,6 +50,15 @@ import { meterGatewayCall, type UsageStore } from "./usage.js";
  * The §3.2 collection invariant is structural: there is no list/read verb for
  * collections here, and the store has no method to enumerate them — covered by
  * an adversarial test asserting those paths 404/405.
+ *
+ * `shared` grants come in two forms (ADR-0042): the literal arrays fixed at
+ * deploy time, and PREFIX grants that authorize every key starting with a
+ * declared prefix — which is what lets an app create records at runtime under
+ * a natural-key layout (`record:<id>`) without a manifest edit per record.
+ * Prefix grants also unlock the `listShared` verb: with only literals, listing
+ * is redundant (the manifest already enumerates what exists); under a prefix
+ * the app can no longer know that, so the list verb ships with the grant — one
+ * decision, not two.
  */
 
 export interface DataGatewayRuntime {
@@ -109,6 +124,22 @@ function nameParam(req: FastifyRequest): string | null {
 }
 
 /**
+ * ADR-0042 decision 1: a shared key is authorized when it matches a literal
+ * grant **or** starts with a granted prefix. Read and write stay independent
+ * grants — callers pass the grant halves separately, exactly as before.
+ */
+function sharedKeyAllowed(literals: string[], prefixes: string[], key: string): boolean {
+  return literals.includes(key) || prefixes.some((p) => key.startsWith(p));
+}
+
+/**
+ * The one reason the list verb can be denied — typed against the bounded
+ * `DATA_LIST_DENIAL_REASONS` set so the span dimension and the vocabulary in
+ * `packages/shared/src/telemetry.ts` cannot drift apart.
+ */
+const LIST_DENY_PREFIX_NOT_GRANTED: DataListDenialReason = "prefix_not_granted";
+
+/**
  * The write's stated concurrency assumption (ADR-0041). `ifMatchAny` is
  * `If-Match: *` — "any current representation" — which states NO assumption and
  * is refused everywhere: on `shared` it is the one-character escape hatch
@@ -171,7 +202,15 @@ function triageMeta(req: FastifyRequest): CollectionMeta {
 }
 
 /** Every app-data verb has this shape, which is what makes one wrapper enough. */
-type DataVerbHandler = (req: FastifyRequest, reply: FastifyReply, slug: string) => Promise<void>;
+type DataVerbHandler = (
+  req: FastifyRequest,
+  reply: FastifyReply,
+  slug: string,
+  span: Span,
+) => Promise<void>;
+
+/** What callers get after {@link withDataSpans}: same verb, span already bound. */
+type DispatchedDataVerb = (req: FastifyRequest, reply: FastifyReply, slug: string) => Promise<void>;
 
 /**
  * Wrap each app-data verb in a root span (ADR-0037 decision 4).
@@ -186,9 +225,17 @@ type DataVerbHandler = (req: FastifyRequest, reply: FastifyReply, slug: string) 
  * promise settles after the response is written. The one exception is the
  * collection export, which is documented as materialising the whole CSV
  * (`TODO.md`) — it is still in-handler, so it is still measured correctly.
+ *
+ * Attributes carry `url.path` (query dropped wholesale by `spanUrlAttributes` —
+ * the `listShared` prefix and cursor live in the query, and neither belongs on
+ * a span) and the span itself is passed to the handler so a verb can record
+ * per-call facts (ADR-0042 decision 7: the list verb's match count and deny
+ * reason) without each verb growing its own wrapper.
  */
-function withDataSpans<T extends Record<string, DataVerbHandler>>(handlers: T): T {
-  const wrapped: Record<string, DataVerbHandler> = {};
+function withDataSpans<T extends Record<string, DataVerbHandler>>(
+  handlers: T,
+): { [K in keyof T]: DispatchedDataVerb } {
+  const wrapped: Record<string, DispatchedDataVerb> = {};
   for (const [verb, handler] of Object.entries(handlers)) {
     wrapped[verb] = (req, reply, slug) =>
       withRootSpan(
@@ -198,12 +245,13 @@ function withDataSpans<T extends Record<string, DataVerbHandler>>(handlers: T): 
           [ATTR_APP_SLUG]: slug,
           [ATTR_DATA_VERB]: verb,
           "http.route": ROUTE_DATA,
+          ...spanUrlAttributes(req.url),
         },
-        () => handler(req, reply, slug),
+        (span) => handler(req, reply, slug, span),
         { reply },
       );
   }
-  return wrapped as T;
+  return wrapped as { [K in keyof T]: DispatchedDataVerb };
 }
 
 export function makeDataHandlers(rt: DataGatewayRuntime) {
@@ -285,12 +333,15 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     appId: string,
     identity: MeterIdentity,
     model: string,
-    outcome: "ok" | "error" | "quota_blocked" | "conflict",
+    outcome: "ok" | "error" | "quota_blocked" | "conflict" | "forbidden",
     env: Env,
   ): void {
     // Counter only — this path does not time itself, and `meterGatewayCall`
     // omits the histogram observation rather than recording a zero that would
-    // drag every percentile down.
+    // drag every percentile down. `forbidden` is the list verb's prefix-grant
+    // denial (ADR-0042 decision 7) — the same outcome the fetch proxy records
+    // for an allowlist denial, and for the same reason: the platform refused
+    // before doing any work, and an operator wants that visible.
     meterGatewayCall({ appId, capability: "data", outcome });
     rt.usage
       ?.record({
@@ -543,7 +594,8 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
      * `GET /_api/data/shared/:key` (§3.3) — app-shared, world-readable within the
      * app's visibility gate (the preamble already enforces it: anon on public
      * apps, authenticated on internal/group). The key must be declared in
-     * `data.sharedRead`.
+     * `data.sharedRead`, or — since ADR-0042 — start with a granted
+     * `sharedReadPrefixes` prefix.
      */
     async getShared(req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> {
       const ctx = await preamble(req, reply, slug, { mutation: false });
@@ -554,7 +606,8 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", "invalid key");
         return;
       }
-      if (!ctx.entry.data?.sharedRead.includes(key)) {
+      const d = ctx.entry.data;
+      if (!d || !sharedKeyAllowed(d.sharedRead, d.sharedReadPrefixes, key)) {
         sendApiError(reply, 403, "forbidden", `key "${key}" is not shared-readable`);
         return;
       }
@@ -579,7 +632,8 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
     /**
      * `PUT /_api/data/shared/:key` (§3.3) — write app-shared state. Rare and
      * dangerous (every visitor could mutate it), so the key must be in the
-     * narrower `data.sharedWrite` grant. Preconditions are MANDATORY here
+     * narrower `data.sharedWrite` grant, or — since ADR-0042 — start with a
+     * granted `sharedWritePrefixes` prefix. Preconditions are MANDATORY here
      * (ADR-0041 decision 4): a shared write is a race between different,
      * mutually unaware principals, so a PUT carrying neither `If-Match:
      * "<version>"` nor `If-None-Match: *` is refused 428, and `If-Match: *` —
@@ -596,7 +650,8 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         sendApiError(reply, 400, "validation_failed", "invalid key");
         return;
       }
-      if (!ctx.entry.data?.sharedWrite.includes(key)) {
+      const d = ctx.entry.data;
+      if (!d || !sharedKeyAllowed(d.sharedWrite, d.sharedWritePrefixes, key)) {
         sendApiError(reply, 403, "forbidden", `key "${key}" is not shared-writable`);
         return;
       }
@@ -660,6 +715,84 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         meter(ctx.entry.appId, identity, "shared.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putShared failed");
         sendApiError(reply, 502, "internal", "failed to store value");
+      }
+    },
+
+    /**
+     * `GET /_api/data/shared?prefix=<p>` (ADR-0042 decision 3) — list the
+     * shared keys under a prefix, with versions, never values.
+     *
+     * Authorization is the whole design: the prefix parameter is required and
+     * must be **covered** by a `sharedReadPrefixes` grant (equal or narrower),
+     * so a listing can never reveal a key outside what the owner approved and
+     * there is no form that asks for "everything". A literal `sharedRead`
+     * grant confers nothing here — literal grants already tell the app what
+     * exists, which is exactly why `shared` had no list verb before prefixes
+     * made that untrue.
+     *
+     * Enumeration is the honest widening (decision 5): today an app user can
+     * read any shared key whose name they can guess; with this verb they can
+     * read any key whose prefix was granted. That is why the grant is elevated
+     * at approval time, and why the deny path here is metered `forbidden` —
+     * probing is audit-visible, not silent. The deny is distinguishable from an
+     * empty result (`ok`, `keys: []`) on both the counter and the span.
+     */
+    async listShared(
+      req: FastifyRequest,
+      reply: FastifyReply,
+      slug: string,
+      span: Span,
+    ): Promise<void> {
+      const ctx = await preamble(req, reply, slug, { mutation: false });
+      if (!ctx) return;
+      const identity = meterIdentity(ctx.caller);
+      const query = req.query as { prefix?: unknown; cursor?: unknown };
+      // The prefix is validated like a key: non-empty, ≤ 256 bytes, no control
+      // characters — it is untrusted app input choosing a slice of the grant.
+      const prefix = typeof query.prefix === "string" ? query.prefix : "";
+      if (!validKey(prefix)) {
+        sendApiError(
+          reply,
+          400,
+          "validation_failed",
+          "a valid `prefix` query parameter is required",
+        );
+        return;
+      }
+      const prefixes = ctx.entry.data?.sharedReadPrefixes ?? [];
+      if (!prefixes.some((p) => prefix.startsWith(p))) {
+        span.setAttribute(ATTR_REASON, LIST_DENY_PREFIX_NOT_GRANTED);
+        meter(ctx.entry.appId, identity, "shared.list", "forbidden", ctx.caller.env);
+        sendApiError(
+          reply,
+          403,
+          "forbidden",
+          `prefix "${prefix}" is not covered by a shared-read prefix grant`,
+        );
+        return;
+      }
+      // Opaque keyset cursor (ADR-0042 decision 3): the last served key,
+      // base64url'd. Undecodable or not-a-key ⇒ 400 — never a silent first page,
+      // which would replay rows the caller already saw.
+      let afterKey: string | null = null;
+      if (typeof query.cursor === "string" && query.cursor.length > 0) {
+        afterKey = decodeListCursor(query.cursor);
+        if (afterKey === null || !validKey(afterKey)) {
+          sendApiError(reply, 400, "validation_failed", "invalid cursor");
+          return;
+        }
+      }
+      try {
+        const page = await rt.store!.listShared(ctx.entry.appId, prefix, afterKey, ctx.caller.env);
+        // The match count, never the matched keys — the keys are app data and
+        // a span is a retained backend (ADR-0042 decision 7).
+        span.setAttribute(ATTR_DATA_MATCH_COUNT, page.keys.length);
+        meter(ctx.entry.appId, identity, "shared.list", "ok", ctx.caller.env);
+        await reply.header("cache-control", "no-store").send(page);
+      } catch (err) {
+        meter(ctx.entry.appId, identity, "shared.list", "error", ctx.caller.env);
+        req.log.warn({ err }, "app-data listShared failed");
+        sendApiError(reply, 502, "internal", "failed to list keys");
       }
     },
   });
