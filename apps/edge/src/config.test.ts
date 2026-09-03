@@ -190,12 +190,58 @@ describe("loadConfig", () => {
     ).toThrow(/EDGE_TRUST_PROXY is not a trusted-proxy address list/);
   });
 
+  // The one overlap where zod is LOOSER than proxy-addr: cidrv4/cidrv6 accept a
+  // /0 prefix (even the non-canonical "10.0.2.0/0"), and Fastify() then throws
+  // on it at construction — a boot crash, which under Container Apps' 'Single'
+  // revision mode is a rollout that silently never takes. "0.0.0.0/0" is also
+  // the natural spelling of "trust any proxy", so it will be written someday.
+  // Refusing it at the parse is the same boot-time failure with an error that
+  // names what to write instead.
+  it("refuses a zero-prefix CIDR, which is 'trust any peer' by another spelling", () => {
+    for (const raw of ["0.0.0.0/0", "::/0", "10.0.2.0/0", "10.0.2.0/24,0.0.0.0/0"]) {
+      expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: raw })).toThrow(
+        /EDGE_TRUST_PROXY is not a trusted-proxy address list/,
+      );
+    }
+    // The advice names broad-but-still-peer-validating spellings — and not
+    // "true": the infra template rejects it, so recommending it here would
+    // point the operator at a deploy-time dead end.
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0.0.0.0/0" })).toThrow(/uniquelocal/);
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0.0.0.0/0" })).toThrow(/10\.0\.0\.0\/16/);
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0.0.0.0/0" })).not.toThrow(/"true"/);
+    // The dev-gateway shares the parse, so it fails closed identically.
+    expect(() =>
+      loadDevGatewayConfig({
+        ...ENV,
+        EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+        EDGE_TRUST_PROXY: "::/0",
+      }),
+    ).toThrow(/EDGE_TRUST_PROXY is not a trusted-proxy address list/);
+  });
+
+  // The dotted-netmask CIDR is the reverse overlap: proxy-addr reads it exactly
+  // as written ("10.0.2.0/255.255.254.0" compiles and covers the same /23), but
+  // the grammar here is deliberately a strict subset, so this is a named
+  // narrowing, not an oversight — and the error says how to convert it.
+  it("refuses the dotted-netmask CIDR form, naming the prefix-length spelling", () => {
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/255.255.254.0" })).toThrow(
+      /EDGE_TRUST_PROXY is not a trusted-proxy address list/,
+    );
+    expect(() => loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/255.255.254.0" })).toThrow(
+      /"10\.0\.2\.0\/255\.255\.254\.0" is "10\.0\.2\.0\/23"/,
+    );
+  });
+
   it("accepts the address forms of EDGE_TRUST_PROXY, and defaults to trusting nothing", () => {
     // Unset/blank → the socket peer is the client (opt-in, not defaulted on).
     // Blank is load-bearing: infra/azure spells "the subnet" as 'auto', so an
     // operator who deliberately blanks edgeTrustProxy still gets trust nothing.
     expect(loadConfig({ ...ENV }).trustProxy).toBe(false);
     expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "" }).trustProxy).toBe(false);
+    // Whitespace-only counts as unset, the same rule requirePositiveMs applies
+    // to every other env duration — compose and CI pass blank strings for vars
+    // that are declared but not set.
+    expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "   " }).trustProxy).toBe(false);
     expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "false" }).trustProxy).toBe(false);
     expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "true" }).trustProxy).toBe(true);
     // `0` is the one count that is not refused: fastify branched on
@@ -282,6 +328,14 @@ describe("loadConfig", () => {
       });
       await app.close();
       expect(res.json<{ ip: string }>().ip).toBe("10.0.2.5");
+    });
+
+    // ...and the one value zod passes that Fastify cannot compile at all: a /0
+    // throws inside Fastify() at construction, with proxy-addr's own cryptic
+    // "invalid range" error. Pinned so the refusal in the parse suite above is
+    // visibly pre-empting a real crash, not a hypothetical one.
+    it("would throw inside Fastify() on a zero prefix, hence the refusal", () => {
+      expect(() => Fastify({ trustProxy: "0.0.0.0/0" })).toThrow(/invalid range/);
     });
   });
 

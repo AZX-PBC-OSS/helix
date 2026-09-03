@@ -489,11 +489,34 @@ const TRUST_PROXY_PRESETS = new Set(["loopback", "linklocal", "uniquelocal"]);
 const TrustProxyAddress = z.union([z.cidrv4(), z.cidrv6(), z.ipv4(), z.ipv6()]);
 
 /**
- * Parse EDGE_TRUST_PROXY into a Fastify `trustProxy` value: unset/empty →
- * `false` (trust nothing — the socket peer is the client), `"true"`/`"false"` →
- * boolean, anything else a comma-separated list whose every part must be an IP,
- * a CIDR, or a proxy-addr preset — validated here, then passed through verbatim
- * for Fastify to compile.
+ * A CIDR part with a zero prefix ("0.0.0.0/0", "::/0", "10.0.2.0/0"): zod's
+ * cidrv4/cidrv6 accept all three, and `Fastify()` then throws on them inside
+ * proxy-addr ("invalid range on address") — a boot crash whose error says
+ * nothing about what to write instead. Refusing them here is the same
+ * boot-time failure with a message that does.
+ */
+const isZeroPrefixCidr = (part: string): boolean => {
+  const slash = part.indexOf("/");
+  if (slash === -1) return false;
+  const suffix = part.slice(slash + 1);
+  return /^\d+$/.test(suffix) && Number(suffix) === 0;
+};
+
+/**
+ * A dotted-netmask CIDR ("10.0.2.0/255.255.254.0"). proxy-addr reads this form
+ * exactly as written; the grammar here refuses it in favor of the prefix-length
+ * spelling ("10.0.2.0/23"). Detected only to pick that error sentence — the
+ * refusal itself is zod rejecting the part.
+ */
+const isDottedNetmaskCidr = (part: string): boolean =>
+  /^\d+\.\d+\.\d+\.\d+\/\d+\.\d+\.\d+\.\d+$/.test(part);
+
+/**
+ * Parse EDGE_TRUST_PROXY into a Fastify `trustProxy` value: unset or blank
+ * (whitespace-only included) → `false` (trust nothing — the socket peer is the
+ * client), `"true"`/`"false"` → boolean, anything else a comma-separated list
+ * whose every part must be an IP, a CIDR, or a proxy-addr preset — validated
+ * here, then passed through verbatim for Fastify to compile.
  *
  * Every rejection throws rather than coercing, because a wrong value is silent:
  * `req.ip` collapses to the ingress address, taking the anon rate limiter
@@ -508,9 +531,16 @@ const TrustProxyAddress = z.union([z.cidrv4(), z.cidrv6(), z.ipv4(), z.ipv6()]);
  * reads legacy short-form IPv4, so one dropped octet turns "10.0.2.0/23" into
  * "10.0.2" → the single host 10.0.0.2, which compiles cleanly and matches
  * nothing the ingress presents. What it rejects ("foo.bar", "10.0.2.0/33")
- * already throws inside `Fastify()` and was never the risk. One narrowing of
- * our own: a zone-suffixed literal ("fe80::1%eth0") is host-local scope and
- * means nothing in a trusted-proxy allowlist.
+ * already throws inside `Fastify()` and was never the risk — with one overlap
+ * worth owning: zod accepts a /0 range ("0.0.0.0/0", "::/0", even a
+ * non-canonical "10.0.2.0/0") and `Fastify()` throws on it, so it is refused
+ * HERE, where the error can say what to write instead (a zero prefix matches
+ * every address — "trust any peer", the property GHSA-3m5p-2c4r-xxw2 removed).
+ * Two narrowings of our own: a zone-suffixed literal ("fe80::1%eth0") is
+ * host-local scope and means nothing in a trusted-proxy allowlist, and the
+ * dotted-netmask CIDR ("10.0.2.0/255.255.254.0") is refused in favor of its
+ * prefix-length spelling ("10.0.2.0/23") — a strict subset beats a netmask
+ * parser that has to agree with ipaddr.js's.
  *
  * A bare integer is rejected. It meant "trust this many hops", which trusts by
  * position and so ignores the address it is handed (GHSA-3m5p-2c4r-xxw2);
@@ -519,8 +549,8 @@ const TrustProxyAddress = z.union([z.cidrv4(), z.cidrv6(), z.ipv4(), z.ipv6()]);
  * template should have resolved before the container saw it.
  */
 function parseTrustProxy(raw: string | undefined): boolean | string {
-  if (!raw) return false;
-  const v = raw.trim();
+  const v = (raw ?? "").trim();
+  if (!v) return false;
   if (v === "true") return true;
   if (v === "false") return false;
   if (/^\d+$/.test(v)) {
@@ -549,14 +579,34 @@ function parseTrustProxy(raw: string | undefined): boolean | string {
   const bad = v
     .split(",")
     .map((part) => part.trim())
-    .filter((part) => !TRUST_PROXY_PRESETS.has(part) && !TrustProxyAddress.safeParse(part).success);
+    .filter(
+      (part) =>
+        (!TRUST_PROXY_PRESETS.has(part) && !TrustProxyAddress.safeParse(part).success) ||
+        isZeroPrefixCidr(part),
+    );
   if (bad.length > 0) {
+    const advice: string[] = [];
+    if (bad.some(isZeroPrefixCidr)) {
+      advice.push(
+        `A /0 range matches every address, which is "trust any peer" — the property the ` +
+          `hop-count removal closed (GHSA-3m5p-2c4r-xxw2). Broad trust still has peer-validating ` +
+          `spellings: a preset such as "uniquelocal", or a wide prefix such as "10.0.0.0/16".`,
+      );
+    }
+    if (bad.some(isDottedNetmaskCidr)) {
+      advice.push(
+        `The dotted-netmask form is not accepted — spell the prefix length instead ` +
+          `("10.0.2.0/255.255.254.0" is "10.0.2.0/23").`,
+      );
+    }
     throw new Error(
       `EDGE_TRUST_PROXY is not a trusted-proxy address list (bad: ${bad.map((b) => JSON.stringify(b)).join(", ")}). ` +
-        `Every comma-separated part must be an IP ("10.0.2.4"), a CIDR ("10.0.2.0/23"), or a ` +
-        `proxy-addr preset (${[...TRUST_PROXY_PRESETS].join("/")}). Watch for a dropped octet: ` +
-        `"10.0.2" is not "10.0.2.0/23" — proxy-addr would read it as the single host 10.0.0.2, ` +
-        `match nothing the ingress presents, and silently collapse req.ip to the ingress address.`,
+        `Every comma-separated part must be an IP ("10.0.2.4"), a CIDR with a nonzero prefix ` +
+        `("10.0.2.0/23"), or a proxy-addr preset (${[...TRUST_PROXY_PRESETS].join("/")}). ` +
+        `Watch for a dropped octet: "10.0.2" is not "10.0.2.0/23" — proxy-addr would read it as ` +
+        `the single host 10.0.0.2, match nothing the ingress presents, and silently collapse ` +
+        `req.ip to the ingress address.` +
+        (advice.length > 0 ? ` ${advice.join(" ")}` : ""),
     );
   }
   return v;
