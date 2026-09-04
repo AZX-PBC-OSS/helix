@@ -156,6 +156,61 @@ param alertEmails array = []
 @description('Registry staleness that fires the alert, in ms. Default 1200000 (20 min) is the ADR-0025 `error` line — 20x the 60s default reconcile interval, the point the edge itself stops calling the projection merely degraded. 300000 fires at the `degraded` line instead, at the cost of noise from transient DB blips.')
 param registryStalenessThresholdMs int = 1200000
 
+@description('Deploy the Application Insights AVAILABILITY TESTS — the only monitoring that looks at this platform from OUTSIDE it, and the probe ADR-0025 wanted (`/health` answers 200 in every state by design, so grading it means reading the body, which no ACA probe can do). Standard tests, not the free `ping` tests: those RETIRE 30 SEPTEMBER 2026. Requires deployTelemetry — an availability test reports into an Application Insights component and is not a standalone resource. Unlike every other rule here these cost real money, billed per execution: the default five locations every five minutes is ~43k executions/month per URL, so read `availabilityTestFrequencySeconds` before turning it up.')
+param deployAvailabilityTests bool = true
+
+@description('Availability test locations, as Azure\'s "population tags" (NOT region names — `us-va-ash-azr`, not `eastus`). Default is the five Azure recommends as a minimum, spread across three continents so one region\'s network trouble cannot read as an outage. Up to 16 are allowed; each one multiplies the bill.')
+param availabilityTestLocations array = [
+  'us-va-ash-azr' // East US
+  'us-ca-sjc-azr' // West US
+  'us-il-ch1-azr' // North Central US
+  'emea-nl-ams-azr' // West Europe
+  'apac-sg-sin-azr' // Southeast Asia
+]
+
+@description('How many test locations must fail together to fire the alert. Azure\'s guidance is (locations - 2) with a floor of 1, so 3 of 5. The module clamps it to the number of locations, because a threshold above that is a rule that can never fire — which looks exactly like a healthy platform.')
+param availabilityFailedLocationCount int = 3
+
+@description('Seconds between availability test runs from EACH location. 300 (the Azure default) with five locations probes the platform about every minute. This is the cost knob.')
+param availabilityTestFrequencySeconds int = 300
+
+@description('Extra public URLs to probe, as `[{ name: \'pilot\', url: \'https://pilot.<appsDomain>/\' }]`. The platform hosts (edge, and the portal when portalExternal) are added automatically; this is for probing a real hosted app end to end — the path that also exercises Blob asset serving, which no platform health check covers. Must be publicly reachable: the test agents run in Azure regions, not in the VNet.')
+param availabilityExtraTargets array = []
+
+@description('Validate the wildcard TLS certificate on the availability tests. DEFAULTS OFF WHEN `acmeServer` IS THE LET\'S ENCRYPT STAGING DIRECTORY, which is the template default: staging certs chain to an untrusted root, so every probe would fail on the certificate and tell you nothing about whether the platform is up. Point acmeServer at the production directory and this turns itself on.')
+param availabilityTlsCheck bool = !contains(toLower(acmeServer), 'staging')
+
+@description('Fail the availability test this many days before the TLS certificate expires. This is the monitor on ADR-0029\'s certbot job — and deliberately on its OUTCOME (a cert with days left) rather than its mechanism (a scheduled job that ran), because a job that succeeds while renewing the wrong thing is the failure that gets missed. 14 days leaves two more renewal attempts inside Let\'s Encrypt\'s 30-day window.')
+param availabilityTlsExpiryWarningDays int = 14
+
+@description('Deploy the INFRASTRUCTURE alert rules (modules/alerts-infra.bicep): Postgres availability + storage, container-app replica restart storms, edge 5xx rate, and Azure Service Health. These read Azure platform metrics, so unlike the telemetry rules they need neither the collector nor App Insights and work on an install running with deployTelemetry=false.')
+param deployInfraAlerts bool = true
+
+@description('Postgres storage percent that fires the storage rule. A full server stops accepting writes and growing the disk is a maintenance operation, so the default leaves room to act rather than warning at the cliff.')
+param postgresStoragePercentThreshold int = 85
+
+@description('Edge 5xx responses in 15 minutes that fire the server-error rule. Not sensitive by default: the edge fronts untrusted app code, so one broken app 500ing is not a platform incident. Lower it only if you are prepared to triage app bugs.')
+param edgeServerErrorThreshold int = 100
+
+@description('Deploy the monthly cost budget (modules/alerts-cost.bicep), scoped to this resource group, notifying at 80% actual, 100% actual and 100% forecast of the derived amount below. Skipped when alertEmails is empty. A budget NOTIFIES — nothing about it caps spend.')
+param deployCostBudget bool = true
+
+@description('Expected monthly spend in USD for this deployment EXCLUDING the egress firewall: the two Container Apps environments and their replicas, Postgres, Blob, both Key Vaults, Log Analytics + App Insights ingestion, DNS, and the availability tests. Measured at ~125 for the reference install on 2026-09-04. Re-measure it after any SKU change — this is the number every budget threshold is derived from, so a stale value moves all of them.')
+param expectedMonthlyUsdExFirewall int = 125
+
+@description('What `deployFirewall` adds per month, in USD. ~920: Azure Firewall STANDARD tier is $1.25/hr of DEPLOYMENT TIME (~912/mo, flat — an idle firewall costs the same as a busy one) plus its static public IP, before $0.016/GB of data processing, which is rounding error at this platform\'s volumes. This one parameter is 88% of the bill when it is on: the firewall turns a ~125/mo install into a ~1045/mo one, and the budget has to follow it rather than being a constant.')
+param firewallMonthlyUsd int = 920
+
+@description('Budget as a PERCENTAGE of expected spend. 160 means the budget is 1.6x what the deployment should cost, and this is not padding — it is what keeps the percentage thresholds from becoming a calendar. Azure compares month-to-date ACTUAL against the amount, so a budget set to expected spend crosses 80% about four fifths of the way into every month: the 24th, every month, forever, on a perfectly healthy install. At 160% the 80% notification means 128% of expected, which is a real overrun. Below ~125 the rule degenerates into that monthly reminder; see modules/alerts-cost.bicep.')
+@minValue(100)
+param budgetHeadroomPercent int = 160
+
+@description('Override the budget amount in USD, skipping the derivation entirely. 0 (the default) derives it as (expectedMonthlyUsdExFirewall + firewall, if deployed) x budgetHeadroomPercent, which is the only form that tracks `deployFirewall` on its own.')
+param monthlyCostBudgetUsd int = 0
+
+@description('Budget start date. Must be the first of a month and, for a monthly budget, no earlier than the current one — so it defaults to the first of the current month at deploy time rather than a date that would age out of validity. Pin it in the .bicepparam if you want deploys to stop touching it.')
+param budgetStartDate string = utcNow('yyyy-MM-01')
+
 @description('Deploy the Azure Firewall that enforces the egress-only network zone (ADR-0001) — the PRIMARY SSRF/egress control per ADR-0005. Default true (secure by default). Setting false SKIPS the firewall + its forced-tunnel routes to save ~$900/mo: the apps subnet then gets default internet egress, so a compromised edge can reach the internet and the only remaining outbound control is the egress app-level denylist (defense-in-depth). Data services stay private (private endpoints) either way. Only disable for dev / smoketest / trusted single-tenant installs — NOT production or untrusted-app hosting. See README "Optional: the egress firewall".')
 param deployFirewall bool = true
 
@@ -507,6 +562,34 @@ module egressCollector 'modules/otel-collector.bicep' = if (deployTelemetry && d
   }
 }
 
+// ---------------------------------------------------------------------------
+// Alerting
+// ---------------------------------------------------------------------------
+// Four modules, deliberately split by WHAT THEY READ rather than by what they
+// are about, because that is what decides whether a rule can see a given
+// failure at all:
+//
+//   alerts.bicep             the platform's own telemetry (needs deployTelemetry)
+//   alerts-availability.bicep  an outside probe (needs deployTelemetry: App Insights)
+//   alerts-infra.bicep       Azure platform metrics (needs neither)
+//   alerts-cost.bicep        billing (needs neither, and is not about health)
+//
+// The first three notify through ONE action group. `alertEmails` empty means no
+// group is created at all: the rules still deploy and still fire, into nothing —
+// the state that looks like coverage, which the `alertsNotify` output exists to
+// report.
+var anyAlerting = deployApps && (deployAlerts || deployAvailabilityTests || deployInfraAlerts)
+
+module actionGroup 'modules/action-group.bicep' = if (anyAlerting && !empty(alertEmails)) {
+  name: 'platform-action-group'
+  params: {
+    namePrefix: namePrefix
+    alertEmails: alertEmails
+  }
+}
+
+var actionGroupId = actionGroup.?outputs.actionGroupId ?? ''
+
 // The consumer for all of the above. Scoped to the apps environment's Log
 // Analytics workspace, which holds both the container stdout and — because the
 // component above is workspace-based onto it — the metrics. See
@@ -517,9 +600,106 @@ module alerts 'modules/alerts.bicep' = if (deployAlerts && deployApps) {
     location: location
     namePrefix: namePrefix
     workspaceId: appsEnv.outputs.logAnalyticsWorkspaceId
-    alertEmails: alertEmails
+    actionGroupId: actionGroupId
     includeMetricRule: deployTelemetry
     registryStalenessThresholdMs: registryStalenessThresholdMs
+  }
+}
+
+// What gets probed from outside. The edge is reached on the AUTH host, not on an
+// app host and not on the apex: `/health` on an app host serves app content by
+// design (the host router mounts platform routes on platform hosts only), so
+// `auth.<appsDomain>` is the one public hostname that answers the platform
+// health JSON. The portal joins the list only when portalExternal put it on the
+// public LB; the dev-gateway never does, because `dev-api` is a valid app slug
+// and the edge image classifies that host as an app. Egress cannot be probed at
+// all — internal-only environment, no public LB, which is ADR-0001 working.
+var availabilityTargets = concat(
+  [
+    {
+      name: 'edge-health'
+      url: 'https://auth.${appsDomain}/health'
+    }
+  ],
+  portalExternal
+    ? [
+        {
+          name: 'portal-health'
+          url: 'https://portal.${appsDomain}/health'
+        }
+      ]
+    : [],
+  availabilityExtraTargets
+)
+
+module availability 'modules/alerts-availability.bicep' = if (deployAvailabilityTests && deployTelemetry && deployApps) {
+  name: 'platform-availability'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    appInsightsId: appInsights!.id
+    targets: availabilityTargets
+    testLocations: availabilityTestLocations
+    failedLocationCount: availabilityFailedLocationCount
+    frequencySeconds: availabilityTestFrequencySeconds
+    tlsCheck: availabilityTlsCheck
+    tlsExpiryWarningDays: availabilityTlsExpiryWarningDays
+    actionGroupId: actionGroupId
+  }
+}
+
+// Every container app that should never be crash-looping. The dev-gateway joins
+// only when it is deployed; a metric alert cannot scope a resource that does not
+// exist.
+var watchedContainerAppIds = concat(
+  [
+    edgeApp!.outputs.appId
+    portalApp!.outputs.appId
+    egressApp!.outputs.appId
+  ],
+  deployDevGateway ? [devGatewayApp!.outputs.appId] : []
+)
+
+module infraAlerts 'modules/alerts-infra.bicep' = if (deployInfraAlerts && deployApps) {
+  name: 'platform-infra-alerts'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    postgresServerId: postgres.outputs.serverId
+    containerAppIds: watchedContainerAppIds
+    edgeAppId: edgeApp!.outputs.appId
+    postgresStoragePercentThreshold: postgresStoragePercentThreshold
+    edgeServerErrorThreshold: edgeServerErrorThreshold
+    actionGroupId: actionGroupId
+  }
+}
+
+// The budget amount is DERIVED FROM THE DEPLOYMENT SHAPE, not from a constant
+// and not from `platformMonthlyUsdCap` (that one is a display-only LLM spend
+// watch line the portal renders on the Activity page — a different number
+// measuring a different thing, and coupling the two produced a budget that sat
+// BELOW expected spend whenever the firewall was on).
+//
+// `deployFirewall` moves the bill by ~8x on its own, so a single hardcoded
+// amount is wrong for one of the two shapes no matter which number you pick:
+// generous enough for the firewall install and it never fires on the small one;
+// sized for the small one and it fires on day three of every month on the other.
+var expectedMonthlyUsd = expectedMonthlyUsdExFirewall + (deployFirewall ? firewallMonthlyUsd : 0)
+// Integer division, deliberately — Azure wants whole dollars.
+var derivedBudgetUsd = (expectedMonthlyUsd * budgetHeadroomPercent) / 100
+var effectiveBudgetUsd = monthlyCostBudgetUsd > 0 ? monthlyCostBudgetUsd : derivedBudgetUsd
+
+// Not gated on deployApps: the expensive resources (firewall, Postgres, the
+// environments) exist after phase 1, so the budget is worth having before any
+// app is deployed. Needs an amount to watch and somewhere to send.
+module costBudget 'modules/alerts-cost.bicep' = if (deployCostBudget && effectiveBudgetUsd > 0 && !empty(alertEmails)) {
+  name: 'platform-cost-budget'
+  params: {
+    namePrefix: namePrefix
+    monthlyBudgetUsd: effectiveBudgetUsd
+    expectedMonthlyUsd: expectedMonthlyUsd
+    contactEmails: alertEmails
+    startDate: '${budgetStartDate}T00:00:00Z'
   }
 }
 
@@ -901,8 +1081,17 @@ output egressFqdn string = egressApp.?outputs.fqdn ?? ''
 output portalFqdn string = portalApp.?outputs.fqdn ?? ''
 output devGatewayFqdn string = devGatewayApp.?outputs.fqdn ?? ''
 
-@description('False when the alert rules deployed but reach nobody (alertEmails was empty) — the state that looks like coverage and is not. Read it after every deploy that touches alerting.')
-output alertsNotify bool = alerts.?outputs.notifies ?? false
+@description('False when alert rules deployed but reach nobody (alertEmails was empty) — the state that looks like coverage and is not. Read it after every deploy that touches alerting.')
+output alertsNotify bool = anyAlerting && !empty(alertEmails)
+
+@description('The URLs the availability tests probe, or empty when they were not deployed. This is the deploy-time answer to "what does site is up mean here".')
+output availabilityProbedUrls array = availability.?outputs.probedUrls ?? []
+
+@description('Monthly USD budget Azure is watching for this resource group, or 0 when none deployed (alertEmails empty, or deployCostBudget false). Notification only — nothing caps spend.')
+output costBudgetUsd int = costBudget.?outputs.budgetUsd ?? 0
+
+@description('Expected monthly spend the budget was derived from, in USD — WITH the firewall counted when deployFirewall is set. Read this next to costBudgetUsd after a deploy that flips the firewall: the two move together or the thresholds are measuring the wrong month.')
+output expectedMonthlyUsd int = expectedMonthlyUsd
 // Feeds `portalIdentityPrincipalId` on the SIBLING ../entra stack, whose second pass
 // grants this identity GroupMember.Read.All on Microsoft Graph (ADR-0040 decision 4).
 // The two stacks deploy in the order entra -> azure -> entra: this output is the only

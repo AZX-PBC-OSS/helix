@@ -507,8 +507,8 @@ this directory. `deployTelemetry` (default `true`, requires `deployApps`) adds:
 - an **`otel-collector` container app per managed environment** — internal
   ingress, OTLP/HTTP on 4318 — both exporting to that one component, so a trace
   crossing edge → egress still lands together;
-- **two alert rules** (`deployAlerts`, default `true`) that consume it — see
-  "Alerting" below.
+- **the alert rules** (`deployAlerts`, `deployAvailabilityTests`) that consume it
+  — see "Alerting" below.
 
 Each service gets `OTEL_EXPORTER_OTLP_ENDPOINT` pointing at its own
 environment's collector. With `deployTelemetry=false` the var is empty and
@@ -537,8 +537,24 @@ gets its own.
 
 ## Alerting (`deployAlerts`, `alertEmails`)
 
-`modules/alerts.bicep` is the consumer ADR-0025 was waiting for. Two rules, on
-**different signals on purpose**:
+Four modules, split by **what they read** rather than by what they are about,
+because that is what decides which failures a rule can see at all:
+
+| Module                      | Reads                        | Needs `deployTelemetry` | Gate                      |
+| --------------------------- | ---------------------------- | ----------------------- | ------------------------- |
+| `alerts.bicep`              | the platform's own telemetry | yes (metric rule)       | `deployAlerts`            |
+| `alerts-availability.bicep` | an outside HTTP probe        | yes (App Insights)      | `deployAvailabilityTests` |
+| `alerts-infra.bicep`        | Azure platform metrics       | no                      | `deployInfraAlerts`       |
+| `alerts-cost.bicep`         | billing                      | no                      | `deployCostBudget`        |
+
+The first three notify through **one** action group (`modules/action-group.bicep`,
+`<prefix>-ag-platform`), so a recipient is added in one parameter rather than
+five files. The budget is the exception and says why in its own header.
+
+### The platform's own telemetry (`modules/alerts.bicep`)
+
+The consumer ADR-0025 was waiting for. Two rules, on **different signals on
+purpose**:
 
 | Rule                           | Reads                                                       | Why not the other signal                                                                                                                 |
 | ------------------------------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
@@ -566,6 +582,141 @@ _degraded_ line instead, and expect noise from transient DB blips.
 **With `alertEmails` empty the rules still deploy and still fire — at nobody.**
 That state looks identical to working alerting, so the deployment emits an
 `alertsNotify` output saying which one you got. Read it.
+
+### Availability tests — the only view from outside (`modules/alerts-availability.bicep`)
+
+Every other rule reads something the platform said about itself, and they share
+one blind spot: a platform that is not running says nothing, and silence looks
+like health. `deployAvailabilityTests` (default `true`, needs `deployTelemetry`)
+adds an Application Insights **standard test** per public endpoint plus the
+metric alert that notifies on it.
+
+Standard tests, not the old free URL ping tests — **those retire 30 September
+2026** and existing ones are deleted from the resource. Standard tests are billed
+per execution; five locations every five minutes is ~43k executions/month per
+URL, which is what `availabilityTestFrequencySeconds` and
+`availabilityTestLocations` control.
+
+| Probed                                    | When                                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------------- |
+| `https://auth.<appsDomain>/health`        | always                                                                    |
+| `https://portal.<appsDomain>/health`      | `portalExternal=true`                                                     |
+| whatever `availabilityExtraTargets` lists | e.g. a real hosted app, which is the only way to cover Blob asset serving |
+
+Three things about that table are load-bearing:
+
+- **The edge is probed on the AUTH host.** `/health` on an _app_ host serves app
+  content by design (the host router mounts platform routes on platform hosts
+  only), so `auth.<appsDomain>` is the one public hostname that answers the
+  platform health JSON.
+- **`dev-api.<appsDomain>` is never probed**, even with the dev-gateway deployed:
+  `dev-api` is a valid app slug and is not in `RESERVED_SUBDOMAINS`, so the edge
+  image classifies that host as an app and serves assets from it. A probe there
+  gets a 404, not a health body.
+- **Egress cannot be probed at all** — internal-only environment, no public load
+  balancer. That is ADR-0001 working, not a gap. Its liveness is inferred from
+  the edge's fetch-proxy spans.
+
+**It reads the body, which is the whole point.** `/health` answers 200 in every
+state on purpose (ADR-0025 — a non-200 would let a liveness probe restart a
+replica serving correctly from a stale projection), which is exactly why no ACA
+probe can grade it. The test's content validation fails on
+`"status":"error"` in the body (`availabilityExtraTargets` URLs get the same rule;
+a string that never appears simply never fails). `degraded` is deliberately not
+matched — the staleness rule already owns that condition from the inside.
+
+**TLS: the check follows `acmeServer`.** `availabilityTlsCheck` defaults to
+`false` while `acmeServer` is the Let's Encrypt **staging** directory (the
+template default), because a staging cert chains to an untrusted root and every
+probe would fail on the certificate instead of telling you anything about the
+platform. Point `acmeServer` at production and it turns itself on — and with it
+`availabilityTlsExpiryWarningDays` (14), which is the cheapest possible monitor
+on ADR-0029's certbot job: the job renewing is the mechanism, a certificate with
+days left is the outcome, and a job that succeeds while renewing the wrong thing
+is the failure that otherwise gets missed.
+
+`availabilityFailedLocationCount` (3 of 5) follows Azure's guidance of
+(locations − 2). It is **clamped** to the number of locations, because a
+threshold above that is a rule that can never fire — indistinguishable from a
+healthy platform.
+
+### Infrastructure (`modules/alerts-infra.bicep`)
+
+Azure platform metrics, so these need neither the collector nor App Insights and
+work on an install running with `deployTelemetry=false`.
+
+| Rule                      | Reads                                                        | Sev | Note                                                                                                             |
+| ------------------------- | ------------------------------------------------------------ | --- | ---------------------------------------------------------------------------------------------------------------- |
+| `-alert-db-unavailable`   | `is_db_alive` < 1, Max over 5 min                            | 0   | The only severity 0. Cannot see a **stopped or deleted** server — a metric rule cannot fire on absence           |
+| `-alert-db-storage`       | `storage_percent` > 85, Avg over 15 min                      | 2   | A full server stops accepting writes, and growing the disk is a maintenance operation                            |
+| `-alert-replica-restarts` | `RestartCount` > 3, Max over 15 min                          | 2   | One multi-resource rule over all container apps. **The metric is cumulative per replica** — see below            |
+| `-alert-edge-5xx`         | `Requests` where `statusCodeCategory` is 5xx, > 100 / 15 min | 2   | The edge fronts untrusted app code, so one broken app is not a platform incident                                 |
+| `-alert-service-health`   | Service Health activity log                                  | —   | Incidents + planned maintenance. Free. Needs an action group; Azure rejects an activity-log alert with no action |
+
+Two caveats worth knowing before you tune them:
+
+- **`RestartCount` is cumulative for the life of a replica** ("the cumulative
+  number of times the replica has restarted since it was created"). Aggregated
+  with Max, a replica that restarted 4 times and then settled holds the rule open
+  until that replica is replaced — it does not self-clear the way a rate would.
+  That is why the threshold is a storm number (Azure's own baseline guidance) and
+  the severity is 2.
+- **The Service Health rule is subscription-scoped**, because Service Health
+  events are not attached to individual resources. On a shared subscription
+  expect events about services Helix does not use; narrow it by impacted service
+  in the portal if that becomes noise.
+
+### Cost (`modules/alerts-cost.bicep`)
+
+A monthly consumption budget on this resource group, notifying at 80% actual,
+100% actual and 100% **forecast**. Skipped when `alertEmails` is empty, and
+**not** gated on `deployApps`: the expensive resources exist after phase 1, so it
+is worth having before any app is deployed. It **notifies and does not enforce** —
+Azure will not stop a resource when a budget is crossed. The real limits are the
+per-app daily token budgets.
+
+**The amount is derived from the deployment shape, and `deployFirewall` is 88% of
+it.** Azure Firewall Standard bills $1.25 per hour of _deployment time_ — flat,
+so an idle firewall costs what a busy one does — plus its static public IP,
+before $0.016/GB of data processing (rounding error at this platform's volumes):
+
+| `deployFirewall` | Baseline | Firewall | Expected  | Budget at 160% | 80% notification |
+| ---------------- | -------- | -------- | --------- | -------------- | ---------------- |
+| `false`          | ~$125    | —        | ~$125/mo  | $200           | $160             |
+| `true`           | ~$125    | ~$920    | ~$1045/mo | $1672          | $1337            |
+
+That is an 8× swing, so no single hardcoded amount is right for both shapes:
+sized for the small install it fires on day three of every firewall month, and
+sized for the firewall it never fires on the small one.
+`expectedMonthlyUsdExFirewall` (125) and `firewallMonthlyUsd` (920) are the two
+inputs; `monthlyCostBudgetUsd` overrides the whole derivation.
+
+**Why the budget is not the expected bill.** An `Actual` notification compares
+_month-to-date_ spend against the amount, and month-to-date spend on a healthy
+install is a straight line from zero to the monthly total. Set the budget to
+expected spend and 80% of it is reached four fifths of the way through the month:
+**the 24th, every month, forever, with nothing wrong.** That teaches the reader to
+delete the mail unread, which is the one mail that has to be read the month
+something is actually wrong. `budgetHeadroomPercent` (160) is what puts the
+thresholds back on the cost axis:
+
+| Notification  | Means                                                            |
+| ------------- | ---------------------------------------------------------------- |
+| 80% actual    | 128% of expected — meaningfully over                             |
+| 100% actual   | 160% of expected — well over, this month                         |
+| 100% forecast | the run rate projects past 160% of expected, early enough to act |
+
+Below ~125% headroom the actual thresholds degenerate back into that monthly
+reminder. The forecast notification needs cost history to project a run rate, so
+on a brand-new subscription it can stay quiet for a month or two; the two actual
+thresholds do not depend on history.
+
+This is deliberately **not** `platformMonthlyUsdCap`. That parameter is a
+display-only LLM spend watch line the portal renders on the Activity page — a
+different number measuring a different thing, and reading it here produced a
+budget that sat _below_ expected spend whenever the firewall was on. The deploy
+echoes both `costBudgetUsd` and `expectedMonthlyUsd` so the pair can be checked
+after any deploy that flips the firewall.
 
 ### Verifying it, which you must do explicitly
 

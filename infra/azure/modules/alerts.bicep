@@ -40,12 +40,8 @@ param namePrefix string
 @description('Log Analytics workspace the rules query — the one the apps environment ships stdout to, and the one the Application Insights component is workspace-based onto.')
 param workspaceId string
 
-@description('Email addresses to notify. Several are supported: each address becomes its own email receiver on one shared action group. EMPTY deploys the rules with NO action group — they still evaluate and still show up in the portal\'s fired-alerts list, but they notify nobody.')
-param alertEmails array = []
-
-@description('Action group short name, which Azure puts in the notification subject line. Max 12 characters (an Azure limit, not ours).')
-@maxLength(12)
-param actionGroupShortName string = 'helix'
+@description('Resource id of the shared action group (modules/action-group.bicep), or empty. EMPTY deploys the rules with NO notification target — they still evaluate and still show up in the portal\'s fired-alerts list, but they notify nobody.')
+param actionGroupId string = ''
 
 @description('Create the staleness rule. Requires the telemetry pipeline, because the rule reads a metric — with `deployTelemetry=false` nothing writes `helix.registry.stale_for_ms` and the rule would sit permanently green. The never-loaded rule is log-based and deploys either way.')
 param includeMetricRule bool = true
@@ -63,29 +59,9 @@ param windowSize string = 'PT15M'
 @allowed([0, 1, 2, 3, 4])
 param severity int = 1
 
-// ---------------------------------------------------------------------------
-// Action group
-// ---------------------------------------------------------------------------
-// Only created when there is somewhere to send. `useCommonAlertSchema` so the
-// payload shape is stable if a webhook is ever added alongside the emails.
-resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(alertEmails)) {
-  name: '${namePrefix}-ag-platform'
-  // Action groups are a global resource; 'global' is the required location.
-  location: 'global'
-  properties: {
-    groupShortName: actionGroupShortName
-    enabled: true
-    emailReceivers: [
-      for (email, i) in alertEmails: {
-        name: 'email${i}'
-        emailAddress: email
-        useCommonAlertSchema: true
-      }
-    ]
-  }
-}
-
-var actionGroupIds = empty(alertEmails) ? [] : [actionGroup!.id]
+// The action group itself lives in modules/action-group.bicep — one group shared
+// by every alert module in the deployment, so a recipient is added in one place.
+var actionGroupIds = empty(actionGroupId) ? [] : [actionGroupId]
 
 // ---------------------------------------------------------------------------
 // Rule 1 — the projection is stale past the error line
@@ -177,8 +153,5 @@ resource registryNeverLoadedRule 'Microsoft.Insights/scheduledQueryRules@2022-06
   }
 }
 
-@description('Action group resource id, or empty when alertEmails was empty and the rules therefore notify nobody.')
-output actionGroupId string = empty(alertEmails) ? '' : actionGroup!.id
-
-@description('Whether the rules will actually reach a human. False means they deploy, evaluate and fire silently.')
-output notifies bool = !empty(alertEmails)
+@description('Whether these rules will actually reach a human. False means they deploy, evaluate and fire silently.')
+output notifies bool = !empty(actionGroupId)

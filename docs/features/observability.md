@@ -138,15 +138,34 @@ Two alert rules read that, and they read **different signals on purpose**
 | projection stale | `helix.registry.stale_for_ms` metric | An age needs a threshold, and this is the metric that made it one rule instead of KQL over log messages |
 | projection never loaded | `registry.never_loaded` log event | The gauge is *absent* in this state by design, and the counter that reports it is cumulative, so a threshold on it never stops firing |
 
-Both are optional (`deployAlerts`) and notify a parameterized list of addresses
-(`alertEmails`). **With no addresses they still deploy and still fire, into
-nothing** — the deployment's `alertsNotify` output says which, because a rule
-nobody hears from looks exactly like coverage.
+Three more modules alert on signals this platform does **not** emit, which is the
+point of them — everything above goes quiet in exactly the failures that stop the
+process:
+
+| Module | Reads | Covers |
+| --- | --- | --- |
+| `alerts-availability.bicep` | Application Insights **standard tests** against `auth.<appsDomain>/health` (+ the portal when external, + any `availabilityExtraTargets`) | Reachability, the health **body**, and TLS cert validity/expiry — from five Azure regions, i.e. from outside the platform |
+| `alerts-infra.bicep` | Azure platform metrics: `is_db_alive`, `storage_percent`, `RestartCount`, ingress `Requests` 5xx, Service Health | Postgres down or filling, container crash loops, edge server errors, Azure's own incidents |
+| `alerts-cost.bicep` | Billing | A monthly budget on the resource group. Notifies; never enforces |
+
+The availability tests are the probe this page used to list under "not built":
+`/health` always answers 200, so grading it means reading the body, and a
+standard test's content match does that — it fails on `"status":"error"`. It also
+watches the wildcard certificate's remaining lifetime, which is the cheapest
+monitor on ADR-0029's certbot job because it reads the **outcome** (a cert with
+days left) rather than the mechanism (a job that ran). Note the two things it
+structurally cannot see: **egress** (internal-only, no public LB — ADR-0001
+working as designed) and `dev-api.<appsDomain>` (a valid app slug, so the edge
+serves assets there rather than platform health).
+
+All of them are optional (`deployAlerts`, `deployAvailabilityTests`,
+`deployInfraAlerts`, `deployCostBudget`) and notify one shared action group built
+from a parameterized list of addresses (`alertEmails`). **With no addresses the
+rules still deploy and still fire, into nothing** — the deployment's
+`alertsNotify` output says which, because a rule nobody hears from looks exactly
+like coverage.
 
 ## Not built yet
-- **Nothing probes `/health`.** It always answers 200 by design (a non-200 would
-  let a liveness probe restart a replica serving correctly from a stale copy), so
-  a probe has to read the body.
 - The OTel **log** bridge, browser/RUM for the portal SPA, per-app telemetry for
   hosted apps, tail sampling, and `pg`/`undici` instrumentation depth beyond the
   hand-placed seams — all deferred, each on its own merits (decision 11).
