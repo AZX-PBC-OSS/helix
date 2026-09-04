@@ -12,6 +12,11 @@
 // (outside the VNet) at revision-provisioning time, so they cannot read a
 // private (VNet-only) vault. Delivering values here keeps kv-platform fully
 // private AND keeps the app portable. See README "Platform secret delivery".
+//
+// An optional `customDomains` list declares TLS bindings in-template (ADR-0044)
+// — main.bicep computes it for the wildcard-TLS planes once the install's
+// bootstrap has run. Internal-only apps (egress; portal by default) pass
+// nothing and get the same ingress shape as before.
 
 @description('Azure region.')
 param location string
@@ -59,12 +64,48 @@ param registries array = []
 @description('Container start command override (replaces the image CMD). Empty = use the image default. Used to run the edge image as the dev-gateway (`start:devgw`).')
 param command array = []
 
+// Typed so a wrong bindingType ('SNIEnabled', say) is a `bicep build` failure
+// here, not a deploy-time ARM failure on the edge app — for a template whose
+// failure mode is "every browser rejects the site", compile time is the right
+// place to find that.
+type customDomain = {
+  name: string
+  bindingType: 'SniEnabled' | 'Disabled'
+  certificateId: string
+}
+
+@description('Custom-domain TLS bindings for this ingress, e.g. [{ name: "*.apps.example.com", bindingType: "SniEnabled", certificateId: <ACA env certificate resource id> }]. Empty = the ingress carries no customDomains property at all. main.bicep computes these for the wildcard-TLS planes (ADR-0044); internal-only apps pass nothing.')
+param customDomains customDomain[] = []
+
 var acaSecrets = [
   for item in items(secretValues): {
     name: item.key
     value: item.value
   }
 ]
+
+// PARITY, NOT PROTECTION (ADR-0044): an absent customDomains and an explicit
+// `customDomains: []` BOTH strip live runtime-made bindings on a PUT — ARM
+// reconciles the whole resource to whatever the template says, and "no list"
+// and "empty list" are the same instruction. So this is not a guard; it keeps
+// the ungated path byte-identical to the pre-declarative shape (an install
+// with wildcardTlsBound=false sees no new what-if noise). Bicep cannot
+// conditionally include an object property inline, hence the union idiom.
+var ingressConfig = union(
+  {
+    external: external
+    targetPort: targetPort
+    transport: 'auto'
+    allowInsecure: false
+    traffic: [
+      {
+        latestRevision: true
+        weight: 100
+      }
+    ]
+  },
+  empty(customDomains) ? {} : { customDomains: customDomains }
+)
 
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
@@ -79,18 +120,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: environmentId
     configuration: {
       activeRevisionsMode: 'Single'
-      ingress: {
-        external: external
-        targetPort: targetPort
-        transport: 'auto'
-        allowInsecure: false
-        traffic: [
-          {
-            latestRevision: true
-            weight: 100
-          }
-        ]
-      }
+      ingress: ingressConfig
       registries: registries
       secrets: acaSecrets
     }
@@ -121,3 +151,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
 output appId string = containerApp.id
 output appName string = containerApp.name
 output fqdn string = containerApp.properties.configuration.ingress.fqdn
+
+// The value dns.bicep's asuid TXT record needs (domainVerificationId). Read it
+// off the deployment output rather than a hand-run `az containerapp show` —
+// it makes the fresh-install bootstrap flow mechanical (README "Wildcard TLS").
+output customDomainVerificationId string = containerApp.properties.customDomainVerificationId

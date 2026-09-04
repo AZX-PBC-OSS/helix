@@ -53,6 +53,14 @@ param deployFirewall = true
 param deployCertbot = true
 param acmeEmail = readEnvironmentVariable('HELIX_ACME_EMAIL', '')
 param acmeServer = readEnvironmentVariable('HELIX_ACME_SERVER', 'https://acme-staging-v02.api.letsencrypt.org/directory')
+// Wildcard TLS bindings become declarative (ADR-0044) once the certbot
+// bootstrap has run — a cert must exist in the ACA env store before a hostname
+// can bind, and this flag bridges that one-time ordering. Leave false for the
+// apps-phase apply on a fresh install; flip to true after the first certbot
+// job run (README "Wildcard TLS") and never look back. LITERAL on purpose: do
+// not readEnvironmentVariable this one — a set-but-blank env var renders ''
+// (= false), and the blank direction is the silent-wipe one.
+param wildcardTlsBound = false
 
 // Portal access. false = internal ingress (secure default). true = expose the
 // control plane at portal.<appsDomain> on the public LB, gated by Entra OIDC

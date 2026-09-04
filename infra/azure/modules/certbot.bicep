@@ -14,10 +14,15 @@
 // (`portalExternal`, `deployDevGateway`) takes its specific hostname, which Envoy
 // routes ahead of the wildcard.
 //
-// Issuance + binding happen in the job at RUNTIME — a cert must exist before a
-// custom domain can bind to it, an ordering the declarative template can't
-// express — so this module does NOT declare the custom-domain binding. Trigger
-// the job once after deploy to bootstrap; it then renews on its schedule. The
+// Division of labor with main.bicep (ADR-0044): once an install's bootstrap has
+// run (`wildcardTlsBound=true`), the template DECLARES those custom-domain
+// bindings, referencing the cert in the environment store by the deterministic
+// name passed in below — so a re-apply preserves them instead of stripping them.
+// This job remains the ISSUER (DNS-01 + upload to the store) and keeps its bind
+// steps unconditionally: they bootstrap a fresh install (a cert must exist
+// before a bind — an ordering a declarative template can't express) and
+// self-heal an apply made with the gate off. Trigger the job once after the
+// first deploy to bootstrap; it then renews on its schedule. The
 // `asuid.<appsDomain>` TXT (`domainVerificationId`) must be present for the bind
 // to validate ownership — see `dns.bicep`.
 //
@@ -34,6 +39,9 @@ param namePrefix string
 
 @description('Apps domain == public DNS zone name, e.g. apps.example.com.')
 param appsDomain string
+
+@description('Certificate name in the ACA environment store. SINGLE-SOURCED (ADR-0044): main.bicep computes this same string for the declarative customDomains certificateId and passes it in here, so the job\'s uploads and the template\'s bindings cannot drift. Injected into the job as CERT_NAME, which issue-and-bind.sh already honours; the script\'s own derivation stays as dead-code insurance.')
+param wildcardCertName string
 
 @description('ACA managed environment name (the edge lives here).')
 param acaEnvName string
@@ -168,6 +176,8 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
           }
           env: [
             { name: 'APPS_DOMAIN', value: appsDomain }
+            // Single-sourced with the declarative bindings (see the param above).
+            { name: 'CERT_NAME', value: wildcardCertName }
             { name: 'ACME_EMAIL', value: acmeEmail }
             { name: 'HELIX_ACME_SERVER', value: acmeServer }
             { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }

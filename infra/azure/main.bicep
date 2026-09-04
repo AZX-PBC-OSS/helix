@@ -218,7 +218,7 @@ param deployFirewall bool = true
 @allowed(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
 param logLevel string = 'info'
 
-@description('Deploy the certbot wildcard-TLS automation job (apps/certbot, ADR-0029): a scheduled Container Apps Job that issues/renews the *.<appsDomain> Let\'s Encrypt cert via DNS-01 and binds the edge wildcard custom domain. Requires acmeEmail. Only takes effect with deployApps=true.')
+@description('Deploy the certbot wildcard-TLS automation job (apps/certbot, ADR-0029): a scheduled Container Apps Job that issues/renews the *.<appsDomain> Let\'s Encrypt cert via DNS-01, uploads it to the ACA environment store under its deterministic name, and binds the edge wildcard custom domain (the bootstrap mechanism; once wildcardTlsBound=true the binding itself is declared by this template — ADR-0044). Requires acmeEmail. Only takes effect with deployApps=true.')
 param deployCertbot bool = true
 
 @description('ACME registration / expiry-notice email for the wildcard cert. REQUIRED for wildcard TLS — certbot is skipped when this is empty.')
@@ -227,7 +227,10 @@ param acmeEmail string = ''
 @description('ACME directory URL. Default = Let\'s Encrypt STAGING (untrusted cert, high rate limits); set the prod directory (https://acme-v02.api.letsencrypt.org/directory) once the flow is validated.')
 param acmeServer string = 'https://acme-staging-v02.api.letsencrypt.org/directory'
 
-@description('Expose the portal on the public LB at portal.<appsDomain>, gated by Entra OIDC (portal audience + platform-admin App Role). Default false (internal ingress — secure by default). The portal is the control plane + the azx-cli target, so a customer-run install (ADR-0028) generally needs it reachable; per-app authz is enforced by ownsApp (ADR-0007, issue #9 closed), and identity/device posture is the perimeter (Conditional Access), not network location. When true the certbot job also binds portal.<appsDomain>. See README "Portal access".')
+@description('Declare the wildcard TLS custom-domain bindings in-template (ADR-0044), referencing the cert in the ACA environment store by its deterministic name. TRUE only after the certbot bootstrap has run — a cert must exist before a hostname can bind, the one ordering a declarative template cannot express, and this flag bridges it: a gated apply on an install with no cert fails LOUDLY at the app PUT (invalid certificate reference) rather than silently. While false, applies keep the pre-ADR-0044 semantics: customDomains is omitted from the ingress entirely and any runtime-made binding is stripped (README "Known deploy gotchas"). Leave false for a fresh install\'s apps-phase apply, flip it after the first certbot job run, and never look back. Set it LITERALLY in the params file — do not source it from an env var: readEnvironmentVariable renders a set-but-blank variable as \'\' = false, and the blank direction is the silent-wipe one.')
+param wildcardTlsBound bool = false
+
+@description('Expose the portal on the public LB at portal.<appsDomain>, gated by Entra OIDC (portal audience + platform-admin App Role). Default false (internal ingress — secure by default). The portal is the control plane + the azx-cli target, so a customer-run install (ADR-0028) generally needs it reachable; per-app authz is enforced by ownsApp (ADR-0007, issue #9 closed), and identity/device posture is the perimeter (Conditional Access), not network location. When true, portal.<appsDomain> gets its own custom-domain binding on the wildcard cert (runtime-bound by the certbot job, declared in-template once wildcardTlsBound=true — ADR-0044). See README "Portal access".')
 param portalExternal bool = false
 
 @description('Permit `public` (anonymous) apps on this install. Sets the matched pair EDGE_ALLOW_PUBLIC_APPS + PORTAL_ALLOW_PUBLIC_APPS — one param because the two planes MUST agree: the portal gates setting the visibility and the edge gates serving it, so a split leaves apps the portal accepts but the edge 403s. Default false (deny — the app-level default too). Review ADR-0010 (anonymous shared writes) before enabling.')
@@ -779,6 +782,19 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
   ]
 }
 
+// Wildcard TLS, declarative half (ADR-0044). The certbot job uploads the cert
+// to the ACA env store under a deterministic name (wildcard-<dashes>), so its
+// resource id is computable here — no existing-reference, no chicken-egg at
+// compile time. The SAME name is passed into the certbot module (injected as
+// CERT_NAME), so the job's uploads and these bindings cannot drift apart.
+var wildcardCertName = 'wildcard-${replace(appsDomain, '.', '-')}'
+var wildcardCertId = '${appsEnv.outputs.environmentId}/certificates/${wildcardCertName}'
+// The gate: bindings are declared only once the bootstrap has run. Ungated
+// (fresh install, or an install that never flipped), customDomains comes
+// through as [] and containerapp.bicep omits the property entirely — the
+// byte-identical pre-ADR-0044 shape.
+var declarativeTls = deployApps && deployCertbot && !empty(acmeEmail) && wildcardTlsBound
+
 module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
   name: 'app-edge'
   params: {
@@ -789,6 +805,18 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     image: '${imageRegistry}/helix-edge:${imageTag}'
     targetPort: 8080
     external: true
+    // The wildcard custom domain (ADR-0044). Declared once the install's
+    // bootstrap has run; until then the job's runtime bind is the mechanism
+    // and an apply strips it (README "Known deploy gotchas").
+    customDomains: declarativeTls
+      ? [
+          {
+            name: '*.${appsDomain}'
+            bindingType: 'SniEnabled'
+            certificateId: wildcardCertId
+          }
+        ]
+      : []
     secretValues: {
       'edge-database-url': edgeDbConn
       'edge-oidc-private-key': edgeOidcPrivateKey
@@ -873,6 +901,18 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     image: '${imageRegistry}/helix-portal:${imageTag}'
     targetPort: 3001
     external: portalExternal // internal by default; portalExternal exposes it on the public LB (Entra-gated)
+    // portal.<appsDomain> rides the wildcard cert but needs its own binding
+    // (a custom-domain binding is per container app). Declared, not
+    // runtime-bound, once the bootstrap has run (ADR-0044).
+    customDomains: (declarativeTls && portalExternal)
+      ? [
+          {
+            name: 'portal.${appsDomain}'
+            bindingType: 'SniEnabled'
+            certificateId: wildcardCertId
+          }
+        ]
+      : []
     secretValues: {
       'portal-database-url': portalDbConn
       'portal-secret': portalSecret
@@ -958,6 +998,18 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
     targetPort: 8082
     external: true
     command: ['pnpm', '--filter', '@azx-pbc/edge', 'start:devgw']
+    // dev-api.<appsDomain>: same wildcard cert, own binding (ADR-0044). The
+    // bind is what makes the dev host usable at all — an untrusted cert fails
+    // the exact cross-origin browser requests this surface exists for.
+    customDomains: (declarativeTls && deployDevGateway)
+      ? [
+          {
+            name: 'dev-api.${appsDomain}'
+            bindingType: 'SniEnabled'
+            certificateId: wildcardCertId
+          }
+        ]
+      : []
     secretValues: {
       'edge-dev-database-url': devDbConn
       'helix-instruction-secret': instructionSecret
@@ -1008,10 +1060,13 @@ module dns 'modules/dns.bicep' = {
 }
 
 // ---------------------------------------------------------------------------
-// Wildcard TLS automation (apps/certbot, ADR-0029). Scheduled job that issues +
-// renews *.<appsDomain> via ACME DNS-01 and binds the edge wildcard custom
-// domain. Bootstrap: trigger once after deploy (the cert must exist before the
-// bind). Skipped without an acmeEmail.
+// Wildcard TLS automation (apps/certbot, ADR-0029/0044). Scheduled job that
+// issues + renews *.<appsDomain> via ACME DNS-01 and uploads it to the
+// environment store under the deterministic name the declarative bindings
+// reference. It also binds at runtime — the bootstrap mechanism on a fresh
+// install (a cert must exist before a bind) and the self-heal for an ungated
+// apply. Bootstrap: trigger once after deploy, then flip wildcardTlsBound.
+// Skipped without an acmeEmail.
 // ---------------------------------------------------------------------------
 
 module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !empty(acmeEmail)) {
@@ -1020,6 +1075,9 @@ module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !emp
     location: location
     namePrefix: namePrefix
     appsDomain: appsDomain
+    // Single-sourced (ADR-0044): the same var the declarative customDomains
+    // certificateId is built from, so job and template cannot drift.
+    wildcardCertName: wildcardCertName
     acaEnvName: '${namePrefix}-apps-env'
     acaEnvId: appsEnv.outputs.environmentId
     edgeAppName: '${namePrefix}-edge'

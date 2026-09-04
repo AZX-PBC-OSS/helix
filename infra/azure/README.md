@@ -120,9 +120,14 @@ scheduled Container Apps Job (not an app/sidecar; TLS terminates at ingress) tha
 1. issues/renews `*.<appsDomain>` (+ apex) from Let's Encrypt via **DNS-01**
    (`certbot-dns-azure` writes the `_acme-challenge` TXT using the job's managed
    identity — DNS Zone Contributor on the zone),
-2. uploads the cert to the **ACA environment cert store** (not Key Vault — same
-   control-plane-can't-reach-a-private-vault reason as ADR-0029), and
-3. binds the **wildcard custom domain** on the edge.
+2. uploads the cert to the **ACA environment certificate store** (not Key Vault — same
+   control-plane-can't-reach-a-private-vault reason as ADR-0029) under a deterministic
+   name (`wildcard-<appsDomain with dashes>`), and
+3. binds the **wildcard custom domain** on the edge — plus `portal.<appsDomain>` /
+   `dev-api.<appsDomain>` on their own apps when those are external. Once the
+   install has flipped `wildcardTlsBound`, this bind is also **declared by the
+   template** (ADR-0044 — see the bootstrap below); the job's bind steps remain as
+   bootstrap and self-heal.
 
 It renews on a daily cron. Requires `acmeEmail`; defaults to the **LE staging**
 directory (`acmeServer`) — validate the flow there, then flip `acmeServer` to the
@@ -143,7 +148,11 @@ case is a wasted issuance rather than a silent expiry.
 
 The **bind** steps run on every execution regardless of that decision. They are
 idempotent, and it means a scheduled run repairs bindings stripped by a template
-re-apply (see "Known deploy gotchas") without spending an issuance.
+re-apply made with the gate off (see "Known deploy gotchas") without spending an
+issuance — and that they are still there to bootstrap a fresh install, where the
+cert does not exist yet and nothing else can make the first bind. Once
+`wildcardTlsBound=true` the bindings are declared by the template itself, so
+there is nothing to strip and the job's bind steps are pure self-heal.
 
 **Bootstrap (one-time, after deploy):** the cert must exist before the domain can
 bind, so trigger the job once:
@@ -155,9 +164,26 @@ az containerapp job start -g <rg> -n <namePrefix>-certbot
 ```
 
 The `asuid.<appsDomain>` TXT (`domainVerificationId`) must be present for the bind
-to validate — set `domainVerificationId` (the edge app's
-`customDomainVerificationId`) so `dns.bicep` writes it, or add it out-of-band
+to validate — set `domainVerificationId` (read the edge app's
+`customDomainVerificationId` off the deployment output; it is an `output` of the
+app module) so `dns.bicep` writes it, or add it out-of-band
 before the first bootstrap run.
+
+**Then flip `wildcardTlsBound=true` in the params file and re-apply (ADR-0044).**
+The cert now exists under its deterministic name, so from this apply on the
+custom-domain bindings are **declared by the template** — `customDomains` on the
+edge / portal / dev-gateway ingress, referencing the env-store cert by resource
+id — and a re-apply **preserves** them instead of stripping them. The name is
+single-sourced: `main.bicep` computes it once, feeds both the declarative
+bindings and the job (injected as `CERT_NAME`), so the issuer and the reference
+cannot drift. Set the flag literally in the params file, never via an env var
+(a set-but-blank env var renders `''` = false, and the blank direction is the
+silent-wipe one).
+
+**The canary for the gate's state:** a what-if on a gated install must never show
+`Delete properties.configuration.ingress.customDomains`. If it does, **the gate is
+off — stop, do not apply.** (On a gated install the declarative set matches the
+live bindings, so that Delete line is impossible unless the flag is wrong.)
 
 ## Portal access (`portalExternal`, [ADR-0007](../../docs/adr/0007-portal-authz-v0.md))
 
@@ -169,8 +195,10 @@ runs it themselves, so this can't be left as an out-of-band operator chore.
 
 `portalExternal=true` serves the portal at `portal.<appsDomain>` on the public LB,
 **gated by Entra OIDC** (portal audience + the `platform-admin` App Role), with
-per-app authz enforced by `ownsApp` (ADR-0007, issue #9 closed). When set, the
-certbot job also binds `portal.<appsDomain>` to the wildcard cert. The perimeter
+per-app authz enforced by `ownsApp` (ADR-0007, issue #9 closed). When set,
+`portal.<appsDomain>` gets its own custom-domain binding on the wildcard cert —
+runtime-bound by the certbot job until the install flips `wildcardTlsBound`,
+then declared in-template (ADR-0044). The perimeter
 is **identity + device posture** (Entra Conditional Access) — deliberately **not**
 IP-allowlists or a bastion, which don't fit a remote team. A specific
 `portal.<appsDomain>` hostname on the portal app takes precedence over the edge
@@ -862,27 +890,49 @@ if a deploy misbehaves:
     deliberate trade: it buys migrations that no human or pipeline has to hold a
     schema-owner credential for.
 
-- **A template re-apply WIPES the certbot custom-domain bindings.** The bindings are
-  made by the job at runtime (see "Wildcard TLS"), but `containerapp.bicep`'s
-  declarative `ingress` block does not list `customDomains` — so any subsequent
-  `az deployment group create` removes every bound hostname, and all custom domains
+- **A template re-apply strips the TLS custom-domain bindings only while
+  `wildcardTlsBound=false`.** With the gate on, the bindings are declared by the
+  template (`customDomains` referencing the env-store cert — ADR-0044) and an apply
+  preserves them; the canary in "Wildcard TLS" catches a wrongly-off flag at what-if
+  time. While it is off — a fresh install before bootstrap, or an install that never
+  flipped — the old semantics apply: the bindings are made by the job at runtime, but
+  `containerapp.bicep`'s ingress omits `customDomains`, so any full
+  `az deployment group create` strips every bound hostname and all custom domains
   immediately serve the ACA default cert (browsers fail TLS verification). **After
-  any re-apply, re-bind.** Prefer re-binding against the cert already in the
-  environment store rather than re-running the job, so you don't spend a Let's
-  Encrypt issuance:
+  such an apply, re-bind against the cert already in the environment store** — filter
+  by the deterministic name, not by position (`[0]` picks whatever is first):
 
   ```bash
-  CERT_ID=$(az containerapp env certificate list -g <rg> -n <env> --query "[0].id" -o tsv)
+  CERT_ID=$(az containerapp env certificate list -g <rg> -n <env> \
+    --query "[?name=='wildcard-<appsDomain-with-dashes>'].id" -o tsv)
   az containerapp hostname bind -g <rg> -n <app> \
     --hostname '<host>' --environment <env> --certificate "$CERT_ID"
   ```
+
+  Do **not** reach for `az containerapp job start` as the recovery reflex: the job's
+  issuance guard fails open when it cannot read the store, and inside the Let's
+  Encrypt renewal window (`renewBeforeDays`, ~30 days before expiry) that spends one
+  of the 5 duplicate certificates per 7 days. Triggering the job is the fresh-install
+  bootstrap path, not the recovery path. The same applies to a gated apply that fails
+  loudly on a missing cert: the recovery is to flip the gate back off (or restore the
+  cert under its deterministic name), not to re-issue.
 
   A **scoped `az containerapp update`** (e.g. `--set-env-vars`) does _not_ wipe the
   bindings — only a full ARM apply reconciles the whole resource — so prefer that for
   single-knob changes to a live install.
 
-  This matters most for **CI-driven deploys**: a workflow that re-applies the template
-  on every release silently breaks TLS unless it re-binds afterwards.
+  **The declared set is an allowlist.** A gated apply preserves exactly the bindings
+  `main.bicep` declares (the edge wildcard, and `portal.` / `dev-api.` when those
+  planes are external) and **deletes anything else** — a hostname bound by hand is
+  silently removed by the next apply, with no self-heal (the job binds only its own
+  three). A host that needs a binding gets a row in `main.bicep`, not an
+  `az containerapp hostname bind`.
+
+  This matters most for **automated re-applies**: a workflow that re-applies the
+  template with the gate off silently breaks TLS on every release. With the gate on
+  there is nothing to repair — but the apply is still dangerous for the reasons that
+  remain (an absent secret renders as `''` over the live value), so this closes one
+  hazard, not the case for running Bicep from CI.
 
 - **Provider registration can wedge.** `Microsoft.DBforPostgreSQL` (and friends) can
   sit in `Registering` for a long time; re-issuing `az provider register -n <ns>`

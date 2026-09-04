@@ -58,3 +58,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0041](0041-app-data-write-concurrency.md) | App-data write concurrency: CAS on an opaque version, mandatory on `shared` | Accepted |
 | [0042](0042-shared-prefix-grants-and-list-verb.md) | Prefix grants on `shared` app-data, with a list verb | Accepted |
 | [0043](0043-app-data-identifiers-printable-ascii.md) | App-data identifiers are printable ASCII | Accepted |
+| [0044](0044-declarative-wildcard-tls-bindings.md) | Declarative wildcard TLS custom-domain bindings | Accepted |
