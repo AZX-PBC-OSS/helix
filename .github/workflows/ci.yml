@@ -16,13 +16,19 @@ name: CI
 # step is where these come from — keep it, it is how the layout stays honest):
 #
 #   static  36s of checks (typecheck 19 · lint 10 · format 7) in a 56s job
-#   test    76s of checks in a 1m54s job
+#   test    76s of checks in a 1m54s job (before sharding)
 #
-# One job doing all of it was 2m34s, so this trades ~16s of extra runner time
-# for ~40s of wall clock. Splitting finer buys much less: `test` is the
-# critical path either way, and each additional shard re-pays the full ~39s of
-# setup to run a fraction of the 76s. Note the ~38s of non-test overhead is
-# now 1/3 of the critical path — image pulls and install, not our code.
+# One job doing all of it was 2m34s. `test` is then sharded three ways, since
+# 76s of vitest on a 2-core runner is mostly lost in-process parallelism — the
+# same suite is ~10s wall in the dev container. Each shard re-pays ~39s of
+# fixed setup (image pulls and install, not our code) to run ~25s of tests,
+# which is why three and not six: the job floor is `static` at 56s.
+#
+# This costs runner-seconds to save wall clock, which is the right trade here
+# only because the repo is public — standard GitHub-hosted runners are free and
+# unbilled for public repos. Concurrency is the real budget (per *account*, not
+# per repo), and three shards takes wave 1 from 3 jobs to 5, matching the peak
+# the `images` matrix already sets. Revisit this if the repo goes private.
 #
 # The `test` job reproduces the dev-container environment (.devcontainer/
 # docker-compose.yml): the same least-privilege Postgres role split, an Azurite
@@ -79,11 +85,26 @@ jobs:
         run: ./check-and-lint.sh typecheck lint format
 
   test:
-    name: test
+    name: test (${{ matrix.shard }})
     runs-on: ubuntu-latest
     # A hung Azurite wait or a stuck integration suite would otherwise burn the
     # 6h runner default. The full pass is single-digit minutes; 20 is slack.
     timeout-minutes: 20
+
+    strategy:
+      # One shard failing must not cancel its siblings: the point of the script
+      # running every step and reporting at the end is a full picture from one
+      # run, and that holds across shards too.
+      fail-fast: false
+      matrix:
+        # Three ways splits ~76s of vitest into ~25s against ~39s of fixed
+        # per-shard setup, which lands the job near the `static` job's floor.
+        # A fourth shard buys a few seconds and pays another full setup.
+        # Shards get a runner each, so each has its own Postgres service and
+        # its own freshly-migrated helix_test — more isolation than one run,
+        # not less. A fresh `prisma migrate deploy` is ~1s, so re-paying it per
+        # shard is noise.
+        shard: ["1/3", "2/3", "3/3"]
 
     services:
       # Matches .devcontainer/docker-compose.yml's `db`. Least-privilege runtime
@@ -210,7 +231,7 @@ jobs:
           echo "Azurite did not become ready" >&2; docker logs azurite >&2; exit 1
 
       - name: Run checks (test)
-        run: ./check-and-lint.sh test
+        run: ./check-and-lint.sh test -- --shard=${{ matrix.shard }}
 
   bicep:
     name: bicep compiles

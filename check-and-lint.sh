@@ -11,12 +11,18 @@
 #   ./check-and-lint.sh                        # run all checks
 #   ./check-and-lint.sh --fix                  # auto-fix lint + formatting first
 #   ./check-and-lint.sh typecheck lint format  # run only the named steps
+#   ./check-and-lint.sh test -- --shard=1/3    # extra args for the test step
 #
 # Naming steps is what lets CI split the work across two jobs (.github/
 # workflows/ci.yml) while still running *this* script rather than a divergent
 # copy of the commands: the `static` job runs the first three, the `test` job
 # runs the last one, and both keep the run-every-step-then-report-all
 # behaviour. With no step names, every step runs — the local default.
+#
+# Anything after `--` is appended to the test step's command line, which is how
+# CI shards the suite (`-- --shard=1/3`). It is rejected unless `test` is the
+# only named step: vitest flags mean nothing to tsc or eslint, and silently
+# ignoring them is exactly the failure this guards against.
 
 set -uo pipefail
 
@@ -26,8 +32,17 @@ ALL_STEPS=(typecheck lint format test)
 
 FIX=0
 STEPS=()
+# Extra args for the test step, everything after a literal `--`.
+TEST_ARGS=()
 
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--" ]]; then
+    shift
+    TEST_ARGS=("$@")
+    break
+  fi
+  arg="$1"
+  shift
   case "${arg}" in
     --fix)
       FIX=1
@@ -56,6 +71,13 @@ done
 
 if [[ "${#STEPS[@]}" -eq 0 ]]; then
   STEPS=("${ALL_STEPS[@]}")
+fi
+
+# Passthrough args only make sense for a lone `test` step — see the header.
+if [[ "${#TEST_ARGS[@]}" -gt 0 && "${STEPS[*]}" != "test" ]]; then
+  echo "args after -- apply to the test step, so 'test' must be the only step named" >&2
+  echo "usage: $0 [--fix] [${ALL_STEPS[*]}] [-- <vitest args>]" >&2
+  exit 2
 fi
 
 # Track failures so we can run every step and report at the end.
@@ -99,7 +121,11 @@ fi
 wants typecheck && run_step "typecheck" pnpm typecheck
 wants lint && run_step "lint" pnpm lint
 wants format && run_step "format" pnpm format:check
-wants test && run_step "tests" pnpm test
+# `pnpm test --shard=…`, NOT `pnpm test -- --shard=…`: pnpm swallows args after
+# a second `--` and vitest never sees them, so the shard silently runs the whole
+# suite and the job still goes green. Verified — do not "fix" this to the `--`
+# form.
+wants test && run_step "tests" pnpm test "${TEST_ARGS[@]}"
 
 echo ""
 echo "────────────────────────────────────────"
