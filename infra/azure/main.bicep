@@ -666,7 +666,6 @@ var watchedContainerAppIds = concat(
 module infraAlerts 'modules/alerts-infra.bicep' = if (deployInfraAlerts && deployApps) {
   name: 'platform-infra-alerts'
   params: {
-    location: location
     namePrefix: namePrefix
     postgresServerId: postgres.outputs.serverId
     containerAppIds: watchedContainerAppIds

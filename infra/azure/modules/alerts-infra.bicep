@@ -11,8 +11,10 @@
 // `deployTelemetry`: no collector, no App Insights, no OTLP. They work on an
 // install that deliberately runs with telemetry off.
 
-@description('Azure region — needed as the `targetResourceRegion` of the multi-resource rules, not as their own location (metric alerts are global).')
-param location string
+// No `location` param: every rule here is `location: 'global'` (metric and
+// activity-log alerts always are), and the only thing that ever needed a region
+// was `targetResourceRegion` on the multi-resource restart rule — which Azure
+// refuses for this resource type. See the restart rule's comment.
 
 @description('Resource name prefix, matching the rest of the deployment.')
 param namePrefix string
@@ -124,10 +126,25 @@ resource pgStorageRule 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty
 // ---------------------------------------------------------------------------
 // Container apps — replica restart storms
 // ---------------------------------------------------------------------------
-// One rule across all the container apps, which a multi-resource metric alert
-// allows because they are the same resource type in the same region and
-// subscription. `targetResourceType` and `targetResourceRegion` are REQUIRED
-// once `scopes` holds more than one resource.
+// ONE RULE PER APP, and not by preference — Azure Monitor rejects a
+// multi-resource metric alert on this resource type outright:
+//
+//   BadRequest: "Alerts are currently not supported with multi resource level
+//   for Microsoft.App/containerApps."
+//
+// Measured, not inferred: the first version of this module scoped a single rule
+// at all four apps (same type, same region, same subscription — the documented
+// conditions for a multi-resource alert) and the deployment FAILED on exactly
+// that resource, while `edge5xxRule` below deployed fine from the same module in
+// the same apply. The difference is the scope COUNT, not the criteria type:
+// both use MultipleResourceMultipleMetricCriteria, and that odata type is
+// accepted with one scope. `targetResourceType`/`targetResourceRegion` are the
+// multi-resource-only properties and must be omitted here — with a single scope
+// Azure derives both, and supplying them re-asserts the shape it just refused.
+//
+// The cost of the fan-out is one rule per app (~$0.10/mo each) and one alert per
+// affected app instead of one alert naming several — which is arguably the more
+// useful notification anyway, since the remediation is per app.
 //
 // A crash loop is the failure an availability test sees worst: replicas keep
 // being replaced, so some probes succeed and the endpoint looks flaky rather
@@ -140,16 +157,19 @@ resource pgStorageRule 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty
 // scale event) — it does not self-clear the way a rate would. That is why the
 // threshold is a storm number from Azure's own baseline guidance rather than 1,
 // and why this is severity 2 and not a page.
-resource restartRule 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(containerAppIds)) {
-  name: '${namePrefix}-alert-replica-restarts'
+resource restartRule 'Microsoft.Insights/metricAlerts@2018-03-01' = [
+  for appId in containerAppIds: {
+  // Suffixed with the app's own short name (`-edge`, `-portal`, `-egress`,
+  // `-dev-gateway`) rather than the loop index: an index would rename every
+  // rule downstream of any change to which apps are watched, and
+  // `deployDevGateway` already changes the list's length.
+  name: '${namePrefix}-alert-replica-restarts-${replace(last(split(appId, '/')), '${namePrefix}-', '')}'
   location: 'global'
   properties: {
     description: 'A container app replica has restarted more than ${restartCountThreshold} times. Usually OOM (raise memory, or find the leak) or a boot-time config failure — check the replica\'s console logs for the exit, and remember the count is cumulative for the life of the replica.'
     severity: 2
     enabled: true
-    scopes: containerAppIds
-    targetResourceType: 'Microsoft.App/containerApps'
-    targetResourceRegion: location
+    scopes: [appId]
     evaluationFrequency: 'PT5M'
     windowSize: 'PT15M'
     criteria: {
@@ -169,7 +189,8 @@ resource restartRule 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(c
     autoMitigate: true
     actions: metricActions
   }
-}
+  }
+]
 
 // ---------------------------------------------------------------------------
 // Edge — 5xx rate
