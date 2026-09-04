@@ -7,12 +7,22 @@ name: CI
 # The checks are split across two jobs by what they *need*, not by what they
 # are. Only the test suite touches Postgres or Blob, so `static` (typecheck +
 # lint + format) skips the service containers, the Azurite pull, the role SQL
-# and the KEK entirely — ~15s of setup instead of ~45s — and runs concurrently
-# with `test`. Both invoke ./check-and-lint.sh with step names rather than
-# open-coding the pnpm commands, so the gate CI runs and the gate a developer
-# runs locally stay the same script. Splitting finer would buy nothing: `test`
-# is the critical path either way, since it is both the longest check and the
-# only one paying for the services.
+# and the KEK entirely, and runs concurrently with `test`. Both invoke
+# ./check-and-lint.sh with step names rather than open-coding the pnpm
+# commands, so the gate CI runs and the gate a developer runs locally stay the
+# same script.
+#
+# Measured, as of the split (the `timing:` line at the end of each "Run checks"
+# step is where these come from — keep it, it is how the layout stays honest):
+#
+#   static  36s of checks (typecheck 19 · lint 10 · format 7) in a 56s job
+#   test    76s of checks in a 1m54s job
+#
+# One job doing all of it was 2m34s, so this trades ~16s of extra runner time
+# for ~40s of wall clock. Splitting finer buys much less: `test` is the
+# critical path either way, and each additional shard re-pays the full ~39s of
+# setup to run a fraction of the 76s. Note the ~38s of non-test overhead is
+# now 1/3 of the critical path — image pulls and install, not our code.
 #
 # The `test` job reproduces the dev-container environment (.devcontainer/
 # docker-compose.yml): the same least-privilege Postgres role split, an Azurite
