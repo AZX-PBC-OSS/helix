@@ -29,9 +29,20 @@ allowBuilds:
 #   update` can reach it; it is CLI-only (loadConfigTsOrJs merges our own
 #   prisma.config.ts), never loaded by a running service. v8 keeps the
 #   `deepmerge` export @prisma/config passes to c12 as its `merger`.
+#   mysql2 — GHSA-3f6p-5ww8-9rcr, a rogue server forces an auth-plugin
+#   downgrade to mysql_clear_password and harvests the password in plaintext
+#   (fixed in 3.22.0), and GHSA-rgwj-5xj2-c3m3, unbounded zlib inflate in the
+#   compressed-protocol handler (fixed in 3.23.1). `prisma` exact-pins 3.15.3
+#   in 7.9.1 and 7.10.0 alike, so no `pnpm update` reaches it. It is the CLI's
+#   MySQL driver, loaded only for a `mysql://` datasource; the portal builds a
+#   PrismaPg adapter (src/db/client.ts), so no running service ever loads it —
+#   but it does ship, because apps/portal/Dockerfile installs without --prod
+#   (tsx and the prisma CLI run in the image) and copies /app wholesale into
+#   the runtime stage. Drop once prisma's own pin moves past 3.23.1.
 overrides:
   brace-expansion: ^5.0.9
   deepmerge-ts: ^8.0.1
+  mysql2: ^3.24.3
 
 # Single-source dependency versions across the monorepo (pnpm catalog).
 # Packages reference these with "catalog:" instead of pinning their own range,
