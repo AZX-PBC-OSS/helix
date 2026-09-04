@@ -42,7 +42,9 @@ The portal API lives under `/api/v1`. Mutating routes take a bearer token throug
 
 The standard workspace scripts (`install`, `typecheck`, `lint`, `format`, `test`) are in the root `package.json`. Per-package scripts also run via `pnpm --filter @azx-pbc/edge <script>`.
 
-**Required before calling any change finished: run `./check-and-lint.sh` (or `--fix`) from the repo root and get a clean pass.** This is the same gate CI runs — typecheck + lint + **format check** + the full test suite — and it catches what per-package or per-file checks miss (a Prettier format failure is a red CI build even when types, lint, and the tests you ran are all green). Targeted `pnpm --filter … typecheck`/`test` runs are fine _while iterating_, but they are not a substitute: do not commit, open a PR, or report a change as done until the full script passes. If it fails, fix it and re-run — don't commit the failure and patch it after.
+**Required before calling any change finished: run `./check-and-lint.sh` (or `--fix`) from the repo root and get a clean pass.** This is the same gate CI runs — typecheck + lint + **format check** + the full test suite — and it catches what per-package or per-file checks miss (a Prettier format failure is a red CI build even when types, lint, and the tests you ran are all green). Targeted `pnpm --filter … typecheck`/`test` runs are fine _while iterating_, but they are not a substitute: do not commit, open a PR, or report a change as done until the full script passes. If it fails, fix it and re-run — don't commit the failure and patch it after. CI runs this exact script rather than a copy of
+the commands, split across two jobs by naming steps (`static` runs `typecheck lint format`,
+`test` runs `test` — only the suite needs Postgres and Azurite); running it bare covers both.
 
 ## Environment
 

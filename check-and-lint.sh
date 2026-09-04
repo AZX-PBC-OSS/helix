@@ -4,37 +4,89 @@
 #
 # Runs typecheck, lint, format check, and tests. Each step runs even if an
 # earlier one fails, so you get the full picture in one pass. Exits non-zero
-# if any step failed.
+# if any step failed. Each step reports its own wall time, and the summary
+# reports the total — CI reads those numbers to keep the job split honest.
 #
 # Usage:
-#   ./check-and-lint.sh          # run all checks
-#   ./check-and-lint.sh --fix    # auto-fix lint + formatting, then run checks
+#   ./check-and-lint.sh                        # run all checks
+#   ./check-and-lint.sh --fix                  # auto-fix lint + formatting first
+#   ./check-and-lint.sh typecheck lint format  # run only the named steps
+#
+# Naming steps is what lets CI split the work across two jobs (.github/
+# workflows/ci.yml) while still running *this* script rather than a divergent
+# copy of the commands: the `static` job runs the first three, the `test` job
+# runs the last one, and both keep the run-every-step-then-report-all
+# behaviour. With no step names, every step runs — the local default.
 
 set -uo pipefail
 
 cd "$(dirname "$0")"
 
+ALL_STEPS=(typecheck lint format test)
+
 FIX=0
-if [[ "${1:-}" == "--fix" ]]; then
-  FIX=1
+STEPS=()
+
+for arg in "$@"; do
+  case "${arg}" in
+    --fix)
+      FIX=1
+      ;;
+    -h | --help)
+      # Reprint the header comment block, minus the shebang and the leading "# ".
+      awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
+      exit 0
+      ;;
+    -*)
+      echo "unknown option: ${arg}" >&2
+      echo "usage: $0 [--fix] [${ALL_STEPS[*]}]" >&2
+      exit 2
+      ;;
+    *)
+      # shellcheck disable=SC2076 # literal match is intended
+      if [[ ! " ${ALL_STEPS[*]} " =~ " ${arg} " ]]; then
+        echo "unknown step: ${arg}" >&2
+        echo "usage: $0 [--fix] [${ALL_STEPS[*]}]" >&2
+        exit 2
+      fi
+      STEPS+=("${arg}")
+      ;;
+  esac
+done
+
+if [[ "${#STEPS[@]}" -eq 0 ]]; then
+  STEPS=("${ALL_STEPS[@]}")
 fi
 
 # Track failures so we can run every step and report at the end.
 FAILED=()
+# Per-step wall time, collected for the summary line.
+TIMINGS=()
+
+wants() {
+  # shellcheck disable=SC2076 # literal match is intended
+  [[ " ${STEPS[*]} " =~ " $1 " ]]
+}
 
 run_step() {
   local name="$1"
   shift
+  local start=${SECONDS}
   echo ""
   echo "▶ ${name}"
   echo "  \$ $*"
   if "$@"; then
-    echo "✔ ${name} passed"
+    local elapsed=$((SECONDS - start))
+    echo "✔ ${name} passed (${elapsed}s)"
   else
-    echo "✗ ${name} FAILED"
+    local elapsed=$((SECONDS - start))
+    echo "✗ ${name} FAILED (${elapsed}s)"
     FAILED+=("${name}")
   fi
+  TIMINGS+=("${name}=${elapsed}s")
 }
+
+TOTAL_START=${SECONDS}
 
 if [[ "${FIX}" -eq 1 ]]; then
   echo "Auto-fixing lint + formatting before checks..."
@@ -44,13 +96,14 @@ if [[ "${FIX}" -eq 1 ]]; then
   pnpm format --log-level warn || true
 fi
 
-run_step "typecheck" pnpm typecheck
-run_step "lint"      pnpm lint
-run_step "format"    pnpm format:check
-run_step "tests"     pnpm test
+wants typecheck && run_step "typecheck" pnpm typecheck
+wants lint && run_step "lint" pnpm lint
+wants format && run_step "format" pnpm format:check
+wants test && run_step "tests" pnpm test
 
 echo ""
 echo "────────────────────────────────────────"
+echo "timing: ${TIMINGS[*]} total=$((SECONDS - TOTAL_START))s"
 if [[ "${#FAILED[@]}" -eq 0 ]]; then
   echo "✔ All checks passed"
   exit 0

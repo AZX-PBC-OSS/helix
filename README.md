@@ -197,7 +197,9 @@ opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-pr
 | `./check-and-lint.sh`                      | Poor-man's CI: typecheck + lint + format + tests   |
 
 `./check-and-lint.sh` (add `--fix` to auto-fix first) is the same gate CI runs, and a change
-isn't finished until it passes clean.
+isn't finished until it passes clean. CI invokes this same script, splitting it across two
+jobs by naming steps (`./check-and-lint.sh typecheck lint format` and `… test`) — running it
+bare locally covers both.
 
 ## Conventions
 

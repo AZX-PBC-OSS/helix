@@ -270,6 +270,11 @@ az deployment group what-if \
   -g <rg> -f main.bicep -p main.bicepparam        # preview
 ```
 
+The compile check also runs in CI on every PR — the `bicep` job in
+`.github/workflows/ci.yml` builds `main.bicep`, `main.bicepparam` and
+`infra/entra/main.bicep`. It shares nothing with the node jobs and gates
+nothing. `what-if` stays a manual step: it needs a live subscription.
+
 **Check your environment for a stale `HELIX_EDGE_TRUST_PROXY`.** It used to hold
 the ACA ingress **hop count** (`1`); fastify 5.12.1 deleted that form
 (GHSA-3m5p-2c4r-xxw2, ADR-0011's 2026-09 amendment) and `edgeTrustProxy` now
