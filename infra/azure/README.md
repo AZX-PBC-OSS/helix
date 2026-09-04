@@ -290,9 +290,13 @@ spoofing the hop-count removal closed. Remove a stale export with the literal
 `unset HELIX_EDGE_TRUST_PROXY`, not a blank `HELIX_EDGE_TRUST_PROXY=` line in a
 sourced `.env` — a blank export resolves to `auto` too (the bicepparam
 normalizes it), so that spelling is harmless, but unset is the clean state — or
-set it to `auto` to trust the ACA infrastructure subnet the edge runs in; set an
-address only when something else fronts the edge (CDN, WAF), and verify `req.ip`
-against the live deployment when you do.
+set it to `auto`, which trusts the ACA ingress at `100.64.0.0/10` — the RFC 6598
+shared address space its pods are drawn from, **not** the apps subnet the edge
+runs in (measured 2026-09-03; ADR-0011's 2026-09 amendment). Set an address only
+when something else fronts the edge (CDN, WAF), and re-verify `req.ip` against
+the live deployment when you do — see
+[Verifying the trusted-proxy address](#verifying-the-trusted-proxy-address)
+below for how.
 
 ### 2. Phase 1 — infra only (`deployApps=false`)
 
@@ -439,8 +443,42 @@ Before enabling it on a real deployment, read the riders in
 [`docs/features/dev-mode.md`](../../docs/features/dev-mode.md): a **short-window
 throttle** on the dev-gateway itself, a **distinct dev LLM budget** (the vendor
 key is env-agnostic), and the `dev-api` DNS/TLS binding (step 6, added when this
-flag is set). The `edgeTrustProxy` trusted-ingress address is already passed to
-this container, so it is no longer one of the riders (issue #13).
+flag is set). The `edgeTrustProxy` trusted-ingress address is passed to this
+container too, and since 2026-09-03 it is a **correct** address rather than
+merely a passed one, so it is no longer one of the riders (issue #13). Passing it
+was never the hard part; having it be right was.
+
+#### Verifying the trusted-proxy address
+
+Do this after any rollout that changes `edgeTrustProxy`, and after anything new
+is put in front of the edge. `req.ip` behind ACA's Envoy ingress is only the real
+client if `EDGE_TRUST_PROXY` names the address the ingress presents — and when it
+doesn't, **nothing surfaces it**: the trust walk truncates at the socket peer, the
+anon limiter / login throttle / audit hash collapse to one bucket per app, and
+`/health` stays green. That is how the wrong default (the apps subnet) survived
+from M5 to 2026-09-03.
+
+`rate_counters.bucketKey` is plaintext `<purpose>:<ip>:<appId>` (`counterStore.ts`)
+and Postgres is private-endpoint-only, so read it from inside the VNet with a
+throwaway job carrying the least-privilege `helix_edge` DSN as a `secretRef` (the
+`set-role-password.sh` shape). Generate known traffic first — a few failed
+`POST /_auth/login` against a password app, since the throttle is reserve-first
+and counts failures — then query inside the 5-minute window before the sweep:
+
+```sql
+SELECT "bucketKey", count, "resetAt" FROM rate_counters
+WHERE "bucketKey" LIKE 'anon:%' OR "bucketKey" LIKE 'login:%'
+ORDER BY "resetAt" DESC LIMIT 50;
+```
+
+The key carries the client's address → correct. Anything else — an ACA ingress
+pod (`100.100.x.x`), an apps-subnet address (`10.0.2.x`) — → the walk is still
+truncating at the peer.
+
+Two traps. `(0 rows)` means no traffic inside the live window, not a failure: the
+rows expire. And a CSRF-refused POST returns 403 **before** the throttle reserve,
+so it creates no row at all — a `curl` with no `Origin` header passes that check
+by design (`isSameOriginFormPost`) and does count.
 
 ### 6. DNS + TLS
 

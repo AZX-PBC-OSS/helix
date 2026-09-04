@@ -122,9 +122,15 @@ export interface GatewayConfig {
    * Container Apps' Envoy ingress that peer *is* the ingress, collapsing every
    * client into one bucket, so per-client limits need EDGE_TRUST_PROXY to name
    * the **address** of the trusted ingress — {@link parseTrustProxy} has the
-   * accepted forms. Too broad a value makes X-Forwarded-For spoofable, so it
-   * stays opt-in and wants verifying against the live ingress (issue #13); the
-   * dev-gateway inherits that residual (dev-mode design §5.4).
+   * accepted forms. On ACA that address is `100.64.0.0/10`: a workload-profile
+   * environment draws ingress pod addresses from the platform-reserved RFC 6598
+   * ranges (`100.100.x.x`), *not* from the apps subnet the container itself runs
+   * in — measured 2026-09-03, after the apps-subnet default silently trusted
+   * nothing for a full milestone (ADR-0011's 2026-09 amendment, issue #13).
+   * `infra/azure` resolves that for the deployed platform; anything else in
+   * front of the edge (CDN, WAF, second proxy) has its own answer and needs
+   * re-verifying, since too broad a value makes X-Forwarded-For spoofable. The
+   * dev-gateway is handed the same value (dev-mode design §5.4).
    */
   trustProxy: boolean | string;
   /**
@@ -562,16 +568,16 @@ function parseTrustProxy(raw: string | undefined): boolean | string {
     throw new Error(
       `EDGE_TRUST_PROXY no longer accepts a proxy hop count (got ${JSON.stringify(v)}). ` +
         `Name the trusted proxy's address instead: a CIDR/IP list such as the ACA ` +
-        `infrastructure subnet ("10.0.2.0/23"), or a proxy-addr preset such as "uniquelocal". ` +
+        `ingress ("100.64.0.0/10"), or a proxy-addr preset such as "uniquelocal". ` +
         `In infra/azure this is the edgeTrustProxy param (HELIX_EDGE_TRUST_PROXY), which ` +
-        `rejects a hop count at deploy time — unset it to trust the ACA subnet.`,
+        `rejects a hop count at deploy time — unset it to trust the ACA ingress.`,
     );
   }
   if (v === "auto") {
     throw new Error(
       `EDGE_TRUST_PROXY does not accept "auto" — that is the infra/azure edgeTrustProxy ` +
-        `sentinel, which main.bicep resolves to the ACA infrastructure subnet before it ` +
-        `reaches the container. Pass the resolved CIDR, or leave EDGE_TRUST_PROXY unset to ` +
+        `sentinel, which main.bicep resolves to the ACA ingress range before it reaches ` +
+        `the container. Pass the resolved CIDR, or leave EDGE_TRUST_PROXY unset to ` +
         `trust nothing (the socket peer is the client).`,
     );
   }

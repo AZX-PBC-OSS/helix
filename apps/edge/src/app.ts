@@ -156,8 +156,10 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     // Which proxy addresses to trust when deriving `req.ip` (the rate-limit /
     // login-throttle key). Default false = the socket peer. Behind Container
     // Apps' Envoy ingress that peer is the ingress, so per-client limits need
-    // EDGE_TRUST_PROXY set to the ingress subnet CIDR — verify against the live
-    // deployment before relying on it (issue #13). A too-trusting value makes
+    // EDGE_TRUST_PROXY set to the ingress CIDR — on ACA that is 100.64.0.0/10
+    // (RFC 6598), not the apps subnet; anything else in front of the edge has
+    // its own answer, so verify against the live deployment (issue #13). A
+    // too-trusting value makes
     // X-Forwarded-For spoofable, so it is opt-in, not defaulted on. A hop count
     // is not accepted (GHSA-3m5p-2c4r-xxw2); see config.ts `parseTrustProxy`.
     trustProxy: config.trustProxy,

@@ -181,7 +181,7 @@ param allowPublicApps bool = false
 @description('Permit `password` (shared-passphrase) apps on this install. Sets the matched pair EDGE_ALLOW_PASSWORD_APPS + PORTAL_ALLOW_PASSWORD_APPS — same paired-planes reasoning as allowPublicApps; when false the edge 403s the assets and the /_auth/login challenge 404s. Default false (deny).')
 param allowPasswordApps bool = false
 
-@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY) — the ADDRESS of the trusted ingress, as a CIDR/IP list or a proxy-addr preset ("uniquelocal"). Behind ACA Envoy ingress req.ip is the ingress hop unless this names it, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). "auto" (the default) resolves to the ACA infrastructure subnet the edge runs in, which is the trusted peer; EMPTY, "false" or a stale "0" trusts nothing (the socket peer is the client), matching the code default; anything else passes to the edge validator, which additionally refuses a /0 range ("0.0.0.0/0" trusts every peer — the GHSA-3m5p-2c4r-xxw2 shape) and the dotted-netmask form ("10.0.2.0/255.255.254.0" — spell the prefix length, "10.0.2.0/23"). A hop COUNT is refused at deploy: fastify 5.12.1 removed the form (GHSA-3m5p-2c4r-xxw2), the edge refuses to boot on one, and this template rejects it before it deploys. "true" is refused with it — it trusts every peer, so anyone reaching the edge directly sets its own req.ip. Re-verify if anything else fronts the edge (CDN, WAF, second proxy): too narrow collapses every client into one bucket, too broad makes X-Forwarded-For spoofable.')
+@description('Fastify trustProxy for the edge (EDGE_TRUST_PROXY) — the ADDRESS of the trusted ingress, as a CIDR/IP list or a proxy-addr preset ("uniquelocal"). Behind ACA Envoy ingress req.ip is the ingress hop unless this names it, collapsing per-IP rate limits + the login throttle into one bucket (issue #13). "auto" (the default) resolves to 100.64.0.0/10 — the RFC 6598 shared address space ACA draws its ingress pod addresses from on a workload-profile environment (100.100.0.0/17 + the three /19s), measured against a live deployment 2026-09-03. It is NOT the apps subnet: that is where the containers get their addresses, not the ingress that connects to them, and trusting it trusted nothing; EMPTY, "false" or a stale "0" trusts nothing (the socket peer is the client), matching the code default; anything else passes to the edge validator, which additionally refuses a /0 range ("0.0.0.0/0" trusts every peer — the GHSA-3m5p-2c4r-xxw2 shape) and the dotted-netmask form ("10.0.2.0/255.255.254.0" — spell the prefix length, "10.0.2.0/23"). A hop COUNT is refused at deploy: fastify 5.12.1 removed the form (GHSA-3m5p-2c4r-xxw2), the edge refuses to boot on one, and this template rejects it before it deploys. "true" is refused with it — it trusts every peer, so anyone reaching the edge directly sets its own req.ip. Re-verify if anything else fronts the edge (CDN, WAF, second proxy): too narrow collapses every client into one bucket, too broad makes X-Forwarded-For spoofable.')
 param edgeTrustProxy string = 'auto'
 
 @description('ACA custom-domain verification id (asuid TXT). Empty = skip.')
@@ -214,9 +214,20 @@ module network 'modules/network.bicep' = {
 // The trusted-proxy address handed to the edge and the dev-gateway. Fastify
 // derives req.ip by walking [socket peer, ...x-forwarded-for reversed] and
 // stopping at the first address this does NOT match, so it must name the ACA
-// ingress — which reaches the container from inside its own infrastructure
-// subnet. 'auto' resolves to that subnet rather than hardcoding a CIDR, which
-// keeps it correct if the address space is ever re-planned in network.bicep.
+// ingress — which is NOT in the apps subnet. On a workload-profile environment
+// with platformReservedCidr unset, ACA draws ingress pod addresses from its
+// platform-reserved ranges — 100.100.0.0/17, 100.100.128.0/19, 100.100.160.0/19
+// and 100.100.192.0/19, in RFC 6598 shared address space:
+// https://learn.microsoft.com/en-us/azure/container-apps/custom-virtual-networks
+// This was measured on a live deployment (2026-09-03), where 'auto' resolving to
+// appsSubnetPrefix trusted nothing: the walk truncated at the socket peer and one
+// client bucketed per Envoy pod (100.100.1.0, 100.100.0.147) with /health green
+// throughout — the silent failure ADR-0011 exists to prevent.
+//
+// 'auto' names the whole RFC 6598 block rather than the four documented
+// sub-ranges: it covers anything Azure adds inside it later, and the breadth
+// costs nothing here, because RFC 6598 space is not routable on the public
+// internet — no client can present such an address as a socket peer.
 // Override edgeTrustProxy when something else fronts the edge (CDN, WAF, second
 // proxy). An EMPTY param value is not 'auto': it means trust nothing, the same
 // as the code default, so an operator who passes "" (or 'false') still gets it
@@ -224,6 +235,10 @@ module network 'modules/network.bicep' = {
 // 'auto', because the one-keystroke "remove the export" in a sourced .env is
 // HELIX_EDGE_TRUST_PROXY=, which must not silently mean trust nothing.
 var trustProxyRaw = trim(edgeTrustProxy)
+
+// What 'auto' means: the ACA ingress, addressed as the RFC 6598 block its pods
+// come from. Deliberately not appsSubnetPrefix — see above.
+var acaIngressTrustProxy = '100.64.0.0/10'
 
 // Reject a stale hop count (a HELIX_EDGE_TRUST_PROXY=1 still exported by a
 // deploy pipeline) in front of the operator: it would otherwise reach
@@ -255,17 +270,17 @@ var trustProxyIsAddress = contains(trustProxyRaw, '.') || contains(trustProxyRaw
   filter(trustProxyParts, part => !contains(trustProxyPresets, part))
 )
 var effectiveEdgeTrustProxy = trustProxyRaw == 'auto'
-  ? network.outputs.appsSubnetPrefix
+  ? acaIngressTrustProxy
   : (empty(trustProxyRaw) || trustProxyRaw == '0')
       ? ''
       : trustProxyRaw == 'true'
           ? fail(
-              'edgeTrustProxy "true" trusts every peer, so anyone who reaches the edge directly sets its own req.ip -- the spoofing GHSA-3m5p-2c4r-xxw2 is about, in the one spelling the hop-count guard otherwise closed. Name the ingress instead: "auto" (or unset/blank HELIX_EDGE_TRUST_PROXY) trusts the ACA infrastructure subnet, and a CIDR/IP list or a proxy-addr preset such as "uniquelocal" names a different one.'
+              'edgeTrustProxy "true" trusts every peer, so anyone who reaches the edge directly sets its own req.ip -- the spoofing GHSA-3m5p-2c4r-xxw2 is about, in the one spelling the hop-count guard otherwise closed. Name the ingress instead: "auto" (or unset/blank HELIX_EDGE_TRUST_PROXY) trusts the ACA ingress at ${acaIngressTrustProxy} (RFC 6598, where ACA draws its ingress pod addresses — not the apps subnet), and a CIDR/IP list or a proxy-addr preset such as "uniquelocal" names a different one.'
             )
           : (trustProxyRaw == 'false' || trustProxyIsAddress)
               ? trustProxyRaw
               : fail(
-                  'edgeTrustProxy names the ADDRESS of the trusted ingress, not a hop count (got "${trustProxyRaw}"). Fastify 5.12.1 removed the hop-count form (GHSA-3m5p-2c4r-xxw2) and the edge refuses to boot on one. Leave it "auto" (or unset/blank HELIX_EDGE_TRUST_PROXY) to trust the ACA infrastructure subnet, pass a CIDR/IP list or a proxy-addr preset such as "uniquelocal" to name a different ingress, or "" / "false" to trust nothing.'
+                  'edgeTrustProxy names the ADDRESS of the trusted ingress, not a hop count (got "${trustProxyRaw}"). Fastify 5.12.1 removed the hop-count form (GHSA-3m5p-2c4r-xxw2) and the edge refuses to boot on one. Leave it "auto" (or unset/blank HELIX_EDGE_TRUST_PROXY) to trust the ACA ingress at ${acaIngressTrustProxy} (RFC 6598, where ACA draws its ingress pod addresses — not the apps subnet), pass a CIDR/IP list or a proxy-addr preset such as "uniquelocal" to name a different ingress, or "" / "false" to trust nothing.'
                 )
 
 // The egress-zone enforcement point (ADR-0001 / ADR-0005). Optional: when

@@ -153,7 +153,7 @@ describe("loadConfig", () => {
     ).toThrow(/EDGE_TRUST_PROXY no longer accepts a proxy hop count/);
   });
 
-  // "auto" is the infra/azure sentinel for "the ACA infrastructure subnet", and
+  // "auto" is the infra/azure sentinel for "the ACA ingress range", and
   // main.bicep resolves it before the container sees it. If one ever arrives the
   // deployment did not resolve it, which is worth saying plainly here rather than
   // letting proxy-addr fail on it as a malformed IP inside buildApp.
@@ -249,7 +249,7 @@ describe("loadConfig", () => {
     // unset. It keeps that meaning rather than failing the boot for no gain.
     expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "0" }).trustProxy).toBe(false);
     expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: " 00 " }).trustProxy).toBe(false);
-    // A CIDR (what infra/azure passes: the ACA infrastructure subnet), a list,
+    // A CIDR (what infra/azure passes: the ACA ingress range), a list,
     // and a proxy-addr preset all pass through verbatim for Fastify to compile.
     expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23" }).trustProxy).toBe("10.0.2.0/23");
     expect(loadConfig({ ...ENV, EDGE_TRUST_PROXY: "10.0.2.0/23,10.0.4.0/23" }).trustProxy).toBe(
@@ -287,8 +287,8 @@ describe("loadConfig", () => {
     });
 
     it("resolves the real client through a trusted proxy address", async () => {
-      // A CIDR naming the peer is what the deployed edge gets (the ACA
-      // infrastructure subnet); loopback stands in for it under inject.
+      // A CIDR naming the peer is what the deployed edge gets (the ACA ingress
+      // range); loopback stands in for it under inject.
       expect(await ipFrom("127.0.0.0/8", "203.0.113.7")).toBe("203.0.113.7");
       expect(await ipFrom("loopback", "203.0.113.7")).toBe("203.0.113.7");
       // Chained proxies: the walk stops at the first address the list doesn't
@@ -312,6 +312,28 @@ describe("loadConfig", () => {
       // ACA presents the peer as an IPv4-mapped v6 address; the v4 CIDR must
       // still match it, or every client collapses into one bucket.
       expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "::ffff:10.0.2.5")).toBe("203.0.113.7");
+    });
+
+    // The live defect, as a test (measured 2026-09-03; ADR-0011's 2026-09
+    // amendment). ACA's ingress pods are addressed out of the platform-reserved
+    // RFC 6598 ranges (100.100.x.x), not out of the apps subnet the container
+    // runs in — so the shipped `auto` default named a network the peer was never
+    // in, and every client bucketed per Envoy pod with /health green. This is a
+    // property of the value infra/azure resolves, so it belongs next to the
+    // parse rather than in the bicep.
+    it("resolves the client from an ACA ingress peer, and not from the apps subnet", async () => {
+      // What ships today: the ingress peer is inside the RFC 6598 block.
+      expect(await ipFrom("100.64.0.0/10", "203.0.113.7", "100.100.1.0")).toBe("203.0.113.7");
+      expect(await ipFrom("100.64.0.0/10", "203.0.113.7", "100.100.0.147")).toBe("203.0.113.7");
+      // What shipped before, reproduced: a well-formed apps-subnet CIDR that the
+      // peer is not in trusts nothing, and req.ip becomes the Envoy pod — one
+      // bucket per pod, which is exactly what was read back out of rate_counters.
+      expect(await ipFrom("10.0.2.0/23", "203.0.113.7", "100.100.1.0")).toBe("100.100.1.0");
+      // And the two values the old advice reached for, which change nothing:
+      // neither the VNet prefix nor `uniquelocal` (10/8 + 172.16/12 + 192.168/16
+      // + fc00::/7) contains 100.100.x.x.
+      expect(await ipFrom("uniquelocal", "203.0.113.7", "100.100.1.0")).toBe("100.100.1.0");
+      expect(await ipFrom("10.0.0.0/16", "203.0.113.7", "100.100.1.0")).toBe("100.100.1.0");
     });
 
     // ...and the concrete failure the validator exists to prevent: were "10.0.2"

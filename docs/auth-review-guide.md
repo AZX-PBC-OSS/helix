@@ -271,9 +271,9 @@ Review it as its own small front door:
   > in-memory per-process map, so it holds under `maxReplicas>1`; the atomic upsert makes it
   > reserve-first, closing the check-then-increment TOCTOU; one interval sweep in `server.ts` GCs it;
   > `EDGE_TRUST_PROXY` names the trusted ingress address (a hop count is refused since fastify
-  > 5.12.1) and is set, so the key derives the real client IP — pending live confirmation that the
-  > ACA ingress peer really falls inside the configured subnet (ADR-0011's 2026-09 amendment, still
-  > open); and scrypt is at OWASP's `N=2^17`. The remaining judgement call is the *policy* —
+  > 5.12.1) and is set to the address the live ACA ingress actually presents — `100.64.0.0/10`,
+  > confirmed 2026-09-03 after the apps-subnet default was found to trust nothing (ADR-0011's
+  > 2026-09 amendment) — so the key derives the real client IP; and scrypt is at OWASP's `N=2^17`. The remaining judgement call is the *policy* —
   > window and threshold — not the mechanism.
 - **The session it mints.** On success `SessionStore.createActive` inserts an **active**
   session directly (no pending/redeem) with a fresh pseudonym (`pw_<random>`,
