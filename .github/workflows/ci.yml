@@ -142,22 +142,16 @@ jobs:
         # localhost; the tests reference them by the dev-container hostnames.
         run: echo "127.0.0.1 db azurite" | sudo tee -a /etc/hosts
 
-      - name: Start Azurite (blob/queue/table emulator)
-        # Not a GHA service: we need the `--skipApiVersionCheck` flag (the SDK
-        # sends a newer x-ms-version than Azurite accepts), and service
-        # containers have no way to pass arguments after the image name —
-        # `options` reaches `docker create`, but there is no `command:`.
-        # Command mirrors .devcontainer/docker-compose.yml.
-        #
-        # Started detached and *not* waited on here: the image pull is the bulk
-        # of this step, and it overlaps with the pnpm install below. The wait
-        # loop runs just before the suite that needs it.
+      - name: Pull the Azurite image (backgrounded)
+        # `docker run -d` detaches the *container*, not the pull — it still
+        # blocks on the image before returning an ID, which is ~13s of the ~14s
+        # this used to cost. So pull explicitly, as a background shell job, and
+        # let it overlap the setup-node + pnpm install steps below. `disown`
+        # keeps it off this step's exit wait.
         run: |
-          docker run -d --name azurite \
-            -p 10000:10000 -p 10001:10001 -p 10002:10002 \
-            mcr.microsoft.com/azure-storage/azurite \
-            azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 \
-                    --location /data --skipApiVersionCheck
+          nohup docker pull mcr.microsoft.com/azure-storage/azurite \
+            > "$RUNNER_TEMP/azurite-pull.log" 2>&1 &
+          disown
 
       - name: Create least-privilege Postgres roles
         # Same db-init the dev container runs on first boot (helix_portal /
@@ -178,6 +172,22 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Start Azurite (blob/queue/table emulator)
+        # Not a GHA service: we need the `--skipApiVersionCheck` flag (the SDK
+        # sends a newer x-ms-version than Azurite accepts), and service
+        # containers have no way to pass arguments after the image name —
+        # `options` reaches `docker create`, but there is no `command:`.
+        # Command mirrors .devcontainer/docker-compose.yml. By now the pull
+        # started above has usually finished; if not, this blocks on the tail
+        # of it, which is still strictly better than blocking on all of it.
+        run: |
+          cat "$RUNNER_TEMP/azurite-pull.log" || true
+          docker run -d --name azurite \
+            -p 10000:10000 -p 10001:10001 -p 10002:10002 \
+            mcr.microsoft.com/azure-storage/azurite \
+            azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 \
+                    --location /data --skipApiVersionCheck
 
       - name: Wait for Azurite
         run: |
