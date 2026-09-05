@@ -61,6 +61,18 @@ resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
 
 output environmentId string = managedEnvironment.id
 output environmentName string = managedEnvironment.name
+
+// The resource group Azure creates for this environment's own infrastructure —
+// the standard load balancer, and a public IP on an external environment. It is
+// a SEPARATE resource group from the one this template deploys into, it holds
+// real billable resources (~$20/mo per environment), and nothing scoped to the
+// deployment's own resource group can see it. `alerts-cost.bicep` needs the name
+// to include it in the budget filter.
+//
+// Read from the resource rather than rebuilt from the `ME_<env>_<rg>_<region>`
+// convention on purpose: the convention is Azure's to change, and a budget that
+// silently stops matching is exactly the failure this output exists to prevent.
+output infrastructureResourceGroup string = managedEnvironment.properties.infrastructureResourceGroup
 output defaultDomain string = managedEnvironment.properties.defaultDomain
 output staticIp string = managedEnvironment.properties.staticIp
 @description('Log Analytics workspace id — so a workspace-based Application Insights component can attach to the workspace this environment already ships stdout to, rather than provisioning a second one.')

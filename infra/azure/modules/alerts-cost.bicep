@@ -1,4 +1,20 @@
-// alerts-cost.bicep — a monthly cost budget, scoped to this resource group.
+// alerts-cost.bicep — a monthly cost budget covering this deployment's resource
+// groups, ALL of them.
+//
+// SCOPE, and why it is not the obvious one. This budget is deployed at
+// SUBSCRIPTION scope with a `ResourceGroupName` filter, not at the deployment's
+// own resource group. That looks like the more complicated choice and it is the
+// only correct one: each ACA managed environment gets its OWN resource group
+// (`ME_<env>_<rg>_<region>`) holding the environment's standard load balancer
+// and, for an external environment, a public IP. Those are real billable
+// resources in a resource group this template does not deploy into, so a
+// resource-group-scoped budget cannot see them at any amount.
+//
+// Measured on both installs 2026-09-04, before this was fixed: the two
+// environment infrastructure groups came to ~$39/mo per install — about 16% of
+// the bill — entirely outside a budget that claimed to cover the deployment.
+// A budget that under-reports is worse than a missing one, because the number it
+// shows is believed.
 //
 // The one rule in this deployment that is not about health. It is here because
 // this platform's cost failures are step changes, not drifts: the egress
@@ -42,8 +58,13 @@
 // means the cost mail still arrives on an install that deployed no health rules
 // at all.
 
+targetScope = 'subscription'
+
 @description('Resource name prefix, matching the rest of the deployment.')
 param namePrefix string
+
+@description('Every resource group this deployment bills into: the one the template deploys to, plus each ACA managed environment\'s own infrastructure group (read from the environment resource, not rebuilt from the ME_<env>_<rg>_<region> convention). The budget filters on exactly these, so the subscription can host anything else without polluting the number.')
+param resourceGroupNames array
 
 @description('Monthly budget in USD (whole dollars). This is expected spend PLUS HEADROOM, not expected spend — see the header for why that distinction is the difference between an alert and a monthly calendar reminder. The caller derives it.')
 param monthlyBudgetUsd int
@@ -71,6 +92,17 @@ resource budget 'Microsoft.Consumption/budgets@2024-08-01' = {
     timeGrain: 'Monthly'
     timePeriod: {
       startDate: startDate
+    }
+    // What turns a subscription-wide budget back into a per-deployment one. The
+    // AZX Internal subscription hosts a dozen unrelated resource groups; without
+    // this the budget would measure the whole tenant's infrastructure spend and
+    // fire on things Helix has nothing to do with.
+    filter: {
+      dimensions: {
+        name: 'ResourceGroupName'
+        operator: 'In'
+        values: resourceGroupNames
+      }
     }
     notifications: {
       Actual_GreaterThan_80_Percent: {

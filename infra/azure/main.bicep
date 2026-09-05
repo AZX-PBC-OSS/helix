@@ -195,7 +195,7 @@ param edgeServerErrorThreshold int = 100
 @description('Deploy the monthly cost budget (modules/alerts-cost.bicep), scoped to this resource group, notifying at 80% actual, 100% actual and 100% forecast of the derived amount below. Skipped when alertEmails is empty. A budget NOTIFIES — nothing about it caps spend.')
 param deployCostBudget bool = true
 
-@description('Expected monthly spend in USD for this deployment EXCLUDING the egress firewall: the two Container Apps environments and their replicas, Postgres, Blob, both Key Vaults, Log Analytics + App Insights ingestion, DNS, and the availability tests. Measured at ~125 for the reference install on 2026-09-04. Re-measure it after any SKU change — this is the number every budget threshold is derived from, so a stale value moves all of them.')
+@description('Expected monthly spend in USD for this deployment EXCLUDING the egress firewall: the two Container Apps environments — INCLUDING their own infrastructure resource groups, which hold a load balancer each and are ~$39/mo together — plus Postgres, Blob, both Key Vaults, Log Analytics + App Insights ingestion, DNS, and the availability tests. **SET THIS PER INSTALL.** There is no useful default: the Postgres SKU alone moves it by more than 2x (a Burstable B1ms install measured ~125/mo on 2026-09-04, a GeneralPurpose D2ds_v5 one ~240/mo on the same date), so a shared number is guaranteed wrong for one of them and the failure is a budget that fires every month on a healthy install. Re-measure after ANY SKU change — every budget threshold derives from this, so a stale value moves all of them.')
 param expectedMonthlyUsdExFirewall int = 125
 
 @description('What `deployFirewall` adds per month, in USD. ~920: Azure Firewall STANDARD tier is $1.25/hr of DEPLOYMENT TIME (~912/mo, flat — an idle firewall costs the same as a busy one) plus its static public IP, before $0.016/GB of data processing, which is rounding error at this platform\'s volumes. This one parameter is 88% of the bill when it is on: the firewall turns a ~125/mo install into a ~1045/mo one, and the budget has to follow it rather than being a constant.')
@@ -694,14 +694,31 @@ var effectiveBudgetUsd = monthlyCostBudgetUsd > 0 ? monthlyCostBudgetUsd : deriv
 // Not gated on deployApps: the expensive resources (firewall, Postgres, the
 // environments) exist after phase 1, so the budget is worth having before any
 // app is deployed. Needs an amount to watch and somewhere to send.
+// Deployed at SUBSCRIPTION scope, unlike everything else here, because the two
+// ACA managed environments bill into their own resource groups and a
+// resource-group-scoped budget cannot see them (~$39/mo per install, measured
+// 2026-09-04). The filter below puts the deployment's boundary back. Note this
+// makes the budget the one resource in this template that needs a permission at
+// subscription scope — a full apply already requires Owner for the role
+// assignments, so it costs nothing extra.
 module costBudget 'modules/alerts-cost.bicep' = if (deployCostBudget && effectiveBudgetUsd > 0 && !empty(alertEmails)) {
   name: 'platform-cost-budget'
+  scope: subscription()
   params: {
     namePrefix: namePrefix
     monthlyBudgetUsd: effectiveBudgetUsd
     expectedMonthlyUsd: expectedMonthlyUsd
     contactEmails: alertEmails
     startDate: '${budgetStartDate}T00:00:00Z'
+    // This resource group, plus each environment's infrastructure group. Read
+    // off the environment resources rather than rebuilt from the naming
+    // convention, so the budget cannot silently stop matching if Azure changes
+    // how it names them.
+    resourceGroupNames: [
+      resourceGroup().name
+      appsEnv.outputs.infrastructureResourceGroup
+      egressEnv.outputs.infrastructureResourceGroup
+    ]
   }
 }
 
