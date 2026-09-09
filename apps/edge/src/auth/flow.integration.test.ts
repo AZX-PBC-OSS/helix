@@ -248,19 +248,22 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     const me = await app.inject({ url: "/_api/me", headers: { ...host, cookie } });
     expect(me.statusCode).toBe(200);
     expect(me.json()).toEqual({
-      user: { id: "5f0d5d2a-9d3f-4b1e-8c5a-111111111111", displayName: "Alice Anders" },
+      user: {
+        id: "5f0d5d2a-9d3f-4b1e-8c5a-111111111111",
+        displayName: "Alice Anders",
+        email: "alice@azx.dev",
+      },
     });
 
-    // The session row now carries alice@azx.dev (captured for the audit trail),
-    // so this is the request where it could leak to untrusted app code. Assert
-    // the KEY SET rather than the absence of one field: `toEqual` above would
-    // still pass if a future edit widened MeResponseSchema, and the strip that
-    // actually enforces this is `MeResponseSchema.parse` in appHost.ts — a
-    // "simplification" that sent the object literal directly would silently
-    // remove it. See packages/shared/src/auth.ts.
+    // Assert the KEY SET, not just the fields we expect: `toEqual` above would
+    // still pass if a future edit widened MeResponseSchema, and the projection
+    // that keeps the group snapshot out of an untrusted app's hands is the
+    // `MeResponseSchema.parse` in appHost.ts — a "simplification" that sent the
+    // session object directly would silently remove it. The address is
+    // deliberately here (see packages/shared/src/auth.ts); `groups` is the thing
+    // this guards.
     const body = me.json() as { user: Record<string, unknown> };
-    expect(Object.keys(body.user).sort()).toEqual(["displayName", "id"]);
-    expect(me.body).not.toContain("alice@azx.dev");
+    expect(Object.keys(body.user).sort()).toEqual(["displayName", "email", "id"]);
   });
 
   it("silently refreshes a due session via prompt=none on the live IdP", async () => {

@@ -9,14 +9,36 @@ import { z } from "zod";
 /**
  * `GET /_api/me` on an app host (architecture §4.2, A.6): static apps can't
  * read auth headers, so this is how an app learns who is logged in.
- * Deliberately minimal — no email, no groups: hosted apps are untrusted code
- * and don't get the user's directory profile.
+ *
+ * Still deliberately narrow — **no groups**: an app that could read the caller's
+ * group ids could reimplement the visibility check the edge already made for it,
+ * badly, which is the vibe-coded-auth failure mode A.6 exists to prevent. The
+ * address is different in kind: it is the display half of the identity (see
+ * `apps/edge/src/auth/identity.ts`), it is what an app needs to address, label or
+ * de-duplicate a person, and an app that wanted to ship it somewhere must already
+ * name that destination in its CSP or its fetch-proxy connections. Withholding it
+ * bought a boundary the platform enforces elsewhere.
  */
 export const MeResponseSchema = z.object({
   user: z.object({
     /** IdP subject (Entra object id) — stable, safe to key app data on. */
     id: z.string(),
     displayName: z.string(),
+    /**
+     * The captured address claim, or `null` when there isn't one — **nullable,
+     * not optional, and the difference is the contract**. A missing key would
+     * conflate "this platform doesn't send emails" with "we have no address for
+     * this person", and the second is routine: shared-password sessions are a
+     * `Guest` with no directory profile at all, and an issuer that sends no
+     * `email` and a non-addressable `preferred_username` yields null too
+     * (`captureEmail`). Apps must handle null; sending it explicitly is what
+     * makes them.
+     *
+     * Never a delivery target or an identity key — `id` is the only thing safe
+     * to join on. Entra addresses are reassignable and B2B guests carry their
+     * home-tenant address.
+     */
+    email: z.string().nullable(),
   }),
 });
 export type MeResponse = z.infer<typeof MeResponseSchema>;

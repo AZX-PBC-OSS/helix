@@ -50,7 +50,13 @@ function buildGatedEdge(registry?: FakeRegistry): GatedEdge {
 
 async function seedSession(
   sessions: FakeSessionStore,
-  opts: { appId?: string; groups?: string[]; refreshDueInMs?: number; expiresInMs?: number } = {},
+  opts: {
+    appId?: string;
+    groups?: string[];
+    email?: string;
+    refreshDueInMs?: number;
+    expiresInMs?: number;
+  } = {},
 ): Promise<string> {
   const id = randomUUID();
   await sessions.createPending({
@@ -60,7 +66,7 @@ async function seedSession(
       oid: "oid-alice",
       displayName: "Alice Anders",
       name: null,
-      email: null,
+      email: opts.email ?? null,
       kind: "user",
       groups: opts.groups ?? [],
     },
@@ -347,7 +353,36 @@ describe("/_api/me", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
-    expect(res.json()).toEqual({ user: { id: "oid-alice", displayName: "Alice Anders" } });
+    // `seedSession` captures no address, and the key is still sent as an
+    // explicit null — apps branch on the value, never on the key's presence.
+    expect(res.json()).toEqual({
+      user: { id: "oid-alice", displayName: "Alice Anders", email: null },
+    });
+  });
+
+  it("returns the captured address when the session has one", async () => {
+    const edge = buildGatedEdge();
+    const token = await seedSession(edge.sessions, { email: "alice@azx.dev" });
+    const res = await edge.app.inject({
+      url: "/_api/me",
+      headers: { ...HOST, ...FETCH, ...sessionHeader(token) },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      user: { id: "oid-alice", displayName: "Alice Anders", email: "alice@azx.dev" },
+    });
+  });
+
+  it("never projects the group snapshot, whatever the session carries", async () => {
+    const edge = buildGatedEdge();
+    const token = await seedSession(edge.sessions, { groups: ["group-eng", "group-admin"] });
+    const res = await edge.app.inject({
+      url: "/_api/me",
+      headers: { ...HOST, ...FETCH, ...sessionHeader(token) },
+    });
+    const body = res.json() as { user: Record<string, unknown> };
+    expect(Object.keys(body.user).sort()).toEqual(["displayName", "email", "id"]);
+    expect(res.body).not.toContain("group-eng");
   });
 
   it("401s without a session and 404s off app hosts", async () => {

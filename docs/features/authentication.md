@@ -74,8 +74,11 @@ behaviors:
 
 ### Other app-host endpoints
 
-- **`GET /_api/me`** — returns only `{user: {id, displayName}}` (Appendix A.6); a fetch with no
-  session gets 401, not a redirect.
+- **`GET /_api/me`** — returns `{user: {id, displayName, email}}` (Appendix A.6); a fetch with no
+  session gets 401, not a redirect. `email` is the captured address claim and is **nullable, not
+  optional** — the key is always present, and it is `null` for shared-password `Guest` sessions
+  and for issuers that send no addressable claim. Still no `groups`: an app that could read the
+  group snapshot could reimplement the visibility check the edge already made for it.
 - **`POST /_auth/logout`** — Origin-checked, deletes the session row (immediate revocation,
   no async GC), clears the cookie.
 

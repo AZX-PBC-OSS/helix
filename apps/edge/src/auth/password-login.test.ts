@@ -143,6 +143,10 @@ describe("POST /_auth/login (verification)", () => {
     expect(me.statusCode).toBe(200);
     expect(me.json().user.id).toMatch(/^pw_/);
     expect(me.json().user.displayName).toBe("Guest");
+    // A shared-password session has no directory profile at all, so this is the
+    // production path that actually exercises the null: the key is present and
+    // null, never absent, and never backfilled from "Guest".
+    expect(me.json().user).toHaveProperty("email", null);
   });
 
   it("rejects a wrong password (401, no cookie, form re-rendered)", async () => {

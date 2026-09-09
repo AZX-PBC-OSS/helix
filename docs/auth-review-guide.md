@@ -302,9 +302,11 @@ Tests: `password-login.test.ts`, `loginThrottle.test.ts`, plus the portal twins
   form POST, Origin is defense in depth), **deletes the session row** (immediate revocation,
   not a tombstone or async GC), and clears the cookie. Confirm it can't be driven
   cross-origin and that a GET can't trigger it.
-- **`GET /_api/me`** — returns `{user: {id, displayName}}` **only** — no email, no groups,
-  no directory profile (Appendix A.6; hosted apps are untrusted). A fetch with no session
-  gets 401, not a redirect. Confirm nothing leaks the group snapshot or email here.
+- **`GET /_api/me`** — returns `{user: {id, displayName, email}}` **and nothing else** — no
+  groups, no wider directory profile (Appendix A.6; hosted apps are untrusted). `email` is
+  nullable and is the captured claim, not a resolved lookup. A fetch with no session gets 401,
+  not a redirect. Confirm nothing leaks the **group snapshot** here, and that the projection is
+  still the `MeResponseSchema.parse` rather than the session object sent directly.
 
 ---
 
@@ -508,8 +510,10 @@ Call these out only if you disagree with the *decision*, not as bugs:
 - **The password path mints a session with no handoff.** Same-origin proof-of-password is
   the credential; there's no cross-host gap to bridge, so the handoff dance would be
   ceremony. The trade-off is a second session-minting path — reviewed in §8.
-- **`/_api/me` returns id + displayName only** — no email, no groups. Hosted apps are
-  untrusted and don't get the directory profile.
+- **`/_api/me` returns id + displayName + email** — no groups. The address is the display
+  half of the identity and is already constrained on the way out (CSP, fetch-proxy
+  connections); the group snapshot is withheld because an app that holds it can re-derive the
+  edge's visibility decision.
 - **dev-idp `conformIdTokenClaims: false`** is intentional: it keeps `groups` in the ID
   token (Entra parity; the edge never calls userinfo).
 
@@ -553,7 +557,8 @@ Call these out only if you disagree with the *decision*, not as bugs:
       other mode — no path produces the wrong one.
 - [ ] The password path is Origin-checked, throttled, constant-time, mints only `pw_*`
       pseudonyms with no groups, and can't be invoked for a non-`password` app.
-- [ ] Logout is Origin-checked and deletes the row; `/_api/me` leaks no email/groups.
+- [ ] Logout is Origin-checked and deletes the row; `/_api/me` projects exactly id +
+      displayName + email and leaks no group snapshot.
 - [ ] Every gateway capability enforces identity + Origin/CSRF + per-app quota; the
       anonymous tier is IP-rate-limited; the native and OpenAI-compatible LLM routes carry
       the identical checks, model allowlist included.

@@ -128,8 +128,9 @@ export interface AppApiRuntime {
 
 /**
  * `GET /_api/me` (Appendix A.6): how a static app learns who is signed in.
- * The response is the MeResponseSchema minimum — apps are untrusted code and
- * don't get the directory profile.
+ * The response is exactly MeResponseSchema — id, display name and the captured
+ * address, and nothing else. The `parse` is the projection, not a formality:
+ * `session.user` also carries the group snapshot, which apps never see.
  */
 export function makeMeHandler(rt: AppApiRuntime) {
   return async function handleMe(
@@ -143,7 +144,11 @@ export function makeMeHandler(rt: AppApiRuntime) {
     if (!session) return;
     await reply.header("cache-control", "no-store").send(
       MeResponseSchema.parse({
-        user: { id: session.user.oid, displayName: session.user.displayName },
+        user: {
+          id: session.user.oid,
+          displayName: session.user.displayName,
+          email: session.user.email,
+        },
       }),
     );
   };

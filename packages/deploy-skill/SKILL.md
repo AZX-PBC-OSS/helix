@@ -114,8 +114,14 @@ offline cold boot `fetch`/`XMLHttpRequest` are patched as usual, and a proxied
 call fails as an ordinary network error you can catch, not as a CSP violation.
 
 **You get an identity for free.** Unless the app is `public`, the edge only serves
-signed-in users; `GET /_api/me` returns the current actor. Don't build a login
-screen.
+signed-in users; `GET /_api/me` returns the current actor as
+`{user: {id, displayName, email}}`. Don't build a login screen.
+
+Use `id` — the IdP subject — as the key for anything you store about a person; it
+is stable and it is what the app-data scopes already partition on. `displayName`
+and `email` are for **display**: `email` is `null` when there is no address to show
+(a shared-password app signs everyone in as `Guest`), so handle that rather than
+rendering "null", and never treat it as an identity or a delivery target.
 
 ---
 
