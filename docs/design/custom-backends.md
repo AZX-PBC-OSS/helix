@@ -51,6 +51,8 @@ The plan is a ladder, not a leap. Each rung is independently shippable, and each
 | Rung | What it is | Trust posture | Isolation needed | When |
 |------|------------|---------------|------------------|------|
 | **0** | Extend gateway primitives — cron/scheduled triggers, **inbound** webhook receivers routed through the gateway, richer app/user data queries | No new untrusted runtime; same as today | None new (runs in our trusted plane) | First, and may absorb most "I need a backend" asks |
+
+> **Rung 0 is being built.** App-triggered durable jobs — the scheduled/background-work half of this row, and the gap [ADR-0041](../adr/0041-app-data-write-concurrency.md) refused to fake with compare-and-swap — are decided in [ADR-0045](../adr/0045-app-triggered-durable-jobs-plane.md), with the supporting research in [`background-jobs.md`](background-jobs.md). Cron/scheduled triggers and inbound webhooks remain unbuilt.
 | **1** | **Constrained serverless functions** — our runtime, one or two languages (JS/Wasm), no arbitrary base image, no ambient network. The architecture's named "phase 2: serverless functions" (§12) | Untrusted tenant code, but on a substrate *we* control | V8 isolates / Wasm + compensating controls (Tier 1) | When apps need real custom logic but not arbitrary images |
 | **2** | **Arbitrary container images** — the author's image and dependencies | Fully untrusted server-side code | Real kernel boundary: Firecracker or gVisor (Tier 2) | Last, and only if rung 1 genuinely can't serve a class of apps |
 
