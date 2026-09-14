@@ -265,9 +265,9 @@ the vendor rejected your schema for being outside the strict subset above — fi
 schema; retrying unchanged will not help.
 
 Not every model can enforce a schema. `claude-haiku-4-5`, `claude-opus-4-8`,
-`claude-opus-5`, `claude-sonnet-5` and `claude-fable-5` can; `claude-opus-4-7`,
-`claude-opus-4-6` and `claude-sonnet-4-6` cannot, and asking gets a `400` — they
-still work fine for plain text chat.
+`claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` and `claude-fable-5-1` can;
+`claude-opus-4-7`, `claude-opus-4-6` and `claude-sonnet-4-6` cannot, and asking gets
+a `400` — they still work fine for plain text chat.
 
 ### 3.2 App data — `/_api/data/*`
 

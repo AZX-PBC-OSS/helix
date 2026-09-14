@@ -200,10 +200,10 @@ Four refusals, all `400` and all before any upstream call:
   path but has no Anthropic equivalent, so forwarding it would leak the backing vendor the same
   way `json_object` would.
 - **Per-model.** Support is not uniform within either vendor's line-up, so it's a catalog bit
-  (`ModelPrice.structuredOutputs`, alongside `reasoning`). Today: `claude-fable-5`,
-  `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5` and all `gpt-*`/`o*`
-  can; `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6` cannot. Those three stay fully
-  usable for text chat.
+  (`ModelPrice.structuredOutputs`, alongside `reasoning`). Today: `claude-fable-5-1`,
+  `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5` and
+  all `gpt-*`/`o*` can; `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6` cannot. Those
+  three stay fully usable for text chat.
 - **Schema budget.** The schema is app-supplied input on the trusted path, walked before the quota
   check, so it must have an object root and stay within ≤ 32,768 characters serialized and ≤ 12
   levels deep. Beyond those guards it is forwarded as-is and the **vendor** validates its own JSON
@@ -252,9 +252,23 @@ no dedicated toggle:
 
 A deployment that doesn't want OpenAI simply doesn't seed that secret and doesn't allowlist `gpt-*`
 models; an app that allowlists one without the secret present gets a `502` at call time — exactly as
-an unseeded Anthropic key would. Seeded OpenAI models: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1{,-mini,-nano}`,
-`o3`, `o4-mini` — **their prices in `pricing.ts` must be verified against OpenAI's current published
-rates** (they drive the cost gate).
+an unseeded Anthropic key would. Seeded OpenAI models: `gpt-6-astra`, `gpt-5.6-{sol,terra,luna}`,
+`gpt-5.1`, `gpt-5-{mini,nano}`, plus the retained previous generations `gpt-4o`, `gpt-4o-mini`,
+`gpt-4.1{,-mini,-nano}`, `o3`, `o4-mini`.
+
+**`reasoning` is set on everything from GPT-5 on, not just the o-series.** The flag decides whether
+the edge sends `max_completion_tokens` or the deprecated `max_tokens`; OpenAI's reasoning models
+reject the latter outright, so a current-generation model added without the flag 400s on every call.
+`pricing.test.ts` pins the split, and pins that no `claude-*` model ever carries it.
+
+**Rates last verified 2026-09-14** against both vendors' pricing pages; they drive the cost gate, so
+re-verify rather than trusting that date. Two things moved at that check: Claude Sonnet 5's
+introductory `$2/$10` became its standard price (the scheduled rise to `$3/$15` was cancelled), and
+Claude Fable 5.1 arrived billing **cache reads at 0.025x** base input instead of the universal 0.1x —
+which is why the read multiplier is now per-model (`ModelPrice.cacheReadMultiplier`, defaulting to
+`CACHE_READ_MULTIPLIER`) rather than one platform-wide constant. Note OpenAI's cached-input discount
+is not a flat 0.1x either (`gpt-4o` 0.5x, `gpt-4.1` 0.25x, current generation 0.1x), so if
+`mapOpenAiStream` ever maps OpenAI's `cached_tokens`, those need per-model rates too.
 
 ## Try it
 

@@ -9,7 +9,7 @@
  *
  * **Cache-aware:** Anthropic bills the three input-token classes at different
  * rates — uncached input at 1x, a cache *write* at 1.25x (5-minute TTL), a cache
- * *read* at ~0.1x. Collapsing them into one number makes spend wrong for
+ * *read* at 0.1x (0.025x on Fable 5.1). Collapsing them into one number makes spend wrong for
  * cache-heavy apps, so `costUsd` prices each class separately. (Cache counts are
  * 0 until prompt caching is enabled — see apps/edge/src/gateway/provider.ts.)
  */
@@ -30,9 +30,18 @@ export interface ModelPrice {
   /** Upstream that serves this model (routing + pricing share this fact). */
   provider: ModelProvider;
   /**
-   * OpenAI "reasoning" models (o-series): they take `max_completion_tokens`
-   * (not `max_tokens`) and reject a non-default `temperature`. The OpenAI request
-   * builder branches on this. Absent ⇒ a normal chat model.
+   * Cache-**read** rate as a multiple of `inputPerMTok`. Absent ⇒
+   * {@link CACHE_READ_MULTIPLIER} (0.1x), which is every model's rate except
+   * Claude Fable 5.1's 0.025x. It lives here rather than in a platform-wide
+   * constant because a vendor can reprice one model's cache tier alone — as
+   * Anthropic did — and a global constant would silently mis-price it.
+   */
+  cacheReadMultiplier?: number;
+  /**
+   * OpenAI reasoning models — the o-series and everything from GPT-5 on: they take
+   * `max_completion_tokens` (not `max_tokens`, which they reject) and reject a
+   * non-default `temperature`. The OpenAI request builder branches on this.
+   * Absent ⇒ a pre-GPT-5 chat model that still takes `max_tokens`.
    */
   reasoning?: boolean;
   /**
@@ -66,17 +75,30 @@ export interface ModelPrice {
  * overlap between the `claude-*` and `gpt-*`/`o*` families, so a flat table is
  * unambiguous.
  *
- * NOTE (OpenAI rates): the numbers below are seeded from OpenAI's published
- * per-1M-token list prices and **must be re-verified against OpenAI's current
- * pricing before relying on them for billing** — OpenAI reprices periodically
- * (o-series especially). The `costUsd` cache multipliers below are Anthropic
- * cache semantics; the OpenAI path reports 0 cache tokens today, so they don't
- * apply to `gpt-*`/`o*`.
+ * Rates last verified against both vendors' published pricing pages on
+ * **2026-09-14**. Both reprice without notice, so re-verify rather than trusting
+ * this line's age. The `costUsd` cache classes are Anthropic cache semantics; the
+ * OpenAI path reports 0 cache tokens today (`mapOpenAiStream` does not map
+ * OpenAI's `cached_tokens`), so the cache multipliers don't apply to `gpt-*`/`o*`
+ * — note that OpenAI's own cached-input discount is *not* a flat 0.1x either
+ * (gpt-4o is 0.5x, gpt-4.1 0.25x, the current generation 0.1x), so mapping those
+ * counts later means pricing them per model, not reusing the constant.
  */
 export const MODEL_PRICING: Record<string, ModelPrice> = {
   // Anthropic. NB `structuredOutputs` is deliberately absent on 4-7/4-6/sonnet-4-6:
-  // structured outputs are supported on Fable 5, Opus 4.8 and Haiku 4.5 but not on
-  // those three, so the flag is opt-in per model rather than per provider.
+  // structured outputs are supported on the Fable 5 line, Opus 5, Sonnet 5, Opus 4.8
+  // and Haiku 4.5 but not on those three, so the flag is opt-in per model rather
+  // than per provider.
+  // Fable 5.1 sits above Fable 5 at the same per-token rate, but its cache *reads*
+  // bill at 0.025x base input rather than the 0.1x every other model uses — the
+  // one reason `cacheReadMultiplier` exists.
+  "claude-fable-5-1": {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    provider: "anthropic",
+    cacheReadMultiplier: 0.025,
+    structuredOutputs: true,
+  },
   "claude-fable-5": {
     inputPerMTok: 10,
     outputPerMTok: 50,
@@ -89,12 +111,12 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
     provider: "anthropic",
     structuredOutputs: true,
   },
-  // NB list rates. Sonnet 5 has promotional $2/$10 pricing through 2026-08-31; this
-  // table drives the **cost gate**, so the list price is the safe number — it
-  // over-estimates spend during the promo rather than under-billing once it lapses.
+  // Sonnet 5's $2/$10 was introductory pricing through 2026-08-31; Anthropic made
+  // it the standard price and cancelled the scheduled rise to $3/$15. This is now
+  // the list rate, so the cost gate no longer over-estimates Sonnet 5 spend.
   "claude-sonnet-5": {
-    inputPerMTok: 3,
-    outputPerMTok: 15,
+    inputPerMTok: 2,
+    outputPerMTok: 10,
     provider: "anthropic",
     structuredOutputs: true,
   },
@@ -113,9 +135,73 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
     provider: "anthropic",
     structuredOutputs: true,
   },
-  // OpenAI — VERIFY against current published rates before production billing.
-  // Every model here resolves to a snapshot new enough for `response_format`
-  // json_schema, so `structuredOutputs` is set across the board.
+  // OpenAI. Every model here resolves to a snapshot new enough for `response_format`
+  // json_schema (that floor is `gpt-4o-2024-08-06`), so `structuredOutputs` is set
+  // across the board.
+  //
+  // The current generation — GPT-6 and GPT-5.x — is reasoning models throughout, so
+  // `reasoning` is set on all of them. On chat/completions that flag means exactly
+  // one thing here: send `max_completion_tokens`, not `max_tokens`. OpenAI has
+  // deprecated `max_tokens` outright and reasoning models reject it, so the flag is
+  // the forward-compatible setting even where a model would still accept both.
+  "gpt-6-astra": {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+    structuredOutputs: true,
+  },
+  "gpt-5.6-sol": {
+    inputPerMTok: 4,
+    outputPerMTok: 20,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+    structuredOutputs: true,
+  },
+  "gpt-5.6-terra": {
+    inputPerMTok: 2,
+    outputPerMTok: 12,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+    structuredOutputs: true,
+  },
+  "gpt-5.6-luna": {
+    inputPerMTok: 0.2,
+    outputPerMTok: 1.2,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+    structuredOutputs: true,
+  },
+  "gpt-5.1": {
+    inputPerMTok: 1.25,
+    outputPerMTok: 10,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+    structuredOutputs: true,
+  },
+  "gpt-5-mini": {
+    inputPerMTok: 0.25,
+    outputPerMTok: 2,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+    structuredOutputs: true,
+  },
+  "gpt-5-nano": {
+    inputPerMTok: 0.05,
+    outputPerMTok: 0.4,
+    provider: "openai",
+    reasoning: true,
+    minCompletionTokens: 25_000,
+    structuredOutputs: true,
+  },
+  // Previous generations, kept curated so a deployed app's manifest keeps working.
+  // Rates re-verified 2026-09-14 and unchanged.
   "gpt-4o": { inputPerMTok: 2.5, outputPerMTok: 10, provider: "openai", structuredOutputs: true },
   "gpt-4o-mini": {
     inputPerMTok: 0.15,
@@ -154,7 +240,11 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   },
 };
 
-/** Cache-read tokens bill at ~0.1x the base input rate. */
+/**
+ * Default cache-read rate: 0.1x the base input rate. A model that bills reads
+ * differently overrides it with `ModelPrice.cacheReadMultiplier` (today only
+ * Claude Fable 5.1, at 0.025x).
+ */
 export const CACHE_READ_MULTIPLIER = 0.1;
 /** Cache-write tokens bill at 1.25x the base input rate (5-minute TTL — our default). */
 export const CACHE_WRITE_MULTIPLIER = 1.25;
@@ -202,7 +292,9 @@ export function costUsd(input: {
   return (
     input.inputTokens * perInputTok +
     input.outputTokens * perOutputTok +
-    (input.cacheReadInputTokens ?? 0) * perInputTok * CACHE_READ_MULTIPLIER +
+    (input.cacheReadInputTokens ?? 0) *
+      perInputTok *
+      (price.cacheReadMultiplier ?? CACHE_READ_MULTIPLIER) +
     (input.cacheCreationInputTokens ?? 0) * perInputTok * CACHE_WRITE_MULTIPLIER
   );
 }

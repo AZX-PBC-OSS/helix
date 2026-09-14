@@ -5,6 +5,7 @@ import {
   costUsd,
   MODEL_PRICING,
   priceForModel,
+  providerForModel,
   supportsStructuredOutputs,
 } from "./pricing.js";
 
@@ -35,6 +36,38 @@ describe("pricing", () => {
       cacheCreationInputTokens: 1_000_000,
     });
     expect(write).toBeCloseTo(5 * CACHE_WRITE_MULTIPLIER, 9); // $6.25
+  });
+
+  it("prices a model's cache reads at its own multiplier, not the platform default", () => {
+    // Fable 5.1 bills reads at 0.025x base input; every other model is 0.1x. A
+    // single global constant silently over-charged this model by 4x.
+    const fable51 = costUsd({
+      model: "claude-fable-5-1",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 1_000_000,
+    });
+    expect(fable51).toBeCloseTo(10 * 0.025, 9); // $0.25
+
+    // Fable 5, same base rate, no override — falls back to the 0.1x default.
+    const fable5 = costUsd({
+      model: "claude-fable-5",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 1_000_000,
+    });
+    expect(fable5).toBeCloseTo(10 * CACHE_READ_MULTIPLIER, 9); // $1.00
+    expect(fable51).toBeLessThan(fable5);
+
+    // The override is cache-read only — it must not touch writes.
+    expect(
+      costUsd({
+        model: "claude-fable-5-1",
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 1_000_000,
+      }),
+    ).toBeCloseTo(10 * CACHE_WRITE_MULTIPLIER, 9); // $12.50
   });
 
   it("treats absent cache counts as zero (no double-counting)", () => {
@@ -91,10 +124,51 @@ describe("supportsStructuredOutputs (ADR-0034)", () => {
     for (const model of ["claude-opus-5", "claude-sonnet-5"]) {
       expect(priceForModel(model)).toBeDefined();
       expect(supportsStructuredOutputs(model)).toBe(true);
-      // Not o-series: `reasoning` means "takes max_completion_tokens" here.
+      // `reasoning` means "takes max_completion_tokens", which is an OpenAI-only
+      // concern — never set on a `claude-*` model.
       expect(priceForModel(model)?.reasoning).toBeUndefined();
     }
-    // List rates, not Sonnet 5's promotional $2/$10 — this table gates spend.
-    expect(priceForModel("claude-sonnet-5")).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 });
+    // Sonnet 5's $2/$10 introductory rate became the standard price on 2026-09-01
+    // (the scheduled rise to $3/$15 was cancelled), so this is the list rate now.
+    expect(priceForModel("claude-sonnet-5")).toMatchObject({ inputPerMTok: 2, outputPerMTok: 10 });
+  });
+});
+
+describe("the OpenAI catalog's request shape", () => {
+  // `reasoning` decides whether the edge sends `max_completion_tokens` or the
+  // deprecated `max_tokens` (apps/edge/src/gateway/provider.ts). A current-generation
+  // model that arrives without the flag gets `max_tokens` and is rejected upstream —
+  // a 400 on every call to that model, which no other test would catch.
+  const TAKES_MAX_TOKENS = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"];
+
+  it("marks every model newer than the gpt-4.x line as a reasoning model", () => {
+    const openai = Object.entries(MODEL_PRICING).filter(([, p]) => p.provider === "openai");
+    expect(openai.length).toBeGreaterThan(TAKES_MAX_TOKENS.length);
+    for (const [model, price] of openai) {
+      if (TAKES_MAX_TOKENS.includes(model)) {
+        expect(price.reasoning).toBeUndefined();
+      } else {
+        expect(price.reasoning, `${model} must take max_completion_tokens`).toBe(true);
+        // A reasoning budget covers thinking *and* visible output, so an unset
+        // floor lets a small maxTokens be spent entirely on reasoning.
+        expect(price.minCompletionTokens, `${model} needs an output floor`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("never marks a claude-* model as reasoning (that flag is OpenAI-only)", () => {
+    for (const [model, price] of Object.entries(MODEL_PRICING)) {
+      if (price.provider !== "anthropic") continue;
+      expect(price.reasoning, model).toBeUndefined();
+      expect(price.minCompletionTokens, model).toBeUndefined();
+    }
+  });
+
+  it("routes every catalog key to the vendor its id implies", () => {
+    for (const [model, price] of Object.entries(MODEL_PRICING)) {
+      const expected = model.startsWith("claude-") ? "anthropic" : "openai";
+      expect(providerForModel(model), model).toBe(expected);
+      expect(price.provider).toBe(expected);
+    }
   });
 });
