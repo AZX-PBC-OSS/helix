@@ -52,6 +52,12 @@ export const ATTR_TARGET_PATH = "helix.target.path";
 export const ATTR_CONNECTION = "helix.connection";
 export const ATTR_UPSTREAM_STATUS = "helix.upstream.status";
 export const ATTR_CLIENT_DISCONNECTED = "helix.client_disconnected";
+/**
+ * How egress sourced the injected credential — `secret` (a sealed `app_secrets`
+ * row) or `managed-identity` (a minted Entra token, ADR-0046). Bounded to those
+ * two values; never the credential itself, its header name, or a token claim.
+ */
+export const ATTR_CREDENTIAL_SOURCE = "helix.credential_source";
 export const ATTR_STREAM = "helix.stream";
 /**
  * The app's slug. Bounded by the tenant like {@link ATTR_APP_ID}, and the half

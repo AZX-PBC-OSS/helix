@@ -59,6 +59,11 @@ looked up:
   path's last segment, and prefix grants (ADR-0042) make those keys unbounded
   and attacker-choosable, so the wrapper records `http.route` + verb only.
   Pinned by `spanRedaction.test.ts`'s planted-key case.
+- `helix.egress.proxy` spans carry `helix.credential_source` ∈ {`secret`,
+  `managed-identity`} when a credential was injected — which custody path served
+  the call (ADR-0046), and the first thing to check when a Foundry-bound call
+  misauthenticates. Bounded to those two values; on the egress allowlist, so
+  never a header name, a credential, or a token claim.
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |

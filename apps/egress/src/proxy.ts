@@ -31,6 +31,7 @@ import {
   ATTR_CAPABILITY,
   ATTR_CLIENT_DISCONNECTED,
   ATTR_CONNECTION,
+  ATTR_CREDENTIAL_SOURCE,
   ATTR_ENV,
   ATTR_METHOD,
   ATTR_OUTCOME,
@@ -395,6 +396,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
           instruction.connection,
           instruction.capability,
           instruction.env,
+          instruction.origin,
         );
       } catch (err) {
         if (err instanceof RecipeDriftError) {
@@ -431,6 +433,13 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       }
       if (!resolved) {
         return fail(reply, 403, "forbidden", "connection not found or not granted");
+      }
+      // Sealed row vs minted Entra token (ADR-0046) — two bounded values, and
+      // the tell an operator needs when a Foundry-bound call misauthenticates.
+      if (resolved.source) {
+        trace
+          .getActiveSpan()
+          ?.setAttributes(egressSpanAttributes({ [ATTR_CREDENTIAL_SOURCE]: resolved.source }));
       }
       clockDerived = resolved.injection.kind === "hmac-timestamp";
       try {

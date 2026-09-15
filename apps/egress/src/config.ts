@@ -5,6 +5,18 @@
  * secret (to verify what the edge minted), a secret-store custody config, and
  * SSRF/limit knobs.
  */
+/**
+ * One `EGRESS_MANAGED_IDENTITY_CONNECTIONS` entry. `connection` is the
+ * operator-chosen platform connection name (kebab-case, like a secret name);
+ * `hostSuffix` pins token injection to that vendor host (exact or subdomain),
+ * so a forged instruction naming the connection but a foreign origin gets
+ * nothing (ADR-0046).
+ */
+export interface ManagedIdentityConnectionRule {
+  connection: string;
+  hostSuffix: string;
+}
+
 export interface EgressConfig {
   port: number;
   host: string;
@@ -17,6 +29,15 @@ export interface EgressConfig {
   /** Dev custody: path to the locally-generated KEK file (post-create.sh). */
   devKeyPath?: string;
   limits: { maxBodyBytes: number; timeoutMs: number };
+  /**
+   * Keyless LLM vendor auth (ADR-0046): connection names for which egress may
+   * mint a **managed-identity** Entra token when no `platform` secret row exists,
+   * each pinned to the vendor host the token may be injected into. Parsed from
+   * `EGRESS_MANAGED_IDENTITY_CONNECTIONS` as comma-separated `name=host-suffix`
+   * pairs (e.g. `foundry=services.ai.azure.com`). Empty (the default) disables
+   * the mint path entirely — resolution is then DB-only, exactly as before.
+   */
+  managedIdentityConnections: ManagedIdentityConnectionRule[];
   /** Permit private/loopback targets — dev/test only; refused in production. */
   allowPrivate: boolean;
   /**
@@ -33,6 +54,47 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
   const v = env[key];
   if (!v) throw new Error(`${key} is required`);
   return v;
+}
+
+/**
+ * Parse `EGRESS_MANAGED_IDENTITY_CONNECTIONS`: comma-separated
+ * `connection=host-suffix` pairs (`foundry=services.ai.azure.com`). Anything
+ * malformed is a boot error, never a silently dropped rule — a rule that
+ * didn't parse and a rule that was never written must not look alike in a
+ * 502. Host suffixes match exactly or on a dot boundary (see the resolver).
+ */
+function parseManagedIdentityConnections(env: NodeJS.ProcessEnv): ManagedIdentityConnectionRule[] {
+  const raw = env.EGRESS_MANAGED_IDENTITY_CONNECTIONS?.trim();
+  if (!raw) return [];
+  const seen = new Set<string>();
+  return raw.split(",").map((entry) => {
+    const eq = entry.indexOf("=");
+    const connection = entry.slice(0, eq).trim();
+    const hostSuffix = entry
+      .slice(eq + 1)
+      .trim()
+      .toLowerCase();
+    if (eq === -1 || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(connection)) {
+      throw new Error(
+        `EGRESS_MANAGED_IDENTITY_CONNECTIONS entry "${entry}" must be connection=host-suffix (kebab-case name)`,
+      );
+    }
+    if (
+      !/^[a-z0-9.-]+$/.test(hostSuffix) ||
+      !hostSuffix.includes(".") ||
+      hostSuffix.startsWith(".")
+    ) {
+      throw new Error(
+        `EGRESS_MANAGED_IDENTITY_CONNECTIONS entry "${entry}" has an unusable host suffix ` +
+          `(want a dotted DNS suffix like services.ai.azure.com — a bare TLD would match the world)`,
+      );
+    }
+    if (seen.has(connection)) {
+      throw new Error(`EGRESS_MANAGED_IDENTITY_CONNECTIONS lists "${connection}" twice`);
+    }
+    seen.add(connection);
+    return { connection, hostSuffix };
+  });
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
@@ -71,6 +133,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
       maxBodyBytes: Number(env.EGRESS_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
       timeoutMs: Number(env.EGRESS_TIMEOUT_MS ?? 30_000),
     },
+    managedIdentityConnections: parseManagedIdentityConnections(env),
     allowPrivate,
     allowInsecureConnection,
   };

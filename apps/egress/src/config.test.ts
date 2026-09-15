@@ -63,4 +63,42 @@ describe("loadConfig", () => {
       /EGRESS_DATABASE_URL or DATABASE_URL is required/,
     );
   });
+
+  // ADR-0046 — the keyless list is empty by default (resolution stays DB-only)
+  // and malformed entries are boot errors, never silently dropped rules.
+  describe("EGRESS_MANAGED_IDENTITY_CONNECTIONS", () => {
+    it("defaults to no managed-identity connections", () => {
+      expect(loadConfig(ENV).managedIdentityConnections).toEqual([]);
+      expect(
+        loadConfig({ ...ENV, EGRESS_MANAGED_IDENTITY_CONNECTIONS: "  " })
+          .managedIdentityConnections,
+      ).toEqual([]);
+    });
+
+    it("parses name=host-suffix pairs, lowercasing the suffix", () => {
+      const config = loadConfig({
+        ...ENV,
+        EGRESS_MANAGED_IDENTITY_CONNECTIONS:
+          "foundry=Services.AI.Azure.com, contoso=contoso.openai.azure.com",
+      });
+      expect(config.managedIdentityConnections).toEqual([
+        { connection: "foundry", hostSuffix: "services.ai.azure.com" },
+        { connection: "contoso", hostSuffix: "contoso.openai.azure.com" },
+      ]);
+    });
+
+    it.each([
+      ["foundry", "missing the =host-suffix half"],
+      ["foundry=", "empty suffix"],
+      ["foundry=.services.ai.azure.com", "leading-dot suffix"],
+      ["foundry=com", "bare TLD — would match the world"],
+      ["foundry=https://services.ai.azure.com", "a URL, not a host suffix"],
+      ["Foundry=services.ai.azure.com", "a non-kebab connection name"],
+      ["foundry=services.ai.azure.com,foundry=openai.azure.com", "a duplicate connection"],
+    ])("refuses malformed entry %s (%s)", (value) => {
+      expect(() => loadConfig({ ...ENV, EGRESS_MANAGED_IDENTITY_CONNECTIONS: value })).toThrow(
+        /EGRESS_MANAGED_IDENTITY_CONNECTIONS/,
+      );
+    });
+  });
 });

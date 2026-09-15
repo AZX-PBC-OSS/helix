@@ -4,6 +4,7 @@ import {
   ATTR_CAPABILITY,
   ATTR_CLIENT_DISCONNECTED,
   ATTR_CONNECTION,
+  ATTR_CREDENTIAL_SOURCE,
   ATTR_ENV,
   ATTR_METHOD,
   ATTR_OUTCOME,
@@ -34,10 +35,13 @@ import {
  * not become a residual on a retained span too.
  *
  * Everything here is either edge-signed (the instruction's own claims, which
- * the edge validated against the manifest allowlist before signing) or a status
- * code. `helix.connection` is the connection's **name** — the operator-chosen
- * label under which a secret is stored, never its material — and it already
- * appears in the clear on this file's error logs.
+ * the edge validated against the manifest allowlist before signing), a status
+ * code, or a fixed-vocabulary fact about egress's own resolution path
+ * (`helix.credential_source` ∈ {secret, managed-identity} — never the
+ * credential, its header name, or a token claim). `helix.connection` is the
+ * connection's **name** — the operator-chosen label under which a secret is
+ * stored, never its material — and it already appears in the clear on this
+ * file's error logs.
  */
 export const EGRESS_SPAN_ATTRS = [
   ATTR_APP_ID,
@@ -49,6 +53,7 @@ export const EGRESS_SPAN_ATTRS = [
   ATTR_OUTCOME,
   ATTR_UPSTREAM_STATUS,
   ATTR_CONNECTION,
+  ATTR_CREDENTIAL_SOURCE,
   ATTR_CLIENT_DISCONNECTED,
 ] as const;
 

@@ -34,6 +34,12 @@ import type { SecretStore } from "@azx-pbc/secret-store";
 export interface ResolvedConnection {
   value: string;
   injection: InjectionRecipe;
+  /**
+   * Where the credential came from: `secret` (a sealed `app_secrets` row) or
+   * `managed-identity` (an Entra token minted at call time, ADR-0046). A span
+   * dimension only — bounded to those two values.
+   */
+  source?: "secret" | "managed-identity";
 }
 
 /**
@@ -53,11 +59,18 @@ export class RecipeDriftError extends Error {
 }
 
 export interface SecretResolver {
+  /**
+   * `origin` is the instruction's edge-signed target origin. The Postgres
+   * resolver ignores it; the managed-identity wrapper (ADR-0046) checks it
+   * against the rule's host suffix before minting a token, so a connection
+   * name alone can never draw a token onto a foreign origin.
+   */
   resolve(
     appId: string,
     connection: string,
     capability: InstructionCapability,
     env: Env,
+    origin: string,
   ): Promise<ResolvedConnection | null>;
   close(): Promise<void>;
 }
@@ -142,7 +155,7 @@ export class PgSecretResolver implements SecretResolver {
     await this.#pool
       .query(`UPDATE app_secrets SET "lastUsedAt" = now() WHERE id = $1`, [row.id])
       .catch(() => {});
-    return { value, injection };
+    return { value, injection, source: "secret" };
   }
 
   /**

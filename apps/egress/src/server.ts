@@ -10,6 +10,7 @@ import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";
+import { FOUNDRY_TOKEN_RESOURCE, ManagedIdentityResolver } from "./managedIdentity.js";
 import { PgSecretResolver, type SecretResolver } from "./secrets.js";
 import { PgBurnStore } from "./burn.js";
 
@@ -111,11 +112,36 @@ const onClientError = (err: unknown, label: string): void => {
   );
 };
 
-const resolver: SecretResolver | null = store
+const pgResolver: PgSecretResolver | null = store
   ? new PgSecretResolver(config.databaseUrl, store, {
       onIdleError: (err) => onClientError(err, "secrets"),
     })
   : null;
+
+// Keyless LLM vendor auth (ADR-0046): when EGRESS_MANAGED_IDENTITY_CONNECTIONS
+// names connections, wrap the resolver so an *absent* platform row falls back
+// to a managed-identity Entra token (Foundry audience) instead of a 403. Same
+// rule as the Key Vault custody above: configuring this without the MI env
+// crashes boot rather than silently degrading every such call.
+let resolver: SecretResolver | null = pgResolver;
+let miTokenProvider: TokenProvider | null = null;
+if (config.managedIdentityConnections.length > 0) {
+  miTokenProvider = managedIdentityTokenProviderFromEnv(process.env, {
+    resource: FOUNDRY_TOKEN_RESOURCE,
+    timeoutMs: 5_000,
+  });
+  if (!miTokenProvider) {
+    throw new Error(
+      "EGRESS_MANAGED_IDENTITY_CONNECTIONS is set but the managed-identity env is not " +
+        "(need IDENTITY_ENDPOINT, IDENTITY_HEADER, AZURE_CLIENT_ID)",
+    );
+  }
+  resolver = new ManagedIdentityResolver(
+    pgResolver,
+    miTokenProvider,
+    config.managedIdentityConnections,
+  );
+}
 
 // The replay burn always runs — it needs only the DB (helix_egress), not the
 // secret store, and protects keyless calls too (issue #3).
@@ -137,8 +163,11 @@ burnSweep.unref();
 app.addHook("onClose", async () => {
   clearInterval(burnSweep);
   await burnStore.close();
+  // The wrapper owns the wrapped resolver (ManagedIdentityResolver.close), so
+  // this one call covers both shapes.
   await resolver?.close();
   await tokenProvider?.close();
+  await miTokenProvider?.close();
   await telemetry.shutdown();
 });
 
@@ -150,6 +179,11 @@ try {
       service: SERVICE_NAME,
       port: config.port,
       secretStore: custody,
+      // Connection names + vendor host suffixes are operator-chosen config
+      // labels, safe beside the connection names the error path already logs.
+      managedIdentityConnections: config.managedIdentityConnections.map(
+        (r) => `${r.connection}→${r.hostSuffix}`,
+      ),
       allowPrivate: config.allowPrivate,
       allowInsecureConnection: config.allowInsecureConnection,
       telemetry: telemetry.enabled,
@@ -167,8 +201,8 @@ try {
   // Say it once at boot rather than making the operator infer it from N identical 502s.
   // A row sealed under the dev envelope cannot be opened here, and there is no migration
   // path between backends — the values have to be re-entered.
-  if (custody === "keyvault" && resolver instanceof PgSecretResolver) {
-    const foreign = await resolver.countForeignMaterial("kv");
+  if (custody === "keyvault" && pgResolver) {
+    const foreign = await pgResolver.countForeignMaterial("kv");
     if (foreign) {
       app.log.warn(
         { count: foreign },
