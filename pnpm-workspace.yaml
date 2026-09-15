@@ -39,10 +39,23 @@ allowBuilds:
 #   but it does ship, because apps/portal/Dockerfile installs without --prod
 #   (tsx and the prisma CLI run in the image) and copies /app wholesale into
 #   the runtime stage. Drop once prisma's own pin moves past 3.23.1.
+#   vite — GHSA-4w7w-66w2-5vf9 (path traversal, optimized-deps .map),
+#   GHSA-fx2h-pf6j-xcff (fs.deny bypass, Windows), GHSA-v6wh-96g9-6wx3
+#   (launch-editor NTLMv2 leak): all dev-server, all patched in 6.4.3+.
+#   vitepress 1.6.4 is the only parent still requesting vite ^5 (its
+#   vite-7-based 2.x is unreleased) and no patched 5.x exists — floor
+#   its copy at the patched 6.x. Scoped to vitepress's own dependency:
+#   a bare `vite@<6.4.3` selector would also rewrite the compound
+#   (5||6||7) peer ranges vitest and @vitejs/plugin-react declare,
+#   faking an unmet peer against the catalog's vite 7. esbuild
+#   GHSA-67mh-4wv8-2f99 clears with it: vite 6.4.3 pulls esbuild
+#   0.25.12, nothing else requests ≤ 0.24. Drop when vitepress reaches
+#   the vite-7 2.x line.
 overrides:
   brace-expansion: ^5.0.9
   deepmerge-ts: ^8.0.1
   mysql2: ^3.24.3
+  "vitepress>vite": ^6.4.3
 
 # Single-source dependency versions across the monorepo (pnpm catalog).
 # Packages reference these with "catalog:" instead of pinning their own range,
