@@ -4,6 +4,12 @@ Infrastructure-as-code for deploying the three-plane Helix platform to Azure
 Container Apps. This is the `infra/` referenced in the project plan (§2) and the
 "minimal IaC" of M5 (architecture §8).
 
+> The operator-facing version of this content — install walkthrough,
+> configuration reference, Entra setup — lives on the public docs site
+> (`apps/docs`, deploy section). This README stays the full operational
+> reference, including the deploy gotchas below; the site links here rather
+> than duplicating them.
+
 ## What it provisions
 
 | Layer    | Resources                                                                                                                       |

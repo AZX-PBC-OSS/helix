@@ -42,3 +42,11 @@ playwright-report/
 test-results/
 
 .github-issues
+
+# VitePress dev cache (the built dist/ is covered by the global dist/ ignore)
+apps/docs/.vitepress/cache/
+
+# Generated docs page — rendered from packages/deploy-skill/SKILL.md by
+# apps/docs/scripts/render-skill.ts before every build and dev start
+# (ADR-0036 decision 7). The template is the single authored source.
+apps/docs/src/apps/quickstart.md

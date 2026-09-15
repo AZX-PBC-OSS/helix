@@ -20,3 +20,6 @@ examples
 # into headings and adds trailing commas to the manifest sample, which would ship
 # uncopyable JSON to an agent.
 packages/deploy-skill/SKILL.md
+
+# Docs site content — prose (like docs/), including the generated quickstart page.
+apps/docs/src

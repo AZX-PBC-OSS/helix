@@ -1,0 +1,22 @@
+{
+  "name": "@azx-pbc/docs-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx scripts/render-skill.ts && vitepress dev",
+    "prebuild": "tsx scripts/render-skill.ts",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vitepress": "catalog:"
+  },
+  "devDependencies": {
+    "@azx-pbc/deploy-skill": "workspace:*",
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

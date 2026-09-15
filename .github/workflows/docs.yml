@@ -1,0 +1,65 @@
+name: Docs
+
+# Publishes the docs site (apps/docs) to GitHub Pages as a project page:
+# https://azx-pbc-oss.github.io/helix/. Static VitePress build; the
+# quickstart page is generated from packages/deploy-skill/SKILL.md by the
+# package's prebuild step, so the deploy always ships the current template.
+#
+# One-time setup (repo settings → Pages → Source: "GitHub Actions"), or:
+#   gh api repos/AZX-PBC-OSS/helix/pages -X POST \
+#     -f build_type=workflow -f source='{"branch":"main","path":"/"}'
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time; never cancel a deploy mid-flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # VitePress fails the build on dead internal links, so a broken page
+      # reference fails here rather than shipping a 404.
+      - run: pnpm --filter @azx-pbc/docs-site build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/docs/.vitepress/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

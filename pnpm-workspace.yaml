@@ -157,6 +157,11 @@ catalog:
   # (its `exports` point at ./src) without leaking `workspace:*` into a
   # published manifest.
   esbuild: ^0.28.2
+  # ── Docs site (apps/docs) ──
+  # The public docs site (docs.azx… → GitHub Pages project page). Static build
+  # only — no server, no runtime service. Kept on the 1.x stable line; the 2.x
+  # line is not released yet.
+  vitepress: ^1.6.4
   tsx: ^4.22.4
   typescript: ^6.0.3
   typescript-eslint: ^8.61.0

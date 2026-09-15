@@ -132,6 +132,7 @@ helix/
     portal-web/   # the React 19 + Mantine SPA (Vite); served statically by the portal
     egress/       # helix-egress — mechanism plane: outbound HTTP, secret injection, SSRF controls
     dev-idp/      # local OIDC issuer (dev/test only; never deployed)
+    docs/         # the public docs site (VitePress, static — published to GitHub Pages)
   packages/
     shared/       # @azx-pbc/shared — zod schemas at every boundary (manifest, registry, instruction, …)
     secret-store/ # @azx-pbc/secret-store — seal/open/destroy seam: dev AES-GCM envelope / prod Key Vault

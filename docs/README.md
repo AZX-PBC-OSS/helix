@@ -5,6 +5,11 @@ determined by what job it does — whether it records a _decision_, a _design ah
 _what is true today_, a _dated snapshot_, or an _operational procedure_. Only entry points and the
 two canonical anchors stay loose at the top level.
 
+> **Public-facing guides live on the docs site**, not here: [apps/docs](../apps/docs) (VitePress,
+> published to GitHub Pages) carries the operator deploy/configuration guides and the app-author
+> docs, and consumes the generic skill render per ADR-0036 decision 7. This directory remains the
+> contributor record — nothing here is copied to the site, and the two audiences link, not overlap.
+
 Start with [`../TOUR.md`](../TOUR.md) if you are about to read the code, or
 [`OVERVIEW.md`](OVERVIEW.md) if you want the platform explained without the repo.
 
