@@ -82,7 +82,8 @@ The full story — quota, regions, Marketplace terms, bring-your-own — is on
 | Parameter | Default | What it is |
 | --- | --- | --- |
 | `deployFoundry` | `false` | Creates the account + deployments and wires both model families at it. Overrides the six `llm*` params |
-| `foundryModels` | the platform's model catalog | Models to deploy. Deployment name == the model id apps request. Prune freely; deployments are pay-per-token and cost nothing idle |
+| `foundryModels` | the platform's model catalog | Models to deploy: `{ name, format, modelVersion?, modelName?, skuName?, capacity?, raiPolicyName? }`. Deployment `name` == the model id apps request; `modelName` is the escape hatch when the Foundry catalog's model name differs from it. Deployments are pay-per-token and cost nothing idle |
+| `egressManagedIdentityConnections` | *(empty)* | BYO-Foundry keyless: `connection=host-suffix` pairs egress may mint managed-identity tokens for. Ignored when `deployFoundry` is on |
 | `foundryAttestation` | *(empty)* | Anthropic Marketplace attestation (`organizationName`/`countryCode`/`industry`) — required for Claude models on a fresh subscription |
 | `foundryLocation` | the platform `location` | Account region. Model availability is regional; Claude is narrower than GPT |
 | `foundryAccountName` | `<namePrefix>-foundry` | Globally unique (becomes `<name>.services.ai.azure.com`) |

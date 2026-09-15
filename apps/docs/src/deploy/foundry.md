@@ -93,11 +93,13 @@ Then choose the credential:
 
 - **Keyless (recommended):** grant the platform's egress identity the two
   inference roles on your account — the template outputs
-  `egressIdentityPrincipalId` for exactly this — and set
-  `EGRESS_MANAGED_IDENTITY_CONNECTIONS=foundry=<account>.services.ai.azure.com,foundry-openai=<account>.services.ai.azure.com`
-  on the egress app. The host pin matters: egress will only mint a token onto
-  that host, so the connection name alone can never draw one onto a foreign
-  origin.
+  `egressIdentityPrincipalId` for exactly this — and set the
+  `egressManagedIdentityConnections` **parameter** to
+  `foundry=<account>.services.ai.azure.com,foundry-openai=<account>.services.ai.azure.com`.
+  The host pin matters: egress will only mint a token onto that host, so the
+  connection name alone can never draw one onto a foreign origin. Set it as a
+  parameter, never by hand on the container app — the next apply reverts
+  out-of-band env edits without a word.
 - **Account key:** seed it twice, once per family (the two endpoints take
   different key headers):
   `pnpm --filter @azx-pbc/portal seed:llm -- <key> --name foundry` and

@@ -66,9 +66,18 @@ mechanism, because there is no secret to seal.
    `platform` secrets); the connection name is allowlisted; and the
    instruction's origin host matches the rule's suffix. That last pin is the
    exfiltration guard: a forged instruction naming the connection but a foreign
-   origin would otherwise draw a live platform-identity token onto any host.
-   Boot fails loudly when the list is set without the managed-identity env —
-   the same posture as the Key Vault custody wiring.
+   origin would otherwise draw a live platform-identity token onto any host —
+   pin the exact account host (`contoso.services.ai.azure.com`), not the shared
+   zone, which is what the Bicep derives and the docs show. Boot fails loudly
+   when the list is set without the managed-identity env, **or** without a
+   custody store (a null inner resolver would turn every other secret-backed
+   call's clear "502 store not configured" into a misleading "403 connection
+   not found") — the same crash-rather-than-degrade posture as the Key Vault
+   wiring. The token audience is a code constant with an
+   `EGRESS_MANAGED_IDENTITY_RESOURCE` env override — a spike/sovereign escape
+   hatch (validated as a bare https origin), not a supported second path; if
+   the Azure OpenAI plane proves to want a different audience, the flip is an
+   env change, not a rebuild.
 
 3. **One-stop Bicep.** `infra/azure/modules/foundry.bicep` behind
    `param deployFoundry`: one `Microsoft.CognitiveServices/accounts` (kind
@@ -82,10 +91,13 @@ mechanism, because there is no secret to seal.
    so the provisioning time doubles as RBAC propagation). `main.bicep` then
    wires both families' endpoint/path/connection env on the edge + dev-gateway
    and sets `EGRESS_MANAGED_IDENTITY_CONNECTIONS` on egress — **no seeding
-   step**. Bring-your-own Foundry is first-class params (`llmOpenAiEndpoint` is
+   step**.    Bring-your-own Foundry is first-class params (`llmOpenAiEndpoint` is
    new, plus the path and connection-name knobs); the template exports
    `egressIdentityPrincipalId` so a BYO customer can grant the same roles on
-   their own account.
+   their own account, and takes `egressManagedIdentityConnections` so BYO
+   keyless is declared in the template too — an out-of-band
+   `az containerapp update` env edit would be silently reverted by the next
+   apply.
 
 4. **Key mode stays** for local dev and key-only BYO: the seed script
    (`seed:llm`) takes `--name`/`--recipe` (`x-api-key` for the `/anthropic`
