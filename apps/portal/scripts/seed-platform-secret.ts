@@ -1,4 +1,5 @@
 import type { SecretStore } from "@azx-pbc/secret-store";
+import { InjectionRecipeSchema, type InjectionRecipe } from "@azx-pbc/shared";
 import { createPrismaClient } from "../src/db/client.js";
 import { createSecretStoreFromEnv } from "../src/secrets/custody.js";
 
@@ -14,11 +15,29 @@ import { createSecretStoreFromEnv } from "../src/secrets/custody.js";
  *   pnpm --filter @azx-pbc/portal seed:llm -- sk-ant-...        # value as an arg
  *   pnpm --filter @azx-pbc/portal seed:llm -- --force           # rotate existing
  *
+ * `--name` / `--recipe` cover non-Anthropic upstreams (ADR-0046 key mode — the
+ * local-dev and BYO path, since a dev container has no managed identity). A
+ * Foundry account key seeds both families, matching the connection names in
+ * the edge env:
+ *   pnpm --filter @azx-pbc/portal seed:llm -- <key> --name foundry
+ *   pnpm --filter @azx-pbc/portal seed:llm -- <key> --name foundry-openai --recipe api-key
+ *
  * Custody mirrors the running portal: Key Vault when `AZURE_KEY_VAULT_URL` is set,
  * else the dev envelope under `DEV_SECRETS_KEK_FILE`. Against a real vault the
  * credential comes from `DefaultAzureCredential`, so an operator running this
  * under `az login` needs no extra setup.
  */
+
+/** The injection recipes a platform LLM secret may be seeded with. */
+const RECIPES = {
+  // Anthropic first-party, and Foundry's `/anthropic` Messages endpoint.
+  "x-api-key": { kind: "header", name: "x-api-key", template: "{}" },
+  // Azure OpenAI / Foundry `/openai/v1` key auth (its documented REST header).
+  "api-key": { kind: "header", name: "api-key", template: "{}" },
+  // OpenAI first-party (and any upstream that takes the key as a bearer).
+  bearer: { kind: "header-bearer" },
+} as const satisfies Record<string, InjectionRecipe>;
+type RecipeName = keyof typeof RECIPES;
 
 function buildStore(): SecretStore {
   const store = createSecretStoreFromEnv();
@@ -31,9 +50,25 @@ function buildStore(): SecretStore {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const force = args.includes("--force");
-  const valueArg = args.find((a) => !a.startsWith("--"));
+  const flagValue = (flag: string): string | undefined => {
+    const i = args.indexOf(flag);
+    return i === -1 ? undefined : args[i + 1];
+  };
+  const valueArg = args.find(
+    (a, i) => !a.startsWith("--") && args[i - 1] !== "--name" && args[i - 1] !== "--recipe",
+  );
   const value = valueArg ?? process.env.EDGE_LLM_ANTHROPIC_KEY;
-  const name = process.env.EDGE_LLM_ANTHROPIC_CONNECTION ?? "anthropic";
+  const name = flagValue("--name") ?? process.env.EDGE_LLM_ANTHROPIC_CONNECTION ?? "anthropic";
+  const recipeName = (flagValue("--recipe") ?? "x-api-key") as RecipeName;
+  const recipe = RECIPES[recipeName];
+  if (!recipe) {
+    throw new Error(
+      `unknown --recipe "${recipeName}" — expected one of: ${Object.keys(RECIPES).join(", ")}`,
+    );
+  }
+  // Belt-and-suspenders: the recipe a row carries is what egress injects under,
+  // so validate it against the same schema the write route uses.
+  InjectionRecipeSchema.parse(recipe);
 
   if (!value) {
     throw new Error(
@@ -57,6 +92,14 @@ async function main(): Promise<void> {
     let committed = false;
     try {
       if (existing) {
+        // Recipes are immutable by design (secrets design) — rotating keeps the
+        // stored one. Say so rather than let `--recipe` look like it applied.
+        if (flagValue("--recipe")) {
+          console.warn(
+            `WARNING: --recipe has no effect on rotation — "${name}" keeps its stored recipe. ` +
+              `Delete and re-create the secret to change it.`,
+          );
+        }
         await prisma.appSecret.update({
           where: { id: existing.id },
           data: { material, rotatedAt: new Date() },
@@ -82,12 +125,12 @@ async function main(): Promise<void> {
             appId: null,
             name,
             material,
-            injection: { kind: "header", name: "x-api-key", template: "{}" },
+            injection: recipe,
             createdBy: "seed-script",
           },
         });
         committed = true;
-        console.log(`created platform secret "${name}" (id ${row.id}).`);
+        console.log(`created platform secret "${name}" (id ${row.id}, recipe ${recipeName}).`);
       }
     } finally {
       if (!committed) {
