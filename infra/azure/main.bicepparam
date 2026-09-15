@@ -77,6 +77,26 @@ param portalExternal = false
 param allowPublicApps = false
 param allowPasswordApps = false
 
+// Azure AI Foundry (ADR-0046) — LLM inference in this subscription instead of
+// first-party Anthropic/OpenAI. false (default) keeps the first-party vendors
+// (seed their keys per README). true deploys a Foundry account + the default
+// catalog's deployments, grants the egress identity inference RBAC, and points
+// both model families at it — keyless, no vendor key anywhere. Deployments are
+// serverless pay-per-token (nothing billed when idle). Notes:
+//  - foundryAttestation is REQUIRED when foundryModels includes Anthropic
+//    entries on a subscription that has never accepted the Anthropic offer
+//    (industry is lowercase: technology|finance|healthcare|education|retail|
+//    manufacturing|government|media|other).
+//  - Model availability is regional; Claude is narrower than GPT. The default
+//    foundryLocation (the platform location) may need overriding.
+//  - BYO Foundry instead: leave this false and set llmEndpoint/llmOpenAiEndpoint
+//    (+ llmAnthropicPath/llmOpenAiPath and the connection names) — see README
+//    "Azure AI Foundry".
+param deployFoundry = false
+// param foundryAccountName = ''            // default ${namePrefix}-foundry; must be globally unique
+// param foundryLocation = 'eastus2'
+// param foundryAttestation = { organizationName: 'Contoso', countryCode: 'US', industry: 'technology' }
+
 // Fastify trustProxy for the edge — the ACA Envoy ingress ADDRESS, not a hop
 // count (fastify 5.12.1 removed the count form; GHSA-3m5p-2c4r-xxw2). 'auto'
 // resolves to 100.64.0.0/10 — the RFC 6598 space ACA draws its ingress pod

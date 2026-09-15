@@ -126,8 +126,88 @@ param azxCliClientId string
 @description('Public web SPA client id (Entra helix-portal registration) advertised for OIDC discovery.')
 param azxWebClientId string
 
-@description('LLM upstream endpoint for the edge gateway.')
+// ── LLM upstreams (docs/features/llm-gateway.md) ────────────────────────────
+// Two families, each origin + path + connection name. Defaults are the
+// first-party vendors; a Foundry deployment (deployFoundry below) overrides all
+// six, and BYO-Foundry sets them directly (see README "Azure AI Foundry").
+@description('LLM upstream endpoint (ORIGIN ONLY) for the Anthropic Messages family.')
 param llmEndpoint string = 'https://api.anthropic.com'
+
+@description('Upstream request path for the Anthropic family — the endpoint is an origin, so any prefix lives here. Foundry: /anthropic/v1/messages.')
+param llmAnthropicPath string = '/v1/messages'
+
+@description('Name of the `platform` secret (or managed-identity rule, ADR-0046) holding the Anthropic-family vendor credential.')
+param llmAnthropicConnection string = 'anthropic'
+
+@description('LLM upstream endpoint (ORIGIN ONLY) for the OpenAI-compatible family — any OpenAI-compatible base URL (api.openai.com, a Foundry account, a gateway).')
+param llmOpenAiEndpoint string = 'https://api.openai.com'
+
+@description('Upstream request path for the OpenAI family. Foundry\'s v1 API: /openai/v1/chat/completions.')
+param llmOpenAiPath string = '/v1/chat/completions'
+
+@description('Name of the `platform` secret (or managed-identity rule, ADR-0046) holding the OpenAI-family vendor credential.')
+param llmOpenAiConnection string = 'openai'
+
+// ── Azure AI Foundry (ADR-0046) ──────────────────────────────────────────────
+@description('''
+  One-stop Azure AI Foundry: deploy a Foundry account into this resource group with the foundryModels deployments, grant the egress identity
+  inference RBAC, and point BOTH LLM families at it (overrides the six llm* params). Keyless — the vendor credential is the egress managed
+  identity's role on the account, minted per call; no key is sealed or stored. Billed per-token to this subscription at Azure list prices;
+  deployments are serverless and cost nothing when idle.''')
+param deployFoundry bool = false
+
+@description('Foundry account name — globally unique (becomes <name>.services.ai.azure.com). Empty derives "<namePrefix>-foundry". Only used with deployFoundry.')
+param foundryAccountName string = ''
+
+@description('''
+  Foundry account location. Model availability is REGIONAL and Claude availability is narrower than GPT — empty uses the platform `location`,
+  but check the region's catalog before deploying (a model the region lacks fails the whole apply). Often eastus2 or swedencentral for Claude.
+  Only used with deployFoundry.''')
+param foundryLocation string = ''
+
+@description('''
+  Models to deploy into the Foundry account: { name, format: "Anthropic"|"OpenAI", modelVersion?, skuName?, capacity? }. The DEPLOYMENT NAME
+  IS the platform catalog model id (packages/shared/src/pricing.ts) — apps address models unchanged and metering keeps working, because the
+  edge forwards the model id verbatim and Foundry routes on deployment name. The default is the full catalog at time of writing; prune freely
+  (each Anthropic entry needs the offer attestation in foundryAttestation). Limits: 32 deployments per account, and quota is per model per
+  subscription — these entries do not compete with each other. An app that requests a catalog model NOT deployed here gets an upstream 404.''')
+param foundryModels array = [
+  { name: 'claude-fable-5-1', format: 'Anthropic' }
+  { name: 'claude-fable-5', format: 'Anthropic' }
+  { name: 'claude-opus-5', format: 'Anthropic' }
+  { name: 'claude-sonnet-5', format: 'Anthropic' }
+  { name: 'claude-opus-4-8', format: 'Anthropic' }
+  { name: 'claude-opus-4-7', format: 'Anthropic' }
+  { name: 'claude-opus-4-6', format: 'Anthropic' }
+  { name: 'claude-sonnet-4-6', format: 'Anthropic' }
+  { name: 'claude-haiku-4-5', format: 'Anthropic' }
+  { name: 'gpt-6-astra', format: 'OpenAI' }
+  { name: 'gpt-5.6-sol', format: 'OpenAI' }
+  { name: 'gpt-5.6-terra', format: 'OpenAI' }
+  { name: 'gpt-5.6-luna', format: 'OpenAI' }
+  { name: 'gpt-5.1', format: 'OpenAI' }
+  { name: 'gpt-5-mini', format: 'OpenAI' }
+  { name: 'gpt-5-nano', format: 'OpenAI' }
+  { name: 'gpt-4o', format: 'OpenAI' }
+  { name: 'gpt-4o-mini', format: 'OpenAI' }
+  { name: 'gpt-4.1', format: 'OpenAI' }
+  { name: 'gpt-4.1-mini', format: 'OpenAI' }
+  { name: 'gpt-4.1-nano', format: 'OpenAI' }
+  { name: 'o3', format: 'OpenAI' }
+  { name: 'o4-mini', format: 'OpenAI' }
+]
+
+@description('''
+  Anthropic Marketplace attestation ({ organizationName, countryCode, industry }) sent with every Anthropic-format deployment — the resource
+  provider uses it to accept the Anthropic offer on the subscription\'s behalf. REQUIRED for a greenfield subscription deploying Claude models;
+  omit only if the offer was accepted before (e.g. foundryModels carries no Anthropic entries). Only used with deployFoundry.''')
+param foundryAttestation object = {}
+
+@description('Per-deployment rate-limit allocation in thousands of TPM (50 = 50K TPM), where an entry sets no capacity of its own. Starting point, not a ceiling — Foundry quota tiers scale with consumption. Only used with deployFoundry.')
+param foundryDefaultCapacity int = 50
+
+@description('Refuse API-key auth on the Foundry account (disableLocalAuth). SECURE DEFAULT true — with keyless auth there are no keys to leak, and some Claude models are Entra-only. Set false only to seed the account key as a platform secret for a dev/smoketest flow. Only used with deployFoundry.')
+param foundryDisableLocalAuth bool = true
 
 // Image references (phase 2). Repo names are fixed; registry + tag are parameterized.
 // The three app images are built and published by this repo's CI to GHCR
@@ -434,6 +514,48 @@ module rbac 'modules/rbac.bicep' = {
     devPrincipalId: identity.outputs.devIdentityPrincipalId
   }
 }
+
+// ---------------------------------------------------------------------------
+// Azure AI Foundry (optional, ADR-0046). NOT gated on deployApps: the account +
+// deployments are slow to provision and belong to the infra phase, so a
+// phase-1 apply can stand them up before any container exists. The egress
+// identity's inference roles are assigned inside the module (the account is
+// conditional, so rbac.bicep's matrix can't hold them — the certbot/migrate
+// modules own theirs the same way).
+// ---------------------------------------------------------------------------
+
+module foundry 'modules/foundry.bicep' = if (deployFoundry) {
+  name: 'foundry'
+  params: {
+    location: empty(foundryLocation) ? location : foundryLocation
+    accountName: empty(foundryAccountName) ? '${namePrefix}-foundry' : foundryAccountName
+    models: foundryModels
+    providerAttestation: foundryAttestation
+    defaultCapacity: foundryDefaultCapacity
+    disableLocalAuth: foundryDisableLocalAuth
+    egressPrincipalId: identity.outputs.egressIdentityPrincipalId
+  }
+}
+
+// The LLM upstream wiring, resolved once: deployFoundry points both families at
+// the account's origin with the Foundry path prefixes and the two well-known
+// connection names egress mints tokens for; otherwise the llm* params rule
+// (first-party defaults, or a BYO Foundry/gateway set by hand).
+var foundryOrigin = foundry.?outputs.origin ?? ''
+var foundryHost = foundry.?outputs.host ?? ''
+var llm = {
+  anthropicEndpoint: deployFoundry ? foundryOrigin : llmEndpoint
+  anthropicPath: deployFoundry ? '/anthropic/v1/messages' : llmAnthropicPath
+  anthropicConnection: deployFoundry ? 'foundry' : llmAnthropicConnection
+  openaiEndpoint: deployFoundry ? foundryOrigin : llmOpenAiEndpoint
+  openaiPath: deployFoundry ? '/openai/v1/chat/completions' : llmOpenAiPath
+  openaiConnection: deployFoundry ? 'foundry-openai' : llmOpenAiConnection
+}
+// The egress keyless-allowlist entry (ADR-0046): mint Entra tokens only for
+// these two connection names, and only onto this account's host. Empty when
+// the flag is off — the parse treats empty as "no rules", and resolution is
+// then DB-only exactly as before.
+var foundryMiConnections = deployFoundry ? 'foundry=${foundryHost},foundry-openai=${foundryHost}' : ''
 
 // ---------------------------------------------------------------------------
 // Platform secrets (kv-platform). ARM-plane writes bypass the vault firewall.
@@ -788,6 +910,11 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
       // dependency-minimal — ADR-0031); it calls the ACA identity endpoint
       // directly, and a user-assigned identity is ambiguous without the client id.
       { name: 'AZURE_CLIENT_ID', value: identity.outputs.egressIdentityClientId }
+      // Keyless LLM vendor auth (ADR-0046): non-empty only when deployFoundry —
+      // egress then mints Entra tokens (its own identity, RBAC-granted by the
+      // foundry module) for these connection names instead of opening a sealed
+      // key, pinned to the account's host. Empty = DB-only resolution.
+      { name: 'EGRESS_MANAGED_IDENTITY_CONNECTIONS', value: foundryMiConnections }
       { name: 'EGRESS_DATABASE_URL', secretRef: 'egress-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
     ]
@@ -886,7 +1013,14 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       // EDGE_ALLOW_DEV_MODE below is a literal.
       { name: 'EDGE_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
       { name: 'EDGE_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
-      { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
+      // LLM upstreams (ADR-0046): first-party by default, the Foundry account
+      // when deployFoundry is set, or a BYO endpoint via the llm* params.
+      { name: 'EDGE_LLM_ENDPOINT', value: llm.anthropicEndpoint }
+      { name: 'EDGE_LLM_ANTHROPIC_PATH', value: llm.anthropicPath }
+      { name: 'EDGE_LLM_ANTHROPIC_CONNECTION', value: llm.anthropicConnection }
+      { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
+      { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
+      { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
       // Behind ACA's Envoy ingress the socket peer is the ingress, so the
       // per-IP anon rate limiter and the password-login throttle need the
       // ingress address named to recover the real client IP (issue #13). See
@@ -1045,7 +1179,13 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       // The per-plane opt-in; the dev-gateway entrypoint exits unless this is true.
       { name: 'EDGE_ALLOW_DEV_MODE', value: 'true' }
       { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
-      { name: 'EDGE_LLM_ENDPOINT', value: llmEndpoint }
+      // Same LLM upstream wiring as the edge (ADR-0046).
+      { name: 'EDGE_LLM_ENDPOINT', value: llm.anthropicEndpoint }
+      { name: 'EDGE_LLM_ANTHROPIC_PATH', value: llm.anthropicPath }
+      { name: 'EDGE_LLM_ANTHROPIC_CONNECTION', value: llm.anthropicConnection }
+      { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
+      { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
+      { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
       { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
       // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
       // dev throttle keys on the real client IP behind ingress too.
@@ -1171,3 +1311,12 @@ output expectedMonthlyUsd int = expectedMonthlyUsd
 // The two stacks deploy in the order entra -> azure -> entra: this output is the only
 // thing flowing back the other way.
 output portalIdentityPrincipalId string = identity.outputs.portalIdentityPrincipalId
+
+@description('Principal id of the egress managed identity — the platform\'s LLM inference caller. A BYO-Foundry customer grants this principal "Cognitive Services User" (+ "Cognitive Services OpenAI User") on their own account to go keyless (ADR-0046).')
+output egressIdentityPrincipalId string = identity.outputs.egressIdentityPrincipalId
+
+@description('The deployed Foundry account\'s data-plane origin (empty when deployFoundry is false), e.g. https://<name>.services.ai.azure.com.')
+output foundryOrigin string = foundry.?outputs.origin ?? ''
+
+@description('Model deployments created on the Foundry account (deployment name == catalog model id). Empty when deployFoundry is false.')
+output foundryDeployments array = foundry.?outputs.deploymentNames ?? []

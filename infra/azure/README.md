@@ -94,6 +94,77 @@ can't express, which is why a firewall was chosen in the first place. For a
 temporary install, `az network firewall deallocate` also stops the hourly charge
 between test sessions without losing config.
 
+## Azure AI Foundry (`deployFoundry`, [ADR-0046](../../docs/adr/0046-azure-ai-foundry-keyless-llm-backend.md))
+
+By default the LLM gateway calls the first-party vendors (`api.anthropic.com`,
+`api.openai.com` — keys seeded as `platform` secrets). For a customer-cloud
+install where inference should bill to and stay inside the customer's
+subscription, set **`deployFoundry=true`**: the template deploys one Azure AI
+Foundry account (`modules/foundry.bicep`), one serverless deployment per model
+in `foundryModels`, grants the **egress identity** the inference roles, and
+points both model families at it. **Keyless — there is no vendor key anywhere:**
+egress mints Entra tokens (its own managed identity, scope
+`https://ai.azure.com/.default`) per call and injects them
+(`EGRESS_MANAGED_IDENTITY_CONNECTIONS` is wired by the template). App code,
+per-app model allowlists, and metering are unchanged — each deployment is named
+for the platform catalog id (`packages/shared/src/pricing.ts`), which is what
+apps request.
+
+Things to know before flipping it:
+
+- **`foundryAttestation` is required for Claude on a fresh subscription.** The
+  Anthropic offer needs Marketplace terms acceptance; the template sends the
+  attestation (`organizationName`/`countryCode`/`industry`) with every
+  Anthropic deployment, which accepts it on your behalf. Without it those
+  deployments fail with a terms error. (GPT models need nothing.)
+- **Model availability is regional** and narrower for Claude than GPT — check
+  the region's catalog before an apply, and override `foundryLocation` if the
+  platform region lacks a model (a model the region lacks fails the whole
+  apply). Note some Claude models run **"Hosted on Anthropic infrastructure"**
+  (v1) — Azure billing, Anthropic compute. If the customer wants Azure-hosted
+  compute (or Data Zone residency), restrict `foundryModels` to v2-hosted
+  entries (`opus-5`, `opus-4-8`, `sonnet-5`, `haiku-4-5` at time of writing).
+- **Quota is per model per subscription and auto-tiers with usage.** Fresh
+  pay-as-you-go subscriptions get 40 RPM for most Claude models (0 for the
+  Fable line) and Tier-1 pools for GPT; increases come from the quota form or
+  arrive automatically with consumption. Deployments cost nothing when idle.
+- **32 deployments per account** (Azure limit) bounds the deploy-the-catalog
+  default (~23 today); prune `foundryModels` or shard to a second account (BYO
+  wiring) if the catalog outgrows it.
+- **A catalog model with no deployment 404s upstream** — the app sees a 502.
+  Adding one later is a `foundryModels` edit + apply (or a portal/CLI
+  deployment named for the model id); no app or edge change.
+- The account deploys with **`disableLocalAuth`** (`foundryDisableLocalAuth`),
+  so no usable keys exist. Set it false only to seed the account key as a
+  platform secret for a dev/smoketest flow.
+- **Soft-delete holds quota for up to 48h**: deleting (not purging) a Foundry
+  account keeps its TPM allocations reserved —
+  `az cognitiveservices account list-deleted -o table` / `purge` to reclaim.
+- Role assignments take ~5 minutes to propagate; the template declares them
+  before the deployments so the provisioning time doubles as the wait, but the
+  first inference call right after an apply can still 401 — retry, don't
+  reconfigure.
+- Networking: egress reaches the account over its public endpoint — the egress
+  subnet's allow-any rule already covers it, and `disableLocalAuth` + RBAC is
+  the exposure control (same class as calling first-party endpoints today). A
+  private-endpoint posture is deliberately not in this template: it would
+  resolve to a private IP, which the egress SSRF controls block (ADR-0046).
+
+**BYO Foundry** (the customer already has an account, possibly in another
+subscription): leave `deployFoundry` false and set the upstream params —
+`llmEndpoint` + `llmOpenAiEndpoint` to `https://<account>.services.ai.azure.com`,
+`llmAnthropicPath` to `/anthropic/v1/messages`, `llmOpenAiPath` to
+`/openai/v1/chat/completions`, `llmAnthropicConnection`/`llmOpenAiConnection` to
+your connection names (default `foundry`/`foundry-openai` keep the template's
+wiring). Then either grant keyless access on your account to the egress identity
+(this template outputs `egressIdentityPrincipalId`; roles: Cognitive Services
+User + Cognitive Services OpenAI User) and set `EGRESS_MANAGED_IDENTITY_CONNECTIONS`
+on the egress app, **or** seed the account key twice (the two families take
+different key headers): `seed:llm -- <key> --name foundry` and
+`seed:llm -- <key> --name foundry-openai --recipe api-key`. Locally (no managed
+identity), the seeded-key path is the only one — point the same env at the
+account and seed as above.
+
 ## Platform secret delivery ([ADR-0029](../../docs/adr/0029-platform-secret-delivery.md))
 
 The container apps receive their **platform/bootstrap** secrets (per-role Postgres
@@ -281,6 +352,7 @@ modules/
   postgres.bicep      Flexible Server (private) + helix DB
   identity.bicep      4 user-assigned managed identities (edge/portal/egress + dev-gateway)
   rbac.bicep          role assignments (the grant matrix)
+  foundry.bicep       optional Azure AI Foundry account + model deployments (deployFoundry, ADR-0046)
   aca-environment.bicep   reusable managed environment (called twice)
   containerapp.bicep  reusable container app (edge/portal/egress + opt-in dev-gateway)
   dns.bicep           public DNS zone + records (incl. opt-in dev-api)
