@@ -133,7 +133,7 @@ catalog:
   # is what put "`esbuild` option ... use `oxc` instead" on every `pnpm test` —
   # vite 8 deprecates options @vitejs/plugin-react 5 still sets. Keep it declared
   # so runner and build share one copy.
-  vite: ^7.3.6
+  vite: ^6.4.3
   "@vitejs/plugin-react": ^5.2.0 # v6 peers on vite ^8 — moves with the rolldown bump
   postcss: ^8.5.23
   postcss-preset-mantine: ^1.18.0
@@ -156,7 +156,7 @@ catalog:
   # we emit JS. Lets @azx-pbc/shared stay a build-free raw-TS workspace package
   # (its `exports` point at ./src) without leaking `workspace:*` into a
   # published manifest.
-  esbuild: ^0.28.2
+  esbuild: ^0.28.1
   # ── Docs site (apps/docs) ──
   # The public docs site (docs.azx… → GitHub Pages project page). Static build
   # only — no server, no runtime service. Kept on the 1.x stable line; the 2.x
