@@ -656,6 +656,26 @@ function requirePositiveMs(raw: string | undefined, fallback: number, name: stri
 }
 
 /**
+ * Validate an LLM upstream path override. Egress binds
+ * `target.pathname === instruction.path` (the path only), so anything URL
+ * normalisation would rewrite — a query, a fragment, dot segments, a space —
+ * can never equal the claim and would 403 every call, with the blame pointing
+ * at egress policy rather than at this env var. Refuse it at boot instead, by
+ * round-tripping through `new URL` rather than blacklisting characters.
+ * Foundry needs no query: its v1 API is versionless (ADR-0046).
+ */
+function llmPath(value: string | undefined, fallback: string, envKey: string): string {
+  const path = value ?? fallback;
+  const parsed = new URL(path, "https://upstream.invalid");
+  if (!path.startsWith("/") || parsed.search || parsed.hash || parsed.pathname !== path) {
+    throw new Error(
+      `${envKey} must be a bare path (leading /, no query or fragment, nothing URL-normalisable)`,
+    );
+  }
+  return path;
+}
+
+/**
  * Parse the config the gateway machinery shares across the edge and the
  * dev-gateway (see {@link GatewayConfig}). Neither the helix_edge DSN nor blob
  * custody appears here — those are edge-only and live in {@link loadConfig} — so
@@ -663,20 +683,6 @@ function requirePositiveMs(raw: string | undefined, fallback: number, name: stri
  * never uses. The HTTPS-only TLS rule applies to both processes (both terminate
  * TLS in dev, both run HTTP behind ingress in prod).
  */
-/**
- * Validate an LLM upstream path override. A query or fragment would die at the
- * egress re-check (`target.pathname === instruction.path` binds the path only),
- * silently — refuse it here instead. Foundry needs no query: its v1 API is
- * versionless (ADR-0046).
- */
-function llmPath(value: string | undefined, fallback: string, envKey: string): string {
-  const path = value ?? fallback;
-  if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
-    throw new Error(`${envKey} must be a bare path (leading /, no query or fragment)`);
-  }
-  return path;
-}
-
 function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
   const certFile = env.EDGE_TLS_CERT_FILE;
   const keyFile = env.EDGE_TLS_KEY_FILE;

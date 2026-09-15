@@ -665,6 +665,15 @@ describe("LLM upstream config (ADR-0046)", () => {
     ["EDGE_LLM_ANTHROPIC_PATH", "anthropic/v1/messages", "no leading slash"],
     ["EDGE_LLM_OPENAI_PATH", "/openai/v1/chat/completions?api-version=1", "a query"],
     ["EDGE_LLM_OPENAI_PATH", "/openai/v1/chat/completions#x", "a fragment"],
+    // URL normalisation would rewrite these, so they could never equal the
+    // path claim egress binds — refused at boot, not per-call at egress.
+    ["EDGE_LLM_ANTHROPIC_PATH", "/anthropic/../v1/messages", "a dot segment"],
+    ["EDGE_LLM_ANTHROPIC_PATH", "/v1 messages", "a space (would percent-encode)"],
+    [
+      "EDGE_LLM_OPENAI_PATH",
+      "//evil.example/x",
+      "protocol-relative (never an origin escape — the target is string-concat — but refused for clarity)",
+    ],
   ])("refuses %s=%s (%s) — it would die silently at the egress path check", (key, value) => {
     expect(() => loadConfig({ ...ENV, [key]: value })).toThrow(new RegExp(`${key}.*bare path`));
   });
