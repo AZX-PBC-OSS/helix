@@ -158,12 +158,16 @@ subscription): leave `deployFoundry` false and set the upstream params —
 your connection names (default `foundry`/`foundry-openai` keep the template's
 wiring). Then either grant keyless access on your account to the egress identity
 (this template outputs `egressIdentityPrincipalId`; roles: Cognitive Services
-User + Cognitive Services OpenAI User) and set `EGRESS_MANAGED_IDENTITY_CONNECTIONS`
-on the egress app, **or** seed the account key twice (the two families take
+User + Cognitive Services OpenAI User) and set the
+**`egressManagedIdentityConnections` parameter** —
+`'foundry=<account>.services.ai.azure.com,foundry-openai=<account>.services.ai.azure.com'`
+— **or** seed the account key twice (the two families take
 different key headers): `seed:llm -- <key> --name foundry` and
 `seed:llm -- <key> --name foundry-openai --recipe api-key`. Locally (no managed
 identity), the seeded-key path is the only one — point the same env at the
-account and seed as above.
+account and seed as above. (Never set the egress env var out-of-band with
+`az containerapp update` — the next apply silently reverts it to the param's
+value.)
 
 ## Platform secret delivery ([ADR-0029](../../docs/adr/0029-platform-secret-delivery.md))
 

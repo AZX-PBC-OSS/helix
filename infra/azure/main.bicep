@@ -166,9 +166,11 @@ param foundryAccountName string = ''
 param foundryLocation string = ''
 
 @description('''
-  Models to deploy into the Foundry account: { name, format: "Anthropic"|"OpenAI", modelVersion?, skuName?, capacity? }. The DEPLOYMENT NAME
-  IS the platform catalog model id (packages/shared/src/pricing.ts) — apps address models unchanged and metering keeps working, because the
-  edge forwards the model id verbatim and Foundry routes on deployment name. The default is the full catalog at time of writing; prune freely
+  Models to deploy into the Foundry account: { name, format: "Anthropic"|"OpenAI", modelVersion?, modelName?, skuName?, capacity?,
+  raiPolicyName? }. The DEPLOYMENT NAME IS the platform catalog model id (packages/shared/src/pricing.ts) — apps address models unchanged and
+  metering keeps working, because the edge forwards the model id verbatim and Foundry routes on deployment name. `modelName` is the escape
+  hatch when the Foundry catalog's model name differs from that id (deployment keeps the catalog name, serves the named model);
+  `raiPolicyName` overrides the Microsoft.DefaultV2 content policy per entry. The default is the full catalog at time of writing; prune freely
   (each Anthropic entry needs the offer attestation in foundryAttestation). Limits: 32 deployments per account, and quota is per model per
   subscription — these entries do not compete with each other. An app that requests a catalog model NOT deployed here gets an upstream 404.''')
 param foundryModels array = [
@@ -208,6 +210,13 @@ param foundryDefaultCapacity int = 50
 
 @description('Refuse API-key auth on the Foundry account (disableLocalAuth). SECURE DEFAULT true — with keyless auth there are no keys to leak, and some Claude models are Entra-only. Set false only to seed the account key as a platform secret for a dev/smoketest flow. Only used with deployFoundry.')
 param foundryDisableLocalAuth bool = true
+
+@description('''
+  BYO-Foundry keyless (ADR-0046): comma-separated connection=host-suffix pairs egress may mint managed-identity tokens for, e.g.
+  "foundry=contoso.services.ai.azure.com,foundry-openai=contoso.services.ai.azure.com". Pairs with the llm* params pointing at that account and
+  the two inference roles granted to egressIdentityPrincipalId on it. Ignored when deployFoundry is true (the template derives the value).
+  Set it HERE, never by hand on the container app — an out-of-band env var is silently reverted to this value by the next apply.''')
+param egressManagedIdentityConnections string = ''
 
 // Image references (phase 2). Repo names are fixed; registry + tag are parameterized.
 // The three app images are built and published by this repo's CI to GHCR
@@ -552,10 +561,13 @@ var llm = {
   openaiConnection: deployFoundry ? 'foundry-openai' : llmOpenAiConnection
 }
 // The egress keyless-allowlist entry (ADR-0046): mint Entra tokens only for
-// these two connection names, and only onto this account's host. Empty when
-// the flag is off — the parse treats empty as "no rules", and resolution is
-// then DB-only exactly as before.
-var foundryMiConnections = deployFoundry ? 'foundry=${foundryHost},foundry-openai=${foundryHost}' : ''
+// these connection names, and only onto the pinned host. deployFoundry derives
+// it; otherwise the BYO param passes through verbatim; empty = "no rules" and
+// resolution is DB-only exactly as before. Declared in the template so a
+// re-apply can never silently revert an out-of-band container-app env edit.
+var foundryMiConnections = deployFoundry
+  ? 'foundry=${foundryHost},foundry-openai=${foundryHost}'
+  : egressManagedIdentityConnections
 
 // ---------------------------------------------------------------------------
 // Platform secrets (kv-platform). ARM-plane writes bypass the vault firewall.

@@ -32,8 +32,10 @@ param location string
 param accountName string
 
 @description('''
-  Models to deploy. Each entry: { name: <catalog model id>, format: "Anthropic"|"OpenAI", modelVersion?: string, skuName?: string, capacity?: int (thousand TPM) }.
+  Models to deploy. Each entry: { name: <catalog model id>, format: "Anthropic"|"OpenAI", modelVersion?: string, modelName?: string,
+  skuName?: string, capacity?: int (thousand TPM), raiPolicyName?: string }.
   Omit modelVersion to take the RP default version for the model (the safe default for a deploy-the-catalog list — version strings differ per region).
+  modelName overrides which catalog model the deployment serves when it differs from the deployment name; raiPolicyName overrides Microsoft.DefaultV2.
   Anthropic-format entries carry the marketplace attestation below.''')
 param models array
 
