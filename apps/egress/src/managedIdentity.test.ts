@@ -115,13 +115,6 @@ describe("ManagedIdentityResolver", () => {
     },
   );
 
-  it("works with no inner resolver at all (custody unconfigured, keyless only)", async () => {
-    const resolver = new ManagedIdentityResolver(null, stubTokenProvider(), RULES);
-    await expect(
-      resolver.resolve("app-1", "foundry", "llm", "prod", FOUNDRY_ORIGIN),
-    ).resolves.toMatchObject({ value: "mi-token" });
-  });
-
   it("propagates a token-endpoint failure (the proxy maps it to an opaque 502)", async () => {
     const tokens = stubTokenProvider();
     tokens.getToken.mockRejectedValue(new Error("managed-identity token endpoint returned 400"));
@@ -194,7 +187,7 @@ describe("ManagedIdentityResolver over /proxy", () => {
   const loopbackRules = [{ connection: "foundry", hostSuffix: "127.0.0.1" }];
 
   it("injects a minted bearer token the app never possessed", async () => {
-    const resolver = new ManagedIdentityResolver(null, stubTokenProvider("live-mi-token"), [
+    const resolver = new ManagedIdentityResolver(stubInner(), stubTokenProvider("live-mi-token"), [
       { connection: "foundry", hostSuffix: "127.0.0.1" },
     ]);
     const app = makeApp(resolver);
@@ -215,7 +208,7 @@ describe("ManagedIdentityResolver over /proxy", () => {
 
   it("a fetch instruction naming the same connection gets nothing", async () => {
     const tokens = stubTokenProvider();
-    const resolver = new ManagedIdentityResolver(null, tokens, loopbackRules);
+    const resolver = new ManagedIdentityResolver(stubInner(), tokens, loopbackRules);
     const app = makeApp(resolver);
     const token = await mint({ origin, connection: "foundry", capability: "fetch" });
     const res = await app.inject({
@@ -245,7 +238,7 @@ describe("ManagedIdentityResolver over /proxy", () => {
     });
 
     it("records helix.credential_source=managed-identity on the proxy span", async () => {
-      const resolver = new ManagedIdentityResolver(null, stubTokenProvider(), loopbackRules);
+      const resolver = new ManagedIdentityResolver(stubInner(), stubTokenProvider(), loopbackRules);
       const app = makeApp(resolver);
       const token = await mint({ origin, connection: "foundry", capability: "llm" });
       const res = await app.inject({

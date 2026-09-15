@@ -10,7 +10,10 @@
  * operator-chosen platform connection name (kebab-case, like a secret name);
  * `hostSuffix` pins token injection to that vendor host (exact or subdomain),
  * so a forged instruction naming the connection but a foreign origin gets
- * nothing (ADR-0046).
+ * nothing (ADR-0046). Pin the exact account host
+ * (`foundry=contoso.services.ai.azure.com`), not the shared zone — a
+ * `services.ai.azure.com`-wide rule authorises minting onto *every* Foundry
+ * account, including one an attacker picks.
  */
 export interface ManagedIdentityConnectionRule {
   connection: string;
@@ -34,10 +37,18 @@ export interface EgressConfig {
    * mint a **managed-identity** Entra token when no `platform` secret row exists,
    * each pinned to the vendor host the token may be injected into. Parsed from
    * `EGRESS_MANAGED_IDENTITY_CONNECTIONS` as comma-separated `name=host-suffix`
-   * pairs (e.g. `foundry=services.ai.azure.com`). Empty (the default) disables
-   * the mint path entirely — resolution is then DB-only, exactly as before.
+   * pairs (e.g. `foundry=contoso.services.ai.azure.com` — the account host, not
+   * the shared zone). Empty (the default) disables the mint path entirely —
+   * resolution is then DB-only, exactly as before.
    */
   managedIdentityConnections: ManagedIdentityConnectionRule[];
+  /**
+   * Entra resource/audience the minted token is for, from
+   * `EGRESS_MANAGED_IDENTITY_RESOURCE`; undefined = the Foundry default
+   * (`https://ai.azure.com`, FOUNDRY_TOKEN_RESOURCE). An escape hatch for the
+   * live spike and sovereign clouds, validated as a bare https origin.
+   */
+  managedIdentityResource?: string;
   /** Permit private/loopback targets — dev/test only; refused in production. */
   allowPrivate: boolean;
   /**
@@ -58,10 +69,11 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
 
 /**
  * Parse `EGRESS_MANAGED_IDENTITY_CONNECTIONS`: comma-separated
- * `connection=host-suffix` pairs (`foundry=services.ai.azure.com`). Anything
- * malformed is a boot error, never a silently dropped rule — a rule that
- * didn't parse and a rule that was never written must not look alike in a
- * 502. Host suffixes match exactly or on a dot boundary (see the resolver).
+ * `connection=host-suffix` pairs (`foundry=contoso.services.ai.azure.com` —
+ * pin the account host, not the shared zone). Anything malformed is a boot
+ * error, never a silently dropped rule — a rule that didn't parse and a rule
+ * that was never written must not look alike in a 502. Host suffixes match
+ * exactly or on a dot boundary (see the resolver).
  */
 function parseManagedIdentityConnections(env: NodeJS.ProcessEnv): ManagedIdentityConnectionRule[] {
   const raw = env.EGRESS_MANAGED_IDENTITY_CONNECTIONS?.trim();
@@ -86,7 +98,7 @@ function parseManagedIdentityConnections(env: NodeJS.ProcessEnv): ManagedIdentit
     ) {
       throw new Error(
         `EGRESS_MANAGED_IDENTITY_CONNECTIONS entry "${entry}" has an unusable host suffix ` +
-          `(want a dotted DNS suffix like services.ai.azure.com — a bare TLD would match the world)`,
+          `(want a dotted DNS host like contoso.services.ai.azure.com — a bare TLD would match the world)`,
       );
     }
     if (seen.has(connection)) {
@@ -95,6 +107,30 @@ function parseManagedIdentityConnections(env: NodeJS.ProcessEnv): ManagedIdentit
     seen.add(connection);
     return { connection, hostSuffix };
   });
+}
+
+/**
+ * Parse `EGRESS_MANAGED_IDENTITY_RESOURCE` — a bare https origin, nothing
+ * else: the MI endpoint takes it as the `resource` query value, and a path or
+ * query would ride along into the token request.
+ */
+function parseManagedIdentityResource(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = env.EGRESS_MANAGED_IDENTITY_RESOURCE?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(
+      "EGRESS_MANAGED_IDENTITY_RESOURCE must be an https origin (e.g. https://ai.azure.com)",
+    );
+  }
+  if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error(
+      "EGRESS_MANAGED_IDENTITY_RESOURCE must be a bare https origin — no path, query, or fragment",
+    );
+  }
+  return url.origin;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
@@ -134,6 +170,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
       timeoutMs: Number(env.EGRESS_TIMEOUT_MS ?? 30_000),
     },
     managedIdentityConnections: parseManagedIdentityConnections(env),
+    managedIdentityResource: parseManagedIdentityResource(env),
     allowPrivate,
     allowInsecureConnection,
   };

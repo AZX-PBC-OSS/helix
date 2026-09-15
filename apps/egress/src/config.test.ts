@@ -101,4 +101,31 @@ describe("loadConfig", () => {
       );
     });
   });
+
+  // ADR-0046 — the audience override is a spike/sovereign escape hatch, and
+  // it is validated like one: a bare https origin, or boot fails.
+  describe("EGRESS_MANAGED_IDENTITY_RESOURCE", () => {
+    it("defaults to undefined (the Foundry audience constant applies)", () => {
+      expect(loadConfig(ENV).managedIdentityResource).toBeUndefined();
+    });
+
+    it("accepts a bare https origin and normalises it", () => {
+      const config = loadConfig({
+        ...ENV,
+        EGRESS_MANAGED_IDENTITY_RESOURCE: "https://cognitiveservices.azure.com/",
+      });
+      expect(config.managedIdentityResource).toBe("https://cognitiveservices.azure.com");
+    });
+
+    it.each([
+      ["http://ai.azure.com", "not https"],
+      ["https://ai.azure.com/.default", "a path (the MI endpoint wants the bare resource)"],
+      ["https://ai.azure.com?x=1", "a query"],
+      ["not a url", "unparseable"],
+    ])("refuses %s (%s)", (value) => {
+      expect(() => loadConfig({ ...ENV, EGRESS_MANAGED_IDENTITY_RESOURCE: value })).toThrow(
+        /EGRESS_MANAGED_IDENTITY_RESOURCE/,
+      );
+    });
+  });
 });

@@ -126,8 +126,21 @@ const pgResolver: PgSecretResolver | null = store
 let resolver: SecretResolver | null = pgResolver;
 let miTokenProvider: TokenProvider | null = null;
 if (config.managedIdentityConnections.length > 0) {
+  // …and the same rule again for custody: with no store, installing the
+  // wrapper would leave deps.resolver non-null, so a secret-backed call off
+  // the MI list would 403 "connection not found" (an authz read) instead of
+  // 502 "secret store not configured" (the actual misconfiguration) — an
+  // operator would hunt grants for a custody gap. Every real topology has a
+  // store (KEK in dev, Key Vault in Azure), so this combination is never
+  // legitimate.
+  if (!pgResolver) {
+    throw new Error(
+      "EGRESS_MANAGED_IDENTITY_CONNECTIONS is set but no custody store is configured " +
+        "(need AZURE_KEY_VAULT_URL or DEV_SECRETS_KEK_FILE)",
+    );
+  }
   miTokenProvider = managedIdentityTokenProviderFromEnv(process.env, {
-    resource: FOUNDRY_TOKEN_RESOURCE,
+    resource: config.managedIdentityResource ?? FOUNDRY_TOKEN_RESOURCE,
     timeoutMs: 5_000,
   });
   if (!miTokenProvider) {
@@ -184,6 +197,7 @@ try {
       managedIdentityConnections: config.managedIdentityConnections.map(
         (r) => `${r.connection}→${r.hostSuffix}`,
       ),
+      managedIdentityResource: config.managedIdentityResource,
       allowPrivate: config.allowPrivate,
       allowInsecureConnection: config.allowInsecureConnection,
       telemetry: telemetry.enabled,
@@ -192,6 +206,17 @@ try {
   );
   if (config.allowPrivate) {
     app.log.warn("EGRESS_ALLOW_PRIVATE is set — private/loopback targets are NOT blocked");
+  }
+  // A sub-three-label suffix (azure.com, co.uk) is a public-suffix-class pin —
+  // technically valid, practically a shared-zone grant. Warn, don't refuse: the
+  // operator may mean it, but they should have to read it once at boot.
+  for (const rule of config.managedIdentityConnections) {
+    if (rule.hostSuffix.split(".").length < 3) {
+      app.log.warn(
+        { connection: rule.connection, hostSuffix: rule.hostSuffix },
+        "managed-identity rule pinned to a broad host suffix — prefer the exact account host (contoso.services.ai.azure.com)",
+      );
+    }
   }
   if (config.allowInsecureConnection) {
     app.log.warn(

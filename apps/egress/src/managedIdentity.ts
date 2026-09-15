@@ -8,9 +8,9 @@ import type { ResolvedConnection, SecretResolver } from "./secrets.js";
  * scoped `https://ai.azure.com/.default`, which the managed-identity endpoint
  * requests as the `resource` (no `/.default` suffix there). Keyless vendor auth
  * is covered by the `Cognitive Services User` role on the Foundry account
- * (ADR-0046). Not configurable: sovereign clouds would need more than this one
- * knob (endpoints, suffixes), so they are a deliberate non-goal until one
- * arrives.
+ * (ADR-0046). The default in code; `EGRESS_MANAGED_IDENTITY_RESOURCE` overrides
+ * it — an escape hatch for the live spike and sovereign clouds, not a supported
+ * second path.
  */
 export const FOUNDRY_TOKEN_RESOURCE = "https://ai.azure.com";
 
@@ -44,14 +44,19 @@ export const FOUNDRY_TOKEN_RESOURCE = "https://ai.azure.com";
  * needed. No `app_secrets` row exists for this path, so there is nothing to
  * stamp `lastUsedAt` on; the call still lands in the edge's ledger like any
  * other LLM call.
+ *
+ * The wrapped resolver is required, not optional: `server.ts` refuses to boot
+ * with the allowlist set and no custody store, because a null inner would turn
+ * every other secret-backed call's clear "502 store not configured" into a
+ * misleading "403 connection not found".
  */
 export class ManagedIdentityResolver implements SecretResolver {
-  readonly #inner: SecretResolver | null;
+  readonly #inner: SecretResolver;
   readonly #tokenProvider: TokenProvider;
   readonly #rules: ReadonlyMap<string, string>;
 
   constructor(
-    inner: SecretResolver | null,
+    inner: SecretResolver,
     tokenProvider: TokenProvider,
     rules: ManagedIdentityConnectionRule[],
   ) {
@@ -64,9 +69,7 @@ export class ManagedIdentityResolver implements SecretResolver {
     ...args: Parameters<SecretResolver["resolve"]>
   ): Promise<ResolvedConnection | null> {
     const [appId, connection, capability, env, origin] = args;
-    const stored = this.#inner
-      ? await this.#inner.resolve(appId, connection, capability, env, origin)
-      : null;
+    const stored = await this.#inner.resolve(appId, connection, capability, env, origin);
     if (stored) return stored;
 
     if (capability !== "llm") return null;
@@ -86,6 +89,6 @@ export class ManagedIdentityResolver implements SecretResolver {
 
   /** Owns the wrapped resolver: closing this closes it. */
   async close(): Promise<void> {
-    await this.#inner?.close();
+    await this.#inner.close();
   }
 }
