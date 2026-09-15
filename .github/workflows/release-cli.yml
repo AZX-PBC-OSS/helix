@@ -130,6 +130,38 @@ jobs:
           helix --help | tee /tmp/help.txt
           grep -q 'helix deploy' /tmp/help.txt
 
+      - name: Switch to Node 22 for the second smoke test
+        # The engines range admits Node 22.12+, and npm filters registry
+        # versions by engines against the running runtime — so this leg is
+        # what makes the declared floor true rather than aspirational: the
+        # exact tarball about to publish installs and runs on the oldest
+        # runtime the manifest admits. setup-node prepends the 22 toolcache
+        # to PATH, so every subsequent `node` is 22 until switched back.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Smoke-test the installed binary on Node 22
+        # A separate clean prefix from the Node 24 leg above, so the 22 test
+        # can't pass off a 24-installed bin. Same stripped PATH, same reason.
+        run: |
+          node --version | grep -q '^v22\.' || { echo "::error::expected Node 22, got $(node --version)"; exit 1; }
+          npm config set prefix "$RUNNER_TEMP/npm-global-node22"
+          npm i -g "$TARBALL"
+          NODE_BIN="$(dirname "$(command -v node)")"
+          export PATH="$RUNNER_TEMP/npm-global-node22/bin:$NODE_BIN:/usr/bin:/bin"
+          command -v node || { echo "::error::node not on the stripped PATH"; exit 1; }
+          helix --help | tee /tmp/help-node22.txt
+          grep -q 'helix deploy' /tmp/help-node22.txt
+
+      - name: Switch back to Node 24 for publishing
+        # Not cosmetics: trusted publishing needs npm >= 11.5.1, and Node 22
+        # bundles a 10.x. Publishing must run under the Node 24 toolcache
+        # (whose npm this workflow already upgraded), hence the round trip.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Publish to npm
         # Publishing the pnpm-packed tarball rather than running `pnpm publish`:
         # pnpm is what rewrites the catalog specifiers, but its OIDC support has

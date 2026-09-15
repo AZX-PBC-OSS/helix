@@ -28,7 +28,10 @@ await build({
   outfile,
   bundle: true,
   platform: "node",
-  target: "node24",
+  // Keep in step with the package.json `engines` range: the bundle is the
+  // published artifact, so the lowest runtime it emits for must never be
+  // newer than the lowest runtime the manifest admits.
+  target: "node22",
   format: "esm",
   sourcemap: false,
   // This banner is the bin's only shebang — `src/bin.ts` deliberately has

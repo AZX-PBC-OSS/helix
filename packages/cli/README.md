@@ -107,12 +107,17 @@ export HELIX_TOKEN="…"
 helix deploy --promote
 ```
 
-Needs **Node 24+** — the bundle is emitted at that target, so older runtimes
-may not merely warn, they may fail to parse it.
+Needs **Node 22.12+** (or 24+). The engines range and the bundle's esbuild
+target move together (see `scripts/build.mjs`), so the declared floor is real:
+older runtimes may not merely warn, they may fail to parse it.
 
 `0.0.0` is a deprecated placeholder that exists only because npm requires a
 package to exist before a trusted publisher can be attached to it. Every real
-version is `0.1.0` or later and carries a provenance attestation.
+version is `0.1.0` or later and carries a provenance attestation. npm filters
+registry versions by `engines` against the running runtime, so before 0.3.0
+declared 22.12+ an install on Node 22 fell all the way back to that
+placeholder — the reason a supported-looking Node could yield a
+non-functional package.
 
 ### From this monorepo today
 

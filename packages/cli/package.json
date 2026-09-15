@@ -1,6 +1,6 @@
 {
   "name": "@azx-pbc/helix-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Deploy CLI for Helix, the AZX App Platform",
   "license": "MIT",
   "repository": {
@@ -20,7 +20,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=24"
+    "node": "^22.12.0 || >=24.0.0"
   },
   "scripts": {
     "helix": "tsx src/bin.ts",
