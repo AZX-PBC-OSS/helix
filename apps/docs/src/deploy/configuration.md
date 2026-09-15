@@ -72,12 +72,33 @@ catches a wrongly-off flag before it does damage.
 | `portalExternal` | `false` | Puts the portal on the public load balancer at `portal.<appsDomain>`, gated by Entra sign-in. Without it (or a private network path), nobody can reach the portal |
 | `allowPublicApps` | `false` | Permits `public` (anonymous) app visibility on this install |
 | `allowPasswordApps` | `false` | Permits `password` (shared-passphrase) app visibility |
+| `deployFoundry` | `false` | Deploys an Azure AI Foundry account with the `foundryModels` deployments and routes all LLM inference to it, keyless (managed identity — no vendor key). See [Azure AI Foundry](/deploy/foundry) |
+
+## Azure AI Foundry
+
+The full story — quota, regions, Marketplace terms, bring-your-own — is on
+[Azure AI Foundry](/deploy/foundry). The parameters:
+
+| Parameter | Default | What it is |
+| --- | --- | --- |
+| `deployFoundry` | `false` | Creates the account + deployments and wires both model families at it. Overrides the six `llm*` params |
+| `foundryModels` | the platform's model catalog | Models to deploy. Deployment name == the model id apps request. Prune freely; deployments are pay-per-token and cost nothing idle |
+| `foundryAttestation` | *(empty)* | Anthropic Marketplace attestation (`organizationName`/`countryCode`/`industry`) — required for Claude models on a fresh subscription |
+| `foundryLocation` | the platform `location` | Account region. Model availability is regional; Claude is narrower than GPT |
+| `foundryAccountName` | `<namePrefix>-foundry` | Globally unique (becomes `<name>.services.ai.azure.com`) |
+| `foundryDefaultCapacity` | `50` | Per-deployment rate limit in thousand-TPM units — a starting point; tiers scale with usage |
+| `foundryDisableLocalAuth` | `true` | Refuses API-key auth on the account. Leave on: with managed identity there are no keys to leak |
+
+The six `llm*` parameters (`llmEndpoint`, `llmAnthropicPath`,
+`llmAnthropicConnection`, and the `llmOpenAi*` triple) are the BYO/manual path —
+first-party defaults, or pointed at an existing Foundry account per the
+[BYO section](/deploy/foundry#bring-your-own-foundry).
 
 ## App behavior
 
 | Parameter | Default | What it is |
 | --- | --- | --- |
-| `llmEndpoint` | `https://api.anthropic.com` | The LLM upstream the edge gateway proxies to |
+| `llmEndpoint` / `llmOpenAiEndpoint` | `https://api.anthropic.com` / `https://api.openai.com` | The LLM upstreams the edge gateway proxies to (per model family). See [Azure AI Foundry](/deploy/foundry) for pointing them at your own subscription |
 | `platformMonthlyUsdCap` | `1000` | Display-only LLM spend line on the admin Activity page. `0` hides it. Nothing enforces it — per-app daily budgets are the real limit |
 | `deployMaxFileMb` | `50` | Max uncompressed size of any single file in a deployed bundle |
 | `deployMaxBundleMb` | `250` | Max uncompressed size of the whole bundle (and the compressed upload). Raising it a lot wants more CPU/memory on the portal container |

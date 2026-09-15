@@ -16,6 +16,12 @@ model from your manifest's `llm.models` list; the response streams back as
 server-sent events. The platform meters tokens against the app's daily USD
 budget, and the call is rejected once the budget is spent.
 
+Model names are the platform's catalog ids and never change with where the
+platform runs inference — first-party vendors or an Azure AI Foundry account in
+the operator's own subscription (an operator concern; see
+[Azure AI Foundry](/deploy/foundry)). An app moves between such installs
+untouched.
+
 ## Storing data
 
 `/_api/data/*` is three stores in one:

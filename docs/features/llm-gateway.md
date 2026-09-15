@@ -270,6 +270,42 @@ which is why the read multiplier is now per-model (`ModelPrice.cacheReadMultipli
 is not a flat 0.1x either (`gpt-4o` 0.5x, `gpt-4.1` 0.25x, current generation 0.1x), so if
 `mapOpenAiStream` ever maps OpenAI's `cached_tokens`, those need per-model rates too.
 
+### Azure AI Foundry upstreams (ADR-0046)
+
+A customer-cloud install can point **both families at one Azure AI Foundry account** instead of the
+first-party vendors — inference then bills to and stays inside the customer's subscription. Foundry
+serves the two wire protocols we already speak from one origin: the Messages API at
+`<origin>/anthropic/v1/messages` and the versionless v1 OpenAI API at
+`<origin>/openai/v1/chat/completions`. The edge config is exactly that split:
+
+- `EDGE_LLM_ENDPOINT` / `EDGE_LLM_OPENAI_ENDPOINT` = the account origin (`https://<account>.services.ai.azure.com`)
+- `EDGE_LLM_ANTHROPIC_PATH` / `EDGE_LLM_OPENAI_PATH` = the prefixed paths above (endpoints are
+  origin-only, so the prefix lives here — the defaults remain the first-party shapes)
+- `EDGE_LLM_ANTHROPIC_CONNECTION` / `EDGE_LLM_OPENAI_CONNECTION` = the credential names (below)
+
+Routing, allowlists, pricing and metering are untouched: models still route by the catalog's
+`provider` field, and the Foundry **deployment name equals the catalog model id** (the edge forwards
+the app-requested model verbatim and Foundry routes on deployment name), so no mapping layer exists.
+Azure's RAI `content_filter` finish reason maps to `refusal` already.
+
+The credential has two modes (ADR-0046 has the decision):
+
+- **Keyless (the deployed default).** No secret exists anywhere: the egress managed identity holds
+  `Cognitive Services User` + `Cognitive Services OpenAI User` on the account, and egress mints an
+  Entra token (scope `https://ai.azure.com/.default`) per call, injecting `Authorization: Bearer`.
+  Engaged only for connection names allowlisted in `EGRESS_MANAGED_IDENTITY_CONNECTIONS`
+  (`foundry=<account-host>,foundry-openai=<account-host>`), only on the `llm` capability, and only
+  onto the pinned host — a forged instruction naming the connection but a foreign origin gets
+  nothing. When `infra/azure` creates the account (`deployFoundry`), all of this is wired by the
+  template; the account is deployed `disableLocalAuth` (no usable keys exist).
+- **Seeded key (local dev / BYO-with-key).** A stored `platform` row always wins over the mint, so
+  dev — which has no managed identity — seeds the Foundry account key under the same connection
+  names and runs the identical code path:
+  `seed:llm -- <key> --name foundry` (x-api-key) and `--name foundry-openai --recipe api-key`.
+
+`infra/azure/README.md` ("Azure AI Foundry") covers the operator side: the `deployFoundry` flag,
+model/quota/region caveats, and the BYO recipe.
+
 ## Try it
 
 `examples/chatbot` streams Claude through this gateway — the app ships only a frontend and never

@@ -1,0 +1,119 @@
+---
+title: Azure AI Foundry
+---
+
+# Azure AI Foundry as the LLM backend
+
+By default, apps' LLM calls go to the first-party vendors (`api.anthropic.com`,
+`api.openai.com`), with the vendor keys held as platform secrets and injected by
+the egress service — the edge never holds them. For an install in your own (or
+your customer's) Azure subscription, you can instead run inference on **Azure
+AI Foundry**: the models deploy into your subscription, the bill lands there,
+and there is **no vendor key anywhere** — the platform authenticates with the
+egress service's managed identity.
+
+Apps see no difference: model names, per-app allowlists, and budgets are
+unchanged, because each Foundry deployment is named for the platform's catalog
+model id (`claude-sonnet-5`, `gpt-5.1`, …) and Foundry routes on deployment
+name.
+
+## The one-flag path
+
+In `main.bicepparam`:
+
+```bicep
+param deployFoundry = true
+// Required when the model list includes Anthropic models and this subscription
+// has never accepted the Anthropic Marketplace offer:
+param foundryAttestation = {
+  organizationName: 'Contoso'
+  countryCode: 'US'
+  industry: 'technology'
+}
+// Optional: model availability is regional — Claude is narrower than GPT.
+// param foundryLocation = 'eastus2'
+```
+
+That is the whole job. The template then:
+
+- creates one Foundry account (`<namePrefix>-foundry`, overridable via
+  `foundryAccountName`) with key-based auth **disabled**;
+- deploys every model in `foundryModels` (default: the platform's full model
+  catalog) as serverless, pay-per-token deployments — nothing is billed while
+  idle;
+- grants the egress identity the two least-privilege inference roles
+  (*Cognitive Services User* for Claude/partner models, *Cognitive Services
+  OpenAI User* for GPT), and points both model families at the account.
+
+Deployments are created serially and can take a while; role assignments need
+about five minutes to propagate, so a 401 on the very first call right after an
+apply means "wait and retry", not a misconfiguration.
+
+## What models exist where — the three lists
+
+1. **The platform catalog** (code): every model Helix will serve at all, with
+   per-token prices for metering. The edge refuses anything not listed.
+2. **`foundryModels`** (your deploy): which catalog models actually get
+   deployed into this Foundry account. Prune it freely — an app that requests a
+   catalog model with no matching deployment gets a 502. Adding one later is an
+   edit and a re-apply (or a portal/CLI deployment named for the model id); no
+   app changes.
+3. **Each app's manifest** (`capabilities.llm.models` + daily budget): which of
+   the deployed models that app may use. This stays the real access control —
+   deploy broadly, grant narrowly.
+
+Azure limits an account to 32 deployments, and the catalog is ~23 models today
+— one account fits. Quota is per model per subscription and scales
+automatically with usage tiers; fresh pay-as-you-go subscriptions start Claude
+models at 40 requests/minute (the Fable line at 0 — request an increase or wait
+for tiering) and GPT models at generous Tier-1 pools.
+
+Two data-residency footnotes: some Claude models run *Hosted on Anthropic
+infrastructure* (Azure billing, Anthropic compute) — if that matters to your
+customer, restrict `foundryModels` to the Azure-hosted entries (`opus-5`,
+`opus-4-8`, `sonnet-5`, `haiku-4-5` at time of writing). And deleting a Foundry
+account without purging it keeps its quota reserved for up to 48 hours
+(`az cognitiveservices account list-deleted -o table`, then `purge`).
+
+## Bring your own Foundry
+
+If the account already exists (perhaps in another subscription), leave
+`deployFoundry` off and point the upstream params at it:
+
+```bicep
+param llmEndpoint = 'https://<account>.services.ai.azure.com'
+param llmAnthropicPath = '/anthropic/v1/messages'
+param llmAnthropicConnection = 'foundry'
+param llmOpenAiEndpoint = 'https://<account>.services.ai.azure.com'
+param llmOpenAiPath = '/openai/v1/chat/completions'
+param llmOpenAiConnection = 'foundry-openai'
+```
+
+Then choose the credential:
+
+- **Keyless (recommended):** grant the platform's egress identity the two
+  inference roles on your account — the template outputs
+  `egressIdentityPrincipalId` for exactly this — and set
+  `EGRESS_MANAGED_IDENTITY_CONNECTIONS=foundry=<account>.services.ai.azure.com,foundry-openai=<account>.services.ai.azure.com`
+  on the egress app. The host pin matters: egress will only mint a token onto
+  that host, so the connection name alone can never draw one onto a foreign
+  origin.
+- **Account key:** seed it twice, once per family (the two endpoints take
+  different key headers):
+  `pnpm --filter @azx-pbc/portal seed:llm -- <key> --name foundry` and
+  `... --name foundry-openai --recipe api-key`. A seeded key always wins over
+  the managed-identity path.
+
+Local development has no managed identity, so against Foundry it always uses
+the seeded-key path — same code, same connection names.
+
+## Verifying
+
+- `az deployment group show` outputs list `foundryOrigin` and
+  `foundryDeployments`.
+- Call a model through any app; the egress span carries
+  `helix.credential_source=managed-identity` (vs `secret` for a seeded key) —
+  the first thing to check when a Foundry-bound call misauthenticates.
+- A 404-class failure on a curated model means the deployment is missing from
+  the account; a 401 means RBAC hasn't propagated or the egress identity lacks
+  the roles.

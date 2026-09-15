@@ -141,6 +141,13 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 
 ---
 
+## Azure AI Foundry (ADR-0046)
+
+- [ ] **Validate against a live Foundry account before a customer install commits to `deployFoundry`.** The endpoint shapes, Entra scope (`https://ai.azure.com/.default`), roles, and wire compatibility are verified against Microsoft Learn and the Azure-Samples/claude starter kit, and the RAI `content_filter`→`refusal` mapping exists in the mapper — but no call from this codebase has hit a real account. The spike: deploy with the flag (one region, small `foundryModels`), run `examples/chatbot` on both families, confirm streaming, structured output (`response_format` json_schema), usage accounting, and a content-filter refusal; check the default `foundryModels` list against the region's live catalog (model versions are region-pinned and the list in `main.bicep` is best-effort). — ADR-0046 consequences
+- [ ] _(Consider)_ **Private-endpoint posture for the Foundry account.** Public endpoint + `disableLocalAuth` + RBAC is the shipped posture (same exposure class as calling first-party endpoints today). A customer who mandates PE needs a per-origin exception in the egress SSRF connector — a PE'd account resolves to a private IP, which `ssrf.ts` blocks wholesale — and that is its own ADR, not a parameter. — ADR-0046
+
+---
+
 ## Deferred / v2
 
 - [ ] **Stale-form concurrency on the policy write paths (`If-Match` / client-supplied `policyVersion`).** `apps.policyVersion` is CAS'd **server-internally** — the app row is read inside the transaction and the write CASes on the version read there, so two genuinely concurrent writers cannot lose each other and the loser gets a 409. What that deliberately does not cover is an owner whose Capabilities tab has been open for an hour: their PUT is a full replace computed from a pre-image the server never sees, so it still blind-overwrites whatever landed meanwhile. Closing it means the client sending the version it read (body field or `If-Match`) and threading it through the SPA forms and the `helix` CLI, plus deciding optional-for-compat vs required. Chosen against for now because it changes the request shape on four routes to harden a case with no data-integrity failure — the last writer's intent is at least fully expressed. — docs/design/approvals.md §5, issue #24 follow-up (2026-08-14)

@@ -32,6 +32,7 @@ export default defineConfig({
           items: [
             { text: "Getting started", link: "/deploy/getting-started" },
             { text: "Entra ID setup", link: "/deploy/entra-setup" },
+            { text: "Azure AI Foundry", link: "/deploy/foundry" },
             { text: "Configuration reference", link: "/deploy/configuration" },
             { text: "Local development", link: "/deploy/local-dev" },
           ],
