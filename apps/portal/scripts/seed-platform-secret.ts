@@ -50,10 +50,19 @@ function buildStore(): SecretStore {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const force = args.includes("--force");
+  // Both `--flag value` and `--flag=value`. A missing or flag-shaped follower
+  // is a hard error, not a silent default: a misparsed connection name seals a
+  // live vault entry under the wrong identity and reports success.
   const flagValue = (flag: string): string | undefined => {
+    const eq = args.find((a) => a.startsWith(`${flag}=`));
+    if (eq) return eq.slice(flag.length + 1);
     const i = args.indexOf(flag);
-    return i === -1 ? undefined : args[i + 1];
+    if (i === -1) return undefined;
+    const v = args[i + 1];
+    if (v === undefined || v.startsWith("--")) throw new Error(`${flag} requires a value`);
+    return v;
   };
+  // The key value is the one bare arg that isn't some flag's follower.
   const valueArg = args.find(
     (a, i) => !a.startsWith("--") && args[i - 1] !== "--name" && args[i - 1] !== "--recipe",
   );
