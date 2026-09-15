@@ -12,6 +12,12 @@ export default defineConfig({
   base: "/helix/",
   srcDir: "src",
   cleanUrls: true,
+  head: [
+    // Head links don't get the base prefix automatically, so spell it out.
+    ["link", { rel: "icon", type: "image/svg+xml", href: "/helix/favicon.svg" }],
+    ["link", { rel: "alternate icon", type: "image/png", href: "/helix/favicon-256.png" }],
+    ["link", { rel: "apple-touch-icon", sizes: "256x256", href: "/helix/favicon-256.png" }],
+  ],
   themeConfig: {
     siteTitle: "Helix",
     nav: [

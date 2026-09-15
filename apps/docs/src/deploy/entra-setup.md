@@ -12,10 +12,86 @@ registrations and putting their ids in the deploy configuration.
 Single-tenant only: your own users. The issuer is
 `https://login.microsoftonline.com/{tenantId}/v2.0`.
 
-Create all three in **Azure Portal → Microsoft Entra ID → App registrations**.
+There are two ways to create the registrations:
+
+- **The Bicep module in `infra/entra`** — preferred for a new deployment. It
+  creates all three registrations with every setting below already correct,
+  and can also assign the admin role, consent the scopes, and grant the Graph
+  permission the group picker needs. [Start here.](#the-automated-way)
+- **By hand in the Azure Portal** — if you cannot run the module (it needs
+  elevated Graph rights), or want to check what the module does and why. The
+  result is identical. [Manual setup.](#the-manual-way)
+
 Substitute your apps domain for `apps.example.com` throughout.
 
-## Registration 1: `helix-edge` (app-user sign-in)
+## The automated way
+
+`infra/entra/main.bicep` declares the three registrations via the
+[Microsoft Graph Bicep extension](https://learn.microsoft.com/graph/templates/bicep/):
+
+| Registration | What it declares |
+| --- | --- |
+| `helix-edge` | Web redirect URI, `email` optional claim, certificate credential for `private_key_jwt`, security-group claims |
+| `helix-portal` | SPA redirect URI, **v2 access tokens** (set here — the manual process's main gotcha), the `access` scope, the `platform-admin` and `user` app roles |
+| `helix-cli` | Public client (device code flow), permission to request the portal's `access` scope |
+
+It also optionally declares, from parameters:
+
+- **The admin role assignment** — set `adminPrincipalId` to a user or group
+  object id instead of assigning it in the portal.
+- **Tenant-wide admin consent** for the sign-in and Graph scopes — set
+  `grantAdminConsent=true`.
+- **The `GroupMember.Read.All` Graph permission for the portal's managed
+  identity** — what the per-app group picker uses to turn group ids into
+  names. Set `portalIdentityPrincipalId` to the portal identity's principal id
+  (a deployment output of the Azure stack, available only after it has
+  deployed). Declaring the assignment **is** the admin consent; there is no
+  separate approval step.
+- **Sign-in restrictions** — `edgeAccessPrincipalIds` / `portalAccessPrincipalIds`
+  limit who can sign in at all. Empty keeps the default open behaviour.
+
+Deploy:
+
+```bash
+cd infra/entra
+az bicep build --file main.bicep            # compile check
+az deployment group create -g <rg> -f main.bicep -p main.bicepparam
+
+# One known wart: the portal's identifier URI can't self-reference its client
+# id in Bicep, so set it once by hand:
+az ad app update --id <portalClientId> --identifier-uris "api://<portalClientId>"
+```
+
+The ordering with the Azure stack is **entra → azure → entra**: deploy this
+first, pass the outputs (`edgeOidcClientId`, `portalOidcAudience`,
+`azxWebClientId`, `azxCliClientId`) into the Azure stack's parameters, then
+re-apply this module with `portalIdentityPrincipalId` set to grant the Graph
+permission.
+
+Before you rely on it, know:
+
+- **Your deploy principal needs Graph rights.** Creating registrations needs
+  Application Administrator; the consent and role assignments need Privileged
+  Role Administrator (or `AppRoleAssignment.ReadWrite.All`). A locked-down
+  tenant can resist this — verify first.
+- **It does not adopt registrations that already exist.** A deployment against
+  a tenant with hand-made apps creates duplicates. Use it for a fresh
+  environment.
+- **The `groups` claim on the portal registration requires a running portal
+  image that unions the `groups` and `roles` claims** — applying it against an
+  older portal image locks admins out of the approval queue. The sequencing is
+  spelled out in
+  [the group claims rollout doc](https://github.com/AZX-PBC-OSS/helix/blob/main/docs/runbooks/entra-group-claims-rollout.md).
+
+The outputs feed the Azure stack parameters listed in
+[the manual section](#what-the-deployment-consumes) — same values, captured
+instead of typed.
+
+## The manual way
+
+Create all three in **Azure Portal → Microsoft Entra ID → App registrations**.
+
+### Registration 1: `helix-edge` (app-user sign-in)
 
 The edge is what app visitors sign in to.
 
@@ -48,7 +124,7 @@ visibility (restricting an app to an Entra group) is a separate later step —
 it uses security groups, not app roles, and needs one Graph permission. See
 [the group claims runbook](https://github.com/AZX-PBC-OSS/helix/blob/main/docs/runbooks/entra-group-claims-rollout.md).
 
-## Registration 2: `helix-portal` (the portal, and the API its tokens call)
+### Registration 2: `helix-portal` (the portal, and the API its tokens call)
 
 One registration serves as both the portal SPA client and the API the SPA and
 CLI get tokens for.
@@ -65,7 +141,7 @@ scope*: name it `access`, allow **Admins and users** to consent, and leave the
 display text at something sensible. The full scope is
 `api://<helix-portal client id>/access`.
 
-### The two token gotchas
+#### The two token gotchas
 
 Both of these break sign-in with confusing errors, and both are one-time fixes.
 
@@ -90,7 +166,7 @@ URI. That is why `PORTAL_OIDC_AUDIENCE` in the deploy configuration is the
 GUID, while the *scope* stays `api://…/access`. Getting this wrong looks like a
 successful login followed by a 401 on every API call.
 
-### The admin role
+#### The admin role
 
 Portal administration (approvals, secrets, admin pages) is gated on an app
 role, not a group — no Entra P1 license needed for individual users.
@@ -100,7 +176,7 @@ role, not a group — no Entra P1 license needed for individual users.
 2. *Enterprise applications → helix-portal → Users and groups*: assign yourself
    to Platform Admin.
 
-## Registration 3: `azx-cli` (the deploy CLI)
+### Registration 3: `azx-cli` (the deploy CLI)
 
 | Setting | Value |
 | --- | --- |
