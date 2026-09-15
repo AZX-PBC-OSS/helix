@@ -143,6 +143,13 @@ export interface GatewayConfig {
   llm: {
     /** Vendor origin (no path), e.g. `https://api.anthropic.com`. */
     endpoint: string;
+    /**
+     * Upstream request path (EDGE_LLM_ANTHROPIC_PATH), default `/v1/messages`.
+     * Configurable because the endpoint is origin-only: a Foundry account serves
+     * the Messages API under `/anthropic/v1/messages` (ADR-0046), which an
+     * origin cannot express.
+     */
+    path: string;
     /** `anthropic-version` header value. */
     anthropicVersion: string;
     /**
@@ -155,15 +162,22 @@ export interface GatewayConfig {
     /**
      * OpenAI-compatible upstream for the `gpt-*`/`o*` model families (M4.5+). An
      * **OpenAI-compatible base URL**: `https://api.openai.com` for OpenAI direct
-     * today, a Warden URL later — same code path. Symmetric with Anthropic above:
-     * always named (defaults `connection` `openai`, `endpoint` api.openai.com) and
-     * wired whenever egress is up. Enabling it is just seeding that `platform`
-     * secret — no dedicated toggle. Absent the secret, a `gpt-*` call 502s at
-     * egress, exactly as an unseeded Anthropic key would.
+     * today, a Foundry account (ADR-0046) or a Warden URL later — same code path.
+     * Symmetric with Anthropic above: always named (defaults `connection`
+     * `openai`, `endpoint` api.openai.com) and wired whenever egress is up.
+     * Enabling it is just seeding that `platform` secret — no dedicated toggle.
+     * Absent the secret, a `gpt-*` call 502s at egress, exactly as an unseeded
+     * Anthropic key would.
      */
     openai: {
       /** OpenAI-compatible origin (no path), e.g. `https://api.openai.com`. */
       endpoint: string;
+      /**
+       * Upstream request path (EDGE_LLM_OPENAI_PATH), default
+       * `/v1/chat/completions`. Foundry's v1 API serves it under
+       * `/openai/v1/chat/completions`.
+       */
+      path: string;
       /** Name of the `platform`-scoped secret holding the OpenAI key. */
       connection: string;
     };
@@ -649,6 +663,20 @@ function requirePositiveMs(raw: string | undefined, fallback: number, name: stri
  * never uses. The HTTPS-only TLS rule applies to both processes (both terminate
  * TLS in dev, both run HTTP behind ingress in prod).
  */
+/**
+ * Validate an LLM upstream path override. A query or fragment would die at the
+ * egress re-check (`target.pathname === instruction.path` binds the path only),
+ * silently — refuse it here instead. Foundry needs no query: its v1 API is
+ * versionless (ADR-0046).
+ */
+function llmPath(value: string | undefined, fallback: string, envKey: string): string {
+  const path = value ?? fallback;
+  if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
+    throw new Error(`${envKey} must be a bare path (leading /, no query or fragment)`);
+  }
+  return path;
+}
+
 function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
   const certFile = env.EDGE_TLS_CERT_FILE;
   const keyFile = env.EDGE_TLS_KEY_FILE;
@@ -682,10 +710,12 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     trustProxy: parseTrustProxy(env.EDGE_TRUST_PROXY),
     llm: {
       endpoint: (env.EDGE_LLM_ENDPOINT ?? "https://api.anthropic.com").replace(/\/+$/, ""),
+      path: llmPath(env.EDGE_LLM_ANTHROPIC_PATH, "/v1/messages", "EDGE_LLM_ANTHROPIC_PATH"),
       anthropicVersion: env.EDGE_LLM_ANTHROPIC_VERSION ?? "2023-06-01",
       connection: env.EDGE_LLM_ANTHROPIC_CONNECTION ?? "anthropic",
       openai: {
         endpoint: (env.EDGE_LLM_OPENAI_ENDPOINT ?? "https://api.openai.com").replace(/\/+$/, ""),
+        path: llmPath(env.EDGE_LLM_OPENAI_PATH, "/v1/chat/completions", "EDGE_LLM_OPENAI_PATH"),
         connection: env.EDGE_LLM_OPENAI_CONNECTION ?? "openai",
       },
     },

@@ -108,6 +108,30 @@ describe("EgressLlmProvider", () => {
     expect(payload.userOid).toBe("user-1");
   });
 
+  // ADR-0046 — the Foundry shape: origin-only endpoint + path override. The
+  // instruction binds the origin (not the prefix), and the target egress dials
+  // is the two composed — the pairing the egress path re-check then enforces.
+  it("composes the Foundry target from an origin-only endpoint and a path override", async () => {
+    let captured: EgressRequest | undefined;
+    const p = new EgressLlmProvider(
+      anthropicVendor({
+        endpoint: "https://contoso.services.ai.azure.com",
+        anthropicVersion: "2023-06-01",
+        connection: "foundry",
+        path: "/anthropic/v1/messages",
+      }),
+      stubEgress({}, (req) => (captured = req)),
+      KEY,
+    );
+    await collect(p.stream(CHAT, opts));
+
+    expect(captured?.target).toBe("https://contoso.services.ai.azure.com/anthropic/v1/messages");
+    const { payload } = await jwtVerify(captured!.instruction, KEY);
+    expect(payload.origin).toBe("https://contoso.services.ai.azure.com");
+    expect(payload.path).toBe("/anthropic/v1/messages");
+    expect(payload.connection).toBe("foundry");
+  });
+
   it("parses the relayed SSE into delta + done events", async () => {
     const p = provider(stubEgress({}));
     const events = await collect(p.stream(CHAT, opts));

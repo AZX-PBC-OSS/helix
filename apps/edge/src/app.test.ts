@@ -32,9 +32,14 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
     statementTimeoutMs: 10_000,
     llm: {
       endpoint: "https://api.anthropic.com",
+      path: "/v1/messages",
       anthropicVersion: "2023-06-01",
       connection: "anthropic",
-      openai: { endpoint: "https://api.openai.com", connection: "openai" },
+      openai: {
+        endpoint: "https://api.openai.com",
+        path: "/v1/chat/completions",
+        connection: "openai",
+      },
     },
     anonRateLimit: { max: 0, windowMs: 60_000 },
     trustProxy: false,

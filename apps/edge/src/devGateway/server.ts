@@ -148,6 +148,7 @@ const llmProvider: LlmProvider | null =
             endpoint: config.llm.endpoint,
             anthropicVersion: config.llm.anthropicVersion,
             connection: config.llm.connection,
+            path: config.llm.path,
           }),
           egress,
           instructionKey,

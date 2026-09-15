@@ -629,6 +629,47 @@ describe("publicOrigin", () => {
   });
 });
 
+describe("LLM upstream config (ADR-0046)", () => {
+  const ENV = {
+    DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
+    EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
+    AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
+  };
+
+  it("defaults both paths to the first-party shapes", () => {
+    const config = loadConfig({ ...ENV });
+    expect(config.llm.path).toBe("/v1/messages");
+    expect(config.llm.openai.path).toBe("/v1/chat/completions");
+  });
+
+  it("takes the Foundry shape from env — endpoint stays an origin, the path carries the prefix", () => {
+    const config = loadConfig({
+      ...ENV,
+      EDGE_LLM_ENDPOINT: "https://contoso.services.ai.azure.com",
+      EDGE_LLM_ANTHROPIC_PATH: "/anthropic/v1/messages",
+      EDGE_LLM_ANTHROPIC_CONNECTION: "foundry",
+      EDGE_LLM_OPENAI_ENDPOINT: "https://contoso.services.ai.azure.com",
+      EDGE_LLM_OPENAI_PATH: "/openai/v1/chat/completions",
+      EDGE_LLM_OPENAI_CONNECTION: "foundry-openai",
+    });
+    expect(config.llm.endpoint).toBe("https://contoso.services.ai.azure.com");
+    expect(config.llm.path).toBe("/anthropic/v1/messages");
+    expect(config.llm.connection).toBe("foundry");
+    expect(config.llm.openai.path).toBe("/openai/v1/chat/completions");
+    expect(config.llm.openai.connection).toBe("foundry-openai");
+  });
+
+  it.each([
+    ["EDGE_LLM_ANTHROPIC_PATH", "anthropic/v1/messages", "no leading slash"],
+    ["EDGE_LLM_OPENAI_PATH", "/openai/v1/chat/completions?api-version=1", "a query"],
+    ["EDGE_LLM_OPENAI_PATH", "/openai/v1/chat/completions#x", "a fragment"],
+  ])("refuses %s=%s (%s) — it would die silently at the egress path check", (key, value) => {
+    expect(() => loadConfig({ ...ENV, [key]: value })).toThrow(new RegExp(`${key}.*bare path`));
+  });
+});
+
 describe("loadDevGatewayConfig", () => {
   // The dev-gateway's ONLY required env is its own helix_dev DSN (+ TLS in dev).
   const DEV_ENV = {

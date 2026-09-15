@@ -461,10 +461,12 @@ export function anthropicVendor(cfg: {
   endpoint: string;
   anthropicVersion: string;
   connection: string;
+  /** Override upstream path — Foundry serves the Messages API at `/anthropic/v1/messages` (ADR-0046). */
+  path?: string;
 }): EgressLlmVendor {
   return {
     endpoint: cfg.endpoint,
-    path: "/v1/messages",
+    path: cfg.path ?? "/v1/messages",
     connection: cfg.connection,
     headers: { "anthropic-version": cfg.anthropicVersion },
     buildBody: anthropicRequestBody,
@@ -472,11 +474,16 @@ export function anthropicVendor(cfg: {
   };
 }
 
-/** OpenAI-compatible chat/completions vendor descriptor (OpenAI direct, or Warden). */
-export function openAiVendor(cfg: { endpoint: string; connection: string }): EgressLlmVendor {
+/** OpenAI-compatible chat/completions vendor descriptor (OpenAI direct, Foundry, or Warden). */
+export function openAiVendor(cfg: {
+  endpoint: string;
+  connection: string;
+  /** Override upstream path — Foundry's v1 API serves `/openai/v1/chat/completions` (ADR-0046). */
+  path?: string;
+}): EgressLlmVendor {
   return {
     endpoint: cfg.endpoint,
-    path: "/v1/chat/completions",
+    path: cfg.path ?? "/v1/chat/completions",
     connection: cfg.connection,
     headers: {},
     buildBody: openAiRequestBody,
