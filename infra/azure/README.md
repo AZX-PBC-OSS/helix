@@ -99,8 +99,10 @@ between test sessions without losing config.
 By default the LLM gateway calls the first-party vendors (`api.anthropic.com`,
 `api.openai.com` — keys seeded as `platform` secrets). For a customer-cloud
 install where inference should bill to and stay inside the customer's
-subscription, set **`deployFoundry=true`**: the template deploys one Azure AI
-Foundry account (`modules/foundry.bicep`), one serverless deployment per model
+subscription, set **`deployFoundry=true`**: the template creates a dedicated
+resource group for it (`<namePrefix>-foundry-rg`, `modules/foundry-rg.bicep`),
+deploys one Azure AI Foundry account into it (`modules/foundry.bicep`), one
+serverless deployment per model
 in `foundryModels`, grants the **egress identity** the inference roles, and
 points both model families at it. **Keyless — there is no vendor key anywhere:**
 egress mints Entra tokens (its own managed identity, scope
@@ -137,6 +139,19 @@ Things to know before flipping it:
 - The account deploys with **`disableLocalAuth`** (`foundryDisableLocalAuth`),
   so no usable keys exist. Set it false only to seed the account key as a
   platform secret for a dev/smoketest flow.
+- **Its own resource group is the cost-axis split.** Both of Foundry's billing
+  planes roll up under the account's group — GPT models meter on the account
+  resource itself, Claude models bill through the Marketplace and surface as
+  `<model>-<guid>` entries under the group — so the platform cost budget
+  (below) never sees a token, and a separate LLM-only budget on that group
+  (`modules/alerts-cost-foundry.bicep`, `llmMonthlyBudgetUsd`, default 1000 to
+  match the portal's `platformMonthlyUsdCap` watch line) sees nothing else.
+  Both budgets NOTIFY — Azure has no hard-spend feature for Foundry, and budget
+  data runs 8–24 hours behind; the real limits are the per-app daily token
+  budgets (synchronous, at the edge) and each deployment's TPM `capacity`,
+  which bounds the worst-case burn rate in real time. Deployed an earlier rev
+  of this branch with the account in the main group? Delete AND purge it first
+  — soft-delete holds the globally-unique name for up to 48h.
 - **Soft-delete holds quota for up to 48h**: deleting (not purging) a Foundry
   account keeps its TPM allocations reserved —
   `az cognitiveservices account list-deleted -o table` / `purge` to reclaim.
@@ -310,7 +325,10 @@ The spend cap defaults to **$1000/mo** so an install gets a budget signal withou
 being configured for one; pass `platformMonthlyUsdCap=0` to show no ceiling. It is
 display-only — the rollup is exact (the gateway is the choke point) but nothing
 enforces it, so treat it as a watch line, not a kill-switch. Local dev leaves it
-unset (no ceiling); see `.env.example`.
+unset (no ceiling); see `.env.example`. With `deployFoundry`, the same axis gets
+an Azure-side counterpart: `llmMonthlyBudgetUsd` (same $1000 default) deploys a
+notify-only consumption budget on the Foundry account's own resource group — see
+"Cost" under **Alerting**.
 
 ## Deploy bundle size caps
 
@@ -356,7 +374,8 @@ modules/
   postgres.bicep      Flexible Server (private) + helix DB
   identity.bicep      4 user-assigned managed identities (edge/portal/egress + dev-gateway)
   rbac.bicep          role assignments (the grant matrix)
-  foundry.bicep       optional Azure AI Foundry account + model deployments (deployFoundry, ADR-0046)
+  foundry-rg.bicep    the Foundry account's own resource group (the cost-axis split) with foundry.bicep in it (deployFoundry, ADR-0046)
+  foundry.bicep       Azure AI Foundry account + model deployments (invoked by foundry-rg.bicep)
   aca-environment.bicep   reusable managed environment (called twice)
   containerapp.bicep  reusable container app (edge/portal/egress + opt-in dev-gateway)
   dns.bicep           public DNS zone + records (incl. opt-in dev-api)
@@ -652,19 +671,20 @@ gets its own.
 
 ## Alerting (`deployAlerts`, `alertEmails`)
 
-Four modules, split by **what they read** rather than by what they are about,
+Five modules, split by **what they read** rather than by what they are about,
 because that is what decides which failures a rule can see at all:
 
-| Module                      | Reads                        | Needs `deployTelemetry` | Gate                      |
-| --------------------------- | ---------------------------- | ----------------------- | ------------------------- |
-| `alerts.bicep`              | the platform's own telemetry | yes (metric rule)       | `deployAlerts`            |
-| `alerts-availability.bicep` | an outside HTTP probe        | yes (App Insights)      | `deployAvailabilityTests` |
-| `alerts-infra.bicep`        | Azure platform metrics       | no                      | `deployInfraAlerts`       |
-| `alerts-cost.bicep`         | billing                      | no                      | `deployCostBudget`        |
+| Module                      | Reads                         | Needs `deployTelemetry` | Gate                               |
+| --------------------------- | ----------------------------- | ----------------------- | ---------------------------------- |
+| `alerts.bicep`              | the platform's own telemetry  | yes (metric rule)       | `deployAlerts`                     |
+| `alerts-availability.bicep` | an outside HTTP probe         | yes (App Insights)      | `deployAvailabilityTests`          |
+| `alerts-infra.bicep`        | Azure platform metrics        | no                      | `deployInfraAlerts`                |
+| `alerts-cost.bicep`         | billing (the platform groups) | no                      | `deployCostBudget`                 |
+| `alerts-cost-foundry.bicep` | billing (the Foundry group)   | no                      | `deployCostBudget`+`deployFoundry` |
 
 The first three notify through **one** action group (`modules/action-group.bicep`,
 `<prefix>-ag-platform`), so a recipient is added in one parameter rather than
-five files. The budget is the exception and says why in its own header.
+five files. The budgets are the exceptions and say why in their own headers.
 
 ### The platform's own telemetry (`modules/alerts.bicep`)
 
@@ -789,6 +809,19 @@ A monthly consumption budget on this resource group, notifying at 80% actual,
 is worth having before any app is deployed. It **notifies and does not enforce** —
 Azure will not stop a resource when a budget is crossed. The real limits are the
 per-app daily token budgets.
+
+**LLM spend is a separate axis and is never in this budget.** With vendor-direct
+keys it is not in Azure at all; with `deployFoundry` it bills into the Foundry
+account's _own_ resource group (the split is topological — budget filters are
+AND-of-`In` only and cannot express an exclusion), where
+`modules/alerts-cost-foundry.bicep` watches it instead. That budget takes
+`llmMonthlyBudgetUsd` as a **direct amount**, not a derivation: the headroom
+arithmetic below exists because fixed-cost month-to-date is a straight line,
+and LLM spend is usage-shaped — set the monthly number you actually want mail
+about. It defaults to `1000`, the same line `platformMonthlyUsdCap` renders on
+the Activity page, and carries the same notify-only caveat, louder: the cost
+data it reads lands 8–24 hours late, so a runaway app is stopped by the per-app
+daily token budgets and the deployments' TPM capacity, not by this.
 
 **The amount is derived from the deployment shape, and `deployFirewall` is 88% of
 it.** Azure Firewall Standard bills $1.25 per hour of _deployment time_ — flat,

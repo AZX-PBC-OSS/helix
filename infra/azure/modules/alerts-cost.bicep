@@ -16,11 +16,16 @@
 // A budget that under-reports is worse than a missing one, because the number it
 // shows is believed.
 //
-// The one rule in this deployment that is not about health. It is here because
-// this platform's cost failures are step changes, not drifts: the egress
-// firewall alone is ~$900/mo (`deployFirewall`), the LLM gateway bills per token
-// against per-app budgets that only cap PER APP, and a workload-profile
-// environment scales on demand. None of that is visible until the invoice.
+// The PLATFORM-INFRA half of the deployment's two budgets (the other is
+// alerts-cost-foundry.bicep, on the LLM axis); every other alerting rule here
+// is about health. It exists because this axis's cost failures are step
+// changes, not drifts: the egress firewall alone is ~$900/mo
+// (`deployFirewall`), and a workload-profile environment scales on demand —
+// none of which is visible until the invoice. LLM spend is deliberately NOT in
+// this budget: with vendor-direct keys it never enters Azure, and with
+// `deployFoundry` it bills into the Foundry account's own resource group
+// (modules/foundry-rg.bicep). The split is topological because budget filters
+// are AND-of-`In` only — an exclusion cannot be expressed.
 //
 // NOTHING HERE ENFORCES ANYTHING. A consumption budget is a notification, not a
 // spend cap — Azure will not stop a resource when it is crossed. The real limits

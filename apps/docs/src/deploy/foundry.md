@@ -37,7 +37,10 @@ param foundryAttestation = {
 That is the whole job. The template then:
 
 - creates one Foundry account (`<namePrefix>-foundry`, overridable via
-  `foundryAccountName`) with key-based auth **disabled**;
+  `foundryAccountName`) **in its own resource group**
+  (`<namePrefix>-foundry-rg`, overridable via `foundryResourceGroupName`) —
+  the boundary that keeps LLM spend out of the platform cost budget — with
+  key-based auth **disabled**;
 - deploys every model in `foundryModels` (default: the platform's full model
   catalog) as serverless, pay-per-token deployments — nothing is billed while
   idle;
@@ -75,6 +78,23 @@ customer, restrict `foundryModels` to the Azure-hosted entries (`opus-5`,
 account without purging it keeps its quota reserved for up to 48 hours
 (`az cognitiveservices account list-deleted -o table`, then `purge`).
 
+## Cost and the LLM budget
+
+Because the account lives in its own resource group, the platform-infra budget
+never sees a token, and a separate LLM-only budget on that group
+(`llmMonthlyBudgetUsd`, default `1000` — the same number the portal's Activity
+page renders as its watch line) emails `alertEmails` at 80% of it, at 100%,
+and when the month's forecast crosses. Both billing planes land in that group:
+GPT models meter on the account itself, Claude models bill through the Azure
+Marketplace under the group.
+
+Azure budgets **notify only** — Azure has no hard spending cap for Foundry,
+and budget data runs 8–24 hours behind. The real limits are each app's daily
+token budget (enforced synchronously by the edge before a call goes upstream)
+and each deployment's TPM `capacity` (`foundryDefaultCapacity`), which bounds
+the worst-case burn rate in real time. With vendor-direct keys
+(`deployFoundry` off) none of this exists — that spend never enters Azure.
+
 ## Bring your own Foundry
 
 If the account already exists (perhaps in another subscription), leave
@@ -111,8 +131,8 @@ the seeded-key path — same code, same connection names.
 
 ## Verifying
 
-- `az deployment group show` outputs list `foundryOrigin` and
-  `foundryDeployments`.
+- `az deployment group show` outputs list `foundryOrigin`,
+  `foundryDeployments`, `foundryResourceGroup`, and `llmBudgetUsd`.
 - Call a model through any app; the egress span carries
   `helix.credential_source=managed-identity` (vs `secret` for a seeded key) —
   the first thing to check when a Foundry-bound call misauthenticates.

@@ -212,6 +212,15 @@ param foundryDefaultCapacity int = 50
 param foundryDisableLocalAuth bool = true
 
 @description('''
+  Resource group the Foundry account deploys INTO, created by the template (default "<namePrefix>-foundry-rg"). Its own group on purpose: that is the
+  platform/LLM cost-axis split. Budget filters are AND-of-`In` only (no `not`), so excluding Foundry from the platform budget by filter is impossible —
+  and both Foundry billing planes (first-party account meters for the OpenAI family, marketplace meters for Anthropic) roll up under the account's group,
+  so a group-scoped budget there sees ALL of the LLM spend and the platform budget sees NONE of it. See modules/foundry-rg.bicep. Only used with
+  deployFoundry. Renaming on a live install MOVES the account (the old one must be deleted AND purged first — the name is globally unique and soft-delete
+  holds it up to 48h; see README "Azure AI Foundry").''')
+param foundryResourceGroupName string = ''
+
+@description('''
   BYO-Foundry keyless (ADR-0046): comma-separated connection=host-suffix pairs egress may mint managed-identity tokens for, e.g.
   "foundry=contoso.services.ai.azure.com,foundry-openai=contoso.services.ai.azure.com". Pairs with the llm* params pointing at that account and
   the two inference roles granted to egressIdentityPrincipalId on it. Ignored when deployFoundry is true (the template derives the value).
@@ -281,10 +290,10 @@ param postgresStoragePercentThreshold int = 85
 @description('Edge 5xx responses in 15 minutes that fire the server-error rule. Not sensitive by default: the edge fronts untrusted app code, so one broken app 500ing is not a platform incident. Lower it only if you are prepared to triage app bugs.')
 param edgeServerErrorThreshold int = 100
 
-@description('Deploy the monthly cost budget (modules/alerts-cost.bicep), scoped to this resource group, notifying at 80% actual, 100% actual and 100% forecast of the derived amount below. Skipped when alertEmails is empty. A budget NOTIFIES — nothing about it caps spend.')
+@description('Deploy the monthly cost budgets (modules/alerts-cost.bicep for the platform-infra axis, plus alerts-cost-foundry.bicep for the LLM axis when deployFoundry is on), notifying at 80% actual, 100% actual and 100% forecast of the amounts below. Skipped when alertEmails is empty. A budget NOTIFIES — nothing about it caps spend.')
 param deployCostBudget bool = true
 
-@description('Expected monthly spend in USD for this deployment EXCLUDING the egress firewall: the two Container Apps environments — INCLUDING their own infrastructure resource groups, which hold a load balancer each and are ~$39/mo together — plus Postgres, Blob, both Key Vaults, Log Analytics + App Insights ingestion, DNS, and the availability tests. **SET THIS PER INSTALL.** There is no useful default: the Postgres SKU alone moves it by more than 2x (a Burstable B1ms install measured ~125/mo on 2026-09-04, a GeneralPurpose D2ds_v5 one ~240/mo on the same date), so a shared number is guaranteed wrong for one of them and the failure is a budget that fires every month on a healthy install. Re-measure after ANY SKU change — every budget threshold derives from this, so a stale value moves all of them.')
+@description('Expected monthly spend in USD for this deployment EXCLUDING the egress firewall: the two Container Apps environments — INCLUDING their own infrastructure resource groups, which hold a load balancer each and are ~$39/mo together — plus Postgres, Blob, both Key Vaults, Log Analytics + App Insights ingestion, DNS, and the availability tests. **SET THIS PER INSTALL.** There is no useful default: the Postgres SKU alone moves it by more than 2x (a Burstable B1ms install measured ~125/mo on 2026-09-04, a GeneralPurpose D2ds_v5 one ~240/mo on the same date), so a shared number is guaranteed wrong for one of them and the failure is a budget that fires every month on a healthy install. Re-measure after ANY SKU change — every budget threshold derives from this, so a stale value moves all of them. LLM spend is never part of this axis: with vendor-direct keys it is not in Azure at all, and with deployFoundry it bills into the Foundry account\'s own resource group, watched by llmMonthlyBudgetUsd instead.')
 param expectedMonthlyUsdExFirewall int = 125
 
 @description('What `deployFirewall` adds per month, in USD. ~920: Azure Firewall STANDARD tier is $1.25/hr of DEPLOYMENT TIME (~912/mo, flat — an idle firewall costs the same as a busy one) plus its static public IP, before $0.016/GB of data processing, which is rounding error at this platform\'s volumes. This one parameter is 88% of the bill when it is on: the firewall turns a ~125/mo install into a ~1045/mo one, and the budget has to follow it rather than being a constant.')
@@ -296,6 +305,14 @@ param budgetHeadroomPercent int = 160
 
 @description('Override the budget amount in USD, skipping the derivation entirely. 0 (the default) derives it as (expectedMonthlyUsdExFirewall + firewall, if deployed) x budgetHeadroomPercent, which is the only form that tracks `deployFirewall` on its own.')
 param monthlyCostBudgetUsd int = 0
+
+@description('''
+  The LLM-axis budget in USD/month (modules/alerts-cost-foundry.bicep), on the Foundry account's OWN resource group — a DIRECT amount, not derived:
+  LLM spend is usage-shaped, not calendar-linear, so the headroom arithmetic above transfers nothing; set the monthly number you want mail about.
+  Defaults to 1000 to match platformMonthlyUsdCap, the portal's display-only watch line for the same axis, so the Azure mail and the portal page are the
+  same line. 0 = no LLM budget. Only used with deployFoundry (+ deployCostBudget + alertEmails); with vendor-direct keys this spend is not in Azure at
+  all. Notification only — the real limits are the per-app daily token budgets (synchronous, at the edge) and the deployments' TPM capacity.''')
+param llmMonthlyBudgetUsd int = 1000
 
 @description('Budget start date. Must be the first of a month and, for a monthly budget, no earlier than the current one — so it defaults to the first of the current month at deploy time rather than a date that would age out of validity. Pin it in the .bicepparam if you want deploys to stop touching it.')
 param budgetStartDate string = utcNow('yyyy-MM-01')
@@ -531,12 +548,24 @@ module rbac 'modules/rbac.bicep' = {
 // identity's inference roles are assigned inside the module (the account is
 // conditional, so rbac.bicep's matrix can't hold them — the certbot/migrate
 // modules own theirs the same way).
+//
+// The account deploys into its OWN resource group via modules/foundry-rg.bicep
+// (subscription scope, same as the platform budget): the group boundary is the
+// platform/LLM cost-axis split, because consumption-budget filters are
+// AND-of-`In` only and cannot express "these groups except Foundry". With the
+// account in its own group, the platform budget below never sees LLM spend and
+// alerts-cost-foundry.bicep sees nothing else.
 // ---------------------------------------------------------------------------
 
-module foundry 'modules/foundry.bicep' = if (deployFoundry) {
+var foundryRgName = empty(foundryResourceGroupName) ? '${namePrefix}-foundry-rg' : foundryResourceGroupName
+
+module foundry 'modules/foundry-rg.bicep' = if (deployFoundry) {
   name: 'foundry'
+  scope: subscription()
   params: {
-    location: empty(foundryLocation) ? location : foundryLocation
+    rgName: foundryRgName
+    location: location
+    accountLocation: empty(foundryLocation) ? location : foundryLocation
     accountName: empty(foundryAccountName) ? '${namePrefix}-foundry' : foundryAccountName
     models: foundryModels
     providerAttestation: foundryAttestation
@@ -702,14 +731,15 @@ module egressCollector 'modules/otel-collector.bicep' = if (deployTelemetry && d
 // ---------------------------------------------------------------------------
 // Alerting
 // ---------------------------------------------------------------------------
-// Four modules, deliberately split by WHAT THEY READ rather than by what they
+// Five modules, deliberately split by WHAT THEY READ rather than by what they
 // are about, because that is what decides whether a rule can see a given
 // failure at all:
 //
 //   alerts.bicep             the platform's own telemetry (needs deployTelemetry)
 //   alerts-availability.bicep  an outside probe (needs deployTelemetry: App Insights)
 //   alerts-infra.bicep       Azure platform metrics (needs neither)
-//   alerts-cost.bicep        billing (needs neither, and is not about health)
+//   alerts-cost.bicep        billing, platform-infra axis (needs neither, not about health)
+//   alerts-cost-foundry.bicep  billing, LLM axis (deployFoundry only; own group, own budget)
 //
 // The first three notify through ONE action group. `alertEmails` empty means no
 // group is created at all: the rules still deploy and still fire, into nothing —
@@ -831,10 +861,10 @@ var effectiveBudgetUsd = monthlyCostBudgetUsd > 0 ? monthlyCostBudgetUsd : deriv
 // Deployed at SUBSCRIPTION scope, unlike everything else here, because the two
 // ACA managed environments bill into their own resource groups and a
 // resource-group-scoped budget cannot see them (~$39/mo per install, measured
-// 2026-09-04). The filter below puts the deployment's boundary back. Note this
-// makes the budget the one resource in this template that needs a permission at
-// subscription scope — a full apply already requires Owner for the role
-// assignments, so it costs nothing extra.
+// 2026-09-04). The filter below puts the deployment's boundary back. This
+// budget and the foundry-rg module above are the two resources in this
+// template that need a permission at subscription scope — a full apply already
+// requires Owner for the role assignments, so it costs nothing extra.
 module costBudget 'modules/alerts-cost.bicep' = if (deployCostBudget && effectiveBudgetUsd > 0 && !empty(alertEmails)) {
   name: 'platform-cost-budget'
   scope: subscription()
@@ -854,6 +884,27 @@ module costBudget 'modules/alerts-cost.bicep' = if (deployCostBudget && effectiv
       egressEnv.outputs.infrastructureResourceGroup
     ]
   }
+}
+
+// The LLM-axis counterpart, on the Foundry account's own resource group — the
+// split from the platform budget is topological (modules/foundry-rg.bicep), so
+// this one needs no filter: everything billing into that group is inference.
+// Only exists when this template deploys the account; with vendor-direct keys
+// LLM spend never enters Azure. Scoped by plain name + dependsOn rather than by
+// the module output, so the condition stays readable; deployFoundry is in both
+// conditions, so the dependency target always exists when this deploys.
+module llmBudget 'modules/alerts-cost-foundry.bicep' = if (deployFoundry && deployCostBudget && llmMonthlyBudgetUsd > 0 && !empty(alertEmails)) {
+  name: 'foundry-llm-budget'
+  scope: resourceGroup(foundryRgName)
+  params: {
+    namePrefix: namePrefix
+    monthlyBudgetUsd: llmMonthlyBudgetUsd
+    contactEmails: alertEmails
+    startDate: '${budgetStartDate}T00:00:00Z'
+  }
+  dependsOn: [
+    foundry
+  ]
 }
 
 // The egress environment is internal, and a workload-profiles environment does
@@ -1318,6 +1369,9 @@ output costBudgetUsd int = costBudget.?outputs.budgetUsd ?? 0
 
 @description('Expected monthly spend the budget was derived from, in USD — WITH the firewall counted when deployFirewall is set. Read this next to costBudgetUsd after a deploy that flips the firewall: the two move together or the thresholds are measuring the wrong month.')
 output expectedMonthlyUsd int = expectedMonthlyUsd
+
+@description('Monthly USD the Foundry LLM budget is watching on the account\'s own resource group, or 0 when none deployed (deployFoundry false, llmMonthlyBudgetUsd 0, deployCostBudget false, or alertEmails empty). Notification only — per-app daily token budgets and the deployments\' TPM capacity are the real limits.')
+output llmBudgetUsd int = llmBudget.?outputs.budgetUsd ?? 0
 // Feeds `portalIdentityPrincipalId` on the SIBLING ../entra stack, whose second pass
 // grants this identity GroupMember.Read.All on Microsoft Graph (ADR-0040 decision 4).
 // The two stacks deploy in the order entra -> azure -> entra: this output is the only
@@ -1326,6 +1380,9 @@ output portalIdentityPrincipalId string = identity.outputs.portalIdentityPrincip
 
 @description('Principal id of the egress managed identity — the platform\'s LLM inference caller. A BYO-Foundry customer grants this principal "Cognitive Services User" (+ "Cognitive Services OpenAI User") on their own account to go keyless (ADR-0046).')
 output egressIdentityPrincipalId string = identity.outputs.egressIdentityPrincipalId
+
+@description('The resource group the Foundry account deploys into — its OWN group, which is what keeps LLM spend out of the platform budget (modules/foundry-rg.bicep). Empty when deployFoundry is false.')
+output foundryResourceGroup string = deployFoundry ? foundryRgName : ''
 
 @description('The deployed Foundry account\'s data-plane origin (empty when deployFoundry is false), e.g. https://<name>.services.ai.azure.com.')
 output foundryOrigin string = foundry.?outputs.origin ?? ''

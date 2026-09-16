@@ -143,7 +143,7 @@ Two alert rules read that, and they read **different signals on purpose**
 | projection stale | `helix.registry.stale_for_ms` metric | An age needs a threshold, and this is the metric that made it one rule instead of KQL over log messages |
 | projection never loaded | `registry.never_loaded` log event | The gauge is *absent* in this state by design, and the counter that reports it is cumulative, so a threshold on it never stops firing |
 
-Three more modules alert on signals this platform does **not** emit, which is the
+Four more modules alert on signals this platform does **not** emit, which is the
 point of them — everything above goes quiet in exactly the failures that stop the
 process:
 
@@ -151,7 +151,8 @@ process:
 | --- | --- | --- |
 | `alerts-availability.bicep` | Application Insights **standard tests** against `auth.<appsDomain>/health` (+ the portal when external, + any `availabilityExtraTargets`) | Reachability, the health **body**, and TLS cert validity/expiry — from five Azure regions, i.e. from outside the platform |
 | `alerts-infra.bicep` | Azure platform metrics: `is_db_alive`, `storage_percent`, `RestartCount`, ingress `Requests` 5xx, Service Health | Postgres down or filling, container crash loops, edge server errors, Azure's own incidents |
-| `alerts-cost.bicep` | Billing | A monthly budget on the resource group. Notifies; never enforces |
+| `alerts-cost.bicep` | Billing | A monthly budget over the platform-infra resource groups (LLM spend is excluded by topology — the Foundry account has its own group). Notifies; never enforces |
+| `alerts-cost-foundry.bicep` | Billing | With `deployFoundry`: a monthly budget on the Foundry account's group — the LLM axis. Notifies; never enforces |
 
 The availability tests are the probe this page used to list under "not built":
 `/health` always answers 200, so grading it means reading the body, and a

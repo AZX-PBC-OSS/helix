@@ -94,8 +94,10 @@ param allowPasswordApps = false
 //    "Azure AI Foundry".
 param deployFoundry = false
 // param foundryAccountName = ''            // default ${namePrefix}-foundry; must be globally unique
+// param foundryResourceGroupName = ''      // default ${namePrefix}-foundry-rg — the account's OWN group: the split that keeps LLM spend out of the platform budget (README "Azure AI Foundry")
 // param foundryLocation = 'eastus2'
 // param foundryAttestation = { organizationName: 'Contoso', countryCode: 'US', industry: 'technology' }
+// param llmMonthlyBudgetUsd = 1000         // notify-only LLM budget on the Foundry group; 0 = none. Default matches platformMonthlyUsdCap so the Azure mail and the portal watch line agree
 
 // Fastify trustProxy for the edge — the ACA Envoy ingress ADDRESS, not a hop
 // count (fastify 5.12.1 removed the count form; GHSA-3m5p-2c4r-xxw2). 'auto'

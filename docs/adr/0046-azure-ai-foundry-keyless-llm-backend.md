@@ -80,7 +80,9 @@ mechanism, because there is no secret to seal.
    env change, not a rebuild.
 
 3. **One-stop Bicep.** `infra/azure/modules/foundry.bicep` behind
-   `param deployFoundry`: one `Microsoft.CognitiveServices/accounts` (kind
+   `param deployFoundry`, deployed into the account's own resource group via
+   `modules/foundry-rg.bicep` (the cost-axis split — see Consequences): one
+   `Microsoft.CognitiveServices/accounts` (kind
    `AIServices`, `customSubDomainName` — required for token auth,
    `disableLocalAuth: true` by default), one serverless `GlobalStandard`
    deployment per `foundryModels` entry (deployment name == catalog model id;
@@ -139,3 +141,21 @@ mechanism, because there is no secret to seal.
   deployment-name==catalog-id convention exists precisely to avoid it);
   per-model Azure list-price drift vs the platform price book (the catalog is
   the platform's price book; the customer's Azure bill is theirs).
+- **Cost-axis isolation is topological.** The account deploys into its own
+  resource group (`modules/foundry-rg.bicep`, `<namePrefix>-foundry-rg`)
+  because consumption-budget filters are a conjunction of `In` comparisons
+  with no `not` (verified against the `Microsoft.Consumption/budgets`
+  2024-08-01 schema, 2026-09): "the platform's groups except Foundry" is not
+  expressible. Both billing planes roll up under the account's group —
+  first-party account meters for Azure-sold (OpenAI-family) models,
+  Marketplace `<model>-<guid>` entries for Anthropic — so the platform budget
+  keeps zero filter surface and one group-scoped budget
+  (`modules/alerts-cost-foundry.bicep`, `llmMonthlyBudgetUsd`, default 1000 to
+  match the portal's `platformMonthlyUsdCap` watch line) covers all LLM spend.
+  Azure offers **no native hard spend cap** for Foundry — Microsoft's own docs
+  say so, and the only documented enforcement route (budget → action group →
+  custom automation) is a new subsystem riding on cost data that lands 8–24h
+  late; deliberately not built. The real caps stay where they were: the
+  per-app daily token budgets (synchronous, at the edge) and the
+  per-deployment TPM `capacity`, which is the hard, real-time, Azure-side
+  bound on burn rate.

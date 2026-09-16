@@ -81,12 +81,13 @@ The full story — quota, regions, Marketplace terms, bring-your-own — is on
 
 | Parameter | Default | What it is |
 | --- | --- | --- |
-| `deployFoundry` | `false` | Creates the account + deployments and wires both model families at it. Overrides the six `llm*` params |
+| `deployFoundry` | `false` | Creates the account (in its own resource group) + deployments and wires both model families at it. Overrides the six `llm*` params |
 | `foundryModels` | the platform's model catalog | Models to deploy: `{ name, format, modelVersion?, modelName?, skuName?, capacity?, raiPolicyName? }`. Deployment `name` == the model id apps request; `modelName` is the escape hatch when the Foundry catalog's model name differs from it. Deployments are pay-per-token and cost nothing idle |
 | `egressManagedIdentityConnections` | *(empty)* | BYO-Foundry keyless: `connection=host-suffix` pairs egress may mint managed-identity tokens for. Ignored when `deployFoundry` is on |
 | `foundryAttestation` | *(empty)* | Anthropic Marketplace attestation (`organizationName`/`countryCode`/`industry`) — required for Claude models on a fresh subscription |
 | `foundryLocation` | the platform `location` | Account region. Model availability is regional; Claude is narrower than GPT |
 | `foundryAccountName` | `<namePrefix>-foundry` | Globally unique (becomes `<name>.services.ai.azure.com`) |
+| `foundryResourceGroupName` | `<namePrefix>-foundry-rg` | The account's own resource group — the boundary that keeps LLM spend out of the platform budget and gives it its own |
 | `foundryDefaultCapacity` | `50` | Per-deployment rate limit in thousand-TPM units — a starting point; tiers scale with usage |
 | `foundryDisableLocalAuth` | `true` | Refuses API-key auth on the account. Leave on: with managed identity there are no keys to leak |
 
@@ -129,6 +130,7 @@ first-party defaults, or pointed at an existing Foundry account per the
 | `firewallMonthlyUsd` | `920` | What `deployFirewall` adds per month |
 | `budgetHeadroomPercent` | `160` | Budget = expected × this. Below ~125% the notifications become a monthly "all is well" reminder |
 | `monthlyCostBudgetUsd` | `0` | Override the derived budget entirely |
+| `llmMonthlyBudgetUsd` | `1000` | LLM-axis budget on the Foundry account's own group (`deployFoundry` only). A direct amount, not derived; `0` = no LLM budget. Notify-only — per-app daily budgets and the deployments' TPM capacity are the real limits |
 
 ## Secret environment variables
 
