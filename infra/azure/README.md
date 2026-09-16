@@ -127,12 +127,39 @@ Things to know before flipping it:
   compute (or Data Zone residency), restrict `foundryModels` to v2-hosted
   entries (`opus-5`, `opus-4-8`, `sonnet-5`, `haiku-4-5` at time of writing).
 - **Quota is per model per subscription and auto-tiers with usage.** Fresh
-  pay-as-you-go subscriptions get 40 RPM for most Claude models (0 for the
-  Fable line) and Tier-1 pools for GPT; increases come from the quota form or
-  arrive automatically with consumption. Deployments cost nothing when idle.
+  pay-as-you-go subscriptions get 40 RPM for most Claude models and Tier-1
+  pools for GPT — but **`claude-sonnet-5` and the Fable line start at 0**, and
+  because the deployments apply serially (`@batchSize(1)`), the first
+  zero-quota entry aborts the whole apply with no hint that quota is the
+  reason. That is why those models are **not in the default `foundryModels`**:
+  the default is the subset of the platform catalog a fresh subscription can
+  actually deploy (audited eastus2 2026-09-16; it also excludes
+  Deprecating-default models — `gpt-4o-mini`, `o3`, `o4-mini`, refused outright
+  — and the unverifiable `gpt-4.1` family). Every excluded model stays in the
+  platform catalog and works first-party; add it back once the quota form
+  lands. Increases arrive automatically with consumption, too. Deployments cost
+  nothing when idle.
+- **Check availability AND quota before an apply — they are different
+  questions, and the catalog answers only the first.** Two read-only commands:
+  `az cognitiveservices model list -l <region>` (per version, read
+  `isDefaultVersion` + `lifecycleStatus`; a `Deprecating` _default_ is refused)
+  and `az cognitiveservices usage list -l <region>` (read the
+  `AIServices.GlobalStandard.<model>` / `OpenAI.GlobalStandard.<model>` limits;
+  0 = the apply fails on that model). And when an apply does fail: the
+  actionable RP error (e.g. `ServiceModelDeprecating: ...`) is buried three
+  `details` levels deep in the `az deployment group create` stderr — the
+  deployment-operations view shows only a tracking id.
+- **The portal advertises what you deploy** (ADR-0047): on a `deployFoundry`
+  install the capability catalogue, the rendered agent skill, and the model
+  picker take their servable-model list from `foundryModels` automatically (the
+  template derives `PORTAL_LLM_MODEL_ALLOWLIST` from it — keyless wiring seeds
+  no `anthropic`/`openai` secret, so without the derivation the catalogue's
+  seeded-secret heuristic would advertise nothing). Prune a model here and the
+  portal stops offering it on the next apply; `llmModelAllowlist` /
+  `llmModelBlocklist` override for BYO and first-party installs.
 - **32 deployments per account** (Azure limit) bounds the deploy-the-catalog
-  default (~23 today); prune `foundryModels` or shard to a second account (BYO
-  wiring) if the catalog outgrows it.
+  shape (~20 in the catalog today); prune `foundryModels` or shard to a second
+  account (BYO wiring) if the catalog outgrows it.
 - **A catalog model with no deployment 404s upstream** — the app sees a 502.
   Adding one later is a `foundryModels` edit + apply (or a portal/CLI
   deployment named for the model id); no app or edge change.

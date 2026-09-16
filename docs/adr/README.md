@@ -61,3 +61,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0044](0044-declarative-wildcard-tls-bindings.md) | Declarative wildcard TLS custom-domain bindings | Accepted |
 | [0045](0045-app-triggered-durable-jobs-plane.md) | App-triggered durable jobs: a platform-owned plane behind an HTTP contract | Proposed |
 | [0046](0046-azure-ai-foundry-keyless-llm-backend.md) | Azure AI Foundry as a keyless LLM backend (egress mints Entra tokens) | Accepted |
+| [0047](0047-operator-declared-servable-model-set.md) | Operator-declared servable model set (allowlist/blocklist), catalogue-side only | Accepted |

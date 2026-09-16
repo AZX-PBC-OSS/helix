@@ -6,6 +6,7 @@ import {
   AppSchema,
   ApprovalRequestSchema,
   AuthConfigResponseSchema,
+  CapabilityCatalogueSchema,
   CollectionItemsPageSchema,
   CollectionSummarySchema,
   CspViolationsPageSchema,
@@ -257,6 +258,23 @@ export const deploymentConfigQuery = queryOptions({
 export const skillQuery = queryOptions({
   queryKey: ["skill"],
   queryFn: async () => (await fetchText("/api/v1/skill")).body,
+  staleTime: Infinity,
+  retry: false,
+});
+
+/**
+ * The deployment capability catalogue (`GET /api/v1/capabilities`, ADR-0036) —
+ * the instance-wide statement of what this deployment can serve. The model
+ * picker's list comes from `llm.models` here (the *servable* set, ADR-0047),
+ * not from the bundle's build-time `MODEL_PRICING`, so a model the operator
+ * has withheld never shows up as a checkbox. Fixed for the page lifetime (the
+ * servable set changes only with a platform config change), so
+ * `staleTime: Infinity`; bearer-gated, so callers gate on `authenticated` via
+ * `enabled` — consume it through `useCatalogue()` (lib/catalogue.ts).
+ */
+export const catalogueQuery = queryOptions({
+  queryKey: ["catalogue"],
+  queryFn: () => fetchJson(CapabilityCatalogueSchema, "/api/v1/capabilities"),
   staleTime: Infinity,
   retry: false,
 });

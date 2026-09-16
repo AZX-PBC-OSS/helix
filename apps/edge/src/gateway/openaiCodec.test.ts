@@ -508,7 +508,7 @@ describe("authz maps to OpenAI errors", () => {
     const edge = buildEdge(); // allowlist is [claude-opus-4-8]
     const token = await seedSession(edge.sessions);
     const res = await completions(edge, token, {
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [{ role: "user", content: "hi" }],
     });
     expect(res.statusCode).toBe(403);
@@ -517,28 +517,28 @@ describe("authz maps to OpenAI errors", () => {
 });
 
 describe("OpenAI models flow through and meter at OpenAI rates", () => {
-  it("serves gpt-4o-mini and meters its cost", async () => {
-    const edge = buildEdge({ models: ["gpt-4o-mini"] });
+  it("serves gpt-4.1 and meters its cost", async () => {
+    const edge = buildEdge({ models: ["gpt-4.1"] });
     const token = await seedSession(edge.sessions);
     const res = await completions(edge, token, {
-      model: "gpt-4o-mini",
+      model: "gpt-4.1",
       messages: [{ role: "user", content: "hi" }],
     });
     expect(res.statusCode).toBe(200);
-    expect(edge.provider.calls[0]?.model).toBe("gpt-4o-mini");
-    // 5 in * $0.15/Mtok + 2 out * $0.60/Mtok = 1.95 micro-USD -> rounds to 2.
-    expect(edge.usage.records[0]).toMatchObject({ model: "gpt-4o-mini", costMicroUsd: 2 });
+    expect(edge.provider.calls[0]?.model).toBe("gpt-4.1");
+    // 5 in * $2/Mtok + 2 out * $8/Mtok = 26 micro-USD exactly.
+    expect(edge.usage.records[0]).toMatchObject({ model: "gpt-4.1", costMicroUsd: 26 });
   });
 });
 
 describe("routing", () => {
   it("503s a curated model whose upstream family is not configured", async () => {
-    // A routing provider with only anthropic wired; the app allowlists gpt-4o-mini.
+    // A routing provider with only anthropic wired; the app allowlists gpt-4o.
     const routing = new RoutingLlmProvider({ anthropic: new FakeLlmProvider(), openai: null });
-    const edge = buildEdge({ models: ["gpt-4o-mini"], provider: routing });
+    const edge = buildEdge({ models: ["gpt-4o"], provider: routing });
     const token = await seedSession(edge.sessions);
     const res = await completions(edge, token, {
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [{ role: "user", content: "hi" }],
     });
     expect(res.statusCode).toBe(503);
@@ -556,13 +556,13 @@ describe("GET /_api/openai/v1/models", () => {
   }
 
   it("lists the app's allowlisted models in OpenAI list shape", async () => {
-    const edge = buildEdge({ models: [MODEL, "gpt-4o-mini"] });
+    const edge = buildEdge({ models: [MODEL, "gpt-4o"] });
     const token = await seedSession(edge.sessions);
     const res = await models(edge, token);
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.object).toBe("list");
-    expect(body.data.map((m: { id: string }) => m.id)).toEqual([MODEL, "gpt-4o-mini"]);
+    expect(body.data.map((m: { id: string }) => m.id)).toEqual([MODEL, "gpt-4o"]);
     // `created` is required on the OpenAI Model object.
     expect(body.data[0]).toMatchObject({ object: "model", owned_by: "helix", created: 0 });
   });

@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
+  APPROVAL_BASELINES,
   BASELINE_DOLLARS_PER_DAY,
   CURATED_LLM_MODELS,
+  ELEVATION_TRIGGERS,
   type App,
   type AppManifest,
   type Capabilities,
+  type CapabilityCatalogue,
 } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { CapabilitiesTab } from "../pages/tabs/CapabilitiesTab";
@@ -37,10 +40,42 @@ function manifest(capabilities: Partial<Capabilities>): AppManifest {
 }
 
 /**
- * Serve the manifest GET (and an empty secrets list for the SecretsCard); auth
+ * A catalogue body valid against `CapabilityCatalogueSchema` (the SPA parses
+ * the response), with the servable model list — the field under test — as the
+ * one knob. Defaults to the full curated set, the shape of a first-party
+ * deployment with both families seeded.
+ */
+function catalogueBody(servable: readonly string[] = CURATED_LLM_MODELS): CapabilityCatalogue {
+  return {
+    visibility: { modes: ["internal"] },
+    llm: { models: [...servable], baselineDollarsPerDay: APPROVAL_BASELINES.dollarsPerDay },
+    data: {
+      provisioned: true,
+      baselineWritesPerDay: APPROVAL_BASELINES.writesPerDay,
+      baselineBytesPerDay: APPROVAL_BASELINES.bytesPerDay,
+    },
+    fetch: {
+      externalOriginsPermitted: true,
+      connections: [],
+      baselineRequestsPerDay: APPROVAL_BASELINES.fetchRequestsPerDay,
+    },
+    mcp: { enforced: false },
+    offline: {
+      available: true,
+      scopeRule: "must not be the domain root or a /_… reserved path",
+    },
+    deploy: { maxFileMb: 50, maxBundleMb: 250 },
+    approval: { baselines: APPROVAL_BASELINES, elevationTriggers: [...ELEVATION_TRIGGERS] },
+  };
+}
+
+/**
+ * Serve the manifest GET, an empty secrets list for the SecretsCard, and the
+ * capability catalogue (ADR-0036) the model picker now renders from; auth
  * config + /me pend forever, irrelevant here. `retry: false` keeps it quiet.
  */
-function stubFetch(m: AppManifest): void {
+function stubFetch(m: AppManifest, opts: { servable?: readonly string[] } = {}): void {
+  const catalogue = catalogueBody(opts.servable);
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) => {
@@ -50,12 +85,18 @@ function stubFetch(m: AppManifest): void {
       if (typeof url === "string" && url.endsWith("/secrets")) {
         return Promise.resolve({ ok: true, status: 200, json: async () => [] });
       }
+      if (typeof url === "string" && url.endsWith("/api/v1/capabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => catalogue });
+      }
       return new Promise(() => {});
     }),
   );
 }
 
 function render() {
+  // The catalogue query is bearer-gated (`enabled: authenticated`), so every
+  // scenario here is a signed-in owner's.
+  setToken("test-token");
   return renderWithProviders(
     <AuthProvider>
       <CapabilitiesTab app={makeApp()} />
@@ -69,15 +110,46 @@ afterEach(() => {
 });
 
 describe("CapabilitiesTab — LLM access", () => {
-  it("renders the priced catalogue as checkbox rows", async () => {
+  it("renders the advertised catalogue as checkbox rows", async () => {
     stubFetch(manifest({}));
     render();
-    // Every curated model shows up with a toggle.
+    // Every advertised model shows up with a toggle (the stub advertises the
+    // full curated set, so this also proves catalogue order reaches the table).
     for (const id of CURATED_LLM_MODELS) {
       expect(await screen.findByRole("checkbox", { name: id })).toBeDefined();
     }
     // ...and at least one catalogue rate is visible.
     expect(screen.getAllByText("$1").length).toBeGreaterThan(0); // haiku input rate
+  });
+
+  it("offers only the models this deployment advertises", async () => {
+    // A deployment that withholds most of the catalog (ADR-0047): the picker
+    // lists exactly the servable set, not the bundle's build-time catalog.
+    stubFetch(manifest({}), { servable: ["claude-opus-4-8", "claude-haiku-4-5"] });
+    render();
+    expect(await screen.findByRole("checkbox", { name: "claude-opus-4-8" })).toBeDefined();
+    expect(screen.getByRole("checkbox", { name: "claude-haiku-4-5" })).toBeDefined();
+    // Catalogued but withheld: never offered as a checkbox.
+    expect(screen.queryByRole("checkbox", { name: "gpt-5-mini" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "claude-fable-5" })).toBeNull();
+  });
+
+  it("flags a granted-but-withheld model rather than hiding it", async () => {
+    // The grant predates (or bypasses) the operator's restriction: the row must
+    // stay visible and removable, or the saved state would be invisible.
+    stubFetch(manifest({ llm: { models: ["claude-fable-5"], dollarsPerDay: 10 } }), {
+      servable: ["claude-opus-4-8"],
+    });
+    render();
+    const box = (await screen.findByRole("checkbox", {
+      name: "claude-fable-5",
+    })) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(await screen.findByText(/withheld on this deployment/)).toBeDefined();
+    // Unchecking drops it from the grant (the ordinary removal path) — the row
+    // leaves the table once the draft no longer holds the model.
+    await userEvent.click(box);
+    await waitFor(() => expect(screen.queryByText(/withheld on this deployment/)).toBeNull());
   });
 
   it("defaults the spend cap to $10 when the first model is enabled", async () => {
@@ -176,6 +248,9 @@ describe("CapabilitiesTab — a save that conflicts", () => {
         }
         if (typeof url === "string" && url.endsWith("/secrets")) {
           return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+        }
+        if (typeof url === "string" && url.endsWith("/api/v1/capabilities")) {
+          return Promise.resolve({ ok: true, status: 200, json: async () => catalogueBody() });
         }
         return new Promise(() => {});
       }),

@@ -148,6 +148,24 @@ param llmOpenAiPath string = '/v1/chat/completions'
 @description('Name of the `platform` secret (or managed-identity rule, ADR-0046) holding the OpenAI-family vendor credential.')
 param llmOpenAiConnection string = 'openai'
 
+// ── Servable-model policy (ADR-0047) ─────────────────────────────────────────
+// What the portal ADVERTISES (catalogue / rendered skill / SPA model picker) —
+// independent of what the edge can route, though the two should agree.
+@description('''
+  LLM catalog ids (packages/shared/src/pricing.ts) this install advertises — PORTAL_LLM_MODEL_ALLOWLIST. Empty = no override: the
+  catalogue derives servability from seeded platform secrets (the ADR-0036 heuristic). With deployFoundry AND an empty list, the portal
+  env AUTO-DERIVES from foundryModels, so the catalogue reads exactly what was deployed — the heuristic cannot see keyless wiring, and
+  without the derivation a Foundry install would advertise nothing. Entries naming no catalog id are ignored (warn-logged): pricing and
+  routing stay in code; there is no dynamic catalogue. Display-surface policy only — a hand-written manifest naming a withheld-but-priced
+  model still saves, then fails at the upstream (the documented backstop).''')
+param llmModelAllowlist array = []
+
+@description('''
+  LLM catalog ids to withhold even when otherwise servable — PORTAL_LLM_MODEL_BLOCKLIST, subtracted after the allowlist (or heuristic)
+  is applied. The first-party/BYO operator's "everything except these" knob, e.g. ['claude-fable-5', 'claude-fable-5-1'] when the Fable
+  line isn't enabled on this install's upstream.''')
+param llmModelBlocklist array = []
+
 // ── Azure AI Foundry (ADR-0046) ──────────────────────────────────────────────
 @description('''
   One-stop Azure AI Foundry: deploy a Foundry account into this resource group with the foundryModels deployments, grant the egress identity
@@ -170,14 +188,16 @@ param foundryLocation string = ''
   raiPolicyName? }. The DEPLOYMENT NAME IS the platform catalog model id (packages/shared/src/pricing.ts) — apps address models unchanged and
   metering keeps working, because the edge forwards the model id verbatim and Foundry routes on deployment name. `modelName` is the escape
   hatch when the Foundry catalog's model name differs from that id (deployment keeps the catalog name, serves the named model);
-  `raiPolicyName` overrides the Microsoft.DefaultV2 content policy per entry. The default is the full catalog at time of writing; prune freely
-  (each Anthropic entry needs the offer attestation in foundryAttestation). Limits: 32 deployments per account, and quota is per model per
-  subscription — these entries do not compete with each other. An app that requests a catalog model NOT deployed here gets an upstream 404.''')
+  `raiPolicyName` overrides the Microsoft.DefaultV2 content policy per entry. The default is the portion of the catalog a FRESH pay-as-you-go
+  subscription can actually deploy (audited eastus2 2026-09-16): it excludes models whose default version the RP reports as Deprecating
+  (gpt-4o-mini, o3, o4-mini — refused outright), models with zero GlobalStandard quota on a new subscription (claude-sonnet-5 and the Fable
+  line — add them back once the quota form lands; the catalogue follows this list automatically, see llmModelAllowlist), and the gpt-4.1
+  family (unverifiable at audit time). Every excluded model stays in the platform catalog and works first-party or here once quota exists.
+  Prune or extend freely (each Anthropic entry needs the offer attestation in foundryAttestation). Limits: 32 deployments per account, and
+  quota is per model per subscription — these entries do not compete with each other. An app that requests a catalog model NOT deployed
+  here gets an upstream 404.''')
 param foundryModels array = [
-  { name: 'claude-fable-5-1', format: 'Anthropic' }
-  { name: 'claude-fable-5', format: 'Anthropic' }
   { name: 'claude-opus-5', format: 'Anthropic' }
-  { name: 'claude-sonnet-5', format: 'Anthropic' }
   { name: 'claude-opus-4-8', format: 'Anthropic' }
   { name: 'claude-opus-4-7', format: 'Anthropic' }
   { name: 'claude-opus-4-6', format: 'Anthropic' }
@@ -191,12 +211,6 @@ param foundryModels array = [
   { name: 'gpt-5-mini', format: 'OpenAI' }
   { name: 'gpt-5-nano', format: 'OpenAI' }
   { name: 'gpt-4o', format: 'OpenAI' }
-  { name: 'gpt-4o-mini', format: 'OpenAI' }
-  { name: 'gpt-4.1', format: 'OpenAI' }
-  { name: 'gpt-4.1-mini', format: 'OpenAI' }
-  { name: 'gpt-4.1-nano', format: 'OpenAI' }
-  { name: 'o3', format: 'OpenAI' }
-  { name: 'o4-mini', format: 'OpenAI' }
 ]
 
 @description('''
@@ -597,6 +611,16 @@ var llm = {
 var foundryMiConnections = deployFoundry
   ? 'foundry=${foundryHost},foundry-openai=${foundryHost}'
   : egressManagedIdentityConnections
+
+// What the portal advertises (ADR-0047): an explicit allowlist wins; on a
+// deployFoundry install with none, the deployed set IS the advertised set —
+// foundryModels deployment names are catalog ids by construction, and the
+// catalogue's seeded-secret heuristic cannot see keyless wiring (no `anthropic`
+// /`openai` secret exists), so without this a Foundry install would advertise
+// nothing. Pruning foundryModels thus prunes the catalogue on the next apply.
+var effectiveModelAllowlist = !empty(llmModelAllowlist)
+  ? llmModelAllowlist
+  : (deployFoundry ? map(foundryModels, m => m.name) : [])
 
 // ---------------------------------------------------------------------------
 // Platform secrets (kv-platform). ARM-plane writes bypass the vault firewall.
@@ -1158,6 +1182,11 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       // 'True', which reads as false.
       { name: 'PORTAL_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
       { name: 'PORTAL_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
+      // Servable-model policy (ADR-0047) — semantics on the llmModel* params.
+      // The portal parses an empty/whitespace string as "unset", which is what
+      // makes the foundryModels auto-derivation skippable by an explicit list.
+      { name: 'PORTAL_LLM_MODEL_ALLOWLIST', value: join(effectiveModelAllowlist, ',') }
+      { name: 'PORTAL_LLM_MODEL_BLOCKLIST', value: join(llmModelBlocklist, ',') }
       // Deployment topology, served to the prebuilt portal SPA at runtime by
       // GET /api/v1/config — the bundle is baked into this image, so anything it
       // burned in at build time would be wrong in every environment but one.

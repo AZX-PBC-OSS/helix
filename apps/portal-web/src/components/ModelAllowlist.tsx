@@ -1,22 +1,30 @@
 import { useState, type CSSProperties } from "react";
 import { Box, Button, Group, NumberInput, Table, Text, TextInput } from "@mantine/core";
 import { MODEL_PRICING, priceForModel } from "@azx-pbc/shared";
+import { useCatalogue } from "../lib/catalogue";
 import { fmtCount } from "../lib/format";
 import { Icon } from "./Icon";
 import { ToneBadge } from "./primitives";
 
 /**
- * The LLM model allowlist, picked from the priced catalogue (`MODEL_PRICING`)
- * rather than typed blind. One table with two halves: the static catalogue rate
- * ($/Mtok) and the budget-driven view (tok/day) of what the daily cap buys. A
- * divider separates them and the cap input lives in the header directly above
- * the columns it drives, so the control sits on its own data. The tok/day cells
- * stay present (showing `—` until a cap is set) so checking a row never reshapes
- * the table. Off-catalogue models can still be added via the escape hatch —
- * they're unpriced (the edge refuses them) and route to admin approval.
+ * The LLM model allowlist, picked from this deployment's **servable** set —
+ * `GET /api/v1/capabilities`' `llm.models` (ADR-0036/ADR-0047) — rather than
+ * typed blind, and rather than the bundle's build-time catalog: a model the
+ * operator has withheld (or whose family has no seeded key) is never offered
+ * as a checkbox, so an owner can't grant a model that would 404/502 at call
+ * time. Rates still come from the bundle (`priceForModel`) — a price is a
+ * per-model fact; only the list varies per deployment.
+ *
+ * One table with two halves: the static catalogue rate ($/Mtok) and the
+ * budget-driven view (tok/day) of what the daily cap buys. A divider separates
+ * them and the cap input lives in the header directly above the columns it
+ * drives, so the control sits on its own data. The tok/day cells stay present
+ * (showing `—` until a cap is set) so checking a row never reshapes the table.
+ * Two off-list row classes keep saved state visible: a granted model the
+ * deployment withholds renders flagged (uncheck to remove), and off-catalogue
+ * customs keep the escape hatch — they're unpriced (the edge refuses them) and
+ * route to admin approval.
  */
-
-const CATALOG = Object.keys(MODEL_PRICING);
 
 /** The vertical rule splitting the static (catalogue) and dynamic (budget) halves. */
 const DIVIDER: CSSProperties = { borderLeft: "1px solid var(--az-line)" };
@@ -45,7 +53,15 @@ export function ModelAllowlist({
   onCapChange: (dollarsPerDay: number | undefined) => void;
 }) {
   const [custom, setCustom] = useState("");
+  const { catalogue, failed } = useCatalogue();
   const selected = new Set(models);
+  // The three row classes partition the grant: advertised here, catalogued but
+  // withheld here, and off-catalogue entirely. Until the catalogue lands (or
+  // if it fails) nothing is classified — the loading/failed note stands in, so
+  // a granted model never flashes a false "withheld" flag.
+  const available = catalogue?.llm.models ?? [];
+  const withheldModels =
+    catalogue === null ? [] : models.filter((m) => m in MODEL_PRICING && !available.includes(m));
   const customModels = models.filter((m) => !(m in MODEL_PRICING));
   const capDisabled = models.length === 0;
 
@@ -113,7 +129,18 @@ export function ModelAllowlist({
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody className="az-mono">
-          {CATALOG.map((id) => {
+          {catalogue === null && (
+            <Table.Tr>
+              <Table.Td colSpan={6}>
+                <Text fz={12} c={failed ? "yellow.6" : "dark.2"}>
+                  {failed
+                    ? "This deployment's model catalogue didn't load — reload to retry. Granted models still apply; they just can't be edited here."
+                    : "Loading this deployment's model catalogue…"}
+                </Text>
+              </Table.Td>
+            </Table.Tr>
+          )}
+          {available.map((id) => {
             const price = priceForModel(id)!;
             const on = selected.has(id);
             return (
@@ -144,6 +171,22 @@ export function ModelAllowlist({
               </Table.Tr>
             );
           })}
+          {withheldModels.map((id) => (
+            <Table.Tr key={id} data-selected>
+              <Table.Td>
+                <input type="checkbox" checked onChange={() => toggle(id, false)} aria-label={id} />
+              </Table.Td>
+              <Table.Td style={{ whiteSpace: "nowrap" }}>{id}</Table.Td>
+              <Table.Td colSpan={2} ta="right">
+                <ToneBadge tone="warn" icon="alert">
+                  withheld on this deployment
+                </ToneBadge>
+              </Table.Td>
+              <Table.Td colSpan={2} ta="right" style={DIVIDER} c="dark.3">
+                calls fail while it stays granted
+              </Table.Td>
+            </Table.Tr>
+          ))}
           {customModels.map((id) => (
             <Table.Tr key={id} data-selected>
               <Table.Td>
@@ -166,7 +209,7 @@ export function ModelAllowlist({
       <Group gap={8} mt={12} align="flex-end">
         <TextInput
           label="Add a custom model"
-          description="Off-catalogue ids are unpriced (the gateway refuses them) and need admin approval."
+          description="Off-catalogue ids are unpriced (the gateway refuses them) and need admin approval. A catalogued id this deployment withholds shows flagged above and fails at call time."
           placeholder="model id"
           value={custom}
           onChange={(e) => setCustom(e.currentTarget.value)}

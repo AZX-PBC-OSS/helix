@@ -82,7 +82,7 @@ The full story — quota, regions, Marketplace terms, bring-your-own — is on
 | Parameter | Default | What it is |
 | --- | --- | --- |
 | `deployFoundry` | `false` | Creates the account (in its own resource group) + deployments and wires both model families at it. Overrides the six `llm*` params |
-| `foundryModels` | the platform's model catalog | Models to deploy: `{ name, format, modelVersion?, modelName?, skuName?, capacity?, raiPolicyName? }`. Deployment `name` == the model id apps request; `modelName` is the escape hatch when the Foundry catalog's model name differs from it. Deployments are pay-per-token and cost nothing idle |
+| `foundryModels` | the catalog subset a fresh subscription can deploy | Models to deploy: `{ name, format, modelVersion?, modelName?, skuName?, capacity?, raiPolicyName? }`. Deployment `name` == the model id apps request; `modelName` is the escape hatch when the Foundry catalog's model name differs from it. Deployments are pay-per-token and cost nothing idle. The default excludes models a fresh pay-as-you-go subscription cannot deploy (Deprecating defaults, zero-quota Claude incl. `claude-sonnet-5`, unverified `gpt-4.1` family) — add them back once quota/verification lands |
 | `egressManagedIdentityConnections` | *(empty)* | BYO-Foundry keyless: `connection=host-suffix` pairs egress may mint managed-identity tokens for. Ignored when `deployFoundry` is on |
 | `foundryAttestation` | *(empty)* | Anthropic Marketplace attestation (`organizationName`/`countryCode`/`industry`) — required for Claude models on a fresh subscription |
 | `foundryLocation` | the platform `location` | Account region. Model availability is regional; Claude is narrower than GPT |
@@ -101,6 +101,8 @@ first-party defaults, or pointed at an existing Foundry account per the
 | Parameter | Default | What it is |
 | --- | --- | --- |
 | `llmEndpoint` / `llmOpenAiEndpoint` | `https://api.anthropic.com` / `https://api.openai.com` | The LLM upstreams the edge gateway proxies to (per model family). See [Azure AI Foundry](/deploy/foundry) for pointing them at your own subscription |
+| `llmModelAllowlist` | *(empty)* | Catalog ids the portal advertises as servable (capability catalogue, agent skill, model picker). Empty with `deployFoundry` auto-derives from `foundryModels`; empty without it derives from seeded platform secrets. Set it to declare the set explicitly (e.g. a BYO Foundry serving a subset). Ids outside the platform catalog are ignored |
+| `llmModelBlocklist` | *(empty)* | Catalog ids withheld even when otherwise servable, subtracted in either allowlist mode — the "everything except these" knob (e.g. `['claude-fable-5']` when your Anthropic upstream lacks that line) |
 | `platformMonthlyUsdCap` | `1000` | Display-only LLM spend line on the admin Activity page. `0` hides it. Nothing enforces it — per-app daily budgets are the real limit |
 | `deployMaxFileMb` | `50` | Max uncompressed size of any single file in a deployed bundle |
 | `deployMaxBundleMb` | `250` | Max uncompressed size of the whole bundle (and the compressed upload). Raising it a lot wants more CPU/memory on the portal container |

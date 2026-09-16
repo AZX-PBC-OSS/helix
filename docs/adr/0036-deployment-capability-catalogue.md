@@ -25,9 +25,13 @@ constrains the value the catalogue delivers today:
   `RoutingLlmProvider.supports()`") therefore holds *under the symmetric-wiring
   assumption*, not by construction. An operator who overrode
   `EDGE_LLM_*_CONNECTION` would see inaccurate filtering. Closing this fully
-  needs the edge to report its wired families (a new field on `/health` checks[]
-  or a new edge endpoint the portal reads at catalogue-build time) — additive,
-  not blocking.
+   needs the edge to report its wired families (a new field on `/health` checks[]
+   or a new edge endpoint the portal reads at catalogue-build time) — additive,
+   not blocking. **Amended by ADR-0047:** this heuristic is now the *fallback* —
+   an operator allowlist (`PORTAL_LLM_MODEL_ALLOWLIST`, Bicep-derived from
+   `foundryModels` on `deployFoundry` installs) replaces it, which is also what
+   closes the family-not-wired gap for keyless Foundry (no seeded secret
+   exists there).
 - **Connections are listed by name only, without the origin each fronts.** A
   `global`-scope secret has no stored origin — the origin is declared per-app in
   each manifest's `fetch.origins` — so the ADR's "each with the origin it fronts"

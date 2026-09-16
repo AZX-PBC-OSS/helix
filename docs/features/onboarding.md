@@ -49,10 +49,14 @@ at `GET /api/v1/skill` from the capability catalogue, and the SPA fetches that (
 deployment with no dev gateway loses that section entirely rather than being handed a base URL that
 will never answer — the same degradation the **Dev mode** tab does.
 
-The models offered come from the catalogue's **servable** list (curated ∩ the upstream family has a
-seeded `platform` secret), not the curated superset, so "what this platform will serve" cannot drift
-from what it prices *and* what it can actually route — a deployment that never seeded the `openai`
-key stops advertising `gpt-*` rather than 502ing at call time.
+The models offered come from the catalogue's **servable** list, not the curated superset, so "what
+this platform will serve" cannot drift from what it prices *and* what it can actually route. The
+operator's declaration wins when one exists (`PORTAL_LLM_MODEL_ALLOWLIST`/`PORTAL_LLM_MODEL_BLOCKLIST`,
+ADR-0047 — on `deployFoundry` installs the Bicep derives the allowlist from `foundryModels`, so the
+skill lists exactly what the account deployed); otherwise the ADR-0036 heuristic applies (curated ∩
+the upstream family has a seeded `platform` secret — a deployment that never seeded the `openai` key
+stops advertising `gpt-*` rather than 502ing at call time). The SPA's model picker reads the same
+catalogue endpoint, so a withheld model is never a checkbox either.
 
 ### Why it's fetched, not bundled
 

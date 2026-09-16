@@ -139,7 +139,7 @@ describe("the OpenAI catalog's request shape", () => {
   // deprecated `max_tokens` (apps/edge/src/gateway/provider.ts). A current-generation
   // model that arrives without the flag gets `max_tokens` and is rejected upstream —
   // a 400 on every call to that model, which no other test would catch.
-  const TAKES_MAX_TOKENS = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"];
+  const TAKES_MAX_TOKENS = ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"];
 
   it("marks every model newer than the gpt-4.x line as a reasoning model", () => {
     const openai = Object.entries(MODEL_PRICING).filter(([, p]) => p.provider === "openai");

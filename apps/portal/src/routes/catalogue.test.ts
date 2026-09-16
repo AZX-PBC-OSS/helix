@@ -158,6 +158,46 @@ describe("GET /api/v1/capabilities", () => {
     });
   });
 
+  describe("operator model policy (ADR-0047)", () => {
+    it("an allowlist replaces the seeded-secret heuristic entirely", async () => {
+      // The keyless-Foundry shape: NO platform secrets seeded, yet the deployed
+      // models must advertise — the operator's declaration IS the servable set.
+      await cleanupSeeded();
+      await withEnv({ PORTAL_LLM_MODEL_ALLOWLIST: "claude-opus-4-8,gpt-5-mini" }, async () => {
+        const body = await catalogue();
+        expect(body.llm.models).toEqual(["claude-opus-4-8", "gpt-5-mini"]);
+      });
+      // …and with the var gone, the heuristic resumes.
+      await seedSecret({ scope: "platform", name: "anthropic" });
+      const after = await catalogue();
+      expect(after.llm.models).toContain("claude-opus-4-8");
+      expect(after.llm.models).not.toContain("gpt-5-mini");
+      await cleanupSeeded();
+    });
+
+    it("drops allowlist entries that name no catalog model", async () => {
+      await cleanupSeeded();
+      await withEnv({ PORTAL_LLM_MODEL_ALLOWLIST: "claude-opus-4-8,claude-typo-9" }, async () => {
+        const body = await catalogue();
+        expect(body.llm.models).toEqual(["claude-opus-4-8"]);
+      });
+    });
+
+    it("subtracts the blocklist from the heuristic result", async () => {
+      await cleanupSeeded();
+      await seedSecret({ scope: "platform", name: "anthropic" });
+      await seedSecret({ scope: "platform", name: "openai" });
+      await withEnv({ PORTAL_LLM_MODEL_BLOCKLIST: "claude-fable-5,claude-fable-5-1" }, async () => {
+        const body = await catalogue();
+        expect(body.llm.models).not.toContain("claude-fable-5");
+        expect(body.llm.models).not.toContain("claude-fable-5-1");
+        expect(body.llm.models).toContain("claude-opus-4-8");
+        expect(body.llm.models).toContain("gpt-5-mini");
+      });
+      await cleanupSeeded();
+    });
+  });
+
   describe("fetch connections", () => {
     it("lists global connection names, not app-scoped secrets", async () => {
       await cleanupSeeded();
@@ -265,6 +305,21 @@ describe("GET /api/v1/skill", () => {
     } finally {
       await cleanupSeeded();
     }
+  });
+
+  // Same tie for the operator-declared path (ADR-0047): the skill an agent
+  // reads must not name a model this deployment withholds.
+  it("renders the operator-declared allowlist, with no secrets seeded", async () => {
+    await cleanupSeeded();
+    await withEnv({ PORTAL_LLM_MODEL_ALLOWLIST: "claude-opus-4-8" }, async () => {
+      const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+      const line = res.body
+        .split("\n")
+        .find((l) => l.includes("Models this platform prices and will serve"));
+      expect(line).toBeDefined();
+      expect(line).toContain("claude-opus-4-8");
+      expect(line).not.toContain("gpt-4o");
+    });
   });
 });
 

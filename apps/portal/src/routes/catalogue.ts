@@ -5,12 +5,11 @@ import {
   APPROVAL_BASELINES,
   CapabilityCatalogueSchema,
   ELEVATION_TRIGGERS,
-  MODEL_PRICING,
-  providerForModel,
   type CapabilityCatalogue,
 } from "@azx-pbc/shared";
 import { renderSkill, type SkillVars } from "@azx-pbc/deploy-skill";
 import { authenticate } from "../plugins/auth.js";
+import { modelPolicy, servableLlmModels } from "../policy/modelPolicy.js";
 import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import { resolveAppPublicBase, resolveDevApiBase } from "../deployment.js";
 import { resolveMaxFileBytes, resolveMaxTotalBytes } from "../deploy/limits.js";
@@ -71,20 +70,34 @@ async function buildCatalogue(app: FastifyInstance): Promise<CapabilityCatalogue
     allowPasswordApps: passwordAppsAllowed(),
   });
 
-  // ── Servable LLM models: curated ∩ (family has a seeded platform secret).
-  // The platform secret name defaults to the provider family (`anthropic` /
-  // `openai`); an operator who overrode `EDGE_LLM_*_CONNECTION` would see
-  // inaccurate filtering here — consistent with the accepted symmetric-wiring
-  // assumption (ADR-0036, "secret-seeded only" for v1).
-  const platformRows = await app.prisma.appSecret.findMany({
-    where: { scope: "platform", env: "prod" },
-    select: { name: true },
-  });
-  const seededFamilies = new Set(platformRows.map((r) => r.name));
-  const servableModels = Object.keys(MODEL_PRICING).filter((m) => {
-    const family = providerForModel(m);
-    return family !== undefined && seededFamilies.has(family);
-  });
+  // ── Servable LLM models: the operator's declaration when one exists
+  // (PORTAL_LLM_MODEL_ALLOWLIST/BLOCKLIST, ADR-0047), else the ADR-0036 v1
+  // heuristic — curated ∩ (family has a seeded platform secret). The platform
+  // secret name defaults to the provider family (`anthropic` / `openai`); an
+  // operator who overrode `EDGE_LLM_*_CONNECTION` would see inaccurate
+  // filtering here — consistent with the accepted symmetric-wiring assumption
+  // (ADR-0036, "secret-seeded only" for v1). The allowlist is the fix for the
+  // wiring the heuristic cannot see (keyless Foundry seeds no secret), so the
+  // secret read is skipped entirely when one is set.
+  const policy = modelPolicy();
+  const seededFamilies =
+    policy.allowlist !== null
+      ? new Set<string>()
+      : new Set(
+          (
+            await app.prisma.appSecret.findMany({
+              where: { scope: "platform", env: "prod" },
+              select: { name: true },
+            })
+          ).map((r) => r.name),
+        );
+  const servableModels = servableLlmModels(policy, seededFamilies);
+  if (policy.unknown.length > 0) {
+    app.log.warn(
+      { event: "catalogue.unknown_model_policy_entries", unknown: policy.unknown },
+      "PORTAL_LLM_MODEL_ALLOWLIST/BLOCKLIST entries name no catalog model — ignored",
+    );
+  }
 
   // ── Fetch connections: named `global`-scope secrets, names only. A global
   // secret has no stored origin (the origin is declared per-app in each

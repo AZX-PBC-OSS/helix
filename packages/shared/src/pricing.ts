@@ -129,6 +129,9 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
   "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25, provider: "anthropic" },
   "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, provider: "anthropic" },
+  // Near-term churn: haiku-4-5's only two Foundry versions both stop serving
+  // 2026-10-19 (measured eastus2 2026-09-16). Not a cut — first-party serving
+  // is unaffected — but expect the Foundry deployments to need a successor.
   "claude-haiku-4-5": {
     inputPerMTok: 1,
     outputPerMTok: 5,
@@ -202,13 +205,14 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   },
   // Previous generations, kept curated so a deployed app's manifest keeps working.
   // Rates re-verified 2026-09-14 and unchanged.
+  //
+  // `gpt-4o-mini`, `o3` and `o4-mini` were deliberately cut (2026-09-16) rather
+  // than retained on that principle: Azure AI Foundry's RP refuses any model
+  // whose *default* version is `Deprecating` (`ServiceModelDeprecating`), so
+  // they could never ride the one-flag Foundry path, and the current generation
+  // covers their price points first-party. A manifest still naming one gets the
+  // edge's `model_not_allowed` (no price configured) — the cut is the break.
   "gpt-4o": { inputPerMTok: 2.5, outputPerMTok: 10, provider: "openai", structuredOutputs: true },
-  "gpt-4o-mini": {
-    inputPerMTok: 0.15,
-    outputPerMTok: 0.6,
-    provider: "openai",
-    structuredOutputs: true,
-  },
   "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8, provider: "openai", structuredOutputs: true },
   "gpt-4.1-mini": {
     inputPerMTok: 0.4,
@@ -220,22 +224,6 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
     inputPerMTok: 0.1,
     outputPerMTok: 0.4,
     provider: "openai",
-    structuredOutputs: true,
-  },
-  o3: {
-    inputPerMTok: 2,
-    outputPerMTok: 8,
-    provider: "openai",
-    reasoning: true,
-    minCompletionTokens: 25_000,
-    structuredOutputs: true,
-  },
-  "o4-mini": {
-    inputPerMTok: 1.1,
-    outputPerMTok: 4.4,
-    provider: "openai",
-    reasoning: true,
-    minCompletionTokens: 25_000,
     structuredOutputs: true,
   },
 };

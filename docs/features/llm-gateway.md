@@ -200,10 +200,10 @@ Four refusals, all `400` and all before any upstream call:
   path but has no Anthropic equivalent, so forwarding it would leak the backing vendor the same
   way `json_object` would.
 - **Per-model.** Support is not uniform within either vendor's line-up, so it's a catalog bit
-  (`ModelPrice.structuredOutputs`, alongside `reasoning`). Today: `claude-fable-5-1`,
-  `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5` and
-  all `gpt-*`/`o*` can; `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6` cannot. Those
-  three stay fully usable for text chat.
+   (`ModelPrice.structuredOutputs`, alongside `reasoning`). Today: `claude-fable-5-1`,
+   `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5` and
+   every `gpt-*` can; `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6` cannot. Those
+   three stay fully usable for text chat.
 - **Schema budget.** The schema is app-supplied input on the trusted path, walked before the quota
   check, so it must have an object root and stay within ≤ 32,768 characters serialized and ≤ 12
   levels deep. Beyond those guards it is forwarded as-is and the **vendor** validates its own JSON
@@ -253,8 +253,10 @@ no dedicated toggle:
 A deployment that doesn't want OpenAI simply doesn't seed that secret and doesn't allowlist `gpt-*`
 models; an app that allowlists one without the secret present gets a `502` at call time — exactly as
 an unseeded Anthropic key would. Seeded OpenAI models: `gpt-6-astra`, `gpt-5.6-{sol,terra,luna}`,
-`gpt-5.1`, `gpt-5-{mini,nano}`, plus the retained previous generations `gpt-4o`, `gpt-4o-mini`,
-`gpt-4.1{,-mini,-nano}`, `o3`, `o4-mini`.
+`gpt-5.1`, `gpt-5-{mini,nano}`, plus the retained previous generations `gpt-4o` and
+`gpt-4.1{,-mini,-nano}`. (`gpt-4o-mini`, `o3` and `o4-mini` were cut from the catalog on 2026-09-16 —
+Azure AI Foundry refuses models whose default version is `Deprecating`, and the current generation
+covers their price points.)
 
 **`reasoning` is set on everything from GPT-5 on, not just the o-series.** The flag decides whether
 the edge sends `max_completion_tokens` or the deprecated `max_tokens`; OpenAI's reasoning models

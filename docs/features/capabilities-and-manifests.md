@@ -116,7 +116,7 @@ SPA's pre-submit warning never drift:
 
 | Area | Baseline (applies now) | Elevated (needs approval) | Risk |
 |---|---|---|---|
-| LLM models | `CURATED_LLM_MODELS` (= every model in `MODEL_PRICING`: the `claude-*` family plus the OpenAI `gpt-*`/`o*` models) | any other model | med |
+| LLM models | `CURATED_LLM_MODELS` (= every model in `MODEL_PRICING`: the `claude-*` family plus the OpenAI `gpt-*` models) | any other model | med |
 | LLM budget | `dollarsPerDay ≤ BASELINE_DOLLARS_PER_DAY` ($50) | above threshold | med |
 | data scopes | user store, collections, shared keys (literal) | shared read/write **prefixes** (ADR-0042 — one element covers unboundedly many runtime-chosen keys; a write prefix is refused without a `writesPerDay` budget, so the grant and its bound approve together) | low |
 | data budgets | writes/bytes ≤ thresholds | above threshold | med |
@@ -125,6 +125,13 @@ SPA's pre-submit warning never drift:
 | fetch.origins | — | any proxied origin (secret-bound = high) | med / high |
 | offline | giving up the grant | taking it, or moving the scope | med |
 | visibility | internal / group / password | **→ public** | high |
+
+**Advertised ≠ curated.** An operator can narrow what the deployment *offers* — the catalogue,
+rendered skill, and SPA model picker — with `PORTAL_LLM_MODEL_ALLOWLIST` / `PORTAL_LLM_MODEL_BLOCKLIST`
+(ADR-0047; on `deployFoundry` installs the Bicep derives the allowlist from `foundryModels`
+automatically). That is display-surface policy only: the classifier above is unchanged, so a
+hand-written manifest naming a withheld-but-catalogued model still classifies as baseline and then
+fails at the upstream — the picker is where the restriction has teeth, by never offering the box.
 
 Two invariants keep it safe without being annoying (`docs/design/approvals.md` §3):
 

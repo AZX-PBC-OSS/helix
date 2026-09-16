@@ -49,12 +49,16 @@ export const CapabilityCatalogueSchema = z.object({
   }),
 
   /**
-   * LLM: the **servable** model ids, not merely the curated catalog. A model is
-   * servable when its upstream family is wired on this edge **and** the matching
-   * `platform` secret is seeded; a curated-but-unseeded model (e.g. a `gpt-*`
-   * model whose `openai` platform key was never added) is omitted, so an agent
-   * that reads this list never designs an app that 502s at call time. Every id
-   * in this list is also curated, so requesting one is baseline (auto-approve).
+   * LLM: the **servable** model ids, not merely the curated catalog. The set is
+   * the operator's declaration when one exists (`PORTAL_LLM_MODEL_ALLOWLIST`,
+   * minus `PORTAL_LLM_MODEL_BLOCKLIST` — ADR-0047; on a `deployFoundry` install
+   * the Bicep derives it from `foundryModels`, so it reads exactly what was
+   * deployed), and otherwise the ADR-0036 v1 heuristic: a model is servable
+   * when its upstream family has a seeded `platform` secret, so a
+   * curated-but-unseeded model (e.g. a `gpt-*` model whose `openai` platform
+   * key was never added) is omitted and an agent that reads this list never
+   * designs an app that 502s at call time. Every id in this list is also
+   * curated, so requesting one is baseline (auto-approve).
    *
    * `baselineDollarsPerDay` is the spend cap at/under which an LLM grant
    * auto-approves; above it queues. From `@azx-pbc/shared/approval.ts`, so the

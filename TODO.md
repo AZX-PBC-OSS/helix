@@ -144,35 +144,8 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 ## Azure AI Foundry (ADR-0046)
 
 - [ ] **Validate against a live Foundry account before a customer install commits to `deployFoundry`.** The endpoint shapes, Entra scope (`https://ai.azure.com/.default`), roles, and wire compatibility are verified against Microsoft Learn and the Azure-Samples/claude starter kit, and the RAI `content_filter`→`refusal` mapping exists in the mapper — but no call from this codebase has hit a real account. The spike: deploy with the flag (one region, small `foundryModels`), run `examples/chatbot` on both families, confirm streaming, structured output (`response_format` json_schema), usage accounting, and a content-filter refusal; check the default `foundryModels` list against the region's live catalog (model versions are region-pinned and the list in `main.bicep` is best-effort). — ADR-0046 consequences
-- [ ] **Pare `foundryModels`' default down to models that can actually be deployed.** The default list in `main.bicep` is the full catalog (23 entries) and **cannot be applied as written** — measured against a live pay-as-you-go subscription in `eastus2` on 2026-09-16, six of the 23 are undeployable and three more are unverifiable. Because `foundry.bicep` deploys `@batchSize(1)`, the *first* rejection aborts the whole apply, so a single bad default entry is a hard stop for the one-flag path the ADR sells. Two distinct failure classes, and only the first is fixable in the default:
-
-  **(a) The RP refuses any model whose default version is `Deprecating`** — `ServiceModelDeprecating: The model 'Format:OpenAI,Name:<n>,Version:<v>' is in deprecating state and cannot be used for new deployments`. This is a property of the model, not of the subscription, so it should just come out of the default list. Each publishes exactly one version in `eastus2`, so there is nothing to pin around it either:
-
-  | Cut | Default version | `lifecycleStatus` |
-  | --- | --- | --- |
-  | `gpt-4o-mini` | 2024-07-18 | Deprecating |
-  | `o3` | 2025-04-16 | Deprecating |
-  | `o4-mini` | 2025-04-16 | Deprecating |
-
-  Note `gpt-4o` is **not** in this set and deploys fine: its default (2024-11-20) is `Legacy`, which the RP accepts — only `Deprecating` is refused. Its two older versions are `Deprecating` but are not the default, which is exactly why the check has to read the *default* version's status rather than the model's version list.
-
-  **(b) Zero `GlobalStandard` quota**, which is per model per subscription and so cannot be fixed by editing a shared default — but shipping a default that reliably fails on a *fresh* subscription is still the wrong default:
-
-  | Cut | Quota measured |
-  | --- | --- |
-  | `claude-sonnet-5` | 0 (both v1 and v2, and DataZoneStandard) |
-  | `claude-fable-5` | 0 |
-  | `claude-fable-5-1` | 0 |
-
-  ADR-0046 already warns that the Fable line starts at 0 on pay-as-you-go. **It does not predict `claude-sonnet-5` at 0**, which is the more serious one — that is the model most apps would reach for, and an operator following the one-flag path gets a failed apply with no hint that quota is the reason. Worth calling out explicitly in the README's "Azure AI Foundry" section alongside the existing 40-RPM note.
-
-  Also dropped defensively but **not** confirmed to fail, so verify before cutting from the default: `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano` — the region catalog offers them at `GlobalStandard` but that subscription had no `GlobalStandard` usage line for them at all (Batch only).
-
-  Near-term churn worth a comment rather than a cut: `claude-haiku-4-5`'s only two versions both stop serving **2026-10-19**.
-
-  The pre-apply check is two read-only commands, and belongs in the README next to the region-availability note — availability and quota are different questions and the catalog answers only the first: `az cognitiveservices model list -l <region>` (read `isDefaultVersion` + `lifecycleStatus`) and `az cognitiveservices usage list -l <region>` (read the `AIServices.GlobalStandard.<model>` / `OpenAI.GlobalStandard.<model>` limits). — ADR-0046
+- [ ] **Re-verify the `gpt-4.1` family against a live subscription and re-add it to the `foundryModels` default if it deploys.** The 2026-09-16 audit (eastus2, pay-as-you-go) could not confirm the three either way — the region catalog offers them at `GlobalStandard`, but that subscription showed no `GlobalStandard` usage line for them at all (Batch only) — so they were cut defensively alongside the confirmed failures (ADR-0047). Same shape for the haiku line's near-term churn: `claude-haiku-4-5`'s only two Foundry versions both stop serving **2026-10-19**, so Foundry deployments need a successor entry by then (flagged in a `pricing.ts` comment). — ADR-0046/ADR-0047
 - [ ] **Reconsider omitting `modelVersion` in `foundry.bicep`.** The module omits it deliberately so the RP picks the default version, documented as "the safe default for a deploy-the-catalog list — version strings differ per region". The failure above shows that is not safe: **the RP's own default version can itself be `Deprecating`**, and then the RP refuses the deployment it just defaulted. Either pin versions per entry (accurate, but region-specific strings to maintain) or keep omitting and document that the default list must be re-audited per region and per release. Mitigating factor, and the reason this is not urgent: the failure is loud and lands at **preflight**, before any container app reconciles — a bad default costs a re-run, not an outage. — ADR-0046
-- [ ] _(Consider)_ **Surface the inner RP error from a failed Foundry apply.** The actionable message (`ServiceModelDeprecating: ...`) was three `details` levels deep in the `az deployment group create` stderr payload; `az deployment operation sub list` reported only `InvalidTemplateDeployment ... See inner errors for details` with a tracking id, and the activity log was still empty at the time of the failure. Anyone debugging this from the deployment-operations view alone gets a tracking id and nothing else. A note in the README's Foundry section on where the real error hides would pay for itself. — ADR-0046
 - [ ] _(Consider)_ **Private-endpoint posture for the Foundry account.** Public endpoint + `disableLocalAuth` + RBAC is the shipped posture (same exposure class as calling first-party endpoints today). A customer who mandates PE needs a per-origin exception in the egress SSRF connector — a PE'd account resolves to a private IP, which `ssrf.ts` blocks wholesale — and that is its own ADR, not a parameter. — ADR-0046
 
 ---

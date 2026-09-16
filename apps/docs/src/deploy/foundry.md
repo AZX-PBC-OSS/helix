@@ -41,9 +41,15 @@ That is the whole job. The template then:
   (`<namePrefix>-foundry-rg`, overridable via `foundryResourceGroupName`) —
   the boundary that keeps LLM spend out of the platform cost budget — with
   key-based auth **disabled**;
-- deploys every model in `foundryModels` (default: the platform's full model
-  catalog) as serverless, pay-per-token deployments — nothing is billed while
-  idle;
+- deploys every model in `foundryModels` as serverless, pay-per-token
+  deployments — nothing is billed while idle. The default is the subset of the
+  platform catalog a *fresh* pay-as-you-go subscription can actually deploy
+  (audited in `eastus2`, 2026-09-16): it leaves out models whose default
+  version the resource provider reports as Deprecating, the zero-quota Claude
+  entries, and the unverifiable `gpt-4.1` family — because deployments apply
+  serially and the first refusal aborts the whole apply. Every omitted model
+  stays in the platform catalog; add it back to `foundryModels` once your
+  subscription has the quota;
 - grants the egress identity the two least-privilege inference roles
   (*Cognitive Services User* for Claude/partner models, *Cognitive Services
   OpenAI User* for GPT), and points both model families at the account.
@@ -65,11 +71,34 @@ apply means "wait and retry", not a misconfiguration.
    the deployed models that app may use. This stays the real access control —
    deploy broadly, grant narrowly.
 
-Azure limits an account to 32 deployments, and the catalog is ~23 models today
+Azure limits an account to 32 deployments, and the catalog is ~20 models today
 — one account fits. Quota is per model per subscription and scales
-automatically with usage tiers; fresh pay-as-you-go subscriptions start Claude
-models at 40 requests/minute (the Fable line at 0 — request an increase or wait
-for tiering) and GPT models at generous Tier-1 pools.
+automatically with usage tiers; fresh pay-as-you-go subscriptions start most
+Claude models at 40 requests/minute, but **`claude-sonnet-5` and the Fable line
+start at 0** — an apply that includes them fails with no hint that quota is the
+reason, which is exactly why they are not in the default list. Request an
+increase (or wait for tiering), then add them back.
+
+Availability and quota are different questions and the catalog answers only the
+first, so check both before committing to a `foundryModels` list (two read-only
+commands):
+
+```bash
+# What the region offers: per version, read isDefaultVersion + lifecycleStatus
+# (a Deprecating *default* version is refused outright).
+az cognitiveservices model list -l <region>
+# What YOUR subscription may deploy: the AIServices/OpenAI.GlobalStandard.<model>
+# limits (0 = the apply will fail on that model).
+az cognitiveservices usage list -l <region>
+```
+
+**The portal advertises what you deploy.** On a `deployFoundry` install the
+capability catalogue (`GET /api/v1/capabilities`), the rendered agent skill,
+and the portal's model picker take their servable-model list from
+`foundryModels` automatically (`llmModelAllowlist` overrides; see
+[Configuration](/deploy/configuration)) — so pruning a model here also stops
+the portal offering it, and an app author never checks a box for a model the
+account doesn't have.
 
 Two data-residency footnotes: some Claude models run *Hosted on Anthropic
 infrastructure* (Azure billing, Anthropic compute) — if that matters to your

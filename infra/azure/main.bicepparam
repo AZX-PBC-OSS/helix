@@ -80,15 +80,20 @@ param allowPasswordApps = false
 // Azure AI Foundry (ADR-0046) — LLM inference in this subscription instead of
 // first-party Anthropic/OpenAI. false (default) keeps the first-party vendors
 // (seed their keys per README). true deploys a Foundry account + the default
-// catalog's deployments, grants the egress identity inference RBAC, and points
-// both model families at it — keyless, no vendor key anywhere. Deployments are
-// serverless pay-per-token (nothing billed when idle). Notes:
+// foundryModels list (the deployable-on-a-fresh-subscription subset of the
+// platform catalog — audited eastus2 2026-09-16; the Deprecating-default and
+// zero-quota entries are deliberately NOT in it, see main.bicep), grants the
+// egress identity inference RBAC, and points both model families at it —
+// keyless, no vendor key anywhere. Deployments are serverless pay-per-token
+// (nothing billed when idle). Notes:
 //  - foundryAttestation is REQUIRED when foundryModels includes Anthropic
 //    entries on a subscription that has never accepted the Anthropic offer
 //    (industry is lowercase: technology|finance|healthcare|education|retail|
 //    manufacturing|government|media|other).
 //  - Model availability is regional; Claude is narrower than GPT. The default
-//    foundryLocation (the platform location) may need overriding.
+//    foundryLocation (the platform location) may need overriding. Quota is per
+//    model per subscription: run the two pre-apply checks in README "Azure AI
+//    Foundry" before committing to a list.
 //  - BYO Foundry instead: leave this false and set llmEndpoint/llmOpenAiEndpoint
 //    (+ llmAnthropicPath/llmOpenAiPath and the connection names) — see README
 //    "Azure AI Foundry".
@@ -98,6 +103,17 @@ param deployFoundry = false
 // param foundryLocation = 'eastus2'
 // param foundryAttestation = { organizationName: 'Contoso', countryCode: 'US', industry: 'technology' }
 // param llmMonthlyBudgetUsd = 1000         // notify-only LLM budget on the Foundry group; 0 = none. Default matches platformMonthlyUsdCap so the Azure mail and the portal watch line agree
+
+// Servable-model policy (ADR-0047) — what the portal catalogue / rendered
+// skill / model picker ADVERTISE. Empty allowlist = the seeded-secret
+// heuristic, or — on a deployFoundry install — an auto-derivation from
+// foundryModels (the catalogue reads exactly what you deployed). Set the
+// allowlist explicitly to override both (e.g. BYO Foundry serving a subset).
+// The blocklist subtracts in either mode — the first-party knob for "everything
+// except these". Ids must come from the platform catalog
+// (packages/shared/src/pricing.ts); unknown ids are ignored (warn-logged).
+// param llmModelAllowlist = ['claude-opus-5', 'claude-haiku-4-5', 'gpt-5.1']
+// param llmModelBlocklist = ['claude-fable-5', 'claude-fable-5-1']
 
 // Fastify trustProxy for the edge — the ACA Envoy ingress ADDRESS, not a hop
 // count (fastify 5.12.1 removed the count form; GHSA-3m5p-2c4r-xxw2). 'auto'

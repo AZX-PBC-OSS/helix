@@ -86,13 +86,13 @@ describe("openAiRequestBody", () => {
     expect(body.max_completion_tokens).toBeUndefined();
   });
 
-  it("floors max_completion_tokens for o-series reasoning models", () => {
-    // requested 256 is below the o4-mini floor (25k) → floored so reasoning has room.
-    const floored = JSON.parse(openAiRequestBody(req({ model: "o4-mini", maxTokens: 256 })));
+  it("floors max_completion_tokens for reasoning models", () => {
+    // requested 256 is below the gpt-5-mini floor (25k) → floored so reasoning has room.
+    const floored = JSON.parse(openAiRequestBody(req({ model: "gpt-5-mini", maxTokens: 256 })));
     expect(floored.max_completion_tokens).toBe(25_000);
     expect(floored.max_tokens).toBeUndefined();
     // unset also gets the floor, never an unbounded/omitted budget.
-    const unset = JSON.parse(openAiRequestBody(req({ model: "o4-mini", maxTokens: undefined })));
+    const unset = JSON.parse(openAiRequestBody(req({ model: "gpt-5-mini", maxTokens: undefined })));
     expect(unset.max_completion_tokens).toBe(25_000);
   });
 
