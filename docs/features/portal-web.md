@@ -160,7 +160,8 @@ A **How to develop** button — in the sidebar footer, and on the Apps page's ha
 modal summarising the platform for a newcomer — what a Helix app is, the four steps from empty account to live app, and a tab pair for
 the two ways to build (browser builder via the dev gateway, or the `helix` CLI). Its **Copy** /
 **Download** buttons hand out `packages/deploy-skill/SKILL.md`, rendered with this deployment's
-hostnames, for a coding agent to load.
+hostnames, for a coding agent to load. The footer pairs the button with **Source code** /
+**Report a bug** links to the platform's upstream repo, hardcoded in `Shell.tsx`.
 
 `lib/skill.ts` (`useRenderedSkill`) does that rendering for both surfaces, and owns the rule that
 matters: the skill is `null` — and every button offering it disabled — until `GET /api/v1/config`

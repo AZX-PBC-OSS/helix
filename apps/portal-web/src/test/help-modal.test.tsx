@@ -127,6 +127,30 @@ describe("HelpModal", () => {
     expect(await screen.findByText("The four steps")).toBeDefined();
   });
 
+  it("links the upstream repo and its issue tracker from the sidebar footer", async () => {
+    setToken("t");
+    stubApi({ appPublicBase: "https://apps.example.com" });
+    renderWithProviders(
+      <AuthProvider>
+        <HelpProvider>
+          <Shell>content</Shell>
+        </HelpProvider>
+      </AuthProvider>,
+    );
+
+    // Off-platform navigation, so both must be plain external anchors — never
+    // router links, and never carrying the referrer over.
+    const source = await screen.findByRole("link", { name: /source code/i });
+    expect(source.getAttribute("href")).toBe("https://github.com/AZX-PBC-OSS/helix");
+    expect(source.getAttribute("target")).toBe("_blank");
+    expect(source.getAttribute("rel")).toContain("noreferrer");
+
+    const bugs = screen.getByRole("link", { name: /report a bug/i });
+    expect(bugs.getAttribute("href")).toBe("https://github.com/AZX-PBC-OSS/helix/issues");
+    expect(bugs.getAttribute("target")).toBe("_blank");
+    expect(bugs.getAttribute("rel")).toContain("noreferrer");
+  });
+
   it("names this deployment's apps host and dev-gateway base", async () => {
     setToken("t");
     stubApi({

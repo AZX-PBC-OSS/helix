@@ -22,7 +22,9 @@ app in a browser IDE will never see it. This is the surface that closes that gap
 `apps/portal-web/src/modals/HelpModal.tsx`, opened from a **How to develop** button in the
 sidebar footer (`components/Shell.tsx`) or from the My Apps handoff band. Two entry points, so
 the open state sits on `modals/HelpContext.tsx` — a provider mirroring `modals/DeployContext.tsx`,
-mounted above `Shell` in `App.tsx`.
+mounted above `Shell` in `App.tsx`. The footer pairs the button with two outbound links —
+**Source code** and **Report a bug** — to the platform's own upstream repo and its issue tracker,
+hardcoded in `Shell.tsx` (see "No external links" below for why that's the one exception).
 
 It covers, in order: what a Helix app is (static frontend, gateway, manifest), the copy/download
 buttons, the four steps (create → grant capabilities → build → deploy & promote), then a tab pair
@@ -79,8 +81,12 @@ prose in place of every placeholder, pointing readers at their own `/api/v1/capa
   literally. `packages/deploy-skill/src/index.test.ts` asserts the rendered output contains no
   leftover `{{` in **both** render modes (the instance `renderSkill()` and the generic
   `renderSkillGeneric()`), so adding a token without wiring both maps fails the suite.
-- **No external links.** Every reference is in-app (the Capabilities tab, the Dev mode tab) or a
-  plain-text repo path. A customer deployment shouldn't render dead links to somewhere else.
+- **No external links in the modal or the skill.** Every reference there is in-app (the
+  Capabilities tab, the Dev mode tab) or a plain-text repo path. A customer deployment shouldn't
+  render dead links to somewhere else. The one deliberate exception is the sidebar chrome: the
+  **Source code** / **Report a bug** pair points at the platform's own upstream repo
+  (`github.com/AZX-PBC-OSS/helix`), hardcoded the way the CLI's npm package name is — product
+  identity, not deployment topology — so it is not a `/api/v1/config` field either.
 - **The CLI instructions carry this deployment's `portalUrl`.** The CLI cannot discover its
   portal — it falls back to `http://localhost:3001` (`packages/cli/src/config.ts`) — so a
   `helix.json` copied from here without it makes `helix login` dial a portal that was never

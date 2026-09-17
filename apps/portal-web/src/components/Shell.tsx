@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { NavLink as RouterNavLink, useLocation } from "react-router";
 import {
+  Anchor,
   AppShell,
   Avatar,
   Box,
@@ -42,6 +43,15 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/admin/secrets", label: "Secrets", icon: "key" },
   { to: "/admin/violations", label: "Violations", icon: "shield" },
 ];
+
+/**
+ * The platform's own upstream repo and issue tracker. Hardcoded because they are
+ * product identity — the same precedent as the npm package name printed in
+ * `HelpModal` and `repository.url` in the CLI's package.json — not deployment
+ * topology, so they deliberately do not come from `GET /api/v1/config`.
+ */
+const REPO_URL = "https://github.com/AZX-PBC-OSS/helix";
+const ISSUES_URL = `${REPO_URL}/issues`;
 
 function Brand() {
   return (
@@ -170,6 +180,24 @@ function UserChip() {
   );
 }
 
+/** Small muted outbound link for the sidebar footer — opens off-platform. */
+function FooterLink({ href, icon, children }: { href: string; icon: IconName; children: string }) {
+  return (
+    <Anchor
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      c="dark.2"
+      fz={11}
+      className="az-mono"
+      style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
+    >
+      <Icon name={icon} size={11} />
+      {children}
+    </Anchor>
+  );
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   const { isAdmin } = useAuth();
   // Deployment-wide, not the caller's own: this badge doubles as the portal
@@ -222,6 +250,14 @@ export function Shell({ children }: { children: ReactNode }) {
           >
             How to develop
           </Button>
+          <Group justify="space-between" px={8} mb={12} wrap="nowrap">
+            <FooterLink href={REPO_URL} icon="ext">
+              Source code
+            </FooterLink>
+            <FooterLink href={ISSUES_URL} icon="bug">
+              Report a bug
+            </FooterLink>
+          </Group>
           <Box px={8} pb={12}>
             <ToneBadge tone={apps.isError ? "bad" : "live"} icon="dot">
               {apps.isPending
