@@ -34,6 +34,7 @@ export default defineConfig({
             { text: "Entra ID setup", link: "/deploy/entra-setup" },
             { text: "Access control", link: "/deploy/access-control" },
             { text: "Azure AI Foundry", link: "/deploy/foundry" },
+            { text: "Deploying updates", link: "/deploy/updates" },
             { text: "Configuration reference", link: "/deploy/configuration" },
             { text: "Local development", link: "/deploy/local-dev" },
           ],

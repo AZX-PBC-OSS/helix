@@ -235,12 +235,10 @@ to `https://acme-v02.api.letsencrypt.org/directory` and re-run the job.
   deployed app and check the trace lands in Application Insights. A missing
   allowlist rule fails as silence, not as an error.
 
-## Upgrades
+## Next: shipping changes
 
-Set `imageTag` to a tag CI published and re-apply (step 5). Run the migrate job
-if the release added migrations. Rotating a secret value does not restart a
-container app by itself — force a new revision after rotating:
-
-```bash
-az containerapp update -g <rg> -n <app> --revision-suffix <tag>
-```
+From here on, an update is a scoped `az containerapp update` against a new
+image tag, with the migrate job run first — not a re-apply of this template.
+**[Deploying updates](/deploy/updates)** covers the routine release, what a
+Container Apps rollout actually does (including why a failed one is silent),
+rollback, secret rotation, and the hazards of the rarer full apply.
