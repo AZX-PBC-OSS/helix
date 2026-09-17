@@ -78,6 +78,25 @@ is operable on day one. Once the tenant's own admins are in and verified,
 rescind the deployers' access. Because every gate here is a group assignment,
 the whole handover is directory edits, not redeploys.
 
+## Revoking someone's access
+
+Removing an assignment or group membership blocks **new** token issuance
+immediately. A session that already exists is a database-backed cookie on the
+edge and is not killed on the spot — but it lapses on its own: sessions live
+8 hours with a refresh every hour, and the refresh goes back to Entra, which
+now denies it. Meaningful access ends within about an hour; only passive
+assets on an already-loaded page linger to the hard expiry.
+
+To end a session now, delete its rows on that install's database:
+
+```sql
+DELETE FROM sessions WHERE "userOid" = '<user-object-id>';
+```
+
+Postgres is private-endpoint-only, so this runs from inside the VNet — the
+same throwaway-job shape as the roles bootstrap in [Database &
+migrations](/deploy/database).
+
 ## What this page is not
 
 - **Per-app visibility.** Restricting one app to specific Entra groups is a

@@ -76,6 +76,10 @@ Before you rely on it, know:
   Application Administrator; the consent and role assignments need Privileged
   Role Administrator (or `AppRoleAssignment.ReadWrite.All`). A locked-down
   tenant can resist this — verify first.
+- **Conditional Access can block the Graph calls.** If your tenant requires a
+  compliant device, every `az ad …` and Graph-Bicep step fails with
+  `AADSTS53003` from an unenrolled machine — ARM calls are unaffected. Run
+  the Entra work from a compliant host.
 - **It does not adopt registrations that already exist.** A deployment against
   a tenant with hand-made apps creates duplicates. Use it for a fresh
   environment.
@@ -88,6 +92,43 @@ Before you rely on it, know:
 The outputs feed the Azure stack parameters listed in
 [the manual section](#what-the-deployment-consumes) — same values, captured
 instead of typed.
+
+### Re-applying this stack
+
+The module is safe to re-apply — it adopts existing objects rather than
+duplicating them, and leaves undeclared assignments and properties alone — but
+three habits from the platform stack do not transfer:
+
+- **what-if is blind here.** Every Graph resource comes back
+  `ExtensibleResourceNotSupported` with `potentialChanges: null`, and the run
+  still reports `Succeeded` — a clean-looking preview that tells you nothing.
+  Run it as a compile check only; never reason about an apply from its output.
+- **The elevated Graph role is needed every time, active at `az login`.** The
+  consent grants and `appRoleAssignedTo` objects need Global Administrator or
+  Privileged Role Administrator (or `AppRoleAssignment.ReadWrite.All`), and a
+  role activated *after* signing in is invisible to the cached token — elevate
+  first, then `az login`.
+- **Pass the edge certificate on every apply.** `edgeCertificateBase64`
+  defaults to empty, and empty renders `keyCredentials: []` — a re-apply
+  without it strips the certificate off the edge registration and
+  `private_key_jwt` sign-in breaks for every user until it is restored.
+
+Two smaller ones:
+
+- **Never hand-edit or hand-delete the portal's template-owned `user` role.**
+  Entra refuses to remove an app role that is still enabled or still assigned,
+  so a diverged role takes three writes in order — delete the assignment,
+  PATCH it `isEnabled: false`, then PATCH it away. Leaving it to the template
+  avoids the dance.
+- **`az ad app permission admin-consent` is a no-op here.** It consents to
+  `requiredResourceAccess`, which these registrations leave empty — the scopes
+  are requested dynamically at authorize time. It reports success and grants
+  nothing; `grantAdminConsent` in the module is the working path.
+
+And when you verify access gating: **Global Administrators are exempt from
+assignment-required**, so test a block with a plain account — `AADSTS50105`
+("not assigned to a role for the application") is the expected error. A GA
+signs in either way and will tell you the block does nothing.
 
 ## The manual way
 

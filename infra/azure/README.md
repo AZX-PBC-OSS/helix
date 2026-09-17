@@ -415,7 +415,27 @@ workspace).
 
 ## Deploy
 
-Prereqs: `az` CLI logged in, a target subscription, and a resource group.
+Prereqs: `az` CLI logged in, a target subscription, and a resource group. On a
+fresh subscription, register the resource providers first — the deploy fails
+on an unregistered namespace:
+
+```bash
+for ns in Microsoft.App Microsoft.Storage Microsoft.OperationalInsights \
+          Microsoft.DBforPostgreSQL; do
+  az provider register -n "$ns"
+done
+# add Microsoft.CognitiveServices if you plan to use deployFoundry
+```
+
+And check Postgres SKU availability in the chosen region **for that
+subscription** before committing to it — restrictions are per subscription,
+not per region, so a region one subscription can use may be refused for
+another:
+
+```bash
+az postgres flexible-server list-skus -l <region>
+# a `reason` field on the first element means restricted — pick another region
+```
 
 ### 1. Validate / preview
 
@@ -1117,14 +1137,22 @@ if a deploy misbehaves:
 > data-services checks hold regardless of the flag.
 
 ```bash
-# from an edge replica console: outbound internet must FAIL, egress must succeed
-az containerapp exec -g <rg> -n helix-prod-edge --command "sh"
-  curl -m 5 https://example.com            # expect: timeout / blocked
-  curl -m 5 https://<egress-internal-fqdn>/health   # expect: ok
+# the images carry no curl/wget, and exec needs a TTY — probe with node over a
+# pseudo-TTY (script(1) supplies it)
+
+# from an edge replica: outbound internet must FAIL, egress must succeed
+script -q /dev/null az containerapp exec -g <rg> -n helix-prod-edge --command \
+  "node -e \"fetch('https://example.com').then(r=>console.log(r.status)).catch(e=>console.log('ERR',e.cause?.code))\"" < /dev/null
+# expect: ERR (blocked)
+
+script -q /dev/null az containerapp exec -g <rg> -n helix-prod-edge --command \
+  "node -e \"fetch(process.env.EDGE_EGRESS_URL+'/health').then(r=>console.log(r.status)).catch(e=>console.log('ERR',e.cause?.code))\"" < /dev/null
+# expect: 200
 
 # from an egress replica: outbound internet must SUCCEED
-az containerapp exec -g <rg> -n helix-prod-egress --command "sh"
-  curl -m 5 https://example.com            # expect: ok
+script -q /dev/null az containerapp exec -g <rg> -n helix-prod-egress --command \
+  "node -e \"fetch('https://example.com').then(r=>console.log(r.status)).catch(e=>console.log('ERR',e.cause?.code))\"" < /dev/null
+# expect: 200
 
 # data services are private — confirm publicNetworkAccess is Disabled
 az postgres flexible-server show -g <rg> -n helix-prod-pg --query network

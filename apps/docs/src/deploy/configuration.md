@@ -36,6 +36,12 @@ which is the complete and current list.
 | `postgresSkuTier` | `GeneralPurpose` | Must match the SKU family (`Burstable` for B-series) |
 | `postgresStorageSizeGB` | `32` | Postgres disk size. Growing it is a maintenance operation |
 
+The Postgres **major version is deliberately not a parameter** — the module
+default is the only control, so pulling new template commits into an apply can
+drive an in-place major-version upgrade. Compare the live server version
+against the module default before applying; see [Deploying
+updates](/deploy/updates#when-you-do-need-a-full-apply).
+
 ## Domains and TLS
 
 | Parameter | Default | What it is |

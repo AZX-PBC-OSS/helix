@@ -68,6 +68,37 @@ for img in edge portal egress certbot; do
 done
 ```
 
+## If you build a release pipeline
+
+The shape that works, and why:
+
+- **Hold resource-group Contributor, nothing more.** Rolling image tags,
+  updating and starting the migrate job, and tagging the resource group need
+  no `Microsoft.Authorization/*` permission. A full template apply does — it
+  creates role assignments — which is one of the reasons CI never runs one.
+- **Know what Contributor implies.** Platform secrets are injected directly
+  into the container apps, so `az containerapp secret list --show-values`
+  reads them back over the control plane, private vault notwithstanding. The
+  pipeline's credential scope is therefore the real access boundary. With
+  GitHub OIDC that boundary is the federated credential's subject — scope it
+  to a GitHub Environment, and required reviewers on that Environment become a
+  gate Azure enforces by refusing the token, not a convention.
+- **Take the OIDC subject verbatim from GitHub.** GitHub emits ID-based
+  subjects — `repo:<org>@<org-id>/<repo>@<repo-id>:environment:<name>` — so a
+  renamed org or repo cannot silently transfer trust, and the classic
+  `repo:<org>/<repo>` form no longer matches. A login failing with
+  `AADSTS700213` prints the presented subject; compare it byte-for-byte with
+  the federated credential's. Do not register the classic form as a fallback —
+  rename-proofing is the point.
+- **Migrate first, then roll.** The migrate step doubles as a canary: it runs
+  the portal image at the new tag, so an image that cannot boot fails before
+  any app is touched.
+- **Report health, don't gate on it.** [What a rollout actually
+  does](#what-a-rollout-actually-does) — Container Apps already prevents the
+  outage, and failing the workflow neither rolls back nor holds traffic. The
+  custom-domain binding check is the one worth blocking on: one API call per
+  app, and losing a binding is an immediate TLS failure.
+
 ## The routine update
 
 Migrate first, then roll the apps. Both steps are scoped commands.
@@ -179,6 +210,25 @@ change that the old code cannot tolerate has to be rolled forward with a fix,
 so keep migrations backward-compatible with the release before them and the
 rollback stays a one-liner.
 
+## A release can be two halves
+
+CI ships app code; the template ships configuration. A change that needs
+**both** — a new environment variable that new code reads is the common case —
+sits half-deployed until someone applies the template, and nothing alerts on
+it: every status is green, because nothing is broken, only inert. The tell
+before assuming a release is fully out:
+
+```bash
+git diff <deployed-template-commit>..<current> -- infra/azure/
+```
+
+If the diff adds or changes a runtime value, the template apply is part of
+shipping the change, not follow-up. And when the live-state delta really is
+one knob, prefer the scoped `az containerapp update --set-env-vars` — it
+converges toward the template (it writes exactly what the template computes),
+so the next full apply is a no-op on it, and it never needs the deploy
+secrets on hand.
+
 ## Rotating a secret
 
 Changing a secret **value** does not restart anything. Container Apps secrets
@@ -195,6 +245,21 @@ band.** `az postgres flexible-server update --admin-password` drifts from the
 copy in Key Vault that the migrate job reads, and migrations start failing.
 Change the Bicep parameter and re-apply.
 
+Three more values whose blast radius is worth knowing before you reach for
+them:
+
+- **`HELIX_PORTAL_SECRET` is the encryption key for shared-password app
+  material.** Rotating it strands everything already encrypted with it. If the
+  actual goal was to capture a value that was never recorded at install,
+  recover it from the running install instead — rotation is the harmful move,
+  not the recovery: `az containerapp secret list -n <app> --show-values`.
+- **`HELIX_EDGE_AUTH_SECRET` signs session cookies.** Rotating it invalidates
+  every live session — every user on every app signs in again.
+- **`HELIX_INSTRUCTION_SECRET` is shared by the edge and the egress service.**
+  Rotate it through a full apply so both planes move together; a scoped update
+  to one side breaks every attested edge→egress call until the other catches
+  up.
+
 ## When you do need a full apply
 
 Anything the template owns and no scoped command can reach:
@@ -206,6 +271,12 @@ Anything the template owns and no scoped command can reach:
 - Adding a hostname that needs a TLS binding. **The declared set is an
   allowlist**: a hostname bound by hand is deleted by the next apply with no
   self-heal, so a host that needs a binding gets a row in `main.bicep`.
+
+Before an apply that pulls in new template commits, also compare the live
+Postgres major version against the module default: `postgresVersion` is
+deliberately not a `main.bicep` parameter — the module default is the only
+control — so a template bump can drive an in-place major-version upgrade you
+did not schedule.
 
 A full apply is a documented operation, not a blocker. But it has hazards no
 preview will show you — read the rest of this section before running one.
@@ -332,7 +403,18 @@ real outages. Check the things that fail silently:
 - **The edge→egress hop resolves**, after any full apply. The apply rewrites
   that URL on every caller from a `reference()` the diff could never resolve,
   so an apply is exactly when this hop breaks. Probe it from inside the
-  calling container — it has failed on real applies.
+  calling container — it has failed on real applies. `az containerapp exec`
+  needs a TTY, and the images carry no curl or wget, so the probe is node over
+  a pseudo-TTY:
+
+  ```bash
+  script -q /dev/null az containerapp exec -n <namePrefix>-edge -g <rg> --command \
+    "node -e \"fetch(process.env.EDGE_EGRESS_URL+'/health').then(r=>console.log(r.status)).catch(e=>console.log('ERR',e.cause?.code))\"" < /dev/null
+  ```
+
+  Expect `200`. `ENOTFOUND` means the environment's private DNS zone is wrong;
+  a 404 serving Azure's "Container App - Unavailable" page means the URL (or
+  the ingress scope) is stale.
 - **Alert rules still exist**, after a full apply — a rule that failed to deploy
   looks exactly like a healthy platform.
 - **A request traces end to end.** Drive a real request through a deployed app
@@ -341,3 +423,19 @@ real outages. Check the things that fail silently:
   the latency has passed. When a query comes back empty, suspect the query
   first — wrong workspace, wrong table, wrong schema. There are two Log
   Analytics workspaces per install, so **never index them by position**.
+
+### Verification pitfalls
+
+Two traps that have produced clean-looking, wrong answers:
+
+- **`az containerapp logs show --tail` maxes at 300.** A larger value exits
+  with an error — and piped into `grep -c`, that error renders as a clean `0`:
+  "no warnings in the logs" when in fact no logs were fetched. Before reading
+  anything into an *absence*, assert the fetch was non-empty.
+- **The actionable error from a failed apply may exist only in stderr.** A
+  resource-provider preflight rejection can surface as `InvalidTemplateDeployment
+  … See inner errors for details` in the deployment-operations view and the
+  activity log, while the real line sits three `details` levels deep in the
+  `az deployment group create` stderr payload. Capture the raw stderr of a
+  failed apply before chasing it through the operations view, which is not a
+  superset of it.

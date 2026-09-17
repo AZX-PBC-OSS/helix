@@ -58,6 +58,16 @@ Deployments are created serially and can take a while; role assignments need
 about five minutes to propagate, so a 401 on the very first call right after an
 apply means "wait and retry", not a misconfiguration.
 
+One preview wrinkle: with `llmMonthlyBudgetUsd` set, `what-if` on the real
+parameters refuses with `ResourceGroupNotFound` while the Foundry resource
+group does not exist yet — the budget module is scoped to a group the same
+deployment creates, and what-if resolves scopes up front. That refusal is
+expected on the first run, and creating the group by hand clears only the
+error, not what-if's deeper blind spot with this flag. Preview in two parts —
+the platform with `deployFoundry=false`, the Foundry module as a standalone
+`az deployment group validate` — per [Deploying
+updates](/deploy/updates#read-the-what-if-knowing-what-it-cannot-tell-you).
+
 ## What models exist where — the three lists
 
 1. **The platform catalog** (code): every model Helix will serve at all, with
@@ -91,6 +101,10 @@ az cognitiveservices model list -l <region>
 # limits (0 = the apply will fail on that model).
 az cognitiveservices usage list -l <region>
 ```
+
+Re-run the first command occasionally *after* the deploy too: versions retire
+(`lifecycleStatus`), and a version approaching retirement stops accepting new
+deployments — nothing warns on the way past the date.
 
 **The portal advertises what you deploy.** On a `deployFoundry` install the
 capability catalogue (`GET /api/v1/capabilities`), the rendered agent skill,

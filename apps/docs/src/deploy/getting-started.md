@@ -66,6 +66,27 @@ default. See the [configuration reference](/deploy/configuration#cost).
 ## Prerequisites
 
 - An Azure subscription and a resource group, with the `az` CLI logged in.
+  On a fresh subscription, register the resource providers first — the deploy
+  fails on an unregistered namespace, and a registration can sit in
+  `Registering` for a long time (re-issue the command to nudge it):
+
+  ```bash
+  for ns in Microsoft.App Microsoft.Storage Microsoft.OperationalInsights \
+            Microsoft.DBforPostgreSQL; do
+    az provider register -n "$ns"
+  done
+  # add Microsoft.CognitiveServices if you plan to use deployFoundry
+  ```
+
+- A region picked **with Postgres availability checked for that
+  subscription** — restrictions are per subscription, not per region, so a
+  region one subscription can use may be refused for another:
+
+  ```bash
+  az postgres flexible-server list-skus -l <region>
+  # a `reason` field on the first element means restricted — pick another region
+  ```
+
 - A Microsoft Entra tenant you can create app registrations in.
 - A DNS domain you control, to delegate as the apps domain (e.g.
   `apps.example.com`). Apps live on `<slug>.<appsDomain>`, the portal on
@@ -141,6 +162,15 @@ export HELIX_AZX_WEB_CLIENT_ID=<helix-portal client id>
 
 az deployment group create -g <rg> -f main.bicep -p main.bicepparam
 ```
+
+Capture every generated value somewhere durable as you go. A lost value is
+recoverable from a *running* install —
+`az containerapp secret list -n <app> --show-values` reads the injected
+secrets back over the control plane, and the Postgres admin password is also
+in the platform vault as `postgres-admin-password` — but recovery needs a
+healthy install, so capture stays the primary path. (The one value held in no
+container is `HELIX_DEV_DB_PASSWORD` on an install with the dev surface off:
+set a fresh one with `ALTER ROLE helix_dev` rather than hunting the original.)
 
 ::: tip Preview first
 `az deployment group what-if -g <rg> -f main.bicep -p main.bicepparam` shows
