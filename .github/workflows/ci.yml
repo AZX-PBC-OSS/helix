@@ -255,6 +255,7 @@ jobs:
           az bicep build --file infra/azure/main.bicep --stdout > /dev/null
           az bicep build-params --file infra/azure/main.bicepparam --stdout > /dev/null
           az bicep build --file infra/entra/main.bicep --stdout > /dev/null
+          az bicep build-params --file infra/entra/main.bicepparam --stdout > /dev/null
 
   package:
     name: pack helix CLI

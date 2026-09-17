@@ -25,6 +25,29 @@ page is the shorter path through it.
 The three services are published to GitHub's container registry by CI, so a
 normal deploy builds nothing locally — you pick a published image tag.
 
+### The security shape, in one diagram
+
+```
+                 Internet
+                    │ (inbound: edge only)        ▲ (outbound: egress only)
+        ┌───────────┴───────────┐                │
+        │  apps env (snet-apps)  │       ┌────────┴────────────┐
+        │   edge  (external)     │       │ egress env          │
+        │   portal(internal)     │       │  egress (internal)  │
+        │   UDR → Firewall DENY  │       │  UDR → Firewall ALLOW│
+        └───────────┬───────────┘       └────────┬────────────┘
+                    └──────── same VNet ──────────┘
+            private endpoints → Postgres · Blob · KV×2
+```
+
+- The **edge** can be reached from the internet but cannot reach it — its
+  subnet's default route goes to the firewall, which denies.
+- **Egress** is the only subnet the firewall lets out, and it has no public
+  ingress. It is the only component that ever holds an app connection secret.
+- All data services are private-endpoint only; `publicNetworkAccess` is off.
+- The **edge identity has no role on the connections vault** — an edge RCE
+  cannot read a single app secret.
+
 ## What it costs
 
 The default shape costs roughly **$125/month**. The one expensive optional is
@@ -46,7 +69,10 @@ default. See the [configuration reference](/deploy/configuration#cost).
 - A Microsoft Entra tenant you can create app registrations in.
 - A DNS domain you control, to delegate as the apps domain (e.g.
   `apps.example.com`). Apps live on `<slug>.<appsDomain>`, the portal on
-  `portal.<appsDomain>`, and sign-in happens on `auth.<appsDomain>`.
+  `portal.<appsDomain>`, and sign-in happens on `auth.<appsDomain>`. Every app
+  gets its own origin — deliberate isolation, since every hosted app is
+  untrusted code: the browser's same-origin policy is what keeps one app's
+  code away from another app's data, and the platform manages it all.
 - `psql`, `openssl`, and Node 24 + pnpm for the one-time migration step.
 
 ## Step 1: Entra app registrations
@@ -54,6 +80,11 @@ default. See the [configuration reference](/deploy/configuration#cost).
 Helix needs three app registrations in your tenant (edge, portal, CLI), plus
 client ids and — for the edge — a certificate. It is a half hour of portal
 clicks and it is fully documented: **[Entra ID setup](/deploy/entra-setup)**.
+
+This is also when to decide who gets in. By default a fresh install is open
+to every member of your tenant; the recommended shape is one Entra security
+group per audience — app users, portal users, platform admins — with sign-in
+restricted to them. See **[Access control](/deploy/access-control)**.
 
 Do this first; the values feed the deploy in the next step.
 

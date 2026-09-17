@@ -21,8 +21,27 @@ param edgeCertificateBase64 = readEnvironmentVariable('HELIX_EDGE_CERT_BASE64', 
 param adminPrincipalId = readEnvironmentVariable('HELIX_ADMIN_PRINCIPAL_ID', '')
 
 // Pre-grant tenant-wide consent for CLI -> portal scope (needs an admin deploy
-// principal). false = users consent at first `helix login`.
+// principal). false = users consent at first `helix login`. REQUIRED once either
+// access list below is non-empty: assignment-required disables user self-consent,
+// so without this a first-time user gets "admin approval required" and is stuck.
 param grantAdminConsent = false
+
+// Who may sign in at all: comma-separated object ids of the users/groups allowed
+// on the edge (app users) and the portal (control plane) respectively. Non-empty
+// ALSO flips appRoleAssignmentRequired on the service principal — from then on
+// sign-in is by explicit assignment only. Empty leaves the install open to every
+// member of the tenant (guests included, on the edge). Recommended: curate one
+// security group per audience and set both — see the docs site's Access control
+// page. A portal admin needs no separate portal entry: the adminPrincipalId
+// assignment above already satisfies sign-in.
+param edgeAccessPrincipalIds = map(
+  filter(split(readEnvironmentVariable('HELIX_EDGE_ACCESS_PRINCIPAL_IDS', ''), ','), id => !empty(trim(id))),
+  id => trim(id)
+)
+param portalAccessPrincipalIds = map(
+  filter(split(readEnvironmentVariable('HELIX_PORTAL_ACCESS_PRINCIPAL_IDS', ''), ','), id => !empty(trim(id))),
+  id => trim(id)
+)
 
 // Portal managed-identity object id -> grants it GroupMember.Read.All on Microsoft
 // Graph, the group picker's only directory credential (ADR-0040). SECOND PASS: this

@@ -48,7 +48,9 @@ It also optionally declares, from parameters:
   deployed). Declaring the assignment **is** the admin consent; there is no
   separate approval step.
 - **Sign-in restrictions** — `edgeAccessPrincipalIds` / `portalAccessPrincipalIds`
-  limit who can sign in at all. Empty keeps the default open behaviour.
+  limit who can sign in at all. Empty keeps the default open behaviour. See
+  [Access control](/deploy/access-control) for the recommended group layout and
+  what gating changes.
 
 Deploy:
 
@@ -175,6 +177,10 @@ role, not a group — no Entra P1 license needed for individual users.
    members **Users/Groups**, value **`platform-admin`**.
 2. *Enterprise applications → helix-portal → Users and groups*: assign yourself
    to Platform Admin.
+
+Sign-in itself is open to the whole tenant unless you restrict it
+(*Enterprise applications → Properties → Assignment required*). Who to let in
+and the recommended group layout: [Access control](/deploy/access-control).
 
 ### Registration 3: `azx-cli` (the deploy CLI)
 
