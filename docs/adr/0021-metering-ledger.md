@@ -17,7 +17,7 @@ One **append-only** `gateway_calls` row per call: `(appId, userOid, userName, us
 
 ## Consequences
 
-- Append-only-by-grant resists edge-RCE tampering (but is **not** cryptographically immutable — a real immutable sink is deferred).
+- Append-only-by-grant resists edge-RCE tampering; it is **not** cryptographically tamper-evident, and no immutable sink is committed — the grant set is the integrity boundary (see the 2026-09-17 amendment).
 - Cost is **frozen per call**, so a later rate change never rewrites history; pricing lives in versioned code.
 - Token-denominated budgets stay stable across price changes; dollars are a derived view, not the enforcement unit.
 - The ledger is a metering + budget primitive, deliberately narrow (no latency/error-detail/size) — not an observability sink.
@@ -26,13 +26,13 @@ One **append-only** `gateway_calls` row per call: `(appId, userOid, userName, us
 
 ## Challenge outcome (2026-06-26)
 
-The Phase-1 P0 admin story demands a **tamper-evident** audit log; this ledger is not one, and "append-only by grant" is weaker than the Decision implies (filed as **#17**, Important).
+Challenged on integrity grounds (filed as **#17**, Important): this ledger is not tamper-evident, and "append-only by grant" proved weaker than the Decision implies. The tamper-evidence demand traced to a Phase-1 PM brief engineering never ratified and is **withdrawn** (amendment, 2026-09-17); the grant finding below stood on its own merits and was fixed.
 
 - **"Append-only" binds only the edge.** `helix_edge` is INSERT-only, but **`helix_portal` has `UPDATE`/`DELETE`** on `gateway_calls` (`migration.sql:30-31`), so the control-plane role / schema owner / a portal RCE can rewrite or delete history. (The `schema.prisma:187` comment claiming the portal "never writes" these rows contradicts that grant.)
 - **Hash-chaining alone is not the fix.** It's the right primitive (RFC 9162 CT, QLDB), but against a *privileged writer* an in-DB chain is forgeable — the writer recomputes every downstream hash. **External anchoring** of the chain head to a write-only sink outside the writer's control (the §8 immutable sink, `platform-architecture.md:285`) is the **load-bearing** part. Tamper-evident ≠ tamper-proof.
 - **GDPR:** two defensible paths, not one — crypto-shredding (per-subject key, hashes over ciphertext) for content/PII rows; a documented legal-obligation/legitimate-interest retention basis (Art. 17(3)) for the metering tuple.
 
-**Sequenced fix:** (1) pre-M5, one line — revoke `helix_portal` `UPDATE`/`DELETE` on `gateway_calls` (makes append-only true for every writer role, aligns the grant with the `schema.prisma:187` comment); (2) fast-follow before any external audit — hash chain + Merkle + external anchoring; (3) GDPR per above. Severity Important (the single-trusted-operator pilot bounds insider risk today).
+**Sequenced fix:** (1) pre-M5, one line — revoke `helix_portal` `UPDATE`/`DELETE` on `gateway_calls` (makes append-only true for every writer role, aligns the grant with the `schema.prisma:187` comment) — **landed**, migration `20260721120000`; (2) fast-follow before any external audit — hash chain + Merkle + external anchoring — **withdrawn 2026-09-17** with the unratified tamper-evidence requirement (amendment below); (3) GDPR per above — **retained**. Severity Important (the single-trusted-operator pilot bounds insider risk today).
 
 ## Amendment (2026-08-28): the metering tuple now includes a request path
 
@@ -136,3 +136,31 @@ directory attribute, not a containment boundary.
 Finally: the labels stop at the edge. `mintInstruction` and `LlmProvider.stream`
 carry the opaque `userOid` alone, because egress is a separate trust boundary and
 `AttestedInstructionSchema` deliberately conveys no display half.
+
+## Amendment (2026-09-17): the tamper-evidence requirement is withdrawn
+
+The demand that opened the challenge outcome — a Phase-1 P0 admin story
+requiring a **tamper-evident** audit log — traced to *Phase 1 User
+Stories.docx*, a PM brief that was never in the repo. The in-repo translation
+of it (`docs/phase-1-user-stories.md`) was deleted 2026-08-06 for mapping
+against a brief that isn't in the repo, and engineering never ratified the
+story as a requirement. It is withdrawn.
+
+What this does and doesn't change:
+
+- **Sequenced fix (1) stands, and has landed.** The grant defect the challenge
+  surfaced was real on its own merits, independent of the brief: `helix_portal`
+  held `UPDATE`/`DELETE` on `gateway_calls` while the Decision claimed
+  append-only. Migration `20260721120000` revoked it to SELECT-only, so
+  append-only by grant holds for every runtime role.
+- **Sequenced fix (2) is descoped.** Hash chain + Merkle + external anchoring
+  was the answer to the withdrawn demand; with no ratified requirement behind
+  it, "append-only by grant for every runtime role" is the chosen integrity
+  posture, not a gap awaiting work. The challenge analysis above (an in-DB
+  chain is forgeable by a privileged writer; anchoring, not chaining, is the
+  load-bearing part) stays as the record of *how* to build it if a concrete
+  compliance driver ever arrives — that arrival would be a new ADR.
+- **Sequenced fix (3) is untouched.** The GDPR/retention question stands on the
+  ledger's own contents — `path` (2026-08-28) and the directly-identifying
+  `userName`/`userEmail` (2026-08-31) on a table with no `DELETE` grant and no
+  pruning job — not on the PM brief. It remains tracked in `TODO.md`.

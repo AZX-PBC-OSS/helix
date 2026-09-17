@@ -531,10 +531,12 @@ Call these out only if you disagree with the *decision*, not as bugs:
   scope here, and the last `PreviewBadge` in the SPA. The BOLA half it used to carry is done
   (`ownsApp`, §12); what remains out of scope is the roles model and owner-scoped read
   filtering ([ADR-0007](adr/0007-portal-authz-v0.md)).
-- **Audit tamper-evidence.** `gateway_calls` is append-only *by DB grant* (the edge has
-  INSERT, not UPDATE/DELETE) but is **not** cryptographically tamper-evident — no hash chain
-  or signature. Audit shipping to an immutable sink is a planned hardening (project plan §5.8);
-  don't file the absence as an auth finding, but know the property's true boundary.
+- **Audit tamper-evidence.** `gateway_calls` is append-only *by DB grant* (no runtime role holds
+  UPDATE/DELETE — `helix_portal` was revoked to SELECT-only in migration `20260721120000`) but is
+  **not** cryptographically tamper-evident — no hash chain or signature. That is the chosen
+  posture, not a gap in flight: the tamper-evidence demand traced to an unratified PM brief and
+  was withdrawn (ADR-0021, 2026-09-17). Don't file the absence as an auth finding, but know the
+  property's true boundary.
 
 ---
 

@@ -112,12 +112,12 @@ observability sink. Two consequences worth stating plainly:
 - **Cost, as charged.** Each `gateway_calls` row carries a frozen `costMicroUsd`, computed at write
   time from a **code-resident rate table** (`packages/shared/src/pricing.ts`) — so a later rate
   change never rewrites history, and token counts are recorded alongside it (ADR-0021).
-- **Append-only by grant, not tamper-evident.** The append-only property is **by DB grant only, not
-  cryptographically tamper-evident**: `helix_edge` has `INSERT` (and `SELECT` for the budget sum)
-  but no `UPDATE`/`DELETE` on `gateway_calls`, so an edge RCE can't rewrite history — but
-  `helix_portal` currently **can** (revoking its `UPDATE`/`DELETE` is a pre-M5 one-liner, issue
-  #17). There is no hash chain or signature: integrity rests on the DB grant set, not on
-  cryptographic immutability. A real immutable audit sink is deferred (architecture §8, ADR-0021).
+- **Append-only by grant.** `helix_edge` has `INSERT` (and `SELECT` for the budget sum) but no
+  `UPDATE`/`DELETE` on `gateway_calls`, and `helix_portal` is revoked to SELECT-only as well
+  (migration `20260721120000`) — no runtime role can rewrite history. There is no hash chain or
+  signature: integrity rests on the DB grant set, not on cryptographic tamper-evidence, and that
+  is the chosen posture rather than a committed gap (ADR-0021 — the tamper-evidence demand, from
+  an unratified PM brief, was withdrawn 2026-09-17).
 
 Calls that never reach the provider record selectively: a `quota_blocked` admission is logged (it
 *was* a request the app made), but a **rejected CSRF / disallowed-model / unconfigured-capability**

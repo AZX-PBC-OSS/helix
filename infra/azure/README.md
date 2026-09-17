@@ -944,7 +944,11 @@ reason: the failure is invisible in every place you would naturally look.
   secrets — those are readable from the container app definitions regardless (see
   "Known deploy gotchas"), so the win is narrower than it first appears.
 
-- **Audit-log shipping to immutable blob** — architecture §10 follow-up.
+- **Audit-log shipping to immutable blob** — descoped 2026-09-17: the
+  tamper-evidence demand it served traced to a Phase-1 PM brief engineering
+  never ratified (ADR-0021 amendment). `gateway_calls` stays append-only by DB
+  grant for every runtime role; ledger retention/erasure (GDPR) is tracked in
+  `TODO.md`.
 
 ## Known deploy gotchas
 
