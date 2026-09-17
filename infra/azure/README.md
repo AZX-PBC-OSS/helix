@@ -464,11 +464,16 @@ below for how.
 Set the secret env vars, then deploy. The apps are skipped on this pass.
 
 ```bash
-export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24)
-export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24)
-export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24)   # helix_portal runtime role (role created in step 4)
-export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24)
-export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24)     # helix_dev role — create it now even if deployDevGateway stays false (see step 4)
+# DB passwords are interpolated into DSN URLs (see the *DbConn vars in
+# main.bicep), so they must be base64URL — a plain base64 value containing
+# / + = corrupts the DSN it lands in.
+export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')   # helix_portal runtime role (role created in step 4)
+export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')     # helix_dev role — create it now even if deployDevGateway stays false (see step 4)
+# Signing secrets are base64-DECODED by the apps — standard base64 here.
+# A base64url value makes the edge crash on boot.
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
 export HELIX_INSTRUCTION_SECRET=$(openssl rand -base64 48)
@@ -521,51 +526,59 @@ docker build -f apps/egress/Dockerfile -t $REG/helix-egress:$TAG .
 docker push $REG/helix-edge:$TAG && docker push $REG/helix-portal:$TAG && docker push $REG/helix-egress:$TAG
 ```
 
-### 4. Create the Postgres runtime roles + run migrations
+### 4. Create the Postgres runtime roles
 
-The server and `helix` DB exist; the least-privilege roles and grants do not yet.
-From inside the VNet, connect as the admin and run the committed role SQL
-(`sql/01-roles.sql` — the prod analog of `.devcontainer/db-init/01-roles.sql`,
-with `NOBYPASSRLS` explicit on all four roles) with the **same passwords** you
-set above, then apply migrations (whose per-table GRANTs are guarded by an
-`IF EXISTS role` check, so the roles must exist first):
+The server and `helix` DB exist; the least-privilege roles and grants do not
+yet. The committed role SQL (`sql/01-roles.sql` — the prod analog of
+`.devcontainer/db-init/01-roles.sql`, with `NOBYPASSRLS` explicit on all four
+roles) creates them, run once as the admin with the **same passwords** you set
+above. It must run before the first migration: the migrations' per-table GRANTs
+are guarded by an `IF EXISTS role` check, so the roles must exist first.
+
+Postgres is private-endpoint-only, so this runs as a throwaway Container Apps
+Job inside the VNet — `scripts/create-roles.sh` wraps the whole operation
+(build the job via `az rest`, run the SQL in it, poll, then delete the job,
+which it must not survive: it carries the admin DSN as a job secret):
+
+```bash
+RG=<rg> PREFIX=<namePrefix> scripts/create-roles.sh
+```
+
+It reads the same `HELIX_*` env vars as the bicepparam, and it is **run-once**:
+`CREATE ROLE` is not idempotent, and a second run fails with "role already
+exists". To change a role password later, `ALTER ROLE` through the same
+throwaway-job shape — don't re-run the script.
 
 > Create `helix_dev` here even if you are not deploying the dev-gateway
 > (`deployDevGateway=false`) — the role is harmless without its app, and adding
 > it later means re-running the migration to pick up its guarded grants + RLS.
+> The script always creates all four; just don't skip `HELIX_DEV_DB_PASSWORD`.
 
-```bash
-ADMIN_URL="postgresql://helixadmin:$HELIX_PG_ADMIN_PASSWORD@<pgFqdn>:5432/helix?sslmode=require"
-
-# 1. create the four least-privilege runtime roles (NOBYPASSRLS, per-role passwords)
-psql "$ADMIN_URL" \
-  -v edge_password="$HELIX_EDGE_DB_PASSWORD" \
-  -v portal_password="$HELIX_PORTAL_DB_PASSWORD" \
-  -v egress_password="$HELIX_EGRESS_DB_PASSWORD" \
-  -v dev_password="$HELIX_DEV_DB_PASSWORD" \
-  -v ON_ERROR_STOP=1 \
-  -f sql/01-roles.sql
-
-# 2. apply migrations as the owner (this issues the per-table edge/egress grants)
-DATABASE_URL="$ADMIN_URL" pnpm --filter @azx-pbc/portal db:deploy
-```
+This is the only step that places the admin credential on a resource. The first
+migration is step 6 below, after the apps apply — and it already uses the
+credential-free migrate job.
 
 > **Note:** every container runtime connects as its least-privilege role
 > (`helix_portal` / `helix_edge` / `helix_egress`, and `helix_dev` for the
 > dev-gateway) — the portal reads `PORTAL_DATABASE_URL` and, under
 > `NODE_ENV=production`, refuses the `DATABASE_URL` owner fallback (ADR-0002).
-> The admin DSN is never placed in a container.
+> The admin DSN is never placed in a long-lived container.
 
-#### Later migrations: use the migrate job, not this step
+#### Every migration: the `<namePrefix>-migrate` job
 
-Step 4 is the **bootstrap**, and it is manual because the roles SQL needs the
-per-role passwords. Every migration _after_ that is applied by the
+All migrations — **including the first** — are applied by the
 `<namePrefix>-migrate` Container Apps Job (`modules/migrate-job.bicep`), which
-`deployApps=true` creates:
+`deployApps=true` creates. That gating is why the fresh-install order is roles
+→ apps apply → migrate: on the first `deployApps=true` pass the apps boot
+before the schema exists (they answer `/health` and fail real requests until
+the migration lands — expected), and the migrate job appears alongside them.
 
 ```bash
 az containerapp job update -g <rg> -n <namePrefix>-migrate --image <registry>/helix-portal:<tag>
 az containerapp job start  -g <rg> -n <namePrefix>-migrate
+# then confirm the execution succeeded — a started job is not a finished one:
+az containerapp job execution list -g <rg> -n <namePrefix>-migrate \
+  --query "[0].{name:name,status:properties.status,start:properties.startTime}"
 ```
 
 The job runs the portal image inside the VNet — needed either way, since Postgres
@@ -590,6 +603,11 @@ az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
   --parameters deployApps=true
 ```
 
+This pass also creates the `<namePrefix>-migrate` job (step 6 runs it). The
+apps boot before the schema exists — they answer `/health` and fail real
+requests until the first migration lands. Expected on a fresh install, and
+invisible from outside: DNS isn't delegated until step 7.
+
 #### (Optional) the dev-gateway
 
 The opt-in dev-mode surface (`dev-api.<appsDomain>`) is off by default. To stand
@@ -603,7 +621,7 @@ az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
 Before enabling it on a real deployment, read the riders in
 [`docs/features/dev-mode.md`](../../docs/features/dev-mode.md): a **short-window
 throttle** on the dev-gateway itself, a **distinct dev LLM budget** (the vendor
-key is env-agnostic), and the `dev-api` DNS/TLS binding (step 6, added when this
+key is env-agnostic), and the `dev-api` DNS/TLS binding (step 7, added when this
 flag is set). The `edgeTrustProxy` trusted-ingress address is passed to this
 container too, and since 2026-09-03 it is a **correct** address rather than
 merely a passed one, so it is no longer one of the riders (issue #13). Passing it
@@ -641,7 +659,14 @@ rows expire. And a CSRF-refused POST returns 403 **before** the throttle reserve
 so it creates no row at all — a `curl` with no `Origin` header passes that check
 by design (`isSameOriginFormPost`) and does count.
 
-### 6. DNS + TLS
+### 6. Run the first migration
+
+The apps apply created the `<namePrefix>-migrate` job — run it now, exactly as
+in "Every migration" above (pin the image to the tag being deployed, start it,
+confirm the execution reports `Succeeded`). Apps that booted before the schema
+existed pick it up on their own; nothing needs restarting.
+
+### 7. DNS + TLS
 
 - Delegate `azx.helix.azxlabs.io` (a subdomain of `azxlabs.io`) by adding NS
   records for `azx.helix` in the parent `azxlabs.io` Cloudflare zone, pointing at
@@ -916,10 +941,10 @@ reason: the failure is invisible in every place you would naturally look.
   certificate params. Full walkthrough + gotchas (v2 tokens, cert auth, App
   Roles): `docs/runbooks/entra-app-registration.md`.
 - **Wildcard ACME cert issuance/renewal** — portal scheduled job (deferred).
-- **Postgres runtime roles + the FIRST migration** — step 4 above (data-plane, not
-  IaC). Subsequent migrations are not an operator step: `deployApps=true` creates
-  the `<namePrefix>-migrate` job, which applies them without anyone handling the
-  admin password (step 4's "Later migrations" note).
+- **Postgres runtime roles + the FIRST migration** — steps 4 and 6 above
+  (data-plane, not IaC). Subsequent migrations are not an operator step:
+  `deployApps=true` creates the `<namePrefix>-migrate` job, which applies them
+  without anyone handling the admin password (step 4's "Every migration" note).
 - **Front Door / bastion** for operator access to the internal portal.
 - **Passwordless (Entra) Postgres auth** — a hardening follow-up, and **not** the
   config flip an earlier version of this list implied. The managed identities do
@@ -988,7 +1013,7 @@ if a deploy misbehaves:
   **This went unnoticed on both installs for a long time because nothing depended on
   it.** Platform secrets are direct-injected as env vars (ADR-0029), not read from the
   vault at runtime, so the apps never resolved it. The first component that genuinely
-  needs it is the migration job (see step 4's "Later migrations"). Note that
+  needs it is the migration job (see step 4's "Every migration"). Note that
   **egress → `kv-connections` at runtime (ADR-0006) is affected too** — it will fail
   the same way as soon as a connection secret exists.
 

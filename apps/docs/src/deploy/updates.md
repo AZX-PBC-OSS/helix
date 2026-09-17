@@ -76,7 +76,8 @@ Migrate first, then roll the apps. Both steps are scoped commands.
 
 Migrations run through the `<namePrefix>-migrate` job, which reads the Postgres
 admin password from Key Vault with its own managed identity. Nobody handles
-that password after the install's first migration.
+that password after the install's roles bootstrap. How the job works, and what
+to do when it fails, is in [Database & migrations](/deploy/database).
 
 ```bash
 az containerapp job update -g <rg> -n <namePrefix>-migrate \

@@ -73,7 +73,8 @@ default. See the [configuration reference](/deploy/configuration#cost).
   gets its own origin — deliberate isolation, since every hosted app is
   untrusted code: the browser's same-origin policy is what keeps one app's
   code away from another app's data, and the platform manages it all.
-- `psql`, `openssl`, and Node 24 + pnpm for the one-time migration step.
+- `openssl` and `python3` on the machine you deploy from (the database
+  bootstrap script uses both). Everything else runs inside Azure.
 
 ## Step 1: Entra app registrations
 
@@ -118,11 +119,15 @@ services, vaults, and identities, but no containers.
 ```bash
 cd infra/azure
 
-export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24)
-export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24)
-export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24)
-export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24)
-export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24)
+# Database passwords are interpolated into DSN URLs, so they must be
+# base64URL — a plain base64 value containing / + = corrupts the DSN.
+export HELIX_PG_ADMIN_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+# Signing secrets are base64-DECODED by the apps — standard base64 here.
+# A base64url value makes the edge crash on boot.
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
 export HELIX_INSTRUCTION_SECRET=$(openssl rand -base64 48)
@@ -145,39 +150,35 @@ bound, the what-if must **not** show a delete of
 `wildcardTlsBound` note in the [configuration reference](/deploy/configuration#tls).
 :::
 
-## Step 4: Create the database roles and run the first migration
+## Step 4: Create the database roles
 
-Postgres is private-endpoint-only, so connect from inside the VNet (for example
-with `az containerapp exec`, a VPN, or a temporary job in the apps
-environment). As the admin user, run the committed role script with the
-passwords from step 3, then apply migrations:
+The deploy created the Postgres server and the `helix` database, but not the
+four least-privilege runtime roles the services connect as (`helix_portal`,
+`helix_edge`, `helix_egress`, `helix_dev`). Those come from the committed
+`infra/azure/sql/01-roles.sql`, run once as the admin — and they must exist
+before the first migration, because the migrations' table grants only apply to
+roles that already exist.
 
-```bash
-ADMIN_URL="postgresql://helixadmin:$HELIX_PG_ADMIN_PASSWORD@<pgFqdn>:5432/helix?sslmode=require"
-
-psql "$ADMIN_URL" \
-  -v edge_password="$HELIX_EDGE_DB_PASSWORD" \
-  -v portal_password="$HELIX_PORTAL_DB_PASSWORD" \
-  -v egress_password="$HELIX_EGRESS_DB_PASSWORD" \
-  -v dev_password="$HELIX_DEV_DB_PASSWORD" \
-  -v ON_ERROR_STOP=1 \
-  -f sql/01-roles.sql
-
-DATABASE_URL="$ADMIN_URL" pnpm --filter @azx-pbc/portal db:deploy
-```
-
-Create all four roles even if you are not enabling the dev gateway — the extra
-role is harmless and adding it later means re-running migrations.
-
-This is the only time anyone handles the admin password. Every later migration
-runs through a scheduled container job (`<namePrefix>-migrate`) that reads the
-admin password from Key Vault itself:
+Postgres is private-endpoint-only, so this runs as a throwaway Container Apps
+job inside the VNet. A script in the repo wraps the whole operation — build the
+job, run the SQL in it, poll the result, and delete the job afterwards:
 
 ```bash
-az containerapp job update -g <rg> -n <namePrefix>-migrate \
-  --image ghcr.io/azx-pbc-oss/helix-portal:<tag>
-az containerapp job start  -g <rg> -n <namePrefix>-migrate
+RG=<rg> PREFIX=<namePrefix> infra/azure/scripts/create-roles.sh
 ```
+
+It reads the same `HELIX_*` variables you exported in step 3 — set all five,
+including `HELIX_DEV_DB_PASSWORD`. The `helix_dev` role is created even when
+the dev gateway stays off: the extra role is harmless without its app, and
+adding it later means re-running migrations to pick up its grants.
+
+The job deletes itself when the script finishes — it carries the admin password
+as a job secret, so it must not be left lying around (if the cleanup itself
+fails, the script prints the one-line delete command). This is the only step in
+the whole install where the admin password is placed on a resource. Every
+migration after it — including the first one, in step 6 — runs through a job
+that reads the password from Key Vault itself. [Database &
+migrations](/deploy/database) explains the model.
 
 ## Step 5: Deploy the apps
 
@@ -194,7 +195,37 @@ public does not make its packages public; flip each one under
 *Package settings → Change visibility*. To keep them private instead, pass a
 `registries` credential to the container apps (see the infra README).
 
-## Step 6: DNS and TLS
+This pass also creates the `<namePrefix>-migrate` job used next. The apps boot
+before the schema exists: they answer `/health` but fail real requests until
+step 6 lands. That is expected on a fresh install — nothing has been delegated
+in DNS yet, so nothing external can reach them.
+
+## Step 6: Run the first migration
+
+The `<namePrefix>-migrate` job runs the portal image inside the VNet and reads
+the Postgres admin password from Key Vault with its own managed identity — no
+credential passes through your shell. Pin it to the tag being deployed, start
+it, and then read the result:
+
+```bash
+az containerapp job update -g <rg> -n <namePrefix>-migrate \
+  --image ghcr.io/azx-pbc-oss/helix-portal:<tag>
+az containerapp job start  -g <rg> -n <namePrefix>-migrate
+
+# a job that starts is not a job that succeeded — check the execution
+az containerapp job execution list -g <rg> -n <namePrefix>-migrate \
+  --query "[0].{name:name,status:properties.status,start:properties.startTime}"
+```
+
+Expect `Succeeded`. On `Failed`, the Prisma output in the job's logs is the
+explanation — see [reading the migrate job's
+output](/deploy/database#reading-the-migrate-jobs-output). Once it succeeds,
+every app that was waiting on the schema comes up on its own.
+
+Migrations are forward-only and run before the apps on every later update too —
+that routine is in [Deploying updates](/deploy/updates).
+
+## Step 7: DNS and TLS
 
 1. **Delegate the domain.** In the parent zone, add NS records for
    `<appsDomain>` pointing at the nameservers in the deployment output
@@ -209,7 +240,7 @@ public does not make its packages public; flip each one under
    az containerapp job start -g <rg> -n <namePrefix>-certbot
    ```
 
-   Delegation from step 1 must be live before this run — Let's Encrypt has to
+   The delegation above must be live before this run — Let's Encrypt has to
    resolve the challenge TXT publicly.
 3. **Flip `wildcardTlsBound: true`** in the params file and re-apply. From then
    on the template itself declares the certificate bindings, so re-applies
@@ -221,7 +252,7 @@ The certificate defaults to the Let's Encrypt **staging** directory so you can
 validate the flow without burning rate limits. Once it works, set `acmeServer`
 to `https://acme-v02.api.letsencrypt.org/directory` and re-run the job.
 
-## Step 7: Verify
+## Step 8: Verify
 
 - Sign in to `https://portal.<appsDomain>` with an admin-assigned user and
   check the admin pages appear.
