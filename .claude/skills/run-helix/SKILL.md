@@ -65,7 +65,7 @@ Apps are at `https://<slug>.local.helix.azxlabs.io:8080`. That wildcard resolves
 ## Test suite
 
 ```bash
-./check-and-lint.sh          # typecheck + lint + format + all tests — the CI gate
+./check-and-lint.sh          # typecheck + lint + format + docs build + all tests — the CI gate
 ```
 
 Required to pass before calling any change done. The smoke test is complementary, not a substitute: it catches wiring the unit tests mock out.

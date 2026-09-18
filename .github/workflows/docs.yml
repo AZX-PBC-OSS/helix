@@ -44,7 +44,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # VitePress fails the build on dead internal links, so a broken page
-      # reference fails here rather than shipping a 404.
+      # reference fails here rather than shipping a 404. ci.yml's `static`
+      # job runs this same build on every PR, so a break should be caught
+      # long before this deploy runs.
       - run: pnpm --filter @azx-pbc/docs-site build
 
       - uses: actions/upload-pages-artifact@v3

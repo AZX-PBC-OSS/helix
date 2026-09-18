@@ -37,14 +37,14 @@ Constraints from that work that outlive any status line:
 | `pnpm dev:docs`                                   | Run the public docs site dev server (VitePress, `apps/docs` — operator + app-author guides, published to GitHub Pages by `.github/workflows/docs.yml`)                              |
 | `pnpm --filter @azx-pbc/portal db:migrate`        | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                                                                                                  |
 | `pnpm --filter @azx-pbc/helix-cli helix -- <cmd>` | Run the `helix` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`). Runs in `packages/cli`; for real deploys run it from an app dir instead — see `packages/cli/README.md` |
-| `./check-and-lint.sh`                             | Poor-man's CI: typecheck + lint + format check + tests in one pass (add `--fix` to auto-fix first)                                                                                  |
+| `./check-and-lint.sh`                             | Poor-man's CI: typecheck + lint + format check + docs build + tests in one pass (add `--fix` to auto-fix first)                                                                     |
 
 The portal API lives under `/api/v1`. Mutating routes take a bearer token through the verifier chain — an IdP-minted JWT (`helix login`) or `$PORTAL_DEV_TOKEN` (CI/dev fallback); reads now require the same token (only `/health` + the auth-config bootstrap stay public). Deploys land as `preview` versions — promotion to live is a separate step (architecture §5.1).
 
 The standard workspace scripts (`install`, `typecheck`, `lint`, `format`, `test`) are in the root `package.json`. Per-package scripts also run via `pnpm --filter @azx-pbc/edge <script>`.
 
-**Required before calling any change finished: run `./check-and-lint.sh` (or `--fix`) from the repo root and get a clean pass.** This is the same gate CI runs — typecheck + lint + **format check** + the full test suite — and it catches what per-package or per-file checks miss (a Prettier format failure is a red CI build even when types, lint, and the tests you ran are all green). Targeted `pnpm --filter … typecheck`/`test` runs are fine _while iterating_, but they are not a substitute: do not commit, open a PR, or report a change as done until the full script passes. If it fails, fix it and re-run — don't commit the failure and patch it after. CI runs this exact script rather than a copy of
-the commands, split across two jobs by naming steps (`static` runs `typecheck lint format`,
+**Required before calling any change finished: run `./check-and-lint.sh` (or `--fix`) from the repo root and get a clean pass.** This is the same gate CI runs — typecheck + lint + **format check** + the docs-site build + the full test suite — and it catches what per-package or per-file checks miss (a Prettier format failure is a red CI build even when types, lint, and the tests you ran are all green). Targeted `pnpm --filter … typecheck`/`test` runs are fine _while iterating_, but they are not a substitute: do not commit, open a PR, or report a change as done until the full script passes. If it fails, fix it and re-run — don't commit the failure and patch it after. CI runs this exact script rather than a copy of
+the commands, split across two jobs by naming steps (`static` runs `typecheck lint format docs`,
 `test` runs `test` — only the suite needs Postgres and Azurite); running it bare covers both.
 
 ## Environment

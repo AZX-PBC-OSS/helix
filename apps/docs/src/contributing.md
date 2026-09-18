@@ -29,7 +29,7 @@ root:
 
 ```bash
 pnpm install
-./check-and-lint.sh   # typecheck + lint + format + tests — the CI gate
+./check-and-lint.sh   # typecheck + lint + format + docs build + tests — the CI gate
 pnpm dev:edge         # …and the other dev:* services, see the docs
 ```
 

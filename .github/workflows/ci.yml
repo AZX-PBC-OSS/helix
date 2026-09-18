@@ -1,22 +1,25 @@
 name: CI
 
 # Basic CI: runs the same checks as ./check-and-lint.sh (typecheck, lint,
-# format:check, tests), then builds the three app images and publishes them to
-# the GitHub Container Registry (GHCR).
+# format:check, docs build, tests), then builds the three app images and
+# publishes them to the GitHub Container Registry (GHCR).
 #
 # The checks are split across two jobs by what they *need*, not by what they
 # are. Only the test suite touches Postgres or Blob, so `static` (typecheck +
-# lint + format) skips the service containers, the Azurite pull, the role SQL
-# and the KEK entirely, and runs concurrently with `test`. Both invoke
-# ./check-and-lint.sh with step names rather than open-coding the pnpm
-# commands, so the gate CI runs and the gate a developer runs locally stay the
-# same script.
+# lint + format + the docs build) skips the service containers, the Azurite
+# pull, the role SQL and the KEK entirely, and runs concurrently with `test`.
+# Both invoke ./check-and-lint.sh with step names rather than open-coding the
+# pnpm commands, so the gate CI runs and the gate a developer runs locally
+# stay the same script.
 #
 # Measured, as of the split (the `timing:` line at the end of each "Run checks"
 # step is where these come from — keep it, it is how the layout stays honest):
 #
 #   static  36s of checks (typecheck 19 · lint 10 · format 7) in a 56s job
 #   test    76s of checks in a 1m54s job (before sharding)
+#
+# (The docs build joined `static` later: a few seconds, no services needed, so
+# the job floor is unchanged in kind. The `timing:` line is the current truth.)
 #
 # One job doing all of it was 2m34s. `test` is then sharded three ways, since
 # 76s of vitest on a 2-core runner is mostly lost in-process parallelism — the
@@ -58,10 +61,11 @@ permissions:
 
 jobs:
   static:
-    name: typecheck · lint · format
+    name: typecheck · lint · format · docs
     runs-on: ubuntu-latest
-    # Pure static analysis: no database, no blob store, no secrets. If a check
-    # added here starts needing a service container, it belongs in `test`.
+    # Static analysis + the docs build: no database, no blob store, no secrets.
+    # If a check added here starts needing a service container, it belongs in
+    # `test`.
     timeout-minutes: 10
 
     steps:
@@ -78,11 +82,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Run checks (typecheck · lint · format)
+      - name: Run checks (typecheck · lint · format · docs)
         # Step names, so this is the same script a developer runs locally; the
         # script still runs every named step even if an earlier one fails, then
         # exits non-zero — one run surfaces the full picture.
-        run: ./check-and-lint.sh typecheck lint format
+        run: ./check-and-lint.sh typecheck lint format docs
 
   test:
     name: test (${{ matrix.shard }})

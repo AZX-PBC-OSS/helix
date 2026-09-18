@@ -2,10 +2,11 @@
 #
 # check-and-lint.sh — poor man's CI.
 #
-# Runs typecheck, lint, format check, and tests. Each step runs even if an
-# earlier one fails, so you get the full picture in one pass. Exits non-zero
-# if any step failed. Each step reports its own wall time, and the summary
-# reports the total — CI reads those numbers to keep the job split honest.
+# Runs typecheck, lint, format check, a docs-site build smoke test, and the
+# test suite. Each step runs even if an earlier one fails, so you get the full
+# picture in one pass. Exits non-zero if any step failed. Each step reports
+# its own wall time, and the summary reports the total — CI reads those
+# numbers to keep the job split honest.
 #
 # Usage:
 #   ./check-and-lint.sh                        # run all checks
@@ -15,7 +16,8 @@
 #
 # Naming steps is what lets CI split the work across two jobs (.github/
 # workflows/ci.yml) while still running *this* script rather than a divergent
-# copy of the commands: the `static` job runs the first three, the `test` job
+# copy of the commands: the `static` job runs the first four (the docs build
+# needs no database or blob store, so it rides along there), the `test` job
 # runs the last one, and both keep the run-every-step-then-report-all
 # behaviour. With no step names, every step runs — the local default.
 #
@@ -28,7 +30,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_STEPS=(typecheck lint format test)
+ALL_STEPS=(typecheck lint format docs test)
 
 FIX=0
 STEPS=()
@@ -121,6 +123,10 @@ fi
 wants typecheck && run_step "typecheck" pnpm typecheck
 wants lint && run_step "lint" pnpm lint
 wants format && run_step "format" pnpm format:check
+# The VitePress build fails on a dead internal link or an unrenderable page,
+# so a broken docs change goes red here instead of at the Pages deploy after
+# merge. Needs no services, so CI gates it with the static steps.
+wants docs && run_step "docs" pnpm --filter @azx-pbc/docs-site build
 # `pnpm test --shard=…`, NOT `pnpm test -- --shard=…`: pnpm swallows args after
 # a second `--` and vitest never sees them, so the shard silently runs the whole
 # suite and the job still goes green. Verified — do not "fix" this to the `--`

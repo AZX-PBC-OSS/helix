@@ -40,7 +40,7 @@ Delete the file to go back to the local IdP.
 ## Checks
 
 ```bash
-./check-and-lint.sh          # typecheck, lint, format, tests — the CI gate
+./check-and-lint.sh          # typecheck, lint, format, docs build, tests — the CI gate
 pnpm --filter @azx-pbc/portal db:migrate   # create/apply a Prisma migration
 ```
 

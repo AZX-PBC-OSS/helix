@@ -180,26 +180,26 @@ opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-pr
 
 ## Commands (from the repo root)
 
-| Command                                    | What                                               |
-| ------------------------------------------ | -------------------------------------------------- |
-| `pnpm install`                             | Install all workspace deps                         |
-| `pnpm typecheck`                           | `tsc` across every package                         |
-| `pnpm lint` / `pnpm format`                | ESLint / Prettier (`format:check` to verify only)  |
-| `pnpm test`                                | Vitest across the workspace                        |
-| `pnpm dev:idp`                             | Local OIDC issuer (`:3002`)                        |
-| `pnpm dev:portal`                          | helix-portal (`:3001`, registry + deploy API)      |
-| `pnpm dev:edge`                            | helix-edge (`:8080`, HTTPS)                        |
-| `pnpm dev:egress`                          | helix-egress (`:8081`, fetch-proxy + secrets)      |
-| `pnpm dev:devgw`                           | the dev-gateway (`:8082`, develop against env=dev) |
-| `pnpm dev:web`                             | portal SPA (`:5173`, proxies `/api` to :3001)      |
-| `pnpm dev:clean`                           | Free the dev ports (8080–8082, 3001, 3002, 5173)   |
-| `pnpm --filter @azx-pbc/portal db:migrate` | Create/apply a Prisma migration (dev)              |
-| `./check-and-lint.sh`                      | Poor-man's CI: typecheck + lint + format + tests   |
+| Command                                    | What                                                          |
+| ------------------------------------------ | ------------------------------------------------------------- |
+| `pnpm install`                             | Install all workspace deps                                    |
+| `pnpm typecheck`                           | `tsc` across every package                                    |
+| `pnpm lint` / `pnpm format`                | ESLint / Prettier (`format:check` to verify only)             |
+| `pnpm test`                                | Vitest across the workspace                                   |
+| `pnpm dev:idp`                             | Local OIDC issuer (`:3002`)                                   |
+| `pnpm dev:portal`                          | helix-portal (`:3001`, registry + deploy API)                 |
+| `pnpm dev:edge`                            | helix-edge (`:8080`, HTTPS)                                   |
+| `pnpm dev:egress`                          | helix-egress (`:8081`, fetch-proxy + secrets)                 |
+| `pnpm dev:devgw`                           | the dev-gateway (`:8082`, develop against env=dev)            |
+| `pnpm dev:web`                             | portal SPA (`:5173`, proxies `/api` to :3001)                 |
+| `pnpm dev:clean`                           | Free the dev ports (8080–8082, 3001, 3002, 5173)              |
+| `pnpm --filter @azx-pbc/portal db:migrate` | Create/apply a Prisma migration (dev)                         |
+| `./check-and-lint.sh`                      | Poor-man's CI: typecheck + lint + format + docs build + tests |
 
 `./check-and-lint.sh` (add `--fix` to auto-fix first) is the same gate CI runs, and a change
 isn't finished until it passes clean. CI invokes this same script, splitting it across two
-jobs by naming steps (`./check-and-lint.sh typecheck lint format` and `… test`) — running it
-bare locally covers both.
+jobs by naming steps (`./check-and-lint.sh typecheck lint format docs` and `… test`) —
+running it bare locally covers both.
 
 ## Conventions
 
