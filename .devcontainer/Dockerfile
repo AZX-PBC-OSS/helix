@@ -6,9 +6,17 @@ FROM mcr.microsoft.com/devcontainers/typescript-node:24-bookworm
 # postgresql-client → psql/pg_isready against the db service.
 # mkcert → local wildcard TLS cert for *.local.helix.azxlabs.io (M3: __Host- cookies
 # demand Secure, so the edge terminates TLS in dev; see post-create.sh).
+# shellcheck → the same lint CI runs over scripts/ (shellcheck job).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        postgresql-client jq fzf vim less mkcert ripgrep \
+        postgresql-client jq fzf vim less mkcert ripgrep shellcheck \
     && rm -rf /var/lib/apt/lists/*
+
+# ── actionlint (pinned; apt doesn't carry it) ────────────────
+# The workflow lint half of CI parity — runs .github/workflows/*.yml with
+# -shellcheck=shellcheck. The project's own script verifies the release
+# checksum; install to /usr/local/bin while still root.
+RUN curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash \
+        | bash -s -- 1.7.7 /usr/local/bin
 
 # ── gh CLI ───────────────────────────────────────────────────
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
