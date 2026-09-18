@@ -120,13 +120,22 @@ need the roles to exist first. So:
 ## Troubleshooting
 
 **An app crash-loops or 500s with `password authentication failed for role
-"helix_…"`.** The role's password in Postgres does not match the DSN the
-deploy generated — usually because the role password was never captured when
-the install was created, or the env file drifted. Fix it by setting the role's
-password to the value your deploy configuration actually carries, via `ALTER
-ROLE` in a throwaway in-VNet job — the same shape `create-roles.sh` uses
-(admin DSN as a job secret, deleted afterwards). Do not "fix" it by editing the
-deployed DSN instead: the next apply regenerates it from the parameter.
+"helix_…"`.** The role's password in Postgres does not match the DSN held in
+the platform vault — usually because the role password was never captured when
+the install was created. The vault is the source of truth, so fix the **role**,
+not the DSN. Read the DSN back off the app — this resolves the reference over
+the control plane, so it works even while the app is crash-looping:
+
+```bash
+az containerapp secret show -g <rg> -n <namePrefix>-edge \
+  --secret-name edge-database-url --query value -o tsv
+```
+
+Extract the password from the DSN and `ALTER ROLE` to it in a throwaway
+in-VNet job — the same shape `create-roles.sh` uses (admin DSN as a job
+secret, deleted afterwards). Do not "fix" it by writing a different DSN to the
+vault: every app holding the reference follows the vault within ~30 minutes,
+so that just moves the mismatch.
 
 **`create-roles.sh` fails with "role already exists".** Expected on anything
 but a fresh install — the script is run-once by design. If what you actually
@@ -141,5 +150,8 @@ name and fails the *next* apply with `RoleAssignmentExists`.
 
 **Never rotate the admin password out of band.** `az postgres flexible-server
 update --admin-password` changes the server but not the copy in Key Vault that
-the migrate job reads — migrations start failing on the next run. Change the
-`HELIX_PG_ADMIN_PASSWORD` parameter and re-apply instead, which updates both.
+the migrate job reads — migrations start failing on the next run. The
+`postgresAdminPassword` parameter sources from the vault via `az.getSecret()`,
+so override it for one apply instead, which updates the server and the vault
+copy in the same pass:
+`az deployment group create -g <rg> -f main.bicep -p main.bicepparam --parameters postgresAdminPassword="$NEW"`.

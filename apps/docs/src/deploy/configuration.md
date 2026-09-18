@@ -7,9 +7,16 @@ title: Configuration reference
 Everything an operator configures lives in two places:
 
 - **Bicep parameters** — `infra/azure/main.bicepparam`, applied by the deploy.
-- **Environment variables** — secrets are supplied as `HELIX_*` variables at
-  deploy time; the template injects them (and every other runtime setting) into
-  the container apps.
+  The secret parameters carry no values: each is an `az.getSecret()` line that
+  resolves from the install's own platform Key Vault, server-side at ARM, at
+  deploy time.
+- **The platform Key Vault** — the source of truth for every platform secret.
+  The container apps hold versionless Key Vault *references* to it (resolved by
+  Container Apps from inside the environment's VNet — the vault stays
+  private-endpoint-only), and the apps themselves read only plain env vars.
+  Environment variables appear exactly once in the lifecycle: the fresh-install
+  bootstrap, before the vault exists — see
+  [Secret environment variables](#secret-environment-variables).
 
 This page lists the parameters you will actually touch, grouped by what they
 affect. Every parameter also carries a `@description` in
@@ -142,22 +149,30 @@ first-party defaults, or pointed at an existing Foundry account per the
 
 ## Secret environment variables
 
-Secrets are generated outside the template and read from the environment at
-deploy time; the template injects them into the container apps directly (the
-apps read env vars only — no Key Vault SDK — so they stay portable).
+These appear in exactly one place: the **fresh-install bootstrap**, before the
+platform vault exists. `main.bootstrap.bicepparam` reads them from the
+environment; the first applies write them into the vault, and from then on the
+vault is the source of truth — steady-state applies source them with
+`az.getSecret()` and read nothing secret from the environment. Keep the
+generated values in your secrets store for disaster recovery, but expect to
+never export them again.
 
 | Variable | What |
 | --- | --- |
 | `HELIX_PG_ADMIN_PASSWORD` | Postgres admin password |
-| `HELIX_EDGE_DB_PASSWORD` / `HELIX_PORTAL_DB_PASSWORD` / `HELIX_EGRESS_DB_PASSWORD` / `HELIX_DEV_DB_PASSWORD` | Per-role database passwords (each container runs as its own least-privilege Postgres role) |
+| `HELIX_EDGE_DB_PASSWORD` / `HELIX_PORTAL_DB_PASSWORD` / `HELIX_EGRESS_DB_PASSWORD` / `HELIX_DEV_DB_PASSWORD` | Per-role database passwords (each container runs as its own least-privilege Postgres role). Steady state sources the *assembled DSNs* instead (`edge-database-url` &c. in the vault); these are the bootstrap-only building blocks |
 | `HELIX_EDGE_AUTH_SECRET` | Session cookie signing root |
 | `HELIX_PORTAL_SECRET` | Shared-password app encryption key |
 | `HELIX_INSTRUCTION_SECRET` | Shared edge→egress attestation key |
 | `HELIX_EDGE_OIDC_PRIVATE_KEY` / `HELIX_EDGE_OIDC_CERTIFICATE` | Edge OIDC client certificate (base64 PEMs) |
-| `HELIX_EDGE_OIDC_CLIENT_ID`, `HELIX_PORTAL_OIDC_AUDIENCE`, `HELIX_PORTAL_ADMIN_GROUP_ID`, `HELIX_AZX_CLI_CLIENT_ID`, `HELIX_AZX_WEB_CLIENT_ID` | The Entra values from [Entra setup](/deploy/entra-setup) |
+| `HELIX_EDGE_OIDC_CLIENT_ID`, `HELIX_PORTAL_OIDC_AUDIENCE`, `HELIX_PORTAL_ADMIN_GROUP_ID`, `HELIX_AZX_CLI_CLIENT_ID`, `HELIX_AZX_WEB_CLIENT_ID` | The Entra values from [Entra setup](/deploy/entra-setup) — not secret, but env-sourced the same way |
 
-Rotating one of these: update it, re-apply, and force a new revision on the
-affected app — changing a secret value alone does not restart a container app.
+Encoding rules live with the generation commands in
+[Getting started](/deploy/getting-started#step-3-deploy-the-infrastructure)
+(DSN passwords base64url; signing secrets standard base64).
+
+Rotating any of these afterwards starts at the vault, not the environment —
+see [Rotating a secret](/deploy/updates#rotating-a-secret).
 
 ## Runtime environment variables
 

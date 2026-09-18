@@ -22,10 +22,12 @@ something no scoped command can express.
 | Preserves | Env vars, secrets, TLS bindings | Only what the params file re-declares |
 | Use for | New image tag, one env var, a restart | Topology, params, roles, new resources |
 
-**Prefer the scoped update.** The reason is the secrets: the template reads
-them from environment variables, and an absent variable renders as `''` and
-overwrites the live value. A full apply therefore needs every deploy secret on
-hand and correct, while a scoped update touches only what you name.
+**Prefer the scoped update.** It touches only what you name, and it *converges*
+toward the template, so the next full apply is a no-op on it. (The historical
+reason was sharper — a full apply used to render an absent secret env var as
+`''` over the live value. That hazard is gone: secrets now resolve from the
+platform vault server-side, so an apply needs no secret on hand at all. The
+blast-radius argument stands on its own.)
 
 ::: warning Don't run the platform Bicep from CI
 A release pipeline should hold resource-group Contributor and roll image tags.
@@ -76,9 +78,10 @@ The shape that works, and why:
   updating and starting the migrate job, and tagging the resource group need
   no `Microsoft.Authorization/*` permission. A full template apply does — it
   creates role assignments — which is one of the reasons CI never runs one.
-- **Know what Contributor implies.** Platform secrets are injected directly
-  into the container apps, so `az containerapp secret list --show-values`
-  reads them back over the control plane, private vault notwithstanding. The
+- **Know what Contributor implies.** The apps hold Key Vault *references* to
+  the platform secrets, but the `listSecrets` API resolves them:
+  `az containerapp secret list --show-values` returns the resolved values over
+  the control plane, private vault notwithstanding. The
   pipeline's credential scope is therefore the real access boundary. With
   GitHub OIDC that boundary is the federated credential's subject — scope it
   to a GitHub Environment, and required reviewers on that Environment become a
@@ -226,24 +229,76 @@ If the diff adds or changes a runtime value, the template apply is part of
 shipping the change, not follow-up. And when the live-state delta really is
 one knob, prefer the scoped `az containerapp update --set-env-vars` — it
 converges toward the template (it writes exactly what the template computes),
-so the next full apply is a no-op on it, and it never needs the deploy
-secrets on hand.
+so the next full apply is a no-op on it.
 
 ## Rotating a secret
 
-Changing a secret **value** does not restart anything. Container Apps secrets
-are app-level, not part of the revision template, so the running containers
-keep the old value — and a revision that is already failing on it will keep
-failing. Force a new revision after rotating:
+Platform secrets live in the platform vault, and the apps hold versionless Key
+Vault **references** to them — so rotation starts at the vault, not at the app
+and not at the template. The vault's public network is off, but ARM
+management-plane writes bypass the data-plane firewall, so a write works from
+anywhere with a throwaway template:
 
-```bash
-az containerapp update -g <rg> -n <app> --revision-suffix <something-new>
+```bicep
+// rotate-secret.bicep
+resource kv 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: '<platformVaultName>'
+}
+resource rotated 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: kv
+  name: '<secret-name>'              // e.g. edge-auth-secret
+  properties: { value: '<new-value>' }
+}
 ```
 
-One exception worth knowing: **never rotate the Postgres admin password out of
-band.** `az postgres flexible-server update --admin-password` drifts from the
-copy in Key Vault that the migrate job reads, and migrations start failing.
-Change the Bicep parameter and re-apply.
+```bash
+az deployment group create -g <rg> -n rotate-<secret-name> \
+  --template-file rotate-secret.bicep
+```
+
+(Note the direction of that write: ARM can *create and update* vault secrets
+from anywhere, but it cannot *delete* them — deletion is data-plane only,
+i.e. from inside the VNet.)
+
+Then the new value reaches the apps on one of three clocks — these were
+measured on a live install, and they differ enough to be worth knowing
+precisely:
+
+- **Do nothing: within ~30 minutes.** Container Apps' background refresh
+  notices the new vault version and restarts the revisions itself (observed:
+  22 min). This is the normal path for singleton secrets.
+- **Force it now:** force a new revision, which re-resolves its references at
+  provisioning:
+
+  ```bash
+  az containerapp update -g <rg> -n <app> --revision-suffix <something-new>
+  ```
+
+- **`az containerapp revision restart` does NOT work.** A manual restart
+  reuses the secret snapshot stored with the revision and keeps serving the
+  old value. Verify a rotation with the resolved value, never with a restart:
+
+  ```bash
+  az containerapp secret show -g <rg> -n <app> --secret-name <name>
+  ```
+
+One exception to "start at the vault": **never rotate the Postgres admin
+password out of band.** `az postgres flexible-server update --admin-password`
+drifts from the copy in Key Vault that the migrate job reads, and migrations
+start failing. The `postgresAdminPassword` parameter sources from the vault,
+so override it for one apply — the server and the vault copy move in the same
+pass:
+
+```bash
+az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
+  --parameters postgresAdminPassword="$NEW_PASSWORD"
+```
+
+A role password (`helix_edge` &c.) rotates the other way around: change it in
+Postgres first (`ALTER ROLE` via a throwaway in-VNet job — see
+[Database & migrations](/deploy/database#troubleshooting)), then write the
+rebuilt DSN to the vault secret (`<role>-database-url`) with the template
+above. The apps pick it up on the refresh clock.
 
 Three more values whose blast radius is worth knowing before you reach for
 them:
@@ -256,9 +311,11 @@ them:
 - **`HELIX_EDGE_AUTH_SECRET` signs session cookies.** Rotating it invalidates
   every live session — every user on every app signs in again.
 - **`HELIX_INSTRUCTION_SECRET` is shared by the edge and the egress service.**
-  Rotate it through a full apply so both planes move together; a scoped update
-  to one side breaks every attested edge→egress call until the other catches
-  up.
+  Both reference the *same* vault secret, so they converge on their own — but
+  the background refresh can take up to ~30 min, and a mismatch between the
+  planes fails every attested edge→egress call for the duration. Write the
+  vault, then force a new revision on **both** apps back-to-back so the window
+  is seconds, not half an hour.
 
 ## When you do need a full apply
 
@@ -293,13 +350,23 @@ az containerapp list -g <rg> \
   --query "[].{app:name,image:properties.template.containers[0].image}" -o table
 ```
 
-### Have every secret on hand
+### The vault is the secrets source — there is nothing secret left to source
 
-Secure parameters render as `[unknown()]` in a what-if, so **the preview
-cannot see the one failure mode that blanks a live credential**. An
-environment variable that is unset — or set but empty — renders as `''` and
-overwrites the secret. Source the environment file; do not assume the shell
-inherited it.
+Before 2026-09-17 this section warned that an unset secret environment
+variable rendered as `''` and overwrote the live credential. That failure mode
+is gone: the params source every secret from the platform vault with
+`az.getSecret()`, resolved server-side at ARM, so an apply needs **no secret
+on hand at all**, and a missing vault secret fails the deployment at parameter
+evaluation rather than blanking anything. The pre-apply checks that remain are
+structural: the vault's `enabledForTemplateDeployment` flag is on (the
+template sets it), every referenced secret exists and is enabled, and your
+deploy principal holds `Microsoft.KeyVault/vaults/deploy/action` (Owner and
+Contributor both include it).
+
+The blindness itself has not gone away, though: the apps' secrets array is a
+secure parameter and still renders as `[unknown()]` in a what-if, so the
+preview cannot show what any reference resolves *to* — only that the wiring is
+intact.
 
 ### Read the what-if, knowing what it cannot tell you
 
@@ -320,7 +387,8 @@ properties the template omits, which show as `Delete` and are never removed.
 
 What the preview genuinely cannot answer:
 
-- **Secure parameters**, as above.
+- **What the secrets resolve to** — the array is a secure parameter and
+  renders as `[unknown()]`, as above.
 - **Cross-module env values.** A value like the edge's egress URL reports
   Modify unconditionally, so a stale value and a correct one produce the same
   line — one more entry in a large set of lookalike false positives. Verify

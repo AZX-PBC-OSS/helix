@@ -5,8 +5,9 @@ title: Azure AI Foundry
 # Azure AI Foundry as the LLM backend
 
 By default, apps' LLM calls go to the first-party vendors (`api.anthropic.com`,
-`api.openai.com`), with the vendor keys held as platform secrets and injected by
-the egress service — the edge never holds them. For an install in your own (or
+`api.openai.com`), with the vendor keys held as connection secrets in the
+connections vault and read by the egress service at runtime — the edge never
+holds them. For an install in your own (or
 your customer's) Azure subscription, you can instead run inference on **Azure
 AI Foundry**: the models deploy into your subscription, the bill lands there,
 and there is **no vendor key anywhere** — the platform authenticates with the

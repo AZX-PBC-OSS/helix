@@ -112,16 +112,30 @@ Do this first; the values feed the deploy in the next step.
 
 ## Step 2: Fill in the parameters
 
-Copy `infra/azure/main.bicepparam` and set, at minimum:
+The template ships **two** params files, because of one hard rule worth
+understanding up front: `az.getSecret()` — the mechanism that lets a deploy
+read secrets straight from your own Key Vault, resolved server-side by ARM —
+cannot be combined with any fallback expression (it is a compile error,
+BCP351, anywhere but a direct parameter assignment). So the env-var path and
+the vault path are two files, not one clever one:
+
+- **`infra/azure/main.bootstrap.bicepparam`** — secrets are read from
+  environment variables. This is the fresh-install file: you use it until the
+  platform vault exists and is seeded (the first two applies below).
+- **`infra/azure/main.bicepparam`** — the steady-state file. Every secret is
+  an `az.getSecret()` line pointing at your vault; no secret ever touches your
+  shell again. You switch to it after step 5.
+
+Copy `main.bootstrap.bicepparam` and set, at minimum:
 
 - Names: `namePrefix`, `storageAccountName`, `platformVaultName`,
   `connectionsVaultName`, `postgresServerName` (vault and storage names are
   globally unique).
 - `appsDomain` — your apps domain.
-- The Entra values from step 1: `edgeOidcClientId`, `portalOidcAudience` (the
+- The Entra ids from step 1: `edgeOidcClientId`, `portalOidcAudience` (the
   bare client-id GUID), `portalAdminGroupId` (`platform-admin`),
-  `azxCliClientId`, `azxWebClientId`, `edgeOidcPrivateKey` and
-  `edgeOidcCertificate`.
+  `azxCliClientId`, `azxWebClientId`. (The edge OIDC **certificate pair** is a
+  secret — it is part of step 3's exports, not this file.)
 - `acmeEmail` — required for the wildcard certificate.
 - `portalExternal: true` — unless you plan to reach the portal over a private
   network path, nothing is deployable without it. The portal is
@@ -133,9 +147,20 @@ what it does.
 
 ## Step 3: Deploy the infrastructure
 
-Secrets are read from environment variables, not the params file. Generate
-them, then deploy with apps disabled — this pass creates the network, data
-services, vaults, and identities, but no containers.
+On a fresh install the vault does not exist yet, so the bootstrap file reads
+the secrets from environment variables. Generate them, then deploy with apps
+disabled — this pass creates the network, data services, vaults, and
+identities, but no containers.
+
+How the secrets will flow, so the rest of the install makes sense: **every
+apply writes the generated values into the platform vault** (ARM
+management-plane writes, so the vault's disabled public access is no
+obstacle), and the container apps' secret entries are **Key Vault references**
+into it, which Container Apps resolves from inside the environment's VNet —
+the vault stays private-endpoint-only throughout. After seeding, the vault is
+the source of truth: both the apps (references) and later deploys
+(`az.getSecret()`) read from it, and the env vars below are never needed
+again.
 
 ```bash
 cd infra/azure
@@ -160,22 +185,23 @@ export HELIX_PORTAL_ADMIN_GROUP_ID=platform-admin
 export HELIX_AZX_CLI_CLIENT_ID=<azx-cli client id>
 export HELIX_AZX_WEB_CLIENT_ID=<helix-portal client id>
 
-az deployment group create -g <rg> -f main.bicep -p main.bicepparam
+az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam
 ```
 
 Capture every generated value somewhere durable as you go. A lost value is
 recoverable from a *running* install —
-`az containerapp secret list -n <app> --show-values` reads the injected
-secrets back over the control plane, and the Postgres admin password is also
-in the platform vault as `postgres-admin-password` — but recovery needs a
-healthy install, so capture stays the primary path. (The one value held in no
-container is `HELIX_DEV_DB_PASSWORD` on an install with the dev surface off:
-set a fresh one with `ALTER ROLE helix_dev` rather than hunting the original.)
+`az containerapp secret list -n <app> --show-values` reads the secrets back
+over the control plane (the API resolves the Key Vault references), and the
+Postgres admin password is also in the platform vault as
+`postgres-admin-password` — but recovery needs a healthy install, so capture
+stays the primary path. (The one value held in no container is
+`HELIX_DEV_DB_PASSWORD` on an install with the dev surface off: set a fresh
+one with `ALTER ROLE helix_dev` rather than hunting the original.)
 
 ::: tip Preview first
-`az deployment group what-if -g <rg> -f main.bicep -p main.bicepparam` shows
-what the apply will change. On any re-apply of an install with TLS already
-bound, the what-if must **not** show a delete of
+`az deployment group what-if -g <rg> -f main.bicep -p main.bootstrap.bicepparam`
+shows what the apply will change. On any re-apply of an install with TLS
+already bound, the what-if must **not** show a delete of
 `properties.configuration.ingress.customDomains` — if it does, stop and see the
 `wildcardTlsBound` note in the [configuration reference](/deploy/configuration#tls).
 :::
@@ -212,9 +238,12 @@ migrations](/deploy/database) explains the model.
 
 ## Step 5: Deploy the apps
 
+Still the bootstrap file — this is the pass that seeds the vault with the apps
+live to consume it:
+
 ```bash
 export HELIX_IMAGE_TAG=<tag>
-az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
+az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam \
   --parameters deployApps=true
 ```
 
@@ -229,6 +258,19 @@ This pass also creates the `<namePrefix>-migrate` job used next. The apps boot
 before the schema exists: they answer `/health` but fail real requests until
 step 6 lands. That is expected on a fresh install — nothing has been delegated
 in DNS yet, so nothing external can reach them.
+
+**This was the last apply that needs the secret exports.** The vault now holds
+every secret, so set up the steady-state file before the next apply: copy
+`main.bicepparam`, set the same non-secret values, and replace the placeholder
+subscription id / resource group / vault name in the `az.getSecret()` lines
+with your own (they are literals by design — and keep every line: a parameter
+left unset falls back to composing a database DSN from an *empty* password,
+which the apply would then write into the vault). On a `deployDevGateway=true`
+install, also uncomment the `edgeDevDatabaseUrl` line — that secret exists only
+where the dev surface deploys. The vault was created with
+`enabledForTemplateDeployment`, and your deploy principal needs
+`Microsoft.KeyVault/vaults/deploy/action` (Owner/Contributor include it) —
+nothing else has to change hands.
 
 ## Step 6: Run the first migration
 
