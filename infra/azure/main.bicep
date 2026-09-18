@@ -77,17 +77,37 @@ param postgresAdminLogin string = 'helixadmin'
 @secure()
 @description('Postgres administrator password.')
 param postgresAdminPassword string
+// --- Runtime-role DSNs. Steady state sources the ASSEMBLED DSNs from
+// kv-platform via `az.getSecret()` in the bicepparam (the vault is the source
+// of truth; kv-secrets' rewrite is then an idempotent no-op). The raw password
+// params below are the BOOTSTRAP path — a fresh install has no vault to read —
+// and are used only to compose the DSN when the corresponding *DatabaseUrl is
+// empty. A supplied *DatabaseUrl always wins over its password param. The
+// template never sets role passwords either way (sql/01-roles.sql at install
+// time; the ops repo's set-role-password.sh for resets). ---
 @secure()
-@description('Password for the helix_portal runtime role.')
-param portalDbPassword string
+@description('helix_portal DSN (assembled). Steady state: az.getSecret from kv-platform. Empty = compose from portalDbPassword (bootstrap).')
+param portalDatabaseUrl string = ''
 @secure()
-@description('Password for the helix_edge runtime role.')
-param edgeDbPassword string
+@description('helix_edge DSN (assembled). Steady state: az.getSecret from kv-platform. Empty = compose from edgeDbPassword (bootstrap).')
+param edgeDatabaseUrl string = ''
 @secure()
-@description('Password for the helix_egress runtime role.')
-param egressDbPassword string
+@description('helix_egress DSN (assembled). Steady state: az.getSecret from kv-platform. Empty = compose from egressDbPassword (bootstrap).')
+param egressDatabaseUrl string = ''
 @secure()
-@description('Password for the helix_dev runtime role (dev-gateway). Only needed when deployDevGateway=true.')
+@description('helix_dev DSN (assembled, dev-gateway). Steady state: az.getSecret from kv-platform. Empty = compose from devDbPassword (bootstrap). Only consumed when deployDevGateway=true.')
+param edgeDevDatabaseUrl string = ''
+@secure()
+@description('Password for the helix_portal runtime role. BOOTSTRAP ONLY — ignored when portalDatabaseUrl is set.')
+param portalDbPassword string = ''
+@secure()
+@description('Password for the helix_edge runtime role. BOOTSTRAP ONLY — ignored when edgeDatabaseUrl is set.')
+param edgeDbPassword string = ''
+@secure()
+@description('Password for the helix_egress runtime role. BOOTSTRAP ONLY — ignored when egressDatabaseUrl is set.')
+param egressDbPassword string = ''
+@secure()
+@description('Password for the helix_dev runtime role (dev-gateway). BOOTSTRAP ONLY — ignored when edgeDevDatabaseUrl is set. Only needed when deployDevGateway=true.')
 param devDbPassword string = ''
 
 // Symmetric platform secrets (base64, >= 32 bytes). Generate with
@@ -627,17 +647,30 @@ var effectiveModelAllowlist = !empty(llmModelAllowlist)
 // ---------------------------------------------------------------------------
 
 var pgFqdn = postgres.outputs.serverFqdn
-var edgeDbConn = 'postgresql://helix_edge:${edgeDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
-var egressDbConn = 'postgresql://helix_egress:${egressDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+// Steady state the *DatabaseUrl params carry the vault's assembled DSNs; the
+// password-composed forms are the bootstrap fallback (fresh install, before the
+// vault exists). A vault-sourced DSN embeds this server's FQDN from seed time,
+// so a Postgres rebuild must re-seed (or re-run the bootstrap params) — the
+// vault, not this template, is the source of truth.
+var edgeDbConn = !empty(edgeDatabaseUrl)
+  ? edgeDatabaseUrl
+  : 'postgresql://helix_edge:${edgeDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+var egressDbConn = !empty(egressDatabaseUrl)
+  ? egressDatabaseUrl
+  : 'postgresql://helix_egress:${egressDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
 // The portal runtime connects as the least-privilege helix_portal role, NOT the
 // schema owner (ADR-0002): full DML but no owner/superuser RLS bypass and no
 // DDL. Migrations run as the admin out-of-band (README step 4), so the admin DSN
 // never reaches a container or kv-platform.
-var portalDbConn = 'postgresql://helix_portal:${portalDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+var portalDbConn = !empty(portalDatabaseUrl)
+  ? portalDatabaseUrl
+  : 'postgresql://helix_portal:${portalDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
 // helix_dev DSN — written to kv-platform only when the opt-in dev-gateway is
 // deployed (kv-secrets skips an empty value).
 var devDbConn = deployDevGateway
-  ? 'postgresql://helix_dev:${devDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+  ? (!empty(edgeDevDatabaseUrl)
+      ? edgeDevDatabaseUrl
+      : 'postgresql://helix_dev:${devDbPassword}@${pgFqdn}:5432/helix?sslmode=require')
   : ''
 
 module platformSecrets 'modules/kv-secrets.bicep' = {
@@ -661,6 +694,15 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
 }
 
 var connectionsVaultUri = keyvault.outputs.connectionsVaultUri
+
+// Base for the apps' ACA Key Vault references (vaultUri ends in '/').
+// Versionless on purpose: rotation becomes "write the vault" and ACA picks the
+// new value up within ~30 min, restarting revisions — no redeploy. The refs
+// resolve from inside the environment's VNet, so kv-platform stays
+// publicNetworkAccess:Disabled (see containerapp.bicep's header). dependsOn
+// [rbac, platformSecrets] on each app guarantees the secrets and the Key Vault
+// Secrets User grants exist before any revision tries to resolve them.
+var platformSecretsUri = '${keyvault.outputs.platformVaultUri}secrets/'
 
 // ---------------------------------------------------------------------------
 // ACA environments (two zones)
@@ -976,8 +1018,14 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
     // environment. It also renames the FQDN to `<app>.internal.<domain>`.
     external: true
     secretValues: {
-      'egress-database-url': egressDbConn
-      'helix-instruction-secret': instructionSecret
+      'egress-database-url': {
+        keyVaultUrl: '${platformSecretsUri}egress-database-url'
+        identity: identity.outputs.egressIdentityId
+      }
+      'helix-instruction-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
+        identity: identity.outputs.egressIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1048,11 +1096,26 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
         ]
       : []
     secretValues: {
-      'edge-database-url': edgeDbConn
-      'edge-oidc-private-key': edgeOidcPrivateKey
-      'edge-oidc-certificate': edgeOidcCertificate
-      'edge-auth-secret': edgeAuthSecret
-      'helix-instruction-secret': instructionSecret
+      'edge-database-url': {
+        keyVaultUrl: '${platformSecretsUri}edge-database-url'
+        identity: identity.outputs.edgeIdentityId
+      }
+      'edge-oidc-private-key': {
+        keyVaultUrl: '${platformSecretsUri}edge-oidc-private-key'
+        identity: identity.outputs.edgeIdentityId
+      }
+      'edge-oidc-certificate': {
+        keyVaultUrl: '${platformSecretsUri}edge-oidc-certificate'
+        identity: identity.outputs.edgeIdentityId
+      }
+      'edge-auth-secret': {
+        keyVaultUrl: '${platformSecretsUri}edge-auth-secret'
+        identity: identity.outputs.edgeIdentityId
+      }
+      'helix-instruction-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
+        identity: identity.outputs.edgeIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1151,8 +1214,14 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
         ]
       : []
     secretValues: {
-      'portal-database-url': portalDbConn
-      'portal-secret': portalSecret
+      'portal-database-url': {
+        keyVaultUrl: '${platformSecretsUri}portal-database-url'
+        identity: identity.outputs.portalIdentityId
+      }
+      'portal-secret': {
+        keyVaultUrl: '${platformSecretsUri}portal-secret'
+        identity: identity.outputs.portalIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1253,8 +1322,14 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
         ]
       : []
     secretValues: {
-      'edge-dev-database-url': devDbConn
-      'helix-instruction-secret': instructionSecret
+      'edge-dev-database-url': {
+        keyVaultUrl: '${platformSecretsUri}edge-dev-database-url'
+        identity: identity.outputs.devIdentityId
+      }
+      'helix-instruction-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
+        identity: identity.outputs.devIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }

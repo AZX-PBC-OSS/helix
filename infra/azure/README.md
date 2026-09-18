@@ -215,20 +215,55 @@ value.)
 
 The container apps receive their **platform/bootstrap** secrets (per-role Postgres
 DSNs, `EDGE_AUTH_SECRET`, `HELIX_INSTRUCTION_SECRET`, the edge OIDC cert) as
-**direct values injected by this deployment**, surfaced to the app as env vars
-(`containerapp.bicep`'s `secretValues`). The app reads only env vars — no Key
-Vault SDK — so it stays portable across clouds.
+**ACA Key Vault references** against `kv-platform` (`containerapp.bicep`'s
+`secretValues` entries of the form `{ keyVaultUrl, identity }`). ACA resolves
+them **from inside the environment's VNet** at revision-provisioning time and
+materializes them into the same env vars (`secretRef`) as before — the app reads
+only env vars, holds no Key Vault SDK, and stays portable across clouds. The
+vault keeps `publicNetworkAccess: Disabled` throughout.
 
-**Why not ACA Key Vault references?** They resolve on the Container Apps **control
-plane, outside the VNet**, at revision-provisioning time, so they cannot read
-`kv-platform` (`publicNetworkAccess: Disabled`, private-endpoint only). ACA is not
-a Key Vault trusted service, so `networkAcls.bypass: AzureServices` doesn't admit
-it either. Direct injection sidesteps this entirely and keeps `kv-platform` fully
-private.
+(An earlier revision of this section claimed references resolve on the ACA
+control plane outside the VNet and therefore cannot reach a private vault. That
+was wrong for workload-profile environments — the 2026-07 failure it was
+generalized from was a private-DNS bug in this template, fixed 2026-07-29. See
+the ADR's 2026-09-17 update for the evidence.)
 
-`kv-platform` is still written at deploy (ARM management-plane, bypasses the
-firewall) as the **canonical store** for audit/rotation — it's just not on the
-provisioning path. **Connection** secrets are different: they stay in
+The URIs are **versionless on purpose**: rotation is "write the vault". ACA's
+background refresh picks the new value up within ~30 min (observed 22 min) and
+restarts revisions itself; to rotate _immediately_, touch the app config (any
+`az containerapp secret set` re-resolves all references at once). A bare
+`az containerapp revision restart` does **not** re-resolve — it reuses the
+snapshot stored with the revision.
+
+The deploy-time params source from the same vault via `az.getSecret()` in the
+bicepparam, so `kv-platform` is the single source of truth end to end: the
+`kv-secrets` module's rewrite of each secret is an idempotent no-op, and no
+secret plaintext transits the deployer's shell or CI. Two gates make that path
+work, both handled by the template: the vault sets
+`enabledForTemplateDeployment: true` (admits the ARM template-deployment trusted
+service — the bypass survives PNA-Disabled), and the deploy principal needs
+`Microsoft.KeyVault/vaults/deploy/action` (Owner/Contributor include it). Because
+getSecret resolves server-side at ARM, the runner's own network position is
+irrelevant. **Fresh installs are the exception:** the vault does not exist yet,
+so the first applies use the env-sourced `main.bootstrap.bicepparam` (getSecret
+cannot be composed with a fallback — it is a compile error anywhere but a direct
+param assignment, BCP351, so the bootstrap path is a separate file, not a
+ternary). Switch to `main.bicepparam` once the vault is seeded.
+
+Two scope notes:
+
+- **ACA Jobs cannot resolve references** (open platform bug,
+  [microsoft/azure-container-apps#1804](https://github.com/microsoft/azure-container-apps/issues/1804)),
+  so the migrate job keeps its runtime read of `postgres-admin-password` with its
+  own managed identity. Do not move it to references until that bug closes.
+- On an environment whose egress is UDR'd through the firewall
+  (`deployFirewall=true`), reference resolution needs the `AzureKeyVault`
+  service tag and `login.microsoft.com` on the allow list (managed-identity
+  token issuance needs the Entra endpoint generally). Neither install runs the
+  firewall today; add these before it comes back.
+
+`kv-platform` is written at deploy (ARM management-plane, bypasses the firewall)
+and is the canonical store. **Connection** secrets are different: they stay in
 `kv-connections` and are read by egress **at runtime from inside the VNet** (a
 data-plane path that works with a private vault) via the `@azx-pbc/secret-store`
 seam ([ADR-0006](../../docs/adr/0006-secret-custody-seam.md)).
@@ -243,8 +278,9 @@ scheduled Container Apps Job (not an app/sidecar; TLS terminates at ingress) tha
 1. issues/renews `*.<appsDomain>` (+ apex) from Let's Encrypt via **DNS-01**
    (`certbot-dns-azure` writes the `_acme-challenge` TXT using the job's managed
    identity — DNS Zone Contributor on the zone),
-2. uploads the cert to the **ACA environment certificate store** (not Key Vault — same
-   control-plane-can't-reach-a-private-vault reason as ADR-0029) under a deterministic
+2. uploads the cert to the **ACA environment certificate store** (not Key Vault —
+   the job already holds the issued PEM, and the store write is a control-plane
+   call its own managed identity is authorized for) under a deterministic
    name (`wildcard-<appsDomain with dashes>`), and
 3. binds the **wildcard custom domain** on the edge — plus `portal.<appsDomain>` /
    `dev-api.<appsDomain>` on their own apps when those are external. Once the
@@ -483,6 +519,15 @@ below for how.
 
 Set the secret env vars, then deploy. The apps are skipped on this pass.
 
+> **Use `main.bootstrap.bicepparam` while the vault does not exist yet.** Steady
+> state sources every secret from `kv-platform` via `az.getSecret()`
+> (`main.bicepparam` — see "Platform secret delivery"), which cannot run before
+> the first apply has created and seeded the vault, and cannot be composed with
+> an env-var fallback (BCP351) — hence the separate bootstrap file rather than a
+> ternary. Keep using it through the first `deployApps=true` apply (the one that
+> seeds the vault), then switch to `main.bicepparam` and drop the secret
+> exports.
+
 ```bash
 # DB passwords are interpolated into DSN URLs (see the *DbConn vars in
 # main.bicep), so they must be base64URL — a plain base64 value containing
@@ -508,7 +553,7 @@ export HELIX_PORTAL_ADMIN_GROUP_ID=platform-admin   # the App Role value, not a 
 export HELIX_AZX_CLI_CLIENT_ID=<azx-cli client id (GUID)>
 export HELIX_AZX_WEB_CLIENT_ID=<helix-portal client id (GUID)>
 
-az deployment group create -g <rg> -f main.bicep -p main.bicepparam
+az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam
 ```
 
 ### 3. Build + publish the three images
@@ -617,11 +662,18 @@ stored copy and break the job — change the parameter and re-apply instead.
 
 ### 5. Phase 2 — deploy the apps (`deployApps=true`)
 
+Still the bootstrap file here — this is the pass that seeds `kv-platform`:
+
 ```bash
 export HELIX_IMAGE_TAG=$TAG
-az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
+az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam \
   --parameters deployApps=true
 ```
+
+From the NEXT apply on, use `main.bicepparam` (vault-sourced secrets; no
+`HELIX_*` secret exports — only the non-secret ids and `HELIX_IMAGE_TAG` stay
+env-sourced). The vault carries `enabledForTemplateDeployment` from its first
+creation, so nothing else has to change hands.
 
 This pass also creates the `<namePrefix>-migrate` job (step 6 runs it). The
 apps boot before the schema exists — they answer `/health` and fail real
@@ -1055,18 +1107,33 @@ if a deploy misbehaves:
   # cannot mislead the next person
   ```
 
-- **Changing a secret value does not roll a new ACA revision.** Container Apps
-  secrets are app-level, not part of the revision template, so a redeploy that only
-  changes secret _values_ won't restart the apps to pick them up (a failed revision
-  will keep failing on the old value). After rotating a secret, force a new
-  revision: `az containerapp update -g <rg> -n <app> --revision-suffix <tag>`.
+- **How a rotated platform secret actually reaches the apps (verified
+  2026-09-17).** The apps hold Key Vault _references_ now, and ACA secrets are
+  app-level config, not revision template — so the three ways to poke the
+  machinery behave very differently:
+  - **Write the vault and walk away:** ACA's background refresh notices the new
+    version and restarts revisions itself within ~30 min (observed: 22 min). No
+    redeploy, no operator action — the normal rotation path.
+  - **Force it now:** any app-config write re-resolves every reference at
+    once — e.g. re-run the same `az containerapp secret set` for one of the
+    app's refs. Use this after an emergency rotation.
+  - **`az containerapp revision restart` does NOT re-resolve.** It bounces the
+    replicas against the value snapshot stored with the revision. Verified: after
+    a vault write + manual restart the app still served the _old_ value. Do not
+    "verify" a rotation this way — check the resolved value instead:
+    `az containerapp secret show -g <rg> -n <app> --secret-name <name>`.
+  - Direct-value secrets (the otel collectors' App Insights connection string)
+    are unchanged by all this: a value-only redeploy still does not roll a
+    revision; force one with `az containerapp update -g <rg> -n <app>
+--revision-suffix <tag>`.
 
-- **Resource-group Contributor is effectively platform-secret read access.** Because
-  the container apps receive their secrets as directly-injected values (see
-  "Platform secret delivery"), those values are readable back off the app
-  definitions: `az containerapp secret list -n <app> --show-values` returns them.
-  That is a control-plane call, so `kv-platform` being private-endpoint-only does
-  not prevent it. Two consequences worth planning around:
+- **Resource-group Contributor is effectively platform-secret read access.** The
+  apps now hold Key Vault _references_ (see "Platform secret delivery"), but the
+  `listSecrets` API resolves them: `az containerapp secret list -n <app>
+--show-values` returns the **resolved values** for references too (verified
+  2026-09-17). That is a control-plane call, so `kv-platform` being
+  private-endpoint-only does not prevent it. Two consequences worth planning
+  around:
   - **Scope deploy principals accordingly.** Anything holding Contributor on the
     resource group can read every per-role Postgres DSN, `EDGE_AUTH_SECRET`,
     `PORTAL_SECRET`, `HELIX_INSTRUCTION_SECRET`, and the edge OIDC private key.

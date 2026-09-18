@@ -1,5 +1,19 @@
 using './main.bicep'
 
+// main.bootstrap.bicepparam — the FRESH-INSTALL params file.
+//
+// Use this until the platform vault exists and is seeded (the first infra
+// apply, and the apps apply that seeds it), then switch to main.bicepparam,
+// which sources these same secrets from the vault via az.getSecret(). The
+// split exists because getSecret cannot be composed with an env-var fallback
+// (it is a compile error anywhere but a direct param assignment, BCP351) — so
+// there are two files instead of one clever one.
+//
+// Everything here mirrors main.bicepparam except the secrets block at the
+// bottom, which reads environment variables. Generate the symmetric ones with
+// `openssl rand -base64 48`; the DB passwords must be DSN-safe (base64url) —
+// set-role-password.sh refuses anything else anyway.
+
 // Non-secret configuration. Edit the resource names to globally-unique values
 // before first deploy (storage / Key Vault / Postgres names are global).
 param namePrefix = 'helix-prod'
@@ -131,28 +145,17 @@ param deployFoundry = false
 var trustProxyEnv = readEnvironmentVariable('HELIX_EDGE_TRUST_PROXY', 'auto')
 param edgeTrustProxy = trustProxyEnv == '' ? 'auto' : trustProxyEnv
 
-// --- Secrets — steady state sources every one from the platform vault with
-// az.getSecret(). Resolution happens server-side at ARM, so the runner's
-// network position is irrelevant and the vault stays publicNetworkAccess:
-// Disabled; the deploy principal needs Microsoft.KeyVault/vaults/deploy/action
-// (Owner/Contributor include it) and the vault needs enabledForTemplateDeployment
-// (the template sets it). getSecret must be a DIRECT param assignment — it
-// cannot be nested in any other expression (compile error BCP351), which is why
-// there is no env-var fallback here: the fresh-install path is a separate file,
-// main.bootstrap.bicepparam. Use it until the vault exists and is seeded, then
-// switch to this file. Replace the subscription id / RG / vault name literals
-// with your install's. ---
-param postgresAdminPassword = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'postgres-admin-password')
-param portalDatabaseUrl = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'portal-database-url')
-param edgeDatabaseUrl = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-database-url')
-param egressDatabaseUrl = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'egress-database-url')
-// Only on a deployDevGateway=true install — kv-secrets writes
-// edge-dev-database-url only when the dev surface deploys, so on a stock
-// install this getSecret would fail the deployment at param evaluation:
-// param edgeDevDatabaseUrl = az.getSecret('…', 'rg-…', '…-kvp', 'edge-dev-database-url')
-param edgeAuthSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-auth-secret')
-param portalSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'portal-secret')
-param instructionSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'helix-instruction-secret')
+// Secrets — sourced from environment variables, never committed. Generate the
+// symmetric ones with `openssl rand -base64 48`.
+param postgresAdminPassword = readEnvironmentVariable('HELIX_PG_ADMIN_PASSWORD', '')
+param portalDbPassword = readEnvironmentVariable('HELIX_PORTAL_DB_PASSWORD', '')
+param edgeDbPassword = readEnvironmentVariable('HELIX_EDGE_DB_PASSWORD', '')
+param egressDbPassword = readEnvironmentVariable('HELIX_EGRESS_DB_PASSWORD', '')
+// helix_dev runtime role — only consumed when deployDevGateway=true.
+param devDbPassword = readEnvironmentVariable('HELIX_DEV_DB_PASSWORD', '')
+param edgeAuthSecret = readEnvironmentVariable('HELIX_EDGE_AUTH_SECRET', '')
+param portalSecret = readEnvironmentVariable('HELIX_PORTAL_SECRET', '')
+param instructionSecret = readEnvironmentVariable('HELIX_INSTRUCTION_SECRET', '')
 // Edge cert (private_key_jwt) — the tenant blocks client secrets. PEM or base64 PEM.
-param edgeOidcPrivateKey = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-oidc-private-key')
-param edgeOidcCertificate = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-oidc-certificate')
+param edgeOidcPrivateKey = readEnvironmentVariable('HELIX_EDGE_OIDC_PRIVATE_KEY', '')
+param edgeOidcCertificate = readEnvironmentVariable('HELIX_EDGE_OIDC_CERTIFICATE', '')

@@ -50,7 +50,15 @@ var commonProperties = {
 resource platformVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: platformVaultName
   location: location
-  properties: commonProperties
+  // enabledForTemplateDeployment admits the ARM template-deployment trusted
+  // service, which is what lets bicepparam `az.getSecret()` source params from
+  // this vault at deploy time. The trusted-services bypass survives
+  // publicNetworkAccess: Disabled (KV network-security docs), and the deploy
+  // principal additionally needs Microsoft.KeyVault/vaults/deploy/action
+  // (Owner/Contributor include it). Verified live 2026-09-17 against this
+  // RBAC-mode, PNA-Disabled vault. Platform vault only: kv-connections holds
+  // customer app secrets that no deployment sources.
+  properties: union(commonProperties, { enabledForTemplateDeployment: true })
 }
 
 resource connectionsVault 'Microsoft.KeyVault/vaults@2023-07-01' = {

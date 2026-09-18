@@ -1,7 +1,68 @@
 # 0029. Platform secret delivery: deployment-injected env vars, not ACA Key Vault references
 
-**Status:** Accepted
+**Status:** Superseded in part (2026-09-17 — see "Update" below). The delivery-mechanism half (direct values instead of Key Vault references) is reversed; the app-contract half (apps read only env vars, no Key Vault SDK) and the connection-secret custody half (ADR-0006) are unchanged.
 **Related:** ADR [0006](0006-secret-custody-seam.md) (connection-secret custody), [0001](0001-three-runtime-split.md); `infra/azure`
+
+## Update (2026-09-17): Key Vault references work after all — the July failure was our DNS bug
+
+The central claim below — "ACA resolves Key Vault references on the control plane
+outside the VNet, so they cannot read a private vault" — is **wrong for our
+topology**, and the 2026-07-24 failure this ADR generalized from was caused by a
+template-wide private-DNS bug of our own, not a platform limitation.
+
+**Root-cause correction.** `privatedns.bicep` originally built the vault zone as
+`environment().suffixes.keyvaultDns` = the *public* suffix `.vault.azure.net`,
+while a vault CNAMEs to `<name>.privatelink.vaultcore.azure.net`. In-VNet DNS
+therefore fell through to the vault's public IPs, which `publicNetworkAccess:
+Disabled` refuses — so *every* in-VNet vault resolution failed template-wide,
+including the KV references at revision provisioning. The zone was fixed
+2026-07-29 (`1c01614`) and the failure was never retried afterwards until now.
+
+**What is true today (verified live 2026-09-17, Franklin install, Consumption
+workload profile, RBAC-mode vault with `defaultAction: Deny`):**
+
+- On workload-profile environments, ACA resolves KV references **from inside the
+  environment's VNet** — a private-endpoint vault works. (Microsoft's
+  manage-secrets doc implies this via its UDR/firewall guidance, and
+  microsoft/azure-container-apps#1804 shows our exact topology succeeding.)
+  A referenced secret resolved, the revision stayed healthy, and
+  `az containerapp secret list --show-values` returns the resolved value for a
+  KV reference (so control-plane readers with `listSecrets` can still read
+  platform secrets back — the README's Contributor paragraph is unaffected).
+- Deploy-time `az.getSecret()` in a bicepparam also works against the
+  PNA-Disabled vault once `enabledForTemplateDeployment: true` is set: the ARM
+  template-deployment service IS a Key Vault trusted service, and that bypass
+  survives `publicNetworkAccess: Disabled`. The deploy principal needs
+  `Microsoft.KeyVault/vaults/deploy/action` (Owner/Contributor include it). This
+  worked on our RBAC-mode vault with no access policy.
+- Container Apps is still **not** itself a Key Vault trusted service — that
+  clause below was accurate, just never the operative constraint.
+- **ACA Jobs cannot resolve KV references** (open platform bug,
+  microsoft/azure-container-apps#1804). The migrate job keeps its runtime vault
+  read, which was the better design for it anyway.
+
+**Verified mechanics of references (they differ from what we assumed):**
+
+- A vault write is picked up by ACA's background refresh and rolled out with a
+  revision restart — observed 22 minutes on 2026-09-17; Microsoft documents
+  "within ~30 min". No redeploy, no operator action.
+- Any app-config write (e.g. re-`az containerapp secret set`) re-resolves all
+  references **immediately** — the way to rotate *now*.
+- A bare `az containerapp revision restart` does **not** re-resolve; it serves
+  the snapshot stored with the revision.
+
+**New delivery model** (implemented the same day): each app's ACA secrets are
+`{ keyVaultUrl, identity }` references against `kv-platform` with **versionless**
+URIs, so rotation is "write the vault". The deploy-time params source from the
+same vault via `az.getSecret()`, so the vault is the single source of truth and
+no secret plaintext transits the deployer's environment. `kv-platform` stays
+`publicNetworkAccess: Disabled` throughout. The app contract is untouched: apps
+still read only env vars via `secretRef`, ACA materializes the reference into
+the env var, and portability (the overriding constraint below) is intact.
+
+The original text follows unchanged, as the record of what we believed and why.
+
+---
 
 ## Context
 

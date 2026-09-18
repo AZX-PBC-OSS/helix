@@ -128,8 +128,11 @@ module collector 'containerapp.bicep' = {
         secretRef: 'appinsights-connection-string'
       }
     ]
+    // Direct value, not a Key Vault reference: the App Insights connection
+    // string is a deployment artifact (derived from the deployed resource),
+    // not a kv-platform secret.
     secretValues: {
-      'appinsights-connection-string': appInsightsConnectionString
+      'appinsights-connection-string': { value: appInsightsConnectionString }
     }
   }
 }

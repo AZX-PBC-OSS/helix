@@ -2,16 +2,21 @@
 //
 // The caller supplies the per-app shape: which environment, which managed
 // identity, ingress exposure (external for edge, internal for portal/egress),
-// the image, plain env vars, and secret values. Secrets are injected as direct
-// values (the deployment sources them; the app only ever reads env vars via
-// secretRef, so it stays cloud-agnostic — no Key Vault SDK). The user-assigned
-// identity is used at runtime for data-plane access (blob, kv-connections) and
-// for private image pulls — no admin credentials, no app-held keys.
+// the image, plain env vars, and secrets. A secret entry is either a direct
+// value or a Key Vault reference ({ keyVaultUrl, identity }) — the app only
+// ever reads env vars via secretRef either way, so it stays cloud-agnostic
+// (no Key Vault SDK). The user-assigned identity is used at runtime for
+// data-plane access (blob, kv-connections) and for private image pulls — no
+// admin credentials, no app-held keys.
 //
-// Why not ACA Key Vault references? They resolve on the ACA control plane
-// (outside the VNet) at revision-provisioning time, so they cannot read a
-// private (VNet-only) vault. Delivering values here keeps kv-platform fully
-// private AND keeps the app portable. See README "Platform secret delivery".
+// Key Vault references DO work against our private vault: on workload-profile
+// environments ACA resolves them from inside the environment's VNet at
+// revision-provisioning time, so a publicNetworkAccess:Disabled vault is
+// reachable. The 2026-07 failure ADR-0029 generalized from was a template-wide
+// private-DNS bug (since fixed), not a platform limitation — verified live
+// 2026-09-17. The exception is ACA Jobs, which cannot resolve refs
+// (microsoft/azure-container-apps#1804): the migrate job keeps reading the
+// vault at runtime. See README "Platform secret delivery" and ADR-0029.
 //
 // An optional `customDomains` list declares TLS bindings in-template (ADR-0044)
 // — main.bicep computes it for the wildcard-TLS planes once the install's
@@ -54,7 +59,7 @@ param maxReplicas int = 3
 @description('Plain + secretRef environment entries for the container.')
 param envVars array = []
 
-@description('Secrets injected as direct values: an object mapping secret name -> value. Exposed to the container as env vars via secretRef. @secure so the values never land in ARM deployment history.')
+@description('Secrets exposed to the container as env vars via secretRef: an object mapping secret name -> { value: \'…\' } (injected directly) or { keyVaultUrl: \'…\', identity: \'…\' } (an ACA Key Vault reference resolved with that managed identity — use versionless URIs so a vault write rotates, with ACA refreshing within ~30 min and restarting revisions). @secure so any direct values never land in ARM deployment history.')
 @secure()
 param secretValues object = {}
 
@@ -77,11 +82,10 @@ type customDomain = {
 @description('Custom-domain TLS bindings for this ingress, e.g. [{ name: "*.apps.example.com", bindingType: "SniEnabled", certificateId: <ACA env certificate resource id> }]. Empty = the ingress carries no customDomains property at all. main.bicep computes these for the wildcard-TLS planes (ADR-0044); internal-only apps pass nothing.')
 param customDomains customDomain[] = []
 
+// Each entry is already a complete ACA secret object minus the name — either
+// { value } or { keyVaultUrl, identity } — so splat it onto the name.
 var acaSecrets = [
-  for item in items(secretValues): {
-    name: item.key
-    value: item.value
-  }
+  for item in items(secretValues): union({ name: item.key }, item.value)
 ]
 
 // PARITY, NOT PROTECTION (ADR-0044): an absent customDomains and an explicit
