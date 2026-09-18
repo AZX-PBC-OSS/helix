@@ -87,6 +87,28 @@ default. See the [configuration reference](/deploy/configuration#cost).
   # a `reason` field on the first element means restricted — pick another region
   ```
 
+- Compute quota for **two Container Apps environments** in that region — the
+  deploy creates one for apps and one for egress, and a fresh or trial
+  subscription can default below that, which fails the second environment
+  mid-apply:
+
+  ```bash
+  SUB=$(az account show --query id -o tsv)  # current login; or a literal id
+  REGION=<region>                           # the deploy region
+
+  az rest --method get \
+    --url "https://management.azure.com/subscriptions/$SUB/providers/Microsoft.App/locations/$REGION/usages?api-version=2025-07-01" \
+    --query "value[?name.value=='ManagedEnvironmentCount']"
+  # limit - currentValue must be >= 2
+  # (cores are environment-scoped, not regional — the per-environment
+  # default covers this platform, which idles under 5)
+  ```
+
+  Short? Portal → **Quotas** → provider *Azure Container Apps* → *Managed
+  Environment Count*. Region-scoped increases are integrated requests —
+  usually approved in minutes, but they can take days, so check before you
+  need it.
+
 - A Microsoft Entra tenant you can create app registrations in.
 - A DNS domain you control, to delegate as the apps domain (e.g.
   `apps.example.com`). Apps live on `<slug>.<appsDomain>`, the portal on

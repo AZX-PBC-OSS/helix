@@ -473,6 +473,28 @@ az postgres flexible-server list-skus -l <region>
 # a `reason` field on the first element means restricted — pick another region
 ```
 
+Same for compute quota: the deploy creates **two Container Apps environments**
+(apps + egress) in that region, and a fresh or trial subscription can default
+below that — which fails the second environment mid-apply:
+
+```bash
+SUB=$(az account show --query id -o tsv)  # current login; or a literal id
+REGION=<region>                           # the deploy region
+
+az rest --method get \
+  --url "https://management.azure.com/subscriptions/$SUB/providers/Microsoft.App/locations/$REGION/usages?api-version=2025-07-01" \
+  --query "value[?name.value=='ManagedEnvironmentCount']"
+# limit - currentValue must be >= 2
+# (cores are environment-scoped, not regional — the per-environment
+# default covers this platform, which idles under 5)
+```
+
+An increase is a portal **Quotas** blade request (provider _Azure Container
+Apps_ → _Managed Environment Count_) — usually approved in minutes, but it
+can take days, so check before you need it. (Command verified against a live
+subscription 2026-09-18; the unfiltered response also carries GPU,
+session-pool and sandbox quotas the platform doesn't use.)
+
 ### 1. Validate / preview
 
 ```bash
