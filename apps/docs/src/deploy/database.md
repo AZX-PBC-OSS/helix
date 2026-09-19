@@ -1,5 +1,6 @@
 ---
 title: Database & migrations
+description: "The private-endpoint Postgres behind every install: its access model, how schema migrations run without anyone holding the admin password, and what to do when either misbehaves."
 ---
 
 # Database & migrations

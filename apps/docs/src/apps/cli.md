@@ -1,5 +1,6 @@
 ---
 title: The helix CLI
+description: "The npm-published deploy tool for app authors: login, create, deploy, promote, and rollback from the command line."
 ---
 
 # The `helix` CLI

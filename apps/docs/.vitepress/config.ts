@@ -1,9 +1,16 @@
 import { defineConfig } from "vitepress";
+import llmstxt from "vitepress-plugin-llms";
 
 // The public docs site, published to GitHub Pages as a project page:
 // https://azx-pbc-oss.github.io/helix/ — hence the base. Content lives in
 // src/; apps/src/apps/quickstart.md is generated at build time from
 // packages/deploy-skill/SKILL.md (scripts/render-skill.ts), per ADR-0036.
+//
+// The llmstxt plugin generates the llmstxt.org v2 artifacts into dist/ at
+// build time — llms.txt (an index structured from the sidebar), llms-full.txt
+// (the whole site in one file), and a .md twin of every page — so AI agents
+// and chatbots can consume the site as clean markdown. Build output only;
+// never hand-create these. The sitemap needs the base in its hostname.
 export default defineConfig({
   lang: "en-US",
   title: "Helix",
@@ -12,6 +19,12 @@ export default defineConfig({
   base: "/helix/",
   srcDir: "src",
   cleanUrls: true,
+  sitemap: {
+    hostname: "https://azx-pbc-oss.github.io/helix/",
+  },
+  vite: {
+    plugins: [llmstxt()],
+  },
   head: [
     // Head links don't get the base prefix automatically, so spell it out.
     ["link", { rel: "icon", type: "image/svg+xml", href: "/helix/favicon.svg" }],

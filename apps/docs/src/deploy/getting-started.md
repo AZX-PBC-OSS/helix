@@ -1,5 +1,6 @@
 ---
 title: Getting started
+description: "The full first deployment on Azure, start to finish: infrastructure, database, the three services, and TLS, from one Bicep template."
 ---
 
 # Deploy Helix on Azure

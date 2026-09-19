@@ -1,5 +1,6 @@
 ---
 title: App manifest
+description: "The per-app declaration of what an app may do: app-data scopes, connections, budgets, and visibility — edited in the portal, enforced by the gateway on every call."
 ---
 
 # The app manifest

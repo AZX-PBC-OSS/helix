@@ -1,5 +1,6 @@
 ---
 title: Deploying updates
+description: "Every deploy after the first: shipping a new build, running migrations, rotating secrets, and when a change needs the whole template re-applied."
 ---
 
 # Deploying updates

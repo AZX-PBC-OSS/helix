@@ -22,6 +22,7 @@ const rendered = renderSkillGeneric(body);
 
 const page = `---
 title: Quickstart — build and deploy an app
+description: "The end-to-end guide to building and deploying a Helix app, written as instructions for an AI coding agent: the constraints, the manifest, the gateway, and the deploy flow."
 ---
 
 This is the end-to-end guide to building a Helix app: the constraints you build

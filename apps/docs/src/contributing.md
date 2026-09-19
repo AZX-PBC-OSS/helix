@@ -1,5 +1,6 @@
 ---
 title: Contributing
+description: "Where contributor documentation lives in the repo, how the codebase is laid out, and how changes are reviewed and proposed."
 ---
 
 # Contributing

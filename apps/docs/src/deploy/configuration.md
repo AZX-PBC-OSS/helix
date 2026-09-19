@@ -1,5 +1,6 @@
 ---
 title: Configuration reference
+description: "Every operator knob in two places: Bicep parameters resolved server-side from the install's Key Vault, and per-service environment variables."
 ---
 
 # Configuration reference

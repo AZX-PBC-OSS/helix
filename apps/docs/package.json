@@ -16,7 +16,9 @@
   "devDependencies": {
     "@azx-pbc/deploy-skill": "workspace:*",
     "@types/node": "catalog:",
+    "sitemap": "catalog:",
     "tsx": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitepress-plugin-llms": "catalog:"
   }
 }

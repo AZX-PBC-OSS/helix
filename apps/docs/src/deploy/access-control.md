@@ -1,5 +1,6 @@
 ---
 title: Access control
+description: "Who can enter a Helix install and who administers it: Entra groups for operators and app users, and how the platform enforces what an allowed user may then do."
 ---
 
 # Access control

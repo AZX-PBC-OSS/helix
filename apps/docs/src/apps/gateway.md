@@ -1,5 +1,6 @@
 ---
 title: The /_api gateway
+description: "The same-origin /_api/* endpoints an app calls for everything dynamic: LLM proxying, app data in three scopes, and the fetch proxy — gated by the manifest, metered and budgeted."
 ---
 
 # The `/_api` gateway

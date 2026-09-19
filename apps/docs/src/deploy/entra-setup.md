@@ -1,5 +1,6 @@
 ---
 title: Entra ID setup
+description: "The three Entra app registrations a deployment needs for OIDC sign-in, and how the bundled fake issuer stands in during local development."
 ---
 
 # Microsoft Entra ID setup

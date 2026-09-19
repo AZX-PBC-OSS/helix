@@ -1,5 +1,6 @@
 ---
 title: Local development
+description: "Running the whole platform locally with no Azure account: the dev container, the five services, and the fake OIDC issuer."
 ---
 
 # Local development

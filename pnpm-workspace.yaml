@@ -175,6 +175,13 @@ catalog:
   # only — no server, no runtime service. Kept on the 1.x stable line; the 2.x
   # line is not released yet.
   vitepress: ^1.6.4
+  # Generates the llmstxt.org v2 artifacts (llms.txt, llms-full.txt, per-page
+  # .md twins) at build time — the plugin Vite/Vue use. Docs build only;
+  # markdown-processing deps, never near a runtime service.
+  vitepress-plugin-llms: ^1.14.0
+  # Powers VitePress's native sitemap option (vitepress declares no range for
+  # it; 9.x is current — fall back to ^8.0.3 if the import surface breaks).
+  sitemap: ^9.0.1
   tsx: ^4.22.4
   typescript: ^6.0.3
   typescript-eslint: ^8.61.0

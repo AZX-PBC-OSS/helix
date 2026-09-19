@@ -1,5 +1,6 @@
 ---
 title: Azure AI Foundry
+description: "Running app LLM calls on Azure AI Foundry instead of first-party vendors: models deploy into your subscription and the bill lands there."
 ---
 
 # Azure AI Foundry as the LLM backend
