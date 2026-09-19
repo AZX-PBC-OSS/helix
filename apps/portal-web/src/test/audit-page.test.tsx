@@ -153,3 +153,95 @@ describe("AuditPage user attribution", () => {
     expect(screen.queryByText("Alice Anders")).toBeNull();
   });
 });
+
+describe("AuditPage failure detail", () => {
+  it("reveals the failure reason only when the row is expanded", async () => {
+    stubFetch([call({ outcome: "error", errorDetail: "upstream 500: overloaded" })]);
+    renderAudit();
+    await screen.findByText("Alice Anders");
+    // One click away, not stashed in a tooltip an operator has no reason to
+    // suspect: the reason is absent from the collapsed table, then leads the
+    // detail card once the row is open.
+    expect(screen.queryByText(/overloaded/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Show call detail" }));
+    expect(screen.getByText(/overloaded/)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Hide call detail" })).toBeDefined();
+  });
+
+  it("shows the full call record on expand — request line, status, accounting, identity", async () => {
+    stubFetch([
+      call({
+        capability: "fetch",
+        model: "api.github.com",
+        method: "POST",
+        path: "/repos/azxlabs/helix/issues",
+        outcome: "error",
+        statusCode: 502,
+        errorDetail: "egress request failed: upstream connect timeout",
+        // The fixture's `10 * seq` counts calls across the whole file, so pin
+        // the accounting this test asserts on.
+        inputTokens: 10,
+      }),
+    ]);
+    renderAudit();
+    await screen.findByText("api.github.com");
+    await userEvent.click(screen.getByRole("button", { name: "Show call detail" }));
+    expect(screen.getByText("POST /repos/azxlabs/helix/issues")).toBeDefined();
+    expect(screen.getByText("502")).toBeDefined();
+    expect(screen.getByText(/connect timeout/)).toBeDefined();
+    expect(screen.getByText("10 in · 5 out")).toBeDefined();
+    // The raw subject — what a support thread would quote — renders in the
+    // detail as copyable text, while the user cell still leads with the
+    // captured claims and keeps the subject on `title`.
+    expect(screen.getByText(OPAQUE)).toBeDefined();
+    expect(document.querySelector(`[title="${OPAQUE}"]`)).not.toBeNull();
+  });
+
+  it("matches the upstream error text in the filter box", async () => {
+    stubFetch([call(), call({ outcome: "error", errorDetail: "connection reset by peer" })]);
+    renderAudit();
+    expect(await screen.findAllByRole("button", { name: "Show call detail" })).toHaveLength(2);
+    // The error string renders nowhere until a row is expanded — the filter
+    // still finds it. Filter finds, expand reveals.
+    await userEvent.type(screen.getByPlaceholderText(/Filter by/i), "connection reset");
+    expect(screen.getAllByRole("button", { name: "Show call detail" })).toHaveLength(1);
+  });
+
+  it("keeps the first row open when a second is expanded", async () => {
+    stubFetch([
+      call({ outcome: "error", errorDetail: "first failure" }),
+      call({ outcome: "error", errorDetail: "second failure" }),
+    ]);
+    renderAudit();
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "Show call detail" }))[0] as HTMLElement,
+    );
+    expect(screen.getByText(/first failure/)).toBeDefined();
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "Show call detail" }))[0] as HTMLElement,
+    );
+    // The point of a set over the Data tab's single-open idiom: two failures
+    // open at once, because comparing them is this screen's job.
+    expect(screen.getByText(/first failure/)).toBeDefined();
+    expect(screen.getByText(/second failure/)).toBeDefined();
+    // Closing one leaves the other where it is.
+    await userEvent.click(
+      screen.getAllByRole("button", { name: "Hide call detail" })[0] as HTMLElement,
+    );
+    expect(screen.queryByText(/first failure/)).toBeNull();
+    expect(screen.getByText(/second failure/)).toBeDefined();
+  });
+
+  it("breaks the not-delivered count down by outcome", async () => {
+    stubFetch([
+      call(),
+      call({ outcome: "error", errorDetail: "boom" }),
+      call({ outcome: "error", errorDetail: "boom" }),
+      call({ outcome: "quota_blocked" }),
+    ]);
+    renderAudit();
+    // Same `!== "ok"` stance as the count itself, so the two can't drift.
+    expect(await screen.findByText("2 error · 1 quota")).toBeDefined();
+    expect(screen.getByText("3")).toBeDefined();
+  });
+});

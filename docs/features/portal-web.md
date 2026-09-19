@@ -89,7 +89,17 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     already denied this request"_ rather than as a failure; every decision mutation invalidates
     `onSettled`, so the queue refetches on conflict too and the row shows the decision that landed.
     Withdraw exists on the API (the requester's verb) but has no UI yet.
-  - **Audit Log** (`/admin/audit`) — `GET /api/v1/gateway/audit` over `gateway_calls`. The **User**
+  - **Audit Log** (`/admin/audit`) — `GET /api/v1/gateway/audit` over `gateway_calls`. The table is the
+    scan row — time, app, user, capability, model/target, outcome — and each row's chevron opens the
+    call's full record as an unframed continuation of the row itself (the open row and its detail
+    share one darker band; rows open independently, so two failures can sit side by side):
+    `errorDetail` in full (the upstream/
+    vendor text the app-facing error deliberately never echoes — kept in the ledger for exactly
+    this admin-only audience), `stopReason`, `statusCode`, the fetch request line (`method`+`path`;
+    the query string is excluded at write time), in/out/cache token accounting, cost, latency, the
+    exact timestamp, and the raw subject as copyable text. The filter box matches what the columns
+    render **and** what only the expand shows (`errorDetail`/`stopReason`/path) — filter finds,
+    expand reveals — and the "Not delivered" stat breaks its count down by outcome. The **User**
     column renders `Principal` on the captured `userName`/`userEmail`, falling back to `userOid`
     only when no claims were captured — the raw subject stays on the cell's `title` for
     correlation, and the filter box matches all three. `anon` and `pw_*` render as "anonymous" and
