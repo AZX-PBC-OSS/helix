@@ -62,3 +62,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0045](0045-app-triggered-durable-jobs-plane.md) | App-triggered durable jobs: a platform-owned plane behind an HTTP contract | Proposed |
 | [0046](0046-azure-ai-foundry-keyless-llm-backend.md) | Azure AI Foundry as a keyless LLM backend (egress mints Entra tokens) | Accepted |
 | [0047](0047-operator-declared-servable-model-set.md) | Operator-declared servable model set (allowlist/blocklist), catalogue-side only | Accepted |
+| [0048](0048-canonical-principal-oid.md) | Canonical principal identifier: the Entra `oid` claim, captured at source in both planes | Accepted |
