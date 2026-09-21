@@ -101,8 +101,9 @@ These are where the security model lives (see `docs/platform-architecture.md` §
   path (Entra ID, Key Vault).
 - **Known, tracked gaps** — before reporting a _missing_ control, check [`TODO.md`](TODO.md);
   known items include per-app RBAC (reads are still authenticated-only, ADR-0007 residual),
-  admin per-user session revocation, confirming `deployFirewall` is on in the live
-  deployments, and Public Suffix List submission. A bypass of a control that _is_ built
+  confirming `deployFirewall` is on in the live deployments, and Public Suffix List
+  submission. (Admin per-user session revocation shipped — the portal Sessions screen —
+  and is no longer a gap.) A bypass of a control that _is_ built
   remains a valid report.
 - **The usual exclusions** — volumetric DoS, unverified scanner output, social engineering,
   and spam or content problems in hosted apps.

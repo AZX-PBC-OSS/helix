@@ -37,14 +37,34 @@ async function edgeRoleAvailable(): Promise<boolean> {
   }
 }
 
+/** The portal role's URL — same derivation as the edge's, creds swapped. */
+function portalUrl(): string {
+  const u = new URL(TEST_DATABASE_URL);
+  u.username = "helix_portal";
+  u.password = "helix_portal";
+  return u.toString();
+}
+
+async function portalRoleAvailable(): Promise<boolean> {
+  const pool = new Pool({ connectionString: portalUrl(), max: 1 });
+  try {
+    await pool.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await pool.end();
+  }
+}
+
 /** Build a Session for the given app; user/expiry are unremarkable. */
-function makeSession(appId: string): Session {
+function makeSession(appId: string, oid = "oid-alice"): Session {
   const hour = 60 * 60 * 1000;
   return {
     id: newSessionId(),
     appId,
     user: {
-      oid: "oid-alice",
+      oid,
       displayName: "Alice",
       name: null,
       email: null,
@@ -161,5 +181,45 @@ describe("PgSessionStore as helix_edge (RLS-backed)", () => {
       [[appA, appB]],
     );
     expect((live.rows[0] as { n: number }).n).toBe(1);
+  });
+
+  // The security claim of the portal's admin revoke, proven at the layer that
+  // makes it true: sessions are server-side and the gate's lookup is uncached,
+  // so a `helix_portal` DELETE (exactly the statement the portal's
+  // POST /api/v1/sessions/revoke runs — migration 20260921120000 is what makes
+  // that role's sessions grant set SELECT+DELETE) kills the session for the
+  // *next* request, with nothing to invalidate anywhere else. The control-plane
+  // half (gating, audit, idempotence) is asserted in the portal's suite.
+  it("the admin kill: a helix_portal DELETE ends the session on the next lookup", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    if (!(await portalRoleAvailable())) return; // revoke route unrunnable here
+    const s = store ?? new PgSessionStore(edgeUrl(), { max: 1 });
+    store = s;
+
+    const alice = `sub-${newSessionId()}`;
+    const bob = `sub-${newSessionId()}`;
+    const aliceToken = newSessionToken();
+    const bobToken = newSessionToken();
+    await s.createActive(makeSession(appA, alice), hashSessionToken(aliceToken));
+    await s.createActive(makeSession(appA, bob), hashSessionToken(bobToken));
+
+    // Precondition: both are live through the gate's real read path.
+    expect(await s.lookup(hashSessionToken(aliceToken), appA)).not.toBeNull();
+    expect(await s.lookup(hashSessionToken(bobToken), appA)).not.toBeNull();
+
+    const kill = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      const r = await kill.query(`DELETE FROM sessions WHERE "userOid" = $1`, [alice]);
+      expect(r.rowCount).toBe(1);
+    } finally {
+      await kill.end();
+    }
+
+    // The claim: no cache, no blocklist, no edge change — the next lookup (the
+    // gate's per-request SELECT) simply misses, and the browser's still-present
+    // cookie is now a key to nothing.
+    expect(await s.lookup(hashSessionToken(aliceToken), appA)).toBeNull();
+    // Scoped to the killed user, not the app: Bob's session survives.
+    expect(await s.lookup(hashSessionToken(bobToken), appA)).not.toBeNull();
   });
 });

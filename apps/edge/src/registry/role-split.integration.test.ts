@@ -242,6 +242,48 @@ async function devRoleAvailable(): Promise<boolean> {
 }
 
 /**
+ * The admin session-revoke grant set (portal Sessions screen, migration
+ * 20260921120000). The control plane may READ live sessions (the admin list)
+ * and DELETE them (the user-level kill) — and nothing else, because both of
+ * the revoked verbs are *credential* powers: INSERT mints a session for any
+ * app and user, and UPDATE is how a session is stolen (rebind `tokenHash` to
+ * an attacker's cookie hash) or resurrected (wind `expiresAt` back). The
+ * handoff's single-use redeem must stay edge-only by grant, not convention.
+ */
+describe("helix_portal on sessions: the admin revoke grant set", () => {
+  it("reads and deletes sessions but cannot mint or rebind one", async () => {
+    if (!(await portalRoleAvailable())) return; // not provisioned on this cluster
+    const pool = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      // The Sessions screen's two verbs.
+      await expect(pool.query("SELECT count(*) FROM sessions")).resolves.toBeDefined();
+      // A DELETE that matches nothing still exercises the grant, without
+      // destroying rows this shared database's other tests own.
+      await expect(
+        pool.query(`DELETE FROM sessions WHERE "userOid" = 'rs-portal-none'`),
+      ).resolves.toBeDefined();
+
+      // The revoked powers. Permission is refused ahead of any constraint or
+      // RLS check, so the FK and the no-op WHERE never matter.
+      await expect(
+        pool.query(
+          `INSERT INTO sessions (id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt")
+             VALUES (gen_random_uuid(), gen_random_uuid(), 'x', 'X', '[]'::jsonb,
+                     now() + interval '1 hour', now() + interval '1 hour')`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
+      await expect(
+        pool.query(
+          `UPDATE sessions SET "tokenHash" = 'x' WHERE id = '00000000-0000-0000-0000-000000000000'`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
+    } finally {
+      await pool.end();
+    }
+  });
+});
+
+/**
  * Dev-mode design §5.3 — the load-bearing security thesis: the database itself
  * refuses to cross the env boundary. `helix_edge`'s RLS policy hardcodes
  * env='prod' and `helix_dev`'s hardcodes env='dev', so neither can read or write

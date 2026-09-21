@@ -41,6 +41,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/admin/audit", label: "Audit Log", icon: "list" },
   { to: "/admin/platform", label: "Activity", icon: "activity" },
   { to: "/admin/secrets", label: "Secrets", icon: "key" },
+  { to: "/admin/sessions", label: "Sessions", icon: "user" },
   { to: "/admin/violations", label: "Violations", icon: "shield" },
 ];
 

@@ -38,6 +38,24 @@ export function timeAgo(iso: string): string {
 }
 
 /**
+ * The future-facing mirror of {@link timeAgo}: "in 2m" / "in 3h" / "now".
+ * Session expiries and refresh-due times are instants ahead of the reader, and
+ * rendering them with `timeAgo`'s floor at zero would show a session that dies
+ * in 90 seconds as "just now" — true, and useless on a kill screen where the
+ * countdown is the whole point.
+ */
+export function timeUntil(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return "now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `in ${h}h`;
+  return `in ${Math.floor(h / 24)}d`;
+}
+
+/**
  * Whole days elapsed since an ISO timestamp. `timeAgo` renders age; this is the
  * numeric form the approvals queue thresholds its staleness tones on.
  */

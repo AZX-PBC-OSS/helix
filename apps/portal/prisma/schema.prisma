@@ -131,8 +131,12 @@ model Version {
 }
 
 /// App-user session state (architecture Appendix A.4) — **edge-owned data**.
-/// The portal migrates this table but never reads or writes it in v0; the
-/// edge does, with hand-written SQL (apps/edge/src/auth/sessions.ts).
+/// The edge is the sole writer (hand-written SQL, apps/edge/src/auth/sessions.ts):
+/// it mints, redeems, refreshes and sweeps these rows. The portal's two
+/// operations are the admin Sessions screen — read live rows (SELECT) and the
+/// user-level revoke (DELETE, migration 20260921120000 revoked INSERT/UPDATE so
+/// the control plane can never mint or rebind a session). The handoff's atomic
+/// redeem UPDATE is edge-only **by grant**, not just by convention.
 ///
 /// `id` doubles as the handoff token's `jti`; `tokenHash` (sha256 of the
 /// cookie value, so a DB read-leak never yields usable cookies) is NULL while

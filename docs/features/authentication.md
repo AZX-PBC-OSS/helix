@@ -211,6 +211,54 @@ null `ownerId` (ADR-0007, issue #9). What remains is per-app **RBAC** — reads 
 authenticated-only, so any authenticated principal can see any app's metadata. That is the v1 fix,
 not merely a nice-to-have.
 
+## Admin session revocation
+
+The admin **Sessions** screen (`/admin/sessions` in the portal SPA; `apps/portal/src/routes/sessions.ts`
+on the API side) lists every live app-user session and revokes them, **per user, across every app**
+— the v1 control-plane feature architecture §4.2 promised, closing ADR-0004's ISSUE-11 window.
+
+**The mechanism is the one the design already had.** Sessions are server-side precisely so
+revocation is real: the edge's gate consults `session_lookup` on every request with no cache
+(`gate.ts`), so `POST /api/v1/sessions/revoke` — one `DELETE FROM sessions WHERE "userOid" = …`
+— kills the session for the *next* request. Navigations 302 to sign-in, `/_api/*` fetches get
+401, and the browser's still-present cookie becomes a key to nothing. No edge change, no cookie
+blocklist, no "revoked" flag to project. The delete also takes the user's never-redeemed pending
+row (a login in flight) as collateral of the same kill.
+
+What it closes, and what it doesn't:
+
+- **It closes the stale-snapshot window on demand.** A user removed from an Entra group keeps
+  serving on the group snapshot captured at login/refresh until the next silent refresh (≤ the
+  refresh interval, hard-capped at the session TTL). Deleting the row ends it now, and re-login
+  re-checks group membership at the OIDC callback — so a user who actually lost the group cannot
+  get back in.
+- **It revokes sessions, not principals.** A user whose entitlement still stands simply signs in
+  again — correct, because sign-in re-evaluates everything fresh. Blocking a person entirely is
+  Entra's job (disable the account / remove the group); denying an app is the archive (410). An
+  in-flight request or stream completes; an offline app's cached shell still cold-boots, but its
+  `/_api/*` calls die instantly (ADR-0035).
+
+Routes (both `requireAdmin`, the same gate and reasoning as the gateway audit log — the rows carry
+a name and address for every app user of every hosted app):
+
+- **`GET /api/v1/sessions`** — live rows only (activated, unexpired: exactly what the gate would
+  still admit), flat, with the app slug joined. Group ids in each session's snapshot are resolved
+  to display names server-side through the directory `getGroups` seam (the my-groups primitive,
+  under the same per-actor resolve budget); a spent budget, an unavailable directory, or a
+  transient Graph failure degrades to `groupsResolved: false` + raw ids rather than failing the
+  list — **revocation never depended on Graph**. `tokenHash` is never projected.
+- **`POST /api/v1/sessions/revoke`** `{userOid}` — the user-level kill above. Idempotent by
+  design (`{removed: 0}` on a stale click, not a 404), returns `{removed, apps}`. Every attempt
+  writes a platform-level audit event (`session.revoke`, `appId` null) with the display half
+  captured from the removed rows — which are about to be swept, so that is the only place the
+  name survives (ADR-0021's capture-at-write).
+
+**Grant posture** (migration `20260921120000`): `helix_portal` holds `SELECT` + `DELETE` on
+`sessions` and nothing else — it cannot mint a session or rebind a `tokenHash` (i.e. steal one);
+the handoff's atomic redeem stays edge-only **by grant**. `role-split.integration.test.ts` holds
+that line, and `sessions.rls.integration.test.ts` proves the kill itself: a `helix_portal` DELETE
+is missed by the edge's very next lookup.
+
 ## Planned / not yet built
 
 - **Per-app RBAC** on the portal side (v1). The BOLA half is done (`ownsApp`); what's left is

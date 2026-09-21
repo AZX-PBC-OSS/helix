@@ -19,6 +19,7 @@ import {
   PlatformUsageSchema,
   PortalMeResponseSchema,
   SecretMetadataSchema,
+  SessionListResponseSchema,
   UsageSummarySchema,
   VersionSchema,
   type AppListScope,
@@ -335,3 +336,17 @@ export const appVisibilityGroupsQuery = (slug: string) =>
       ),
     staleTime: 30_000,
   });
+
+/**
+ * Live app-user sessions (admin Sessions screen). The response resolves the
+ * page's group ids to names server-side; this screen groups the flat rows by
+ * user client-side, because the revoke operation is user-level.
+ *
+ * No `staleTime` — the default (0) is the point: this is a kill screen, and
+ * what it shows must be what the server would act on *now*, not a cached page
+ * a revoked user's rows are still sitting in.
+ */
+export const sessionsQuery = queryOptions({
+  queryKey: ["sessions"],
+  queryFn: () => fetchJson(SessionListResponseSchema, "/api/v1/sessions"),
+});

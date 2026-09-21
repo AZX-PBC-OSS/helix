@@ -6,6 +6,7 @@ import {
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
   SecretMetadataSchema,
+  SessionRevokeResultSchema,
   UploadVersionResponseSchema,
   VisibilityUpdateResultSchema,
   type ApprovalRequest,
@@ -18,6 +19,7 @@ import {
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
   type SecretMetadata,
+  type SessionRevokeResult,
   type UploadVersionResponse,
   type Visibility,
   type VisibilityUpdateResult,
@@ -516,5 +518,25 @@ export function useRevokeSecret() {
         { method: "DELETE" },
       ),
     onSuccess: () => invalidateGlobalSecrets(queryClient),
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Admin session revocation (portal Sessions screen). User-level: one call
+ * deletes every live session of the subject, across apps. The server audits
+ * every attempt; idempotent, so a stale list click is a result, not an error.
+ * The server enforces requireAdmin.
+ * ------------------------------------------------------------------------- */
+
+/** Kill every session of one user. */
+export function useRevokeSessions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userOid }: { userOid: string }): Promise<SessionRevokeResult> =>
+      fetchJson(SessionRevokeResultSchema, "/api/v1/sessions/revoke", {
+        method: "POST",
+        body: { userOid },
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["sessions"] }),
   });
 }

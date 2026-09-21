@@ -21,6 +21,7 @@ import { approvalRoutes } from "./routes/approvals.js";
 import { cspRoutes } from "./routes/csp.js";
 import { versionRoutes } from "./routes/versions.js";
 import { usageRoutes } from "./routes/usage.js";
+import { sessionRoutes } from "./routes/sessions.js";
 import { dataRoutes } from "./routes/data.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { authRoutes } from "./routes/auth.js";
@@ -102,6 +103,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(cspRoutes);
   app.register(versionRoutes);
   app.register(usageRoutes);
+  app.register(sessionRoutes);
   app.register(dataRoutes);
   app.register(authRoutes);
   app.register(configRoutes);

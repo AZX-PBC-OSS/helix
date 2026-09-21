@@ -45,3 +45,17 @@ WEAKEN — code claims verified; two **undisclosed** gaps to add (the `statement
 A review flagged "shared-table RLS is a cross-app leak foot-gun." True as a *pattern* (pool tenancy is the most fragile model; some sources avoid RLS), but **not for this implementation** (5-model red-team + best-practice grounding). The classic foot-gun fails *open* (a forgotten `WHERE tenant_id` exposes all rows); Helix's `app_data` policy fails **closed**: a missing GUC → `current_setting(...,true)` is NULL → **zero rows**, INSERT fails the WITH CHECK (`migrations/20260616231036_app_data/migration.sql:35-37`). Combined with `FORCE` + `ENABLE` RLS, `helix_edge` non-owner/NOBYPASSRLS, a **server-derived** predicate, and `SET LOCAL` in an explicit txn (`gateway/data.ts:83-89`) — this is exactly the AWS-recommended pool-model hardening. The two best-practice CI guards already exist: a cross-app isolation test (`data.integration.test.ts:52`) and a forgotten-GUC zero-rows test (`:143`).
 
 The only *present* cross-tenant read path is the **owner/superuser bypass** (a superuser bypasses RLS even with `FORCE`) — i.e. the portal-as-owner / edge owner-DSN items above, not the shared-table choice. **Physical isolation (schema/DB-per-app) is not warranted** — it trades a fail-closed risk for migration explosion + dynamic DDL from the trusted path and doesn't fix the owner bypass. Severity of the shared-table design itself: **Minor** (pattern-awareness). Only additive hygiene: a lint/banned-import forbidding raw `app_data` queries outside `withPartition` (still open), and codifying explicit `NOBYPASSRLS` on `helix_edge` in the prod role bootstrap (**done** — see the review-notes item above).
+
+## Amendment (2026-09-21) — the permissive `sessions_portal_all` policy is now load-bearing
+
+The admin session-revocation feature (portal Sessions screen; ADR-0004's 2026-09-21 amendment)
+is the "future portal read" the `sessions_portal_all` policy was left permissive for. The
+control plane now SELECTs live session rows (the admin list) and DELETEs them (the user-level
+kill) through that `USING (true)` policy. The verb set was tightened to match at the same time:
+migration `20260921120000` revoked `helix_portal`'s INSERT/UPDATE on `sessions`, so the portal
+holds SELECT+DELETE only — it cannot mint a session or rebind a `tokenHash` (either is a
+credential power: the latter is how a session would be *stolen*), and the handoff's atomic
+redeem UPDATE stays edge-only by grant, not just by convention. Same carve-out mechanism as
+`20260721120000` (which made `gateway_calls` append-only for every runtime role). Pinned in
+`role-split.integration.test.ts`; the kill's effect on the edge's uncached lookup is asserted in
+`sessions.rls.integration.test.ts`.

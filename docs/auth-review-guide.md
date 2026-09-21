@@ -524,9 +524,6 @@ Call these out only if you disagree with the *decision*, not as bugs:
 - **Real Entra** verification — now live in the deployed platform (the swap was env-only, as
   designed). This guide's walkthrough still uses the local issuer, which exercises the identical
   flow.
-- **Admin per-user *session* revocation UI** — the `sessions` table is migrated but there is
-  no revoke route/UI yet (project plan §5.7). (Logout and app-disable already revoke; this is
-  the admin-initiated kill of a *specific* live session.)
 - **Per-app RBAC** (owner/editor/viewer roles) on the portal side — a v1 feature, out of
   scope here, and the last `PreviewBadge` in the SPA. The BOLA half it used to carry is done
   (`ownsApp`, §12); what remains out of scope is the roles model and owner-scoped read

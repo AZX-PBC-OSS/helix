@@ -13,6 +13,7 @@ import { ApprovalsPage } from "./pages/admin/ApprovalsPage";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { PlatformPage } from "./pages/admin/PlatformPage";
 import { SecretsPage } from "./pages/admin/SecretsPage";
+import { SessionsPage } from "./pages/admin/SessionsPage";
 import { ViolationsPage } from "./pages/admin/ViolationsPage";
 
 /** Wrap an admin route element in the platform-admin gate. */
@@ -36,6 +37,7 @@ function Portal() {
             working as a link, rather than 404ing bookmarks. */}
         <Route path="/admin/registry" element={<Navigate to="/?scope=all" replace />} />
         <Route path="/admin/secrets" element={admin(<SecretsPage />)} />
+        <Route path="/admin/sessions" element={admin(<SessionsPage />)} />
         <Route path="/admin/violations" element={admin(<ViolationsPage />)} />
         <Route path="*" element={<AppsListPage />} />
       </Routes>

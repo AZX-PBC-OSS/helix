@@ -162,6 +162,7 @@ describe("Shell admin nav", () => {
     // A workspace link is always present; admin links are not.
     expect(await screen.findByText("Apps")).toBeDefined();
     await waitFor(() => expect(screen.queryByText("Approvals")).toBeNull());
+    expect(screen.queryByText("Sessions")).toBeNull();
   });
 
   it("shows the admin nav for a platform admin", async () => {
@@ -170,6 +171,7 @@ describe("Shell admin nav", () => {
     renderShell();
     expect(await screen.findByText("Approvals")).toBeDefined();
     expect(screen.getByText("Secrets")).toBeDefined();
+    expect(screen.getByText("Sessions")).toBeDefined();
     // "All Apps" used to live here. It is the apps page's `all` scope now, open to
     // everyone, so an admin-only nav entry for it would be a lie.
     expect(screen.queryByText("All Apps")).toBeNull();
