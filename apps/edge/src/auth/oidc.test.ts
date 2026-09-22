@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildClientAuth, certThumbprintX5t, groupsClaimOverflowed } from "./oidc.js";
+import {
+  buildClientAuth,
+  certThumbprintX5t,
+  groupsClaimOverflowed,
+  identityFromClaims,
+} from "./oidc.js";
 
 /**
  * Certificate (private_key_jwt) client auth — the path for Entra tenants whose
@@ -95,5 +100,71 @@ describe("groupsClaimOverflowed", () => {
     for (const bad of [null, "src1", 42, []]) {
       expect(groupsClaimOverflowed({ _claim_names: bad }, "groups")).toBe(false);
     }
+  });
+});
+
+/**
+ * ADR-0048 decision 2, the unit half (the login refusal itself is driven end
+ * to end against a real issuer in flow.integration.test.ts, using dev-idp's
+ * `omitOidClaim`). What is under test here is the claim mapping: `oid` is the
+ * canonical principal id, taken from the `oid` claim only — never `sub`, and
+ * with no fallback when it is absent.
+ */
+describe("identityFromClaims", () => {
+  it("takes the principal id from the oid claim — never the pairwise sub", () => {
+    const id = identityFromClaims(
+      {
+        sub: "pairwise-per-client-sub",
+        oid: "6b9f4d31-8e2a-4c07-9b5d-111111111111",
+        email: "a@b.dev",
+      },
+      "groups",
+    );
+    expect(id?.oid).toBe("6b9f4d31-8e2a-4c07-9b5d-111111111111");
+    expect(id?.email).toBe("a@b.dev");
+    expect(id?.displayName).toBe("a@b.dev");
+  });
+
+  it("refuses a token with no oid claim — absence, empty, or non-string", () => {
+    expect(identityFromClaims({ sub: "s", email: "a@b.dev" }, "groups")).toBeNull();
+    expect(identityFromClaims({ sub: "s", oid: "" }, "groups")).toBeNull();
+    expect(identityFromClaims({ sub: "s", oid: 42 }, "groups")).toBeNull();
+    expect(identityFromClaims({ sub: "s", oid: null }, "groups")).toBeNull();
+  });
+
+  it("reads groups from the configured claim, tolerating absence and garbage", () => {
+    expect(identityFromClaims({ oid: "o", groups: ["g1", "g2"] }, "groups")?.groups).toEqual([
+      "g1",
+      "g2",
+    ]);
+    expect(identityFromClaims({ oid: "o", roles: ["admin"] }, "groups")?.groups).toEqual([]);
+    expect(identityFromClaims({ oid: "o", groups: "g1" }, "groups")?.groups).toEqual([]);
+    expect(identityFromClaims({ oid: "o", groups: ["g1", 7, null] }, "groups")?.groups).toEqual([
+      "g1",
+    ]);
+  });
+
+  it("ends the displayName ladder at the oid — never the sub", () => {
+    // An issuer that sends no name, no email and no preferred_username: the
+    // contract is a non-empty displayName, and the oid (never the pairwise
+    // sub) is the final rung.
+    const id = identityFromClaims({ sub: "pairwise-sub", oid: "the-oid" }, "groups");
+    expect(id?.displayName).toBe("the-oid");
+    expect(id?.name).toBeNull();
+    expect(id?.email).toBeNull();
+  });
+
+  it("keeps the capture ladders: name preferred, email before preferred_username", () => {
+    const id = identityFromClaims(
+      { oid: "o", name: " Alice ", email: "a@b.dev", preferred_username: "alice" },
+      "groups",
+    );
+    expect(id?.displayName).toBe(" Alice ");
+    expect(identityFromClaims({ oid: "o", preferred_username: "alice" }, "groups")?.email).toBe(
+      null,
+    );
+    expect(
+      identityFromClaims({ oid: "o", preferred_username: "not-an-address" }, "groups")?.displayName,
+    ).toBe("not-an-address");
   });
 });

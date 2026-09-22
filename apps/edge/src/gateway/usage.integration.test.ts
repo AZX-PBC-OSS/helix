@@ -16,6 +16,9 @@ let pool: Pool;
 let store: PgUsageStore;
 const appId = randomUUID();
 const otherAppId = randomUUID();
+// dana's directory oid (ADR-0048): a `user`-kind row's identity half is an
+// `oid` claim, not the pairwise `sub` a fixture literal here used to hold.
+const DANA_OID = "6b9f4d31-8e2a-4c07-9b5d-444444444444";
 
 beforeAll(() => {
   pool = new Pool({ connectionString: TEST_DATABASE_URL, max: 4 });
@@ -124,7 +127,7 @@ describe("PgUsageStore", () => {
       await store.record({
         appId: labelledAppId,
         env: "prod",
-        userOid: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
+        userOid: DANA_OID,
         userName: longName,
         userEmail: "alice@azx.dev",
         userKind: "user" as const,
@@ -140,7 +143,7 @@ describe("PgUsageStore", () => {
       );
       expect(rows[0].userEmail).toBe("alice@azx.dev");
       // The identity half is stored verbatim — it is a key, not a label.
-      expect(rows[0].userOid).toBe("VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA");
+      expect(rows[0].userOid).toBe(DANA_OID);
       // The display half is bounded, with the ellipsis costing one character.
       expect(rows[0].userName).toHaveLength(USER_NAME_MAX + 1);
       expect(rows[0].userName.endsWith("…")).toBe(true);

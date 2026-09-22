@@ -68,10 +68,12 @@ export type Caller =
  *
  * Two halves, and keeping them apart is the point (the split `App.ownerId` vs
  * `ownerName`/`ownerEmail` already draws on the control plane). `userOid` is the
- * identity: compared, joined on, used as the RLS partition key — never rendered,
- * because Entra's `sub` is pairwise and resolves to nobody. `userName`/`userEmail`
- * are the display half: rendered, never compared, and captured at write time
- * because `sessions` is the only id→name map there is and it is swept at expiry.
+ * identity: the Entra `oid` claim (ADR-0048) — compared, joined on, and used as
+ * the RLS partition key, never rendered, because the platform holds no
+ * Graph `/users` grant and so it resolves to nobody by policy.
+ * `userName`/`userEmail` are the display half: rendered, never compared, and
+ * captured at write time because `sessions` is the only id→name map there is
+ * and it is swept at expiry.
  */
 export interface MeterIdentity {
   userOid: string;

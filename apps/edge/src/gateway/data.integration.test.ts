@@ -32,6 +32,9 @@ async function edgeRoleAvailable(): Promise<boolean> {
 
 const APP = randomUUID();
 const OTHER_APP = randomUUID();
+// dana's directory oid (ADR-0048): a `user`-kind row's identity half is an
+// `oid` claim, not the pairwise `sub` a fixture literal here used to hold.
+const DANA_OID = "6b9f4d31-8e2a-4c07-9b5d-444444444444";
 // Dedicated partitions for the two listShared tests that seed a whole page of
 // `record:*` keys: the walk asserts exact counts/orderings, and the sibling
 // tests' `record:`-prefixed rows under APP would be indistinguishable pollution.
@@ -94,7 +97,7 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
         "labelled",
         { email: "lead@x.z" },
         {
-          userOid: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
+          userOid: DANA_OID,
           userName: "Alice Anders",
           userEmail: "alice@azx.dev",
           userKind: "user" as const,
@@ -110,7 +113,7 @@ describe("PgAppDataStore as helix_edge (RLS-backed)", () => {
         [APP],
       );
       expect(r.rows[0]).toEqual({
-        userOid: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
+        userOid: DANA_OID,
         userName: "Alice Anders",
         userEmail: "alice@azx.dev",
         userKind: "user",

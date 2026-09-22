@@ -23,12 +23,14 @@ export interface AuthorizeParams {
 /** What a completed login tells us about the user — nothing else leaves. */
 export interface OidcIdentity {
   /**
-   * IdP subject — Entra's `sub`, which is **pairwise per client id**: a different
-   * value for the same human in every app registration, and not resolvable
-   * through Graph. It is emphatically NOT the directory object id (`oid`), which
-   * this field's name has implied since M3 and does not hold; re-basing onto the
-   * real claim is TODO.md's `private`-visibility item. Compare it, never render
-   * it — `name`/`email` below are the half that is fit to display.
+   * Entra's `oid` claim — the directory object id, stable for the life of the
+   * user object and **identical across every app registration in the tenant**
+   * (ADR-0048). The canonical principal identifier in both planes: this value
+   * is the RLS partition key for user-scoped `app_data` and the one id that
+   * joins to the portal's `App.ownerId` — the pairwise `sub` can be neither
+   * (a different value for the same human per client, resolvable through
+   * nothing). Compare it, never render it — `name`/`email` below are the half
+   * that is fit to display.
    */
   oid: string;
   /** Non-empty, for `GET /_api/me`. Falls back to {@link oid} when no claim. */
@@ -37,7 +39,7 @@ export interface OidcIdentity {
    * The display half, captured at login and written onto every audit/collection
    * row the session goes on to produce. Null when the claim is absent — and
    * deliberately NOT falling back to {@link oid}, because a stored label that is
-   * the opaque subject renders as an attribution while attributing nothing.
+   * the opaque object id renders as an attribution while attributing nothing.
    */
   name: string | null;
   email: string | null;
@@ -185,6 +187,54 @@ export function groupsClaimOverflowed(
   return typeof names === "object" && names !== null && groupsClaim in names;
 }
 
+/**
+ * Verified ID-token claims → an {@link OidcIdentity}, or null when the token
+ * cannot be one of ours.
+ *
+ * The `oid` claim is the canonical principal id (ADR-0048 decision 2): the
+ * claim name is hardcoded, there is **no config var and no fallback** — a
+ * fallback to `sub` would reintroduce exactly the pairwise bug the re-base
+ * exists to kill, in the exact green-locally shape, and a config var would
+ * let a deployment point the canonical id at something mutable or pairwise.
+ * Entra emits `oid` unconditionally in ID tokens, so absence is a
+ * misconfiguration, and it fails closed at the login. No detail of the token
+ * leaves this module's callers — the refusal is logged inside `exchangeCode`.
+ *
+ * Extracted and exported only so the refusal can be tested without standing
+ * up a token exchange (the {@link groupsClaimOverflowed} pattern).
+ */
+export function identityFromClaims(
+  claims: Record<string, unknown>,
+  groupsClaim: string,
+): OidcIdentity | null {
+  if (typeof claims.oid !== "string" || claims.oid.length === 0) return null;
+  const rawGroups = claims[groupsClaim];
+  const groups = Array.isArray(rawGroups)
+    ? rawGroups.filter((g): g is string => typeof g === "string")
+    : [];
+  const name = captureName(claims.name);
+  // `email` first — it is semantically the address. `preferred_username` is
+  // the UPN, which for an ordinary user is the same string, and for a B2B
+  // guest is their *home tenant* address (the mangled `…#EXT#@…` form lives in
+  // `upn`, which is never read). `captureEmail` rejects either if it isn't
+  // actually addressable, so the order only decides between two valid ones.
+  const email = captureEmail(claims.email) ?? captureEmail(claims.preferred_username);
+  // `displayName` has a THIRD rung the label columns deliberately lack: any
+  // non-empty `preferred_username`, address-shaped or not.
+  //
+  // Routing that claim only through `captureEmail` is right for `userEmail`,
+  // which a reader acts on — but it silently regressed `displayName`, which
+  // is merely a non-empty contract value for `/_api/me`. An issuer that sends
+  // no `name`, no `email` and a bare-username UPN (a sAMAccountName, a
+  // Keycloak or Okta login) went from showing `alice` to showing the opaque
+  // subject. The two ladders want different strictness, so they are written
+  // separately rather than one being derived from the other. The final rung
+  // is the oid — opaque, but never absent, which is the whole contract.
+  const displayName =
+    name ?? email ?? captureName(claims.preferred_username) ?? (claims.oid as string);
+  return { oid: claims.oid, displayName, name, email, groups };
+}
+
 export class OpenIdConnectClient implements OidcClient {
   #auth: AuthConfig;
   #redirectUri: string;
@@ -271,10 +321,6 @@ export class OpenIdConnectClient implements OidcClient {
       if (!claims || typeof claims.sub !== "string") {
         return { kind: "invalid" };
       }
-      const rawGroups = claims[this.#auth.groupsClaim];
-      const groups = Array.isArray(rawGroups)
-        ? rawGroups.filter((g): g is string => typeof g === "string")
-        : [];
       // Claim overage (ADR-0040 decision 10). Above roughly 200 groups Entra
       // drops the groups claim and substitutes `_claim_names`/`_claim_sources`
       // pointing at Graph. We read no groups in that case and therefore DENY
@@ -293,25 +339,22 @@ export class OpenIdConnectClient implements OidcClient {
             "so every group-scoped app will deny this session",
         );
       }
-      const name = captureName(claims.name);
-      // `email` first — it is semantically the address. `preferred_username` is
-      // the UPN, which for an ordinary user is the same string, and for a B2B
-      // guest is their *home tenant* address (the mangled `…#EXT#@…` form lives in
-      // `upn`, which is never read). `captureEmail` rejects either if it isn't
-      // actually addressable, so the order only decides between two valid ones.
-      const email = captureEmail(claims.email) ?? captureEmail(claims.preferred_username);
-      // `displayName` has a THIRD rung the label columns deliberately lack: any
-      // non-empty `preferred_username`, address-shaped or not.
-      //
-      // Routing that claim only through `captureEmail` is right for `userEmail`,
-      // which a reader acts on — but it silently regressed `displayName`, which
-      // is merely a non-empty contract value for `/_api/me`. An issuer that sends
-      // no `name`, no `email` and a bare-username UPN (a sAMAccountName, a
-      // Keycloak or Okta login) went from showing `alice` to showing the opaque
-      // subject. The two ladders want different strictness, so they are written
-      // separately rather than one being derived from the other.
-      const displayName = name ?? email ?? captureName(claims.preferred_username) ?? claims.sub;
-      return { kind: "ok", identity: { oid: claims.sub, displayName, name, email, groups } };
+      const identity = identityFromClaims(claims, this.#auth.groupsClaim);
+      if (!identity) {
+        // ADR-0048 decision 2: no `oid` claim means a misconfigured issuer
+        // (Entra emits it unconditionally), so the login fails closed — but
+        // with its own specific line, the same diagnosability posture as the
+        // group-overage warn above: folding it into the opaque "invalid"
+        // would send an operator hunting a nonce or state bug instead of the
+        // missing claim.
+        this.#log.warn(
+          { event: "auth.oidc_missing_oid", sub: claims.sub },
+          "ID token has no oid claim — refusing login: the canonical principal id " +
+            "(ADR-0048) is not optional and has no fallback",
+        );
+        return { kind: "invalid" };
+      }
+      return { kind: "ok", identity };
     } catch (err) {
       if (
         err instanceof oidc.AuthorizationResponseError &&

@@ -3,11 +3,13 @@
  *
  * The edge stores two different things about a signed-in person, and the whole
  * point is that they never merge. `oid` is the **identity half** — Entra's
- * pairwise `sub`, compared and joined on, never rendered, because it resolves to
- * nobody. The claims picked here are the **display half** — rendered, never
- * compared. That is the split `App.ownerId` vs `App.ownerName`/`ownerEmail`
- * already draws on the control plane (`apps/portal/prisma/schema.prisma`); this
- * module is the same move for app users.
+ * `oid` claim, the directory object id (ADR-0048), compared and joined on,
+ * never rendered: the platform deliberately holds no Graph `/users` grant
+ * (ADR-0040 decision 3), so no principal id it stores resolves to a name. The
+ * claims picked here are the **display half** — rendered, never compared. That
+ * is the split `App.ownerId` vs `App.ownerName`/`ownerEmail` already draws on
+ * the control plane (`apps/portal/prisma/schema.prisma`); this module is the
+ * same move for app users.
  *
  * The claims are *captured*, not resolved: the only id→name map in the system is
  * the `sessions` row itself, and `session_sweep()` deletes it at expiry, while

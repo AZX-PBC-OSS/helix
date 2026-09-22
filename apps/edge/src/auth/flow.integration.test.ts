@@ -2,7 +2,14 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { LightMyRequestResponse } from "fastify";
-import { startDevIdp, TestHttpSession, type RunningDevIdp } from "@azx-pbc/dev-idp";
+import {
+  EDGE_CLIENT_ID,
+  findFixtureUser,
+  pairwiseSub,
+  startDevIdp,
+  TestHttpSession,
+  type RunningDevIdp,
+} from "@azx-pbc/dev-idp";
 import { buildApp } from "../app.js";
 import { OpenIdConnectClient } from "./oidc.js";
 import { PgSessionStore, hashSessionToken } from "./sessions.js";
@@ -176,10 +183,16 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
     expect(sessionCookie).toBeTruthy();
 
     // The session row is real: alice's identity + group snapshot, app-scoped.
+    // The oid is the directory object id — the invariant ADR-0048 exists for:
+    // what the edge stores must be what the portal will store as ownerId for
+    // the same login (pinned from the portal side in its own integration
+    // suite, against this same fixture constant).
+    const alice = findFixtureUser("alice@azx.dev")!;
     const session = await sessions.lookup(
       hashSessionToken(sessionCookie as string),
       internalApp.appId,
     );
+    expect(session?.user.oid).toBe(alice.oid);
     expect(session?.user.displayName).toBe("Alice Anders");
     expect(session?.user.groups).toEqual(["eng-team", "platform-admin"]);
     expect(
@@ -247,13 +260,22 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
 
     const me = await app.inject({ url: "/_api/me", headers: { ...host, cookie } });
     expect(me.statusCode).toBe(200);
-    expect(me.json()).toEqual({
+    const alice = findFixtureUser("alice@azx.dev")!;
+    const meBody = me.json();
+    expect(meBody).toEqual({
       user: {
-        id: "5f0d5d2a-9d3f-4b1e-8c5a-111111111111",
+        id: alice.oid,
         displayName: "Alice Anders",
         email: "alice@azx.dev",
       },
     });
+    // The honesty half of the same invariant: the edge client's pairwise sub
+    // is NOT the id apps see — dev-idp issues per-client subs like real Entra
+    // (ADR-0048 decision 7), and this is the assertion that can never pass by
+    // reading the wrong claim.
+    expect((meBody as { user: { id: string } }).user.id).not.toBe(
+      pairwiseSub(EDGE_CLIENT_ID, alice),
+    );
 
     // Assert the KEY SET, not just the fields we expect: `toEqual` above would
     // still pass if a future edit widened MeResponseSchema, and the projection
@@ -350,5 +372,101 @@ describe("the full Appendix A flow against real oidc-provider + Postgres", () =>
       headers: { ...AUTH_HOST, cookie: `${FLOW_COOKIE}=${flowCookie}` },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("a token without an oid claim refuses the login (ADR-0048 decision 2)", () => {
+  // A second, deliberately misconfigured issuer: dev-idp's omitOidClaim mode
+  // mints real tokens (real signature, real PKCE, real nonce) that simply
+  // lack the canonical principal id. The refusal under test is the edge's,
+  // not the issuer's — Entra cannot produce this token, which is exactly why
+  // absence is treated as misconfiguration and fails closed.
+  let bareIdp: RunningDevIdp;
+  let bareApp: FastifyInstance;
+  let bareOidc: OpenIdConnectClient;
+  let bareSessions: PgSessionStore;
+  const warnings: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+
+  beforeAll(async () => {
+    bareIdp = await startDevIdp({ edgeRedirectUris: [REDIRECT_URI], omitOidClaim: true });
+    const auth = testAuthConfig({
+      issuerUrl: bareIdp.issuer,
+      clientId: "helix-edge",
+      credential: { kind: "secret", clientSecret: "edge-dev-secret" },
+      allowInsecureIdp: true,
+    });
+    bareSessions = new PgSessionStore(TEST_DATABASE_URL, { max: 2 });
+    bareOidc = new OpenIdConnectClient(auth, REDIRECT_URI, {
+      info: () => {},
+      warn: (obj, msg) => warnings.push({ obj: obj as Record<string, unknown>, msg }),
+    });
+    await bareOidc.start();
+
+    const registry = new FakeRegistry([
+      registryEntry({
+        appId: internalApp.appId,
+        slug: internalApp.slug,
+        blobPrefix: internalApp.blobPrefix,
+      }),
+    ]);
+    const blob = new FakeBlobReader();
+    blob.set(`${internalApp.blobPrefix}index.html`, {
+      body: "<body>internal app</body>",
+      contentType: "text/html",
+    });
+    bareApp = buildApp({
+      config: testEdgeConfig({ auth, allowUnauthenticated: false }),
+      registry,
+      blob,
+      sessions: bareSessions,
+      oidc: bareOidc,
+    });
+    await bareApp.ready();
+  });
+
+  afterAll(async () => {
+    await bareApp.close();
+    bareOidc.stop();
+    await bareSessions.close();
+    await bareIdp.close();
+  });
+
+  it("fails closed at the callback — 400 page, no session row, one specific log line", async () => {
+    const start = await bareApp.inject({
+      url: `/start?app=${internalApp.slug}&rd=/`,
+      headers: AUTH_HOST,
+    });
+    expect(start.statusCode).toBe(302);
+    const flowCookie = cookieValue(start, FLOW_COOKIE);
+    const callbackUrl = await browseIdpLogin(start.headers.location as string, "alice@azx.dev");
+
+    const callbackRes = await bareApp.inject({
+      url: callbackUrl.pathname + callbackUrl.search,
+      headers: { ...AUTH_HOST, cookie: `${FLOW_COOKIE}=${flowCookie}` },
+    });
+    // The same opaque-failure page every invalid exchange renders…
+    expect(callbackRes.statusCode).toBe(400);
+    expect(String(callbackRes.body)).toContain("Sign-in could not be completed");
+    // …no handoff was minted, so there is nothing to redeem and no session
+    // cookie. (The flow cookie IS cleared — that happens before the exchange,
+    // on every failure, and is correct.)
+    expect(callbackRes.headers.location).toBeUndefined();
+    const setCookies = callbackRes.headers["set-cookie"];
+    const cookieLines = Array.isArray(setCookies) ? setCookies : setCookies ? [setCookies] : [];
+    expect(cookieLines.some((l) => l.startsWith(`${SESSION_COOKIE}=`))).toBe(false);
+
+    // …and the operator is told the real cause: a stable-event line, not the
+    // generic code-exchange failure (same diagnosability posture as the
+    // group-overage line). This is the line an alert would key on.
+    const missingOid = warnings.find((w) => w.obj.event === "auth.oidc_missing_oid");
+    expect(
+      missingOid,
+      `expected auth.oidc_missing_oid among: ${JSON.stringify(warnings)}`,
+    ).toBeTruthy();
+    expect(missingOid?.obj.sub).toBe(
+      pairwiseSub(EDGE_CLIENT_ID, findFixtureUser("alice@azx.dev")!),
+    );
+    // The refusal is the only complaint — no code_exchange_failed noise on top.
+    expect(warnings.filter((w) => w.obj.event === "auth.code_exchange_failed")).toHaveLength(0);
   });
 });
