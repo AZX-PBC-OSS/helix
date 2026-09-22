@@ -339,6 +339,15 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     if (target.protocol !== "https:" && target.protocol !== "http:") {
       return fail(reply, 400, "bad_target", "only http(s) targets are proxied");
     }
+    // Authority validation (bug-class ledger: a secret-bearing request must
+    // never ride a URL whose authority it doesn't own). `URL.origin` ignores
+    // userinfo, so the origin binding below cannot see `user:pass@` — and
+    // undici silently dials such a URL rather than refusing it. Credentials
+    // live in the connection store, never the target string; refuse instead of
+    // normalizing.
+    if (target.username !== "" || target.password !== "") {
+      return fail(reply, 400, "bad_target", "target must not carry userinfo credentials");
+    }
     // The instruction binds the origin the edge authorized — egress re-checks it.
     if (target.origin !== instruction.origin) {
       return fail(reply, 403, "forbidden", "target origin does not match the authorization");

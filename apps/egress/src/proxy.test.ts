@@ -272,6 +272,65 @@ describe("egress /proxy", () => {
     await app.close();
   });
 
+  /**
+   * Authority validation (bug-class ledger: secret-bearing requests to URLs
+   * without authority validation). `URL.origin` ignores userinfo, so the origin
+   * binding above cannot see `user:pass@` — and undici silently dials such a
+   * URL rather than refusing it, normalizing credentials into an outbound call
+   * they were never meant to carry. Credentials live in the connection store,
+   * never the target; refuse instead of normalizing.
+   */
+  it("refuses a target carrying userinfo credentials", async () => {
+    const app = makeApp(true);
+    const token = await mint({ origin });
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        // Same origin as the instruction — only the userinfo differs, which is
+        // exactly the component the origin check cannot see.
+        [TARGET_HEADER]: `${origin.replace("http://", "http://user:pass@")}/echo`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("bad_target");
+    await app.close();
+  });
+
+  /**
+   * Header injection (bug-class ledger): a connection secret is configured
+   * material, but a value carrying CR/LF must never be able to smuggle extra
+   * headers into the outbound request. undici refuses such header values, the
+   * throw is contained to the opaque 502, and nothing reaches the upstream.
+   */
+  it("contains a connection secret carrying control characters", async () => {
+    const app = makeApp(true, {
+      resolve: async () => ({
+        value: "leak\r\nX-Evil: injected",
+        injection: { kind: "header-bearer" } as const,
+      }),
+      close: async () => {},
+    });
+    const token = await mint({ origin, connection: "gh" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        [TARGET_HEADER]: `${origin}/echo`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.headers[OUTCOME_HEADER]).toBe("error");
+    // The echo upstream answers only if the poisoned request actually went out;
+    // the opaque 502 means it never did.
+    expect(res.payload).not.toContain("injected");
+    await app.close();
+  });
+
   it("rejects a forged/absent instruction", async () => {
     const app = makeApp(true);
     const missing = await app.inject({

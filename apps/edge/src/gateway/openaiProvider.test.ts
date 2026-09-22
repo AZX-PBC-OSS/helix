@@ -204,6 +204,64 @@ describe("mapOpenAiStream", () => {
       collect(mapOpenAiStream(Readable.from([Buffer.from(sse)]))),
     ).rejects.toBeInstanceOf(LlmProviderError);
   });
+
+  /**
+   * Bug-class ledger (sister project): numeric coercion. The usage block is read
+   * off the vendor SSE wire — a semi-trusted upstream (any OpenAI-compatible
+   * origin the operator wired) — so the counts must be coerced to Numbers at the
+   * boundary, not trusted by the `as` cast. A string count reaching the `+`
+   * aggregation in the OpenAI codec's `usageBlock` would concatenate
+   * (`"12" + 0 + 0` → `"120"`) instead of summing, writing garbage to the app's
+   * response and, through `costUsd`, to the ledger.
+   */
+  it("coerces numeric-string usage counts instead of concatenating them", async () => {
+    const sse =
+      chunk({ choices: [{ index: 0, delta: { content: "hi" }, finish_reason: "stop" }] }) +
+      chunk({ choices: [], usage: { prompt_tokens: "12", completion_tokens: "3" } }) +
+      "data: [DONE]\n\n";
+    const events = await collect(mapOpenAiStream(Readable.from([Buffer.from(sse)])));
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.usage).toEqual({
+      inputTokens: 12, // not "120" — coerced, then summed downstream
+      outputTokens: 3,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
+  });
+
+  /**
+   * Non-finite counts (a `1e999` overflows to Infinity through JSON.parse; a
+   * hostile upstream can also send NaN-bearing junk) must not be able to poison
+   * the cost accumulator — `Math.round(Infinity)` into the `costMicroUsd` ledger
+   * column fails the INSERT and loses the metering row. Fail closed, like a
+   * missing usage block does.
+   */
+  it("throws on non-finite or non-numeric usage counts", async () => {
+    for (const raw of [
+      // `1e999` overflows to Infinity inside JSON.parse — the only way a
+      // non-finite count can ride the wire (JSON.stringify nulls it).
+      '{"prompt_tokens": 1e999, "completion_tokens": 1}',
+      '{"prompt_tokens": "abc", "completion_tokens": 1}',
+    ]) {
+      const sse =
+        chunk({ choices: [{ index: 0, delta: { content: "hi" }, finish_reason: "stop" }] }) +
+        `data: ${raw}\n\n` +
+        "data: [DONE]\n\n";
+      await expect(
+        collect(mapOpenAiStream(Readable.from([Buffer.from(sse)]))),
+      ).rejects.toBeInstanceOf(LlmProviderError);
+    }
+  });
+
+  it("throws on a negative usage count", async () => {
+    const sse =
+      chunk({ choices: [{ index: 0, delta: { content: "hi" }, finish_reason: "stop" }] }) +
+      chunk({ choices: [], usage: { prompt_tokens: -5, completion_tokens: 1 } }) +
+      "data: [DONE]\n\n";
+    await expect(
+      collect(mapOpenAiStream(Readable.from([Buffer.from(sse)]))),
+    ).rejects.toBeInstanceOf(LlmProviderError);
+  });
 });
 
 describe("RoutingLlmProvider", () => {
