@@ -1,0 +1,15 @@
+-- ADR-0048 / review finding 3: the approvals separation-of-duty and withdraw
+-- guards compared `requestedBy` — the actor's display subject, which Entra
+-- issues pairwise per client id. A request filed from the CLI (client
+-- `azx-cli`) and decided from the SPA (client `azx-portal-web`) therefore
+-- belonged to two different "people" as far as the guard could tell: the
+-- self-approval check silently failed to fire, and a legitimate requester
+-- was 403'd at withdraw after switching clients.
+--
+-- This column is the identity half, written at request time from the actor's
+-- `oid` and compared by the guards; `requestedBy`/`decidedBy` stay the
+-- display half (rendered, audited, never compared). Nullable because rows
+-- predating the re-base carry no oid — null fails closed in every guard that
+-- reads it, and the cutover runbook's step 3 rewrites pending rows from the
+-- same email→oid pairs as `apps.ownerId`, which unfreezes them.
+ALTER TABLE "approval_requests" ADD COLUMN "requestedOid" TEXT;

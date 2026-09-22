@@ -219,8 +219,19 @@ model ApprovalRequest {
   /// Effective values of the touched areas at request time (conflict detect + diff render).
   baseSnapshot Json
 
+  /// The requester's **identity half** — their Entra `oid` (ADR-0048). What
+  /// the separation-of-duty guards (approve/deny/needs_changes) and the
+  /// withdraw gate compare; `actor.oid` at request time. Nullable only on
+  /// rows predating the re-base — null fails closed in every guard that
+  /// reads it, and the cutover runbook rewrites pending rows from the same
+  /// email→oid pairs as `apps.ownerId`.
+  requestedOid String?
+  /// The requester's **display half** (`actor.sub`, usually their email) —
+  /// rendered in the queue, stored on the audit event, never compared.
   requestedBy  String
   reason       String?
+  /// The deciding admin's display half, when decided — display/audit only,
+  /// nothing compares it.
   decidedBy    String?
   /// Required on deny / needs_changes.
   decisionNote String?

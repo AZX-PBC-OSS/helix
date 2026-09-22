@@ -292,6 +292,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         appId: row.id,
         mutate: () => requested,
         actor: actor.sub,
+        actorOid: actor.oid,
         reason,
       });
     },
@@ -323,6 +324,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           externalOrigins: [...effective.externalOrigins, origin],
         }),
         actor: actor.sub,
+        actorOid: actor.oid,
         reason,
       });
     },
@@ -417,6 +419,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
             deltas: [change.delta],
             risk: change.risk,
             baseSnapshot,
+            requestedOid: actor.oid,
             requestedBy: actor.sub,
             reason,
           });
