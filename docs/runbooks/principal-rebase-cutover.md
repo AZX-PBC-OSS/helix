@@ -62,14 +62,29 @@ ADR-0048 change (edge + portal ship together).
 
 ## Steps
 
-### 1. Deploy
+### 1. Deploy — migrate job first, then the app revision
 
-Deploy the build containing the change (edge + portal + egress as usual —
-egress is unchanged but ships together). Owners who log in before step 3 will
-403 on their own apps; that is the fail-closed posture working, and step 3
-clears it.
+Migrations do not run on app boot: they land via the `<namePrefix>-migrate`
+Container Apps Job (infra/azure/README.md, §"Every migration"). **Run the
+migrate job before activating the new app revision** — the order is safe in
+that direction only: the new columns are additive, so old code + new schema
+is fine, but new code + old schema breaks the approvals surface (the new
+portal selects `requestedOid` on every approval query). The job applies both
+new migrations — the `ownerEmail` transitional backfill and the
+`approval_requests.requestedOid` column.
 
-### 2. Let sessions drain
+```bash
+az containerapp job update -g <rg> -n <namePrefix>-migrate --image <registry>/helix-portal:<tag>
+az containerapp job start  -g <rg> -n <namePrefix>-migrate
+az containerapp job execution list -g <rg> -n <namePrefix>-migrate \
+  --query "[0].{name:name,status:properties.status,start:properties.startTime}"
+```
+
+Then deploy the new revision (edge + portal + egress as usual — egress is
+unchanged but ships together). Owners who log in before step 3 will 403 on
+their own apps; that is the fail-closed posture working, and step 3 clears it.
+
+### 2. Let sessions drain — optional on a zero-row install
 
 Sessions carry an 8 h TTL and the sweeper clears rows one day past expiry, so
 within ~32 h of the deploy no live session holds an old-space `userOid` — and
@@ -79,6 +94,14 @@ install you can shorten this to zero with the admin Sessions screen (or
 pre-pilot that is a handful of people. **If the preflight inventory showed any
 user-scoped `app_data` rows, this step is not optional** — see the preflight
 note above.
+
+Scope note: these are **app-user** sessions (the edge's). The portal itself
+has no sessions to clear — it is stateless bearer tokens, and a CLI/SPA token
+keeps working across the whole cutover because Entra access tokens have
+carried `oid` all along; the new verifier simply started reading it. Clearing
+sessions buys tidiness (everyone onto oid-space rows promptly, no old-space
+metering attribution); skipping it costs nothing on an install with zero
+user-scoped rows. This step is independent of step 3 — order doesn't matter.
 
 ### 3. Re-base the owner/requester ids — one UPDATE per pair
 
@@ -136,6 +159,23 @@ minutes. What works: base64 the JS and run it as
 serialized with a pause between; `pg` is reachable only via its
 `/app/node_modules/.pnpm/pg@*/node_modules/pg` path. The working runner lives
 in the ops repo — use it rather than re-deriving the incantation.
+
+**Budget for the throttle.** Step 3 is two UPDATEs per email→oid pair plus one
+dev-token revoke — thirteen calls for the reference install's six owners,
+which at ~5 calls / 10 min is half an hour of serial exec. Batch instead: the
+pairs are a few hundred bytes of JSON, well inside the ~2 KB URL cap, so the
+whole re-base for one install can ride ONE base64'd script that loops over
+the pairs and reports per-statement row counts. Confirm the ops-repo runner
+does that before the day; if it doesn't, extend it — do not hand-run thirteen
+throttled calls.
+
+**One-way doors.** After `UPDATE apps SET "ownerId" = '<oid>' WHERE "ownerId"
+= '<email>'` runs, the email matches zero rows: a WRONG oid for an owner
+leaves them locked out (visibly — 403, empty Mine) until corrected with
+`UPDATE apps SET "ownerId" = '<right>' WHERE "ownerId" = '<wrong>'`. The
+display email survives in `ownerEmail` regardless, so the UI stays readable
+and the mapping is recoverable — but double-check the pairs against the
+ops-repo list before running.
 
 ## Local dev databases
 
