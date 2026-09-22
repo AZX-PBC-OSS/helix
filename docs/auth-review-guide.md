@@ -421,12 +421,13 @@ confirm:
 - `aud` is checked against a fixed value (`PORTAL_OIDC_AUDIENCE`) — a token minted for
   another audience by the same issuer must be rejected.
 - `authenticate`/`requireActor` keep their signatures, so route code didn't change; the actor's
-  `sub` prefers email for human-readable audit attribution, and — since ADR-0048 — `oid` (the
-  Entra `oid` claim) is the identity half: required on every actor, and a correctly signed
-  token **without** it yields no actor at all (401, plus a specific `auth.token_missing_oid`
-  warn) rather than a silently wrong one. The edge holds the mirror-image refusal at login
-  (`auth.oidc_missing_oid`, `apps/edge/src/auth/oidc.ts`). No fallback exists in either plane,
-  by decision.
+  `sub` prefers email for human-readable audit attribution, and — since ADR-0048 — the
+  configured principal claim (`oid` by default) is the identity half: required on every
+  actor, and a correctly signed token **without** a usable value yields no actor at all
+  (401, plus a specific `auth.token_missing_principal` warn on the request logger, latched
+  once per verifier) rather than a silently wrong one. The edge holds the mirror-image
+  refusal at login (`auth.oidc_missing_principal`, `apps/edge/src/auth/oidc.ts`). No
+  fallback exists in either plane, by decision.
 - **Admin authorization is real for approvals.** `requireAdmin` checks the admin group claim
   (`PORTAL_ADMIN_GROUP_ID`); `PORTAL_ALLOW_SELF_APPROVE` is a dev escape hatch refused in
   prod. The approval write-gate (elevated capability/visibility changes) depends on this —
