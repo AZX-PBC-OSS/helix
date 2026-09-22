@@ -215,13 +215,47 @@ describe("createOidcVerifier", () => {
       expect(await loud.verify(token)).toBeNull();
     }
 
-    expect(warnings).toHaveLength(6);
-    for (const w of warnings) {
-      expect(w.obj.event).toBe("auth.token_missing_principal");
-      expect(w.obj.claim).toBe("oid");
-      expect(w.obj.sub).toBe("5f0d5d2a-1111-4abc-8def-000000000001");
-    }
+    // Latched (review finding 5): the condition is static issuer
+    // misconfiguration, so exactly ONE line names the cause — the 401s are
+    // the per-request signal, and an unthrottled line would emit one warn
+    // per API call for as long as the misconfiguration stands.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.obj.event).toBe("auth.token_missing_principal");
+    expect(warnings[0]?.obj.claim).toBe("oid");
+    expect(warnings[0]?.obj.sub).toBe("5f0d5d2a-1111-4abc-8def-000000000001");
     expect(warnings[0]?.msg).toContain("no usable oid claim");
+  });
+
+  /**
+   * The refusal lands on the REQUEST logger when one is supplied (review
+   * finding 5): `authenticate` passes `req.log`, so the line carries the
+   * `reqId` every other auth denial in the request path already carries —
+   * the construction-time `log` option is the fallback, not the channel.
+   */
+  it("logs the refusal on the request logger, latched, not the construction fallback", async () => {
+    const fallback: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+    const requestLog: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+    const v = createOidcVerifier({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+      allowInsecure: true,
+      log: { warn: (obj, msg) => fallback.push({ obj: obj as Record<string, unknown>, msg }) },
+    });
+
+    expect(
+      await v.verify(await mint({ oid: null }), {
+        log: { warn: (obj, msg) => requestLog.push({ obj: obj as Record<string, unknown>, msg }) },
+      }),
+    ).toBeNull();
+    expect(requestLog).toHaveLength(1);
+    expect(requestLog[0]?.obj.event).toBe("auth.token_missing_principal");
+    expect(fallback).toHaveLength(0);
+
+    // The latch held: a second refusal stays silent on both channels.
+    expect(await v.verify(await mint({ oid: null }))).toBeNull();
+    expect(requestLog).toHaveLength(1);
+    expect(fallback).toHaveLength(0);
   });
 
   /**

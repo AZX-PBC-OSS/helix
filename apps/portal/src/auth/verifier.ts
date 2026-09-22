@@ -55,8 +55,19 @@ export interface Actor {
   groups: string[];
 }
 
+/**
+ * Request-scoped context for a verification. `log` is the **request** logger
+ * (`req.log`), so a refusal line lands with the `reqId` every other auth
+ * denial in the request path already carries (docs/design/logging.md makes
+ * `reqId` the correlation key) — the construction-time `log` option below is
+ * the fallback, not the preferred channel.
+ */
+export interface VerifyContext {
+  log?: { warn(obj: object, msg: string): void };
+}
+
 export interface TokenVerifier {
-  verify(token: string): Promise<Actor | null>;
+  verify(token: string, ctx?: VerifyContext): Promise<Actor | null>;
 }
 
 export interface OidcVerifierOptions {
@@ -75,9 +86,12 @@ export interface OidcVerifierOptions {
   /** Injectable key resolver (tests); defaults to the issuer's remote JWKS. */
   getKey?: JWTVerifyGetKey;
   /**
-   * Where the missing-principal-claim refusal is reported (ADR-0048 decision
-   * 2 — the diagnosability posture of the edge's `auth.oidc_missing_principal`
-   * line). Optional so tests and construction stay quiet by default.
+   * Where the missing-principal-claim refusal is reported when no request
+   * logger was supplied (ADR-0048 decision 2 — the diagnosability posture of
+   * the edge's `auth.oidc_missing_principal` line). The request path passes
+   * `req.log` via {@link VerifyContext}; this is the fallback for callers
+   * with no request in hand. Optional so tests and construction stay quiet
+   * by default.
    */
   log?: { warn(obj: object, msg: string): void };
   /**
@@ -177,8 +191,15 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
     return getKey;
   }
 
+  // One refusal line per verifier instance (review finding 5): the condition
+  // is static issuer misconfiguration, not a per-caller event — a token
+  // without the principal claim will lack it on every request — so an
+  // unthrottled line would emit one warn per API call indefinitely. The 401s
+  // are the per-request signal; this line is the one that names the cause.
+  let warnedMissingPrincipal = false;
+
   return {
-    async verify(token: string): Promise<Actor | null> {
+    async verify(token: string, ctx?: VerifyContext): Promise<Actor | null> {
       // Three dot-separated parts or it isn't a JWT — lets the chain fall
       // through to the dev-token verifier without a JWKS round-trip.
       if (token.split(".").length !== 3) return null;
@@ -207,11 +228,15 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
           // line, so an operator is pointed at the claim and not at a
           // signature hunt; the same diagnosability posture as the edge's
           // login refusal.
-          opts.log?.warn(
-            { event: "auth.token_missing_principal", sub, claim: principalClaim },
-            `access token has no usable ${principalClaim} claim — refusing it: the ` +
-              "canonical principal id (ADR-0048) is not optional and has no fallback",
-          );
+          const log = ctx?.log ?? opts.log;
+          if (log && !warnedMissingPrincipal) {
+            warnedMissingPrincipal = true;
+            log.warn(
+              { event: "auth.token_missing_principal", sub, claim: principalClaim },
+              `access token has no usable ${principalClaim} claim — refusing it: the ` +
+                "canonical principal id (ADR-0048) is not optional and has no fallback",
+            );
+          }
           return null;
         }
         const email = claimString(payload.email);
@@ -247,7 +272,11 @@ export function createDevTokenVerifier(
   }
   const expectedBuf = Buffer.from(expected);
   return {
-    async verify(token: string): Promise<Actor | null> {
+    async verify(token: string, ctx?: VerifyContext): Promise<Actor | null> {
+      // A static token has no issuer to complain about, so there is nothing
+      // to log — but the signature is the chain's, so `authenticate` passes
+      // the request context uniformly.
+      void ctx;
       // Constant-time compare; the length check leaks only the length.
       const tokenBuf = Buffer.from(token);
       if (tokenBuf.length !== expectedBuf.length || !timingSafeEqual(tokenBuf, expectedBuf)) {

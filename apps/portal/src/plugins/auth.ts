@@ -81,9 +81,10 @@ function verifiersFromEnv(log: { warn(obj: object, msg: string): void }): TokenV
         // The verifier requires https unless this is set; it refuses the
         // flag in production. Dev needs it: the local IdP is plain http.
         allowInsecure: process.env.PORTAL_OIDC_ALLOW_INSECURE === "true",
-        // The one denial this verifier can log (ADR-0048 decision 2) rides
-        // the app logger so an operator sees it where every other auth
-        // complaint already lands.
+        // Construction-time fallback logger for the one denial this verifier
+        // can log (ADR-0048 decision 2) — the request path passes `req.log`
+        // per call (see `authenticate`), which is where that line is meant to
+        // land; this covers callers with no request in hand.
         log,
       }),
     );
@@ -155,7 +156,10 @@ export async function authenticate(req: FastifyRequest): Promise<void> {
     throw new AppError("unauthorized", "missing bearer token");
   }
   for (const verifier of req.server.tokenVerifiers) {
-    const actor = await verifier.verify(token);
+    // The request logger rides along (ADR-0048 decision 2, review finding 5):
+    // a refusal line lands with the reqId every other auth denial here
+    // already carries, instead of on the root logger with no correlation key.
+    const actor = await verifier.verify(token, { log: req.log });
     if (actor) {
       req.actor = actor;
       return;
