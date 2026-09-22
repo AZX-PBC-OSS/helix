@@ -62,12 +62,22 @@ export interface TokenVerifier {
 export interface OidcVerifierOptions {
   issuer: string;
   audience: string;
+  /**
+   * The access-token claim carrying the canonical principal id (ADR-0048, as
+   * amended): `oid` by default, configurable for issuers whose stable id
+   * lives elsewhere — most non-Entra issuers' `sub` is already stable across
+   * clients, so it is the usual non-Entra value, and the caller
+   * (`verifiersFromEnv`) gates it behind an explicit flag. **Must equal the
+   * edge's `EDGE_OIDC_PRINCIPAL_CLAIM`** — the cross-plane correlation
+   * assumes both planes read the same claim.
+   */
+  principalClaim?: string;
   /** Injectable key resolver (tests); defaults to the issuer's remote JWKS. */
   getKey?: JWTVerifyGetKey;
   /**
-   * Where the missing-`oid` refusal is reported (ADR-0048 decision 2 — the
-   * diagnosability posture of the edge's `auth.oidc_missing_oid` line).
-   * Optional so tests and construction stay quiet by default.
+   * Where the missing-principal-claim refusal is reported (ADR-0048 decision
+   * 2 — the diagnosability posture of the edge's `auth.oidc_missing_principal`
+   * line). Optional so tests and construction stay quiet by default.
    */
   log?: { warn(obj: object, msg: string): void };
   /**
@@ -79,6 +89,20 @@ export interface OidcVerifierOptions {
 
 function claimString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The principal claim as a bounded id: a string, trimmed, 1..64 characters
+ * (an Entra `oid` is a 36-char GUID; no legitimate stable id is longer).
+ * Whitespace-only and oversized values are garbage rather than absence, but
+ * get the same fail-closed treatment — the value flows into `Actor.oid` and
+ * from there into `App.ownerId`, which want a bounded id. Mirrors the edge's
+ * `principalIdClaim` (`apps/edge/src/auth/oidc.ts`).
+ */
+function principalClaimString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length >= 1 && trimmed.length <= 64 ? trimmed : undefined;
 }
 
 /** Read a string-array claim (`groups`/`roles`); tolerant of absence/garbage. */
@@ -171,20 +195,22 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
         if (typeof payload.exp !== "number" || typeof payload.iat !== "number") return null;
         const sub = claimString(payload.sub);
         if (!sub) return null;
-        const oid = claimString(payload.oid);
+        const principalClaim = opts.principalClaim ?? "oid";
+        const oid = principalClaimString(payload[principalClaim]);
         if (!oid) {
-          // ADR-0048 decision 2: the `oid` claim is the canonical principal
-          // id — hardcoded, no fallback. Entra emits it unconditionally in
-          // access tokens, so absence is a misconfigured issuer, and the
-          // token cannot produce an actor (401, not a silently wrong one —
-          // falling back to `sub` would reintroduce the exact pairwise bug
-          // the re-base exists to kill). One specific line, so an operator
-          // is pointed at the claim and not at a signature hunt; the same
-          // diagnosability posture as the edge's login refusal.
+          // ADR-0048 decision 2: the configured principal claim is the
+          // canonical principal id — no fallback. Entra emits `oid`
+          // unconditionally in access tokens, so absence is a misconfigured
+          // issuer, and the token cannot produce an actor (401, not a
+          // silently wrong one — falling back to `sub` would reintroduce the
+          // exact pairwise bug the re-base exists to kill). One specific
+          // line, so an operator is pointed at the claim and not at a
+          // signature hunt; the same diagnosability posture as the edge's
+          // login refusal.
           opts.log?.warn(
-            { event: "auth.token_missing_oid", sub },
-            "access token has no oid claim — refusing it: the canonical principal id " +
-              "(ADR-0048) is not optional and has no fallback",
+            { event: "auth.token_missing_principal", sub, claim: principalClaim },
+            `access token has no usable ${principalClaim} claim — refusing it: the ` +
+              "canonical principal id (ADR-0048) is not optional and has no fallback",
           );
           return null;
         }

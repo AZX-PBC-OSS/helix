@@ -44,7 +44,7 @@ Every Azure dependency must work in three modes: **local dev**, **integration te
 | Blob Storage | **Azurite** (official emulator, same SDK) | Blob Storage | Same Azure SDK both ways; thin `BlobStore` wrapper for testability |
 | Postgres | Docker container | Azure Database for PostgreSQL | Same engine; no abstraction needed |
 | Key Vault | `SecretStore` interface → env/file impl | Key Vault impl | No emulator exists; interface + dual implementation |
-| Entra ID | Local OIDC issuer (`oidc-provider` npm) | Real Entra app registration (single-tenant; authz via **App Roles** → the `roles` claim) — see the [Entra runbook](runbooks/entra-app-registration.md) | OIDC is a standard; the edge speaks generic OIDC (which we want anyway for IdP-agnostic customers) |
+| Entra ID | Local OIDC issuer (`oidc-provider` npm) | Real Entra app registration (single-tenant; authz via **App Roles** → the `roles` claim) — see the [Entra runbook](runbooks/entra-app-registration.md) | OIDC is a standard, and the edge speaks standard OIDC — but the canonical principal id is one claim (ADR-0048, as amended): Entra's `oid` by default, `EDGE/PORTAL_OIDC_PRINCIPAL_CLAIM` for issuers whose stable id is their own `sub` (Keycloak, Okta, dex, Google), so IdP-agnostic customers remain a config path, not a rewrite |
 | LLM APIs | `LlmProvider` interface → fake/echo provider | Azure OpenAI / Anthropic impls | Interface + dual implementation; fake provider streams canned tokens for testing quota/stream handling |
 
 Config selects implementations per environment. CI runs against local/emulated; a separate integration suite runs against a real Azure dev resource group.

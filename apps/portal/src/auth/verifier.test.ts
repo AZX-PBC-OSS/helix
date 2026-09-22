@@ -185,13 +185,13 @@ describe("createOidcVerifier", () => {
 
   /**
    * ADR-0048 decision 2, the portal half: the `oid` claim is the canonical
-   * principal id — hardcoded, no fallback. A token without it cannot produce
-   * an actor: falling back to the pairwise `sub` would mint a silently wrong
-   * owner id that can never match the edge session's, which is the exact bug
-   * the re-base exists to kill. Entra emits `oid` unconditionally, so absence
-   * is a misconfigured issuer — and the refusal says so, with its own stable
-   * event name, so an operator is pointed at the claim rather than a
-   * signature hunt.
+   * principal id — the configured claim, no fallback. A token without it
+   * cannot produce an actor: falling back to the pairwise `sub` would mint a
+   * silently wrong owner id that can never match the edge session's, which is
+   * the exact bug the re-base exists to kill. Entra emits `oid`
+   * unconditionally, so absence is a misconfigured issuer — and the refusal
+   * says so, with its own stable event name, so an operator is pointed at the
+   * claim rather than a signature hunt.
    */
   it("rejects a token without an oid claim — no fallback, one specific log line", async () => {
     const warnings: Array<{ obj: Record<string, unknown>; msg: string }> = [];
@@ -206,18 +206,56 @@ describe("createOidcVerifier", () => {
     });
 
     expect(await loud.verify(await mint({ oid: null }))).toBeNull();
-    // Absent, empty, and non-string are all "no oid claim".
-    for (const bad of [null, "", 42]) {
+    // Absent, empty, non-string, whitespace-only and oversized are all "no
+    // usable claim" — garbage gets the same fail-closed treatment as absence
+    // (the value flows into Actor.oid and App.ownerId, which want a bounded
+    // id; review finding 4).
+    for (const bad of [null, "", 42, "   ", "x".repeat(65)]) {
       const token = bad === null ? await mint({ oid: null }) : await mint({ claims: { oid: bad } });
       expect(await loud.verify(token)).toBeNull();
     }
 
-    expect(warnings).toHaveLength(4);
+    expect(warnings).toHaveLength(6);
     for (const w of warnings) {
-      expect(w.obj.event).toBe("auth.token_missing_oid");
+      expect(w.obj.event).toBe("auth.token_missing_principal");
+      expect(w.obj.claim).toBe("oid");
       expect(w.obj.sub).toBe("5f0d5d2a-1111-4abc-8def-000000000001");
     }
-    expect(warnings[0]?.msg).toContain("no oid claim");
+    expect(warnings[0]?.msg).toContain("no usable oid claim");
+  });
+
+  /**
+   * The seam (ADR-0048 decision 2, as amended): on a non-Entra issuer the
+   * stable, client-independent id usually IS the `sub` (pairwise `sub` is
+   * Entra's deviation from the OIDC norm, not the norm), and the claim name is
+   * configurable for exactly that. `verifiersFromEnv` gates `sub` behind an
+   * explicit flag; these cases exercise the verifier once the choice is made.
+   */
+  it("reads the principal id from the configured claim — including a non-Entra sub", async () => {
+    const keycloak = createOidcVerifier({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      principalClaim: "sub",
+      getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+      allowInsecure: true,
+    });
+    const actor = await keycloak.verify(await mint({ oid: null, claims: { email: "a@b.dev" } }));
+    expect(actor?.oid).toBe("5f0d5d2a-1111-4abc-8def-000000000001");
+
+    const custom = createOidcVerifier({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      principalClaim: "uid",
+      getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+      allowInsecure: true,
+    });
+    const customActor = await custom.verify(await mint({ claims: { uid: "issuer-user-id" } }));
+    expect(customActor?.oid).toBe("issuer-user-id");
+
+    // Whatever the claim, it is trimmed and bounded like the default.
+    const padded = await custom.verify(await mint({ claims: { uid: "  padded  " } }));
+    expect(padded?.oid).toBe("padded");
+    expect(await custom.verify(await mint({ claims: { uid: "x".repeat(65) } }))).toBeNull();
   });
 
   it("rejects HS256 alg confusion (symmetric key = the public JWKS bytes)", async () => {

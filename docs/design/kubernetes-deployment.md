@@ -12,7 +12,7 @@
 The codebase is unusually well-positioned for this: every Azure dependency already has a proven seam, because local development substitutes each one. The work is mostly _around_ the runtimes, not in them.
 
 - **The three runtimes are stateless, env-configured containers.** Edge and egress carry zero Azure SDK dependencies (hand-rolled REST over `fetch`/undici); portal alone uses `@azure/identity` + `@azure/storage-blob`. Images are already published to public GHCR and pulled anonymously.
-- **OIDC is a generic issuer swap.** `EDGE_OIDC_*` / `PORTAL_OIDC_*` point at any compliant issuer; `apps/dev-idp` proves the swap is env-only. Works with Entra, Keycloak, dex, anything.
+- **OIDC is a generic issuer swap, with one claimed name.** `EDGE_OIDC_*` / `PORTAL_OIDC_*` point at any compliant issuer; `apps/dev-idp` proves the swap is env-only. One caveat (ADR-0048, as amended): the canonical principal id is read from one claim — Entra's `oid` by default, `EDGE_OIDC_PRINCIPAL_CLAIM`/`PORTAL_OIDC_PRINCIPAL_CLAIM` for an issuer whose stable id lives elsewhere (Keycloak/Okta/dex/Google: their own `sub`, gated behind an explicit allow-flag). **Both services must be set to the same claim.**
 - **Telemetry is OTLP-only** (ADR-0037). Nothing App Insights-specific exists in `apps/` or `packages/`; that coupling lives entirely in Bicep. Dev already runs Jaeger.
 - **Secret custody is a two-implementation interface** (`packages/secret-store`: Key Vault or AES-GCM envelope behind `createSecretStore`). A third implementation is a known-size change.
 - **TLS is already ingress-terminated in prod.** The edge runs plain HTTP behind the ACA ingress today — exactly the k8s shape. `EDGE_PUBLIC_PORT=443` exists for this.

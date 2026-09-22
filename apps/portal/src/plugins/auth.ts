@@ -53,17 +53,37 @@ function verifiersFromEnv(log: { warn(obj: object, msg: string): void }): TokenV
   const chain: TokenVerifier[] = [];
   const issuer = process.env.PORTAL_OIDC_ISSUER;
   const audience = process.env.PORTAL_OIDC_AUDIENCE;
+  // The principal-claim seam (ADR-0048 decision 2, as amended): `oid` by
+  // default; `sub` — stable on most issuers, pairwise per client on Entra —
+  // only behind an explicit flag, so the pairwise bug cannot come back
+  // through a typo. The edge holds the mirror-image rule on
+  // EDGE_OIDC_PRINCIPAL_CLAIM; both must be set to the same claim.
+  const principalClaim = process.env.PORTAL_OIDC_PRINCIPAL_CLAIM ?? "oid";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(principalClaim)) {
+    throw new Error(
+      `PORTAL_OIDC_PRINCIPAL_CLAIM must be 1-64 chars of [A-Za-z0-9_-] (got ${JSON.stringify(principalClaim)})`,
+    );
+  }
+  if (principalClaim === "sub" && process.env.PORTAL_OIDC_ALLOW_SUB_PRINCIPAL !== "true") {
+    throw new Error(
+      "PORTAL_OIDC_PRINCIPAL_CLAIM=sub is refused by default: Entra's sub is pairwise per " +
+        "client id — the exact bug ADR-0048 exists to kill. Set PORTAL_OIDC_ALLOW_SUB_PRINCIPAL=" +
+        "true only if this issuer's sub is stable across clients (Keycloak, Okta, dex, " +
+        "Google — not Entra).",
+    );
+  }
   if (issuer && audience) {
     chain.push(
       createOidcVerifier({
         issuer: issuer.replace(/\/+$/, ""),
         audience,
+        principalClaim,
         // The verifier requires https unless this is set; it refuses the
         // flag in production. Dev needs it: the local IdP is plain http.
         allowInsecure: process.env.PORTAL_OIDC_ALLOW_INSECURE === "true",
         // The one denial this verifier can log (ADR-0048 decision 2) rides
         // the app logger so an operator sees it where every other auth
-        // complain already lands.
+        // complaint already lands.
         log,
       }),
     );

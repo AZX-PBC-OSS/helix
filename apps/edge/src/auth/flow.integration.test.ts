@@ -458,10 +458,10 @@ describe("a token without an oid claim refuses the login (ADR-0048 decision 2)",
     // …and the operator is told the real cause: a stable-event line, not the
     // generic code-exchange failure (same diagnosability posture as the
     // group-overage line). This is the line an alert would key on.
-    const missingOid = warnings.find((w) => w.obj.event === "auth.oidc_missing_oid");
+    const missingOid = warnings.find((w) => w.obj.event === "auth.oidc_missing_principal");
     expect(
       missingOid,
-      `expected auth.oidc_missing_oid among: ${JSON.stringify(warnings)}`,
+      `expected auth.oidc_missing_principal among: ${JSON.stringify(warnings)}`,
     ).toBeTruthy();
     expect(missingOid?.obj.sub).toBe(
       pairwiseSub(EDGE_CLIENT_ID, findFixtureUser("alice@azx.dev")!),

@@ -154,3 +154,48 @@ Six further findings, none of which change the decision:
 6. **`sessions` shows 4 distinct users per install** — nowhere near the "large active user base" that would justify the dual-read RLS policy edit, which stays unengaged as decision 6 intended.
 
 **Operational note for whoever runs the queries next.** The suggested `az containerapp exec` one-liner above does not work as written. The exec API **splits `--command` on whitespace** (quotes are passed through literally, not used for grouping) and the whole command rides in the websocket URL's query string, which caps around 2 KB; and the endpoint **throttles at roughly five calls per ten minutes**, answering the sixth with a websocket handshake `429` and `retry-after: 600`. What works: base64 the JS (so the command line contains no whitespace) and run it as `node -e eval(Buffer.from('…','base64').toString())`, one statement per call, serialized with a pause between. `pg` is not resolvable from `/app` either — it lives in the pnpm store, so require it by its `/app/node_modules/.pnpm/pg@*/node_modules/pg` path. The working runner is in the ops repo.
+
+## Amendment, 2026-09-22 — decision 2's claim name becomes a guarded seam
+
+The review of the implementation surfaced what decision 2's "no config var"
+wording never stated: **`oid` is a Microsoft identity platform claim, not an
+OIDC standard one.** OIDC Core defines only `sub` as the mandatory subject;
+`pairwise` subject types — the reason Entra's `sub` cannot be the join key —
+are a standard *feature*, defined precisely so a shared IdP (which
+`login.microsoftonline.com` is, at planetary scale) does not become a
+cross-relying-party tracking database. And the standard deliberately has no
+claim for "the issuer-internal stable id exposed cross-client", because that
+is exactly what pairwise `sub` exists to withhold — so it lives in vendor
+extensions, and Microsoft's is `oid`. On Keycloak, Okta, dex or Google, the
+stable, client-independent id **is the `sub` itself**. Hardcoding the name
+`oid` therefore made Entra a hard dependency of every login while three
+documents (the kubernetes deployment design, the project plan's IdP-agnostic
+row, the public docs site) still promised generic issuers — a promise-vs-code
+contradiction rather than a live outage (both installs are Entra), found by
+the review panel and fixed by this amendment.
+
+Decision 2 is amended: the **invariant** stands — the canonical principal id
+is one claim, read at source in both planes, with **no fallback to whatever
+else is present** — but the claim **name** is a seam:
+
+- `EDGE_OIDC_PRINCIPAL_CLAIM` / `PORTAL_OIDC_PRINCIPAL_CLAIM`, default `oid`
+  — the same concession `EDGE_OIDC_GROUPS_CLAIM` already makes, because claim
+  names vary by issuer. **The two must be set to the same claim on any
+  install that overrides them**: the cross-plane correlation this ADR pins
+  assumes both planes read the same value.
+- `sub` — the one name that is pairwise on Entra and correct almost
+  everywhere else — is refused at boot unless `EDGE_OIDC_ALLOW_SUB_PRINCIPAL`
+  / `PORTAL_OIDC_ALLOW_SUB_PRINCIPAL` is explicitly set. Reintroducing the
+  pairwise bug must be a deliberate, greppable act, not a typo.
+- The configured claim's value is trimmed and bounded (1..64 chars; an Entra
+  `oid` is a 36-char GUID and no legitimate stable id is longer). Absence and
+  garbage alike fail closed, with the same refusal line — the events are
+  `auth.oidc_missing_principal` (edge login) and `auth.token_missing_principal`
+  (portal verify), and each line names the configured claim.
+
+What the original decision got right and stays: absence fails closed, there
+is no automatic fallback, and the display half never becomes the identity.
+What it got wrong: "no claim configuration, scope, or consent is needed to
+receive it" is true of Entra and silent about everyone else — the property
+this ADR actually needed (stable, client-independent) is the OIDC norm;
+pairwise `sub` is the deviation.

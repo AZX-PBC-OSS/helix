@@ -188,17 +188,32 @@ export function groupsClaimOverflowed(
 }
 
 /**
+ * The principal claim as a bounded id: a string, trimmed, 1..64 characters.
+ * A directory `oid` is a 36-char GUID, and no legitimate stable id is longer;
+ * whitespace-only or oversized values are garbage rather than absence, but
+ * they get the same fail-closed treatment — this is the adjacent case to the
+ * missing-claim refusal below, and the claim value flows into the
+ * `app.user_oid` GUC, the stored `sessions.userOid`, and the `/_api/me`
+ * displayName rung, none of which want an unbounded string.
+ */
+function principalIdClaim(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length >= 1 && trimmed.length <= 64 ? trimmed : null;
+}
+
+/**
  * Verified ID-token claims → an {@link OidcIdentity}, or null when the token
  * cannot be one of ours.
  *
- * The `oid` claim is the canonical principal id (ADR-0048 decision 2): the
- * claim name is hardcoded, there is **no config var and no fallback** — a
- * fallback to `sub` would reintroduce exactly the pairwise bug the re-base
- * exists to kill, in the exact green-locally shape, and a config var would
- * let a deployment point the canonical id at something mutable or pairwise.
- * Entra emits `oid` unconditionally in ID tokens, so absence is a
- * misconfiguration, and it fails closed at the login. No detail of the token
- * leaves this module's callers — the refusal is logged inside `exchangeCode`.
+ * The configured principal claim (ADR-0048 decision 2, as amended — `oid` by
+ * default, `EDGE_OIDC_PRINCIPAL_CLAIM` for issuers whose stable id lives
+ * elsewhere, most commonly their non-pairwise `sub`) is the canonical
+ * principal id. There is **no fallback**: absence or garbage fails closed at
+ * the login, because a fallback to whatever-else-is-present is how the
+ * pairwise bug returns wearing a green-locally shape. The value is trimmed
+ * and bounded ({@link principalIdClaim}). No detail of the token leaves this
+ * module's callers — the refusal is logged inside `exchangeCode`.
  *
  * Extracted and exported only so the refusal can be tested without standing
  * up a token exchange (the {@link groupsClaimOverflowed} pattern).
@@ -206,8 +221,10 @@ export function groupsClaimOverflowed(
 export function identityFromClaims(
   claims: Record<string, unknown>,
   groupsClaim: string,
+  principalClaim = "oid",
 ): OidcIdentity | null {
-  if (typeof claims.oid !== "string" || claims.oid.length === 0) return null;
+  const oid = principalIdClaim(claims[principalClaim]);
+  if (oid === null) return null;
   const rawGroups = claims[groupsClaim];
   const groups = Array.isArray(rawGroups)
     ? rawGroups.filter((g): g is string => typeof g === "string")
@@ -229,10 +246,10 @@ export function identityFromClaims(
   // Keycloak or Okta login) went from showing `alice` to showing the opaque
   // subject. The two ladders want different strictness, so they are written
   // separately rather than one being derived from the other. The final rung
-  // is the oid — opaque, but never absent, which is the whole contract.
-  const displayName =
-    name ?? email ?? captureName(claims.preferred_username) ?? (claims.oid as string);
-  return { oid: claims.oid, displayName, name, email, groups };
+  // is the principal id — opaque, but never absent, which is the whole
+  // contract.
+  const displayName = name ?? email ?? captureName(claims.preferred_username) ?? oid;
+  return { oid, displayName, name, email, groups };
 }
 
 export class OpenIdConnectClient implements OidcClient {
@@ -339,18 +356,27 @@ export class OpenIdConnectClient implements OidcClient {
             "so every group-scoped app will deny this session",
         );
       }
-      const identity = identityFromClaims(claims, this.#auth.groupsClaim);
+      const identity = identityFromClaims(
+        claims,
+        this.#auth.groupsClaim,
+        this.#auth.principalClaim,
+      );
       if (!identity) {
-        // ADR-0048 decision 2: no `oid` claim means a misconfigured issuer
-        // (Entra emits it unconditionally), so the login fails closed — but
-        // with its own specific line, the same diagnosability posture as the
-        // group-overage warn above: folding it into the opaque "invalid"
-        // would send an operator hunting a nonce or state bug instead of the
-        // missing claim.
+        // ADR-0048 decision 2: no usable principal claim means a misconfigured
+        // issuer (Entra emits `oid` unconditionally in ID tokens, and the
+        // configured claim on any issuer is not optional), so the login fails
+        // closed — but with its own specific line, the same diagnosability
+        // posture as the group-overage warn above: folding it into the opaque
+        // "invalid" would send an operator hunting a nonce or state bug
+        // instead of the missing claim.
         this.#log.warn(
-          { event: "auth.oidc_missing_oid", sub: claims.sub },
-          "ID token has no oid claim — refusing login: the canonical principal id " +
-            "(ADR-0048) is not optional and has no fallback",
+          {
+            event: "auth.oidc_missing_principal",
+            sub: claims.sub,
+            claim: this.#auth.principalClaim,
+          },
+          `ID token has no usable ${this.#auth.principalClaim} claim — refusing login: the ` +
+            "canonical principal id (ADR-0048) is not optional and has no fallback",
         );
         return { kind: "invalid" };
       }

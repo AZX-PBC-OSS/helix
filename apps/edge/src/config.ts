@@ -73,6 +73,20 @@ export interface AuthConfig {
   credential: AuthClientCredential;
   /** ID-token claim carrying group ids (Entra and dev-idp: `groups`). */
   groupsClaim: string;
+  /**
+   * ID-token claim carrying the canonical principal id (ADR-0048, as
+   * amended): Entra's `oid` by default. Configurable because claim names
+   * vary by issuer — the same concession `EDGE_OIDC_GROUPS_CLAIM` already
+   * makes — and on most non-Entra issuers the stable, client-independent id
+   * IS their `sub` (pairwise `sub` is Entra's deviation from the OIDC norm,
+   * not the norm). `sub` is the one name that would silently reintroduce the
+   * pairwise bug against Entra, so it is refused at boot unless
+   * `EDGE_OIDC_ALLOW_SUB_PRINCIPAL=true` — an explicit, greppable assertion
+   * that this issuer's `sub` is stable. **Must equal the portal's
+   * `PORTAL_OIDC_PRINCIPAL_CLAIM`**: the cross-plane correlation the ADR
+   * pins assumes both planes read the same claim.
+   */
+  principalClaim: string;
   scopes: string;
   /** Permit a plain-http issuer — local dev-idp only. */
   allowInsecureIdp: boolean;
@@ -445,6 +459,32 @@ function loadClientCredential(env: NodeJS.ProcessEnv): AuthClientCredential {
 }
 
 /**
+ * The principal-claim name, with the one dangerous value gated (ADR-0048
+ * decision 2, as amended): `sub` is stable on most issuers (Keycloak, Okta,
+ * dex, Google) but pairwise per client on Entra — the exact bug the re-base
+ * exists to kill — so choosing it must be an explicit act, not a typo. Any
+ * other claim name is the operator's assertion that it is a stable,
+ * client-independent id.
+ */
+function loadPrincipalClaim(env: NodeJS.ProcessEnv): string {
+  const claim = env.EDGE_OIDC_PRINCIPAL_CLAIM ?? "oid";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(claim)) {
+    throw new Error(
+      `EDGE_OIDC_PRINCIPAL_CLAIM must be 1-64 chars of [A-Za-z0-9_-] (got ${JSON.stringify(claim)})`,
+    );
+  }
+  if (claim === "sub" && env.EDGE_OIDC_ALLOW_SUB_PRINCIPAL !== "true") {
+    throw new Error(
+      "EDGE_OIDC_PRINCIPAL_CLAIM=sub is refused by default: Entra's sub is pairwise per " +
+        "client id — the exact bug ADR-0048 exists to kill. Set EDGE_OIDC_ALLOW_SUB_PRINCIPAL=" +
+        "true only if this issuer's sub is stable across clients (Keycloak, Okta, dex, " +
+        "Google — not Entra).",
+    );
+  }
+  return claim;
+}
+
+/**
  * Parse the auth block. All-or-nothing: no auth env at all returns null (the
  * edge boots fail-closed and app hosts serve nothing without the dev bypass);
  * a partial block is a config error worth failing loudly on. The IdP client
@@ -486,6 +526,7 @@ function loadAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | null {
     clientId: parsed.clientId,
     credential,
     groupsClaim: env.EDGE_OIDC_GROUPS_CLAIM ?? "groups",
+    principalClaim: loadPrincipalClaim(env),
     // The default is DEV-IDP SHAPED, deliberately: apps/dev-idp serves `groups` as a
     // real scope (see its ALL_SCOPES) and that is how group visibility is exercised
     // locally and in CI, neither of which sets this var. Entra has no `groups`

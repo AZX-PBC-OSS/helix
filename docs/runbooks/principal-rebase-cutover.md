@@ -26,6 +26,14 @@ ADR-0048 change (edge + portal ship together).
 
 ## Preconditions
 
+- **An Entra issuer, or the principal-claim seam set on both planes.** The
+  canonical principal id is read from one claim: `oid` by default, which Entra
+  emits unconditionally. On a non-Entra issuer (Keycloak, Okta, dex, Google)
+  set `EDGE_OIDC_PRINCIPAL_CLAIM` and `PORTAL_OIDC_PRINCIPAL_CLAIM` to the
+  issuer's stable id claim — usually `sub`, gated behind the explicit
+  `*_ALLOW_SUB_PRINCIPAL` flags (ADR-0048, as amended) — **to the same value
+  on both services**. The email→oid pairs below then resolve against whatever
+  that claim carries.
 - **The email→oid pairs for every distinct `ownerId`** on the install. For the
   two live installs these are already resolved and recorded in the ops repo
   (the ADR amendment, finding 1). For any other install, collect them by
