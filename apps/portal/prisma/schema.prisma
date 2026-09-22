@@ -43,19 +43,23 @@ model App {
   id                 String            @id @default(uuid()) @db.Uuid
   slug               String            @unique
   displayName        String
-  /// Creator's `actor.sub`, set at `app.create`. Nullable: rows predating the
-  /// approvals work (docs/design/approvals.md §4) have no recorded owner. Drives
-  /// the admin queue "owner" column, "who may request/withdraw", and the apps
-  /// list's `scope=mine` filter. **The identity half — compared, never rendered.**
+  /// Creator's `actor.oid` — the Entra `oid` claim (ADR-0048), set at
+  /// `app.create`. Nullable: rows predating the approvals work
+  /// (docs/design/approvals.md §4) have no recorded owner; rows created before
+  /// the ADR-0048 re-base hold the old email-collapsed subject until the
+  /// cutover runbook rewrites them. Drives the admin queue "owner" column,
+  /// "who may request/withdraw", and the apps list's `scope=mine` filter.
+  /// **The identity half — compared, never rendered.** It is the one id the
+  /// edge session also holds for the same human.
   ownerId            String?
   /// The owner's claims as they read at `app.create` (`actor.name`/`actor.email`).
   /// **The display half — rendered, never compared.** Stored rather than resolved
-  /// because `ownerId` is only human-readable by accident today: the portal
-  /// verifier collapses the subject to `email ?? preferred_username ?? sub`
-  /// (`src/auth/verifier.ts`), and TODO.md's `private`-visibility work plans to
-  /// re-base `ownerId` onto Entra's opaque `oid`. These columns keep every owner
-  /// cell in the portal readable across that change. Slightly stale if someone
-  /// renames themselves in the directory; nullable for rows predating them.
+  /// because `ownerId` is the opaque directory object id (ADR-0048), which names
+  /// nobody the platform can resolve — it holds no Graph `/users` grant
+  /// (ADR-0040 decision 3). These columns keep every owner cell in the portal
+  /// readable. Slightly stale if someone renames themselves in the directory;
+  /// nullable for rows predating them (a transitional backfill migration
+  /// captured the email from the pre-re-base `ownerId` where it was still one).
   ownerName          String?
   ownerEmail         String?
   // Visibility is a discriminated union in zod; stored flattened here so it is
@@ -215,8 +219,19 @@ model ApprovalRequest {
   /// Effective values of the touched areas at request time (conflict detect + diff render).
   baseSnapshot Json
 
+  /// The requester's **identity half** — their Entra `oid` (ADR-0048). What
+  /// the separation-of-duty guards (approve/deny/needs_changes) and the
+  /// withdraw gate compare; `actor.oid` at request time. Nullable only on
+  /// rows predating the re-base — null fails closed in every guard that
+  /// reads it, and the cutover runbook rewrites pending rows from the same
+  /// email→oid pairs as `apps.ownerId`.
+  requestedOid String?
+  /// The requester's **display half** (`actor.sub`, usually their email) —
+  /// rendered in the queue, stored on the audit event, never compared.
   requestedBy  String
   reason       String?
+  /// The deciding admin's display half, when decided — display/audit only,
+  /// nothing compares it.
   decidedBy    String?
   /// Required on deny / needs_changes.
   decisionNote String?
@@ -250,16 +265,19 @@ model GatewayCall {
   /// The caller's claims as they read when the call was made. **Display half —
   /// rendered, never compared** (the identity is `userOid`), mirroring the
   /// `App.ownerName`/`ownerEmail` split. Captured rather than resolved: `userOid`
-  /// is Entra's pairwise `sub` and resolves to nobody, and the only id→name map
+  /// is the Entra `oid` claim (ADR-0048) — or a pairwise `sub` on rows that
+  /// predate the re-base — and the platform holds no Graph `/users` grant, so
+  /// it resolves to nobody by policy, and the only id→name map
   /// in the system (`sessions`) is swept at expiry while these rows are
   /// append-only. Null for `anon`, `pw_*` and dev-token callers, and for rows
   /// predating the columns — the portal falls back to rendering `userOid`.
   userName                 String?
   userEmail                String?
   /// The principal's kind (`PRINCIPAL_KINDS`): `user` | `password` | `anon` |
-  /// `dev`. Written at capture because it cannot be soundly inferred — Entra's
-  /// `sub` shares the base64url alphabet with the `pw_` pseudonym prefix, so a
-  /// shape test mislabels ~1 real subject in 262,144. Null on rows predating it.
+  /// `dev`. Written at capture because it cannot be soundly inferred —
+  /// pre-re-base `userOid` rows carry Entra's `sub`, which shares the base64url
+  /// alphabet with the `pw_` pseudonym prefix, so a shape test mislabels ~1
+  /// legacy subject in 262,144. Null on rows predating it.
   userKind                 String?
   /// Capability invoked — `llm` in M4.
   capability               String
@@ -533,8 +551,8 @@ model AppDevToken {
   id           String    @id @default(uuid()) @db.Uuid
   appId        String    @db.Uuid
   app          App       @relation(fields: [appId], references: [id], onDelete: Cascade)
-  /// The principal env=dev is keyed by (the minting developer's actor.sub); also
-  /// the metering/audit identity in dev.
+  /// The principal env=dev is keyed by (the minting developer's `actor.oid`,
+  /// ADR-0048); also the metering/audit identity in dev.
   developerOid String
   /// SHA-256 hex of the opaque token (prefix included) — the revocable lookup key.
   tokenHash    String    @unique

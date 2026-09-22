@@ -5,11 +5,14 @@ export {
   CLI_CLIENT_ID,
   EDGE_CLIENT_ID,
   EDGE_CLIENT_SECRET_DEFAULT,
+  FIXTURE_CLIENT_IDS,
   FIXTURE_USERS,
   GROUP_ENG_TEAM,
   GROUP_PLATFORM_ADMINS,
   PORTAL_AUDIENCE,
+  WEB_CLIENT_ID,
   findFixtureUser,
+  pairwiseSub,
   type FixtureUser,
 } from "./fixtures.js";
 export {

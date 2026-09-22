@@ -1,23 +1,29 @@
+import { createHmac } from "node:crypto";
+
 /**
  * Fixture identities and OAuth clients for the local dev IdP (project plan §3,
  * Entra row: the platform speaks generic OIDC; locally that issuer is this
- * package). Shapes mirror what Entra will provide — GUID subjects, a `groups`
- * claim — so nothing downstream special-cases dev.
+ * package). Shapes mirror what Entra provides — a stable per-user `oid`, a
+ * pairwise `sub` per client id, GUID object ids, a `groups` claim — so nothing
+ * downstream special-cases dev (ADR-0048 decision 7).
  */
 
 export interface FixtureUser {
   /**
-   * The subject claim. The first three are readable GUIDs, which is convenient
-   * but NOT what Entra sends: Entra's `sub` is pairwise per client id, 32 random
-   * bytes base64url, and resolves to nobody. `dana` below carries that shape on
-   * purpose — see the note on the fixture list.
+   * The `oid` claim — the directory object id (ADR-0048). Stable for the life
+   * of the user object and **identical in every token, for every client, in
+   * both planes**: the edge session stores it as `OidcIdentity.oid`, the
+   * portal persists it as `App.ownerId`, and the cross-plane correlation tests
+   * pin it as the one value that must agree. Readable GUIDs on purpose —
+   * Entra's `oid` is a GUID too, and a fixture IdP nobody can eyeball throws
+   * away the one advantage fixtures have.
    */
-  sub: string;
+  oid: string;
   email: string;
   /**
    * Optional, because a real tenant need not send a `name` claim — and a user
    * who has none is the case where the captured display half falls back to the
-   * address rather than to the opaque subject.
+   * address rather than to anything readable.
    */
   name?: string;
   groups: string[];
@@ -29,49 +35,47 @@ export const GROUP_PLATFORM_ADMINS = "platform-admin";
 
 export const FIXTURE_USERS: FixtureUser[] = [
   {
-    sub: "5f0d5d2a-9d3f-4b1e-8c5a-111111111111",
+    oid: "6b9f4d31-8e2a-4c07-9b5d-111111111111",
     email: "alice@azx.dev",
     name: "Alice Anders",
     groups: [GROUP_ENG_TEAM, GROUP_PLATFORM_ADMINS],
   },
   {
-    sub: "5f0d5d2a-9d3f-4b1e-8c5a-222222222222",
+    oid: "6b9f4d31-8e2a-4c07-9b5d-222222222222",
     email: "bob@azx.dev",
     name: "Bob Builder",
     groups: [GROUP_ENG_TEAM],
   },
   {
     // No groups — exists so group-visibility denial paths have a subject.
-    sub: "5f0d5d2a-9d3f-4b1e-8c5a-333333333333",
+    oid: "6b9f4d31-8e2a-4c07-9b5d-333333333333",
     email: "mallory@azx.dev",
     name: "Mallory Moor",
     groups: [],
   },
   {
     /*
-     * The Entra-shaped user, and the reason this fixture exists.
+     * The no-name user, and the reason this fixture exists.
      *
-     * The three above are convenient in a way real life is not: readable GUID
-     * subjects and a `name` claim on every login. That combination means the
-     * local stack never reproduces what a deployment actually shows — a
-     * 43-character pairwise `sub` that resolves to nobody, and a tenant that
-     * sends no name — so the whole class of "the id is unattributable" bug is
-     * invisible until it reaches Entra. This user makes both reproducible: the
-     * captured display half has to fall back to the address, and every screen
-     * that renders a principal has to cope with an opaque one.
+     * The three above are convenient in a way real life is not: a `name`
+     * claim on every login. A tenant that sends none is a real shape, and a
+     * user without one is the case where every screen that renders a
+     * principal has to fall back to the address. This user makes that
+     * reproducible.
      *
-     * Additive on purpose — the other three keep their ids so existing
-     * assertions and dev muscle memory are untouched.
+     * Before ADR-0048 she also carried the "43-character opaque `sub`" half
+     * of the lesson; pairwise subjects (see {@link pairwiseSub}) made that
+     * universal, so the missing name is what remains distinctive here.
      */
-    sub: "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA",
+    oid: "6b9f4d31-8e2a-4c07-9b5d-444444444444",
     email: "dana@azx.dev",
     groups: [GROUP_ENG_TEAM],
   },
 ];
 
-/** Look a fixture up by sub or email (the picker uses emails). */
+/** Look a fixture up by oid or email (the picker uses emails). */
 export function findFixtureUser(id: string): FixtureUser | undefined {
-  return FIXTURE_USERS.find((u) => u.sub === id || u.email === id);
+  return FIXTURE_USERS.find((u) => u.oid === id || u.email === id);
 }
 
 /** Audience of portal API access tokens (Entra later: the App ID URI). */
@@ -86,6 +90,58 @@ export const EDGE_CLIENT_SECRET_DEFAULT = "edge-dev-secret";
 
 /** Public client for the portal SPA — code + PKCE in the browser. */
 export const WEB_CLIENT_ID = "azx-portal-web";
+
+/** HMAC key behind the pairwise sub derivation — see {@link pairwiseSub}. */
+const PAIRWISE_SUB_KEY = "dev-idp-pairwise-sub-v1";
+
+/**
+ * The subject this IdP presents for (client, user): HMAC-SHA256 over a fixed
+ * fixture key, base64url — Entra's shape, 43 opaque characters.
+ *
+ * **Pairwise per client id**, exactly as Entra issues it (ADR-0048): the same
+ * human is a *different* `sub` to the edge's registration than to the
+ * portal's, which is the whole point — until that is true locally, the
+ * production failure (two planes that can never agree on a principal) cannot
+ * be reproduced, only described. The stable cross-client identity is the
+ * `oid` claim, never this value.
+ *
+ * Deterministic on purpose: the key is a constant, so two boots of the IdP,
+ * cached tokens and pinned tests all agree on a (client, user) pair's sub.
+ * Exported because the account id oidc-provider carries *is* this value (see
+ * provider.ts), and the consumers' correlation tests pin the derivation.
+ */
+export function pairwiseSub(clientId: string, user: FixtureUser): string {
+  return createHmac("sha256", PAIRWISE_SUB_KEY)
+    .update(`${clientId}:${user.oid}`)
+    .digest("base64url");
+}
+
+/**
+ * The single source of truth for which clients this IdP registers. The
+ * account-id reverse lookup below scans exactly this list, and `buildProvider`
+ * refuses to construct a provider whose registered clients drift from it — a
+ * client registered without a tuple entry would mint account ids no code path
+ * can resolve back to a user, failing logins with nothing pointing at the
+ * cause. Add a client by adding it here AND in `provider.ts`.
+ */
+export const FIXTURE_CLIENT_IDS = [CLI_CLIENT_ID, EDGE_CLIENT_ID, WEB_CLIENT_ID] as const;
+
+/**
+ * Reverse the derivation: which fixture user does this account id belong to?
+ * oidc-provider's account id — in the session, the code, the refresh token
+ * and the access token — is the pairwise sub minted at login, so `findAccount`
+ * and `extraTokenClaims` resolve users through this. The set is closed (four
+ * fixtures × {@link FIXTURE_CLIENT_IDS}), so a scan is the honest
+ * implementation, and an HMAC over distinct inputs cannot collide within it.
+ */
+export function fixtureUserForAccountId(accountId: string): FixtureUser | undefined {
+  for (const clientId of FIXTURE_CLIENT_IDS) {
+    for (const user of FIXTURE_USERS) {
+      if (pairwiseSub(clientId, user) === accountId) return user;
+    }
+  }
+  return undefined;
+}
 
 /** Every scope the dev IdP knows; grants are auto-approved with all of them. */
 export const ALL_SCOPES = "openid profile email groups offline_access";

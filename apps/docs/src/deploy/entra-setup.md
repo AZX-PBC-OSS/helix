@@ -7,8 +7,17 @@ description: "The three Entra app registrations a deployment needs for OIDC sign
 
 Helix signs users in through OIDC. Locally it uses a bundled fake issuer; on a
 real deployment it points at your own Microsoft Entra tenant. Both services
-speak generic OIDC with discovery, so setup is creating three app
+speak standard OIDC with discovery, so setup is creating three app
 registrations and putting their ids in the deploy configuration.
+
+One claim is pinned rather than discovered: the **principal identifier** is
+read from the token's `oid` claim (the Entra directory object id — stable for
+the user's lifetime, identical across all your app registrations; see
+ADR-0048). A token without it is refused by design. Running Helix against a
+non-Entra issuer is possible via `EDGE_OIDC_PRINCIPAL_CLAIM` /
+`PORTAL_OIDC_PRINCIPAL_CLAIM` (set both to your issuer's stable id claim —
+for Keycloak, Okta, dex or Google that is `sub`, which the config gates
+behind an explicit allow-flag); on Entra, leave them unset.
 
 Single-tenant only: your own users. The issuer is
 `https://login.microsoftonline.com/{tenantId}/v2.0`.

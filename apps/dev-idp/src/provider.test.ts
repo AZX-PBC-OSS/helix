@@ -2,11 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startDevIdp, type RunningDevIdp } from "./start.js";
 import {
   ALL_SCOPES,
+  CLI_CLIENT_ID,
   EDGE_CLIENT_ID,
   EDGE_CLIENT_SECRET_DEFAULT,
   PORTAL_AUDIENCE,
   WEB_CLIENT_ID,
   findFixtureUser,
+  pairwiseSub,
 } from "./fixtures.js";
 import { decodeJwtPayload, runAuthCodeFlow, runDeviceFlow } from "./testing.js";
 
@@ -57,7 +59,10 @@ describe("device flow (the CLI path)", () => {
 
     expect(claims.iss).toBe(idp.issuer);
     expect(claims.aud).toBe(PORTAL_AUDIENCE);
-    expect(claims.sub).toBe(alice.sub);
+    // The CLI client's own pairwise subject for alice — opaque, and never the
+    // stable cross-client identity (that is the `oid` claim).
+    expect(claims.sub).toBe(pairwiseSub(CLI_CLIENT_ID, alice));
+    expect(claims.oid).toBe(alice.oid);
     expect(claims.email).toBe("alice@azx.dev");
     expect(claims.name).toBe(alice.name);
     expect(tokens.refreshToken).toBeTruthy();
@@ -65,7 +70,7 @@ describe("device flow (the CLI path)", () => {
 });
 
 describe("authorization-code flow (the edge path)", () => {
-  it("puts groups, email, and name in the ID token itself", async () => {
+  it("puts oid, groups, email, and name in the ID token itself", async () => {
     const result = await runAuthCodeFlow({
       issuer: idp.issuer,
       clientId: EDGE_CLIENT_ID,
@@ -76,7 +81,8 @@ describe("authorization-code flow (the edge path)", () => {
     });
     const bob = findFixtureUser("bob@azx.dev")!;
 
-    expect(result.idTokenClaims.sub).toBe(bob.sub);
+    expect(result.idTokenClaims.sub).toBe(pairwiseSub(EDGE_CLIENT_ID, bob));
+    expect(result.idTokenClaims.oid).toBe(bob.oid);
     expect(result.idTokenClaims.nonce).toBe("nonce-under-test");
     // conformIdTokenClaims: false is what keeps these in the ID token —
     // the edge never calls userinfo (Entra parity).
@@ -131,7 +137,8 @@ describe("authorization-code flow (the portal SPA path)", () => {
 
     expect(claims.iss).toBe(idp.issuer);
     expect(claims.aud).toBe(PORTAL_AUDIENCE);
-    expect(claims.sub).toBe(alice.sub);
+    expect(claims.sub).toBe(pairwiseSub(WEB_CLIENT_ID, alice));
+    expect(claims.oid).toBe(alice.oid);
     expect(claims.email).toBe("alice@azx.dev");
     // The browser does the code exchange from JS — without this CORS header
     // the SPA login fails silently (oidc-provider denies CORS by default).
@@ -163,5 +170,65 @@ describe("authorization-code flow (the portal SPA path)", () => {
         origin: WEB_ORIGIN,
       }),
     ).rejects.toThrow(/not allowed for client/);
+  });
+});
+
+describe("pairwise subjects + stable oid (ADR-0048 decision 7)", () => {
+  it("presents a different sub to every client for the same user — and the same oid to all", async () => {
+    const alice = findFixtureUser("alice@azx.dev")!;
+    const device = decodeJwtPayload((await runDeviceFlow(idp.issuer, "alice@azx.dev")).accessToken);
+    const edge = (
+      await runAuthCodeFlow({
+        issuer: idp.issuer,
+        clientId: EDGE_CLIENT_ID,
+        clientSecret: EDGE_CLIENT_SECRET_DEFAULT,
+        redirectUri: REDIRECT_URI,
+        userEmail: "alice@azx.dev",
+      })
+    ).idTokenClaims;
+    const web = decodeJwtPayload(
+      (
+        await runAuthCodeFlow({
+          issuer: idp.issuer,
+          clientId: WEB_CLIENT_ID,
+          redirectUri: WEB_REDIRECT_URI,
+          userEmail: "alice@azx.dev",
+          origin: WEB_ORIGIN,
+        })
+      ).accessToken,
+    );
+
+    const subs = [device.sub, edge.sub, web.sub];
+    // Three clients, three distinct subjects for one human — the Entra
+    // behavior this IdP existed without until ADR-0048, and the reason the
+    // production identity bug was invisible locally.
+    expect(new Set(subs).size).toBe(3);
+    for (const sub of subs) {
+      expect(sub).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    }
+    // The cross-client identity is the oid claim, identical everywhere.
+    expect([device.oid, edge.oid, web.oid]).toEqual([alice.oid, alice.oid, alice.oid]);
+  });
+});
+
+describe("omitOidClaim (the fail-closed fixture, ADR-0048 decision 2)", () => {
+  let bare: RunningDevIdp;
+
+  beforeAll(async () => {
+    bare = await startDevIdp({ port: 0, omitOidClaim: true });
+  });
+
+  afterAll(async () => {
+    await bare.close();
+  });
+
+  it("issues tokens with sub and actor claims but no oid", async () => {
+    const tokens = await runDeviceFlow(bare.issuer, "alice@azx.dev");
+    const claims = decodeJwtPayload(tokens.accessToken);
+    const alice = findFixtureUser("alice@azx.dev")!;
+
+    expect(claims.sub).toBe(pairwiseSub(CLI_CLIENT_ID, alice));
+    expect(claims.oid).toBeUndefined();
+    expect(claims.email).toBe("alice@azx.dev");
   });
 });

@@ -10,11 +10,14 @@ import { clearToken, setToken } from "../auth/tokenStore";
 /**
  * The audit log's user column.
  *
- * `userOid` is Entra's pairwise `sub`: stable, and an attribution dead end — it
- * resolves to nobody, for anyone, ever. So these assertions are about which of
- * the two halves the operator actually reads.
+ * `userOid` is an opaque principal id — Entra's `oid` claim since ADR-0048 (a
+ * pairwise `sub` on rows older than that): stable, and an attribution dead
+ * end, because the platform holds no Graph `/users` grant and so it resolves
+ * to nobody, for anyone, ever. These assertions are about which of the two
+ * halves the operator actually reads.
  */
 const APP_ID = "11111111-1111-4111-8111-111111111111";
+// A pre-re-base pairwise sub: the historical shape these rows really carry.
 const OPAQUE = "VKn3n7f8eM3JdjdHi6CSFsRTRIBtt1Nob_iPGjKAmPA";
 
 let seq = 0;

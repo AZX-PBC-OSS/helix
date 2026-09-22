@@ -42,9 +42,14 @@ model ApprovalRequest {
   deltas       Json      // the *elevated* subset of a change: typed deltas (see §3)
   baseSnapshot Json      // effective values of the touched paths at request time (conflict detect + diff render)
 
-  requestedBy  String    // actor.sub of the requester
+  requestedOid String?   // the requester's identity half — their `oid` (ADR-0048). What the
+                         // separation-of-duty and withdraw guards compare; null only on rows
+                         // predating the re-base (frozen — fails closed until the cutover
+                         // rewrite fills it)
+  requestedBy  String    // actor.sub of the requester — the display half, rendered and audited,
+                         // never compared
   reason       String?   // requester's justification
-  decidedBy    String?   // actor.sub of the admin who decided
+  decidedBy    String?   // actor.sub of the admin who decided — display/audit only
   decisionNote String?   // reviewer note (required on deny / needs_changes)
 
   createdAt    DateTime  @default(now())
@@ -119,11 +124,11 @@ Concretely:
 - **Portal verifier** (`apps/portal/src/auth/verifier.ts`): extract the `groups` (or Entra `roles`) claim into a new `Actor.groups: string[]` field. Today `Actor` is `{ sub, via, name?, email? }` and drops group claims on the floor — this adds one field and one claim read; standard-claims-only verification is unchanged, so Entra tokens still validate (the doc's existing "Entra swap is env-only" promise holds).
 - **Admin check:** membership in a configured admin group id (`PORTAL_ADMIN_GROUP_ID`). A `requireAdmin(req)` guard mirrors the existing `requireActor(req)`.
 - **dev-idp** (`apps/dev-idp`): **already done.** Alice's fixture already carries `GROUP_PLATFORM_ADMINS` (`fixtures.ts`), and `extraTokenClaims` already emits `groups` into the JWT access token the portal verifies (`provider.ts`). No dev-idp change is needed — the claim is already on the wire; the portal just isn't reading it yet.
-- **Separation of duty:** `decidedBy.sub ≠ requestedBy` enforced by default, with a `PORTAL_ALLOW_SELF_APPROVE` dev flag (refused in production, same posture as `PORTAL_DEV_TOKEN`) so a solo operator can drive the whole loop.
+- **Separation of duty:** `decidedBy.sub ≠ requestedBy` enforced by default, with a `PORTAL_ALLOW_SELF_APPROVE` dev flag (refused in production, same posture as `PORTAL_DEV_TOKEN`) so a solo operator can drive the whole loop. _(As built, the comparison is on the **identity halves** — `actor.oid` vs `requestedOid`, ADR-0048 / review finding 3: under Entra the display `sub` is pairwise per client id, so a sub comparison let an admin file from the CLI and approve from the SPA as two different "people". `decidedBy`/`requestedBy` remain the display half, rendered and audited.)_
 
 > **Prod note (no local blocker):** locally there is nothing to wire — dev-idp already ships the `platform-admin` claim. The only prod dependency is that the **Entra app registration surface a group or app-role claim** in its access token — config on the registration, deferred to the Entra tail (M3/M5), and it blocks *nothing* in local development of #2.
 
-`App` needs an owner field for the admin queue's "owner" column and "who may request": add `App.ownerId` (= creator's `actor.sub`, set at `app.create`). Cheap, and several v1 surfaces want it anyway. _(Since built: `App.ownerId` now exists and is set at create — but note ADR-0007: v0 authz is still **flat** (authenticated == authorized). `ownerId` became exactly the hook the interim gate needed: an `ownsApp` owner-or-admin preHandler now guards the app-scoped mutating + secret routes, closing the BOLA/IDOR (issue #9). Reads and per-app roles remain flat, which is the v1 RBAC item.)_
+`App` needs an owner field for the admin queue's "owner" column and "who may request": add `App.ownerId` (= creator's `actor.sub` at design time; **since ADR-0048 it is the creator's `actor.oid`**, the Entra `oid` claim, set at `app.create`). Cheap, and several v1 surfaces want it anyway. _(Since built: `App.ownerId` now exists and is set at create — but note ADR-0007: v0 authz is still **flat** (authenticated == authorized). `ownerId` became exactly the hook the interim gate needed: an `ownsApp` owner-or-admin preHandler now guards the app-scoped mutating + secret routes, closing the BOLA/IDOR (issue #9). Reads and per-app roles remain flat, which is the v1 RBAC item.)_
 
 ---
 

@@ -182,8 +182,9 @@ export function collectionCsv(items: readonly CollectionItem[]): {
     "createdAt",
     "env",
     "userOid",
-    // The display half sits beside the id it labels: `userOid` is Entra's
-    // pairwise `sub` and names nobody, so a drain that carried only it could not
+    // The display half sits beside the id it labels: `userOid` is an opaque
+    // principal id that names nobody the platform can resolve (no `/users`
+    // grant by design), so a drain that carried only it could not
     // be acted on. Widening the fixed prefix is safe by this format's own
     // contract — the `item.` namespace exists so platform columns can be added,
     // and anything needing stable offsets is directed to `?format=json`.

@@ -32,8 +32,9 @@ const ADMIN_GROUP = "platform-admin";
 const verifiers: TokenVerifier[] = [
   {
     verify: async (token) => {
-      if (token === "admin") return { sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
-      if (token === "plain") return { sub: PLAIN, via: "oidc", groups: [] };
+      if (token === "admin")
+        return { oid: "oid-admin", sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
+      if (token === "plain") return { oid: "oid-plain", sub: PLAIN, via: "oidc", groups: [] };
       return null;
     },
   },
@@ -107,6 +108,43 @@ describe("authPlugin boot guards", () => {
     vi.stubEnv("PORTAL_OIDC_ISSUER", issuer);
     vi.stubEnv("PORTAL_OIDC_AUDIENCE", audience);
     await expect(bareApp().ready()).rejects.toThrow(/must be set together/);
+  });
+
+  // ADR-0048 decision 2, as amended: the principal-claim NAME is a seam (a
+  // non-Entra issuer's stable id usually IS its `sub` — pairwise `sub` is
+  // Entra's deviation from the OIDC norm), and the one dangerous value is
+  // gated so the pairwise bug cannot come back through a typo.
+  describe("PORTAL_OIDC_PRINCIPAL_CLAIM (the non-Entra seam)", () => {
+    it("refuses sub by default — Entra's sub is pairwise per client id", async () => {
+      vi.stubEnv("PORTAL_OIDC_ISSUER", "https://idp.test");
+      vi.stubEnv("PORTAL_OIDC_AUDIENCE", "urn:helix:portal");
+      vi.stubEnv("PORTAL_OIDC_PRINCIPAL_CLAIM", "sub");
+      await expect(bareApp().ready()).rejects.toThrow(/pairwise/);
+    });
+
+    it("accepts sub behind the explicit allow flag", async () => {
+      vi.stubEnv("PORTAL_OIDC_ISSUER", "https://idp.test");
+      vi.stubEnv("PORTAL_OIDC_AUDIENCE", "urn:helix:portal");
+      vi.stubEnv("PORTAL_OIDC_PRINCIPAL_CLAIM", "sub");
+      vi.stubEnv("PORTAL_OIDC_ALLOW_SUB_PRINCIPAL", "true");
+      const app = bareApp();
+      await app.ready();
+      expect(app.tokenVerifiers.length).toBeGreaterThan(0);
+      await app.close();
+    });
+
+    it("accepts a custom claim name without a flag, and refuses a malformed one", async () => {
+      vi.stubEnv("PORTAL_OIDC_ISSUER", "https://idp.test");
+      vi.stubEnv("PORTAL_OIDC_AUDIENCE", "urn:helix:portal");
+      vi.stubEnv("PORTAL_OIDC_PRINCIPAL_CLAIM", "uid");
+      const app = bareApp();
+      await app.ready();
+      expect(app.tokenVerifiers.length).toBeGreaterThan(0);
+      await app.close();
+
+      vi.stubEnv("PORTAL_OIDC_PRINCIPAL_CLAIM", "o id");
+      await expect(bareApp().ready()).rejects.toThrow(/PORTAL_OIDC_PRINCIPAL_CLAIM/);
+    });
   });
 });
 

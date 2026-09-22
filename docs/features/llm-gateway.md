@@ -92,9 +92,10 @@ inputTokens, outputTokens, outcome}` where outcome is `ok` / `error` / `quota_bl
 also admits `refusal`, reserved for content-policy stops; M4 emits the three above).
 
 `userOid` and the two label columns are the **identity half and the display half** of the caller,
-and the split is the point. `userOid` is Entra's pairwise `sub` — stable, compared, joined on, and
-an attribution dead end, because it is a different value per app registration and resolves through
-no directory lookup we hold. `userName`/`userEmail` are the claims *captured at the moment of the
+and the split is the point. `userOid` is the Entra `oid` claim since ADR-0048 (a pairwise `sub` on
+rows that predate the re-base) — stable, compared, joined on, and an attribution dead end, because
+the platform deliberately holds no Graph `/users` grant (ADR-0040 decision 3), so it resolves
+through no directory lookup there is. `userName`/`userEmail` are the claims *captured at the moment of the
 call* (`apps/edge/src/auth/identity.ts`), rendered but never compared. They are captured rather than
 resolved because the only id→name map the platform has is the `sessions` row, which is swept at
 expiry, while these rows are append-only — and because "who this was at the time" is the correct

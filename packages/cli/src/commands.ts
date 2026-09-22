@@ -178,7 +178,11 @@ export async function loginCommand(client: PortalClient, config: ResolvedConfig)
   // Prove the token against the portal and greet the actor.
   const authed = new PortalClient(config.portalUrl, tokens.accessToken);
   const me = await authed.me();
-  console.log(`Logged in as ${me.name ?? me.sub} (${me.sub}).`);
+  // The oid rides along when the portal sends it (ADR-0048): it is the value
+  // the cutover runbook's owner-pair collection asks for, so the operator
+  // collecting pairs reads it straight off a login instead of a DB query.
+  const oid = me.oid ? ` — oid ${me.oid}` : "";
+  console.log(`Logged in as ${me.name ?? me.sub} (${me.sub})${oid}.`);
 }
 
 export async function logoutCommand(config: ResolvedConfig): Promise<void> {
@@ -188,7 +192,12 @@ export async function logoutCommand(config: ResolvedConfig): Promise<void> {
 
 export async function whoamiCommand(client: PortalClient): Promise<void> {
   const me = await client.me();
-  console.log(`${me.sub} (via ${me.via}${me.name ? `, ${me.name}` : ""})`);
+  // oid first: it is the canonical principal id (ADR-0048) — the one an
+  // operator collecting cutover pairs needs — with the readable sub after.
+  // Older portals don't send it (the field is optional cross-version), and
+  // the output simply omits what isn't there.
+  const oid = me.oid ? `${me.oid} — ` : "";
+  console.log(`${oid}${me.sub} (via ${me.via}${me.name ? `, ${me.name}` : ""})`);
 }
 
 /**

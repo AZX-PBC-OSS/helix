@@ -505,11 +505,50 @@ describe("auth config", () => {
     expect(auth).not.toBeNull();
     expect(auth?.issuerUrl).toBe("https://idp.example.com");
     expect(auth?.groupsClaim).toBe("groups");
+    expect(auth?.principalClaim).toBe("oid");
     expect(auth?.scopes).toBe("openid profile email groups");
     expect(auth?.secret).toEqual(Buffer.alloc(32));
     expect(auth?.sessionTtlMs).toBe(8 * 60 * 60 * 1000);
     expect(auth?.refreshAfterMs).toBe(60 * 60 * 1000);
     expect(auth?.handoffTtlSec).toBe(30);
+  });
+
+  // ADR-0048 decision 2, as amended: the principal-claim NAME is a seam (most
+  // non-Entra issuers' stable id is their own `sub` — pairwise `sub` is
+  // Entra's deviation, not the OIDC norm), and the one dangerous value is
+  // gated so the pairwise bug cannot return through a typo.
+  describe("EDGE_OIDC_PRINCIPAL_CLAIM (the non-Entra seam)", () => {
+    it("accepts a custom claim name", () => {
+      const auth = loadConfig({ ...ENV, ...AUTH_ENV, EDGE_OIDC_PRINCIPAL_CLAIM: "uid" }).auth;
+      expect(auth?.principalClaim).toBe("uid");
+    });
+
+    it("refuses sub by default — Entra's sub is pairwise per client id", () => {
+      expect(() => loadConfig({ ...ENV, ...AUTH_ENV, EDGE_OIDC_PRINCIPAL_CLAIM: "sub" })).toThrow(
+        /pairwise/,
+      );
+    });
+
+    it("accepts sub behind the explicit allow flag (the operator asserts a stable sub)", () => {
+      const auth = loadConfig({
+        ...ENV,
+        ...AUTH_ENV,
+        EDGE_OIDC_PRINCIPAL_CLAIM: "sub",
+        EDGE_OIDC_ALLOW_SUB_PRINCIPAL: "true",
+      }).auth;
+      expect(auth?.principalClaim).toBe("sub");
+    });
+
+    it.each([
+      ["empty", ""],
+      ["whitespace", "o id"],
+      ["oversized", "c".repeat(65)],
+      ["garbage", "oid;drop"],
+    ])("refuses a malformed claim name (%s)", (_label, value) => {
+      expect(() => loadConfig({ ...ENV, ...AUTH_ENV, EDGE_OIDC_PRINCIPAL_CLAIM: value })).toThrow(
+        /EDGE_OIDC_PRINCIPAL_CLAIM/,
+      );
+    });
   });
 
   it("rejects an http issuer unless explicitly allowed", () => {

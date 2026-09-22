@@ -12,19 +12,20 @@ import { createPrismaClient } from "../src/db/client.js";
  *
  * The principal is supplied at run time and deliberately not baked into a
  * migration — whose apps these are is a property of the deployment, not of the
- * code. Pass the same value the portal would see as `actor.sub`: the verifier
- * collapses the subject to `email ?? preferred_username ?? sub`, so for an
- * ordinary Entra user that is their email address.
+ * code. Pass the adopting operator's Entra `oid` (ADR-0048): `helix whoami`
+ * prints it, and it is the value `POST /api/v1/apps` stores and `ownsApp`
+ * compares. (Apps adopted before the ADR-0048 re-base carry an email-shaped
+ * `ownerId` — the cutover runbook rewrites those, not this script.)
  *
  * Usage (from repo root):
- *   pnpm --filter @azx-pbc/portal db:backfill-owners -- ops@example.com
- *   BACKFILL_OWNER_ID=ops@example.com pnpm --filter @azx-pbc/portal db:backfill-owners
- *   pnpm --filter @azx-pbc/portal db:backfill-owners -- ops@example.com --name "Ops Team"
- *   pnpm --filter @azx-pbc/portal db:backfill-owners -- ops@example.com --dry-run
+ *   pnpm --filter @azx-pbc/portal db:backfill-owners -- <oid>
+ *   BACKFILL_OWNER_ID=<oid> pnpm --filter @azx-pbc/portal db:backfill-owners
+ *   pnpm --filter @azx-pbc/portal db:backfill-owners -- <oid> --name "Ops Team" --email ops@example.com
+ *   pnpm --filter @azx-pbc/portal db:backfill-owners -- <oid> --dry-run
  *
- * `--name` also fills the display column; without it only the identity is set and
- * the portal falls back to rendering `ownerId`, which is the pre-existing
- * behaviour for these rows either way.
+ * `--name`/`--email` also fill the display columns; without them only the
+ * identity is set and the portal falls back to rendering `ownerId`, which is
+ * the pre-existing behaviour for these rows either way.
  */
 
 interface Options {
@@ -68,14 +69,23 @@ function parseArgs(argv: string[]): Options {
   if (!ownerId) {
     throw new Error(
       "no owner — pass the principal as an argument or set BACKFILL_OWNER_ID " +
-        "(use the value the portal sees as actor.sub, usually an email address)",
+        "(use the operator's oid from `helix whoami`, not an email address)",
+    );
+  }
+  // An email-shaped owner id is the pre-re-base value and can never match an
+  // actor now (ADR-0048) — and because this script only ever touches
+  // `ownerId IS NULL` rows, a bad run is not recoverable by re-running with
+  // the right value. Refuse the known-wrong shape outright; the display half
+  // is what `--email` is for.
+  if (ownerId.includes("@")) {
+    throw new Error(
+      `"${ownerId}" looks like an email address — post-ADR-0048 the owner id is the ` +
+        "operator's oid (get it from `helix whoami`); pass their address with --email instead",
     );
   }
 
-  // A subject that looks like an address is one: the verifier prefers the `email`
-  // claim when composing `actor.sub`, so this matches what create would store.
   const ownerName = values.get("name");
-  const ownerEmail = values.get("email") ?? (ownerId.includes("@") ? ownerId : undefined);
+  const ownerEmail = values.get("email");
   return {
     ownerId,
     ...(ownerName ? { ownerName } : {}),

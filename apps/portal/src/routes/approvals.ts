@@ -13,6 +13,7 @@ import {
   canSelfApprove,
   requireActor,
   requireAdmin,
+  type Actor,
 } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { publicAppsAllowed } from "../policy/visibilityPolicy.js";
@@ -84,6 +85,45 @@ async function priorDecisionsByApp(
  */
 const APPROVE_LANDED = ["approved", "needs_changes"] as const;
 
+/**
+ * Separation-of-duty gate for the decide paths (approve/deny/needs_changes,
+ * §4): the deciding admin must not be the requester, unless the dev
+ * self-approve flag is set.
+ *
+ * The comparison is on the **identity halves** — `actor.oid` vs
+ * `requestedOid` (ADR-0048, review finding 3). The display halves (`sub`,
+ * usually the email) are pairwise per client id under Entra, so comparing
+ * them let an admin file a request from the CLI (`azx-cli`) and approve it
+ * from the SPA (`azx-portal-web`): two different subs, one human, guard
+ * silently disarmed.
+ *
+ * A pre-re-base row carries a null `requestedOid` and **fails closed** — it
+ * cannot certify separation of duty at all. The cutover runbook's step-3
+ * rewrite fills `requestedOid` from the same email→oid pairs as
+ * `apps.ownerId`, which unfreezes these requests; an operator can also
+ * simply wait them out (a pending request is inert).
+ */
+function assertSeparationOfDuty(
+  request: { requestedOid: string | null; requestedBy: string },
+  actor: Actor,
+  canSelfApprove: boolean,
+): void {
+  if (request.requestedOid === null) {
+    throw new AppError(
+      "forbidden",
+      "this pre-re-base request cannot be decided: separation of duty cannot be " +
+        "certified without the requester's oid — run the principal-rebase cutover " +
+        "rewrite (docs/runbooks/principal-rebase-cutover.md, step 3) to unfreeze it",
+    );
+  }
+  if (request.requestedOid === actor.oid && !canSelfApprove) {
+    throw new AppError(
+      "forbidden",
+      "deciding your own request is not permitted (separation of duty)",
+    );
+  }
+}
+
 export async function approvalRoutes(app: FastifyInstance): Promise<void> {
   // List requests. `?app=<slug>` scopes to one app (owner or admin); without it
   // the global admin queue (admin only). `?status=` filters by lifecycle state.
@@ -100,7 +140,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         const row = await app.prisma.app.findUnique({ where: { slug: req.query.app } });
         if (!row) throw new AppError("not_found", `app "${req.query.app}" not found`);
         // Owners see their own app's requests; admins see any.
-        if (row.ownerId !== actor.sub && !actorIsAdmin(actor)) {
+        if (row.ownerId !== actor.oid && !actorIsAdmin(actor)) {
           throw new AppError("forbidden", "not the app owner");
         }
         where.appId = row.id;
@@ -159,10 +199,9 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         if (request.status !== "pending") return { row: alreadyDecided(request, APPROVE_LANDED) };
 
         // Separation of duty: an admin may not decide their own request unless
-        // the dev self-approve flag is set (§4).
-        if (request.requestedBy === actor.sub && !canSelfApprove()) {
-          throw new AppError("forbidden", "self-approval is not permitted (separation of duty)");
-        }
+        // the dev self-approve flag is set (§4). Identity halves, per
+        // assertSeparationOfDuty.
+        assertSeparationOfDuty(request, actor, canSelfApprove());
 
         const appRow = await tx.app.findUniqueOrThrow({ where: { id: request.appId } });
         const effective = capabilitiesFromRow(appRow);
@@ -298,12 +337,8 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           if (!request)
             throw new AppError("not_found", `approval request "${req.params.id}" not found`);
           if (request.status !== "pending") return alreadyDecided(request, [status]);
-          if (request.requestedBy === actor.sub && !canSelfApprove()) {
-            throw new AppError(
-              "forbidden",
-              "deciding your own request is not permitted (separation of duty)",
-            );
-          }
+          // Identity halves, per assertSeparationOfDuty.
+          assertSeparationOfDuty(request, actor, canSelfApprove());
           const claim = await claimPendingRequest(tx, request.id, {
             status,
             decidedBy: actor.sub,
@@ -337,8 +372,21 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         const request = await tx.approvalRequest.findUnique({ where: { id: req.params.id } });
         if (!request)
           throw new AppError("not_found", `approval request "${req.params.id}" not found`);
-        // `requestedBy` never changes, so gating on this read is sound.
-        if (request.requestedBy !== actor.sub) {
+        // `requestedOid` never changes, so gating on this read is sound. The
+        // identity halves (ADR-0048, review finding 3): under Entra the
+        // display `sub` is pairwise per client, so a requester who filed from
+        // the CLI and opens the SPA would otherwise be refused the withdraw
+        // of their own request. Null (a pre-re-base row) fails closed with
+        // the same unfreeze pointer as the decide paths.
+        if (request.requestedOid === null) {
+          throw new AppError(
+            "forbidden",
+            "this pre-re-base request cannot be withdrawn: the requester cannot be " +
+              "certified without their oid — run the principal-rebase cutover " +
+              "rewrite (docs/runbooks/principal-rebase-cutover.md, step 3) to unfreeze it",
+          );
+        }
+        if (request.requestedOid !== actor.oid) {
           throw new AppError("forbidden", "only the requester may withdraw a request");
         }
         if (request.status !== "pending") return alreadyDecided(request, ["withdrawn"]);

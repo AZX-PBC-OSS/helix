@@ -33,8 +33,12 @@ WEAKEN — confirmed live and **filed as #9**. The app-scoped secrets routes (`s
 
 The `ownsApp` gate landed (`dc2aacf`; extended to the secrets *list* route in
 `844a863`; #9 marked closed in `1701bdf`). `ownsApp` (`auth.ts:204`) allows the
-request only if the actor is the app's **owner** (`app.ownerId === actor.sub`)
-**or a platform-admin**, and it is enforced as a `preHandler` on every app-scoped
+request only if the actor is the app's **owner** (`app.ownerId === actor.sub`
+at the time of writing; **amended 2026-09-22** by ADR-0048 to
+`app.ownerId === actor.oid`, the Entra `oid` claim — the one principal id the
+edge session also holds, which the email-collapsed `sub` never was in
+production) **or a platform-admin**, and it is enforced as a `preHandler` on
+every app-scoped
 mutating route (`secrets.ts`, `versions.ts`, `apps.ts`) plus the secret routes and
 the credential-returning `GET /:slug/access/password`. In `data.ts` it initially
 reached only the item **delete** — see the amendment below. Adversarial coverage in

@@ -35,9 +35,9 @@ export const AppSchema = z.object({
    */
   url: z.url().optional(),
   /**
-   * Who owns this app — the portal actor that created it (`actor.sub`). The
-   * **identity** half: this is what `scope=mine` and `ownsApp` compare against,
-   * and it is never what a screen renders.
+   * Who owns this app — the creator's Entra `oid` (ADR-0048). The **identity**
+   * half: this is what `scope=mine` and `ownsApp` compare against, and it is
+   * never what a screen renders.
    *
    * Optional for the same reason as `url`: the CLI parses this schema, and rows
    * predating the approvals work carry no owner at all.
@@ -45,11 +45,12 @@ export const AppSchema = z.object({
   ownerId: z.string().optional(),
   /**
    * The owner's claims as captured at create time. The **display** half: render
-   * these, never compare them. `ownerId` only looks like an email by accident of
-   * the portal verifier collapsing the subject to
-   * `email ?? preferred_username ?? sub`, and it is slated to be re-based onto an
-   * opaque directory id — so display travels separately. Absent for rows created
-   * before the columns existed; fall back to `ownerId`.
+   * these, never compare them. `ownerId` is the Entra `oid` (ADR-0048) — an
+   * opaque directory object id since the re-base, opaque-by-accident (an
+   * email) on rows created before it — so display travels separately. Absent
+   * for rows created before the columns existed; fall back to `ownerId` (the
+   * pre-re-base rows where it is still an email are the one case where the
+   * fallback renders something readable).
    */
   ownerName: z.string().optional(),
   ownerEmail: z.string().optional(),

@@ -27,9 +27,12 @@ export type SessionKind = Extract<PrincipalKind, "user" | "password">;
 
 export interface SessionUser {
   /**
-   * IdP subject — Entra's **pairwise** `sub`, not the directory object id the
-   * field name suggests (see `OidcIdentity.oid`). The identity half: compared,
-   * never rendered.
+   * Entra's `oid` claim — the directory object id (ADR-0048): stable for the
+   * life of the user object, identical across every app registration in the
+   * tenant, and the canonical principal id in both planes — it joins to the
+   * portal's `App.ownerId` and partitions user-scoped `app_data` (see
+   * `OidcIdentity.oid`). The identity half: compared, never rendered. A `pw_*`
+   * pseudonym on shared-password sessions.
    */
   oid: string;
   /** Non-empty, for `GET /_api/me`; falls back to {@link oid}. */

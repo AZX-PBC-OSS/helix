@@ -1,17 +1,25 @@
 import { generateKeyPair, exportJWK, SignJWT, createLocalJWKSet, type JWK } from "jose";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDevTokenVerifier, createOidcVerifier, type TokenVerifier } from "./verifier.js";
+import {
+  DEV_TOKEN_ACTOR_OID,
+  createDevTokenVerifier,
+  createOidcVerifier,
+  type TokenVerifier,
+} from "./verifier.js";
 
 /**
  * The portal-side adversarial JWT suite (working agreement §6): every way a
  * bearer token can be wrong — issuer, audience, expiry, signature, algorithm
- * confusion, shape — must yield null (→ 401 via the chain), never an actor.
+ * confusion, shape, a missing canonical principal id — must yield null
+ * (→ 401 via the chain), never an actor.
  */
 
 type SignKey = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
 
 const ISSUER = "http://idp.test";
 const AUDIENCE = "urn:helix:portal";
+/** The default mint's `oid` claim — the canonical principal id (ADR-0048). */
+const FIXTURE_OID = "6b9f4d31-8e2a-4c07-9b5d-aaaaaaaaaaaa";
 
 let rightKey: SignKey;
 let rightPublicJwk: JWK;
@@ -41,6 +49,8 @@ interface MintOptions {
   issuer?: string;
   audience?: string;
   sub?: string | null;
+  /** `null` mints a token with NO oid claim (ADR-0048 decision 2 fixture). */
+  oid?: string | null;
   /** `null` mints a token with NO exp claim. */
   expiresIn?: string | null;
   /** When false, mints a token with NO iat claim. */
@@ -52,6 +62,7 @@ interface MintOptions {
 async function mint(opts: MintOptions = {}): Promise<string> {
   let jwt = new SignJWT({
     ...(opts.sub === null ? {} : { sub: opts.sub ?? "5f0d5d2a-1111-4abc-8def-000000000001" }),
+    ...(opts.oid === null ? {} : { oid: opts.oid ?? FIXTURE_OID }),
     ...opts.claims,
   })
     .setProtectedHeader({ alg: "RS256" })
@@ -63,11 +74,12 @@ async function mint(opts: MintOptions = {}): Promise<string> {
 }
 
 describe("createOidcVerifier", () => {
-  it("accepts a valid token and prefers email for the actor sub", async () => {
+  it("accepts a valid token; oid is the identity, email the actor sub", async () => {
     const actor = await verifier.verify(
       await mint({ claims: { email: "alice@azx.dev", name: "Alice Anders" } }),
     );
     expect(actor).toEqual({
+      oid: FIXTURE_OID,
       sub: "alice@azx.dev",
       via: "oidc",
       email: "alice@azx.dev",
@@ -171,6 +183,115 @@ describe("createOidcVerifier", () => {
     expect(await verifier.verify(await mint({ sub: null }))).toBeNull();
   });
 
+  /**
+   * ADR-0048 decision 2, the portal half: the `oid` claim is the canonical
+   * principal id — the configured claim, no fallback. A token without it
+   * cannot produce an actor: falling back to the pairwise `sub` would mint a
+   * silently wrong owner id that can never match the edge session's, which is
+   * the exact bug the re-base exists to kill. Entra emits `oid`
+   * unconditionally, so absence is a misconfigured issuer — and the refusal
+   * says so, with its own stable event name, so an operator is pointed at the
+   * claim rather than a signature hunt.
+   */
+  it("rejects a token without an oid claim — no fallback, one specific log line", async () => {
+    const warnings: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+    const loud = createOidcVerifier({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+      allowInsecure: true,
+      log: {
+        warn: (obj, msg) => warnings.push({ obj: obj as Record<string, unknown>, msg }),
+      },
+    });
+
+    expect(await loud.verify(await mint({ oid: null }))).toBeNull();
+    // Absent, empty, non-string, whitespace-only and oversized are all "no
+    // usable claim" — garbage gets the same fail-closed treatment as absence
+    // (the value flows into Actor.oid and App.ownerId, which want a bounded
+    // id; review finding 4).
+    for (const bad of [null, "", 42, "   ", "x".repeat(65)]) {
+      const token = bad === null ? await mint({ oid: null }) : await mint({ claims: { oid: bad } });
+      expect(await loud.verify(token)).toBeNull();
+    }
+
+    // Latched (review finding 5): the condition is static issuer
+    // misconfiguration, so exactly ONE line names the cause — the 401s are
+    // the per-request signal, and an unthrottled line would emit one warn
+    // per API call for as long as the misconfiguration stands.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.obj.event).toBe("auth.token_missing_principal");
+    expect(warnings[0]?.obj.claim).toBe("oid");
+    expect(warnings[0]?.obj.sub).toBe("5f0d5d2a-1111-4abc-8def-000000000001");
+    expect(warnings[0]?.msg).toContain("no usable oid claim");
+  });
+
+  /**
+   * The refusal lands on the REQUEST logger when one is supplied (review
+   * finding 5): `authenticate` passes `req.log`, so the line carries the
+   * `reqId` every other auth denial in the request path already carries —
+   * the construction-time `log` option is the fallback, not the channel.
+   */
+  it("logs the refusal on the request logger, latched, not the construction fallback", async () => {
+    const fallback: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+    const requestLog: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+    const v = createOidcVerifier({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+      allowInsecure: true,
+      log: { warn: (obj, msg) => fallback.push({ obj: obj as Record<string, unknown>, msg }) },
+    });
+
+    expect(
+      await v.verify(await mint({ oid: null }), {
+        log: { warn: (obj, msg) => requestLog.push({ obj: obj as Record<string, unknown>, msg }) },
+      }),
+    ).toBeNull();
+    expect(requestLog).toHaveLength(1);
+    expect(requestLog[0]?.obj.event).toBe("auth.token_missing_principal");
+    expect(fallback).toHaveLength(0);
+
+    // The latch held: a second refusal stays silent on both channels.
+    expect(await v.verify(await mint({ oid: null }))).toBeNull();
+    expect(requestLog).toHaveLength(1);
+    expect(fallback).toHaveLength(0);
+  });
+
+  /**
+   * The seam (ADR-0048 decision 2, as amended): on a non-Entra issuer the
+   * stable, client-independent id usually IS the `sub` (pairwise `sub` is
+   * Entra's deviation from the OIDC norm, not the norm), and the claim name is
+   * configurable for exactly that. `verifiersFromEnv` gates `sub` behind an
+   * explicit flag; these cases exercise the verifier once the choice is made.
+   */
+  it("reads the principal id from the configured claim — including a non-Entra sub", async () => {
+    const keycloak = createOidcVerifier({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      principalClaim: "sub",
+      getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+      allowInsecure: true,
+    });
+    const actor = await keycloak.verify(await mint({ oid: null, claims: { email: "a@b.dev" } }));
+    expect(actor?.oid).toBe("5f0d5d2a-1111-4abc-8def-000000000001");
+
+    const custom = createOidcVerifier({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      principalClaim: "uid",
+      getKey: createLocalJWKSet({ keys: [rightPublicJwk] }),
+      allowInsecure: true,
+    });
+    const customActor = await custom.verify(await mint({ claims: { uid: "issuer-user-id" } }));
+    expect(customActor?.oid).toBe("issuer-user-id");
+
+    // Whatever the claim, it is trimmed and bounded like the default.
+    const padded = await custom.verify(await mint({ claims: { uid: "  padded  " } }));
+    expect(padded?.oid).toBe("padded");
+    expect(await custom.verify(await mint({ claims: { uid: "x".repeat(65) } }))).toBeNull();
+  });
+
   it("rejects HS256 alg confusion (symmetric key = the public JWKS bytes)", async () => {
     const hsToken = await new SignJWT({ sub: "x" })
       .setProtectedHeader({ alg: "HS256" })
@@ -241,9 +362,13 @@ describe("createOidcVerifier transport security", () => {
 });
 
 describe("createDevTokenVerifier", () => {
-  it("matches only the exact token", async () => {
+  it("matches only the exact token, and carries the fixed synthetic oid", async () => {
     const dev = createDevTokenVerifier("secret-token", "dev@azx.io");
     expect(await dev.verify("secret-token")).toEqual({
+      // ADR-0048 decision 1: the dev-token actor's oid is a fixed synthetic
+      // value — never directory-id-shaped, so it can only ever own what it
+      // created itself in that same dev/CI environment.
+      oid: DEV_TOKEN_ACTOR_OID,
       sub: "dev@azx.io",
       via: "dev-token",
       groups: [],

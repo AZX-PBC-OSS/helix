@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { TokenVerifier } from "../plugins/auth.js";
-import type { PrismaClient } from "../db/client.js";
+import { Prisma, type PrismaClient } from "../db/client.js";
 import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../test/harness.js";
 
 // Two actors: an app owner (no admin group) and a platform admin.
@@ -12,8 +12,29 @@ const ADMIN_GROUP = "platform-admin";
 const verifiers: TokenVerifier[] = [
   {
     verify: async (t) => {
-      if (t === "owner") return { sub: OWNER, via: "oidc", groups: [] };
-      if (t === "admin") return { sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
+      if (t === "owner") return { oid: "oid-owner", sub: OWNER, via: "oidc", groups: [] };
+      if (t === "admin")
+        return { oid: "oid-admin", sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
+      // The same human as admin, presenting a DIFFERENT client's pairwise
+      // sub — exactly what Entra produces when an admin files from the CLI
+      // (`azx-cli`) and decides from the SPA (`azx-portal-web`). Same oid,
+      // different sub: the shape the old sub-comparing guards could not see
+      // through, and ADR-0048's reason to exist.
+      if (t === "admin-spa")
+        return {
+          oid: "oid-admin",
+          sub: "admin-spa-pairwise-sub",
+          via: "oidc",
+          groups: [ADMIN_GROUP],
+        };
+      // A different human whose display subject COLLIDES with the owner's —
+      // display halves match, identity halves do not.
+      if (t === "owner-sub-admin")
+        return { oid: "oid-other-admin", sub: OWNER, via: "oidc", groups: [ADMIN_GROUP] };
+      // The owner again from a different client (same oid, different sub) —
+      // for the withdraw-across-clients case.
+      if (t === "owner-spa")
+        return { oid: "oid-owner", sub: "owner-spa-pairwise-sub", via: "oidc", groups: [] };
       return null;
     },
   },
@@ -21,6 +42,10 @@ const verifiers: TokenVerifier[] = [
 
 const owner = { authorization: "Bearer owner" };
 const admin = { authorization: "Bearer admin" };
+/** The admin again, from the SPA client (same oid, different pairwise sub). */
+const adminViaSpa = { authorization: "Bearer admin-spa" };
+/** A different admin whose display sub collides with the owner's. */
+const ownerSubAdmin = { authorization: "Bearer owner-sub-admin" };
 
 let t: TestApp;
 
@@ -475,6 +500,130 @@ describe("deny / needs_changes / withdraw", () => {
     expect(self.statusCode).toBe(200);
     expect(self.json().status).toBe("withdrawn");
     expect(await auditActions(appId)).toContain("approval.withdraw");
+  });
+});
+
+/**
+ * ADR-0048 / review finding 3: the separation-of-duty and withdraw guards
+ * compare the **identity halves** (`actor.oid` vs `requestedOid`), never the
+ * display subjects. Under Entra the display `sub` is pairwise per client id,
+ * so the old `requestedBy === actor.sub` guards broke in both directions the
+ * moment a principal switched clients — an admin could approve their own
+ * CLI-filed request from the SPA, and a requester was refused their own
+ * withdraw. These cases pin both directions, plus the frozen pre-re-base row.
+ */
+describe("separation of duty compares the identity half (ADR-0048)", () => {
+  it("stores the requester's oid at file time, beside the display subject", async () => {
+    const { requestId } = await appWithPendingRequest();
+    const row = await t.prisma.approvalRequest.findUnique({ where: { id: requestId } });
+    expect(row?.requestedOid).toBe("oid-owner");
+    expect(row?.requestedBy).toBe(OWNER);
+  });
+
+  it("blocks self-approval across clients: same oid, different pairwise sub", async () => {
+    // Admin files from the CLI; the SAME admin returns from the SPA with a
+    // different sub. The old guard compared subs and let this through — the
+    // exact silently-disarmed separation of duty this re-base closes.
+    const slug = uniqueSlug();
+    await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: admin,
+      payload: { slug, displayName: "cross-client" },
+    });
+    const put = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: admin,
+      payload: { capabilities: { mcp: ["pagerduty"] } },
+    });
+    const requestId = put.json().pending as string;
+
+    const blocked = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: adminViaSpa,
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error.message).toMatch(/separation of duty/);
+  });
+
+  it("lets the requester withdraw across clients: same oid, different sub", async () => {
+    // The benign direction of the same shape — the owner filed from the CLI
+    // and opens the SPA. Under the old guard this was a 403 on their own
+    // request.
+    const { requestId } = await appWithPendingRequest();
+    const withdrawn = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/withdraw`,
+      // The owner again from a different client: same oid, different sub.
+      headers: { authorization: "Bearer owner-spa" },
+    });
+    expect(withdrawn.statusCode).toBe(200);
+    expect(withdrawn.json().status).toBe("withdrawn");
+  });
+
+  it("a display-subject collision neither blocks nor allows a decision", async () => {
+    // A different admin whose sub COLLIDES with the requester's display
+    // subject: identity halves differ, so the decide is allowed. Under the
+    // old guard this was blocked for the wrong reason — and its mirror image
+    // (same sub, same human, different client) was the live bug above.
+    const { requestId } = await appWithPendingRequest();
+    const decided = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: ownerSubAdmin,
+    });
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json().status).toBe("approved");
+  });
+
+  it("freezes a pre-re-base row (null requestedOid) on every guarded path", async () => {
+    // Fail-closed on the identity the row cannot certify: no decide, no
+    // withdraw — the cutover runbook's step-3 rewrite unfreezes it. The row
+    // is removed afterwards: it can never be decided, and a pending row a
+    // test leaves behind rides the admin queue forever.
+    const slug = uniqueSlug();
+    const created = await t.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: owner,
+      payload: { slug, displayName: "legacy" },
+    });
+    expect(created.statusCode).toBe(201);
+    const row = await t.prisma.approvalRequest.create({
+      data: {
+        appId: created.json().id as string,
+        status: "pending",
+        risk: "med",
+        // A REAL delta shape (path-keyed, DeltaSchema) — a garbage one would
+        // poison the admin queue's response parse for every later test.
+        deltas: [{ path: "mcp[+pagerduty]", to: "pagerduty" }] as unknown as Prisma.InputJsonValue,
+        baseSnapshot: {} as unknown as Prisma.InputJsonValue,
+        // The pre-re-base shape: identity half absent, display half present.
+        requestedOid: null,
+        requestedBy: OWNER,
+      },
+    });
+
+    try {
+      for (const [suffix, headers] of [
+        ["approve", admin],
+        ["deny", admin],
+        ["withdraw", owner],
+      ] as const) {
+        const res = await t.app.inject({
+          method: "POST",
+          url: `/api/v1/approvals/${row.id}/${suffix}`,
+          headers,
+          ...(suffix === "approve" ? {} : { payload: { note: "n" } }),
+        });
+        expect(res.statusCode, suffix).toBe(403);
+        expect(res.json().error.message).toMatch(/cutover/);
+      }
+    } finally {
+      await t.prisma.approvalRequest.delete({ where: { id: row.id } });
+    }
   });
 });
 

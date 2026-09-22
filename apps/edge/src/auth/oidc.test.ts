@@ -5,6 +5,7 @@ import {
   buildClientAuth,
   certThumbprintX5t,
   groupsClaimOverflowed,
+  identityFromClaims,
   OpenIdConnectClient,
 } from "./oidc.js";
 import { testAuthConfig } from "../test/config.js";
@@ -153,5 +154,103 @@ describe("OpenIdConnectClient discovery — issuer anchor", () => {
     // itself as ready (auth routes 503 while `!isReady()`).
     expect(client.isReady()).toBe(false);
     client.stop(); // clear the retry timer
+  });
+});
+
+/**
+ * ADR-0048 decision 2 (as amended), the unit half (the login refusal itself
+ * is driven end to end against a real issuer in flow.integration.test.ts,
+ * using dev-idp's `omitOidClaim`). What is under test here is the claim
+ * mapping: the configured principal claim — `oid` by default, whatever the
+ * issuer's stable id lives in otherwise — is the canonical principal id,
+ * taken from that claim only, trimmed and bounded, with no fallback.
+ */
+describe("identityFromClaims", () => {
+  it("takes the principal id from the oid claim — never the pairwise sub", () => {
+    const id = identityFromClaims(
+      {
+        sub: "pairwise-per-client-sub",
+        oid: "6b9f4d31-8e2a-4c07-9b5d-111111111111",
+        email: "a@b.dev",
+      },
+      "groups",
+    );
+    expect(id?.oid).toBe("6b9f4d31-8e2a-4c07-9b5d-111111111111");
+    expect(id?.email).toBe("a@b.dev");
+    expect(id?.displayName).toBe("a@b.dev");
+  });
+
+  it("reads whatever claim is configured — e.g. a non-Entra issuer's stable sub", () => {
+    // The seam: on Keycloak/Okta/dex/Google the stable, client-independent id
+    // IS the `sub`, and an `oid` claim never exists.
+    const id = identityFromClaims(
+      { sub: "stable-across-clients", email: "a@b.dev" },
+      "groups",
+      "sub",
+    );
+    expect(id?.oid).toBe("stable-across-clients");
+    // …and a custom claim name likewise, ignoring claims this issuer never sends.
+    const custom = identityFromClaims(
+      { sub: "pairwise", uid: "issuer-user-id", email: "a@b.dev" },
+      "groups",
+      "uid",
+    );
+    expect(custom?.oid).toBe("issuer-user-id");
+  });
+
+  it("refuses a token with no usable principal claim — absent, empty, or garbage", () => {
+    expect(identityFromClaims({ sub: "s", email: "a@b.dev" }, "groups")).toBeNull();
+    expect(identityFromClaims({ sub: "s", oid: "" }, "groups")).toBeNull();
+    expect(identityFromClaims({ sub: "s", oid: 42 }, "groups")).toBeNull();
+    expect(identityFromClaims({ sub: "s", oid: null }, "groups")).toBeNull();
+    // Garbage rather than absence — the same fail-closed treatment (review
+    // finding 4: the value flows into the RLS partition GUC and the stored
+    // sessions row, which want a bounded id).
+    expect(identityFromClaims({ sub: "s", oid: "   " }, "groups")).toBeNull();
+    expect(identityFromClaims({ sub: "s", oid: "x".repeat(65) }, "groups")).toBeNull();
+  });
+
+  it("trims the claim value before using it anywhere", () => {
+    const id = identityFromClaims({ sub: "s", oid: "  padded-oid  " }, "groups");
+    expect(id?.oid).toBe("padded-oid");
+    // The displayName rung gets the trimmed value too — it is the same id.
+    const bare = identityFromClaims({ sub: "s", oid: "  bare-oid  " }, "groups");
+    expect(bare?.displayName).toBe("bare-oid");
+  });
+
+  it("reads groups from the configured claim, tolerating absence and garbage", () => {
+    expect(identityFromClaims({ oid: "o", groups: ["g1", "g2"] }, "groups")?.groups).toEqual([
+      "g1",
+      "g2",
+    ]);
+    expect(identityFromClaims({ oid: "o", roles: ["admin"] }, "groups")?.groups).toEqual([]);
+    expect(identityFromClaims({ oid: "o", groups: "g1" }, "groups")?.groups).toEqual([]);
+    expect(identityFromClaims({ oid: "o", groups: ["g1", 7, null] }, "groups")?.groups).toEqual([
+      "g1",
+    ]);
+  });
+
+  it("ends the displayName ladder at the principal id — never the sub", () => {
+    // An issuer that sends no name, no email and no preferred_username: the
+    // contract is a non-empty displayName, and the principal id (never the
+    // pairwise sub) is the final rung.
+    const id = identityFromClaims({ sub: "pairwise-sub", oid: "the-oid" }, "groups");
+    expect(id?.displayName).toBe("the-oid");
+    expect(id?.name).toBeNull();
+    expect(id?.email).toBeNull();
+  });
+
+  it("keeps the capture ladders: name preferred, email before preferred_username", () => {
+    const id = identityFromClaims(
+      { oid: "o", name: " Alice ", email: "a@b.dev", preferred_username: "alice" },
+      "groups",
+    );
+    expect(id?.displayName).toBe(" Alice ");
+    expect(identityFromClaims({ oid: "o", preferred_username: "alice" }, "groups")?.email).toBe(
+      null,
+    );
+    expect(
+      identityFromClaims({ oid: "o", preferred_username: "not-an-address" }, "groups")?.displayName,
+    ).toBe("not-an-address");
   });
 });

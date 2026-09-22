@@ -35,6 +35,9 @@ export interface OpenRequestArgs {
   risk: Risk;
   /** Effective values of the touched areas at request time (conflict detect). */
   baseSnapshot: Record<string, unknown>;
+  /** The requester's identity half — their `oid` (ADR-0048). What the guards compare. */
+  requestedOid: string;
+  /** The requester's display half (`actor.sub`) — rendered and audited, never compared. */
   requestedBy: string;
   reason?: string;
 }
@@ -47,7 +50,8 @@ export async function createApprovalRequest(tx: Tx, args: OpenRequestArgs): Prom
       status: "pending",
       risk: args.risk,
       deltas: args.deltas as unknown as Prisma.InputJsonValue,
-      baseSnapshot: args.baseSnapshot as Prisma.InputJsonValue,
+      baseSnapshot: args.baseSnapshot as unknown as Prisma.InputJsonValue,
+      requestedOid: args.requestedOid,
       requestedBy: args.requestedBy,
       reason: args.reason ?? null,
     },
@@ -147,7 +151,10 @@ export async function applyCapabilityChange(
   opts: {
     appId: string;
     mutate: (effective: Capabilities) => Capabilities;
+    /** The actor's display half (`actor.sub`) — audit attribution. */
     actor: string;
+    /** The actor's identity half (`actor.oid`, ADR-0048) — requestedOid. */
+    actorOid: string;
     reason?: string;
   },
 ): Promise<ManifestUpdateResult> {
@@ -193,6 +200,7 @@ export async function applyCapabilityChange(
         deltas: elevatedDeltas,
         risk,
         baseSnapshot,
+        requestedOid: opts.actorOid,
         requestedBy: opts.actor,
         reason: opts.reason,
       });

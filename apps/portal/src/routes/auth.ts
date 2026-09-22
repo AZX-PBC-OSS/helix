@@ -17,12 +17,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Who am I, per the verifier chain — powers `helix whoami` and the v1 SPA.
+  // `oid` is the canonical principal id (ADR-0048): additive on the wire,
+  // echoed so an operator (or `helix whoami`) can collect the email→oid pair
+  // the cutover runbook needs without a database round-trip.
   app.get("/api/v1/me", { preHandler: authenticate }, async (req) => {
     const actor = requireActor(req);
     const canSearch = directorySearchAllowed(actor);
     const tier = directorySearchTier();
     const restriction = tier === "everyone" ? undefined : tier;
     return PortalMeResponseSchema.parse({
+      oid: actor.oid,
       sub: actor.sub,
       via: actor.via,
       ...(actor.name ? { name: actor.name } : {}),

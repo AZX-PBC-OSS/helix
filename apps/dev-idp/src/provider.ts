@@ -5,9 +5,10 @@ import {
   CLI_CLIENT_ID,
   EDGE_CLIENT_ID,
   EDGE_CLIENT_SECRET_DEFAULT,
+  FIXTURE_CLIENT_IDS,
   PORTAL_AUDIENCE,
   WEB_CLIENT_ID,
-  findFixtureUser,
+  fixtureUserForAccountId,
 } from "./fixtures.js";
 
 export interface DevIdpOptions {
@@ -17,6 +18,15 @@ export interface DevIdpOptions {
   edgeRedirectUris?: string[];
   /** Redirect URIs registered for the portal SPA client. */
   webRedirectUris?: string[];
+  /**
+   * Omit the `oid` claim from every token. **Test-only** — never set by the
+   * dev stack itself. Exists so the consumers' fail-closed suites can drive a
+   * real login whose token lacks the claim: ADR-0048 decision 2 makes absence
+   * a misconfiguration that refuses the login on both planes, and this is how
+   * that refusal is exercised against a real issuer rather than a forged
+   * token.
+   */
+  omitOidClaim?: boolean;
 }
 
 /** Per-boot RSA keypair; consumers re-fetch JWKS on unknown `kid`. */
@@ -33,6 +43,7 @@ function bootJwks(): { keys: object[] } {
  * instances possible.
  */
 export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provider {
+  const omitOidClaim = opts.omitOidClaim === true;
   const configuration: Configuration = {
     clients: [
       {
@@ -74,25 +85,41 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
 
     // Scope → claim mapping. With `conformIdTokenClaims: false` below these
     // land in the ID token itself (Entra-style), which the edge depends on —
-    // it never calls userinfo.
+    // it never calls userinfo. `oid` rides under `openid` because Entra emits
+    // it unconditionally there (ADR-0048 decision 2: no claim configuration,
+    // no scope, no consent needed to receive it).
     claims: {
-      openid: ["sub"],
+      openid: ["sub", "oid"],
       profile: ["name"],
       email: ["email"],
       groups: ["groups"],
     },
     conformIdTokenClaims: false,
 
+    // The account id is the **pairwise sub** minted for (client, user) at
+    // login (interactions.ts / pairwiseSub) — oidc-provider presents the
+    // account id as `sub` in the ID token and (for JWT access tokens) derives
+    // it from the token's own accountId, so sub is per-client by construction
+    // with no library subject_type machinery (which the public device-flow
+    // client cannot use anyway). `findAccount` resolves that id back to the
+    // fixture user; the stable cross-client identity is the `oid` claim.
+    //
+    // Known dev-only imperfection: a browser that logs into two clients shares
+    // one IdP session, and the second client's silent login reuses the first
+    // client's pairwise account id. Every consumer reads `oid` (correct) or
+    // the email, so nothing observes it; the test suites use fresh cookie jars
+    // per flow.
     async findAccount(_ctx, id) {
-      const user = findFixtureUser(id);
+      const user = fixtureUserForAccountId(id);
       if (!user) return undefined;
       return {
-        accountId: user.sub,
+        accountId: id,
         // `name` is spread in only when the fixture has one: a tenant that sends
         // no name claim is a real shape, and `name: undefined` would not
         // reproduce it faithfully.
         claims: () => ({
-          sub: user.sub,
+          sub: id,
+          ...(omitOidClaim ? {} : { oid: user.oid }),
           email: user.email,
           ...(user.name === undefined ? {} : { name: user.name }),
           groups: user.groups,
@@ -117,11 +144,15 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
       },
     },
 
-    // Actor attribution: the portal reads email/name from the access token.
+    // Actor attribution + the stable identity half: the portal reads
+    // email/name/oid from the access token. (`sub` needs no help — it is the
+    // token's accountId, the pairwise value, per-client by construction.)
     async extraTokenClaims(_ctx, token) {
-      const user = "accountId" in token ? findFixtureUser(token.accountId ?? "") : undefined;
+      const user =
+        "accountId" in token ? fixtureUserForAccountId(token.accountId ?? "") : undefined;
       if (!user) return {};
       return {
+        ...(omitOidClaim ? {} : { oid: user.oid }),
         email: user.email,
         ...(user.name === undefined ? {} : { name: user.name }),
         groups: user.groups,
@@ -155,6 +186,20 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
     jwks: bootJwks(),
     cookies: { keys: ["dev-idp-insecure-cookie-key"] },
   };
+
+  // Drift guard (fixtures.ts's FIXTURE_CLIENT_IDS docblock): a client
+  // registered here but missing from the tuple would mint account ids the
+  // reverse scan cannot resolve — every login through it fails with nothing
+  // pointing at the cause. Fail at construction instead, where the fix is a
+  // one-line edit away from the error.
+  for (const client of configuration.clients ?? []) {
+    if (!FIXTURE_CLIENT_IDS.includes(client.client_id as (typeof FIXTURE_CLIENT_IDS)[number])) {
+      throw new Error(
+        `client "${client.client_id}" is not in FIXTURE_CLIENT_IDS — add it there too, ` +
+          "or the account-id reverse lookup cannot resolve its logins",
+      );
+    }
+  }
 
   return new Provider(issuer, configuration);
 }

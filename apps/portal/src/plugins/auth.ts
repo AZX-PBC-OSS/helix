@@ -49,18 +49,43 @@ declare module "fastify" {
   }
 }
 
-function verifiersFromEnv(): TokenVerifier[] {
+function verifiersFromEnv(log: { warn(obj: object, msg: string): void }): TokenVerifier[] {
   const chain: TokenVerifier[] = [];
   const issuer = process.env.PORTAL_OIDC_ISSUER;
   const audience = process.env.PORTAL_OIDC_AUDIENCE;
+  // The principal-claim seam (ADR-0048 decision 2, as amended): `oid` by
+  // default; `sub` — stable on most issuers, pairwise per client on Entra —
+  // only behind an explicit flag, so the pairwise bug cannot come back
+  // through a typo. The edge holds the mirror-image rule on
+  // EDGE_OIDC_PRINCIPAL_CLAIM; both must be set to the same claim.
+  const principalClaim = process.env.PORTAL_OIDC_PRINCIPAL_CLAIM ?? "oid";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(principalClaim)) {
+    throw new Error(
+      `PORTAL_OIDC_PRINCIPAL_CLAIM must be 1-64 chars of [A-Za-z0-9_-] (got ${JSON.stringify(principalClaim)})`,
+    );
+  }
+  if (principalClaim === "sub" && process.env.PORTAL_OIDC_ALLOW_SUB_PRINCIPAL !== "true") {
+    throw new Error(
+      "PORTAL_OIDC_PRINCIPAL_CLAIM=sub is refused by default: Entra's sub is pairwise per " +
+        "client id — the exact bug ADR-0048 exists to kill. Set PORTAL_OIDC_ALLOW_SUB_PRINCIPAL=" +
+        "true only if this issuer's sub is stable across clients (Keycloak, Okta, dex, " +
+        "Google — not Entra).",
+    );
+  }
   if (issuer && audience) {
     chain.push(
       createOidcVerifier({
         issuer: issuer.replace(/\/+$/, ""),
         audience,
+        principalClaim,
         // The verifier requires https unless this is set; it refuses the
         // flag in production. Dev needs it: the local IdP is plain http.
         allowInsecure: process.env.PORTAL_OIDC_ALLOW_INSECURE === "true",
+        // Construction-time fallback logger for the one denial this verifier
+        // can log (ADR-0048 decision 2) — the request path passes `req.log`
+        // per call (see `authenticate`), which is where that line is meant to
+        // land; this covers callers with no request in hand.
+        log,
       }),
     );
   } else if (issuer || audience) {
@@ -90,7 +115,7 @@ export const authPlugin = fp<AuthPluginOptions>(
     if (process.env.PORTAL_ALLOW_SELF_APPROVE === "true" && process.env.NODE_ENV === "production") {
       throw new Error("PORTAL_ALLOW_SELF_APPROVE is a dev flag and is refused in production");
     }
-    const verifiers = opts.verifiers ?? verifiersFromEnv();
+    const verifiers = opts.verifiers ?? verifiersFromEnv(app.log);
     if (verifiers.length === 0) {
       throw new Error(
         "No auth verifier configured: set PORTAL_OIDC_ISSUER + PORTAL_OIDC_AUDIENCE " +
@@ -131,7 +156,10 @@ export async function authenticate(req: FastifyRequest): Promise<void> {
     throw new AppError("unauthorized", "missing bearer token");
   }
   for (const verifier of req.server.tokenVerifiers) {
-    const actor = await verifier.verify(token);
+    // The request logger rides along (ADR-0048 decision 2, review finding 5):
+    // a refusal line lands with the reqId every other auth denial here
+    // already carries, instead of on the root logger with no correlation key.
+    const actor = await verifier.verify(token, { log: req.log });
     if (actor) {
       req.actor = actor;
       return;
@@ -184,13 +212,14 @@ export function actorIsAdmin(actor: Actor): boolean {
 
 /**
  * Route `preHandler` gating an app-scoped MUTATING endpoint: the actor must own
- * the app (`ownerId === actor.sub`) or be a platform-admin. Runs AFTER
+ * the app (`ownerId === actor.oid`) or be a platform-admin. Runs AFTER
  * {@link authenticate}, so `req.actor` is already set.
  *
  * This closes the v0 BOLA (ADR-0007, issue #9): before this, "authenticated"
  * meant "authorized to mutate ANY app" — operator B could archive, redeploy,
  * rotate secrets on, or delete data from operator A's app. `ownerId` is set to
- * the creator's `actor.sub` at `POST /api/v1/apps` and this is the only gate
+ * the creator's `actor.oid` (the Entra `oid` claim — ADR-0048, the one id the
+ * edge session also holds) at `POST /api/v1/apps`, and this is the only gate
  * that reads it for mutations (the approvals list already reads it for reads).
  *
  * Resolves the app from `:slug` itself (a cheap indexed lookup) rather than
@@ -199,7 +228,7 @@ export function actorIsAdmin(actor: Actor): boolean {
  * where it's greppable, not buried in a handler body.
  *
  * Fail-closed: a null `ownerId` (which cannot arise for apps created through
- * the normal path) is not equal to any `actor.sub`, so only an admin passes.
+ * the normal path) is not equal to any `actor.oid`, so only an admin passes.
  */
 export async function ownsApp(req: FastifyRequest): Promise<void> {
   const actor = requireActor(req);
@@ -214,7 +243,7 @@ export async function ownsApp(req: FastifyRequest): Promise<void> {
   if (!row) {
     throw new AppError("not_found", `app "${slug}" not found`);
   }
-  if (row.ownerId === actor.sub || actorIsAdmin(actor)) {
+  if (row.ownerId === actor.oid || actorIsAdmin(actor)) {
     return;
   }
   req.log.warn(

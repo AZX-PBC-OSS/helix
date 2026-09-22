@@ -85,7 +85,11 @@ export async function devTokenRoutes(app: FastifyInstance): Promise<void> {
       const row = await app.prisma.appDevToken.create({
         data: {
           appId: appRow.id,
-          developerOid: actor.sub,
+          // The minting developer's canonical id (ADR-0048): the actor's oid,
+          // NOT the email-collapsed sub — the dev gateway resolves this into
+          // the dev-tier partition key and metering identity, and an opaque id
+          // is what those consumers want.
+          developerOid: actor.oid,
           tokenHash: hashDevToken(token),
           origins: body.origins,
           expiresAt: expiryFromNow(body.ttlDays ?? DEV_TOKEN_DEFAULT_TTL_DAYS),

@@ -20,11 +20,15 @@ never deployed.** Full notes: [`apps/dev-idp/README.md`](../../apps/dev-idp/READ
 
 ### Fixture users (`src/fixtures.ts`)
 
-| User | Groups | For |
-| --- | --- | --- |
-| `alice@azx.dev` | `eng-team`, `platform-admin` | admin / happy path |
-| `bob@azx.dev` | `eng-team` | regular user |
-| `mallory@azx.dev` | _(none)_ | group-denial tests |
+| User | `oid` tail | Groups | For |
+| --- | --- | --- | --- |
+| `alice@azx.dev` | `…-111111111111` | `eng-team`, `platform-admin` | admin / happy path |
+| `bob@azx.dev` | `…-222222222222` | `eng-team` | regular user |
+| `mallory@azx.dev` | `…-333333333333` | _(none)_ | group-denial tests |
+| `dana@azx.dev` | `…-444444444444` | `eng-team` | the no-`name`-claim shape |
+
+Full `oid` values in `src/fixtures.ts` (`findFixtureUser("<email>").oid`) — that constant is
+what both planes' correlation tests pin (ADR-0048 decision 7).
 
 ### Clients
 
@@ -34,15 +38,26 @@ never deployed.** Full notes: [`apps/dev-idp/README.md`](../../apps/dev-idp/READ
 - `azx-portal-web` (public) — code + PKCE for the browser SPA; `clientBasedCORS` opens the token
   endpoint to it.
 
-### Entra parity (group claims in the token)
+### Entra parity (token shape)
 
-The provider sets `conformIdTokenClaims: false`, so `groups` / `email` / `name` land **in the ID
-token itself** (not behind a userinfo round-trip), matching how Entra delivers group claims — the
+The provider sets `conformIdTokenClaims: false`, so `oid` / `groups` / `email` / `name` land **in
+the ID token itself** (not behind a userinfo round-trip), matching how Entra delivers them — the
 edge reads them straight off the token and never calls userinfo (`provider.ts`). Access tokens are
 **JWTs** (`accessTokenFormat: "jwt"` via the resource-indicator feature) with `aud:` the portal
 audience, so the portal verifies them statelessly over JWKS; `extraTokenClaims` copies
-`email`/`name`/`groups` onto the access token for actor attribution. Consent is always auto-granted,
-so the only interaction that ever renders is the login picker (`interactions.ts`).
+`oid`/`email`/`name`/`groups` onto the access token for actor attribution and the canonical
+principal id. Consent is always auto-granted, so the only interaction that ever renders is the
+login picker (`interactions.ts`).
+
+**Pairwise `sub` per client (ADR-0048 decision 7):** the subject oidc-provider presents for a
+(client, user) pair is a deterministic HMAC — 43 opaque characters, distinct per client, stable
+across restarts (`pairwiseSub` in `src/fixtures.ts`; the account id *is* that value, minted at
+login from the interaction's `client_id`). The same fixture user is therefore a *different* `sub`
+to `azx-cli`, `helix-edge` and `azx-portal-web`, exactly as against real Entra — the property that
+makes the two-plane identity bug reproducible locally instead of invisible. The stable
+cross-client identity is the **`oid` claim**, identical in every token. `buildProvider` /
+`startDevIdp` accept `omitOidClaim: true` — a test-only issuer whose tokens lack the claim, for
+driving the consumers' fail-closed refusal paths (ADR-0048 decision 2).
 
 ### Testing exports
 

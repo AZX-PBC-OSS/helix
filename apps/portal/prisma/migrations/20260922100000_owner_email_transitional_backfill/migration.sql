@@ -1,0 +1,27 @@
+-- ADR-0048 decision 6 / amendment finding 4: the transitional email join,
+-- mechanized. Apps whose rows predate migration 20260819214211 got the owner
+-- display columns as nullable-nullable with no backfill, and on the installs
+-- the inventory ran against, three such rows exist. Their `ownerId` is still
+-- an email — the pre-re-base portal collapsed the subject to
+-- `email ?? preferred_username ?? sub` — so the display half is recoverable
+-- from the identity half exactly once: NOW, before the cutover runbook
+-- rewrites `ownerId` onto the opaque directory `oid` and the email is lost
+-- from the row forever. (After that rewrite the owner is unnamed in the UI:
+-- `ownerName` is null, and `ownerEmail` would be too.)
+--
+-- Idempotent and self-limiting by construction:
+--   * a no-op once `ownerEmail` is captured (the WHERE guard),
+--   * a no-op once `ownerId` is oid-shaped rather than email-shaped (the
+--     regex guard — which also makes it a no-op on any install first deployed
+--     after the re-base, where `ownerId` was never an email),
+--   * safe to re-run at any point before or after the cutover.
+--
+-- `ownerName` is deliberately NOT recovered: an email is not a name, and the
+-- UI's `name ?? email ?? id` ladder renders the email — which is exactly the
+-- fallback the columns' docblocks promise.
+--
+-- Data-only on purpose: ADR-0048 decision 6 needs no DDL (every affected
+-- column is TEXT), and this is the one UPDATE the decision sanctions as a
+-- transitional email join — one-shot, never an access-control key.
+UPDATE apps SET "ownerEmail" = "ownerId"
+WHERE "ownerEmail" IS NULL AND "ownerId" ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$';

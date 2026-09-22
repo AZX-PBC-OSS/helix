@@ -10,6 +10,7 @@ export function testAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig 
     clientId: "helix-edge",
     credential: { kind: "secret", clientSecret: "test-secret" },
     groupsClaim: "groups",
+    principalClaim: "oid",
     scopes: "openid profile email groups",
     allowInsecureIdp: false,
     secret: TEST_AUTH_SECRET,

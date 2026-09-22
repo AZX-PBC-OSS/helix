@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PORTAL_AUDIENCE, runDeviceFlow, startDevIdp, type RunningDevIdp } from "@azx-pbc/dev-idp";
+import {
+  PORTAL_AUDIENCE,
+  findFixtureUser,
+  runDeviceFlow,
+  startDevIdp,
+  type RunningDevIdp,
+} from "@azx-pbc/dev-idp";
 import { createOidcVerifier } from "./verifier.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
@@ -8,7 +14,16 @@ import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
  * device-code login, and the verifier's real discovery + remote-JWKS path
  * (no injected keys). This is the proof that `helix login` tokens drive the
  * deploy API end to end — and that foreign tokens don't.
+ *
+ * It is also the **portal half of the ADR-0048 invariant**: the same fixture
+ * user's `oid` — asserted from the edge's own integration suite
+ * (`apps/edge/src/auth/flow.integration.test.ts`) as the session row's
+ * `userOid` and the `/_api/me` `id` — must be what this suite sees as
+ * `me.oid` and what `POST /apps` stores as `ownerId`. Same constant, both
+ * planes, no cross-package harness: that agreement is the whole decision.
  */
+
+const ALICE = findFixtureUser("alice@azx.dev")!;
 
 let idp: RunningDevIdp;
 let portal: TestApp;
@@ -34,16 +49,16 @@ afterAll(async () => {
 });
 
 describe("portal API with real device-flow tokens", () => {
-  it("authenticates /api/v1/me via discovery + remote JWKS", async () => {
+  it("authenticates /api/v1/me via discovery + remote JWKS, echoing the oid", async () => {
     const res = await portal.app.inject({
       url: "/api/v1/me",
       headers: { authorization: `Bearer ${accessToken}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ sub: "alice@azx.dev", via: "oidc" });
+    expect(res.json()).toMatchObject({ oid: ALICE.oid, sub: "alice@azx.dev", via: "oidc" });
   });
 
-  it("authorizes a mutation and attributes the audit event to alice", async () => {
+  it("authorizes a mutation; ownerId is alice's oid, the audit actor her email", async () => {
     const slug = uniqueSlug("oidc");
     const res = await portal.app.inject({
       method: "POST",
@@ -53,10 +68,25 @@ describe("portal API with real device-flow tokens", () => {
     });
     expect(res.statusCode).toBe(201);
 
+    // ADR-0048's invariant, the storage half: the app row's owner is the
+    // same principal id the edge session for this very login carries. Under
+    // Entra's pairwise subs (which dev-idp now reproduces), no other value
+    // the portal could store here would ever match.
+    const appRow = await portal.prisma.app.findUnique({ where: { slug } });
+    expect(appRow?.ownerId).toBe(ALICE.oid);
+
     const audit = await portal.prisma.auditEvent.findFirst({
       where: { action: "app.create", appId: res.json<{ id: string }>().id },
     });
     expect(audit?.actor).toBe("alice@azx.dev");
+
+    // And `scope=mine` finds it back by that same id.
+    const mine = await portal.app.inject({
+      url: "/api/v1/apps?scope=mine",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(mine.statusCode).toBe(200);
+    expect(mine.json<{ slug: string }[]>().map((a) => a.slug)).toContain(slug);
   });
 
   it("rejects a token from a different issuer with the same audience", async () => {
