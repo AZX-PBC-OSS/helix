@@ -6,11 +6,13 @@ import { z } from "zod";
  * Recorded because it cannot be reliably *inferred*. The obvious inference —
  * read it off `userOid`'s shape — is wrong: a shared-password pseudonym is
  * `pw_` + 12 base64url chars, and Entra's `sub` is 32 random bytes in the same
- * base64url alphabet, **which includes `_`**. So roughly one real subject in
- * 262,144 begins `pw_`, and a prefix test labels that person's calls as coming
- * from an anonymous shared-password visitor. A wrong attribution in an audit UI
- * is worse than no attribution, and the odds are not small enough to wave at:
- * one tenant with a few hundred thousand sign-ins expects a collision.
+ * base64url alphabet, **which includes `_`** — and rows predating ADR-0048's
+ * re-base still carry one, so the collision below is history, not hypothesis.
+ * So roughly one legacy subject in 262,144 begins `pw_`, and a prefix test
+ * labels that person's calls as coming from an anonymous shared-password
+ * visitor. A wrong attribution in an audit UI is worse than no attribution,
+ * and the odds are not small enough to wave at: one tenant with a few hundred
+ * thousand sign-ins expects a collision.
  *
  * So the edge writes down what it *knows* at capture time — it always knows,
  * because the kind is decided by which code path minted the principal — and the
@@ -22,7 +24,8 @@ import { z } from "zod";
  *   login, so unattributable *across* sessions by construction, not by omission.
  * - `anon` — a public-app visitor. No principal at all (app-data design §6);
  *   the ledger records the `"anon"` sentinel, collections record NULL.
- * - `dev` — a dev-token developer, keyed by the portal actor's subject.
+ * - `dev` — a dev-token developer, keyed by the minting developer's principal
+ *   id (`app_dev_token.developerOid`, the actor's `oid` since ADR-0048).
  *
  * Plain `TEXT` in the database with this array as the source of truth, matching
  * `GATEWAY_OUTCOMES` — an enum type would need a migration to add a kind.

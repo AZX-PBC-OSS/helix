@@ -21,7 +21,13 @@ import { z } from "zod";
  */
 export const MeResponseSchema = z.object({
   user: z.object({
-    /** IdP subject (Entra object id) — stable, safe to key app data on. */
+    /**
+     * The principal id — Entra's `oid` claim (the directory object id), stable
+     * for the life of the user object and identical across every app
+     * registration in the tenant (ADR-0048): safe to key app data on, and the
+     * user scope partitions on exactly this value. Opaque by design — never
+     * render it; `displayName` and `email` are the half fit to display.
+     */
     id: z.string(),
     displayName: z.string(),
     /**
@@ -45,6 +51,20 @@ export type MeResponse = z.infer<typeof MeResponseSchema>;
 
 /** `GET /api/v1/me` on the portal — the authenticated actor, echoed. */
 export const PortalMeResponseSchema = z.object({
+  /**
+   * The canonical principal id — Entra's `oid` claim from the access token
+   * (ADR-0048). This is what `App.ownerId` stores and what ownership compares;
+   * `sub` below is the display/audit half, never a join key.
+   *
+   * **Optional, not required**, for the same cross-version reason as the
+   * defaulted fields below: this schema parses `PortalClient.me()` in the
+   * *published* CLI, which routinely talks to portals older than itself, and
+   * portals are customer-deployed and version independently (ADR-0028). An
+   * older portal has no `oid` to echo — pre-ADR-0048 it has no such concept —
+   * and nothing in the CLI keys on it. A current portal always sends it (the
+   * dev-token actor gets a fixed synthetic value).
+   */
+  oid: z.string().optional(),
   sub: z.string(),
   /** How the actor was established: `oidc` or `dev-token`. */
   via: z.string(),

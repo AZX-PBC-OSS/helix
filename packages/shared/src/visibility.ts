@@ -44,13 +44,14 @@ export const VisibilityGroupIdsSchema = z.array(z.string().min(1)).max(MAX_VISIB
  * `internal` admits guests; `group` is the mode that narrows to a population.
  *
  * A future owner-plus-platform-admins mode reclaims the name `private`. It is
- * deliberately **absent rather than reserved**: it needs a principal identifier
- * the data and control planes do not yet share (the edge session's `oid` is the
- * edge client's `sub`, while `App.ownerId` is the portal actor's — different
- * identifier spaces under Entra's pairwise `sub`). A mode listed here that no
- * plane can evaluate would fall through the edge's gate and deny every request
- * including the owner's, so the label stays out until the check exists. See
- * TODO.md.
+ * deliberately **absent rather than reserved**: the identity prerequisite is
+ * now satisfied — ADR-0048 re-based both planes onto the Entra `oid` claim, so
+ * the edge session and `App.ownerId` finally name the same principal — but the
+ * *policy* half (the edge gate consulting the projected owner, the admin
+ * group id mirrored into edge config, the derived-ACL shape ADR-0048 decision
+ * 5 chose) is still unbuilt. A mode listed here that no plane can evaluate
+ * would fall through the edge's gate and deny every request including the
+ * owner's, so the label stays out until the check exists. See TODO.md.
  *
  * The name is now free in every direction: the expand/contract releases removed
  * the last legacy row and then the Postgres label itself, so nothing reads,

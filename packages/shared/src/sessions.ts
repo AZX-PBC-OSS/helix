@@ -30,8 +30,11 @@ export const SessionSummarySchema = z.object({
   /** App slug at read time; the FK guarantees the app row exists. */
   slug: z.string(),
   /**
-   * The identity half — Entra's pairwise `sub`, compared and joined on, never
-   * rendered except as a last resort (it identifies nobody).
+   * The identity half — Entra's `oid` claim since ADR-0048 (a pairwise `sub`
+   * on rows that predate the re-base; a `pw_*` pseudonym for shared-password
+   * visitors). Compared and joined on, never rendered except as a last
+   * resort: the platform deliberately holds no Graph `/users` grant, so no
+   * principal id it stores resolves to a name.
    */
   userOid: z.string(),
   /**
@@ -77,9 +80,10 @@ export type SessionListResponse = z.infer<typeof SessionListResponseSchema>;
 /** Body of `POST /api/v1/sessions/revoke` — kill every session of one user. */
 export const SessionRevokeRequestSchema = z.object({
   /**
-   * A pairwise `sub` (or `pw_*` pseudonym) as seen in the list. Opaque to the
-   * admin; copied from the row they clicked, so its shape is whatever the
-   * session rows hold — bounded only against abuse, not parsed.
+   * A session's principal id as seen in the list — the `oid` claim, a `pw_*`
+   * pseudonym, or a pre-re-base pairwise `sub`. Opaque to the admin; copied
+   * from the row they clicked, so its shape is whatever the session rows
+   * hold — bounded only against abuse, not parsed.
    */
   userOid: z.string().min(1).max(200),
 });
