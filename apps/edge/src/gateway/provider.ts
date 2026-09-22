@@ -112,11 +112,19 @@ export async function* mapAnthropicStream(body: Readable): AsyncIterable<LlmStre
     switch (event.type) {
       case "message_start":
         // `input_tokens` is the uncached remainder; cache classes are separate
-        // (0 today — we send no cache_control yet).
-        inputTokens = event.message?.usage?.input_tokens ?? 0;
-        outputTokens = event.message?.usage?.output_tokens ?? 0;
-        cacheReadInputTokens = event.message?.usage?.cache_read_input_tokens ?? 0;
-        cacheCreationInputTokens = event.message?.usage?.cache_creation_input_tokens ?? 0;
+        // (0 today — we send no cache_control yet). Counts are coerced at the
+        // wire boundary — see {@link wireCount}; an absent field stays 0, a
+        // present-but-unusable one throws.
+        inputTokens = wireCount(event.message?.usage?.input_tokens ?? 0, "input_tokens");
+        outputTokens = wireCount(event.message?.usage?.output_tokens ?? 0, "output_tokens");
+        cacheReadInputTokens = wireCount(
+          event.message?.usage?.cache_read_input_tokens ?? 0,
+          "cache_read_input_tokens",
+        );
+        cacheCreationInputTokens = wireCount(
+          event.message?.usage?.cache_creation_input_tokens ?? 0,
+          "cache_creation_input_tokens",
+        );
         break;
       case "content_block_delta":
         if (event.delta?.type === "text_delta" && event.delta.text) {
@@ -124,7 +132,9 @@ export async function* mapAnthropicStream(body: Readable): AsyncIterable<LlmStre
         }
         break;
       case "message_delta":
-        if (event.usage?.output_tokens != null) outputTokens = event.usage.output_tokens;
+        if (event.usage?.output_tokens != null) {
+          outputTokens = wireCount(event.usage.output_tokens, "output_tokens");
+        }
         if (event.delta?.stop_reason) stopReason = event.delta.stop_reason;
         break;
       case "error":
@@ -249,8 +259,10 @@ export async function* mapOpenAiStream(body: Readable): AsyncIterable<LlmStreamE
     }
     if (event.usage) {
       sawUsage = true;
-      inputTokens = event.usage.prompt_tokens ?? 0;
-      outputTokens = event.usage.completion_tokens ?? 0;
+      // Coerced at the wire boundary — see {@link wireCount} in this file for
+      // why the cast alone would concatenate or poison the accounting.
+      inputTokens = wireCount(event.usage.prompt_tokens ?? 0, "prompt_tokens");
+      outputTokens = wireCount(event.usage.completion_tokens ?? 0, "completion_tokens");
     }
   }
 
@@ -278,8 +290,34 @@ interface OpenAiChunk {
     delta?: { content?: string; refusal?: string };
     finish_reason?: string | null;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+  usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } | null;
   error?: { message?: string };
+}
+
+/**
+ * Validate one usage count read off the vendor SSE wire.
+ *
+ * The stream mapper is the boundary between a semi-trusted upstream (any
+ * OpenAI-/Anthropic-compatible origin the operator wired, relayed through
+ * egress) and the edge's accounting, so the counts are coerced here, not
+ * trusted through the `JSON.parse … as` cast. Two failure modes, both real:
+ * a numeric-string count (`"prompt_tokens": "12"`) reaching the `+`
+ * aggregations concatenates instead of summing (`"12" + 0 + 0` → `"120"`), and
+ * a non-finite one (`1e999` overflows to Infinity through `JSON.parse`)
+ * poisons `costUsd` → `Math.round(Infinity)` fails the ledger INSERT and loses
+ * the metering row. Coerce numeric strings (some proxies send them), refuse
+ * everything else — same shape as `parseExpiresOn` in the blob/secret token
+ * providers.
+ *
+ * Absent stays 0 (`?? 0` at the call sites): an absent field is the vendor not
+ * reporting a class, which the existing handling already covers.
+ */
+function wireCount(raw: unknown, field: string): number {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isInteger(n) || n < 0) {
+    throw new LlmProviderError(`upstream usage block has an invalid ${field}`);
+  }
+  return n;
 }
 
 /** A provider call that failed upstream — the handler maps it to an error response. */
@@ -357,19 +395,21 @@ export class AnthropicProvider implements LlmProvider {
   }
 }
 
-/** The Anthropic SSE event shapes we read (others are ignored). */
+/** The Anthropic SSE event shapes we read (others are ignored). Usage counts
+ * are `unknown` on purpose: they are coerced through {@link wireCount}, never
+ * trusted via this cast. */
 interface AnthropicEvent {
   type: string;
   message?: {
     usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
+      input_tokens?: unknown;
+      output_tokens?: unknown;
+      cache_read_input_tokens?: unknown;
+      cache_creation_input_tokens?: unknown;
     };
   };
   delta?: { type?: string; text?: string; stop_reason?: string };
-  usage?: { output_tokens?: number };
+  usage?: { output_tokens?: unknown };
   error?: { message?: string };
 }
 

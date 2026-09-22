@@ -227,6 +227,54 @@ describe("SSE parser hardening (issue #12)", () => {
     expect(collectText(events)).toBe(TEXT);
   });
 
+  /**
+   * Bug-class ledger (sister project): numeric coercion. The usage counts come
+   * off the vendor SSE wire — for the egress-routed provider that is whatever
+   * OpenAI-compatible/Anthropic-compatible origin the operator wired — so they
+   * must be coerced to Numbers at the boundary. A string count reaching the `+`
+   * aggregations (`usageBlock`, `costUsd`) would concatenate or poison the cost
+   * instead of summing.
+   */
+  it("coerces numeric-string usage counts instead of concatenating them", async () => {
+    const sse = [
+      `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: "11", output_tokens: "0" } } })}`,
+      `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: "4" } })}`,
+      `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}`,
+      "",
+    ].join("\n\n");
+    const events = await collect(mapAnthropicStream(Readable.from([Buffer.from(sse)])));
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.usage).toEqual({
+      inputTokens: 11, // not "110..." — coerced
+      outputTokens: 4,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
+  });
+
+  /**
+   * Non-finite / non-numeric counts must not reach the cost accumulator: an
+   * Infinity through `costUsd` and `Math.round` fails the ledger INSERT and
+   * loses the metering row. Fail closed, like an `error` SSE frame does.
+   */
+  it("throws on non-finite or non-numeric usage counts", async () => {
+    for (const raw of [
+      // `1e999` overflows to Infinity inside JSON.parse — the only way a
+      // non-finite count can ride the wire (JSON.stringify nulls it).
+      '{"type":"message_start","message":{"usage":{"input_tokens":1e999,"output_tokens":0}}}',
+      '{"type":"message_start","message":{"usage":{"input_tokens":"abc","output_tokens":0}}}',
+    ]) {
+      const sse = [
+        `event: message_start\ndata: ${raw}`,
+        `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}`,
+        "",
+      ].join("\n\n");
+      await expect(
+        collect(mapAnthropicStream(Readable.from([Buffer.from(sse)]))),
+      ).rejects.toBeInstanceOf(LlmProviderError);
+    }
+  });
+
   it("destroys a separator-less stream once it exceeds the buffer cap", async () => {
     async function* neverSeparates() {
       // >1 MiB of data with no blank-line record separator.

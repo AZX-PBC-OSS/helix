@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { buildClientAuth, certThumbprintX5t, groupsClaimOverflowed } from "./oidc.js";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  buildClientAuth,
+  certThumbprintX5t,
+  groupsClaimOverflowed,
+  OpenIdConnectClient,
+} from "./oidc.js";
+import { testAuthConfig } from "../test/config.js";
 
 /**
  * Certificate (private_key_jwt) client auth — the path for Entra tenants whose
@@ -95,5 +103,55 @@ describe("groupsClaimOverflowed", () => {
     for (const bad of [null, "src1", 42, []]) {
       expect(groupsClaimOverflowed({ _claim_names: bad }, "groups")).toBe(false);
     }
+  });
+});
+
+/**
+ * Mix-up anchor (bug-class ledger): the discovery document's `issuer` claim must
+ * be validated against the URL it was fetched from before anything trusts it —
+ * a document that names a different issuer is either a misconfigured IdP or an
+ * answer from the wrong host, and token requests minted against it would send
+ * authorization codes to a mix-up attacker. openid-client enforces the match
+ * (throws "discovered metadata issuer does not match the expected issuer"); this
+ * pin holds that the enforcement is actually on the edge's discovery path — a
+ * swap of the discovery call or a library downgrade fails here, not in prod.
+ */
+describe("OpenIdConnectClient discovery — issuer anchor", () => {
+  let server: ReturnType<typeof createServer>;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      // A well-formed discovery document whose `issuer` names some OTHER host
+      // than the one it was served from.
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          issuer: "https://evil.example",
+          authorization_endpoint: "https://evil.example/authorize",
+          token_endpoint: "https://evil.example/token",
+          jwks_uri: "https://evil.example/jwks",
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  it("refuses to become ready when the discovered issuer does not match the fetch URL", async () => {
+    const client = new OpenIdConnectClient(
+      testAuthConfig({
+        issuerUrl: baseUrl,
+        allowInsecureIdp: true, // loopback http fixture
+      }),
+      "https://auth.local.helix.azxlabs.io:8080/callback",
+      { info: () => {}, warn: () => {} },
+    );
+    await client.start();
+    // Discovery failed and scheduled its 5s retry; the client must NOT present
+    // itself as ready (auth routes 503 while `!isReady()`).
+    expect(client.isReady()).toBe(false);
+    client.stop(); // clear the retry timer
   });
 });
