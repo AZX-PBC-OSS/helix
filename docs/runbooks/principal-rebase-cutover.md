@@ -105,8 +105,9 @@ user-scoped rows. This step is independent of step 3 — order doesn't matter.
 
 ### 3. Re-base the owner/requester ids — one UPDATE per pair
 
-As the portal's database role (the exec pattern below), for each email→oid
-pair:
+As the portal's database role, on the job channel (see "Running SQL against a
+deployed install" below — this is a transaction, so it does not want the exec
+channel), for each email→oid pair:
 
 ```sql
 UPDATE apps SET "ownerId" = '<oid>' WHERE "ownerId" = '<email>';
@@ -149,25 +150,42 @@ should print the oid that now sits in `ownerId`.
 
 ## Running SQL against a deployed install
 
-The database is private-network only; there is no psql hop. Use the
-established `az containerapp exec` pattern from `infra/azure/README.md`
-(§"step 5" area) with the corrections ADR-0048's amendment records at its end:
-the exec API splits `--command` on whitespace, the command rides a ~2 KB
-websocket URL, and the endpoint throttles at roughly five calls per ten
-minutes. What works: base64 the JS and run it as
-`node -e eval(Buffer.from('…','base64').toString())`, one statement per call,
-serialized with a pause between; `pg` is reachable only via its
-`/app/node_modules/.pnpm/pg@*/node_modules/pg` path. The working runner lives
-in the ops repo — use it rather than re-deriving the incantation.
+The database is private-network only — no public endpoint, and on the reference
+installs no gateway, bastion or jump box either, so there is no psql hop from a
+workstation. Everything runs inside the VNet, and there are **two channels with
+different shapes**. Pick by the task, not by habit:
 
-**Budget for the throttle.** Step 3 is two UPDATEs per email→oid pair plus one
-dev-token revoke — thirteen calls for the reference install's six owners,
-which at ~5 calls / 10 min is half an hour of serial exec. Batch instead: the
-pairs are a few hundred bytes of JSON, well inside the ~2 KB URL cap, so the
-whole re-base for one install can ride ONE base64'd script that loops over
-the pairs and reports per-statement row counts. Confirm the ops-repo runner
-does that before the day; if it doesn't, extend it — do not hand-run thirteen
-throttled calls.
+| | a quick look | a change |
+| --- | --- | --- |
+| mechanism | `az containerapp exec` into the portal app | a throwaway `postgres:16` job in the VNet |
+| round trip | seconds | a minute or two |
+| SQL size | ~2 KB, whitespace-hostile | unlimited |
+| transactions | no | yes — real psql, `ON_ERROR_STOP=1` |
+| good for | the preflight inventory, verification | **steps 2-4 below** |
+
+**Step 3 is a transactional, multi-statement write, so it belongs on the job
+channel** — two UPDATEs per email→oid pair plus the dev-token revoke, which
+wants to be all-or-nothing and wants readable row counts. Running it through
+exec is possible but means base64'ing a program, fighting a 2 KB URL and
+batching to stay inside a rate limit, none of which buys anything here.
+
+If you do use the exec channel for a read, three edges present as something
+else: `--command` is split on whitespace and quotes do not group (base64 the
+program and run `node -e eval(Buffer.from('…','base64').toString())`); the
+command rides a ~2 KB websocket URL and overflowing it returns a **404** that
+reads as a wrong resource name; and the endpoint is documented as throttling
+around five calls per ten minutes. Also `pg` resolves only via
+`/app/node_modules/.pnpm/pg@*/node_modules/pg`.
+
+On the job channel, the output is the part that surprises people: `az
+containerapp job logs show` may return **nothing** for a short job, with no
+error. The output is not lost — read it from the environment's Log Analytics
+workspace, filtering on `ContainerJobName_s` and ordering by `_timestamp_d`
+rather than `TimeGenerated`, which is stamped per batch and scrambles psql's
+table output.
+
+Runners for both live in the ops repo (`portal-query.sh`, `portal-sql.sh`,
+`rebase-principals.sh`) — use them rather than re-deriving any of this.
 
 **One-way doors.** After `UPDATE apps SET "ownerId" = '<oid>' WHERE "ownerId"
 = '<email>'` runs, the email matches zero rows: a WRONG oid for an owner
