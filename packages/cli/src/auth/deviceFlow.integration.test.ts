@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   approveDeviceFlow,
   decodeJwtPayload,
+  findFixtureUser,
   startDevIdp,
   TestHttpSession,
   type RunningDevIdp,
@@ -50,11 +51,15 @@ describe("device flow against dev-idp", () => {
     const claims = decodeJwtPayload(tokens.accessToken);
     expect(claims.aud).toBe("urn:helix:portal");
     expect(claims.email).toBe("alice@azx.dev");
+    // The canonical principal id rides the token (ADR-0048) — stable across
+    // clients, unlike the pairwise sub the CLI's own client gets.
+    expect(claims.oid).toBe(findFixtureUser("alice@azx.dev")!.oid);
     expect(lines.join("\n")).toMatch(/confirm the code: [A-Z]{4}-[A-Z]{4}/i);
 
     const renewed = await refreshGrant(idp.issuer, "azx-cli", tokens.refreshToken as string);
     expect(renewed.accessToken).toBeTruthy();
     expect(renewed.accessToken).not.toBe(tokens.accessToken);
     expect(decodeJwtPayload(renewed.accessToken).email).toBe("alice@azx.dev");
+    expect(decodeJwtPayload(renewed.accessToken).oid).toBe(claims.oid);
   });
 });
