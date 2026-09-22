@@ -320,7 +320,12 @@ async function seedRegistry() {
     ["smoke-internal", "internal"],
   ]) {
     await check(`live ${visibility} app (${slug})`, async () => {
-      const { body: apps } = await jget(`${PORTAL}/api/v1/apps`, { headers: auth });
+      // scope=all, not the default mine: the question is "does this slug exist
+      // with a live version", not "is it mine". A principal-id re-base (e.g.
+      // ADR-0048 changing the dev-token actor's oid) otherwise makes rows
+      // seeded by an older build invisible here, and the create below fails
+      // with slug_taken while the edge still serves the old app.
+      const { body: apps } = await jget(`${PORTAL}/api/v1/apps?scope=all`, { headers: auth });
       const existing = Array.isArray(apps) ? apps.find((a) => a.slug === slug) : null;
       let how = "reused";
       if (!existing?.currentVersionId) {
