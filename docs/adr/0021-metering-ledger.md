@@ -164,3 +164,18 @@ What this does and doesn't change:
   ledger's own contents — `path` (2026-08-28) and the directly-identifying
   `userName`/`userEmail` (2026-08-31) on a table with no `DELETE` grant and no
   pruning job — not on the PM brief. It remains tracked in `TODO.md`.
+
+## Amendment (2026-09-22): `userOid` provenance changed — ADR-0048
+
+The 2026-08-31 amendment above describes `userOid` as "Entra's `sub`, pairwise
+per client id". ADR-0048 re-based the canonical principal identifier onto
+Entra's `oid` claim in both planes, so rows written after that change carry the
+directory object id instead — still an opaque id this table only stores, never
+renders. Nothing about this amendment's reasoning moves: the display half
+stays captured at write, the ledger keeps its historical subjects (a row
+records what was true at write time, so pre-re-base rows keep their pairwise
+subs — `COUNT(DISTINCT "userOid")` rollups double-count a user straddling the
+cutover, cosmetic, once), and the platform still holds no Graph `/users`
+grant, so the id still resolves to nobody *by policy* rather than by
+pairwise-ness. The erasure analysis in `docs/runbooks/user-labels-and-erasure.md`
+is unchanged in every particular.

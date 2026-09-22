@@ -8,8 +8,10 @@ you promise anything, which of it the platform can actually erase.
 Someone asks what Helix holds about an app user, or asks for it to be deleted.
 Since 2026-08-31 the platform captures a display half — `userName` / `userEmail`,
 the directory claims as they read at the time of the call — alongside the opaque
-`userOid`. That was added because `userOid` is Entra's pairwise `sub` and
-identifies nobody, which made the audit log unreadable. The cost is that real
+`userOid`. That was added because `userOid` identifies nobody the platform can
+resolve — it is Entra's `oid` claim since the ADR-0048 re-base (a pairwise `sub`
+on older rows), and the platform deliberately holds no Graph `/users` grant —
+which made the audit log unreadable. The cost is that real
 names and addresses now sit in three tables, and **one of them cannot be deleted
 from by any role.**
 

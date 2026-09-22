@@ -114,8 +114,8 @@ is also the one package on `moduleResolution: bundler` (the rest are nodenext).
     grouped by user into one card per principal, with a user-level **Revoke** that POSTs
     `/api/v1/sessions/revoke` (a confirm dialog states the blast radius — every app, next
     request — before anything fires). The card header renders `Principal` on the captured
-    `userName`/`userEmail` (the audit page's identity-vs-display split: `userOid` is a pairwise
-    `sub` and identifies nobody), and each session row carries its app slug, its **group
+    `userName`/`userEmail` (the audit page's identity-vs-display split: `userOid` is an opaque
+    principal id that identifies nobody the platform can resolve), and each session row carries its app slug, its **group
     snapshot** as chips — names resolved server-side through the directory seam, raw ids when
     the deployment has no Graph grant, with a banner saying so — plus signed-in, refresh-due
     (an "overdue" badge marks exactly the stale-snapshot window an admin might be here to kill)

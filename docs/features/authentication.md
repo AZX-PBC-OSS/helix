@@ -30,7 +30,8 @@ single-use **handoff token** carries the result to the app subdomain, which mint
    redirects), generates state/nonce/PKCE, stashes them in a signed `__Host-oidc-flow` cookie
    (10 min), and redirects to the IdP (`prompt=none` when silent-refreshing).
 2. **`GET /callback`** on the auth host — verifies and burns the flow cookie, re-resolves the
-   app (it may have been archived mid-flow), does the PKCE code exchange, extracts `oid` /
+   app (it may have been archived mid-flow), does the PKCE code exchange, extracts the `oid`
+   claim (the directory object id, ADR-0048 — a token without it fails the login, no fallback),
    `displayName` / `groups`, runs the **visibility check** (`visibilityAllows`), creates a
    **pending** session row (no `tokenHash` yet), mints the handoff JWS (`jti=sessionId`,
    `aud=appId`, ~30 s), and redirects to `<slug>/_auth/complete?token=…`.
@@ -200,8 +201,9 @@ preHandler).
    attributed to `PORTAL_DEV_ACTOR`. **Refused in production** (throws at startup).
 
 Supporting routes: **`GET /api/v1/auth/config`** (public — issuer + client IDs for the CLI/web
-to bootstrap) and **`GET /api/v1/me`** (echoes the authenticated actor `{sub, via, name?,
-email?}`, powering `helix whoami`). Tested in `apps/portal/src/auth/oidc.integration.test.ts`.
+to bootstrap) and **`GET /api/v1/me`** (echoes the authenticated actor `{oid?, sub, via, name?,
+email?}` — the `oid` is the canonical principal id since ADR-0048, additive so older portals
+omit it — powering `helix whoami`). Tested in `apps/portal/src/auth/oidc.integration.test.ts`.
 
 **Authorization model (v0):** authz is **flat** — any authenticated portal-audience principal may
 mutate ("authenticated == authorized"), the same level as the old shared token, now attributed in

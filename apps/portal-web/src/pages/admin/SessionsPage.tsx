@@ -31,7 +31,9 @@ import { principalLabel, timeAgo, timeUntil } from "../../lib/format";
  * to happen, which is why this page is a list and a button rather than a
  * dashboard: the mechanism is one DELETE, and the value here is *aiming* it —
  * which is also why the rows carry the display half (name, address) captured at
- * login: `userOid` is a pairwise `sub` and identifies nobody.
+ * login: `userOid` is an opaque principal id (Entra's `oid` claim since
+ * ADR-0048; a pairwise `sub` on rows older than that) and identifies nobody
+ * the platform can resolve.
  *
  * Grouping is client-side because the operation is user-level: one revoke
  * deletes every row of the subject, across apps. The group snapshot rides each

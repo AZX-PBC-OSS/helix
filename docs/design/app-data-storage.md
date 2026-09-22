@@ -104,7 +104,7 @@ Caveats that make RLS actually hold:
 Replace the architecture's implicit two scopes with three named **access patterns**. The scope *is* the security boundary, so it is named explicitly and is immutable for a given key/collection.
 
 ### 3.1 `user` — per-user private store (the safe default)
-Auto-partitioned by the authenticated user. The gateway injects `WHERE appId = ? AND userOid = ?` from the **session**, never from app input. The untrusted frontend cannot phrase a query that returns another user's row.
+Auto-partitioned by the authenticated user. The gateway injects `WHERE appId = ? AND userOid = ?` from the **session**, never from app input — `userOid` is the Entra `oid` claim captured at login (ADR-0048), stable for the life of the user object and the same value `/_api/me` exposes as `id`. The untrusted frontend cannot phrase a query that returns another user's row.
 
 - Verbs (all gated, all caller-scoped): `PUT /_api/data/user/:key`, `GET /_api/data/user/:key`, `DELETE /_api/data/user/:key`, `GET /_api/data/user` (list the caller's own keys).
 - Use: "save my todo list," "my chat history," per-user preferences.

@@ -4,10 +4,11 @@ import { createPrismaClient } from "../src/db/client.js";
  * Recover a display half for collection rows written before the
  * `userName`/`userEmail` columns existed.
  *
- * Those rows carry only `userOid` — Entra's pairwise `sub`, which resolves to
- * nobody — so the portal renders them as an opaque string. The only id→name map
- * the platform has ever held is the `sessions` table, and this copies what is
- * left of it onto the rows it can reach.
+ * Those rows carry only `userOid` — an opaque principal id (Entra's `oid`
+ * claim since ADR-0048, a pairwise `sub` on rows older than that), which
+ * resolves to nobody — so the portal renders them as an opaque string. The
+ * only id→name map the platform has ever held is the `sessions` table, and
+ * this copies what is left of it onto the rows it can reach.
  *
  * **`gateway_calls` is deliberately NOT covered, and cannot be.** The ledger is
  * append-only *by grant*: `helix_edge` holds INSERT (plus SELECT for budget

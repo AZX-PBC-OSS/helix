@@ -25,15 +25,16 @@ is what makes it mutable by its owner again.
 
 ## What to pass
 
-The value the portal would see as `actor.sub`. The verifier collapses the subject
-to `email ?? preferred_username ?? sub` (`apps/portal/src/auth/verifier.ts`), so
-for an ordinary Entra user that is **their email address**. Getting this wrong
-assigns the apps to a principal who will never sign in as it; re-running with the
-right value will not fix it, because the rows are no longer ownerless — see
-_Correcting a bad run_ below.
+The adopting operator's Entra `oid` — the canonical principal id since
+[ADR-0048](../adr/0048-canonical-principal-oid.md), the value `POST
+/api/v1/apps` stores and `ownsApp` compares. `helix whoami` prints it (as does
+`GET /api/v1/me`). Getting this wrong assigns the apps to a principal who will
+never sign in as it; re-running with the right value will not fix it, because
+the rows are no longer ownerless — see _Correcting a bad run_ below.
 
-Confirm what a given operator's subject looks like by having them hit
-`GET /api/v1/me` (the portal's user chip shows the same value).
+(Rows adopted before the ADR-0048 re-base carry an email-shaped `ownerId`
+instead; the [cutover runbook](principal-rebase-cutover.md) rewrites those —
+this script only ever touches `ownerId IS NULL`.)
 
 ## Run it
 

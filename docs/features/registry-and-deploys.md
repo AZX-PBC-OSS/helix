@@ -129,7 +129,7 @@ primitive, not an observability sink).
 
 ## Planned / not yet built
 
-- **Per-app RBAC** — `App.ownerId` is recorded at create, but per-app owner/editor/viewer roles
+- **Per-app RBAC** — `App.ownerId` (the creator's Entra `oid`, ADR-0048) is recorded at create, but per-app owner/editor/viewer roles
   are not yet enforced. v0 authz is deliberately flat (authenticated == authorized, ADR-0007): any
   authenticated portal principal may mutate **any** app and manage **any** app's secrets — the app-
   scoped mutating + secret routes now enforce an `ownsApp` owner-or-admin check, so the BOLA/IDOR
