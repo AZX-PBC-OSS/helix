@@ -76,4 +76,14 @@ must keep it (or an equivalent network egress control). Data-plane privacy
 (private endpoints on Postgres/Blob/KV) is independent of the flag. See
 `infra/azure/README.md` → "Optional: the egress firewall".
 
+**Accepted-risk record (2026-09-22):** both current production installs run with
+`deployFirewall = false` — a deliberate per-install cost decision, verified
+structurally (no firewall resource provisioned, route tables empty) rather than
+assumed. Both are trusted single-tenant installs, the case this note calls
+acceptable; the acceptance, and the preconditions for turning it back on (the
+allow-list must also cover the platform's own dependencies — Key Vault and the
+Entra login host), live in the operator's private deployments repo. The
+"primary control" claim above therefore describes the reference posture, not
+the present live one.
+
 **Perf note (Resolved):** egress originally built a **fresh undici `Agent` per request** because the dispatcher carried the per-request pinned IP + `servername` (SNI), which defeated cross-request connection pooling (a TCP+TLS handshake per outbound call) — an accepted simplicity-for-isolation trade. This is now **optimized**: `makeProxyHandler` holds **one long-lived shared `Agent`** (closed on app teardown via a Fastify `onClose` hook) whose connector — built with `buildConnector` — runs `resolveAndValidate` and **pins the socket to the validated IP on every new connection**, then hands off to the default connector with `servername` pinned to the real hostname. The request dials the **real origin** (undici pools by origin and derives Host/SNI from it), so keep-alive is recovered (a `proxy.test.ts` case asserts one TCP connection across six requests). The IP-pin is unweakened: validation runs per *new* socket, a pooled/keep-alive socket is already bonded to a validated IP (so reuse can't reach a rebound address and the next fresh socket re-validates), and a blocked/unresolvable host throws `SsrfBlockedError` from the connector, which undici propagates verbatim to the `request()` rejection where the handler maps it to `403 blocked` — preserving the old upfront-check semantics.
