@@ -72,13 +72,20 @@ function parseArgs(argv: string[]): Options {
         "(use the operator's oid from `helix whoami`, not an email address)",
     );
   }
+  // An email-shaped owner id is the pre-re-base value and can never match an
+  // actor now (ADR-0048) — and because this script only ever touches
+  // `ownerId IS NULL` rows, a bad run is not recoverable by re-running with
+  // the right value. Refuse the known-wrong shape outright; the display half
+  // is what `--email` is for.
+  if (ownerId.includes("@")) {
+    throw new Error(
+      `"${ownerId}" looks like an email address — post-ADR-0048 the owner id is the ` +
+        "operator's oid (get it from `helix whoami`); pass their address with --email instead",
+    );
+  }
 
-  // An owner passed with its address included still self-fills the display
-  // email; an oid (never address-shaped) leaves it to --email. Pre-re-base
-  // runs passed emails and got this convenience for free; post-re-base the
-  // oid is the identity and the email is a deliberate --email.
   const ownerName = values.get("name");
-  const ownerEmail = values.get("email") ?? (ownerId.includes("@") ? ownerId : undefined);
+  const ownerEmail = values.get("email");
   return {
     ownerId,
     ...(ownerName ? { ownerName } : {}),

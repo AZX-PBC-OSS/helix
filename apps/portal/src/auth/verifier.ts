@@ -203,16 +203,13 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
 /**
  * The M1 static dev token, demoted to one verifier in the chain. Kept for
  * CI/scripts (`AZX_TOKEN`); refuses to exist in production.
- */
-export const DEV_TOKEN_ACTOR_OID = "dev-token-actor";
-
-/**
- * The dev-token actor's fixed synthetic `oid` (ADR-0048 decision 1). The
- * canonical-principal-id contract requires an `oid` on every actor, and this
- * one is deliberately *not* shaped like a directory object id — it can never
- * be mistaken for one, never matches an `App.ownerId` written by a real login
- * (so a dev-token actor owns only what it created itself), and is stable so
- * CI fixtures and `scope=mine` behave deterministically.
+ *
+ * The dev-token actor's `oid` is {@link DEV_TOKEN_ACTOR_OID} — a fixed
+ * synthetic value (ADR-0048 decision 1), deliberately *not* shaped like a
+ * directory object id: it can never be mistaken for one, never matches an
+ * `App.ownerId` written by a real login (so a dev-token actor owns only what
+ * it created itself), and is stable so CI fixtures and `scope=mine` behave
+ * deterministically.
  */
 export function createDevTokenVerifier(
   expected: string,
@@ -234,3 +231,6 @@ export function createDevTokenVerifier(
     },
   };
 }
+
+/** The dev-token actor's fixed synthetic `oid` — see `createDevTokenVerifier`. */
+export const DEV_TOKEN_ACTOR_OID = "dev-token-actor";

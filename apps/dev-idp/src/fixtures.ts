@@ -91,6 +91,9 @@ export const EDGE_CLIENT_SECRET_DEFAULT = "edge-dev-secret";
 /** Public client for the portal SPA — code + PKCE in the browser. */
 export const WEB_CLIENT_ID = "azx-portal-web";
 
+/** HMAC key behind the pairwise sub derivation — see {@link pairwiseSub}. */
+const PAIRWISE_SUB_KEY = "dev-idp-pairwise-sub-v1";
+
 /**
  * The subject this IdP presents for (client, user): HMAC-SHA256 over a fixed
  * fixture key, base64url — Entra's shape, 43 opaque characters.
@@ -107,8 +110,6 @@ export const WEB_CLIENT_ID = "azx-portal-web";
  * Exported because the account id oidc-provider carries *is* this value (see
  * provider.ts), and the consumers' correlation tests pin the derivation.
  */
-const PAIRWISE_SUB_KEY = "dev-idp-pairwise-sub-v1";
-
 export function pairwiseSub(clientId: string, user: FixtureUser): string {
   return createHmac("sha256", PAIRWISE_SUB_KEY)
     .update(`${clientId}:${user.oid}`)
@@ -116,15 +117,25 @@ export function pairwiseSub(clientId: string, user: FixtureUser): string {
 }
 
 /**
+ * The single source of truth for which clients this IdP registers. The
+ * account-id reverse lookup below scans exactly this list, and `buildProvider`
+ * refuses to construct a provider whose registered clients drift from it — a
+ * client registered without a tuple entry would mint account ids no code path
+ * can resolve back to a user, failing logins with nothing pointing at the
+ * cause. Add a client by adding it here AND in `provider.ts`.
+ */
+export const FIXTURE_CLIENT_IDS = [CLI_CLIENT_ID, EDGE_CLIENT_ID, WEB_CLIENT_ID] as const;
+
+/**
  * Reverse the derivation: which fixture user does this account id belong to?
  * oidc-provider's account id — in the session, the code, the refresh token
  * and the access token — is the pairwise sub minted at login, so `findAccount`
  * and `extraTokenClaims` resolve users through this. The set is closed (four
- * fixtures × three clients), so a scan is the honest implementation, and an
- * HMAC over distinct inputs cannot collide within it.
+ * fixtures × {@link FIXTURE_CLIENT_IDS}), so a scan is the honest
+ * implementation, and an HMAC over distinct inputs cannot collide within it.
  */
 export function fixtureUserForAccountId(accountId: string): FixtureUser | undefined {
-  for (const clientId of [CLI_CLIENT_ID, EDGE_CLIENT_ID, WEB_CLIENT_ID]) {
+  for (const clientId of FIXTURE_CLIENT_IDS) {
     for (const user of FIXTURE_USERS) {
       if (pairwiseSub(clientId, user) === accountId) return user;
     }

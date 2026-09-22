@@ -5,6 +5,7 @@ import {
   CLI_CLIENT_ID,
   EDGE_CLIENT_ID,
   EDGE_CLIENT_SECRET_DEFAULT,
+  FIXTURE_CLIENT_IDS,
   PORTAL_AUDIENCE,
   WEB_CLIENT_ID,
   fixtureUserForAccountId,
@@ -185,6 +186,20 @@ export function buildProvider(issuer: string, opts: DevIdpOptions = {}): Provide
     jwks: bootJwks(),
     cookies: { keys: ["dev-idp-insecure-cookie-key"] },
   };
+
+  // Drift guard (fixtures.ts's FIXTURE_CLIENT_IDS docblock): a client
+  // registered here but missing from the tuple would mint account ids the
+  // reverse scan cannot resolve — every login through it fails with nothing
+  // pointing at the cause. Fail at construction instead, where the fix is a
+  // one-line edit away from the error.
+  for (const client of configuration.clients ?? []) {
+    if (!FIXTURE_CLIENT_IDS.includes(client.client_id as (typeof FIXTURE_CLIENT_IDS)[number])) {
+      throw new Error(
+        `client "${client.client_id}" is not in FIXTURE_CLIENT_IDS — add it there too, ` +
+          "or the account-id reverse lookup cannot resolve its logins",
+      );
+    }
+  }
 
   return new Provider(issuer, configuration);
 }
