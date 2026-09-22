@@ -8,6 +8,7 @@ import {
 import type { Actor } from "../auth/verifier.js";
 
 const actor = (groups: string[] = []): Actor => ({
+  oid: "oid-alice",
   sub: "alice@azx.dev",
   via: "oidc",
   groups,

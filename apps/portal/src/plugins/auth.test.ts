@@ -32,8 +32,9 @@ const ADMIN_GROUP = "platform-admin";
 const verifiers: TokenVerifier[] = [
   {
     verify: async (token) => {
-      if (token === "admin") return { sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
-      if (token === "plain") return { sub: PLAIN, via: "oidc", groups: [] };
+      if (token === "admin")
+        return { oid: "oid-admin", sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
+      if (token === "plain") return { oid: "oid-plain", sub: PLAIN, via: "oidc", groups: [] };
       return null;
     },
   },

@@ -695,8 +695,10 @@ describe("global + platform secret routes refuse a non-admin", () => {
   const verifiers: TokenVerifier[] = [
     {
       verify: async (token) => {
-        if (token === "admin") return { sub: "admin@azx.io", via: "oidc", groups: [ADMIN_GROUP] };
-        if (token === "plain") return { sub: "plain@azx.io", via: "oidc", groups: [] };
+        if (token === "admin")
+          return { oid: "oid-admin", sub: "admin@azx.io", via: "oidc", groups: [ADMIN_GROUP] };
+        if (token === "plain")
+          return { oid: "oid-plain", sub: "plain@azx.io", via: "oidc", groups: [] };
         return null;
       },
     },

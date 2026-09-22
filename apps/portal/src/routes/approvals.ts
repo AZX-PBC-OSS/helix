@@ -100,7 +100,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         const row = await app.prisma.app.findUnique({ where: { slug: req.query.app } });
         if (!row) throw new AppError("not_found", `app "${req.query.app}" not found`);
         // Owners see their own app's requests; admins see any.
-        if (row.ownerId !== actor.sub && !actorIsAdmin(actor)) {
+        if (row.ownerId !== actor.oid && !actorIsAdmin(actor)) {
           throw new AppError("forbidden", "not the app owner");
         }
         where.appId = row.id;

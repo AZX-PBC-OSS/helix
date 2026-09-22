@@ -7,7 +7,10 @@ import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
  * authenticated principal must NOT be able to mutate an app it does not own.
  * Three principals via an injected verifier chain — the app owner, a second
  * non-owner operator (the attacker), and a platform-admin (the owner-or-admin
- * override).
+ * override). Each principal carries the two halves of ADR-0048's split: an
+ * opaque `oid` (the identity `ownerId` stores and compares) and a readable
+ * `sub` (display/audit) — deliberately different values, so a test can never
+ * pass by comparing the wrong one.
  */
 const OWNER = "owner@azx.io";
 const OTHER = "other@azx.io";
@@ -17,9 +20,10 @@ const ADMIN_GROUP = "platform-admin";
 const verifiers: TokenVerifier[] = [
   {
     verify: async (t) => {
-      if (t === "owner") return { sub: OWNER, via: "oidc", groups: [] };
-      if (t === "other") return { sub: OTHER, via: "oidc", groups: [] };
-      if (t === "admin") return { sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
+      if (t === "owner") return { oid: "oid-owner", sub: OWNER, via: "oidc", groups: [] };
+      if (t === "other") return { oid: "oid-other", sub: OTHER, via: "oidc", groups: [] };
+      if (t === "admin")
+        return { oid: "oid-admin", sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
       return null;
     },
   },

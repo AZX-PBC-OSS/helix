@@ -6,8 +6,9 @@ const ADMIN_GROUP = "platform-admin";
 const verifiers: TokenVerifier[] = [
   {
     verify: async (t) => {
-      if (t === "owner") return { sub: "owner@azx.io", via: "oidc", groups: [] };
-      if (t === "admin") return { sub: "admin@azx.io", via: "oidc", groups: [ADMIN_GROUP] };
+      if (t === "owner") return { oid: "oid-owner", sub: "owner@azx.io", via: "oidc", groups: [] };
+      if (t === "admin")
+        return { oid: "oid-admin", sub: "admin@azx.io", via: "oidc", groups: [ADMIN_GROUP] };
       return null;
     },
   },

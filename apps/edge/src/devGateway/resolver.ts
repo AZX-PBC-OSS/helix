@@ -67,9 +67,11 @@ export function makeDevTokenResolver(store: DevTokenStore): CallerResolver {
       authenticated: true,
       oid: row.developerOid,
       displayName: row.developerOid,
-      // `developerOid` is the portal actor's subject, which the portal verifier
-      // already collapses to `email ?? preferred_username ?? sub` — so it is
-      // usually readable on its own and needs no separate display half.
+      // `developerOid` is the minting developer's `actor.oid` (ADR-0048) —
+      // opaque since the re-base, like every other principal id, so the dev
+      // tier has no display half to render. Rows minted before the re-base
+      // hold the old email-collapsed subject; the cutover runbook revokes
+      // them rather than migrating (ADR-0048 decision 6).
       name: null,
       email: null,
       kind: "dev",

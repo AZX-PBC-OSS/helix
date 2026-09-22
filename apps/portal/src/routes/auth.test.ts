@@ -32,7 +32,9 @@ beforeAll(async () => {
         // The dev token rides along, as in the real env-built chain.
         {
           verify: async (t) =>
-            t === "test-token" ? { sub: "dev@azx.io", via: "dev-token", groups: [] } : null,
+            t === "test-token"
+              ? { oid: "dev-token-actor", sub: "dev@azx.io", via: "dev-token", groups: [] }
+              : null,
         },
       ],
       publicConfig: { issuer: ISSUER, cliClientId: "azx-cli" },
@@ -45,7 +47,13 @@ afterAll(async () => {
 });
 
 async function mintAccessToken(claims: Record<string, unknown> = {}): Promise<string> {
-  return new SignJWT({ sub: "oid-1", email: "alice@azx.dev", name: "Alice Anders", ...claims })
+  return new SignJWT({
+    sub: "oid-1",
+    oid: "actor-oid-1",
+    email: "alice@azx.dev",
+    name: "Alice Anders",
+    ...claims,
+  })
     .setProtectedHeader({ alg: "RS256" })
     .setIssuer(ISSUER)
     .setAudience(AUDIENCE)
@@ -105,6 +113,9 @@ describe("GET /api/v1/me", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(PortalMeResponseSchema.parse(res.json())).toEqual({
+      // The canonical principal id is echoed alongside the display half
+      // (ADR-0048): additive on the wire, never a comparison key for clients.
+      oid: "actor-oid-1",
       sub: "alice@azx.dev",
       via: "oidc",
       name: "Alice Anders",
@@ -122,11 +133,26 @@ describe("GET /api/v1/me", () => {
     const res = await edge.app.inject({ url: "/api/v1/me", headers: authHeader("test-token") });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
+      // The dev-token actor's fixed synthetic oid (ADR-0048 decision 1) —
+      // deliberately not directory-id-shaped, so it can never collide with a
+      // real login's ownerId.
+      oid: "dev-token-actor",
       sub: "dev@azx.io",
       via: "dev-token",
       isAdmin: false,
       canSearchDirectory: true,
     });
+  });
+
+  it("401s a correctly signed token with no oid claim — fail closed, no fallback", async () => {
+    // ADR-0048 decision 2: the canonical principal id has no fallback. A token
+    // like this cannot come from Entra (it emits oid unconditionally), so its
+    // only honest treatment is refusal — never a silently wrong actor built
+    // from the pairwise sub.
+    const token = await mintAccessToken({ oid: undefined });
+    const res = await edge.app.inject({ url: "/api/v1/me", headers: authHeader(token) });
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toMatchObject({ error: { code: "unauthorized" } });
   });
 
   it("reports isAdmin:true when the actor carries the configured admin role", async () => {
@@ -260,7 +286,7 @@ describe("GET /api/v1/me", () => {
 });
 
 describe("mutating routes through the chain", () => {
-  it("accepts an OIDC JWT and attributes the audit event to the email", async () => {
+  it("accepts an OIDC JWT; ownerId is the oid, the audit actor the email", async () => {
     const slug = `t-${Date.now().toString(36)}jwt`;
     const res = await edge.app.inject({
       method: "POST",
@@ -269,6 +295,11 @@ describe("mutating routes through the chain", () => {
       payload: { slug, displayName: "JWT-created app" },
     });
     expect(res.statusCode).toBe(201);
+
+    // The two halves land in their columns (ADR-0048): the identity half is
+    // the oid claim — never the email-collapsed sub the row used to store.
+    const appRow = await edge.prisma.app.findUnique({ where: { slug } });
+    expect(appRow?.ownerId).toBe("actor-oid-1");
 
     const audit = await edge.prisma.auditEvent.findFirst({
       where: { action: "app.create", appId: res.json<{ id: string }>().id },

@@ -574,9 +574,12 @@ describe("PORTAL_DIRECTORY_SEARCH tiers", () => {
     {
       name: "stub",
       async verify(token: string) {
-        if (token === "admin") return { sub: ADMIN_SUB, via: "oidc", groups: [ADMIN_GROUP] };
-        if (token === "user") return { sub: USER_SUB, via: "oidc", groups: ["eng-team"] };
-        if (token === "stranger") return { sub: STRANGER_SUB, via: "oidc", groups: [] };
+        if (token === "admin")
+          return { oid: "oid-admin", sub: ADMIN_SUB, via: "oidc", groups: [ADMIN_GROUP] };
+        if (token === "user")
+          return { oid: "oid-user", sub: USER_SUB, via: "oidc", groups: ["eng-team"] };
+        if (token === "stranger")
+          return { oid: "oid-stranger", sub: STRANGER_SUB, via: "oidc", groups: [] };
         return null;
       },
     },

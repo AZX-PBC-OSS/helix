@@ -21,9 +21,23 @@ const verifiers: TokenVerifier[] = [
   {
     verify: async (token) => {
       if (token === "alice")
-        return { sub: ALICE, via: "oidc", name: "Alice Anders", email: ALICE, groups: [] };
+        return {
+          oid: "oid-alice",
+          sub: ALICE,
+          via: "oidc",
+          name: "Alice Anders",
+          email: ALICE,
+          groups: [],
+        };
       if (token === "bob")
-        return { sub: BOB, via: "oidc", name: "Bob Builder", email: BOB, groups: [] };
+        return {
+          oid: "oid-bob",
+          sub: BOB,
+          via: "oidc",
+          name: "Bob Builder",
+          email: BOB,
+          groups: [],
+        };
       return null;
     },
   },
@@ -107,7 +121,9 @@ describe("GET /api/v1/apps — owner", () => {
     const slug = await createApp(alice);
     const row = (await list(alice)).find((r) => r.slug === slug);
 
-    expect(row?.ownerId).toBe(ALICE);
+    // The identity half is the actor's oid (ADR-0048) — not the email-collapsed
+    // sub the row used to store; the display half travels beside it.
+    expect(row?.ownerId).toBe("oid-alice");
     expect(row?.ownerName).toBe("Alice Anders");
     expect(row?.ownerEmail).toBe(ALICE);
   });
@@ -118,7 +134,7 @@ describe("GET /api/v1/apps — owner", () => {
     const hers = await createApp(alice);
     const row = (await list(bob, "all")).find((r) => r.slug === hers);
 
-    expect(row?.ownerId).toBe(ALICE);
+    expect(row?.ownerId).toBe("oid-alice");
     expect(row?.ownerName).toBe("Alice Anders");
   });
 

@@ -13,11 +13,28 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
  */
 
 /**
- * The authenticated principal behind a mutating request. Same shape since M1
- * — audit attribution (`AuditEvent.actor` stores `sub`) is unchanged.
+ * The authenticated principal behind a mutating request.
+ *
+ * Two halves, and the split is the point (ADR-0048): `oid` is the **identity
+ * half** — Entra's `oid` claim, the directory object id, identical across
+ * every app registration and therefore the one value that equals the edge
+ * session's `user.oid` for the same human. `App.ownerId` stores it; `ownsApp`
+ * and `scope=mine` compare it. `sub` is the **display/audit half** — the
+ * subject collapsed to `email ?? preferred_username ?? sub`, human-readable,
+ * stored as `AuditEvent.actor` and rendered; never compared, never joined on.
  */
 export interface Actor {
-  /** Authenticated subject — an email or principal id, human-readable. */
+  /**
+   * The canonical principal id — Entra's `oid` claim from the verified access
+   * token (ADR-0048). Required: a token without it cannot produce an actor,
+   * mirroring the edge's fail-closed login refusal. Never rendered.
+   */
+  oid: string;
+  /**
+   * The display/audit subject — `email ?? preferred_username ?? sub`,
+   * human-readable. Audit attribution (`AuditEvent.actor` stores it) is this
+   * field's job and is unchanged.
+   */
   sub: string;
   /** How the actor was established: `oidc` or `dev-token`. */
   via: string;
@@ -47,6 +64,12 @@ export interface OidcVerifierOptions {
   audience: string;
   /** Injectable key resolver (tests); defaults to the issuer's remote JWKS. */
   getKey?: JWTVerifyGetKey;
+  /**
+   * Where the missing-`oid` refusal is reported (ADR-0048 decision 2 — the
+   * diagnosability posture of the edge's `auth.oidc_missing_oid` line).
+   * Optional so tests and construction stay quiet by default.
+   */
+  log?: { warn(obj: object, msg: string): void };
   /**
    * Permit an `http:` issuer/JWKS (the local dev IdP). Off by default: a
    * plaintext JWKS fetch would let a network attacker supply signing keys.
@@ -148,11 +171,28 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
         if (typeof payload.exp !== "number" || typeof payload.iat !== "number") return null;
         const sub = claimString(payload.sub);
         if (!sub) return null;
+        const oid = claimString(payload.oid);
+        if (!oid) {
+          // ADR-0048 decision 2: the `oid` claim is the canonical principal
+          // id — hardcoded, no fallback. Entra emits it unconditionally in
+          // access tokens, so absence is a misconfigured issuer, and the
+          // token cannot produce an actor (401, not a silently wrong one —
+          // falling back to `sub` would reintroduce the exact pairwise bug
+          // the re-base exists to kill). One specific line, so an operator
+          // is pointed at the claim and not at a signature hunt; the same
+          // diagnosability posture as the edge's login refusal.
+          opts.log?.warn(
+            { event: "auth.token_missing_oid", sub },
+            "access token has no oid claim — refusing it: the canonical principal id " +
+              "(ADR-0048) is not optional and has no fallback",
+          );
+          return null;
+        }
         const email = claimString(payload.email);
         const name = claimString(payload.name);
         const preferred = claimString(payload.preferred_username);
         const groups = unionClaimArrays(payload.groups, payload.roles);
-        return { sub: email ?? preferred ?? sub, via: "oidc", name, email, groups };
+        return { oid, sub: email ?? preferred ?? sub, via: "oidc", name, email, groups };
       } catch {
         return null;
       }
@@ -163,6 +203,16 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
 /**
  * The M1 static dev token, demoted to one verifier in the chain. Kept for
  * CI/scripts (`AZX_TOKEN`); refuses to exist in production.
+ */
+export const DEV_TOKEN_ACTOR_OID = "dev-token-actor";
+
+/**
+ * The dev-token actor's fixed synthetic `oid` (ADR-0048 decision 1). The
+ * canonical-principal-id contract requires an `oid` on every actor, and this
+ * one is deliberately *not* shaped like a directory object id — it can never
+ * be mistaken for one, never matches an `App.ownerId` written by a real login
+ * (so a dev-token actor owns only what it created itself), and is stable so
+ * CI fixtures and `scope=mine` behave deterministically.
  */
 export function createDevTokenVerifier(
   expected: string,
@@ -180,7 +230,7 @@ export function createDevTokenVerifier(
       if (tokenBuf.length !== expectedBuf.length || !timingSafeEqual(tokenBuf, expectedBuf)) {
         return null;
       }
-      return { sub: actorSub, via: "dev-token", groups };
+      return { oid: DEV_TOKEN_ACTOR_OID, sub: actorSub, via: "dev-token", groups };
     },
   };
 }

@@ -83,7 +83,11 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         data: {
           slug: body.slug,
           displayName: body.displayName,
-          ownerId: actor.sub,
+          // The identity half — the creator's Entra `oid` (ADR-0048): the one
+          // id the edge session also holds for the same human, so `ownsApp`
+          // and `scope=mine` compare a value that actually corresponds across
+          // planes. Never rendered.
+          ownerId: actor.oid,
           // Capture the actor's display claims alongside the identity. The
           // portal never resolves an owner against the directory later, so this
           // is the only moment they are available; they may go stale if the
@@ -152,7 +156,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       const scope = AppListScopeSchema.catch("mine").parse(req.query.scope ?? "mine");
 
       const rows = await app.prisma.app.findMany({
-        where: scope === "mine" ? { ownerId: actor.sub } : {},
+        where: scope === "mine" ? { ownerId: actor.oid } : {},
         orderBy: { createdAt: "asc" },
         include: { currentVersion: { select: { number: true } } },
       });
