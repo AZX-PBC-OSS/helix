@@ -1,6 +1,6 @@
 # ADR-0048 — Canonical principal identifier: the Entra `oid` claim, captured at source in both planes
 
-**Status:** Accepted _(recorded 2026-09-21; implementation mechanics sequenced by the prod inventory in the final section)_
+**Status:** Accepted _(recorded 2026-09-21; the prod inventory in the final section was run the same day and selects a **straight cutover** — see the amendment)_
 **Related:** ADR [0004](0004-auth-model.md) (the auth model the misnomer was born into); ADR [0015](0015-app-data-three-scope-model.md) (the user scope whose partition key is re-based here); ADR [0021](0021-metering-ledger.md) (the display half, already separated by capture-at-write); ADR [0007](0007-portal-authz-v0.md) (the RBAC future that consumes this); ADR [0040](0040-entra-group-visibility-directory-seam.md) (the Graph door this declines to reopen, and the groups snapshot the admin check will reuse); ADR [0028](0028-deployment-model-customer-deployed.md) (why a zero-tenant-ask decision matters); the `private`-visibility item in [`TODO.md`](../../TODO.md) (which this splits in half)
 
 ## Context
@@ -123,3 +123,34 @@ SELECT count(*) AS sessions, count(DISTINCT "userOid") AS recent_users FROM sess
 - Query 3: report the full owner list with emails. Each owner's pair comes from their next `helix whoami` / portal login after the portal change deploys (`/api/v1/me` will echo `oid`), or from operator-collected pairs. An unmapped owner is locked out of their apps — visibly (403), not silently.
 
 **Report back:** the four result sets, the date, and which mechanism the thresholds above select. The results go into this ADR as an amendment and unblock the implementation item in TODO.md.
+
+## Amendment, 2026-09-21 — the inventory was run: straight cutover
+
+Taken against **both** live installs. That is the first correction to the section above, which was written as though there were one production database: Helix is shipped software (ADR-0028), so "prod" is per install and the inventory is per install. Both were queried; the owner checklist is per install too, and the union is what the implementation has to satisfy.
+
+| | reference install | second install |
+| --- | --- | --- |
+| **Q1** user-scoped `app_data` rows (any env) | **0** | **0** |
+| `app_data` rows *at all*, any scope | **0** | **0** |
+| **Q2** prod rows by app | none | none |
+| **Q3** apps | 31 | 4 |
+| distinct `ownerId`s | 6 | 2 |
+| `visibilityMode` in use | `internal` 28, `group` 2, `password` 1 | `internal` 4 |
+| `app_dev_token` rows | 4 | 3 |
+| **Q4** `app_collection_items` with a `userOid` | 1 | 2 |
+| `sessions` / distinct `userOid` | 7 / 4 | 5 / 4 |
+
+**Mechanism selected: straight cutover** (decision 6, first bullet), on both installs. Q1 is zero, so there is nothing to strand and nothing to backfill — no one-shot paired script, no lazy login-time backfill, no dual-read RLS window. Deploy, let sessions drain (≤ 8 h TTL + 1-day sweep), verify each owner's next login. The zero is not a query artefact: `app_data` is empty outright on both, checked separately, and the runner surfaces query errors rather than swallowing them (a column-name typo in an exploratory query returned `ERR: column … does not exist`, which is how we know an empty result means empty).
+
+The timing bet in the Consequences section paid: this is the cheap half, taken at the cheapest possible moment.
+
+Six further findings, none of which change the decision:
+
+1. **Every `ownerId` on both installs is an email**, since the portal's collapse is `email ?? preferred_username ?? sub` and every owner is a tenant member with an email. So the owner re-base needs no operator-collected pairs and no waiting for logins: decision 6's sanctioned transitional email join resolves the whole checklist in one read. **All owners across both installs resolve to a directory `oid`** — done and recorded in the ops repo, which is where the emails and object ids live; they are not repeated here.
+2. **No app anywhere uses the reserved `private` mode** — as designed, the reservation test holds in production, and decision 4's decoupling costs nothing.
+3. **`group` and `password` visibility are in live use** on the reference install (2 and 1 apps). Neither consults a principal id, so neither is affected — worth knowing only because the `private` work will touch the same enum.
+4. **Three apps carry a null `ownerEmail`/`ownerName`** on the reference install: they predate migration `20260819214211`, which added the columns but did not backfill. Harmless for this ADR — `ownerId` is itself an email today, so the display half is recoverable — but a re-base makes `ownerId` opaque, so **those three rows should have their display half filled in before or during the cutover**, or their owner becomes unnamed in the UI. This is a new, small item the inventory surfaced.
+5. **7 dev tokens across the two installs are invalidated** by the re-base (decision 6, third bullet). That is the only user-visible disruption in the whole change, it is confined to developers, and they re-mint. Worth a heads-up rather than a migration.
+6. **`sessions` shows 4 distinct users per install** — nowhere near the "large active user base" that would justify the dual-read RLS policy edit, which stays unengaged as decision 6 intended.
+
+**Operational note for whoever runs the queries next.** The suggested `az containerapp exec` one-liner above does not work as written. The exec API **splits `--command` on whitespace** (quotes are passed through literally, not used for grouping) and the whole command rides in the websocket URL's query string, which caps around 2 KB; and the endpoint **throttles at roughly five calls per ten minutes**, answering the sixth with a websocket handshake `429` and `retry-after: 600`. What works: base64 the JS (so the command line contains no whitespace) and run it as `node -e eval(Buffer.from('…','base64').toString())`, one statement per call, serialized with a pause between. `pg` is not resolvable from `/app` either — it lives in the pnpm store, so require it by its `/app/node_modules/.pnpm/pg@*/node_modules/pg` path. The working runner is in the ops repo.
