@@ -9,7 +9,9 @@ export {
   GROUP_ENG_TEAM,
   GROUP_PLATFORM_ADMINS,
   PORTAL_AUDIENCE,
+  WEB_CLIENT_ID,
   findFixtureUser,
+  pairwiseSub,
   type FixtureUser,
 } from "./fixtures.js";
 export {

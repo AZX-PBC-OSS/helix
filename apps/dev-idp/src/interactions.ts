@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type Provider from "oidc-provider";
-import { FIXTURE_USERS, findFixtureUser } from "./fixtures.js";
+import { FIXTURE_USERS, findFixtureUser, pairwiseSub } from "./fixtures.js";
 
 /**
  * The one interaction the dev IdP ever renders: a fixture-user picker
@@ -42,18 +42,14 @@ export async function handleInteraction(
     return false;
   }
 
-  let prompt: string;
-  try {
-    const details = await provider.interactionDetails(req, res);
-    prompt = details.prompt.name;
-  } catch {
+  const details = await provider.interactionDetails(req, res).catch(() => undefined);
+  if (!details) {
     send(res, 400, "<p>Unknown or expired interaction — restart sign-in.</p>");
     return true;
   }
-
-  if (prompt !== "login") {
+  if (details.prompt.name !== "login") {
     // Consent is auto-granted via loadExistingGrant; anything else is a bug.
-    send(res, 500, `<p>Unexpected interaction prompt: ${prompt}</p>`);
+    send(res, 500, `<p>Unexpected interaction prompt: ${details.prompt.name}</p>`);
     return true;
   }
 
@@ -69,10 +65,22 @@ export async function handleInteraction(
     return true;
   }
 
+  // The account id the login completes with is what oidc-provider will present
+  // as `sub` forever after (ID token, access token, refresh) — so it is minted
+  // **pairwise for this client** (fixtures.ts, ADR-0048 decision 7): the same
+  // human picks the same login on the edge's flow and the portal's and becomes
+  // two different subjects, exactly as against real Entra. The interaction's
+  // params carry the requesting client for both the code and device flows.
+  const clientId = details.params.client_id;
+  if (typeof clientId !== "string" || clientId === "") {
+    send(res, 500, "<p>Interaction carried no client_id — cannot mint a subject.</p>");
+    return true;
+  }
+
   await provider.interactionFinished(
     req,
     res,
-    { login: { accountId: user.sub } },
+    { login: { accountId: pairwiseSub(clientId, user) } },
     { mergeWithLastSubmission: false },
   );
   return true;
