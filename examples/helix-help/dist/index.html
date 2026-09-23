@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f766e" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>helix-help — AZX</title>
+    <script type="module" crossorigin src="./assets/index-8ZothUb9.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-D3RGaeer.css">
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>helix-help</h1>
+        <p class="tagline">
+          A docs-grounded chatbot for Helix app developers. It loads the platform
+          documentation at runtime <strong>through the fetch proxy</strong> (
+          <code>/_api/fetch/…</code>) and answers over the OpenAI-compatible gateway (
+          <code>/_api/openai/v1</code>) — no key in the app, no RAG, just real docs in
+          the system prompt.
+        </p>
+        <p id="whoami" class="whoami" aria-live="polite"></p>
+        <p id="docs-status" class="docs-status" aria-live="polite"></p>
+        <div class="toolbar">
+          <label>
+            Model
+            <select id="model" disabled>
+              <option value="">(loading…)</option>
+            </select>
+          </label>
+        </div>
+      </header>
+      <ul id="messages" aria-live="polite"></ul>
+      <form id="chat-form" autocomplete="off">
+        <input
+          id="chat-input"
+          name="message"
+          type="text"
+          placeholder="Ask about building a Helix app…"
+          autofocus
+        />
+        <button id="send" type="submit">Send</button>
+      </form>
+    </main>
+  </body>
+</html>

@@ -18,6 +18,7 @@ shim, and `offline` exercises the offline capability (ADR-0035).
 | [`oversell`](./oversell)         | Compare-and-swap shared writes (ADR-0041) and prefix grants + the list verb (ADR-0042): ETags, mandatory preconditions, a runtime-growing waitlist, one-click 412/428/403 probes.  |
 | [`github-stars`](./github-stars) | Fetches a public API **directly** — CSP-blocked until an admin approves the origin (the approval loop). |
 | [`fetch-proxy`](./fetch-proxy)   | Reaches the GitHub API **through the fetch-proxy** — keyless, then secret-injected, then via the shim. |
+| [`helix-help`](./helix-help)     | A docs-grounded chatbot: loads the public docs site at runtime through the fetch-proxy and answers over the OpenAI-compatible surface — no key, no RAG. |
 | [`offline`](./offline)           | Cold-boots with no network via the platform's scope-confined service worker, and shows what the app still owns. |
 
 Each app is a **standalone project** built with [Vite](https://vite.dev) — they

@@ -16,6 +16,7 @@ only**; every dynamic capability flows through the edge gateway at `/_api/*`. Fu
 | `oversell` | The write-concurrency contract (ADR-0041) and the growing-shared-namespace pattern (ADR-0042): CAS on shared keys, prefix grants + the list verb, with one-click probes that force every failure. | `/_api/data/*` |
 | `github-stars` | Calls a public API **directly** — CSP-blocked until an admin grants the origin (approval loop). | — (CSP) |
 | `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the transparent shim. | `/_api/fetch/*` |
+| `helix-help` | A docs-grounded chatbot: fetches the public docs site's markdown pages at runtime through the proxy, embeds them in the system prompt, and answers over the OpenAI-compatible surface — no key, no RAG. | `/_api/fetch/*` + `/_api/openai/v1/*` |
 | `offline` | Cold-boots with no network on the platform's scope-confined service worker; six probes separate what the platform caches from what the app still owns. | — (`/_helix/sw.js`) |
 
 ## How they fit the platform
@@ -89,6 +90,18 @@ API works both keyless (60 req/hr) and authenticated (5000), so the injected tok
 directly visible: probe 1 jumps `60 → 5000` and probe 2 flips `401 → your account`. No
 "trust-me-it-worked." Needs `pnpm dev:egress` running, or the proxy probes return 503. See
 [fetch-proxy.md](./fetch-proxy.md) and [secrets-and-connections.md](./secrets-and-connections.md).
+
+### `helix-help` — the fetch proxy + OpenAI surface cooperating in practice
+
+A chatbot for Helix app developers that inverts the usual embedding question: instead
+of RAG, it `GET`s the docs site's per-page markdown twins (`/helix/apps/quickstart.md`
+and friends) **through the fetch proxy** on boot — a keyless origin grant, so no
+secret and no approval — and embeds the ~38 KB (~10K-token) result in the system
+prompt, re-sent every turn. Chatting goes through `/_api/openai/v1/chat/completions`
+(streaming, session cookie, manifest-allowlisted model). Docs failures degrade to a
+banner + general-knowledge answers, and replies are rendered with a `textContent`-only
+markdown-lite renderer, so model output is never parsed as HTML. See
+[fetch-proxy.md](./fetch-proxy.md) and [llm-gateway.md](./llm-gateway.md).
 
 ### `offline` — the offline capability in practice
 
