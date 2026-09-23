@@ -7,6 +7,7 @@ import type { BlobReader } from "./blob/client.js";
 import type { RegistryFreshnessReader, RegistryReader } from "./registry/projection.js";
 import { registryFreshnessCheck } from "./registry/health.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
+import { trustProxyCheck, wireTrustProxyHealth } from "./routing/trustProxyHealth.js";
 import { makeAssetHandler } from "./serving/assets.js";
 import { edgeErrorHandler, sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
 import { normalizeRequestPath } from "./serving/paths.js";
@@ -302,6 +303,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     req.hostClass = classifyHost(req.headers.host, config.baseDomain);
   });
 
+  // The trust-proxy self-report (ADR-0011): watch whether the forwarded walk
+  // ever moves, so a well-formed EDGE_TRUST_PROXY pointed at the wrong network
+  // — the failure the boot-time guards cannot see — surfaces as a `degraded`
+  // sub-check instead of silently collapsing every per-IP bucket. Registers
+  // its own onRequest hook + the observable gauge; must precede the routes.
+  const trustProxyObserver = wireTrustProxyHealth(app);
+
   // The shared-password login form posts urlencoded. Hand-rolled parser (no
   // @fastify/formbody — dep-minimal rule): URLSearchParams into a flat object.
   app.addContentTypeParser(
@@ -349,6 +357,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       // (architecture §7) turned into the outage it exists to prevent (ADR-0025).
       const checks = [
         registryFreshnessCheck(deps.registry.freshness(), config.reconcileIntervalMs),
+        trustProxyCheck(trustProxyObserver.snapshot()),
       ];
       reply.header("cache-control", "no-store"); // a degraded body must not be cached
       return HealthStatusSchema.parse({

@@ -5,6 +5,7 @@ import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryFreshnessReader, RegistryReader } from "../registry/projection.js";
 import { registryFreshnessCheck } from "../registry/health.js";
+import { trustProxyCheck, wireTrustProxyHealth } from "../routing/trustProxyHealth.js";
 import { makeLlmHandler } from "../gateway/llm.js";
 import { openAiCodec } from "../gateway/openaiCodec.js";
 import { makeOpenAiModelsHandler } from "../gateway/openaiModels.js";
@@ -107,6 +108,12 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
 
   app.decorateRequest("devCorsOrigin", undefined);
 
+  // Same trust-proxy self-report as the edge (ADR-0011): the dev-gateway takes
+  // the same EDGE_TRUST_PROXY value, and its denial damping / audit hash key on
+  // `req.ip` the same way. Local dev sends no forwarded header and so never
+  // counts — the check reads "not enough proxied traffic" here, which is right.
+  const trustProxyObserver = wireTrustProxyHealth(app);
+
   const resolveCaller = makeDevTokenResolver(deps.devTokens);
   // The DevTokenResolver already validated Origin ∈ the token's allowlist, so the
   // handlers' CSRF seam is a no-op here (the cross-origin caller can never match
@@ -173,6 +180,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       // Same contract as the edge (ADR-0025): freshness is reported, always 200.
       const checks = [
         registryFreshnessCheck(deps.registry.freshness(), deps.config.reconcileIntervalMs),
+        trustProxyCheck(trustProxyObserver.snapshot()),
       ];
       reply.header("cache-control", "no-store");
       return HealthStatusSchema.parse({

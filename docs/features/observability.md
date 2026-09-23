@@ -73,12 +73,13 @@ looked up:
 | `helix.gateway.duration` | histogram (ms) | `capability`, `outcome` |
 | `helix.egress.proxy.duration` | histogram (ms) | `outcome` |
 | `helix.session.gate_denied` | counter | `reason` |
+| `helix.edge.trust_proxy.unresolved` | observable gauge | — |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained
 metrics backend.
 
-### Two things to know before writing an alert on these
+### Things to know before writing an alert on these
 
 - **`gate_denied{reason="no_session"}` has a permanent baseline.** It fires on
   every first, anonymous navigation to a non-public app — the ordinary
@@ -94,6 +95,12 @@ metrics backend.
   (decision 11), and it is a span attribute rather than a metric label, so it
   costs retention rather than time series — but it is the first thing to revisit
   if span volume becomes a cost question.
+- **`helix.edge.trust_proxy.unresolved` is absent below N, by design.** A gauge
+  reading `0` on a replica that has seen no proxied traffic would claim
+  "verified healthy" about a state nobody has measured — the same
+  direction-wrongness rule 2 above exists because of. The gauge appears at `0`
+  or `1` only once the last 50 forwarded-header requests exist to grade
+  (ADR-0011); an alert on it fires on presence, so no-data is not an alert.
 - **The app-data gateway's spans carry no `url.path`, by decision.** Four of its
   routes put an app-chosen key in the path's last segment, and prefix grants
   (ADR-0042) exist so those keys are invented at runtime — a path attribute
@@ -135,13 +142,15 @@ component, so traces and metrics land in the same Log Analytics workspace the
 environment already ships stdout to. Metrics arrive in `customMetrics`
 (`AppMetrics` under the workspace schema — the two names are the same table).
 
-Two alert rules read that, and they read **different signals on purpose**
-(`infra/azure/modules/alerts.bicep`):
+Two alert rules read the registry gauges, and they read **different signals on
+purpose** (`infra/azure/modules/alerts.bicep`); a third reads the trust-proxy
+one:
 
 | Rule | Signal | Why that one |
 | --- | --- | --- |
 | projection stale | `helix.registry.stale_for_ms` metric | An age needs a threshold, and this is the metric that made it one rule instead of KQL over log messages |
 | projection never loaded | `registry.never_loaded` log event | The gauge is *absent* in this state by design, and the counter that reports it is cumulative, so a threshold on it never stops firing |
+| trust proxy unresolved | `helix.edge.trust_proxy.unresolved` metric | A `degraded` /health alerts nobody by itself — this is the rule that makes the edge's `EDGE_TRUST_PROXY` self-reporting (ADR-0011) |
 
 Four more modules alert on signals this platform does **not** emit, which is the
 point of them — everything above goes quiet in exactly the failures that stop the

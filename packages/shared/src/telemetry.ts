@@ -30,6 +30,7 @@ export const INSTR_GATEWAY_CALLS = "helix.gateway.calls";
 export const INSTR_GATEWAY_DURATION = "helix.gateway.duration";
 export const INSTR_EGRESS_PROXY_DURATION = "helix.egress.proxy.duration";
 export const INSTR_SESSION_GATE_DENIED = "helix.session.gate_denied";
+export const INSTR_TRUST_PROXY_UNRESOLVED = "helix.edge.trust_proxy.unresolved";
 
 /**
  * Attribute keys.

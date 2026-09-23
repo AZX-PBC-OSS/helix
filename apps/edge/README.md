@@ -50,13 +50,13 @@ Two rules:
 
 **What this does not cover.** The guarantee is scoped to the `req.url` **field**. Fastify itself interpolates the raw URL into two log _messages_ (`lib/reply.js` — `FST_ERR_REP_ALREADY_SENT` and the double-send warning), both of which need a bug in one of our own handlers to fire; and any hand-rolled log call must pass `redactUrl(req.url)` itself. Tests: `packages/shared/src/logging.test.ts` (the rules) and `src/logging.test.ts` (a real pino round-trip on the request and error paths).
 
-**Ops note — the hops we don't own.** This closes the container's own logs, which in Azure is the retention surface that matters: Container Apps ships container stdout to the environment's Log Analytics workspace (`appLogsConfiguration` in `infra/azure/modules/aca-environment.bicep`, 30-day retention). As configured today the ACA ingress emits no access log we can see — but note that is an Azure platform default, not something this repo sets: no ingress access-log setting appears anywhere in `infra/azure`, and it has not been verified against the live ingress (same caveat as `EDGE_TRUST_PROXY` — ingress properties are per-deployment and can change underneath you). **Anything added in front of the edge — Front Door, App Gateway/WAF, a CDN, an nginx sidecar — logs full request URIs by default and must have query-string logging disabled or the same parameters masked.** The handoff token stays bounded regardless (single-use, 30 s TTL, audience-bound to one app + one session row), and both legs of the redirect that carries it — the callback's 302 and `/_auth/complete`'s own response — send `Referrer-Policy: no-referrer` + `Cache-Control: no-store`, so it doesn't leak via Referer or an intermediary cache. Browser history is the residual we can't erase — see issue #20.
+**Ops note — the hops we don't own.** This closes the container's own logs, which in Azure is the retention surface that matters: Container Apps ships container stdout to the environment's Log Analytics workspace (`appLogsConfiguration` in `infra/azure/modules/aca-environment.bicep`, 30-day retention). The ACA ingress persists no access log — **verified 2026-09-23 on both production installs**: a marker in `/_auth/complete?token=…` appeared nowhere in either environment's workspaces except the edge's own stdout line, as `token=REDACTED`, and App Insights `AppRequests` recorded the request with an empty `Url`. Note that is an Azure default, not something this repo sets. ACA does offer an ingress access log (the `ContainerAppHTTPLogs` diagnostic category, full request URIs), and it stays off only because `appLogsConfiguration` uses the `log-analytics` destination, which carries console and system logs alone, and no diagnostic setting exists on the environment. **Switching the destination to `azure-monitor` or adding a diagnostic setting with that category (or `allLogs`) turns it on — mask the query string first.** Re-verify the same way after any change there (same caveat as `EDGE_TRUST_PROXY` — ingress properties are per-deployment and can change underneath you). **Anything added in front of the edge — Front Door, App Gateway/WAF, a CDN, an nginx sidecar — logs full request URIs by default and must have query-string logging disabled or the same parameters masked.** The handoff token stays bounded regardless (single-use, 30 s TTL, audience-bound to one app + one session row), and both legs of the redirect that carries it — the callback's 302 and `/_auth/complete`'s own response — send `Referrer-Policy: no-referrer` + `Cache-Control: no-store`, so it doesn't leak via Referer or an intermediary cache. Browser history is the residual we can't erase — see issue #20.
 
 ## Health and staleness
 
 `GET /health` on platform/auth hosts returns the shared `HealthStatusSchema` — and on app hosts it
-is just an asset path (an app may ship its own `/health` file). Beyond liveness it reports one
-sub-check, the registry projection's freshness (ADR-0025):
+is just an asset path (an app may ship its own `/health` file). Beyond liveness it reports two
+sub-checks: the registry projection's freshness (ADR-0025) and the trust-proxy walk (ADR-0011):
 
 ```json
 {
@@ -70,6 +70,16 @@ sub-check, the registry projection's freshness (ADR-0025):
       "detail": "projection last loaded 412s ago (> 5× the 60s reconcile interval); serving stale",
       "lastSuccessAt": "2026-07-30T12:00:00.000Z",
       "metrics": { "consecutiveLoadFailures": 7, "staleForSeconds": 412 }
+    },
+    {
+      "name": "trust-proxy",
+      "status": "ok",
+      "metrics": {
+        "forwardedSeen": 512,
+        "forwardedResolved": 512,
+        "windowSeen": 50,
+        "windowResolved": 50
+      }
     }
   ]
 }
@@ -86,6 +96,21 @@ green. Thresholds (`src/registry/health.ts`, ratios to `EDGE_RECONCILE_INTERVAL_
 
 Staleness is measured on a **monotonic** clock, so an NTP step can't flatter it; `lastSuccessAt` is
 report-only.
+
+The **`trust-proxy`** sub-check (`src/routing/trustProxyHealth.ts`, ADR-0011) watches the behaviour
+the config guards can't: of the last 50 requests that arrived with `X-Forwarded-For` (the ring is
+`TRUST_PROXY_WINDOW`), at least one must have resolved `req.ip` past the socket peer. It degrades
+when none did — i.e. `EDGE_TRUST_PROXY` doesn't name the address the ingress actually presents and
+every per-IP bucket (anon limiter, login throttle, audit hash) has collapsed to one per proxy:
+
+| State      | When                                                                                                                    |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `ok`       | fewer than 50 forwarded requests seen yet (`"not enough proxied traffic yet (n/N)"`), **or** ≥ 1 in the window resolved |
+| `degraded` | the window is full of forwarded requests and **none** ever resolved                                                     |
+
+Requests without the header never count — probes, `containerapp exec` and local dev satisfy
+`req.ip === peer` correctly, so a quiet install stays green. The same gauge
+(`helix.edge.trust_proxy.unresolved`) feeds the alert rule in `infra/azure/modules/alerts.bicep`.
 
 > **`/health` answers 200 in every state, deliberately.** The body carries the degradation, never
 > the status code. If you add a Container Apps liveness probe, do **not** point it at `/health`

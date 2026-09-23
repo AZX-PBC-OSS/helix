@@ -723,13 +723,21 @@ was never the hard part; having it be right was.
 
 #### Verifying the trusted-proxy address
 
-Do this after any rollout that changes `edgeTrustProxy`, and after anything new
-is put in front of the edge. `req.ip` behind ACA's Envoy ingress is only the real
-client if `EDGE_TRUST_PROXY` names the address the ingress presents — and when it
-doesn't, **nothing surfaces it**: the trust walk truncates at the socket peer, the
-anon limiter / login throttle / audit hash collapse to one bucket per app, and
-`/health` stays green. That is how the wrong default (the apps subnet) survived
-from M5 to 2026-09-03.
+**The primary check is automatic since 2026-09-23 (ADR-0011):** the edge's `/health` carries a
+`trust-proxy` sub-check that degrades once 50 forwarded-header requests have arrived and **none**
+resolved `req.ip` past the socket peer — i.e. exactly the failure this section used to require a
+manual session to find. The `helix.edge.trust_proxy.unresolved` gauge and its alert rule in
+`modules/alerts.bicep` make the same condition page. Read the check on
+`https://auth.<domain>/health` (a platform host — on app hosts `/health` is an asset path), or
+just rely on the alert: the availability probes keep the window full on their own.
+
+Do the manual recipe below only when a degraded report needs confirming, or when working without
+telemetry — and after any rollout that changes `edgeTrustProxy`, and after anything new is put in
+front of the edge. `req.ip` behind ACA's Envoy ingress is only the real client if
+`EDGE_TRUST_PROXY` names the address the ingress presents — and when it doesn't, the trust walk
+truncates at the socket peer, the anon limiter / login throttle / audit hash collapse to one
+bucket per app, and (before the check existed) `/health` stayed green. That is how the wrong
+default (the apps subnet) survived from M5 to 2026-09-03.
 
 `rate_counters.bucketKey` is plaintext `<purpose>:<ip>:<appId>` (`counterStore.ts`)
 and Postgres is private-endpoint-only, so read it from inside the VNet with a
@@ -834,13 +842,14 @@ five files. The budgets are the exceptions and say why in their own headers.
 
 ### The platform's own telemetry (`modules/alerts.bicep`)
 
-The consumer ADR-0025 was waiting for. Two rules, on **different signals on
+The consumer ADR-0025 was waiting for. Three rules, on **different signals on
 purpose**:
 
-| Rule                           | Reads                                                       | Why not the other signal                                                                                                                 |
-| ------------------------------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `-alert-registry-stale`        | the `helix.registry.stale_for_ms` metric, over `AppMetrics` | An age wants a threshold; this is what replaced KQL over log messages                                                                    |
-| `-alert-registry-never-loaded` | the `registry.never_loaded` log event                       | The gauge is _absent_ in that state by design, and the counter that reports it is cumulative — a threshold on it would never stop firing |
+| Rule                           | Reads                                                             | Why not the other signal                                                                                                                                                 |
+| ------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-alert-registry-stale`        | the `helix.registry.stale_for_ms` metric, over `AppMetrics`       | An age wants a threshold; this is what replaced KQL over log messages                                                                                                    |
+| `-alert-registry-never-loaded` | the `registry.never_loaded` log event                             | The gauge is _absent_ in that state by design, and the counter that reports it is cumulative — a threshold on it would never stop firing                                 |
+| `-alert-trust-proxy`           | the `helix.edge.trust_proxy.unresolved` metric, over `AppMetrics` | The trust-proxy `/health` sub-check grades `degraded`, which no other rule reads — without this rule the edge's `EDGE_TRUST_PROXY` self-report reaches nobody (ADR-0011) |
 
 Both scope to the apps environment's Log Analytics workspace, which holds the
 container stdout **and** the metrics (the component is workspace-based onto it).

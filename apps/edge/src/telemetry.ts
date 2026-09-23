@@ -18,6 +18,7 @@ import {
   INSTR_REGISTRY_LOAD_FAILURES,
   INSTR_REGISTRY_STALE_FOR_MS,
   INSTR_SESSION_GATE_DENIED,
+  INSTR_TRUST_PROXY_UNRESOLVED,
 } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -57,6 +58,14 @@ export interface EdgeInstruments {
   registryStaleForMs: ObservableGauge;
   /** `reason` ∈ `SESSION_DENIAL_REASONS`. */
   sessionGateDenied: Counter;
+  /**
+   * Observable, like {@link registryStaleForMs}: 1 while the trust-proxy
+   * check is degraded (the forwarded walk never resolved on the last N
+   * proxied requests), 0 while verified healthy, and **absent below N** — a
+   * gauge reading 0 on an unmeasured state would claim health nobody has
+   * seen. Attached by `wireTrustProxyHealth` (`routing/trustProxyHealth.ts`).
+   */
+  trustProxyUnresolved: ObservableGauge;
 }
 
 /**
@@ -105,6 +114,11 @@ export function instruments(): EdgeInstruments {
     }),
     sessionGateDenied: meter.createCounter(INSTR_SESSION_GATE_DENIED, {
       description: "App-host session-gate denials by reason.",
+    }),
+    trustProxyUnresolved: meter.createObservableGauge(INSTR_TRUST_PROXY_UNRESOLVED, {
+      description:
+        "1 when the last N proxied requests never resolved a forwarded client IP " +
+        "(trust-proxy /health check degraded); 0 when verified healthy; absent below N.",
     }),
   };
   return cached;

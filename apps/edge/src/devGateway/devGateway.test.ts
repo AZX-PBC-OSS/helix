@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { hashDevToken, newDevToken } from "@azx-pbc/shared/devToken";
+import type { HealthCheck } from "@azx-pbc/shared";
 import { buildDevGateway } from "./app.js";
 import type { DevTokenRow, DevTokenStore } from "./devTokenStore.js";
 import { testDevGatewayConfig } from "../test/config.js";
 import { FakeAppDataStore, FakeRegistry, FakeUsageStore, registryEntry } from "../test/fakes.js";
+import { TRUST_PROXY_CHECK_NAME, TRUST_PROXY_WINDOW } from "../routing/trustProxyHealth.js";
 import type { AppDataStore, PutResult, SharedKeyPage, StoredValue } from "../gateway/data.js";
 import type { Env } from "@azx-pbc/shared";
 
@@ -144,7 +146,13 @@ describe("dev-gateway /health", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({
       status: "ok",
-      checks: [{ name: "registry-projection", status: "ok" }],
+      checks: [
+        { name: "registry-projection", status: "ok" },
+        // Local dev sends no forwarded header, so the trust-proxy check has
+        // nothing measured yet — the same "not enough traffic" state the edge
+        // reports on an idle install (ADR-0011).
+        { name: "trust-proxy", status: "ok" },
+      ],
     });
     await app.close();
   });
@@ -165,6 +173,30 @@ describe("dev-gateway /health", () => {
     const res = await app.inject({ url: "/health" });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("error");
+    await app.close();
+  });
+
+  it("degrades on the trust-proxy check after N forwarded requests the config refuses (ADR-0011)", async () => {
+    const app: FastifyInstance = buildDevGateway({
+      config: testDevGatewayConfig({ trustProxy: false }),
+      registry: new FakeRegistry([registryEntry({ slug: "myapp", appId: APP_A })]),
+      devTokens: new FakeDevTokenStore(),
+      appData: new FakeAppDataStore(),
+      usage: new FakeUsageStore(),
+      llmProvider: null,
+      egress: null,
+      instructionKey: null,
+    });
+    await app.ready();
+    for (let i = 0; i < TRUST_PROXY_WINDOW; i++) {
+      await app.inject({ url: "/health", headers: { "x-forwarded-for": "203.0.113.7" } });
+    }
+    const res = await app.inject({ url: "/health" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ checks?: HealthCheck[] }>();
+    const check = body.checks?.find((c) => c.name === TRUST_PROXY_CHECK_NAME);
+    expect(check?.status).toBe("degraded");
+    expect(check?.detail).toContain("EDGE_TRUST_PROXY");
     await app.close();
   });
 });

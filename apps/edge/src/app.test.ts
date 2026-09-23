@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import type { HealthCheck } from "@azx-pbc/shared";
 import { buildApp } from "./app.js";
 import type { EdgeConfig } from "./config.js";
 import { FakeBlobReader, FakeRegistry, registryEntry } from "./test/fakes.js";
+import { TRUST_PROXY_CHECK_NAME, TRUST_PROXY_WINDOW } from "./routing/trustProxyHealth.js";
 
 const APP_ID = "11111111-1111-4111-8111-111111111111";
 const PREFIX = `apps/${APP_ID}/1/`;
@@ -108,11 +110,90 @@ describe("platform hosts", () => {
     // The registry-freshness sub-check is part of the contract an alert keys on.
     expect(res.json().checks?.[0]?.name).toBe("registry-projection");
     expect(res.json().checks?.[0]?.status).toBe("ok");
+    // So is the trust-proxy one (ADR-0011) — nothing proxied yet in this suite.
+    expect(res.json().checks?.[1]?.name).toBe("trust-proxy");
+    expect(res.json().checks?.[1]?.status).toBe("ok");
   });
 
   it("404s everything else", async () => {
     const res = await edge.app.inject({ url: "/whatever", headers: { host: "localhost:8080" } });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+/**
+ * The trust-proxy self-report, through the real app (ADR-0011). Inject's
+ * loopback peer stands in for the ingress — the same convention config.test.ts
+ * established — and the test configs default `trustProxy: false`
+ * (`src/test/config.ts`), so the degraded arm needs no override at all.
+ */
+describe("the trust-proxy /health sub-check", () => {
+  const N = TRUST_PROXY_WINDOW;
+  const healthCheck = async (app: FastifyInstance) => {
+    const res = await app.inject({ url: "/health", headers: { host: "localhost:8080" } });
+    const body = res.json<{ status: string; checks?: HealthCheck[] }>();
+    return {
+      rollup: body.status,
+      check: body.checks?.find((c) => c.name === TRUST_PROXY_CHECK_NAME),
+    };
+  };
+
+  it("starts at 'not enough proxied traffic yet' and degrades after N untrusted proxied requests", async () => {
+    const { app } = buildTestEdge({});
+    await app.ready();
+    const { check } = await healthCheck(app);
+    expect(check).toMatchObject({
+      status: "ok",
+      detail: `not enough proxied traffic yet (0/${N})`,
+    });
+
+    // The live defect (ADR-0011's 2026-09-03 section), reproduced: an
+    // X-Forwarded-For-carrying ingress in front of an edge that trusts nothing.
+    for (let i = 0; i < N; i++) {
+      await app.inject({
+        url: "/health",
+        headers: { host: "localhost:8080", "x-forwarded-for": "203.0.113.7" },
+      });
+    }
+    const degraded = await healthCheck(app); // this read carries no header, so it counts nothing
+    expect(degraded.check?.status).toBe("degraded");
+    expect(degraded.check?.detail).toContain("EDGE_TRUST_PROXY");
+    expect(degraded.check?.metrics?.windowResolved).toBe(0);
+    expect(degraded.rollup).toBe("degraded"); // the worst state wins the roll-up
+    await app.close();
+  });
+
+  it("reads ok once the walk resolves, with forwardedResolved to show for it", async () => {
+    const { app } = buildTestEdge({ config: { trustProxy: "127.0.0.0/8" } });
+    await app.ready();
+    for (let i = 0; i < N; i++) {
+      await app.inject({
+        url: "/health",
+        headers: { host: "localhost:8080", "x-forwarded-for": "203.0.113.7" },
+      });
+    }
+    const { check, rollup } = await healthCheck(app);
+    expect(check?.status).toBe("ok");
+    expect(check?.detail).toBeUndefined();
+    expect(check?.metrics?.forwardedResolved).toBeGreaterThan(0);
+    expect(check?.metrics?.windowResolved).toBeGreaterThan(0);
+    expect(rollup).toBe("ok");
+    await app.close();
+  });
+
+  it("never counts requests without the header — probes and local dev cannot degrade it", async () => {
+    const { app } = buildTestEdge({ config: { trustProxy: "127.0.0.0/8" } });
+    await app.ready();
+    for (let i = 0; i < N + 10; i++) {
+      await app.inject({ url: "/health", headers: { host: "localhost:8080" } });
+    }
+    const { check } = await healthCheck(app);
+    expect(check).toMatchObject({
+      status: "ok",
+      detail: `not enough proxied traffic yet (0/${N})`,
+      metrics: { forwardedSeen: 0 },
+    });
+    await app.close();
   });
 });
 
@@ -302,7 +383,11 @@ describe("app hosts: registry states", () => {
     expect(health.statusCode).toBe(200);
     expect(health.json()).toMatchObject({
       status: "degraded",
-      checks: [{ name: "registry-projection", status: "degraded" }],
+      checks: [
+        { name: "registry-projection", status: "degraded" },
+        // No forwarded traffic in this suite: the check stays "not enough yet".
+        { name: "trust-proxy", status: "ok" },
+      ],
     });
     expect(health.headers["cache-control"]).toBe("no-store");
     // The whole point of degrading rather than failing: apps still serve.
