@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 
@@ -51,6 +52,14 @@ const app = buildApp();
 app.addHook("onClose", async () => {
   await telemetry.shutdown();
 });
+
+// SIGTERM (revision swaps, scale-in) / SIGINT (Ctrl-C): drain in-flight
+// requests and run the onClose hook above (Prisma + directory close in
+// buildApp's plugins), bounded by a hard deadline. Default 10 s, a third of
+// Container Apps' documented 30 s SIGTERM-to-SIGKILL window; SHUTDOWN_GRACE_MS
+// overrides. (`@azx-pbc/shared/lifecycle`, not the barrel — the barrel is
+// browser-consumed.)
+installGracefulShutdown(app, app.log);
 
 try {
   await app.listen({ port, host });

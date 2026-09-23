@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig, publicOrigin } from "./config.js";
@@ -267,6 +268,14 @@ app.addHook("onClose", async () => {
   // Last: flush the final batch after everything that could still record.
   await telemetry.shutdown();
 });
+
+// SIGTERM (revision swaps, scale-in) / SIGINT (Ctrl-C): drain in-flight
+// requests and run the onClose hook above, bounded by a hard deadline so a
+// never-finishing upstream SSE stream can't turn a 100 ms exit into a
+// SIGKILL. Default 10 s, a third of Container Apps' documented 30 s
+// SIGTERM-to-SIGKILL window; SHUTDOWN_GRACE_MS overrides.
+// (`@azx-pbc/shared/lifecycle`, not the barrel — that one is browser-consumed.)
+installGracefulShutdown(app, app.log);
 
 try {
   // First load attempt completes before we accept traffic; a down DB logs and

@@ -344,6 +344,32 @@ silent-wipe one).
 off — stop, do not apply.** (On a gated install the declarative set matches the
 live bindings, so that Delete line is impossible unless the flag is wrong.)
 
+## Container shutdown (graceful drain)
+
+Every service installs a `SIGTERM`/`SIGINT` handler (`@azx-pbc/shared/lifecycle`)
+that drains in-flight requests under a hard deadline and then runs its `onClose`
+hooks — on a revision swap the old replica finishes short requests instead of
+having every connection cut mid-byte. The deadline defaults to **10 s**
+(`SHUTDOWN_GRACE_MS` overrides without a code change) and deliberately sits a
+third under the Container Apps default **30 s SIGTERM-to-SIGKILL window** — the
+documented contract, and the only number the platform honours reliably (its
+issue tracker has cases of configured grace periods ignored and SIGTERM
+undelivered on consumption profiles, so shorter-and-inside beats longer-and-hoped).
+
+Nothing in the template sets `terminationGracePeriodSeconds` — the 30 s default
+is the number the 10 s deadline sits under. Pinning it explicitly (e.g. `20`,
+double the deadline) in `modules/containerapp.bicep` is optional hardening for
+the next template pass, not a prerequisite; if you ever need more drain, raise
+`SHUTDOWN_GRACE_MS` first and keep it comfortably under whatever the template
+pins. The batch interval of the telemetry pipeline is set to 1 s precisely so
+the never-delivered-signal cases lose at most a second of spans.
+
+One runner detail the drain depends on: the images execute the entrypoint as
+`node --import tsx`, **not** `tsx` — the tsx CLI installs a SIGTERM/SIGINT
+handler that exits 143 outright, which would kill the process before any of
+this runs. Keep the CLI out of the container CMD and the package `start`
+scripts.
+
 ## Portal access (`portalExternal`, [ADR-0007](../../docs/adr/0007-portal-authz-v0.md))
 
 The **edge** (app-serving) is public; the **portal** (control plane + `azx-cli`

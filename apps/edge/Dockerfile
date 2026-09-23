@@ -3,10 +3,16 @@
 # Build from the REPO ROOT (the build context is the whole pnpm workspace):
 #   docker build -f apps/edge/Dockerfile -t <acr>/helix-edge:<tag> .
 #
-# The app runs via `tsx src/server.ts` and consumes @azx-pbc/shared as raw TS
-# (its `exports` point at ./src), so the image keeps devDependencies (tsx,
-# typescript) — there is no compiled dist. @azx-pbc/dev-idp is a devDependency
-# used only by tests and is never imported at runtime.
+# The app runs via `node --import tsx src/server.ts` — the `tsx` LOADER, not the
+# tsx CLI — and consumes @azx-pbc/shared as raw TS (its `exports` point at
+# ./src), so the image keeps devDependencies (tsx, typescript) — there is no
+# compiled dist. The loader-vs-CLI distinction is load-bearing, not style: the
+# tsx CLI installs its own SIGTERM/SIGINT handler that exits 143 outright,
+# which would defeat the services' graceful-shutdown drain before it starts
+# (packages/shared/src/lifecycle.ts). `node --import tsx` loads TS with no
+# handler of its own, so the process's own signal handling is the only one.
+# @azx-pbc/dev-idp is a devDependency used only by tests and is never imported
+# at runtime.
 #
 # Follow-up (not blocking the pilot): precompile to dist + prune devDeps to
 # shrink the image.

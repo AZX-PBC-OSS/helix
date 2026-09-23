@@ -184,5 +184,10 @@ like coverage.
 - The OTel **log** bridge, browser/RUM for the portal SPA, per-app telemetry for
   hosted apps, tail sampling, and `pg`/`undici` instrumentation depth beyond the
   hand-placed seams — all deferred, each on its own merits (decision 11).
-- **Graceful shutdown.** No service installs a `SIGTERM` handler, so the
-  `onClose` telemetry flush does not run on a real stop. `TODO.md`.
+
+Graceful shutdown is built: every service installs a `SIGTERM`/`SIGINT` handler
+(`@azx-pbc/shared/lifecycle`) that drains in-flight requests under a hard
+deadline (default 10 s, `SHUTDOWN_GRACE_MS`) and runs the `onClose` hooks — the
+final telemetry batch now lands on a real stop. The batch interval (1 s) is
+what still covers crashes, `SIGKILL` and never-delivered signals; see
+[`packages/telemetry/README.md`](../../packages/telemetry/README.md).

@@ -206,9 +206,20 @@ export function startTelemetry(
     // event loop that terminates untrusted traffic (ADR-0003, ADR-0037 §5). If a
     // future debugging session wants SimpleSpanProcessor, it has to argue with
     // this comment first.
+    //
+    // `scheduledDelayMillis: 1_000`, not the 5 s default: the batch interval is
+    // the span loss window on any stop the process doesn't get to react to — a
+    // crash, a SIGKILL, or a SIGTERM that never arrives (Container Apps has had
+    // all three; see TODO.md history and lifecycle.ts). The graceful-shutdown
+    // handler covers only the stops it sees; this covers the rest, and 1 s
+    // keeps the export rate trivial at this platform's span volume.
     tracerProvider = new NodeTracerProvider({
       resource,
-      spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: config.tracesUrl }))],
+      spanProcessors: [
+        new BatchSpanProcessor(new OTLPTraceExporter({ url: config.tracesUrl }), {
+          scheduledDelayMillis: 1_000,
+        }),
+      ],
     });
     // Registers the global tracer provider, plus a context manager and the
     // propagator. Propagation runs INWARD ONLY (edge → egress): the edge never

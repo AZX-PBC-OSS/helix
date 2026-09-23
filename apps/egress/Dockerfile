@@ -3,8 +3,11 @@
 # Build from the REPO ROOT (the build context is the whole pnpm workspace):
 #   docker build -f apps/egress/Dockerfile -t <acr>/helix-egress:<tag> .
 #
-# Runs via `tsx src/server.ts` and consumes @azx-pbc/shared and
-# @azx-pbc/secret-store as raw TS, so devDependencies stay in the image.
+# Runs via `node --import tsx src/server.ts` — the `tsx` LOADER, not the CLI
+# (the CLI installs a SIGTERM/SIGINT handler that exits 143 outright and would
+# defeat graceful shutdown, see packages/shared/src/lifecycle.ts) — and
+# consumes @azx-pbc/shared and @azx-pbc/secret-store as raw TS, so
+# devDependencies stay in the image.
 
 FROM node:24-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm

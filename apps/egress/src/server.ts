@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import {
   createSecretStore,
   managedIdentityTokenProviderFromEnv,
@@ -185,6 +186,14 @@ app.addHook("onClose", async () => {
   await miTokenProvider?.close();
   await telemetry.shutdown();
 });
+
+// SIGTERM (revision swaps, scale-in) / SIGINT (Ctrl-C): drain in-flight proxy
+// calls and run the onClose hook above, bounded by a hard deadline so a slow
+// upstream can't turn a fast exit into a SIGKILL. Default 10 s, a third of
+// Container Apps' documented 30 s SIGTERM-to-SIGKILL window;
+// SHUTDOWN_GRACE_MS overrides. (`@azx-pbc/shared/lifecycle`, not the barrel —
+// that one is browser-consumed.)
+installGracefulShutdown(app, app.log);
 
 try {
   await app.listen({ port: config.port, host: config.host });

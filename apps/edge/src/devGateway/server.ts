@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildDevGateway, SERVICE_NAME } from "./app.js";
 import { loadDevGatewayConfig, type DevGatewayConfig } from "../config.js";
@@ -183,6 +184,12 @@ app.addHook("onClose", async () => {
   // Last, after everything that could still record.
   await telemetry.shutdown();
 });
+
+// SIGTERM / SIGINT: drain in-flight requests and run the onClose hook above,
+// bounded by a hard deadline. Mirrors `../server.ts` (default 10 s,
+// SHUTDOWN_GRACE_MS overrides — a third of Container Apps' documented 30 s
+// SIGTERM-to-SIGKILL window).
+installGracefulShutdown(app, app.log);
 
 try {
   await registry.start();

@@ -85,11 +85,19 @@ top-level exception and the service does not boot. A misconfigured endpoint —
 a `warn`, and anything half-built is unregistered and shut down on the way out.
 A typo in one env var must not be able to stop the edge.
 
-The `onClose` hook is where the final flush belongs, but **no service installs a
-`SIGTERM`/`SIGINT` handler yet**, so on a real stop Node's default handler exits
-immediately and the hook does not run. Graceful drain is tracked in
-[`TODO.md`](../../TODO.md); until it lands, treat the last batch before a deploy
-as lost.
+The `onClose` hook is where the final flush belongs, and every service now gets
+there on a real stop: each `server.ts` installs a `SIGTERM`/`SIGINT` handler
+(`installGracefulShutdown`, `@azx-pbc/shared/lifecycle`) that drains in-flight
+requests under a hard deadline — default 10 s, `SHUTDOWN_GRACE_MS` overrides —
+and then closes the app.
+
+The deadline is a ceiling, not a guarantee. A crash, a `SIGKILL`, or a platform
+that never delivers the signal (Azure Container Apps has had all three: grace
+periods not honoured on some paths, SIGTERM undelivered on consumption
+workload profiles) still loses the in-flight batch. That is why
+`BatchSpanProcessor`'s `scheduledDelayMillis` is 1 s rather than the 5 s
+default — the loss window on an unhandled stop is one second of spans, not
+five, with no signal handling involved.
 
 ## Locally
 

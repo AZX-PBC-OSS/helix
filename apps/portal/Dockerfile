@@ -6,7 +6,10 @@
 # The portal serves the React SPA from apps/portal-web/dist, so this image
 # additionally installs + builds @azx-pbc/portal-web. `prisma generate` runs via
 # the portal package's postinstall during install (Prisma 7, pg adapter). Runs
-# via `tsx src/server.ts`; devDependencies stay in the image.
+# via `node --import tsx src/server.ts` — the `tsx` LOADER, not the CLI (the
+# CLI installs a SIGTERM/SIGINT handler that exits 143 outright and would
+# defeat graceful shutdown, see packages/shared/src/lifecycle.ts);
+# devDependencies stay in the image.
 
 FROM node:24-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm

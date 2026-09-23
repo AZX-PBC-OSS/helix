@@ -40,14 +40,6 @@ Legend for gating conditions:
 > The platform is deployed on Azure. Every unchecked item below was written as "before we go
 > to production" and is now running without it. Nothing here is theoretical any more.
 
-- [ ] **No service installs a `SIGTERM`/`SIGINT` handler, so nothing in any `onClose` hook ever runs.** All three services end at `await app.listen(...)` and never call `app.close()`; Fastify installs no signal handler of its own. Node's default handler exits immediately, so on every revision swap the edge drops `registry.stop()`, the session/usage/app-data/egress/CSP closes, `llmProvider.close()`, `counterStore.close()` and `blob.close()` (`apps/edge/src/server.ts`), egress drops its burn-store and resolver closes (`apps/egress/src/server.ts`), and the portal drops the Prisma disconnect — plus, since ADR-0037, the final telemetry batch. **The real prize is draining in-flight requests, not the spans**: today a deploy cuts every open connection mid-byte, which on the edge means a truncated LLM stream for every user mid-request. Three things the fix has to get right, in order:
-
-  1. **A hard deadline is not optional.** Fastify 5 defaults `forceCloseConnections: 'idle'`, so `close()` drops idle keep-alives at once but _waits_ on any connection with a request in flight — and the edge holds long-lived upstream SSE streams (`apps/edge/src/gateway/provider.ts`, `gateway/llm.ts`). One slow stream and a 100 ms exit becomes a hang until the orchestrator `SIGKILL`s, and the batch is lost anyway, just later. So: `process.once(signal, ...)`, `const deadline = setTimeout(() => process.exit(0), SHUTDOWN_GRACE_MS).unref()`, then `void app.close().finally(...)`.
-  2. **Pin the grace period in Bicep.** Nothing in `infra/azure` sets a termination grace period today, so we are on the Container Apps default; `SHUTDOWN_GRACE_MS` has to sit comfortably under a number we actually control.
-  3. **Lower `BatchSpanProcessor`'s `scheduledDelayMillis`** (`packages/telemetry/src/index.ts`, 5 s default) as the cheap independent mitigation — it shrinks the loss window with no signal handling at all, and unlike a handler it also covers crashes and `SIGKILL`.
-
-  This is boot-path code in the trusted path that no test exercises, which is why it was kept out of the telemetry scaffold rather than tacked onto it. `packages/telemetry/README.md` states the current (handler-less) state so the docs don't assert a property the platform lacks. — ADR-0037 decision 5, PR #35 review
-
 ---
 
 ## Pre-GA — before external app owners / customer URLs commit

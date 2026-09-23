@@ -9,6 +9,7 @@
     "./bundlePlan": "./src/bundlePlan.ts",
     "./bundleFixtures": "./src/bundleFixtures.ts",
     "./devToken": "./src/devToken.ts",
+    "./lifecycle": "./src/lifecycle.ts",
     "./logging": "./src/logging.ts",
     "./telemetry": "./src/telemetry.ts"
   },
