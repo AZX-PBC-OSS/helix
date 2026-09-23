@@ -1,6 +1,8 @@
 import { Pool } from "pg";
 import { INSTRUCTION_BURN_RETENTION_SECONDS } from "@azx-pbc/shared";
 
+import { createEgressPool, type EgressPoolOpts } from "./pool.js";
+
 /**
  * One-time-use burn for the attested instruction's `jti` (ADR-0013 Step 1,
  * issue #3). Egress trusts the edge's signature but the signature alone is a
@@ -38,14 +40,8 @@ export interface InstructionBurnStore {
 export class PgBurnStore implements InstructionBurnStore {
   readonly #pool: Pool;
 
-  constructor(
-    databaseUrl: string,
-    opts: { max?: number; onIdleError?: (err: unknown) => void } = {},
-  ) {
-    this.#pool = new Pool({ connectionString: databaseUrl, max: opts.max ?? 5 });
-    // See the note in `secrets.ts`: no listener here means a dropped idle client
-    // is an unhandled 'error' event that kills the egress process.
-    this.#pool.on("error", (err) => opts.onIdleError?.(err));
+  constructor(databaseUrl: string, opts: EgressPoolOpts = {}) {
+    this.#pool = createEgressPool(databaseUrl, { ...opts, max: opts.max ?? 5 });
   }
 
   async burn(jti: string): Promise<boolean> {

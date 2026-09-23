@@ -26,19 +26,30 @@ const RLS_TEMPLATE = {
 
 const POOL_CONNECT_MESSAGE =
   "Bare `pool.connect()`: pg-pool REMOVES the client's 'error' listener for the duration of a checkout (_acquireClient), and pg emits 'error' SYNCHRONOUSLY on a socket death while deferring the query rejection to nextTick — so a mid-transaction connection drop is an unhandled 'error' event that kills the edge before your `await client.query()` ever rejects. Use `withPooledClient` (or `withPartition`, which composes it) from apps/edge/src/db/pool.ts: it covers the window and destroys the dead client instead of returning it to the pool.";
+const EGRESS_POOL_CONNECT_MESSAGE =
+  "Bare `pool.connect()`: pg-pool REMOVES the client's 'error' listener for the duration of a checkout (_acquireClient), and pg emits 'error' SYNCHRONOUSLY on a socket death while deferring the query rejection to nextTick — so a mid-transaction connection drop is an unhandled 'error' event that kills egress before your `await client.query()` ever rejects — on the plane that holds plaintext connection secrets. Use `Pool.query()` (it plugs its own temporary handler for the window), and build pools through `createEgressPool` (apps/egress/src/pool.ts) so every pool carries the per-query `statement_timeout` (ADR-0002 ISSUE-05) and the idle-error listener.";
 // Two selectors for the two shapes a pool reference takes: a bare identifier
 // (`pool.connect()`) and a member/private field (`this.#pool.connect()`).
 // Deliberately matched on the NAME, not the type — same coarseness the RLS rule
-// above documents, so a pool variable not named `*pool` slips through.
-const POOL_CONNECT_IDENT = {
-  selector: 'CallExpression[callee.property.name="connect"][callee.object.name=/[Pp]ool$/]',
-  message: POOL_CONNECT_MESSAGE,
-};
-const POOL_CONNECT_FIELD = {
-  selector:
-    'CallExpression[callee.property.name="connect"][callee.object.property.name=/[Pp]ool$/]',
-  message: POOL_CONNECT_MESSAGE,
-};
+// above documents, so a pool variable not named `*pool` slips through. Built by
+// a factory because the pair is shared by the edge (twice) and egress blocks,
+// which differ only in the message — each names the sanctioned escape hatch for
+// its own plane.
+const poolConnectSelectors = (message) => [
+  {
+    selector: 'CallExpression[callee.property.name="connect"][callee.object.name=/[Pp]ool$/]',
+    message,
+  },
+  {
+    selector:
+      'CallExpression[callee.property.name="connect"][callee.object.property.name=/[Pp]ool$/]',
+    message,
+  },
+];
+const [POOL_CONNECT_IDENT, POOL_CONNECT_FIELD] = poolConnectSelectors(POOL_CONNECT_MESSAGE);
+const [EGRESS_POOL_CONNECT_IDENT, EGRESS_POOL_CONNECT_FIELD] = poolConnectSelectors(
+  EGRESS_POOL_CONNECT_MESSAGE,
+);
 
 const URL_ATTR_MESSAGE =
   "This is a span/metric attribute key that carries a WHOLE URL (ADR-0037 decision 6). Several platform URLs carry a live credential in the query string — the Appendix A handoff `token`, the OIDC `code`, and (uncoverable by any name list) the fetch-proxy target's own query, which may hold an app's API key or an Azure SAS `sig` — and a span attribute lands in the same 30-day-retained backend a log line does. Record `url.path` and `http.route` instead, and put anything URL-shaped through `redactUrl` (@azx-pbc/shared/logging) first. The list lives in FORBIDDEN_URL_ATTRS (@azx-pbc/shared/telemetry).";
@@ -190,10 +201,26 @@ export default defineConfig([
     },
   },
   {
+    // ADR-0037 decisions 6 and 7 on the other two planes. Separate blocks
+    // because the selector sets differ: egress is the ONE service allowed to
+    // extract trace context (its caller is the edge, over a hop whose authority
+    // comes from the signed instruction), so PROPAGATION_EXTRACT does not apply
+    // to it. Tests are exempt — the adversarial suites name these very keys in
+    // order to assert they are absent. The pool-connect selectors are the same
+    // guard the edge blocks carry (same hole, same crash), with egress's own
+    // escape hatch in the message — egress has no withPooledClient because its
+    // stores run `Pool.query()` only.
     files: ["apps/egress/src/**/*.ts"],
     ignores: ["apps/egress/src/**/*.test.ts"],
     rules: {
-      "no-restricted-syntax": ["error", URL_ATTR_LITERAL, LOG_URL_DIRECT, LOG_URL_PROPERTY],
+      "no-restricted-syntax": [
+        "error",
+        URL_ATTR_LITERAL,
+        LOG_URL_DIRECT,
+        LOG_URL_PROPERTY,
+        EGRESS_POOL_CONNECT_IDENT,
+        EGRESS_POOL_CONNECT_FIELD,
+      ],
     },
   },
   {

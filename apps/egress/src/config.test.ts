@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
+import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./pool.js";
 
 /**
  * The dev seams are the point of this file: both open a control ADR-0005 rests
@@ -61,6 +62,15 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ HELIX_INSTRUCTION_SECRET: "short" })).toThrow(/at least 32 bytes/);
     expect(() => loadConfig({ HELIX_INSTRUCTION_SECRET: ENV.HELIX_INSTRUCTION_SECRET })).toThrow(
       /EGRESS_DATABASE_URL or DATABASE_URL is required/,
+    );
+  });
+
+  // ADR-0002 ISSUE-05 — the per-query ceiling both egress pools get from
+  // `createEgressPool`; config only resolves the knob, the factory applies it.
+  it("defaults statementTimeoutMs to the shared factory default and honors EGRESS_STATEMENT_TIMEOUT_MS", () => {
+    expect(loadConfig(ENV).statementTimeoutMs).toBe(DEFAULT_STATEMENT_TIMEOUT_MS);
+    expect(loadConfig({ ...ENV, EGRESS_STATEMENT_TIMEOUT_MS: "3000" }).statementTimeoutMs).toBe(
+      3000,
     );
   });
 

@@ -5,6 +5,7 @@
  * secret (to verify what the edge minted), a secret-store custody config, and
  * SSRF/limit knobs.
  */
+import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./pool.js";
 /**
  * One `EGRESS_MANAGED_IDENTITY_CONNECTIONS` entry. `connection` is the
  * operator-chosen platform connection name (kebab-case, like a secret name);
@@ -25,6 +26,12 @@ export interface EgressConfig {
   host: string;
   /** Connects as `helix_egress` (EGRESS_DATABASE_URL); falls back to DATABASE_URL in dev. */
   databaseUrl: string;
+  /**
+   * Per-query `statement_timeout` for both egress pools (`EGRESS_STATEMENT_TIMEOUT_MS`;
+   * default {@link DEFAULT_STATEMENT_TIMEOUT_MS}). The same pool-exhaustion guard the
+   * edge's pools carry (ADR-0002 ISSUE-05).
+   */
+  statementTimeoutMs: number;
   /** Shared with the edge; HKDF-derived into the instruction-verify key. >= 32 bytes. */
   instructionSecret: Buffer;
   /** Prod custody: Key Vault. */
@@ -162,6 +169,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
     port: Number(env.EGRESS_PORT ?? env.PORT ?? 8081),
     host: env.HOST ?? "0.0.0.0",
     databaseUrl,
+    statementTimeoutMs: Number(env.EGRESS_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),
     instructionSecret,
     keyVaultUrl: env.AZURE_KEY_VAULT_URL || undefined,
     devKeyPath: env.DEV_SECRETS_KEK_FILE || undefined,

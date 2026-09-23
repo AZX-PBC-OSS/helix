@@ -55,7 +55,13 @@ plaintext secrets or the public internet:
 2. **Resolve + inject** the named connection secret, if any
    (`PgSecretResolver` under the `helix_egress` role; see
    `secrets-and-connections.md`). The credential is applied per its recipe
-   (`Authorization: Bearer …`, a header template, or a query param).
+   (`Authorization: Bearer …`, a header template, or a query param). Both
+   egress Postgres pools (this resolver and the instruction burn store) build
+   through `createEgressPool` (`apps/egress/src/pool.ts`), which gives every
+   query a Postgres-enforced `statement_timeout` (default 10 s,
+   `EGRESS_STATEMENT_TIMEOUT_MS` to tune) so a stuck query can't pin a pooled
+   connection on the plane that holds plaintext secrets, and attaches the
+   idle-client `'error'` listener (ADR-0002 ISSUE-05).
 3. **SSRF controls** (`apps/egress/src/ssrf.ts`): resolve every address and
    refuse private / loopback / link-local / `169.254.169.254` (IMDS); pin the
    connection to the validated IP (cert/SNI still checked against the hostname),

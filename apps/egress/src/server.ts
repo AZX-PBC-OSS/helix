@@ -114,6 +114,7 @@ const onClientError = (err: unknown, label: string): void => {
 
 const pgResolver: PgSecretResolver | null = store
   ? new PgSecretResolver(config.databaseUrl, store, {
+      statementTimeoutMs: config.statementTimeoutMs,
       onIdleError: (err) => onClientError(err, "secrets"),
     })
   : null;
@@ -159,6 +160,7 @@ if (config.managedIdentityConnections.length > 0) {
 // The replay burn always runs — it needs only the DB (helix_egress), not the
 // secret store, and protects keyless calls too (issue #3).
 const burnStore = new PgBurnStore(config.databaseUrl, {
+  statementTimeoutMs: config.statementTimeoutMs,
   onIdleError: (err) => onClientError(err, "instruction-jti"),
 });
 
