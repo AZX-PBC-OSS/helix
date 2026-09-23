@@ -462,6 +462,17 @@ Two things make it more than an exporter swap, and they are why it is not here:
   SDK config, or decision 1's "no service code moves with the vendor" property
   takes its first real exception.
 
+The preview question is settled (verified 2026-09-23 against the current
+Microsoft Learn pages): **only the AMA and AKS ingestion paths are preview —
+the OpenTelemetry Collector path, which is the one this deployment would run,
+is generally available.** The blanket preview banner still on the
+"OpenTelemetry ingestion options" summary page is stale against its own
+options page, which states the split explicitly, and against the collector
+how-to, which carries no banner and documents exactly the two costs above —
+Entra authentication with the Monitoring Metrics Publisher role, and
+`cumulativetodelta` for cumulative metrics. Nothing here blocks putting an
+Azure Monitor workspace in a template.
+
 One consequence of the log-based table to record, because it shapes the rules:
 counters arrive **cumulative**, so a threshold on
 `helix.registry.load_failures{outcome:"never_loaded"}` would fire forever after
