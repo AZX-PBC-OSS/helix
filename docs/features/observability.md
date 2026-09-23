@@ -64,6 +64,14 @@ looked up:
   the call (ADR-0046), and the first thing to check when a Foundry-bound call
   misauthenticates. Bounded to those two values; on the egress allowlist, so
   never a header name, a credential, or a token claim.
+- `helix.egress.proxy` spans' `helix.outcome` ∈ {`ok`, `upstream_throttled`,
+  `refusal`, `error`} — `upstream_throttled` is a proxied upstream `429`: the
+  proxy worked, the vendor said slow down. Without the distinct label a real
+  vendor throttle (an app pushing past its TPM) presented as a wall of `ok`
+  spans, and anything keyed on outcome missed it entirely. The gateway LLM span
+  records `http.route` per surface — `/_api/llm/chat` or
+  `/_api/openai/v1/chat/completions` — so throttles on the OpenAI-compatible
+  route are findable by route.
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |

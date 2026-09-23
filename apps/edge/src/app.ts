@@ -47,6 +47,7 @@ import {
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
+import { ROUTE_OPENAI } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -248,7 +249,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         }
       : null;
   const handleLlmChat = llmRuntime ? makeLlmHandler(llmRuntime) : null;
-  const handleOpenAiChat = llmRuntime ? makeLlmHandler(llmRuntime, openAiCodec) : null;
+  const handleOpenAiChat = llmRuntime
+    ? makeLlmHandler(llmRuntime, openAiCodec, ROUTE_OPENAI)
+    : null;
   const handleOpenAiModels = llmRuntime ? makeOpenAiModelsHandler(llmRuntime) : null;
   // The data gateway needs a caller (session, or anon on public apps); the
   // store may be null (capability 503s), like the LLM provider.

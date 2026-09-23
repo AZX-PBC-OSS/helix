@@ -108,6 +108,7 @@ export const SPAN_DEPLOY_RECORD = "helix.deploy.record";
  * is nothing variable to record anyway.
  */
 export const ROUTE_LLM = "/_api/llm/chat";
+export const ROUTE_OPENAI = "/_api/openai/v1/chat/completions";
 export const ROUTE_FETCH = "/_api/fetch/*";
 export const ROUTE_DATA = "/_api/data/*";
 export const ROUTE_AUTH_START = "/start";

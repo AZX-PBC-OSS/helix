@@ -17,6 +17,7 @@ import type { LlmProvider } from "../gateway/provider.js";
 import type { EgressProvider } from "../gateway/egressProvider.js";
 import type { UsageStore } from "../gateway/usage.js";
 import type { AppDataStore } from "../gateway/data.js";
+import { ROUTE_OPENAI } from "@azx-pbc/shared/telemetry";
 import { makeDevTokenResolver } from "./resolver.js";
 import type { DevTokenStore } from "./devTokenStore.js";
 
@@ -130,7 +131,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     usage: deps.usage,
   };
   const handleLlmChat = makeLlmHandler(llmRuntime);
-  const handleOpenAiChat = makeLlmHandler(llmRuntime, openAiCodec);
+  const handleOpenAiChat = makeLlmHandler(llmRuntime, openAiCodec, ROUTE_OPENAI);
   const handleOpenAiModels = makeOpenAiModelsHandler(llmRuntime);
   const dataHandlers = makeDataHandlers({
     config,

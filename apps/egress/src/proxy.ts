@@ -528,7 +528,13 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         }
       }
 
-      reply.header(OUTCOME_HEADER, "ok");
+      // An upstream throttle is a proxied round-trip that worked, but `ok`
+      // hides it from anyone alerting on `helix.outcome` (a real 70K-vs-40K
+      // TPM throttle presented as a wall of `ok` spans). Label the throttle so
+      // it is filterable; the edge's `toOutcome` folds unknown labels into
+      // `error`, which is the truthful ledger meaning for a call the vendor
+      // refused.
+      reply.header(OUTCOME_HEADER, upstream.statusCode === 429 ? "upstream_throttled" : "ok");
       reply.code(upstream.statusCode);
       // Dynamically strip the exact headers we injected so an upstream that
       // reflects them (echo/debug endpoints, CORS reflection) can't leak the

@@ -507,6 +507,56 @@ describe("a vendor 400 is the app's fault, not the upstream's (ADR-0034)", () =>
   });
 });
 
+describe("an upstream 429 is a throttle, not an outage", () => {
+  /** What EgressLlmProvider throws when Foundry answers 429. */
+  const vendor429 = (retryAfter?: number): LlmProviderError =>
+    new LlmProviderError('egress llm call failed (429): {"error":{"code":"429"}}', 429, retryAfter);
+
+  it("passes through as 429 rate_limited with the vendor's retry-after, non-streaming", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor429(30);
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, { ...ASK, stream: false });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["retry-after"]).toBe("30");
+    expect(res.json().error.code).toBe("rate_limited");
+    expect(edge.usage.records[0]?.outcome).toBe("error");
+  });
+
+  it("passes through on the streaming path too, since nothing has been written yet", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor429(12);
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, { ...ASK, stream: true });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["retry-after"]).toBe("12");
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.json().error.code).toBe("rate_limited");
+  });
+
+  it("falls back to a fixed retry-after when the vendor sent none", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor429();
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, { ...ASK, stream: false });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["retry-after"]).toBe("5");
+  });
+
+  it("never echoes the vendor's message", async () => {
+    const edge = buildLlmEdge();
+    edge.provider.error = vendor429(7);
+    const token = await seedSession(edge.sessions);
+    const res = await chat(edge, token, { ...ASK, stream: false });
+
+    expect(res.body).not.toContain("egress llm call failed");
+    expect(edge.usage.records[0]?.errorDetail).toContain("429");
+  });
+});
+
 /**
  * Real-socket coverage for client disconnect. The rest of this file drives the
  * app through `app.inject()`, which cannot express a client hanging up — and

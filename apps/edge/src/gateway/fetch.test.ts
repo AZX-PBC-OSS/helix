@@ -44,6 +44,8 @@ function abortError(): Error {
 class FakeEgress implements EgressProvider {
   calls: EgressRequest[] = [];
   outcome = "ok";
+  /** The status the proxied response carries (the upstream's, verbatim). */
+  status = 200;
   /** When set, the response body egress "returns" — used to exercise the cap. */
   responseBody: Readable | null = null;
   /** When set, the request body is fully drained so tests can measure its size. */
@@ -83,7 +85,7 @@ class FakeEgress implements EgressProvider {
     if (this.delayMs > 0) await this.#holdOpen(req.signal);
     settled = true;
     return {
-      status: 200,
+      status: this.status,
       headers: { "content-type": "application/json" },
       body: this.responseBody ?? Readable.from([Buffer.from(JSON.stringify({ ok: true }))]),
       outcome: this.outcome,
@@ -483,6 +485,25 @@ describe("/_api/fetch", () => {
       headers: { ...HOST, origin: ORIGIN },
     });
     expect(res.statusCode).toBe(503);
+    await app.close();
+  });
+
+  it("meters a proxied upstream 429 (outcome upstream_throttled) as an error", async () => {
+    // Egress labels a vendor throttle `upstream_throttled` instead of `ok`, and
+    // `toOutcome` folds that into the ledger's `error` — previously a throttle
+    // metered as a clean `ok` and nothing keyed on outcome could find it.
+    const { app, egress, usage } = buildFetchEdge();
+    egress.status = 429;
+    egress.outcome = "upstream_throttled";
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/x",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(429);
+    expect(usage.records).toContainEqual(
+      expect.objectContaining({ capability: "fetch", outcome: "error", statusCode: 429 }),
+    );
     await app.close();
   });
 

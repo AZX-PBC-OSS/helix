@@ -79,7 +79,9 @@ The handler relays this two ways:
   `event: delta` records as text arrives, then `event: done` with `{stopReason, usage}`; on
   failure, `event: error` `{code, message}`.
 - **Non-streaming** — accumulates deltas into a single `LlmChatResponseSchema` JSON body;
-  upstream failures become `502`.
+  upstream failures become `502` — except an upstream `429`, which passes through as
+  `429 rate_limited` (with `retry-after` when the vendor sent one, else a fixed 5s) so the app's
+  SDK retry/backoff engages instead of reading a platform outage.
 
 The client is aborted when it goes away: `req.raw.on("close", () => abort.abort())` cancels the
 upstream stream — the edge never blocks the event loop buffering a response (project plan §1).
@@ -217,7 +219,9 @@ guards but falls outside the vendor's strict subset draws a `400` from the vendo
 flatten to `502 internal` — telling the app to retry something that could never succeed, and
 attributing an app bug to the platform. `describeError` now branches on the `upstreamStatus` that
 `LlmProviderError` already carried: an upstream `400` becomes `400 validation_failed`, naming
-`responseFormat` when a schema was in play. The vendor's own message is **never echoed** (it can
+`responseFormat` when a schema was in play, and an upstream `429` becomes `429 rate_limited` with
+the vendor's `retry-after` (egress already forwards the header; the edge coerces it to integer
+delay-seconds or falls back to 5). The vendor's own message is **never echoed** (it can
 quote request content, and on an auth failure the key); it goes to the ledger's internal
 `errorDetail` instead, which walks the `cause` chain so the wire-level code survives.
 

@@ -59,7 +59,14 @@ export const INSTRUCTION_HEADER = "x-helix-instruction";
 export const TARGET_HEADER = "x-helix-target";
 /** The upstream HTTP method to use (egress preserves the app's method). */
 export const METHOD_HEADER = "x-helix-method";
-/** Egress → edge: the outcome label for the edge to meter into `gateway_calls`. */
+/**
+ * Egress → edge: the outcome label for the edge to meter into `gateway_calls`.
+ * Values (by convention — the edge's `toOutcome` folds anything unrecognized
+ * into `error`): `ok` a clean proxied round-trip; `upstream_throttled` the
+ * upstream answered 429 (the proxy worked, the vendor said slow down);
+ * `refusal` egress itself refused the call (4xx from `fail`); `error` an
+ * egress-side failure (5xx from `fail`, a throw).
+ */
 export const OUTCOME_HEADER = "x-helix-egress-outcome";
 
 /**

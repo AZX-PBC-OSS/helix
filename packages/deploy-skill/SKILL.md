@@ -430,6 +430,7 @@ yourself in new code — it is explicit and it works without the shim.
 | 428    | `precondition_required`  | Shared write without `If-Match`/`If-None-Match` — fix the code       |
 | 429    | `quota_exceeded`         | Daily budget spent — in-flight calls finish, new ones are refused    |
 | 429    | `rate_limited`           | Anonymous per-IP limit on a `public` app                             |
+| 429    | `rate_limited`           | The upstream model is throttled — retry after the `retry-after` delay |
 | 503    | `capability_unavailable` | The platform isn't configured for this capability here               |
 | 502    | —                        | Upstream provider failed                                             |
 

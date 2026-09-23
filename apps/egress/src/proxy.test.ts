@@ -2,7 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SignJWT } from "jose";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import {
   INSTRUCTION_AUDIENCE,
   INSTRUCTION_HEADER,
@@ -20,11 +21,23 @@ import type { ResolvedConnection, SecretResolver } from "./secrets.js";
 const secret = randomBytes(32);
 const key = deriveInstructionKey(secret);
 
+// Real in-memory span/metric providers, so the outcome-label assertions below
+// pin what the *span* says — the thing alerting reads — not just the header.
+let recording: RecordingTelemetry;
+
 // An upstream that echoes what it received, so we can assert injection + method.
 let upstream: Server;
 let origin: string;
 beforeAll(async () => {
+  recording = startRecordingTelemetry();
   upstream = createServer((req, res) => {
+    // A throttling route: egress must label the proxied 429 so alerting on
+    // `helix.outcome` can distinguish a vendor throttle from a clean pass.
+    if (req.url === "/throttle") {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "30" });
+      res.end(JSON.stringify({ error: { code: "429", message: "Rate limit exceeded" } }));
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
@@ -46,7 +59,11 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
 });
-afterAll(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
+afterEach(() => recording.reset());
+afterAll(async () => {
+  await recording.restore();
+  await new Promise<void>((resolve) => upstream.close(() => resolve()));
+});
 
 /** The private half of the hmac fixture pair — also the needle for leak assertions. */
 const HMAC_PRIVATE = "ghp_LIVEPRIVATEKEY_abcdefghijklmnop";
@@ -135,6 +152,37 @@ describe("egress /proxy", () => {
     expect(body.method).toBe("GET");
     expect(body.path).toBe("/echo");
     expect(body.authorization).toBeNull(); // keyless: nothing injected
+    await app.close();
+  });
+
+  it("labels a proxied upstream 429 as upstream_throttled and forwards retry-after", async () => {
+    const app = makeApp(true);
+    const token = await mint({ origin });
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: token,
+        [TARGET_HEADER]: `${origin}/throttle`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    // The 429 is proxied verbatim — egress does not decide it's a failure — but
+    // the outcome label distinguishes it from a clean pass, and the vendor's
+    // retry-after (not blocklisted) survives to the caller.
+    expect(res.statusCode).toBe(429);
+    expect(res.headers[OUTCOME_HEADER]).toBe("upstream_throttled");
+    expect(res.headers["retry-after"]).toBe("30");
+
+    // The span agrees with the header — this is what alerting reads. Previously
+    // a real vendor throttle presented as `outcome: "ok"` + the status buried in
+    // `helix.upstream.status`, and anything keyed on outcome missed it entirely.
+    // Span status stays UNSET: a 429 from the vendor is not egress failing.
+    const spans = recording.spans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.attributes["helix.outcome"]).toBe("upstream_throttled");
+    expect(spans[0]?.attributes["helix.upstream.status"]).toBe(429);
+    expect(spans[0]?.status.code).toBe(0); // UNSET
     await app.close();
   });
 

@@ -72,7 +72,15 @@ export class EgressLlmProvider implements LlmProvider {
       // A 403 here is egress refusing the connection — typically the platform
       // secret is unset/misnamed. Surface the upstream status to the handler.
       const text = await readText(res.body);
-      throw new LlmProviderError(`egress llm call failed (${res.status}): ${text}`, res.status);
+      throw new LlmProviderError(
+        `egress llm call failed (${res.status}): ${text}`,
+        res.status,
+        // Egress forwards the upstream's `retry-after` (it is not on the
+        // response blocklist, and a non-200 streams back through the same
+        // header loop as a 200). Coerce-or-drop like `wireCount`: an integer
+        // delay-seconds value travels, an HTTP-date or junk does not.
+        retryAfterSeconds(res.headers["retry-after"]),
+      );
     }
 
     yield* this.#vendor.mapStream(res.body);
@@ -94,4 +102,12 @@ async function readText(body: Readable, max = 200): Promise<string> {
   }
   const text = Buffer.concat(chunks).toString("utf8");
   return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** Coerce an upstream `retry-after` header to integer delay-seconds, or undefined. */
+function retryAfterSeconds(raw: string | string[] | undefined): number | undefined {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
 }

@@ -80,8 +80,16 @@ export interface LlmGatewayRuntime {
  * policy + metering and speaks the neutral shape; the codec owns the request/
  * response envelope. `nativeCodec` (default) is `POST /_api/llm/chat`; the OpenAI
  * codec backs `/_api/openai/v1/chat/completions`. Same runtime, same guarantees.
+ *
+ * `route` is the `http.route` the span records — the codec owns the wire format,
+ * not the URL, so the OpenAI surface passes `ROUTE_OPENAI` rather than letting
+ * its calls masquerade as `/_api/llm/chat` in traces.
  */
-export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nativeCodec) {
+export function makeLlmHandler(
+  rt: LlmGatewayRuntime,
+  codec: LlmWireCodec = nativeCodec,
+  route: string = ROUTE_LLM,
+) {
   async function handleLlmChat(
     req: FastifyRequest,
     reply: FastifyReply,
@@ -350,11 +358,12 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
           return;
         }
         await recordOnce("error", { errorDetail: errorDetailOf(err) });
-        const { status, code, message, param } = describeError(err, { structured });
+        const { status, code, message, param, retryAfter } = describeError(err, { structured });
         if (!started) {
           // `start()` is lazy, so a failure before the first delta has written
           // nothing — a real status is still possible, and matches how every other
           // pre-stream refusal on this route (authz, quota, validation) answers.
+          if (retryAfter !== undefined) reply.header("retry-after", String(retryAfter));
           codec.error(reply, status, code, message, param);
           return;
         }
@@ -388,9 +397,11 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
         return;
       }
       await recordOnce("error", { errorDetail: errorDetailOf(err) });
-      const { status, code, message, param } = describeError(err, { structured });
-      // 502 for upstream failures, 400 when the vendor rejected the app's request;
-      // the code stays within the shared set.
+      const { status, code, message, param, retryAfter } = describeError(err, { structured });
+      // 502 for upstream failures, 400 when the vendor rejected the app's request,
+      // 429 (with retry-after) when it throttled one; the code stays within the
+      // shared set.
+      if (retryAfter !== undefined) reply.header("retry-after", String(retryAfter));
       codec.error(reply, status, code, message, param);
     }
   }
@@ -409,7 +420,7 @@ export function makeLlmHandler(rt: LlmGatewayRuntime, codec: LlmWireCodec = nati
   return (req: FastifyRequest, reply: FastifyReply, slug: string): Promise<void> =>
     withRootSpan(
       SPAN_LLM,
-      { [ATTR_CAPABILITY]: "llm", [ATTR_APP_SLUG]: slug, "http.route": ROUTE_LLM },
+      { [ATTR_CAPABILITY]: "llm", [ATTR_APP_SLUG]: slug, "http.route": route },
       () => handleLlmChat(req, reply, slug),
       { reply },
     );
@@ -429,6 +440,15 @@ function outcomeFor(stopReason: string): GatewayOutcome {
  * something that can never succeed, and attributed an app bug to the platform.
  * `LlmProviderError` already carries the status, so this needs no new plumbing.
  *
+ * An **upstream 429 is a throttle, not an outage** — it passes through as
+ * `429 rate_limited` so the app's SDK retry/backoff engages instead of reading
+ * a platform failure, with the vendor's `retry-after` when we have one (a
+ * fixed 5s otherwise, the same nudge `sendUnavailable` gives). `rate_limited`
+ * is already in the shared code set, and the OpenAI codec maps it to
+ * `rate_limit_exceeded`. Deliberately no 5xx passthrough: a vendor 5xx *is* an
+ * upstream failure, and 502 says so; a 503 here would also collide with the
+ * platform's own `capability_unavailable` meaning.
+ *
  * The vendor's own message is **never echoed** — it can quote request content, and
  * on an auth failure it can quote the key. `errorDetailOf` keeps the full text in
  * the ledger (internal-only) for the owner instead.
@@ -436,7 +456,7 @@ function outcomeFor(stopReason: string): GatewayOutcome {
 function describeError(
   err: unknown,
   opts: { structured: boolean },
-): { status: number; code: ApiErrorCode; message: string; param?: string } {
+): { status: number; code: ApiErrorCode; message: string; param?: string; retryAfter?: number } {
   if (err instanceof LlmProviderError) {
     if (err.upstreamStatus === 400) {
       // Only blame the schema when one was actually sent; a 400 can also be a bad
@@ -454,6 +474,14 @@ function describeError(
             code: "validation_failed",
             message: "the upstream rejected this request as invalid",
           };
+    }
+    if (err.upstreamStatus === 429) {
+      return {
+        status: 429,
+        code: "rate_limited",
+        message: "upstream model is rate limited — retry shortly",
+        retryAfter: err.retryAfter ?? 5,
+      };
     }
     return { status: 502, code: "internal", message: "upstream LLM request failed" };
   }

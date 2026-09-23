@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import type { OpenAiChatCompletionChunk } from "@azx-pbc/shared";
+import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
+import { ROUTE_OPENAI, SPAN_LLM } from "@azx-pbc/shared/telemetry";
 import { buildApp } from "../app.js";
 import { SESSION_COOKIE } from "../auth/cookies.js";
 import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
@@ -25,6 +27,18 @@ import { LlmProviderError, type LlmProvider } from "./provider.js";
  * `chat.completion(.chunk)` framing, OpenAI-shaped errors, `/v1/models`, and the
  * routing 503 — over the shared fakes.
  */
+
+let recording: RecordingTelemetry;
+
+beforeAll(() => {
+  recording = startRecordingTelemetry();
+});
+afterEach(() => {
+  recording.reset();
+});
+afterAll(async () => {
+  await recording.restore();
+});
 
 const APP_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PREFIX = "apps/a/1/";
@@ -179,6 +193,21 @@ describe("streaming", () => {
     expect(res.headers["content-type"]).toContain("application/json");
     expect(res.json().error.type).toBe("api_error");
     expect(edge.usage.records[0]).toMatchObject({ outcome: "error" });
+  });
+
+  it("passes an upstream 429 through as 429 rate_limit_exceeded with retry-after", async () => {
+    const edge = buildEdge();
+    // What EgressLlmProvider throws when Foundry answers 429 with a retry-after.
+    edge.provider.error = new LlmProviderError("egress llm call failed (429): nope", 429, 30);
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, { ...ASK, stream: true });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["retry-after"]).toBe("30");
+    expect(res.json().error).toMatchObject({
+      type: "rate_limit_exceeded",
+      code: "rate_limit_exceeded",
+    });
   });
 
   it("surfaces a genuinely mid-stream error as an error chunk with no [DONE]", async () => {
@@ -579,5 +608,19 @@ describe("GET /_api/openai/v1/models", () => {
     const res = await models(edge, token);
     expect(res.statusCode).toBe(403);
     expect(res.json().error.type).toBe("invalid_request_error");
+  });
+});
+
+describe("the OpenAI surface's span", () => {
+  it("records http.route as the OpenAI route, not the native one", async () => {
+    // During the Franklin 429 diagnosis the span's hard-coded
+    // `/_api/llm/chat` made OpenAI-surface traffic unfindable by route.
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    await completions(edge, token, { ...ASK, stream: true });
+
+    const span = recording.spans().find((s) => s.name === SPAN_LLM);
+    expect(span).toBeDefined();
+    expect(span?.attributes["http.route"]).toBe(ROUTE_OPENAI);
   });
 });

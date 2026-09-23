@@ -164,4 +164,40 @@ describe("EgressLlmProvider", () => {
     });
     expect(LlmProviderError).toBeDefined();
   });
+
+  it("carries the upstream retry-after (integer delay-seconds) on the error", async () => {
+    const p = provider(
+      stubEgress({
+        status: 429,
+        outcome: "upstream_throttled",
+        headers: { "content-type": "application/json", "retry-after": "30" },
+        body: Readable.from(JSON.stringify({ error: { code: "429", message: "Rate limit" } })),
+      }),
+    );
+    await expect(collect(p.stream(CHAT, opts))).rejects.toMatchObject({
+      name: "LlmProviderError",
+      upstreamStatus: 429,
+      retryAfter: 30,
+    });
+  });
+
+  it("drops a retry-after that isn't integer delay-seconds (HTTP-date, junk, absent)", async () => {
+    for (const retryAfter of ["Wed, 23 Sep 2026 12:00:00 GMT", "soon", undefined]) {
+      const p = provider(
+        stubEgress({
+          status: 429,
+          outcome: "upstream_throttled",
+          ...(retryAfter === undefined
+            ? {}
+            : { headers: { "content-type": "application/json", "retry-after": retryAfter } }),
+          body: Readable.from(JSON.stringify({ error: { code: "429" } })),
+        }),
+      );
+      await expect(collect(p.stream(CHAT, opts))).rejects.toMatchObject({
+        name: "LlmProviderError",
+        upstreamStatus: 429,
+        retryAfter: undefined,
+      });
+    }
+  });
 });

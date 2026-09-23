@@ -324,10 +324,18 @@ function wireCount(raw: unknown, field: string): number {
 export class LlmProviderError extends Error {
   /** HTTP status from the vendor, if the failure was an HTTP response. */
   readonly upstreamStatus?: number;
-  constructor(message: string, upstreamStatus?: number) {
+  /**
+   * Upstream `retry-after` as integer delay-seconds, when the vendor sent one
+   * that parsed — carried so the handler can answer `retry-after` on a
+   * passthrough 429. Absent when the header wasn't sent or didn't coerce (see
+   * `retryAfterSeconds` in `egressLlmProvider.ts`).
+   */
+  readonly retryAfter?: number;
+  constructor(message: string, upstreamStatus?: number, retryAfter?: number) {
     super(message);
     this.name = "LlmProviderError";
     this.upstreamStatus = upstreamStatus;
+    this.retryAfter = retryAfter;
   }
 }
 
