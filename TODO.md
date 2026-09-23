@@ -55,7 +55,6 @@ Legend for gating conditions:
 ## Pre-GA — before external app owners / customer URLs commit
 
 - [ ] **Host untrusted apps on a separate registrable domain.** Apps currently share one eTLD+1 with the control plane; move untrusted apps to e.g. `*.azx-apps.<tld>` and keep portal/auth on `azx.helix.azxlabs.io`. Closes cookie-bomb DoS, Safe-Browsing/reputation blast radius, same-site coupling with the auth host, and storage-partitioning residuals (PSL submission only partially closes cookie vectors). Cheap now, painful after customer URLs commit — treat as a pre-GA prerequisite, not an M5 blocker. — ADR-0019, issue #16
-- [ ] **Add the CI gate that refuses co-deploy when `NODE_ENV=production`.** The _trigger_ question is resolved — the Azure deploy provisions edge, portal and egress as three separate container apps, so the boundary collapse doesn't exist in the live topology (ADR-0012 Resolution). What's missing is the gate that keeps it that way: today the split is a property of the current Bicep, not a guarantee, and co-deploy remains reachable in code. — ADR-0012
 
 ---
 
@@ -148,6 +147,7 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 
 - Moving the OIDC RP credential off the edge — standard BFF/confidential-client pattern; not warranted. (ADR-0001)
 - Physical DB isolation (schema/DB-per-app) — not warranted; the role split + RLS is the control. (ADR-0002)
+- A CI gate refusing edge/portal co-deploy when `NODE_ENV=production` — the split's realistic failure mode is a deliberate, reviewed Bicep change against documented architecture, not the silent drift CI gates catch, and a Bicep-parsing check would duplicate the deployment source of truth; a boot-time refusal would revoke ADR-0012's permission outright (an amendment, not a gate). Revisit if co-deploy is ever exercised in production or the first non-employee owner onboards. (ADR-0012)
 - Sandboxed iframe without `allow-same-origin` for app isolation — category error, breaks the same-origin `/_api/*` gateway (ADR-0014). Still the right control _only_ if the portal ever embeds an unpromoted app for preview. (ADR-0019)
 - The `HKDF(master, appId)` per-app-key step-1 fix for the egress seam — unsound; both planes hold the master. (ADR-0013)
 - Approval-request expiry / a pending-request sweep — a request is a standing question, not standing access; `baseSnapshot` already makes age safe to approve, and a long queue is a staffing signal, so age is surfaced rather than swept. (ADR-0038)
