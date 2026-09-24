@@ -15,33 +15,16 @@ import {
 } from "@azx-pbc/shared/telemetry";
 
 /**
- * The complete set of attributes an egress span may carry (ADR-0037 decision 6).
+ * Allowed egress span attributes (ADR-0037 decision 6). New attributes require
+ * review because this process handles plaintext credentials.
  *
- * **An allowlist, not a blocklist, and that asymmetry is the decision.** This is
- * the one process holding plaintext connection secrets, and its own error
- * handler already returns a fixed opaque body specifically because a thrown
- * message can embed a fragment of credential material
- * (`apps/egress/src/app.ts`). A blocklist would mean every new attribute is
- * permitted until someone notices; an allowlist means every new attribute is a
- * review.
+ * Never record header names, header values, response-body content, or exception
+ * text. Custom injection recipes configure header names, and upstream bodies
+ * or errors can echo credentials.
  *
- * **No header name and no header value, ever.** The injected credential *is* a
- * header — that is the whole mechanism of this service — so there is no version
- * of "just the header names" that is safe: the `header` recipe's name and
- * `hmac-timestamp`'s timestamp and signature header names are per-connection
- * configuration, and naming them narrows the search for the value. Nothing
- * derived from a response body either: an upstream that echoes its own
- * credential is an accepted transparent-proxy residual on the *body*, and must
- * not become a residual on a retained span too.
- *
- * Everything here is either edge-signed (the instruction's own claims, which
- * the edge validated against the manifest allowlist before signing), a status
- * code, or a fixed-vocabulary fact about egress's own resolution path
- * (`helix.credential_source` ∈ {secret, managed-identity} — never the
- * credential, its header name, or a token claim). `helix.connection` is the
- * connection's **name** — the operator-chosen label under which a secret is
- * stored, never its material — and it already appears in the clear on this
- * file's error logs.
+ * Allowed values come from signed instruction claims, status codes, or bounded
+ * resolution outcomes. helix.credential_source is secret or managed-identity;
+ * helix.connection is the configured connection name, never secret material.
  */
 export const EGRESS_SPAN_ATTRS = [
   ATTR_APP_ID,

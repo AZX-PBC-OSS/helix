@@ -5,31 +5,23 @@
 > there is no stability or support guarantee, and it has not been hardened for
 > production or third-party use. Use at your own risk.
 
-Secure hosting for vibe-coded AI apps. **New here? Start with [`TOUR.md`](./TOUR.md)** — the
-high-level map for someone about to read the code, or
-[`docs/OVERVIEW.md`](./docs/OVERVIEW.md) for the problem, architecture, and security model in
-one file without the repo. Then: [`docs/features/`](./docs/features/) for per-feature docs (the
-_what & how, today_), [`docs/platform-architecture.md`](./docs/platform-architecture.md) (the
-_what & why_), and [`docs/platform-project-plan.md`](./docs/platform-project-plan.md) (the _with
-what & in what order_) — [`docs/README.md`](./docs/README.md) maps the rest. The whole design rests on one stance — **every hosted app is untrusted code** —
-and contains the blast radius per app instead of trying to verify it.
+Helix hosts AI-generated static web apps with platform-managed authentication,
+API credentials, data storage, quotas, and audit. Every hosted app is treated as
+untrusted code, with access restricted per app.
 
-> **Status: deployed on Azure (M5); feature set M4.5 — Egress & Connections.** Running in
-> production on Container Apps — three planes, real Entra OIDC, wildcard TLS, a live Key Vault
-> — and still fully runnable on a laptop, with `apps/dev-idp` standing in for Entra and an AES-GCM
-> envelope for Key Vault. Shipped: registry + deploys (portal API, `helix` CLI, and
-> drag-and-drop upload in the SPA), edge serving, the §4.2 / Appendix A auth flow (central
-> callback, one-time handoff token, `__Host-session` cookies, server-side sessions, group
-> visibility, silent refresh, password/public modes, `/_api/me`; portal/CLI bearer JWTs), the
-> `/_api/*` **gateway** — LLM (`/_api/llm/chat`, plus an OpenAI-compatible
-> `/_api/openai/v1/*` surface and structured output), app-data (`/_api/data/*`: user /
-> collection / shared), and the fetch-proxy (`/_api/fetch/<url>` + an opt-in transparent
-> fetch/XHR shim) — all metered against a ledger over the Postgres role split, an enforced
-> capability **approval** workflow, secret-backed connections through the **`helix-egress`**
-> mechanism plane (its own container from day one), the platform-authored **offline** service
-> worker, and **dev mode** for building an app against an isolated `env=dev` tier. Outstanding
-> from M5: a real pilot app end to end, and confirming the egress firewall is on in the live
-> deployments (project plan §4).
+Start with [TOUR.md](./TOUR.md) for the repository map or
+[the system overview](./docs/OVERVIEW.md) for the product and architecture.
+[Feature docs](./docs/features/) describe current behavior;
+[the project plan](./docs/platform-project-plan.md) tracks implementation status.
+[The docs index](./docs/README.md) maps the remaining documentation.
+
+Helix runs on Azure Container Apps with Entra OIDC, wildcard TLS, and Key Vault.
+The same stack runs locally using the dev IdP, Azurite, and local encrypted secret
+storage. The gateway supports LLM calls, app data, and proxied HTTP requests.
+The portal supports deploys, capability approvals, and secret-backed connections.
+Apps can also use a platform-managed offline worker and an isolated development
+tier. Remaining M5 work includes an end-to-end pilot app and confirmation that the
+optional egress firewall is enabled in live deployments.
 
 ## Layout
 
@@ -71,9 +63,9 @@ There is no plain-HTTP mode, even locally. `__Host-` session cookies require `Se
 hosted apps' crypto APIs (`crypto.randomUUID`, SubtleCrypto) only exist in a
 [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) — so
 the edge **refuses to boot in dev without TLS**. The dev container terminates TLS itself with
-mkcert; production terminates at ingress. The one-time cost: your **host browser will warn on
-the self-signed cert** the first time you open an app — accept it (or import
-`.devcontainer/certs/caroot/rootCA.pem` into your OS/browser trust store to silence it). Node
+mkcert; production terminates at ingress. Your host browser may warn about
+the local certificate. Accept it for local development, or import
+`.devcontainer/certs/caroot/rootCA.pem` into your OS/browser trust store. Node
 processes inside the container already trust the CA via `NODE_EXTRA_CA_CERTS`.
 
 ## Local dev: the processes
@@ -111,13 +103,13 @@ EDGE_DEV_ALLOW_UNAUTHENTICATED=true pnpm dev:edge
 
 ## Deploy an app and log in
 
-Two paths, same registry. **From the portal SPA**: create the app, then drop a build folder or a
-zip onto the deploy modal — it validates and salvages the bundle in the browser before upload.
-**From the CLI** (`npm i -g @azx-pbc/helix-cli`, or run it out of the workspace as below), from
+In the portal SPA, create an app and upload a build folder or zip. The portal
+validates the bundle and offers repairs for supported packaging problems.
+To deploy from the CLI (`npm i -g @azx-pbc/helix-cli`, or run it out of the workspace as below), from
 inside the app directory:
 
 ```bash
-# 0. Run the CLI straight from the working tree, under the name it really has:
+# 0. Run the CLI from the working tree:
 alias helix='node --import tsx /workspace/packages/cli/src/bin.ts'
 
 # 1. Sign the CLI in (OIDC device flow against the dev IdP). Or export
@@ -180,21 +172,21 @@ opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-pr
 
 ## Commands (from the repo root)
 
-| Command                                    | What                                                          |
-| ------------------------------------------ | ------------------------------------------------------------- |
-| `pnpm install`                             | Install all workspace deps                                    |
-| `pnpm typecheck`                           | `tsc` across every package                                    |
-| `pnpm lint` / `pnpm format`                | ESLint / Prettier (`format:check` to verify only)             |
-| `pnpm test`                                | Vitest across the workspace                                   |
-| `pnpm dev:idp`                             | Local OIDC issuer (`:3002`)                                   |
-| `pnpm dev:portal`                          | helix-portal (`:3001`, registry + deploy API)                 |
-| `pnpm dev:edge`                            | helix-edge (`:8080`, HTTPS)                                   |
-| `pnpm dev:egress`                          | helix-egress (`:8081`, fetch-proxy + secrets)                 |
-| `pnpm dev:devgw`                           | the dev-gateway (`:8082`, develop against env=dev)            |
-| `pnpm dev:web`                             | portal SPA (`:5173`, proxies `/api` to :3001)                 |
-| `pnpm dev:clean`                           | Free the dev ports (8080–8082, 3001, 3002, 5173)              |
-| `pnpm --filter @azx-pbc/portal db:migrate` | Create/apply a Prisma migration (dev)                         |
-| `./check-and-lint.sh`                      | Poor-man's CI: typecheck + lint + format + docs build + tests |
+| Command                                    | What                                                           |
+| ------------------------------------------ | -------------------------------------------------------------- |
+| `pnpm install`                             | Install all workspace deps                                     |
+| `pnpm typecheck`                           | `tsc` across every package                                     |
+| `pnpm lint` / `pnpm format`                | ESLint / Prettier (`format:check` to verify only)              |
+| `pnpm test`                                | Vitest across the workspace                                    |
+| `pnpm dev:idp`                             | Local OIDC issuer (`:3002`)                                    |
+| `pnpm dev:portal`                          | helix-portal (`:3001`, registry + deploy API)                  |
+| `pnpm dev:edge`                            | helix-edge (`:8080`, HTTPS)                                    |
+| `pnpm dev:egress`                          | helix-egress (`:8081`, fetch-proxy + secrets)                  |
+| `pnpm dev:devgw`                           | the dev-gateway (`:8082`, develop against env=dev)             |
+| `pnpm dev:web`                             | portal SPA (`:5173`, proxies `/api` to :3001)                  |
+| `pnpm dev:clean`                           | Free the dev ports (8080–8082, 3001, 3002, 5173)               |
+| `pnpm --filter @azx-pbc/portal db:migrate` | Create/apply a Prisma migration (dev)                          |
+| `./check-and-lint.sh`                      | Full CI checks: typecheck + lint + format + docs build + tests |
 
 `./check-and-lint.sh` (add `--fix` to auto-fix first) is the same gate CI runs, and a change
 isn't finished until it passes clean. CI invokes this same script, splitting it across two

@@ -2,19 +2,20 @@
 
 **Status:** Draft v1 · June 2026
 **Companion to:** `platform-architecture.md` (the *what and why*; this doc is the *with what and in what order*)
-**How to use:** each milestone below is sized to be one or a few Claude Code planning-mode sessions. Low-level design happens there, not here.
+**How to use:** Use milestones to scope implementation work. Keep detailed designs
+in `docs/design/` and update status here as work ships.
 
 ---
 
 ## 1. Tech stack (decided)
 
-- **TypeScript everywhere, Node LTS.** One language across edge, portal, frontend, CLI, and deploy skill. Boring and reviewable beats fast and exotic — the edge contains the most security-sensitive code in the platform, and we can only safely merge what we can deeply read.
+- **TypeScript everywhere, Node LTS.** One language across edge, portal, frontend, CLI, and deploy skill. A shared language makes security-sensitive code easier to review.
 - **`helix-edge`:** Fastify + `undici` (streaming proxy, asset serving), `openid-client` + `jose` (OIDC, handoff tokens), `pg` with hand-written SQL (sessions, registry projection). **Hard rule: dependency-minimal.** Every npm package in the edge is code inside the trusted path; the libraries named here are roughly the whole list. No ORM. Never block the event loop — pipe streams, never buffer LLM responses.
 - **`helix-portal` API:** Fastify + Prisma. The portal owns the Postgres schema and all migrations (`prisma migrate`); the edge only reads. The API is a deliberate, versioned REST surface with zod-validated request/response schemas — the portal SPA, the `helix` CLI, and coding agents are all consumers, so no tRPC/framework-coupled endpoints.
 - **Portal frontend:** Vite + React SPA, TanStack Query for server state, React Router. Served statically by the portal container. No SSR/meta-framework — internal authenticated tool, nothing to gain.
 - **Shared contract:** zod schemas in a shared package (app manifest, registry types, API request/response shapes). Runtime validation at every boundary; inferred types everywhere.
 - **Testing:** Vitest throughout; Playwright for portal e2e when the UI warrants it.
-- **Tooling:** pnpm workspaces monorepo; VS Code dev container (config pillaged from an existing project).
+- **Tooling:** pnpm workspaces monorepo; VS Code dev container.
 
 ## 2. Monorepo layout
 
@@ -55,7 +56,10 @@ Config selects implementations per environment. CI runs against local/emulated; 
 
 Goal: one pilot app, end to end, on Azure. Definition of done is §12 v0 in the architecture doc. v0 may ship both modules as a single binary/container if that's faster — but with two routers strictly keyed by hostname from day one (architecture §3, decision 12).
 
-**Status at a glance (July 2026).** Helix is **deployed and running on Azure**, not only locally: the three planes on Container Apps, real Entra OIDC (no `dev-idp`), a wildcard TLS cert on the apps domain, and Key Vault custody verified against a live vault. M5 has therefore shipped; what remains of it is a short residuals list rather than a milestone. Milestone numbers and `§`-anchors are stable — other docs and code comments reference them — so this section keeps the original sequence and annotates each header with where it actually landed.
+**Status at a glance (July 2026).** Helix runs on Azure Container Apps with Entra
+OIDC, wildcard TLS, and Key Vault. The infrastructure is deployed; the remaining
+M5 exit criteria are listed below. Milestone numbers and section anchors remain
+stable because code and other docs reference them.
 
 | Milestone | Status |
 |---|---|
@@ -69,7 +73,7 @@ Goal: one pilot app, end to end, on Azure. Definition of done is §12 v0 in the 
 
 **M5 residuals.** The infrastructure milestone is met; two of its stated exit criteria are not yet:
 
-- **A real vibe-coded pilot app end to end** (`helix deploy` → SSO login → app calls the LLM gateway) — the original §12 v0 definition of done. Until one exists, "the platform works" is an argument from its test suite and its deployment, not from a user.
+- **A real vibe-coded pilot app end to end** (`helix deploy` → SSO login → app calls the LLM gateway) — the original §12 v0 definition of done. This will validate the complete user workflow beyond automated tests.
 - **Confirm the egress firewall (`deployFirewall`) is on in the live deployments.** It defaults `true`, but it is operator-optional for cost reasons and turning it off silently removes what ADR [0005](adr/0005-ssrf-egress-controls.md) names the **primary** SSRF control, leaving the app-level `ssrf.ts` denylist — explicitly defense-in-depth — carrying the whole outbound posture. This is a check, not an assumption, precisely because the failure is invisible from inside the app.
 
 Much of the **v1 backlog (§5)** was also pulled forward against the local stack — see that section for item-by-item status.
@@ -99,20 +103,64 @@ Minimal IaC: resource group, ACA apps (edge, portal, **egress in its own egress-
 
 **Landed:** the IaC is real and applied (`infra/azure`, Bicep) — the three planes on Container Apps across two ACA environments, private-endpoint-only Postgres/Blob/Key Vault, the least-privilege managed-identity matrix, real Entra OIDC replacing `dev-idp`, and automated wildcard TLS via a scheduled certbot job (DNS-01). Key Vault custody is verified against a live vault. Beyond the original scope: platform secrets by direct injection rather than ACA Key Vault references (ADR [0029](adr/0029-platform-secret-delivery.md)), images from public GHCR rather than a private ACR, an ACA job that applies migrations, the opt-in dev-gateway, and operator flags for public/password app hosting.
 
-**Outstanding:** the pilot app itself, and confirming `deployFirewall` (see the residuals note in §4). The definition of done was a *user* on a *real app* — the deployment is the means, not the criterion.
+**Outstanding:** an end-to-end pilot app and confirmation that `deployFirewall`
+is enabled in live deployments (see §4).
 
 ## 5. v1 backlog (rough order, re-plan after v0)
 
 Most of this was pulled forward against the local stack — M4/M5 (Azure deploy) buy little before there's a product people want to host, so v1 features came first. Status as of June 2026:
 
-1. **Portal SPA** — **done.** `apps/portal-web` (Vite + React 19 + Mantine + TanStack Query): app list/detail, version history with promote/rollback, create app, zip-upload deploy (CSP lint warnings rendered), archive/unarchive, a real capability-manifest editor, and browser sign-in (code+PKCE). Served statically by the portal. **Every screen is now real and wired** — the usage/audit/approvals/violations/registry/secrets pages all hit live `/api/v1/*` endpoints; the only remaining `PreviewBadge` marks **per-app RBAC** (owner/editor/viewer roles, item #7-adjacent, a v1 feature) in the Settings tab, never silent mock data.
-2. **Capabilities manifest + approvals** — **done** (`docs/design/approvals.md`). Manifest is real and enforced (`GET`/`PUT /api/v1/apps/:slug/manifest`; the gateway enforces the per-app model allowlist + daily token budget on every LLM call). The baseline-vs-admin-approved **approval workflow** landed on top: a pure `classifyChange` classifier + policy thresholds in `@azx-pbc/shared` split a requested change into baseline deltas (committed immediately, as before) and elevated deltas (bundled into one pending request); an `ApprovalRequest` table holds the typed pending change (the `apps` row keeps only effective state — the edge is untouched); `PUT /manifest` and a new `POST /apps/:slug/visibility` route through that write-gate; `/api/v1/approvals` serves the admin queue and `approve`/`deny`/`needs_changes`/`withdraw` with apply-on-approve (snapshot conflict-check → `needs_changes`, separation-of-duty, idempotency). Admin is a group claim (`requireAdmin`, `PORTAL_ADMIN_GROUP_ID`; `PORTAL_ALLOW_SELF_APPROVE` is the refused-in-prod dev escape hatch). The portal Approvals screen is now real (the `PreviewBadge` is gone).
-3. **App data API** — **done (scope grew).** `/_api/data/*` in three scopes — per-user (RLS-partitioned via `SET LOCAL` GUCs from the verified session), write-only `collections` (no app-facing read; owner drains via the export API), and app-`shared` keys — backed by the `helix_edge` Postgres role split (INSERT-only metering/collections, RLS app-data, no registry write). Broader than the original app-/user-scoped JSONB KV sketch.
-4. **CSP feedback loop** — **done** (`docs/design/approvals.md` §6.2). Deploy-time courtesy lint (warnings on upload + in the SPA), the edge violation sink (`report-uri` → `POST /_csp-report` → the `csp_reports` table on an INSERT-only `helix_edge` grant — the edge appends but can never enumerate them), and `capabilities.externalOrigins` → per-app CSP `connect-src`/`img-src` widening at serve time all landed. The portal **Violations** screen is real and turns a blocked origin into a one-click origin-grant request through the #2 approval spine. `examples/github-stars` exercises the whole loop end to end (it fetches a public API directly, so the CSP blocks it until the origin is approved).
-5. **Deploy skill + preview/promote** — **done.** Preview-by-default deploys + human promote/rollback (control plane + `helix` CLI), the device-code flow (`helix login`/`logout`/`whoami`, XDG token cache), and `packages/deploy-skill` — a templated `SKILL.md` the portal renders for this deployment and hands out from its **How to develop** modal (`docs/features/onboarding.md`).
-6. **Password/public visibility modes** — **done.** `password` visibility is done end to end (portal mints/stores an xkcd passphrase; edge serves a throttled same-origin `/_auth/login` challenge minting a pseudonymous `pw_<random>` session). `public` apps resolve to an anonymous caller in the gate, and **going public flows through the approval queue** — a high-risk `visibility → public` delta gated by `requireAdmin` (`docs/design/approvals.md` §6.3). The portal app's **Access** tab is now a real visibility switcher (`POST /apps/:slug/visibility` via `useSetVisibility`): reductions (→ internal/group) apply immediately, going public opens a confirm-with-reason approval request, and leaving `password` defers to the password card's Disable. The **anonymous tier is per-IP rate-limited** at the gateway (`apps/edge/src/gateway/ipRateLimiter.ts` — a fixed-window limiter mirroring the password-login throttle; `EDGE_ANON_RATE_LIMIT`/`EDGE_ANON_RATE_WINDOW_MS`), keyed per IP+app across every anonymous `/_api/*` call (LLM + data), returning `429 rate_limited`; authenticated callers answer to per-app budgets instead. (Status per [ADR-0011](adr/0011-in-memory-rate-limiting.md), issue #13: the count moved off per-process memory to a shared atomic Postgres counter (`rate_counters`, `gateway/counterStore.ts`), so the limit holds under the shipped `maxReplicas>1`, and `trustProxy` is set — `EDGE_TRUST_PROXY` names the trusted ingress **address**, not a hop count, confirmed against the live ingress 2026-09-03 as `100.64.0.0/10`, the RFC 6598 range ACA's ingress pods come from rather than the apps subnet the default first named. Residual: the edge does not yet self-report a truncated trust walk on `/health`.) _Remaining (deferred knobs):_ `bytesPerDay` and total-collection-size caps — see the app-data design doc §7.
-7. **Session management** — **done.** A real gateway audit read-side exists (`/api/v1/gateway/audit` + the portal Audit page over `gateway_calls`), and **admin session revocation** shipped (`GET /api/v1/sessions` + `POST /api/v1/sessions/revoke` + the portal Sessions screen — a user-level kill across apps, immediate on the next request; `docs/features/authentication.md` §Admin session revocation). The portal holds SELECT+DELETE on `sessions` and nothing else (migration `20260921120000`).
-8. **Audit hardening + usage** — **done (residual descoped).** Per-app and platform usage views are real and wired (`/api/v1/apps/:slug/usage`, `/api/v1/gateway/usage` + the Usage/Platform pages reading `gateway_calls`). The one residual, **audit shipping to an immutable blob**, was descoped 2026-09-17: the tamper-evidence demand it served traced to a Phase-1 PM brief engineering never ratified (ADR-0021 amendment). Ledger retention/erasure (GDPR) is unrelated to that demand and stays tracked in `TODO.md`.
+1. **Portal SPA — done.** `apps/portal-web` uses React, Mantine, TanStack Query,
+   and the portal API for app management, versions, capabilities, usage, approvals,
+   violations, secrets, and audit. The remaining PreviewBadge marks planned
+   owner/editor/viewer roles. See `docs/features/portal-web.md`.
+
+2. **Capabilities manifest and approvals — done.** The gateway enforces effective
+   per-app grants. `classifyChange` separates baseline changes, applied immediately,
+   from elevated requests stored in `ApprovalRequest`. Admin decisions support
+   approve, deny, needs_changes, and withdrawal. Approval checks conflicts,
+   separation of duty, and idempotency before applying a change. The edge sees
+   only effective settings. `requireAdmin` uses the configured admin group;
+   self-approval is a development-only escape hatch. See `docs/design/approvals.md`.
+
+3. **App data API — done.** Three scopes: per-user data under RLS, append-only
+   collections with owner export, and shared keys with separate read/write grants.
+   The edge has restricted database permissions. See `docs/features/app-data-gateway.md`.
+
+4. **CSP feedback — done.** Uploads return lint warnings; the edge records browser
+   violation reports through an INSERT-only grant. Approved externalOrigins extend
+   each app's CSP. The portal Violations page can request an origin grant through
+   the approval workflow. `examples/github-stars` demonstrates the process.
+   See `docs/design/approvals.md` §6.2.
+
+5. **Deploy skill and preview/promote — done.** Deploys create previews by default;
+   portal and CLI support promotion and rollback. The CLI uses OIDC device login
+   and an XDG token cache. The portal's How to develop modal provides a
+   deployment-specific agent skill. See `docs/features/onboarding.md`.
+
+6. **Password/public visibility — done.** The portal manages shared passphrases;
+   the edge verifies them through a throttled same-origin login and creates
+   pseudonymous sessions. Public apps use anonymous callers, and switching to
+   public visibility requires approval. The Access tab manages these workflows.
+
+   Anonymous gateway calls share a per-IP+app fixed-window limit. Shared atomic
+   Postgres counters enforce it across replicas (ADR-0011, issue #13).
+   EDGE_TRUST_PROXY must name ingress addresses, not a hop count. The live ACA
+   ingress was verified in the RFC 6598 range `100.64.0.0/10` on 2026-09-03.
+   The later trust-proxy health check is recorded in ADR-0011's 2026-09-23 amendment.
+   Deferred: bytesPerDay enforcement and total collection-size caps (app-data
+   design §7).
+
+7. **Session management — done.** The admin audit page reads gateway_calls.
+   `GET /api/v1/sessions`, `POST /api/v1/sessions/revoke`, and the Sessions page
+   support per-user revocation across apps, effective on the next request.
+   The portal has only SELECT and DELETE on sessions (migration 20260921120000).
+   See `docs/features/authentication.md`.
+
+8. **Audit and usage — done.** Per-app and platform usage endpoints and pages read
+   gateway_calls. Immutable external audit shipping was removed from scope on
+   2026-09-17 because its requirement had not been adopted (ADR-0021 amendment).
+   Ledger retention and erasure remain separate work in TODO.md.
 
 The fetch-proxy and secret-backed connections **shipped as M4.5** (above) — built on the `helix-egress` mechanism plane from day one. The rest of v1.x and beyond (MCP-as-REST, Git-connect builds) stay in the architecture doc §12; don't plan them yet.
 

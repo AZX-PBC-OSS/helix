@@ -29,26 +29,10 @@ export interface AuthState {
   /** Server-computed: the actor holds the `platform-admin` role. */
   isAdmin: boolean;
   /**
-   * Server-computed: this caller may run a tenant-wide group search
-   * (`PORTAL_DIRECTORY_SEARCH`, ADR-0040 decision 11). Lets `GroupPicker` avoid
-   * issuing a search it would only be refused, rather than firing one and
-   * interpreting the 403 — which matters because a refused search is **not** a
-   * broken directory, and must not be rendered as one.
-   *
-   * **Tri-state, and `undefined` is load-bearing: it means we do not know.** This
-   * was a plain boolean defaulting to `false`, justified on "while /api/v1/me is
-   * in flight" — and `RequireAuth` does hold the tree behind a loader for that.
-   * But `meLoading` is `me.isLoading`, which goes false the moment the query
-   * *errors* with anything other than a 401, and `meQuery` sets `retry: false` —
-   * so a single 500 or one network blip rendered the app with no `me` at all, and
-   * the picker turned that into "search is limited to platform admins on this
-   * deployment": a confident statement of deployment policy, false on a default
-   * deployment, caused by a transient portal fault with nothing on screen to
-   * connect it to.
-   *
-   * So the unknown case is now representable, and the picker shows no search box
-   * **and no claim** for it. `isAdmin` degrades the same way and is left alone —
-   * hiding a nav item asserts nothing.
+   * Server-computed permission to search groups (ADR-0040 decision 11).
+   * undefined means policy is unknown, including when /me fails. The picker must
+   * hide search without claiming it is forbidden or the directory is unavailable.
+   * false means the server explicitly restricted this caller.
    */
   canSearchDirectory: boolean | undefined;
   /**

@@ -5,26 +5,16 @@ import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telem
 import { withRootSpan } from "./telemetry.js";
 
 /**
- * ADR-0037 decision 5: "Spans over streamed responses end on stream close, not
- * on response headers. […] a span ended at headers records every streamed call
- * at approximately zero milliseconds, which is worse than no metric because it
- * looks like data."
- *
- * The design review expected `return reply.send(stream)` to need special
- * handling — it looks like it resolves the moment the pipe is wired. It does
- * not: Fastify's `Reply` is thenable and resolves when the response finishes,
- * so one `try/finally` helper is correct for both streaming shapes. That is a
- * property of a dependency rather than of our code, so it is pinned here with
- * a deliberately slow body: if a future Fastify resolves `send` early, every
- * streamed span silently collapses to ~0 ms and this is what catches it.
+ * Streamed spans must end when the response finishes (ADR-0037 decision 5).
+ * Fastify Reply is thenable and currently waits for completion. A slow response
+ * body verifies that dependency behavior so an upgrade cannot make spans end
+ * at headers.
  */
 
 /**
- * ONE recording for the whole file. A second `startRecordingTelemetry()` would
- * record nothing: the module-level tracer in `./telemetry.js` is a `ProxyTracer`
- * that caches its delegate on first use, so it keeps writing into the first
- * provider even after `restore()` shuts it down — silently, with every
- * assertion after the first failing on an empty array. (Found the hard way.)
+ * Use one recording for this file: module-level ProxyTracers cache the first
+ * provider and would keep using it after a replacement. Reset exported data
+ * between cases instead.
  */
 let recording: RecordingTelemetry;
 

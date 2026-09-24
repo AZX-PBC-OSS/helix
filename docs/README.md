@@ -1,51 +1,41 @@
-# Helix docs
+# Helix contributor docs
 
-Everything here is sorted by **kind**, not by feature. Which directory a document belongs in is
-determined by what job it does — whether it records a _decision_, a _design ahead of the code_,
-_what is true today_, a _dated snapshot_, or an _operational procedure_. Only entry points and the
-two canonical anchors stay loose at the top level.
+Start with [the repository tour](../TOUR.md) for a code-oriented introduction, or
+[the system overview](OVERVIEW.md) for the product and architecture.
 
-> **Public-facing guides live on the docs site**, not here: [apps/docs](../apps/docs) (VitePress,
-> published to GitHub Pages) carries the operator deploy/configuration guides and the app-author
-> docs, and consumes the generic skill render per ADR-0036 decision 7. This directory remains the
-> contributor record — nothing here is copied to the site, and the two audiences link, not overlap.
+Operator and app-author guides live in the [public docs site](../apps/docs).
+This directory contains contributor documentation. Link between the two where
+needed instead of maintaining duplicate guides. The site uses the generic deploy
+skill render described in ADR-0036, decision 7.
 
-Start with [`../TOUR.md`](../TOUR.md) if you are about to read the code, or
-[`OVERVIEW.md`](OVERVIEW.md) if you want the platform explained without the repo.
+## Directories
 
-## The directories
+| Directory | Purpose | When to update |
+| --- | --- | --- |
+| [adr/](adr/) | Architecture decisions: context, decision, and consequences. An ADR takes precedence over older prose. | Amend when a decision changes; preserve its history. |
+| [design/](design/) | Detailed subsystem designs, including work planned but not yet built. | As the design changes. |
+| [features/](features/) | Current behavior, implementation files, and known gaps for shipped features. | With the code. |
+| [reviews/](reviews/) | Dated review findings and supporting evidence. | Keep the original snapshot; write a new review for later findings. |
+| [runbooks/](runbooks/) | Operational procedures. | When the procedure changes. |
 
-| Directory                     | What belongs in it                                                                                                                                   | Time sense                    |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| [`adr/`](adr/)                | One significant architecture decision per file (Context → Decision → Consequences). The canonical record of _why_ — where an ADR and older prose disagree, **the ADR wins**. | Permanent, amended in place   |
-| [`design/`](design/)          | Deep design for a subsystem, usually written **before or alongside** the code: app-data, approvals, fetch-proxy, secrets & connections, dev-mode, git connections, custom backends, background jobs, logging. | Forward-looking               |
-| [`features/`](features/)      | How a shipped capability works **today** — the files to open, the behaviour to expect, what isn't built yet. Kept current with the code.               | Present tense                 |
-| [`reviews/`](reviews/)        | Dated point-in-time artifacts: review outputs, verification passes, decision-support written for a specific review. Never edited to stay current — they are evidence of what was believed on a date. | Frozen at its date            |
-| [`runbooks/`](runbooks/)      | Operational procedures a human follows step by step (e.g. the Entra app registration).                                                                 | Present tense                 |
+The ADR, feature, and review directories each have an index README.
 
-Each of `adr/`, `features/`, and `reviews/` has its own README with an index.
+## Main documents
 
-## The loose files
+| File | Purpose |
+| --- | --- |
+| [OVERVIEW.md](OVERVIEW.md) | Introduction to the product, architecture, and security model. |
+| [platform-architecture.md](platform-architecture.md) | Architecture and rationale. Numbered section references in code and docs point here. |
+| [platform-project-plan.md](platform-project-plan.md) | Milestones, implementation status, and planned work. |
+| [auth-review-guide.md](auth-review-guide.md) | Guide to reviewing authentication and authorization. |
+| [TODO.md](../TODO.md) | Open follow-up work and the conditions for starting it. |
 
-| File                                                              | What it is                                                                                                     |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| [`OVERVIEW.md`](OVERVIEW.md)                                      | Single-file orientation for anyone — product, security, engineering — meeting the platform for the first time.  |
-| [`platform-architecture.md`](platform-architecture.md)            | The **what & why**. Section references throughout the code and docs ("§4.2") point here.                        |
-| [`platform-project-plan.md`](platform-project-plan.md)            | The **with what & in what order**. The authority on done/partial/deferred status per milestone.                 |
-| [`auth-review-guide.md`](auth-review-guide.md)                    | The reviewer's entry point to the auth & authorization surface — the most security-sensitive code in the platform. |
+## Adding a document
 
-Open follow-up work is [`../TODO.md`](../TODO.md), distilled from the ADRs with a gating condition
-on each item.
+Choose the directory by the document's purpose. Keep only entry points and the
+main architecture and project-plan documents at this level. Link new documents
+from the relevant index.
 
-## Adding a doc
-
-Ask what job it does, then put it in the matching directory — a new top-level file needs to be an
-entry point or a canonical anchor to earn the spot, and anything loose that isn't linked from
-[`../TOUR.md`](../TOUR.md) or here will quietly rot. Two distinctions worth getting right:
-
-- **`design/` vs `features/`** — same subsystem, different tense. The design doc says what we
-  intend and why we rejected the alternatives; the feature doc says what the code does right now.
-  Several subsystems have both, and that's correct.
-- **`reviews/` vs everything else** — if the document is only true as of a date, it goes in
-  `reviews/` with the date in its filename. Don't update it later; write a new one, or fold the
-  conclusion into an ADR.
+A design describes intended behavior and trade-offs. A feature document describes
+what the code does today; a subsystem may need both. A review records findings as
+of a date. Put the date in its filename and record later decisions in an ADR.

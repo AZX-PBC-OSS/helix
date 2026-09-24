@@ -7,12 +7,10 @@ Design: [ADR-0037](../../docs/adr/0037-platform-observability-otlp-boundary.md).
 
 ## The rule
 
-**Services speak OTLP and nothing else.** The destination — App Insights today —
-is a collector endpoint configured in `infra/azure`. **No vendor telemetry SDK
-name appears anywhere outside `infra/`** — not Azure Monitor's in-process
-exporter, not its client library, not any successor — now or later. ADR-0037
-decision 1 names the specific packages this rules out. Changing backends is a
-Bicep edit, which under ADR-0028's customer-deployed model is not hypothetical.
+Services export through OTLP. The collector endpoint in `infra/azure` selects
+the backend. Keep vendor telemetry SDKs out of `apps/` and `packages/`; see
+ADR-0037 decision 1 for the excluded packages. Operators can change the backend
+without changing service code.
 
 Auto-instrumentation is rejected outright (ADR-0037 decision 4): it monkey-patches
 `http`, `undici` and `pg` at require time, inside the process that terminates

@@ -181,36 +181,18 @@ export const InjectionRecipeSchema = injectionRecipe("request");
 export type InjectionRecipe = z.infer<typeof InjectionRecipeSchema>;
 
 /**
- * A recipe read back out of the `app_secrets.injection` column. Lenient about
- * *hygiene*, identical about *security*, and the same TypeScript type.
+ * Parser for stored app_secrets.injection rows. Use the strict parser for
+ * request bodies; this one preserves readability of older stored values.
  *
- * **Two parsers, one type — which you want depends on where the value came
- * from, not on how careful you feel.** The split exists because that column is
- * schemaless JSON that both the portal and egress re-parse on *every read*, so
- * tightening the write schema retroactively makes older rows unreadable — and a
- * read that throws is an outage, not a validation error. One bad `platform` row
- * used to fail the entire admin list, reported as a 400 that no 5xx alerting
- * would ever see.
+ * Relax header syntax, length, and template-format rules on reads so operators
+ * can inspect old invalid rows. The HTTP client still rejects them on use.
+ * Keep forbidden header names, x-helix- restrictions, and trim/lowercase checks
+ * on both reads and writes: those prevent upstream host or protocol overrides.
+ * A stored security violation yields injection: null, blocks rotation, and
+ * fails the egress request closed.
  *
- * The line is drawn at **who gets hurt**:
- *
- * - *Hygiene* (the RFC 7230 token charset, the 64/512 caps, the ASCII-only
- *   template) protects the request the platform is about to make. A row that
- *   violates one was already dead on the wire — undici rejects it at Request
- *   construction — so it 502'd long before this schema existed. Relaxing it on
- *   read costs nothing and lets an operator *see* the broken row instead of a
- *   blank page.
- * - *Security* (`FORBIDDEN_HEADER_NAMES`, the `x-helix-` prefix, and the
- *   trim+lowercase normalisation those checks depend on) protects the
- *   **upstream**. A stored `host` is the SNI-override bug. These fail closed on
- *   both sides: such a row is unreadable *on purpose*, surfacing as
- *   `injection: null`, refusing to rotate, and failing the egress hop closed.
- *
- * Adding a constraint? It belongs in the strict half unless a row violating it
- * could hurt something other than itself.
- *
- * **Never use this on a request body** — it accepts header names undici will
- * refuse, turning a 400 into a 502 at 3am.
+ * New formatting constraints generally belong on writes. Apply constraints to
+ * stored reads too when accepting a value would compromise another component.
  */
 export const StoredInjectionRecipeSchema = injectionRecipe("stored");
 

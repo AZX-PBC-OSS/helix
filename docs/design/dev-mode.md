@@ -3,7 +3,10 @@
 **Status:** Design draft **v2.1** · July 2026 (reconciled against the M4/M4.5 hardening now landed locally, then against **ADR-0028** — single-tenant, customer-deployed — accepted 2026-07-22. `ownsApp`/issue #9 landed in `dc2aacf`, closing the BOLA prerequisite; ADR-0028 then reframed domain-split/#16 into a per-deployment topology and answered the dev-gateway-hostname question it gated. **Both hard prerequisites are now cleared** — the isolation work (step 1) is unblocked start-to-finish.)
 **Companion to:** `platform-architecture.md` (the _what & why_ — §2 names "apps built elsewhere with Lovable/Cursor/Claude Code" as a given, §3 the trust split, §6.1 the gateway) and `platform-project-plan.md` (§4 the gateway milestones, §6 the adversarial-test discipline).
 **Builds on:** `app-data-storage.md` (the partition model + DB-role split this extends), `secrets-and-connections.md` (dev-tier secrets), `fetch-proxy.md`, and the hardening ADRs this revision leans on: **ADR-0002** (role split + RLS, now with NOBYPASSRLS and the `withPartition` choke point), **ADR-0007** (portal authz v0 — the BOLA this feature must *not* inherit), **ADR-0011** (shared-counter rate limiting), **ADR-0013** (egress trust model — the attested instruction now `jti`-burned + `aud`-pinned), **ADR-0019** (subdomain/domain-per-app isolation, which gated where the dev-gateway lives — now **reframed per-deployment by ADR-0028**), and **ADR-0028** (single-tenant, customer-deployed; it parameterizes the base domain per install and resolves the dev-gateway host to the control-plane base of *this* deployment).
-**Why this exists:** The architecture assumes apps are authored *elsewhere* and only specs the **deploy** path (the deploy skill + upload API, §5.1). It never specs the **develop-against** path — how an app still under development, running on `localhost` or in a cloud IDE like Lovable / Claude Artifacts, reaches the platform capabilities (`/_api/llm`, `/_api/data`, `/_api/fetch`) it is being written to use. Without that path the platform is only usable by apps that are *first* built fully self-contained and *then* brought over — which is most apps' worst-case workflow and, for any app that is non-trivially coupled to our APIs, no workflow at all. This doc closes the gap by introducing a **dev tier: a separate data partition on the same app**, reachable from foreign origins through a dedicated dev surface, isolated from production data, budget, and secrets by the same role/RLS machinery the app-data design already established.
+**Purpose:** Let apps under development on localhost or in a browser IDE use
+Helix APIs before deployment. A separate `dev` partition on the same app provides
+isolated data, budgets, and secrets, enforced by database roles and RLS. The
+[feature document](../features/dev-mode.md) describes the shipped implementation.
 
 ---
 
@@ -29,13 +32,10 @@ The production gateway is bound to the served origin by **three deliberate, inde
 2. **Exact-Origin / CSRF check.** Every mutation requires `origin === publicOrigin(slug)` and fails closed on a missing Origin (`apps/edge/src/auth/validate.ts`). `https://myapp.lovable.app` ≠ `https://myapp.azx.helix.azxlabs.io` → 403.
 3. **No CORS anywhere on the edge.** Even a GET you somehow authenticated couldn't be read back.
 
-These are not oversights to patch — they are the containment model. The LLM proxy is safe *because* it runs on the app's own origin under the visitor's session (architecture decision 1: the frontend is untrusted code in the attacker's browser). So "let `localhost`/Lovable reach prod's gateway" means knocking out the three walls that make production safe. **We will not do that.**
-
-The reframe that resolves the tension:
-
-> Don't bring the dev environment to production's gateway. Bring an **isolated copy of the capabilities** to the dev environment — a separate tier with its own principal, its own data partition, its own budget, and its own secrets — and leave the three production walls untouched.
-
-The load-bearing claim of this doc is that "dev mode" is **not** a relaxation of the production APIs. It is a *second, isolated environment* that happens to share an app's slug and manifest. The blast radius of the entire dev surface is "a developer's own throwaway dev data and dev budget" — bounded by partition, not by policy, and revocable.
+The development path must preserve production's cookie, Origin, and CORS
+controls. It therefore uses a separate environment with its own developer
+credential, database role, data partition, budget, and secrets. It shares the
+app's slug and manifest so development exercises the same capability policy.
 
 ---
 
@@ -71,7 +71,9 @@ The unifying invariant across all three: **the production origin is never called
 
 ## 4. Identity and the dev token (the credential)
 
-The dev tier has a **different principal** from production, and naming that is what makes "this isn't lowering security" true. In production the caller is an *end-user* whose session the untrusted frontend rides — hence cookie-only, Origin-locked, no-CORS. In dev the caller is the **developer themselves**, explicitly, holding a credential they own. A bearer token is the *correct* primitive here precisely because there is no end-user session to protect — you **are** the user.
+Production requests act as an app visitor through a session cookie. Dev requests
+act as the developer through an explicit bearer credential, scoped to the dev
+environment. This separates development access from visitor sessions.
 
 ### 4.1 What a dev token is
 

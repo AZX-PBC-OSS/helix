@@ -2,12 +2,11 @@
 
 > **Related ADRs:** [ADR-0008](../adr/0008-llm-key-via-egress.md) (LLM key via egress) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway) · [ADR-0033](../adr/0033-openai-compatible-gateway-surface.md) (OpenAI-compatible surface + multi-provider routing) · [ADR-0034](../adr/0034-structured-output-on-the-llm-gateway.md) (structured output).
 
-**What it is.** `POST /_api/llm/chat` — the gateway's first capability (architecture §6.1,
-project plan §4 M4). It is the choke point that makes per-app blast radius real: an untrusted
-app calls a **same-origin** endpoint, and the edge authenticates the user, proves the request
-came from the app's own origin, enforces the per-app model allowlist and daily token budget,
-proxies to the vendor through a seam **the app never sees the key for**, and meters every call.
-The vendor-neutral wire contract is `packages/shared/src/llm.ts`.
+`POST /_api/llm/chat` sends a language-model request through the platform.
+The edge resolves the caller, checks the request origin and app's model allowlist,
+enforces its daily budget, and records usage. Egress supplies the vendor
+credential and makes the outbound call. The vendor-neutral request and response
+schemas are in `packages/shared/src/llm.ts` (architecture §6.1, project plan §4 M4).
 
 Handler: `apps/edge/src/gateway/llm.ts` (`makeLlmHandler`). Route wiring:
 `apps/edge/src/app.ts` (`POST /_api/llm/chat`). App hosts only — `sendNotFound` elsewhere.

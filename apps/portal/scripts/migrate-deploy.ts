@@ -2,39 +2,25 @@ import { spawn } from "node:child_process";
 import { DefaultAzureCredential } from "@azure/identity";
 
 /**
- * Apply Prisma migrations using the Postgres admin (schema-owner) credential
- * fetched from Key Vault at run time.
+ * Run Prisma migrations as the schema owner (helixadmin, ADR-0002).
+ * The database is private, so this runs in the VNet through the Container Apps
+ * job defined in infra/azure/modules/migrate-job.bicep.
  *
- * WHY THIS EXISTS
- * Migrations must run as the schema owner (`helixadmin`), not as one of the
- * least-privilege runtime roles — the portal actively refuses the owner DSN in
- * production (ADR-0002). Postgres is private-endpoint-only, so the migration has
- * to run from inside the VNet, which means a Container Apps Job (see
- * `infra/azure/modules/migrate-job.bicep`).
+ * The job receives a vault URL, database hostname, and managed-identity client
+ * id. Its identity reads the owner password from kv-platform at runtime, so
+ * the deployment pipeline and ARM resources do not hold that credential.
+ * The password is passed only in the Prisma child process environment, never
+ * logged or written to disk.
  *
- * The point of fetching the password here rather than receiving it as an env var
- * is that **no deploy pipeline and no ARM resource ever holds the schema-owner
- * credential**. The job carries only a vault URL, a hostname and a client id; the
- * secret is read over the vault's private endpoint by the job's own deploy-scoped
- * managed identity, whose single permission is `Key Vault Secrets User` on
- * kv-platform (granted in `migrate-job.bicep`, not in the app role model).
+ * Use the portal's existing @azure/identity dependency for authentication and
+ * one REST GET for the secret; no Key Vault SDK dependency is needed.
  *
- * WHY THE REST API RATHER THAN @azure/keyvault-secrets
- * `@azure/identity` is already a portal dependency (the blob plugin uses it the
- * same way — `src/plugins/blob.ts`), but `@azure/keyvault-secrets` is not, and a
- * single authenticated GET does not justify adding one to the image. The fiddly
- * part — acquiring an IMDS token for a user-assigned identity — is still done by
- * the SDK, not hand-rolled.
- *
- * Usage (inside the job; every value comes from the template):
- *   AZURE_CLIENT_ID=<user-assigned client id> \
- *   PLATFORM_VAULT_URL=https://<kv-platform>.vault.azure.net/ \
- *   POSTGRES_HOST=<server>.postgres.database.azure.com \
- *   POSTGRES_ADMIN_LOGIN=helixadmin \
- *     pnpm --filter @azx-pbc/portal db:deploy:azure
- *
- * The password is never logged, never written to disk, and is passed to Prisma
- * only through the child process environment.
+ * Usage inside the job (values supplied by the template):
+ *   AZURE_CLIENT_ID=<client id>
+ *   PLATFORM_VAULT_URL=https://<kv-platform>.vault.azure.net/
+ *   POSTGRES_HOST=<server>.postgres.database.azure.com
+ *   POSTGRES_ADMIN_LOGIN=helixadmin
+ *   pnpm --filter @azx-pbc/portal db:deploy:azure
  */
 
 const VAULT_API_VERSION = "7.4";

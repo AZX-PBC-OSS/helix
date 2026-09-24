@@ -5,7 +5,9 @@
 
 ## Context
 
-Untrusted apps must never implement auth or hold a secret. Identity has to be terminated by the platform, on the app's own origin, without the app participating.
+The platform must authenticate users without relying on untrusted app code or
+exposing credentials to it. Authentication must establish a session on each
+app's own origin.
 
 ## Decision
 

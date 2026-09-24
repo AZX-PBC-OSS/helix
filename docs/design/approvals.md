@@ -2,7 +2,9 @@
 
 **Status:** Design draft v1 · June 2026
 **Companion to:** `platform-architecture.md` (the _what & why_; §5.1 names preview/promote, §6 the gateway), `platform-project-plan.md` (§5 v1 backlog items #2 capabilities + approvals, #4 CSP feedback loop, #6 public visibility), `app-data-storage.md` (the prior design doc this mirrors in shape), and the feature doc `docs/features/capabilities-and-manifests.md`.
-**Why this exists:** Three separate v1 backlog items — capability-manifest approvals (#2), CSP origin grants (#4), and public-visibility mode (#6) — are the *same problem* wearing three hats. If we model them separately we build three half-overlapping mini-workflows that drift. This doc names the one shape under all three, proposes the data model + policy + state machine, and grounds it in the existing edge/portal trust split. It does **not** require building all three at once — it requires designing them so they share one spine.
+**Purpose:** Use one approval workflow for capability changes, CSP origin grants,
+and public visibility. The features can ship separately, but they share policy
+classification, pending changes, and apply-on-approval behavior.
 
 > **Related ADRs:** [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (approval classifier) · [ADR-0009](../adr/0009-relaxed-csp.md) (relaxed CSP) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0007](../adr/0007-portal-authz-v0.md) (portal authz v0).
 
@@ -12,7 +14,7 @@
 
 All three concerns reduce to one sentence:
 
-> **A privileged actor must bless a change to an app's effective policy before the edge will enforce it.**
+> **An authorized actor must approve elevated policy changes before they take effect.**
 
 The differences between them — which JSON field changes, how risky it is — are *data*, not structure. The load-bearing observation is how the edge already works (architecture §3, decision 12):
 

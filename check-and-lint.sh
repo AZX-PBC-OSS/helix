@@ -1,30 +1,17 @@
 #!/usr/bin/env bash
 #
-# check-and-lint.sh — poor man's CI.
-#
-# Runs typecheck, lint, format check, a docs-site build smoke test, and the
-# test suite. Each step runs even if an earlier one fails, so you get the full
-# picture in one pass. Exits non-zero if any step failed. Each step reports
-# its own wall time, and the summary reports the total — CI reads those
-# numbers to keep the job split honest.
+# Run typecheck, lint, formatting, docs build, and tests. Run every selected step
+# even if one fails, then report timings and exit non-zero on any failure.
 #
 # Usage:
-#   ./check-and-lint.sh                        # run all checks
-#   ./check-and-lint.sh --fix                  # auto-fix lint + formatting first
-#   ./check-and-lint.sh typecheck lint format  # run only the named steps
-#   ./check-and-lint.sh test -- --shard=1/3    # extra args for the test step
+#   ./check-and-lint.sh                        # all checks
+#   ./check-and-lint.sh --fix                  # fix lint/format first
+#   ./check-and-lint.sh typecheck lint format  # selected checks
+#   ./check-and-lint.sh test -- --shard=1/3    # pass arguments to Vitest
 #
-# Naming steps is what lets CI split the work across two jobs (.github/
-# workflows/ci.yml) while still running *this* script rather than a divergent
-# copy of the commands: the `static` job runs the first four (the docs build
-# needs no database or blob store, so it rides along there), the `test` job
-# runs the last one, and both keep the run-every-step-then-report-all
-# behaviour. With no step names, every step runs — the local default.
-#
-# Anything after `--` is appended to the test step's command line, which is how
-# CI shards the suite (`-- --shard=1/3`). It is rejected unless `test` is the
-# only named step: vitest flags mean nothing to tsc or eslint, and silently
-# ignoring them is exactly the failure this guards against.
+# CI uses this script for both jobs: static runs typecheck/lint/format/docs;
+# test runs the suite. Arguments after -- require test as the only selected step.
+
 
 set -uo pipefail
 

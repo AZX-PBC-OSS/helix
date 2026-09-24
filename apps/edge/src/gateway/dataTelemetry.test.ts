@@ -22,25 +22,13 @@ import {
 } from "../test/fakes.js";
 
 /**
- * ADR-0042 decision 7 — the list verb is a new route and the prefix check a new
- * decision point that can deny, so both are instrumented, and this file holds
- * the list verb to ADR-0037's rules with the same every-attribute scan the
- * other adversarial suites use:
- *
- *  - the span says WHICH capability and verb ran, and HOW MANY keys matched,
- *    but never the prefix value and never a matched key — those are app data,
- *    and a span is a retained backend. There is deliberately no `url.path` on
- *    ANY data span (review finding 1): the key-addressed verbs carry an
- *    app-chosen KEY as the path's last segment, and prefix grants exist
- *    precisely so those keys are unbounded and attacker-choosable — `http.route`
- *    plus the verb identify the route without it;
- *  - the deny path is distinguishable from the empty result on both the span
- *    (`helix.reason` vs `helix.data.match_count: 0`) and the counter
- *    (`outcome=forbidden` vs `ok`);
- *  - `userOid` is nowhere (it is never a dimension — ADR-0037 decision 8).
- *
- * The key-addressed verbs' planted-key case lives in `spanRedaction.test.ts`,
- * beside the credential-URL scans it already does.
+ * Assert data telemetry preserves the ADR-0037/0042 boundaries:
+ * - Record capability, verb, and match count, never keys or prefixes. Data paths
+ *   contain app-selected keys, so use http.route instead of url.path.
+ * - Distinguish forbidden requests from successful empty results in spans and
+ *   counters.
+ * - Never include userOid as an attribute or dimension.
+ * spanRedaction.test.ts also checks key-addressed routes with planted values.
  */
 
 const APP_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";

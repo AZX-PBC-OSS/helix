@@ -5,7 +5,10 @@
 
 ## Context
 
-Untrusted apps acquire capabilities (LLM models, token budgets, proxied fetch origins, visibility, MCP servers). Granting these needs governance — but the public-facing **edge must stay ignorant of pending approvals** (it only reads effective state), and routine self-service changes must not require a human for everything.
+Capability increases need approval, but routine changes should remain self-service.
+The edge should enforce only effective grants and should not process pending
+approvals. The portal therefore needs to classify and store proposed changes
+separately.
 
 ## Decision
 

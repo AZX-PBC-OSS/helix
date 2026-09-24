@@ -1,27 +1,12 @@
 /**
- * The agent skill bundle (project plan §2, architecture v1) — `SKILL.md` plus the
- * tiny renderer that turns it into something an agent can act on.
+ * Render the deployment-independent SKILL.md template (ADR-0036).
+ * renderSkill substitutes deployment values for the portal and helix skill.
+ * renderSkillGeneric substitutes descriptions for the public docs site.
+ * The optional dev-gateway section uses a conditional block.
  *
- * `SKILL.md` is deployment-agnostic on disk: every host it mentions is a
- * `{{PLACEHOLDER}}`, and the dev-gateway section is wrapped in a conditional
- * block, because the gateway is an opt-in deployment. Two render modes share one
- * template (ADR-0036):
- *
- *  - {@link renderSkill} — the **instance** rendering, substituting this
- *    deployment's real values. Served by `GET /api/v1/skill` and consumed by the
- *    portal SPA and the `helix skill` CLI command.
- *  - {@link renderSkillGeneric} — the **generic** rendering, substituting
- *    descriptive prose for each placeholder ("your deployment's apps host — see
- *    `GET /api/v1/capabilities`"). The public docs site consumes this; there is
- *    no public *skill*, only public *docs*.
- *
- * Nothing here reaches for a bundler, the filesystem, or the network: this is a
- * document plus a string transform. The "no leftover `{{`" / "no `<!--`"
- * assertions in the test cover **both** modes, so a new placeholder fails the
- * suite until both maps are wired.
- *
- * Zero runtime dependencies, on purpose — the package is a document plus a
- * string transform.
+ * Both modes must replace every placeholder and remove conditional markers;
+ * tests check for leftover {{ and <!--. This package only transforms strings
+ * and has no runtime dependencies, filesystem access, or network calls.
  */
 
 /** The filename the skill should be saved as; also the name the SPA downloads it under. */

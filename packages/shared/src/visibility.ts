@@ -31,32 +31,16 @@ export const MAX_VISIBILITY_GROUPS = 10;
 export const VisibilityGroupIdsSchema = z.array(z.string().min(1)).max(MAX_VISIBILITY_GROUPS);
 
 /**
- * How an app gates access at the edge (architecture §4.2).
+ * App access modes (architecture §4.2). The group variant carries groupIds;
+ * manifest shorthand group:<id>[,<id>…] maps to that payload.
  *
- * Modeled as a discriminated union rather than a flat enum because `group`
- * carries a payload (which Entra groups may open the app). The manifest's
- * `group:<id>[,<id>…]` shorthand (§6.3) maps onto `{ mode: "group", groupIds }`.
+ * internal is the default: any authenticated directory principal, including
+ * Entra B2B guests, may enter. Use group to restrict access to a population.
  *
- * `internal` is the baseline and the default: SSO, and *any* authenticated
- * directory principal passes. It was called `private` until the rename, a name
- * that overpromised — the gate never checked *which* user signed in, only that
- * one had. Note that under Entra a B2B guest is a directory principal too, so
- * `internal` admits guests; `group` is the mode that narrows to a population.
- *
- * A future owner-plus-platform-admins mode reclaims the name `private`. It is
- * deliberately **absent rather than reserved**: the identity prerequisite is
- * now satisfied — ADR-0048 re-based both planes onto the Entra `oid` claim, so
- * the edge session and `App.ownerId` finally name the same principal — but the
- * *policy* half (the edge gate consulting the projected owner, the admin
- * group id mirrored into edge config, the derived-ACL shape ADR-0048 decision
- * 5 chose) is still unbuilt. A mode listed here that no plane can evaluate
- * would fall through the edge's gate and deny every request including the
- * owner's, so the label stays out until the check exists. See TODO.md.
- *
- * The name is now free in every direction: the expand/contract releases removed
- * the last legacy row and then the Postgres label itself, so nothing reads,
- * writes or stores `private` any more. A test pins that this schema still
- * refuses it, so the reservation is enforced rather than merely intended.
+ * private is reserved for future owner-plus-admin access and is rejected here.
+ * ADR-0048 aligned principal ids across planes, but the projected-owner/admin
+ * checks are not built. The old private label was removed from stored rows and
+ * Postgres; tests prevent accepting it before its new gate exists.
  */
 export const VisibilitySchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("internal") }),

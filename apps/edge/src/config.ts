@@ -573,41 +573,17 @@ const isDottedNetmaskCidr = (part: string): boolean =>
   /^\d+\.\d+\.\d+\.\d+\/\d+\.\d+\.\d+\.\d+$/.test(part);
 
 /**
- * Parse EDGE_TRUST_PROXY into a Fastify `trustProxy` value: unset or blank
- * (whitespace-only included) → `false` (trust nothing — the socket peer is the
- * client), `"true"`/`"false"` → boolean, anything else a comma-separated list
- * whose every part must be an IP, a CIDR, or a proxy-addr preset — validated
- * here, then passed through verbatim for Fastify to compile.
+ * Parse EDGE_TRUST_PROXY: unset/blank means false; true/false select booleans;
+ * otherwise accept a comma-separated list of IPs, CIDRs, or proxy-addr presets.
+ * Reject invalid values before Fastify starts. An incorrect trusted address
+ * can collapse rate limits and collection audit hashes to the ingress IP.
  *
- * Every rejection throws rather than coercing, because a wrong value is silent:
- * `req.ip` collapses to the ingress address, taking the anon rate limiter
- * (`gateway/ipRateLimiter.ts`), the shared-password login throttle
- * (`auth/routes/passwordLogin.ts`) and the collection audit hash
- * (`gateway/data-handler.ts`) down to one bucket per app with `/health` green —
- * the failure mode issue #13 exists to prevent.
- *
- * The list is checked against a second, stricter grammar than proxy-addr's, and
- * deliberately not by calling into it: the dangerous values are the ones
- * proxy-addr *accepts and reinterprets*. It parses through ipaddr.js, which
- * reads legacy short-form IPv4, so one dropped octet turns "10.0.2.0/23" into
- * "10.0.2" → the single host 10.0.0.2, which compiles cleanly and matches
- * nothing the ingress presents. What it rejects ("foo.bar", "10.0.2.0/33")
- * already throws inside `Fastify()` and was never the risk — with one overlap
- * worth owning: zod accepts a /0 range ("0.0.0.0/0", "::/0", even a
- * non-canonical "10.0.2.0/0") and `Fastify()` throws on it, so it is refused
- * HERE, where the error can say what to write instead (a zero prefix matches
- * every address — "trust any peer", the property GHSA-3m5p-2c4r-xxw2 removed).
- * Two narrowings of our own: a zone-suffixed literal ("fe80::1%eth0") is
- * host-local scope and means nothing in a trusted-proxy allowlist, and the
- * dotted-netmask CIDR ("10.0.2.0/255.255.254.0") is refused in favor of its
- * prefix-length spelling ("10.0.2.0/23") — a strict subset beats a netmask
- * parser that has to agree with ipaddr.js's.
- *
- * A bare integer is rejected. It meant "trust this many hops", which trusts by
- * position and so ignores the address it is handed (GHSA-3m5p-2c4r-xxw2);
- * fastify 5.12.1 removed the form. `0` is the exception, read as `false` — see
- * the note on it below. `"auto"` is rejected as the `infra/azure` sentinel the
- * template should have resolved before the container saw it.
+ * Validate more strictly than proxy-addr/ipaddr.js, which accepts legacy short
+ * IPv4 forms: 10.0.2 can become 10.0.0.2 instead of the intended network.
+ * Reject /0 (use the explicit boolean form), zone-suffixed IPv6, and dotted
+ * netmasks (use prefix lengths). Reject hop counts removed by Fastify 5.12.1
+ * (GHSA-3m5p-2c4r-xxw2); accept 0 only as false. `auto` belongs to the Azure
+ * template and must be resolved before reaching this parser.
  */
 function parseTrustProxy(raw: string | undefined): boolean | string {
   const v = (raw ?? "").trim();

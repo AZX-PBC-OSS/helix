@@ -30,34 +30,19 @@ import { withRootSpan } from "../telemetry.js";
 import { meterGatewayCall, type UsageStore } from "./usage.js";
 
 /**
- * `/_api/data/*` — the gateway's app-data capability (architecture §6.1,
- * app-data design §3/§5). Every handler reuses the LLM gateway's preamble
- * (`llm.ts`): resolve serving entry → resolve caller (gate, or anon on public
- * apps) → Origin/CSRF check on mutations → capability/scope check → body
- * validation → store call → meter. Reads send `cache-control: no-store`.
+ * App-data handlers (architecture §6.1, app-data design §3/§5).
+ * Resolve the app and caller, check Origin on mutations, validate capability,
+ * scope and body, call the store, then meter. Reads send cache-control: no-store.
  *
- * Writes are compare-and-swap on an opaque `version` (ADR-0041): reads emit it
- * as `ETag: "<version>"`, and a PUT states its assumption with
- * `If-Match: "<version>"` (write if current) or `If-None-Match: *`
- * (create-if-absent). Preconditions are MANDATORY on `shared` — a shared PUT
- * carrying neither is 428 `precondition_required` — and optional on `user`,
- * which keeps last-write-wins by default. A stated precondition that doesn't
- * hold is 412 `conflict`. Neither failure is CHARGED against writesPerDay
- * (decision 7); a 412 still records a non-charging `conflict` ledger row so a
- * contended retry loop is visible rather than silent.
+ * PUT uses an opaque version: reads emit ETag; If-Match updates the expected
+ * version and If-None-Match: * creates only if absent. Shared writes require a
+ * precondition (428 if missing); user writes default to last-write-wins. Failed
+ * preconditions return 412 and record a non-charging conflict ledger row.
+ * Neither 412 nor 428 consumes writesPerDay (ADR-0041).
  *
- * The §3.2 collection invariant is structural: there is no list/read verb for
- * collections here, and the store has no method to enumerate them — covered by
- * an adversarial test asserting those paths 404/405.
- *
- * `shared` grants come in two forms (ADR-0042): the literal arrays fixed at
- * deploy time, and PREFIX grants that authorize every key starting with a
- * declared prefix — which is what lets an app create records at runtime under
- * a natural-key layout (`record:<id>`) without a manifest edit per record.
- * Prefix grants also unlock the `listShared` verb: with only literals, listing
- * is redundant (the manifest already enumerates what exists); under a prefix
- * the app can no longer know that, so the list verb ships with the grant — one
- * decision, not two.
+ * Collections have no app-facing read or list method; adversarial tests assert
+ * 404/405 for those paths. Shared permissions support exact keys and prefixes.
+ * Prefix grants allow runtime-created keys and authorized listing (ADR-0042).
  */
 
 export interface DataGatewayRuntime {

@@ -62,11 +62,10 @@ allow-list is the **primary** SSRF/egress control; the egress app's own
 behind it (ADR [0001](../../docs/adr/0001-three-runtime-split.md),
 [0013](../../docs/adr/0013-egress-trust-model.md)).
 
-It is also the single most expensive resource in the stack: **~$900/mo** for the
-Standard-tier deployment charge alone (a flat, always-on reservation — an idle
-firewall costs the same as a busy one), before data processing. That is a real
-adoption barrier for a customer-deployed product, so it is **opt-out** via
-`deployFirewall` (default **`true`** — secure by default).
+The Standard firewall deployment charge is approximately $900/month before data
+processing, as estimated for this deployment. It applies even when idle.
+`deployFirewall` defaults to true; operators can disable it with the security
+trade-offs below.
 
 **What you lose when `deployFirewall=false`:**
 

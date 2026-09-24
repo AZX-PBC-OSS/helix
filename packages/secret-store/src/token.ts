@@ -1,22 +1,11 @@
 /**
- * Managed-identity AAD token acquisition for Key Vault (ADR-0006).
+ * Acquire Key Vault tokens through the Container Apps managed-identity endpoint
+ * (ADR-0006). Use global fetch and AbortSignal to keep this package free of runtime
+ * dependencies for egress. The transport mirrors apps/edge/src/blob/token.ts
+ * with a Key Vault audience instead of Storage.
  *
- * `@azx-pbc/secret-store` is consumed by **`helix-egress`**, the mechanism plane —
- * the one process that holds plaintext connection secrets. ADR-0031 asks that the
- * edge's dependency-minimal reasoning extend to egress by degree, so this package
- * stays **zero-dependency**: on Container Apps the user-assigned identity's token
- * endpoint is a documented HTTP call, and we make it ourselves over Node's global
- * `fetch` rather than taking `@azure/identity` into the mechanism plane.
- *
- * This is a deliberate port of `apps/edge/src/blob/token.ts` (which does the same
- * for Blob over undici). Two differences: the resource is the Key Vault audience,
- * and the transport is global `fetch` + `AbortSignal` instead of an undici Agent,
- * so no runtime dependency is added.
- *
- * The privileged control plane (`helix-portal`) already depends on `@azure/identity`
- * for Blob writes (ADR-0027) and injects a `DefaultAzureCredential`-backed
- * {@link GetVaultToken} instead — that also lets operator scripts run under
- * `az login`. Both paths satisfy the same one-function seam.
+ * The portal supplies DefaultAzureCredential through GetVaultToken, supporting
+ * both managed identity and operator az login credentials.
  */
 
 /** AAD resource/audience for Azure Key Vault. No trailing slash, unlike Storage. */

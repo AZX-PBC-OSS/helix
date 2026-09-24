@@ -5,7 +5,10 @@
 
 ## Context
 
-Hosting untrusted code is the core risk. **Server-side** untrusted code (containers, custom backends) demands per-app sandboxing, runtime isolation, and network egress control for each app — an order of magnitude more containment work than serving an untrusted **static frontend**, whose only powers are what the browser and the platform gateway grant it.
+Running untrusted server code requires per-app sandboxes, runtime isolation,
+and outbound network controls. Static frontends run in the visitor's browser
+and use the platform gateway for server-side capabilities, reducing the hosting
+and isolation work required for v1.
 
 ## Decision
 

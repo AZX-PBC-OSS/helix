@@ -2,54 +2,22 @@ import { actorIsAdmin } from "../plugins/auth.js";
 import type { Actor } from "../auth/verifier.js";
 
 /**
- * Operator policy for **who may search the directory** (ADR-0040 decision 11).
+ * Controls who may search tenant-wide group names (ADR-0040 decision 11).
+ * Unset means `everyone` to preserve existing deployments; operators may choose
+ * `admins` or `none`.
  *
- * `GET /api/v1/directory/groups` is a tenant-wide read: it turns a three-letter
- * term into the display names of matching security groups anywhere in the
- * customer's directory. ADR-0040 shipped it open to every authenticated portal
- * principal and said so in its own consequences, because the picker is needed at
- * app-*create* time and so cannot hang off `ownsApp`, and per-app RBAC (ADR-0007)
- * is still outstanding. That is a defensible posture for one tenant and a hard
- * sell for another, which is what this knob exists to stop us arguing about.
+ * `PORTAL_DIRECTORY` selects the backend; this policy selects its callers.
+ * Backend `off` disables all lookups. Search policy `none` disables discovery
+ * but keeps id-to-name resolution available under each route's access checks.
  *
- * **This is a different axis from `PORTAL_DIRECTORY`** (`../directory/custody.ts`),
- * which picks the *backend*. This picks *who may query it*. They compose, and the
- * backend wins: `PORTAL_DIRECTORY=off` reports unavailable for everyone whatever
- * the tier says. `none` here is therefore not redundant with it — `off` also kills
- * id→name resolution, where `none` keeps every name resolving and removes only
- * discovery.
- *
- * **The tier gates search; the two id→name resolves are treated separately, and
- * not identically.** `my-groups` resolves the group claim on the caller's own
- * verified token and genuinely discloses nothing new, so it is never gated.
- *
- * `/apps/:slug/visibility/groups` is the one that needed a second look. An
- * earlier version of this comment claimed it too "discloses nothing the caller
- * could not already read", on the grounds that it resolves ids already returned
- * by `GET /api/v1/apps/:slug`. That is false, because **the caller chooses the
- * ids**: `POST /api/v1/apps` is authenticate-only and `VisibilityGroupIdsSchema`
- * never checks a group id against the directory, so anyone can store ten
- * arbitrary ids on an app of their own and read the names back. Ids that do not
- * resolve are omitted, which makes it an existence oracle as well as a name one.
- *
- * So it is narrowed rather than excused: on any deployment that set a tier, the
- * route additionally requires owner-or-admin (`ownsAppWhenSearchRestricted` in
- * `../routes/directory.ts`). What remains after that is an operator resolving ids
- * on their *own* apps, bounded by the resolve limiter at ten ids per request —
- * and it does not defeat the tier, because there is no name→id direction and
- * Entra object ids are not guessable. Closing it entirely is per-app RBAC
- * (ADR-0007), not this knob.
- *
- * Flag polarity is deliberately **not** `visibilityPolicy`'s "off unless
- * explicitly true". Those two flags guard surfaces open to the anonymous
- * internet, so default-deny is right. This one guards a surface that already
- * shipped open, and silently tightening it on the next deploy of an existing
- * deployment would break a working picker with no operator action to correlate
- * against. Unset means `everyone` — today's behaviour, exactly — and tightening
- * is an explicit choice.
+ * `my-groups` resolves the caller's verified token claims without a search gate.
+ * App-scoped resolution requires owner-or-admin when search is restricted.
+ * Callers can store arbitrary group ids on their own apps, so this still allows
+ * bounded name and existence lookups: at most ten ids per request, rate-limited.
+ * It does not provide name-to-id discovery. See `ownsAppWhenSearchRestricted`
+ * in `../routes/directory.ts` and ADR-0007 for the remaining per-app RBAC work.
  */
 
-/** Who may call the tenant-wide group search. */
 export const DIRECTORY_SEARCH_TIERS = ["everyone", "admins", "none"] as const;
 export type DirectorySearchTier = (typeof DIRECTORY_SEARCH_TIERS)[number];
 

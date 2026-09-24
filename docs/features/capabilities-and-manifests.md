@@ -2,13 +2,11 @@
 
 > **Related ADRs:** [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (manifest & approval classifier) · [ADR-0009](../adr/0009-relaxed-csp.md) (relaxed CSP) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin gateway).
 
-**What it is.** Every app carries a **manifest** that declares the capabilities the gateway will
-enforce (architecture §6.3). It is the contract between the control plane (which grants) and the
-data plane (which enforces): the portal writes it, the registry projection carries it to the
-edge, and the LLM / app-data / fetch-proxy handlers gate every call against it. Nothing an app
-does at runtime can exceed its manifest. Capability policy is **per-app**: the manifest is the
-only place a grant is declared — there is no per-team or per-group capability policy (group
-membership governs app *access*, not what an app may call).
+Each app has a manifest of permitted gateway capabilities (architecture §6.3).
+The portal writes approved settings, the registry cache carries them to the edge,
+and the LLM, data, and fetch handlers check them on each call. Capability grants
+are per app. Group membership controls who may open an app; it does not grant
+additional API capabilities.
 
 Schema: `packages/shared/src/manifest.ts`. Visibility: `packages/shared/src/visibility.ts`.
 Approval classifier + thresholds: `packages/shared/src/approval.ts`.

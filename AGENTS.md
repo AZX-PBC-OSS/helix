@@ -4,9 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-> **New to the repo? Start with [`TOUR.md`](TOUR.md)** — a high-level map of what's here, why there are three runtimes, and where to read next. This file (`AGENTS.md`) is the working reference: commands, environment, conventions.
+> Start with [`TOUR.md`](TOUR.md) for the repository map. This file is the
+> working reference for commands, environment, and contribution rules.
 
-**Helix** is the AZX App Platform: secure hosting for vibe-coded AI apps. The whole design rests on one stance — **every hosted app is untrusted code** — and contains the blast radius per app rather than trying to verify app code. Read `docs/platform-architecture.md` (the _what & why_) and `docs/platform-project-plan.md` (the _with what & in what order_) before making non-trivial decisions; section references like "§4.2" or "project plan §6" throughout the code point into these. `docs/adr/` records the significant architecture decisions one-per-file (Context → Decision → Consequences), and is the canonical record of _why_ — where an ADR and older prose disagree, the ADR wins. `docs/features/` holds up-to-date per-feature docs (what & how, today), and `docs/design/app-data-storage.md` is the app-data design. `docs/` is sorted by _kind_ — decisions in `adr/`, designs ahead of the code in `design/`, what's true today in `features/`, dated snapshots in `reviews/`, procedures in `runbooks/` — and [`docs/README.md`](docs/README.md) is the map; put a new doc in the directory matching the job it does rather than loose at the top level. Open follow-up work distilled from the ADRs lives in [`TODO.md`](TODO.md).
+**Helix** hosts AI-generated static web apps. It treats every hosted app as
+untrusted and restricts access per app. Before non-trivial design work, read
+`docs/platform-architecture.md` and `docs/platform-project-plan.md`. Architecture
+Decision Records in `docs/adr/` take precedence over older prose. Feature docs
+describe current behavior; design docs describe intended behavior; reviews are
+dated snapshots; runbooks are procedures. Use [`docs/README.md`](docs/README.md)
+to find the right document and location for new docs. Follow-up work is in
+[`TODO.md`](TODO.md).
 
 **Current status: deployed on Azure (M5); feature work at M4.5 — Egress & Connections.** The three planes run in production on Container Apps against real Entra OIDC, wildcard TLS, and a live Key Vault — `infra/azure` (Bicep) is the source of truth for the topology, and `infra/azure/README.md` is the operational reference. The outstanding M5 residual is a real pilot app end to end. **Everything still runs fully locally** — `apps/dev-idp` stands in for Entra, the dev AES-GCM envelope for Key Vault, Azurite for Blob — so treat "local" below as the development path, not the only deployment. **Where a doc says something is "local only", treat it as stale unless it agrees with this line.**
 
@@ -43,9 +51,13 @@ The portal API lives under `/api/v1`. Mutating routes take a bearer token throug
 
 The standard workspace scripts (`install`, `typecheck`, `lint`, `format`, `test`) are in the root `package.json`. Per-package scripts also run via `pnpm --filter @azx-pbc/edge <script>`.
 
-**Required before calling any change finished: run `./check-and-lint.sh` (or `--fix`) from the repo root and get a clean pass.** This is the same gate CI runs — typecheck + lint + **format check** + the docs-site build + the full test suite — and it catches what per-package or per-file checks miss (a Prettier format failure is a red CI build even when types, lint, and the tests you ran are all green). Targeted `pnpm --filter … typecheck`/`test` runs are fine _while iterating_, but they are not a substitute: do not commit, open a PR, or report a change as done until the full script passes. If it fails, fix it and re-run — don't commit the failure and patch it after. CI runs this exact script rather than a copy of
-the commands, split across two jobs by naming steps (`static` runs `typecheck lint format docs`,
-`test` runs `test` — only the suite needs Postgres and Azurite); running it bare covers both.
+**Before committing, opening a PR, or reporting a change as finished, run
+`./check-and-lint.sh` (or `--fix`) from the repo root and get a clean pass.** It
+runs typecheck, lint, format check, docs build, and the full test suite. Fix
+failures and rerun the gate before proceeding. Targeted checks are useful during
+iteration but do not replace it. CI uses the same script, split into static
+checks (`typecheck lint format docs`) and tests (`test`, requiring Postgres and
+Azurite). Running the script without step names covers both.
 
 ## Environment
 
@@ -80,6 +92,19 @@ Every service splits `buildApp()` (pure, no listen) from `server.ts`, so tests b
 - **zod at every boundary** (`@azx-pbc/shared`); inferred types travel with the schemas.
 - **Tests** are colocated `*.test.ts` under each package's `src/`. Vitest runs **two projects**: `node` for every backend package, and `portal-web` (jsdom + the React plugin, defined in `apps/portal-web/vite.config.ts`) for the SPA's `*.test.tsx`.
 - **Anything touching M3 auth code gets adversarial tests with it, not after** (project plan §6). The OIDC handoff is the most security-sensitive code in the platform and gets a dedicated review pass.
+
+### Documentation and comments
+
+Use plain English and short paragraphs. State behavior or a requirement first,
+then explain the reason when it helps the reader. `apps/docs/` is the style
+reference. Keep commands, contracts, security limits, and decision links precise.
+
+Comments should explain a non-obvious constraint, a failure case, or a choice a
+maintainer could otherwise get wrong. Remove comments that only repeat the code.
+Keep implementation history and rejected alternatives in an ADR when they matter;
+do not narrate earlier drafts or review arguments in source comments. Avoid
+rhetorical questions, dramatic warnings, and repeated claims that a feature is
+"real" or "deliberate". Preserve dated reviews as historical records.
 
 ### Telemetry ships with the change
 

@@ -5,7 +5,10 @@
 
 ## Context
 
-CSP normally exists to stop XSS — to prevent injected script from running. In Helix the app's own code is *already* untrusted and runs by design; blocking inline/eval would not contain a hostile app, because the app author can put whatever they want in their own bundle. Containment is done at the origin boundary (separate subdomain) and the gateway, not by CSP.
+Helix treats an app's own scripts as untrusted. Restricting inline scripts or
+eval cannot make that code trustworthy: the author can put equivalent code in
+the bundle. Separate origins and gateway permissions provide app isolation;
+CSP restricts network destinations while supporting common generated bundles.
 
 ## Decision
 

@@ -5,7 +5,10 @@
 
 ## Context
 
-Untrusted, vibe-coded apps need governed access to platform capabilities (LLM, app-data, fetch-proxy, future MCP). The gateway could live on a **separate API origin** (`api.<base>`) or on the **app's own origin** (`/_api/*` on `<slug>.<base>`). A separate origin forces CORS on every call and forces a token to be handed to app JavaScript (the cookie can't ride a cross-origin request) — exactly the things an untrusted app must not hold.
+Apps need access to LLM, data, fetch, and future MCP capabilities. A separate
+API origin would require cross-origin request configuration and credential
+handling. Serving /_api/* on each app's origin lets the gateway use its existing
+host-only session cookie and Origin checks.
 
 ## Decision
 

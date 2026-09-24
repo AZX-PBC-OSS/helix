@@ -24,34 +24,17 @@ import {
 } from "../db/mappers.js";
 
 /**
- * Read-side metering routes over the `gateway_calls` ledger (M4, architecture
- * §6.1/§8). The **edge writes** the ledger; these endpoints only **read** it for
- * display.
+ * Usage and audit reads over gateway_calls; the edge writes the ledger.
  *
- * **The two usage routes and the audit route are gated differently, on purpose.**
- * Usage is aggregate — bucket sums, a model breakdown, `COUNT(DISTINCT userOid)`
- * — so it answers "how much", and any authenticated portal principal may read it
- * (per-app RBAC is a v1 feature; that openness is the pre-existing gap tracked in
- * TODO.md, not a decision made here).
+ * Any authenticated portal principal may read aggregate usage. Per-app read
+ * RBAC remains tracked in TODO.md. Audit reads require admin access because
+ * rows include user names and email addresses across apps. Collection reads
+ * use authenticate + ownsApp in data.ts.
  *
- * The **audit log is `requireAdmin`**, because it answers "who". It was once
- * equally open, on the reasoning that its subject column was `userOid` — Entra's
- * pairwise `sub`, which resolves to nobody and so disclosed nobody. Capturing
- * `userName`/`userEmail` onto the ledger removed that premise: the same rows now
- * carry a real name and address for every app user of every hosted app, and the
- * route takes no `?app=` filter by default. So the gate is not a late patch on an
- * oversight — it is the openness being withdrawn because the thing it was
- * predicated on is gone. Collection items carry the same two columns and are
- * already `[authenticate, ownsApp]` in `data.ts`; this brings the ledger into
- * line. Letting an app's *owner* read their own app's audit rows is the reasonable
- * next step and needs the per-app RBAC work, not a looser gate here.
- *
- * Trends use a selectable rolling `range`: a `generate_series` grid (hourly for
- * `24h`, daily otherwise) left-joined to the ledger so buckets are dense and
- * zero-filled. They are **not** grouped by model: cost is summed from the frozen
- * `costMicroUsd` column the edge writes at call time, so there is nothing
- * per-model left to do at read time — only the per-app `byModel` breakdown still
- * needs the key. The per-app daily-cap gauge stays calendar-day scoped (`today`).
+ * Trends use hourly buckets for 24h and daily buckets for longer ranges.
+ * generate_series plus a left join supplies zero-filled buckets. Sum frozen
+ * costMicroUsd values instead of recalculating model prices. Only the per-app
+ * byModel breakdown groups by model; the daily-cap gauge uses calendar today.
  */
 
 /**

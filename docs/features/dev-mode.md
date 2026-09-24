@@ -2,9 +2,13 @@
 
 > **Related ADRs:** [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS — the isolation) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model) · [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed). The _why_ and the full design live in [`../design/dev-mode.md`](../design/dev-mode.md); this doc is the **how, today**.
 
-**What it is.** A way to develop an app _against the real platform_ — its LLM proxy, app-data, fetch-proxy, manifest, and capability approvals — while the app is still being written **somewhere else** (localhost, Lovable, a cloud IDE), before it's ever deployed. Instead of relaxing production's walls, dev mode gives the app a **second, isolated environment**: a `dev` data partition on the _same app_, with its own data, budget, and secrets, reached through a dedicated surface. The whole blast radius of dev mode is "one developer's throwaway `env=dev` data and budget," bounded by the database, not by policy.
+Dev mode lets an app running on localhost or in a browser IDE call Helix before
+it is deployed. The same app and manifest have an isolated `env=dev` tier with
+separate data, budgets, and secrets.
 
-The core stance (dev-mode design §1): production's gateway is safe _because_ it's cookie-only, exact-Origin-locked, and CORS-free. Dev mode does **not** poke holes in that. It stands up a separate tier — a different principal (you, the developer, holding a token you own), a different DB role, a different data partition — and leaves production untouched.
+The dev-gateway accepts developer tokens and registered cross-origin requests.
+A separate database role and partition enforce isolation. Production keeps its
+cookie sessions, exact-Origin checks, and no-CORS policy.
 
 | Surface | For | Status |
 | --- | --- | --- |
@@ -26,7 +30,7 @@ An app can exist with zero deployed versions. Create it in the portal (or `helix
 
 ### 2. Grant the capabilities you'll use
 
-In the portal **Capabilities** tab, grant what the app calls: `llm` (with a model allowlist + daily budget), `data` (user / collections / shared), and/or `fetch` (proxied origins). **The manifest is shared between dev and prod** — a capability the app isn't granted 403s in dev too. That's the point: you find the missing grant while developing, not after promoting.
+In the portal **Capabilities** tab, grant what the app calls: `llm` (with a model allowlist + daily budget), `data` (user / collections / shared), and/or `fetch` (proxied origins). **The manifest is shared between dev and prod** — a capability the app isn't granted 403s in dev too. This lets you find missing grants during development.
 
 ### 3. (Only for secret-backed fetch) configure a dev connection secret
 

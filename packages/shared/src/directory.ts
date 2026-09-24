@@ -1,25 +1,14 @@
 import { z } from "zod";
 
 /**
- * Wire shapes for the portal's directory endpoints (ADR-0040 decisions 6–8) —
- * the group picker's search and its "groups you're a member of" default view.
+ * Directory endpoint contracts (ADR-0040 decisions 6–8).
+ * Missing configuration or consent returns 200 with available: false so the UI
+ * can show a banner and manual group-id entry. Transient failures use the error
+ * envelope and remain distinguishable from expected unavailability.
  *
- * **Every response carries `available`, and the degraded case is a 200.** ADR-0040
- * decision 8 requires that a deployment without the `GroupMember.Read.All` grant
- * keeps a working Access tab, falling back to free-text group ids behind an
- * explicit banner. Modelling absent consent as an error status would put the
- * picker in a failure state and make that fallback the hard path; as a success
- * shape the client renders a banner off one boolean. Transient failures still use
- * the normal error envelope, so a real outage stays distinguishable from a tenant
- * that said no.
- *
- * Names are **not** persisted anywhere (decision 7): they are resolved on demand
- * through these endpoints and cached client-side. The authorization value is the
- * id array on the app row and nothing else — a second, staler copy of a name
- * sitting beside a live authorization value invites exactly one bug, disagreeing
- * about which is real, and the UI would show the wrong one. The single exception
- * is an audit entry, which records names as observed at write time because that
- * is a historical fact rather than a cache.
+ * Resolve names on demand and cache them client-side. Authorization uses stored
+ * group ids; do not persist a second name cache beside them. Audit entries may
+ * record names as observed at write time.
  */
 
 export const DirectoryGroupSchema = z.object({

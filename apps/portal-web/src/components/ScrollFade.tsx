@@ -1,21 +1,10 @@
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
 
 /**
- * Horizontal **scroll shadows** — the affordance also travels as "scroll hints"
- * or "overflow indicators": a frosted gradient over whichever edge still has
- * table behind it, so a table too wide for its frame says so instead of looking
- * like it simply ends at the border. Scroll to an end and that end's fade goes
- * away; scroll back and the other one lights up.
- *
- * Replaces `Table.ScrollContainer` at every table wide enough to scroll, rather
- * than wrapping it. Two reasons to own the scroller: Mantine's default
- * `type="scrollarea"` buries the element that actually scrolls a few divs down
- * inside a `ScrollArea`, and the fades have to be positioned against the
- * viewport while the overflow is measured from the content — so we need a
- * handle on both boxes, not just the outer one.
- *
- * Everything visual lives in `.az-scrollfade` in theme/global.css; this owns
- * only the two data attributes it keys off.
+ * Show a gradient at each edge with horizontally hidden content. Own the scroll
+ * element so overflow measurements and viewport-positioned fades use the right
+ * boxes; Mantine's default ScrollArea nests the scrolling element.
+ * Styling lives in .az-scrollfade; this component supplies its data attributes.
  */
 
 /**

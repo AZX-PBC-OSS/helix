@@ -2,7 +2,9 @@
 
 **Status:** Research draft v1 · June 2026
 **Companion to:** `platform-architecture.md` (the _what & why_) and `platform-project-plan.md` (the _with what & in what order_)
-**Why this exists:** There are no concrete custom-backend requirements yet. This memo exists so that when they arrive we are not flying blind or implementing into a corner — it fleshes out a _potential_ plan, names the load-bearing decisions, and marks which of today's choices keep that future open versus foreclose it. It is deliberately ahead of demand; nothing here is committed.
+**Purpose:** Explore future custom-backend options and the security decisions
+they require. No implementation is committed; concrete app requirements should
+determine whether to proceed.
 
 External claims are cited inline to the primary sources the research pass verified (vendor docs, protocol specs). Where this memo reasons from our own architecture rather than a cited source — most of the service-discovery section — it says so.
 

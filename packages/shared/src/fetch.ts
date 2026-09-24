@@ -90,21 +90,14 @@ export const REQUEST_HEADER_SAFELIST: readonly string[] = [
 ];
 
 /**
- * Response headers stripped before the upstream response is returned to the app
- * (§6) — credentials and transport framing never reach the browser. `authorization`
- * is a static backstop against an upstream reflecting the injected bearer credential
- * (issue #7); egress additionally strips whatever headers it injected *dynamically*
- * — names a fixed list can't enumerate because they are per-recipe configuration:
- * the `header` recipe's name, and `hmac-timestamp`'s timestamp *and* signature
- * headers (see `apps/egress/src/proxy.ts`). `www-authenticate` is intentionally NOT here: it is a
- * server-issued challenge, not a reflection of the injected secret.
+ * Strip upstream credential and transport headers before returning to the app.
+ * Authorization is a static backstop; egress also removes every header named by
+ * the injection recipe, including custom and HMAC timestamp/signature headers.
+ * Keep www-authenticate, which carries an upstream challenge.
  *
- * `location` is stripped so the browser can never follow an upstream redirect back
- * out of the proxy (egress does not chase redirects — `maxRedirections: 0` — and a
- * forwarded `Location` would let the browser chase it un-proxied). This makes the
- * non-follow policy end-to-end explicit (ADR-0005, issue #10). `content-location`
- * is *not* stripped — it doesn't drive navigation — but egress redacts an injected
- * query secret reflected in it (issue #7).
+ * Strip Location so browsers cannot follow a redirect outside the proxy;
+ * egress also does not follow redirects (ADR-0005). Keep Content-Location,
+ * which does not navigate, but redact any injected query credential in it.
  */
 export const RESPONSE_HEADER_BLOCKLIST: readonly string[] = [
   "set-cookie",

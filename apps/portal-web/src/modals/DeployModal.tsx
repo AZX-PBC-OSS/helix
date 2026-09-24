@@ -8,25 +8,10 @@ import { UploadStep } from "../deploy/UploadStep";
 import { portalOrigin } from "../lib/deployment";
 
 /**
- * Deploy = upload a zipped build as a new immutable *preview* version
- * (architecture §5.1 — promotion to live is a separate, human step).
- *
- * One job, one target. The modal is only ever opened from an app's own page, so
- * it takes the slug it deploys into rather than asking; both halves of the flow
- * (the CLI command and the upload endpoint) address the app by slug anyway.
- *
- * The upload is open and the CLI is a closed disclosure. That is not a ranking
- * of the two ways to ship — it follows from who is standing here. A developer
- * using `helix` deploys from a terminal without opening the portal, so the
- * person who reaches this modal is overwhelmingly the one who cannot: no
- * checkout, no terminal, an app built in a browser. Everything the CLI block
- * says is noise to them, so it collapses to one labelled row.
- *
- * This used to lead with a "pick or create an app" step, which existed to keep
- * registration reachable: it once hid inside the app picker's "nothing found"
- * message, so a single registered app cut off the path to a second. That
- * guarantee now belongs to the **Create app** button on the apps page
- * (`AppsListPage`) — always visible, independent of how many apps exist.
+ * Upload a build as an immutable preview version for the current app slug.
+ * Promotion is separate (architecture §5.1). Keep upload visible and the CLI
+ * instructions collapsed; terminal users can deploy without this modal.
+ * App registration is available from the apps page's Create app button.
  */
 export function DeployModal({
   opened,

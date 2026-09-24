@@ -2,12 +2,11 @@
 
 > **Related ADRs:** [ADR-0017](../adr/0017-registry-listen-notify-projection.md) (registry projection) · [ADR-0025](../adr/0025-registry-projection-hardening.md) (projection hardening) · [ADR-0009](../adr/0009-relaxed-csp.md) (relaxed CSP) · [ADR-0019](../adr/0019-subdomain-per-app-isolation.md) (subdomain isolation) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps) · [ADR-0003](../adr/0003-dependency-minimal-edge.md) (dependency-minimal edge) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (Postgres role split) · [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split).
 
-**What it is.** The data plane (`apps/edge` — helix-edge) terminates all untrusted app-user
-traffic: it routes a request to an app by hostname, serves that app's static assets straight
-from Blob, injects the platform CSP on every response, and answers `404`/`410` uniformly so
-the registry can't be enumerated. It is **stateless** and **dependency-minimal** — every npm
-package here is code inside the trusted path (project plan §1), so there is no ORM (hand-written
-SQL), no Azure SDK (hand-rolled Blob signing over undici), and no LLM SDK.
+The edge (`apps/edge`) routes requests by hostname, authenticates app users,
+streams assets from Blob, and applies the platform CSP. Missing and archived
+apps receive consistent 404/410 responses. The service is stateless and uses
+parameterized SQL and HTTP clients instead of an ORM or vendor SDKs. New runtime
+dependencies require justification (project plan §1).
 
 See [`apps/edge/README.md`](../../apps/edge/README.md) for the full request flow and config.
 

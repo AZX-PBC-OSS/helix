@@ -211,24 +211,10 @@ export function actorIsAdmin(actor: Actor): boolean {
 }
 
 /**
- * Route `preHandler` gating an app-scoped MUTATING endpoint: the actor must own
- * the app (`ownerId === actor.oid`) or be a platform-admin. Runs AFTER
- * {@link authenticate}, so `req.actor` is already set.
- *
- * This closes the v0 BOLA (ADR-0007, issue #9): before this, "authenticated"
- * meant "authorized to mutate ANY app" — operator B could archive, redeploy,
- * rotate secrets on, or delete data from operator A's app. `ownerId` is set to
- * the creator's `actor.oid` (the Entra `oid` claim — ADR-0048, the one id the
- * edge session also holds) at `POST /api/v1/apps`, and this is the only gate
- * that reads it for mutations (the approvals list already reads it for reads).
- *
- * Resolves the app from `:slug` itself (a cheap indexed lookup) rather than
- * reusing the handler's fetch, so it attaches uniformly to every `:slug` route
- * regardless of what that handler loads — and lives in the route declaration
- * where it's greppable, not buried in a handler body.
- *
- * Fail-closed: a null `ownerId` (which cannot arise for apps created through
- * the normal path) is not equal to any `actor.oid`, so only an admin passes.
+ * Require app ownership (ownerId === actor.oid) or platform-admin access.
+ * Run after authenticate. Resolve :slug here so each protected route can declare
+ * the check independently of its handler's queries (ADR-0007, ADR-0048).
+ * A legacy null ownerId admits only admins.
  */
 export async function ownsApp(req: FastifyRequest): Promise<void> {
   const actor = requireActor(req);

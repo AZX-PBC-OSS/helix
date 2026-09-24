@@ -5,7 +5,11 @@
 
 ## Context
 
-The three-runtime split (ADR [0001](0001-three-runtime-split.md)) is the security model made physical. But edge and portal share a request framework, session store, and registry cache; their split is a deploy-config concern (hostname routing), not a code rewrite. Egress is the exception — its split is a genuinely different posture and is non-negotiable.
+Edge and portal share request infrastructure and can be routed by hostname in
+one process. Separate processes provide the isolation described in ADR-0001,
+but the pilot could use co-deployment without changing the routing model.
+Egress must remain separate because it holds connection credentials and has
+a different outbound network policy.
 
 ## Decision
 

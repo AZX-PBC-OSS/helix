@@ -48,26 +48,14 @@ export interface EdgePoolOpts {
 const SINKS = new WeakMap<Pool, (err: unknown, phase: PoolClientErrorPhase) => void>();
 
 /**
- * The single place edge Postgres pools are built. Every edge pool gets a
- * `statement_timeout` so a slow or stuck query can't hold a pooled connection
- * open indefinitely and, in aggregate, exhaust the pool — a DoS the edge (the
- * exposed, untrusted-traffic plane) must be resilient to (ADR-0002 ISSUE-05 /
- * issue #12). The timeout is enforced by Postgres itself, not a client-side
- * timer, so it survives even if the event loop is starved.
+ * Create edge pools with a server-side statement_timeout to prevent stuck
+ * queries from exhausting connections, even if the Node event loop is blocked
+ * (ADR-0002, issue #12).
  *
- * **Every pool also gets an `'error'` listener, and that is load-bearing.** When
- * an *idle* pooled connection drops — a DB restart or failover, a severed
- * network path, a pooler reaping an idle session — `pg-pool` re-emits the error
- * on the Pool itself. With no listener, Node treats it as an unhandled `'error'`
- * event and **kills the process**. That turns the exact fault the edge is
- * designed to ride out (architecture §7: serve stale from the cached projection)
- * into a hard crash, and takes the sessions, metering and app-data pools down
- * with it.
- *
- * **This listener covers idle clients only.** A client checked out via
- * `pool.connect()` is a second, separate window that `pool.on('error')`
- * structurally cannot see — use {@link withPooledClient}, which is the only
- * sanctioned way to check one out (enforced in `eslint.config.mjs`).
+ * The error listener handles dropped idle clients. Without it, pg-pool emits
+ * an unhandled error and terminates the process instead of allowing recovery.
+ * Checked-out clients need separate handling: use withPooledClient, enforced
+ * by eslint.config.mjs.
  */
 export function createEdgePool(databaseUrl: string, opts: EdgePoolOpts = {}): Pool {
   const statementTimeoutMs = opts.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS;

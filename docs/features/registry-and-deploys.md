@@ -2,12 +2,12 @@
 
 > **Related ADRs:** [ADR-0018](../adr/0018-deploy-model-immutable-versions.md) (immutable versions, preview→live) · [ADR-0017](../adr/0017-registry-listen-notify-projection.md) (LISTEN/NOTIFY projection) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (approval classifier) · [ADR-0026](../adr/0026-hosted-build-isolation-prerequisites.md) (hosted-build isolation).
 
-**What it is.** The control plane (`apps/portal` — helix-portal) owns the registry and the deploy
-pipeline under `/api/v1`. It is the only writer of the Postgres schema (Prisma 7 + pg driver
-adapter); the edge reads a cached projection. All `/api/v1` routes — reads and mutations
-alike — require a bearer token (only `/health` and the auth-config bootstrap stay public);
-see [authentication.md](./authentication.md). Deploys land as **`preview`** versions —
-promotion to live is a separate, explicit step (architecture §5.1).
+The portal (`apps/portal`) owns the registry, schema migrations, and `/api/v1`
+deploy API. It uses Prisma 7 with the pg adapter; the edge reads a cached registry
+projection. App reads and mutations require bearer authentication (see
+[authentication](./authentication.md)). Health and bootstrap configuration are
+public. Uploaded versions start as `preview`; promotion makes them live
+(architecture §5.1).
 
 ## How it works
 
@@ -15,8 +15,8 @@ promotion to live is a separate, explicit step (architecture §5.1).
 
 ```
 POST   /api/v1/apps                  create (slug, displayName, visibility, optional capabilities)
-GET    /api/v1/apps                  list (open)
-GET    /api/v1/apps/:slug            get (open)
+GET    /api/v1/apps                  list (authenticated)
+GET    /api/v1/apps/:slug            get (authenticated)
 POST   /api/v1/apps/:slug/archive    freeze → edge serves 410 + Clear-Site-Data (idempotent)
 POST   /api/v1/apps/:slug/unarchive  restore (idempotent)
 GET/PUT /api/v1/apps/:slug/manifest  capability grants (see capabilities-and-manifests.md)

@@ -8,41 +8,15 @@ import { useAuth } from "../auth/AuthProvider";
 import { Hint } from "./primitives";
 
 /**
- * Pick the directory groups that may open an app (ADR-0040 §5, §8, §9).
- *
- * Three behaviours are load-bearing rather than decorative:
- *
- * 1. **It defaults to the caller's own groups.** Most apps are scoped to a team
- *    the owner is in, so the common case needs no search at all. Those come from
- *    the groups claim on the token the portal already verified — not Graph — so
- *    they answer even where the directory grant is missing (§6).
- *
- * 2. **Selected ids that don't resolve still render.** `MultiSelect` shows a
- *    value verbatim when it isn't in `data`, which is exactly the
- *    "unknown group (<id>)" degradation §7 asks for — so we lean on it
- *    deliberately, and seed `data` with an explicit label for those ids rather
- *    than letting a bare GUID appear as if it were a name.
- *
- * 3. **Three states, not two — and the third is "we don't know".** Search may be
- *    allowed, refused, or unanswered (`/api/v1/me` errored). Unanswered renders
- *    no search box *and no explanation*, because every sentence available for
- *    that state would be a guess about deployment policy.
- *
- * 4. **A caller who may not search is not a caller with a broken directory.**
- *    `PORTAL_DIRECTORY_SEARCH` (ADR-0040 decision 11) can restrict search to
- *    platform admins, or to nobody. That state is kept strictly apart from
- *    `unavailable`: the two id→name resolves are never gated, so a restricted
- *    caller still sees their own groups *by name* and their app's stored groups
- *    *by name* — only discovery goes. Rendering it through the unavailable banner
- *    would tell them the directory is down while it is visibly naming groups for
- *    them, and would push them to the free-text id box they do not need.
- *
- * 5. **It survives an unavailable directory, and stays fully editable.** When the
- *    tenant hasn't granted `GroupMember.Read.All` the search goes away but the
- *    selection and its remove buttons do not, and a banner names the permission
- *    (§8). Removal has to keep working precisely here: this is the state where an
- *    owner cannot re-find a group they just took off. Group visibility keeps
- *    working end to end regardless — enforcement never depended on Graph.
+ * Group picker behavior (ADR-0040):
+ * - Start with the caller's verified token groups; directory lookup supplies names.
+ * - Keep unresolved selected ids visible as "unknown group (<id>)".
+ * - Hide search until policy is known. A failed /me request does not establish
+ *   that search is forbidden or that the directory is unavailable.
+ * - Treat policy-restricted search separately from directory unavailability;
+ *   permitted id-to-name lookups can still work when discovery is disabled.
+ * - When the directory is unavailable, show its reason and allow manual ids
+ *   and removal of existing selections. Access enforcement does not use Graph.
  */
 export function GroupPicker({
   value,

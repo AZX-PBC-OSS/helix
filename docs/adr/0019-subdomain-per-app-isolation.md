@@ -5,7 +5,9 @@
 
 ## Context
 
-The platform hosts many mutually-untrusted apps. They can be addressed by **path** on one shared origin (`apps.<base>/<slug>`) or by **subdomain** (`<slug>.<base>`). Path routing puts every app in a single browser origin, so the same-origin policy gives any app's script read access to every other app's cookies, `localStorage`, and DOM — a cross-app breach by construction.
+Mutually untrusted apps need separate browser origins. Path-based routing puts
+all apps on one origin, allowing scripts to access shared browser storage and
+other same-origin pages. A subdomain per app provides distinct origins.
 
 ## Decision
 

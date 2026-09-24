@@ -5,21 +5,13 @@
 
 ## Context
 
-The public-facing **edge** held the **Azure Storage account key** — a full
-read/write/delete credential for the whole account that holds every app's bundle
-— injected as `AZURE_STORAGE_CONNECTION_STRING` (via a Key Vault secret built
-from `storageAccount.listKeys()`). The edge's runtime use is read-only, but
-*holding* the key meant an edge RCE could PUT/DELETE any `<slug>/<version>/...`
-bundle and serve persistent malicious JS to every visitor of any app — an
-**all-tenant supply-chain compromise**, exactly the event the three-plane split
-(ADR-0001) exists to contain. The portal held the same key for its legitimate
-writes.
+The edge needed only Blob reads but received an account key with read, write,
+and delete access to every app bundle. An edge compromise could therefore
+replace or delete other apps' assets. The portal used the same key for uploads.
 
-The least-privilege path was **already provisioned but unused**: `rbac.bicep`
-grants the edge identity `Storage Blob Data Reader` and the portal identity
-`Blob Data Contributor`, and `identity.bicep` already outputs their client IDs.
-Only the code and the injected credential needed to change. (ADR-0001 recorded
-this as a P0 to be tracked; this ADR is its resolution.)
+The infrastructure already granted Storage Blob Data Reader to the edge identity
+and Blob Data Contributor to the portal identity. This change uses those roles
+instead of the production account key, resolving the issue recorded in ADR-0001.
 
 ## Decision
 

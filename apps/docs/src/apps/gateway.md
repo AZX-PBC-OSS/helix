@@ -17,11 +17,9 @@ model from your manifest's `llm.models` list; the response streams back as
 server-sent events. The platform meters tokens against the app's daily USD
 budget, and the call is rejected once the budget is spent.
 
-Model names are the platform's catalog ids and never change with where the
-platform runs inference — first-party vendors or an Azure AI Foundry account in
-the operator's own subscription (an operator concern; see
-[Azure AI Foundry](/deploy/foundry)). An app moves between such installs
-untouched.
+Use model ids from your deployment's catalogue. The operator chooses whether
+requests go to first-party vendors or Azure AI Foundry; your app uses the same
+ids and request format. See [Azure AI Foundry](/deploy/foundry) for operator setup.
 
 ## Storing data
 
@@ -55,9 +53,9 @@ changes and calls flow through the proxy automatically.
 
 ## Offline
 
-`offline.scope` makes the platform serve a service worker that caches your
-app's assets, so it cold-boots with no network. The worker is platform-authored
-and confined to your app's scope; the app ships no worker code.
+`offline.scope` enables a platform-managed service worker that caches your
+app's assets so it can start without a network connection. The worker is limited
+to the approved scope; your app does not supply worker code.
 
 ## What to build with
 

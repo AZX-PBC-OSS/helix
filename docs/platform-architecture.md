@@ -7,9 +7,13 @@
 
 ## 1. Summary
 
-A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default, and gives those apps superpowers through a centrally governed API/MCP gateway. v1 supports static frontends only; all dynamic capability (LLM calls, storage, integrations) flows through platform APIs. This keeps the attack surface small and makes the gateway — our main value add — the single choke point for identity, authorization, quotas, and audit.
+Helix hosts untrusted, AI-generated static frontends behind SSO by default.
+Apps use platform APIs for language models, storage, and integrations. The
+gateway checks identity and permissions, applies quotas, and records usage.
 
-**The core security stance: every hosted app is untrusted code.** Vibe-coded apps may contain injected or hallucinated logic, leaked prompts, or supply-chain malware. The design assumes this and contains the blast radius per app, rather than trying to verify app code.
+**Every hosted app is untrusted code.** Generated apps may contain faulty logic,
+malicious dependencies, or injected instructions. Helix restricts each app's
+permissions and access to other apps rather than trying to verify its code.
 
 ---
 
@@ -71,23 +75,44 @@ A platform that hosts untrusted, vibe-coded frontend apps behind SSO by default,
                         cached registry projection (§7)
 ```
 
-Three deployable containers plus managed storage:
+Three deployable services use managed Postgres, Blob storage, and Key Vault:
 
-- **`helix-edge` — the data/policy plane.** Terminates all `*.azx.helix.azxlabs.io` traffic: host routing, session auth + the OIDC handoff, CSP injection, asset serving from Blob, and the `/_api/*` gateway (LLM proxy, app data, the fetch-proxy *policy* — identity, authz, quota, audit). Runs with a read-only registry projection, **no app-connection-secret read** (no grant on `app_secrets`), and **no _arbitrary_ outbound route** (only egress can reach the open internet). Boring by design; rarely redeployed. (It is not literally secretless or stateless: it holds its own operational keys — auth/instruction/OIDC — and keeps an in-memory projection ([ADR-0017](adr/0017-registry-listen-notify-projection.md)). Blob reads go out under a read-only managed identity, the over-broad account key ADR-0001 flagged having been removed in [ADR-0027](adr/0027-blob-auth-managed-identity.md), and rate limiting moved to a shared Postgres counter ([ADR-0011](adr/0011-in-memory-rate-limiting.md)).)
-- **`helix-portal` — the control plane.** Privileged: portal UI + API, deploy endpoint, registry writes, capability approvals, secret writes, audit log UI. Not routable from app subdomains. Background work (usage rollups, ACME DNS-01 renewal) runs as scheduled jobs it owns — no standing workers.
-- **`helix-egress` — the mechanism plane.** The one component that makes governed outbound HTTP for the fetch-proxy (§6.1): it resolves connection secrets to plaintext, injects credentials server-side, and enforces SSRF controls. It runs in its **own network egress zone** (the only component with a route to the public internet) and holds the secret-read capability the edge deliberately lacks. It never terminates app-user traffic and never re-authenticates the end user — it trusts a signed attested instruction `(app, user, capability, origin, connection, request-id)` minted by the edge.
+- **Edge (data/policy plane):** handles app routing, sessions, CSP, static assets,
+  and gateway authorization, quotas, and audit. It keeps a registry cache and
+  holds operational auth/signing credentials, but cannot read app connection
+  secrets. Production Blob access uses a read-only managed identity
+  ([ADR-0027](adr/0027-blob-auth-managed-identity.md)). Rate counters are shared
+  through Postgres ([ADR-0011](adr/0011-in-memory-rate-limiting.md)).
+- **Portal (control plane):** manages apps, versions, approvals, secrets, and audit
+  views. It is not routed through app subdomains. Scheduled infrastructure work
+  runs in separate jobs.
+- **Egress (mechanism plane):** verifies signed instructions from the edge,
+  resolves and injects connection credentials, applies SSRF controls, and makes
+  outbound requests. It has its own network zone and accepts no app-user traffic.
 
-**Why three — not two, not four.** The split follows the trust boundary. The data plane faces untrusted app users (eventually anonymous internet traffic); the control plane holds the privileged verbs — grants, secrets, approvals; the mechanism plane holds the two capabilities that are dangerous to co-locate with a public-facing process — *plaintext third-party secrets* and *unrestricted outbound network*. In one process, a bug in the public-facing path exposes control-plane memory and identity, and every portal deploy restarts the data path, killing in-flight LLM streams — the portal iterates constantly while the edge should be boring. The egress split is the one gateway extraction that *isn't* ceremony: a generic gateway service would only buy an internal hop (it shares the edge's request path, session store, and registry cache), but egress genuinely needs a *different* posture — its own network zone so an SSRF bug in the edge reaches nothing, and custody of secrets the edge must never hold. Building egress in-process and extracting later would mean shipping that blast radius first; we draw the boundary from day one instead. (A standalone build service appears only if Git-connect lands, §5.)
+The process split keeps privileged administration and connection credentials out
+of the service facing untrusted apps. It also lets the portal deploy without
+interrupting edge streams. Egress needs a separate network policy, so it runs
+separately from the start ([ADR-0001](adr/0001-three-runtime-split.md)).
 
-**The same boundary is enforced again in Postgres.** The three-plane split would be theatre if a compromise of one process could simply reach into shared data, so each plane connects as a distinct least-privilege role and the database refuses what the trust model forbids ([ADR-0002](adr/0002-postgres-role-split-rls.md)). In production each runtime requires its own role DSN — the portal `PORTAL_DATABASE_URL` (`helix_portal`), the edge `EDGE_DATABASE_URL` (`helix_edge`) — and boot-fails rather than fall back to the owner DSN (which would bypass RLS and defeat the split); outside production the owner fallback stays a dev convenience. Migrations run separately as the `helix` owner:
+Postgres enforces separate permissions ([ADR-0002](adr/0002-postgres-role-split-rls.md)):
 
-- `helix_portal` — full DML runtime role for every privileged verb; **not** the schema owner (migrations run as `helix`), so a portal RCE holds DML but cannot `DROP TABLE` or bypass RLS as owner.
-- `helix_edge` — **explicit per-table grants only, no blanket grant**: read the registry projection, append metering, INSERT-only on collections, RLS-partitioned app-data. It has **no grant on `app_secrets` at all**, so an edge RCE cannot read a single connection secret, and no registry-write, so it cannot grant itself a capability.
-- `helix_egress` — `SELECT` on secrets + `UPDATE` on one `lastUsedAt` column; nothing else.
+| Role | Access |
+| --- | --- |
+| `helix_portal` | Control-plane DML; not the schema owner. Migrations run as `helix`. |
+| `helix_edge` | Explicit grants for registry reads, metering/collection inserts, and RLS-scoped app data. No connection-secret reads or registry writes. |
+| `helix_egress` | Secret reads and updates to `lastUsedAt`, under its restricted grants. |
 
-So the runtime split (process + network zone) and the role split (database authority) say the same thing in two enforcement layers — a defence-in-depth that survives an in-process compromise. Asserted in `role-split.integration.test.ts`.
+Production requires role-specific database URLs. The portal and edge refuse to
+fall back to the owner URL; local development permits that fallback. The
+`role-split.integration.test.ts` suite checks the database boundaries.
 
-**v0 consolidation option:** the edge and portal modules may still ship as a single binary/container if it accelerates the pilot — with two routers strictly keyed by hostname, and control-plane handlers never mounted on app-subdomain hosts. Built with that discipline, the later edge/portal process split is a deploy-config change; built without it, it's a rewrite. Split at the latest before the first public app ships. ([ADR-0012](adr/0012-edge-portal-codeploy.md): the Azure deploy now provisions edge, portal and egress as three separate container apps, so the split is delivered in the deployed topology while co-deploy remains possible in code — the proposed CI gate to refuse co-deploy in production was considered and declined; the split's enforcement point is deployment review.) **`helix-egress` is the exception: it ships as its own container from the start** — its network-zone and secret-custody isolation is the entire point, and folding it into either module would forfeit it.
+**v0 consolidation option:** edge and portal can share a process if their routers
+remain strictly separated by hostname. Control-plane handlers must never be
+mounted on app hosts. Separate the processes before hosting public apps. Azure
+already deploys them separately; deployment review enforces that separation
+([ADR-0012](adr/0012-edge-portal-codeploy.md)). Egress must always run separately
+to preserve its network and credential isolation.
 
 All three containers run on Azure Container Apps for v1 (AKS if/when needed), keeping the stack portable. Egress sits in its own egress-permitted network zone; the edge and portal run with no outbound internet route.
 
@@ -97,62 +122,103 @@ All three containers run on Azure Container Apps for v1 (AKS if/when needed), ke
 
 ### 4.1 Routing and TLS
 
-- Apps live on a **dedicated domain** (`azx.helix.azxlabs.io`), not the corporate domain. Three reasons: (a) *reputation* — vibe-coded apps never carry the weight of the main brand, and an embarrassing or compromised app doesn't taint `azx.io`; (b) *security* — complete cookie/session isolation from corporate properties: nothing an app does on `azx.helix.azxlabs.io` can touch `azx.io` cookies, and corporate CSP/HSTS policy stays independent; (c) *phishing hygiene* — users learn a clean rule: real company sites are on `azx.io`, hosted apps are on `azx.helix.azxlabs.io`, and credentials are only ever typed on the Entra domain.
-- Wildcard DNS `*.azx.helix.azxlabs.io` → edge proxy; wildcard cert via ACME (DNS-01) or Azure-managed cert.
-- Each app gets its own subdomain. **Subdomains are the isolation boundary**: separate browser origin per app means no shared DOM, storage, or cookies between apps. This is the single most important security decision in the design.
+- Serve apps on a dedicated domain, such as `azx.helix.azxlabs.io`, separate from
+  corporate sites. This separates branding, cookies, and browser policies.
+  Entra credentials are entered only on the identity provider's domain;
+  shared app passwords use the platform's distinct login form.
+- Wildcard DNS routes `*.<base>` to the edge. A wildcard certificate covers app
+  hosts; the deployed setup uses ACME DNS-01 renewal.
+- Give each app its own subdomain and browser origin to separate DOM, storage,
+  and host-only session cookies.
 
 ### 4.2 Authentication
 
-The edge proxy terminates auth so apps never implement it:
+The edge authenticates visitors. Apps do not implement login.
 
-- **Internal (default):** OIDC against Entra ID. **Any** authenticated directory principal passes — the gate checks that a user signed in, never *which* one, and under Entra a B2B guest is a directory principal too, so `internal` admits guests. `group` below is the mode that narrows to a population. (This mode was called `private` until the rename; the name overpromised, and is being kept free for a genuine owner-plus-admins mode — see TODO.md.) Unauthenticated users are redirected to login; the proxy sets a session cookie **host-scoped to that app's subdomain only** (never a parent-domain cookie — a parent-domain cookie would let any hosted app steal sessions for all others).
+| Visibility | Access |
+| --- | --- |
+| `internal` (default) | Any authenticated directory principal, including Entra B2B guests. |
+| `group` | An authenticated principal whose group snapshot matches the app's configured groups. |
+| `password` | A shared app password; creates a pseudonymous session, not a verified directory identity. |
+| `public` | No login; requires an owner request and platform-admin approval because gateway access remains available. |
 
-  Host-only cookies are necessary but not sufficient, because sibling subdomains are *same-site* in browsers. Three additional controls are required:
-  - **`__Host-` cookie prefix** on the session cookie — blocks cookie-tossing/session-fixation, where a malicious app sets a `Domain=.azx.helix.azxlabs.io` cookie that shadows the session cookie on every other app.
-  - **Origin-header validation at the gateway** plus `form-action 'self'` in CSP — `SameSite` does not protect one app's `/_api/*` from cross-subdomain form POSTs riding the user's session on another app, and `form-action` does not fall back to `default-src`, so it must be set explicitly.
-  - **Submit `azx.helix.azxlabs.io` to the Public Suffix List** once stable, making app subdomains cross-site to each other for cookie purposes. (Consequence: nothing can set domain-wide cookies under `azx.helix.azxlabs.io` — which is the point. Platform services like `auth.` and `portal.` use host-only cookies and are unaffected.)
+The name `private` is reserved for future owner-plus-admin access; see TODO.md.
 
-  **OIDC mechanics:** Entra ID does not allow wildcard redirect URIs, so per-app callbacks don't work. Use a central callback at `auth.azx.helix.azxlabs.io`, then a one-time signed handoff (short-lived, single-use, audience-bound to the target app) to mint the host-scoped cookie on the app subdomain. The return-URL parameter must be validated against the app registry (open-redirect risk). This handoff is the most security-sensitive code in the platform; it gets a dedicated design review. **Appendix A walks through the full flow.**
+For OIDC, use one callback on `auth.<base>` because Entra requires exact registered
+redirect URLs. After login, a short-lived, signed, single-use, audience-bound
+handoff token transfers the result to the app host. Validate app and return-path
+parameters to prevent open redirects. Appendix A describes the flow and required
+adversarial tests.
 
-  Sessions are short (hours, not weeks) with silent re-auth against Entra on refresh; group membership is re-checked at refresh, so a user removed from a group or disabled in Entra loses access within the session TTL. Per-user session revocation is available in the control plane (the portal Sessions screen — a delete of the user's session rows that bites on the next request, closing the stale-snapshot window on demand).
-- **Group-restricted:** same, plus an Entra group check (e.g. only `eng-team` can open the app).
-- **Password-protected:** shared password gate at the proxy (for external demos). Gateway calls from these sessions carry a pseudonymous per-session identity, not a verified user — same tier as public apps (§6.4). Note: this is the one mode where users type a credential on an app subdomain rather than the Entra domain; the password form is platform-rendered with distinct branding to keep it visually separate from real login.
-- **Public:** no gate. Requires an explicit owner action plus a platform-admin approval flag, since public apps can still call platform APIs (see §6.4).
+Sessions use host-only `__Host-` cookies. Sibling subdomains are still same-site,
+so additional controls are required:
 
-Apps learn who's logged in via a `/_api/me` endpoint (static apps can't read auth headers); the gateway attributes every API call to the session's verified user.
+- The `__Host-` prefix rejects parent-domain cookies that could shadow a session.
+- Gateway Origin checks prevent cross-app requests from using another app's
+  session. CSP must explicitly set `form-action 'self'`; it does not inherit
+  `default-src`.
+- Submit the stable apps domain to the Public Suffix List so sibling apps become
+  cross-site for cookie purposes. This also prevents domain-wide cookies;
+  platform services already use host-only cookies.
 
-Candidate implementation: Envoy or Caddy + an oauth2-proxy-style sidecar, or a thin custom Go service. Avoid Azure Front Door/App Gateway for auth logic — it works, but it's the part other customers can't take to their own cloud.
+Silent OIDC refresh checks current group membership and account status. Removal
+therefore takes effect within the session lifetime. Admin session revocation
+deletes a user's sessions and takes effect on the next request. Password forms
+are platform-rendered and visually distinct from Entra sign-in.
+
+Apps can call `/_api/me` for the current user's display information. The gateway
+attributes requests to the resolved caller. The implementation is the TypeScript
+edge service; see [authentication](features/authentication.md).
 
 ### 4.3 Serving
 
-Static assets live in Azure Blob Storage, addressed as `apps/<app-id>/<version>/...`. The proxy serves them only after the auth check — no public blob endpoints, no CDN in front of gated apps in v1 (tens of apps doesn't need one). Deploys are immutable versions; "deploy" = flip a pointer in the app registry; rollback = flip it back.
+Static assets live in private Blob storage at `apps/<app-id>/<version>/...`.
+The edge applies the app's access gate before serving them. v1 does not place a
+CDN in front of gated apps. Upload creates an immutable version; promotion changes
+the registry's live-version pointer, and rollback selects an earlier version.
 
 ### 4.4 Browser-side containment (CSP)
 
-The proxy injects a Content-Security-Policy on every app response. The design principle: **classic CSP defends a trusted app against injected script; our threat model is inverted — the app itself is untrusted.** That splits the directives into two groups with opposite postures.
+The proxy applies Content-Security-Policy to every app response. Because the app
+itself is untrusted, the policy focuses on restricting data destinations while
+allowing the script patterns common in generated apps.
 
-**Strict — data-flow directives.** These control where data can go and what the app can touch; they are the containment and they don't bend:
+**Strict — data-flow directives.** Restrict connections, form submissions, and framing:
 
 - `connect-src 'self'` — apps cannot call arbitrary third-party APIs from the browser. The gateway is same-origin at `/_api/*`, so platform capabilities need no exception. Additional origins are a declared, owner-requested, auditable capability.
 - `form-action 'self'` (see §4.2 — required for cross-app CSRF protection)
 - `frame-ancestors 'none'` (no embedding apps in other apps)
 
-**Relaxed — code-provenance directives.** Blocking inline scripts in an app whose external scripts we also don't trust buys nothing: either way it's vibe-coded code we assume may be hostile. So the platform allows by default what vibe-coded apps actually produce:
+**Relaxed — code-provenance directives.** Allow inline scripts and common build
+patterns for compatibility. This policy does not try to establish trust in app code:
 
 - Inline scripts, inline styles, event-handler attributes, and `eval` are permitted. A single-file Claude-generated HTML app deploys and runs untouched.
-- A **platform-curated CDN allowlist** (cdnjs, jsdelivr, unpkg, esm.sh, Google Fonts, Tailwind CDN, …) is in script/style/font sources by default. Yes, some of these serve arbitrary packages — but "untrusted code runs in the app's origin" is already the baseline assumption; the boundary is data flow, not code provenance.
-- `img-src https: data: blob:` — open. Honest trade-off: image URLs are an exfiltration channel, but CSP cannot stop navigation-based exfil (`location.href=...`) anyway, so hermetic sealing was never on the table. The goal is funneling routine data flow through the gateway, not perfection.
-- `wasm-unsafe-eval` and `worker-src 'self' blob:` available without ceremony — not a real boundary under this threat model. (`blob:` covers dedicated/shared workers only; a service worker can never be registered from a `blob:` URL, so this relaxation is independent of the rule below.) **App-supplied service workers are the one exception:** the edge refuses any request carrying the `Service-Worker` registration header, so apps cannot install one. A root-scoped service worker is a persistent same-origin network proxy — it would observe the handoff token on `/_auth/complete` (A.3) and could convert a user's in-browser visit into a headless server-side session. Plain web workers are unaffected.
+- A curated CDN allowlist includes cdnjs, jsdelivr, unpkg, esm.sh, Google Fonts,
+  and Tailwind CDN. These can serve third-party code; the policy does not establish
+  trust in that code.
 
-  Offline support returns as a narrow, approval-gated capability rather than a relaxation of that rule — [ADR-0035](adr/0035-offline-capability-platform-service-worker.md). An app declaring `capabilities.offline` gets a **platform-authored** worker served from a reserved `/_helix/` route and confined to a validated non-root scope prefix (never `/`, never a `_` namespace), so the worker provably cannot reach `/_auth/*` or `/_api/*`. The app ships no worker code, the edge injects the registration, and revocation serves a self-unregistering tombstone. What the grant buys is **cold boot** — the document and its assets answer with no network — and nothing else; durable state and large-asset caching were always ungranted page JS.
+- `img-src https: data: blob:` allows remote images. Image requests and
+  navigation can transmit data, so CSP does not prevent all exfiltration.
+- `wasm-unsafe-eval` and `worker-src 'self' blob:` allow WebAssembly and ordinary
+  workers. Service workers cannot register from blob URLs. The edge rejects
+  app-supplied service-worker registration requests because a root-scoped worker
+  could intercept the handoff URL at `/_auth/complete` (Appendix A.3).
 
-**The feedback loop is the real UX.** App authors are assumed to know nothing about CSP, and the deploy skill won't always be in the loop. So:
+  The offline capability ([ADR-0035](adr/0035-offline-capability-platform-service-worker.md))
+  provides a platform-authored worker limited to an approved non-root scope.
+  Root and `_` namespaces are forbidden, keeping `/_auth/*` and `/_api/*` outside
+  its scope. The edge injects registration and serves a self-unregistering
+  tombstone after revocation. The capability supports offline startup; ordinary
+  page JavaScript remains responsible for its own durable state and asset caching.
+
+**CSP feedback.** Help app authors identify blocked requests and request access:
 
 - `report-to` points violation reports at the platform. The portal turns them into plain-English, actionable messages: "Your app tried to call `api.weather.com` and was blocked — request this origin?" One click files the capability request. Silent breakage becomes a guided fix.
 - Deploy-time linting still runs, but as a courtesy warning ("your app references `api.example.com`; it will be blocked until granted"), not a gate.
 - The gateway's fetch-proxy (§6.1) gives blocked third-party calls an on-platform answer — route through `/_api/fetch` and get auditing, metering, and server-side secrets instead of a CSP exception.
 
-Residual honesty, unchanged: CSP raises the bar against exfiltration but does not prevent it — navigation exfil, open img-src, and granted channels (LLM prompts, approved origins) remain — see §10.
+CSP does not prevent all data exfiltration. Navigation, HTTPS images, LLM prompts,
+and approved external origins remain possible channels; see §10.
 
 ---
 
@@ -160,7 +226,10 @@ Residual honesty, unchanged: CSP raises the bar against exfiltration but does no
 
 v1 has exactly one path into the platform: **upload of a pre-built bundle** (zip of `dist/`) via CLI or portal. The deploy endpoint (part of the control plane) validates the artifact (static files only, size/type sanity checks), runs the CSP courtesy lint (§4.4), stores it as an immutable version in Blob, and updates the registry pointer.
 
-**Git-connected builds are deliberately out of scope for v1.** Running builds means operating a CI system and sandboxing arbitrary code execution (`npm install` runs whatever the lockfile says) — ephemeral builders, credential isolation, egress controls. That's a lot of yak to shave, and none of it blocks the core platform. The long-term direction is still to push app authors toward Git as the source of truth; when Git-connect lands (target: v2), the builder design is already sketched:
+**Git-connected builds are out of scope for v1.** Running `npm install` and build
+scripts means executing untrusted code. Hosted builds need ephemeral workers,
+credential isolation, and outbound network controls. Authors can build locally
+or in their own CI and upload the output. A future hosted-build service would use:
 
 - Ephemeral container per build, destroyed after; no platform credentials inside — artifacts leave via a one-way, scoped upload token
 - Egress allowlisted to package registries, acknowledging it's leaky (git deps, tarball URLs, postinstall scripts) — the credential-free environment is the real defense
@@ -172,14 +241,19 @@ Until then, a thin CLI (`helix deploy`) keeps the workflow one command, and team
 
 Most app authors work inside coding agents (Claude Code, Cursor, etc.), so the deploy path should meet the agent where it is. On app creation, the portal offers a downloadable **deploy skill** — an agent-agnostic bundle of prompts + scripts that teaches any agent the deploy API: push a bundle, check status, list versions, roll back.
 
-**The skill contains no credentials.** A deploy token is effectively code execution in front of every user of the app, with all of the app's granted capabilities — and a skill is a file that gets committed to repos, shared between people, and held in agent context windows and transcript logs. Embedding a long-lived bearer token in exactly that artifact is the classic leak shape, and it would contradict the platform's credential posture everywhere else (short sessions, single-use handoffs). Instead:
+**The skill contains no credentials.** It may be committed, shared, or retained
+in agent transcripts. A deploy credential would let its holder publish code with
+the app's permissions, so authentication must happen separately:
 
 - First deploy triggers an **Entra device-code flow**; the script caches a short-lived, per-user × per-app, deploy-scoped token in the OS keychain — outside the repo, outside agent context. Subsequent deploys refresh silently.
 - Attribution and revocation come free: every deploy is audited as (user, app), and a departing user's deploy access dies with their Entra account.
 - Deploy tokens are deploy-plane only — they can never call gateway APIs or read app data.
 - If headless use cases later demand static tokens (expect this argument), they must be deploy-only, expiring, shown once, and prefixed (`azxd_...`) so secret scanners catch them, with anomaly alerts on use from new IPs. Default stance: don't.
 
-**Preview-then-promote guardrail.** An agent holding deploy authority means anything that hijacks the agent — prompt injection from a README, a poisoned dependency doc — can ship code to users with no human in the loop. So agent deploys land on a **preview version** by default (cheap: deploys are already immutable versions behind a pointer), and promoting to live takes a human action in the portal. Agents iterate at full speed; production gets one click of supervision. Per-app configurable, so a trusted solo tool can opt out.
+**Preview-then-promote guardrail.** Agent instructions can be influenced by
+untrusted repositories and dependency docs. Deploys therefore create previews
+by default, with a separate human promotion step before users receive the new
+version. A trusted solo workflow can opt out.
 
 ---
 
@@ -203,7 +277,8 @@ Every gateway request carries two identities:
 - **User:** from the edge session (who is clicking) — a verified Entra identity for internal/group apps; a pseudonymous session identity for password/public apps
 - **App:** from the app's registered ID bound to its subdomain (which code is calling)
 
-Authorization is evaluated against the pair: *app X, on behalf of user Y, wants capability Z*. This is what makes per-app blast-radius containment real — a malicious app can only abuse the capabilities it was granted, attributed to the users who actually used it.
+Authorization checks the app, user, and requested capability together. An app
+can use only its granted capabilities, and each call is attributed to its caller.
 
 ### 6.3 Capabilities model
 
@@ -221,11 +296,20 @@ capabilities:
 ```
 (Illustrative; the authoritative zod schema is `packages/shared/src/manifest.ts`.)
 
-Grants above a baseline require platform-admin approval, and this **is enforced** (it is not a courtesy): a `classifyChange` classifier (`packages/shared/src/approval.ts`) splits a requested manifest change into **baseline deltas** — committed immediately — and **elevated deltas** (a non-curated LLM model, a budget above threshold, any MCP server, a new proxied origin, going `public`), which are bundled into a pending `ApprovalRequest` and applied only when a platform admin approves. The `apps` row holds only the *effective* state, so the edge never sees a pending change. Everything is logged: every gateway call gets an audit record of (app, user, capability, outcome, cost) in the append-only `gateway_calls` ledger. Design: `docs/design/approvals.md`.
+Grants above the baseline require platform-admin approval.
+`classifyChange` in `packages/shared/src/approval.ts` separates baseline changes
+from elevated requests, such as non-curated models, larger budgets, new proxied
+origins, MCP servers, or public visibility. Baseline changes apply immediately;
+elevated changes enter an `ApprovalRequest`. Only approved settings reach the
+`apps` row and the edge. The append-only `gateway_calls` ledger records app,
+user, capability, outcome, and cost. See `docs/design/approvals.md`.
 
 ### 6.4 Public apps
 
-Public apps still get gateway access but with an anonymous user identity, much tighter default quotas, and mandatory abuse controls (per-IP rate limits, no user-scoped storage). Anonymous means **fully stateless** — no cookie-based pseudonymous IDs, no notion of a public-app "user" — until concrete use cases demand otherwise. Making an app public is the highest-risk action in the system; the approval flag exists for this reason.
+Public apps can use granted gateway capabilities with tighter default quotas
+and per-IP abuse limits. They have no user-scoped storage or pseudonymous cookie
+identity. This stateless anonymous model remains the default until a concrete
+use case requires otherwise. Public visibility requires admin approval.
 
 ---
 
@@ -244,7 +328,7 @@ The registry is the source of truth (Postgres). The edge proxy and gateway read 
 
 ## 8. Azure mapping (v1)
 
-- **Compute:** Azure Container Apps — two apps (`helix-edge`, `helix-portal`) plus scheduled ACA jobs; builders only if Git-connect lands
+- **Compute:** Azure Container Apps: edge, portal, and egress, plus scheduled jobs and an optional dev-gateway. Hosted builders remain deferred.
 - **Assets/files:** Blob Storage
 - **Registry + app data:** Azure Database for PostgreSQL (flexible server)
 - **Secrets:** Key Vault (platform vendor keys, app connection secrets)
@@ -264,7 +348,7 @@ Portability rule: **Azure services may appear only behind internal interfaces** 
 | 2 | Subdomain per app, host-only cookies | Path-based routing (`azx.helix.azxlabs.io/<app>`) | Path routing puts all apps in one origin — any XSS or malicious app reads every other app's storage and session. Non-negotiable. |
 | 3 | Auth at the edge proxy | Per-app auth SDKs | Apps are vibe-coded; assume auth code in them is wrong. Centralizing makes SSO-by-default actually default. |
 | 4 | Same-origin `/_api/*` gateway path | Separate `api.azx.helix.azxlabs.io` origin | No CORS, no token-in-JS handoff; session cookie just works. Slightly more proxy complexity. |
-| 5 | CSP strict on data flow (`connect-src`), relaxed on code provenance (inline/eval/CDNs) | Uniformly strict CSP | The app is untrusted either way, so blocking inline script buys nothing; blocking it breaks every single-file vibe-coded app. Containment lives at the data-flow boundary, where violations become a click-to-request flow instead of silent breakage. |
+| 5 | CSP strict on data flow (`connect-src`), relaxed on code provenance (inline/eval/CDNs) | Uniformly strict CSP | Allowing inline scripts supports single-file generated apps; the policy does not establish trust in app code. Containment lives at the data-flow boundary, where violations become a click-to-request flow instead of silent breakage. |
 | 6 | Self-hosted proxy/auth, not Front Door | Azure-native edge | Other customers must run this on their clouds; the edge is core IP, not infra to outsource. |
 | 7 | Postgres-backed KV for app data | Cosmos DB | Portability and operational familiarity; Cosmos is Azure-only and overkill at this scale. |
 | 8 | One org, but app-id partitioning everywhere | Multi-tenant now | Every row/blob/audit record keyed by app ID from day one; adding an org ID above it later is additive, not a migration. |
@@ -288,7 +372,9 @@ Portability rule: **Azure services may appear only behind internal interfaces** 
 | Phishing within SSO (app mimics login) | Entra login only ever happens on the Entra domain (password-gate forms are platform-rendered with distinct branding — §4.2); dedicated apps domain gives users a clean rule — credentials never get typed on `azx.helix.azxlabs.io`; consider a platform-standard header bar on hosted apps |
 | Platform compromise (gateway holds vendor keys) | Keys in Key Vault, managed identities, least-privilege between components (the Postgres role split, §3, is the in-DB layer of this); `gateway_calls` is append-only by DB grant for every runtime role (ADR-0021), so neither the edge's nor the portal's DB credentials can rewrite history — external sealing to a write-only sink was considered and descoped (unratified demand; ADR-0021, 2026-09-17) |
 
-Residual risk to name explicitly: a granted capability can still be misused *within its scope* (an app granted the `azure-billing` MCP can misrepresent billing data to its users). Governance reduces blast radius; it does not make app code trustworthy.
+A granted capability can still be misused within its permissions. For example,
+an app with billing access can misrepresent the results to its users. Capability
+controls limit access; they cannot guarantee correct app behavior.
 
 ---
 
@@ -335,16 +421,20 @@ Entra requires every redirect URI to be registered exactly; no wildcards. Per-ap
 
 ### A.3 The handoff token
 
-A bearer credential meaning "this user, authenticated, destined for appA" that travels through the browser in a URL — so it can leak via history, logs, or referrers. Each property kills a specific attack:
+A bearer credential meaning "this user, authenticated, destined for appA" that travels through the browser in a URL — so it can leak via history, logs, or referrers. The token has four protections:
 
 - **~30-second TTL** — limits the leak window
-- **Single-use** (the proxy records and rejects replays) — kills replay
+- **Single-use** (the proxy records and rejects replays) — rejects replay
 - **Audience-bound to the target app** — a token captured by a malicious app is worthless on any other subdomain
 - **Signed by the auth service** — nobody else can mint one
 
 Audience binding does not protect the token from *the target app itself*: a service worker registered by the app would see the `/_auth/complete` request URL — token included — before the edge does, and could exfiltrate it for a headless redemption. That is why app-supplied service-worker registration is blocked at the edge (§4.4); the residual risk of URL transport is then bounded by the TTL + single-use properties above.
 
-The offline capability ([ADR-0035](adr/0035-offline-capability-platform-service-worker.md)) does not touch this flow. Its worker is platform code confined to a non-root scope prefix, and `/_auth/*` is root-level — so the scope cannot contain it and the worker never sees a handoff navigation. Binding the token to an `HttpOnly __Host-` nonce cookie was considered as an alternative and rejected: a worker is same-origin, so `fetch('/_auth/complete?token=…', {credentials:'include'})` has the cookie attached by the browser without the worker ever reading it. Confining scope is the containment; the cookie would have been theatre.
+The offline capability ([ADR-0035](adr/0035-offline-capability-platform-service-worker.md))
+uses a platform worker confined to a non-root scope, so it cannot intercept
+`/_auth/*`. An HttpOnly nonce cookie would not provide that protection: a
+same-origin worker could redeem the token with `credentials: 'include'` without
+reading the cookie. Scope restriction prevents the interception.
 
 This is the most security-sensitive code path in the platform: every guarantee depends on a small amount of code getting state validation, token burning, and audience checks exactly right. It gets a dedicated design review and adversarial tests.
 
@@ -358,6 +448,13 @@ Authentication establishes *who you are* once; *whether you may see this app* is
 
 ### A.6 What the app sees
 
-Nothing of the above. Apps are static files and ship zero auth code. An app that wants to display the current user calls `/_api/me`. This is deliberate twice over: vibe-coded auth is the failure mode the design exists to avoid, and IdP swap (Okta, Google) for future customers requires no change to any hosted app.
+Apps implement no authentication code. They can call `/_api/me` to display the
+current user. Changing the platform's identity provider requires no app changes.
 
-The response is `{user: {id, displayName, email}}`. `id` is the principal id — Entra's `oid` claim since ADR-0048, the directory object id, stable for the life of the user object and identical across every app registration in the tenant — the only value safe to key app data on, and exactly what the user scope partitions on. `email` is the captured address claim, **nullable** (a shared-password `Guest` has no directory profile, and not every issuer sends an addressable claim) and never a delivery target or a join key. It is here because an app that wanted to ship an address off-platform must already name the destination in its CSP or its fetch-proxy connections, so withholding it bought a boundary that is enforced elsewhere. The group snapshot is **not** here, and that absence is the live decision: an app holding group ids can re-derive the visibility check the edge already performed, which is exactly the vibe-coded auth this appendix exists to prevent.
+The response is `{user: {id, displayName, email}}`. `id` is the canonical principal
+id: Entra's `oid` by default, stable across app registrations in the tenant
+(ADR-0048). Use it to key user data. `email` is nullable because password guests
+and some issuer profiles have no address claim. It is a display field, not a
+join key or delivery target. Sending it outside the app still requires a permitted
+CSP destination or fetch connection. Group ids are omitted; access checks belong
+to the edge, not to app code.

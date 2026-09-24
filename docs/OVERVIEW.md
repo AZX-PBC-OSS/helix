@@ -1,34 +1,23 @@
 # AZX Helix — System Overview
 
-**What it is, what it solves, and how it's built.** A single-file orientation for anyone — product,
-security, or engineering — meeting the platform for the first time. Deeper detail lives in
-[`docs/platform-architecture.md`](platform-architecture.md), the per-decision records in
-[`docs/adr/`](adr/), and the per-feature docs in [`docs/features/`](features/).
+Helix hosts AI-generated web apps with platform-managed access control,
+credentials, storage, and usage limits. This overview introduces the product
+and its security model. See the [project plan](platform-project-plan.md) for
+status and [feature docs](features/) for implementation details.
 
-> **Status (2026-08):** **deployed and running on Azure** — the three planes on Container Apps,
-> real Entra OIDC, wildcard TLS, and Key Vault custody verified against a live vault (M5).
-> Outstanding: a real pilot app end to end. Where a capability isn't fully delivered yet, this
-> doc says so — but the authority on exact done/partial/deferred status is
-> [`platform-project-plan.md`](platform-project-plan.md), and on how a shipped feature works
-> today, [`features/`](features/). This doc is orientation, not a status tracker.
-
----
+Helix runs on Azure Container Apps with Entra OIDC, wildcard TLS, and Key Vault.
+It also runs locally for development.
 
 ## 1. The problem
 
-A non-engineer builds a working prototype with AI tools (Lovable, Cursor, Claude, v0). Today, getting
-it in front of a client or stakeholder means pulling in DevOps: hosting, a URL, sign-in, API keys,
-rate limits, audit. So the prototype dies on a laptop — or it ships with an API key pasted into the
-bundle and no access control at all.
+AI tools make it easier to build a frontend, but sharing it still requires
+hosting, sign-in, API credentials, usage limits, and audit. Helix supplies those
+services: an owner uploads a static bundle and configures its access and API
+permissions through the portal.
 
-**Helix is secure hosting for vibe-coded AI apps.** A business user uploads a static frontend and gets
-a governed, signed-in URL in minutes — with platform-managed credentials, per-app policy, metering,
-and audit — without touching infrastructure. A platform administrator gets the control surface
-(vault, policy, audit, identity) that makes that safe to allow.
-
-The whole design rests on **one stance: every hosted app is untrusted code.** Helix does not try to
-verify what an app does; it **contains the blast radius of each app** so that a hostile or buggy app
-can harm only itself.
+Every hosted app is treated as untrusted code. Helix restricts each app's access
+to data, credentials, other apps, and external services. It does not verify that
+the app behaves correctly.
 
 ---
 
@@ -40,25 +29,17 @@ can harm only itself.
 | **Platform administrator** (IT / security) | One vault for every key and third-party token; let an app spend an organisation's *own* licensed API contract without ever holding it; restrict which models and capabilities each app can use; an audit log of every AI call; manage builders via Entra groups; spend alerts; warehouse export. |
 | **End user** (uses a hosted app) | A working experience behind sign-in, with a useful fallback when the AI is down. |
 
-The first two personas are the reason the platform is shaped the way it is: the business user's
-needs are all *self-serve*, and the administrator's are all *centrally enforced*. Everything in §3
-and §4 follows from serving both at once — which is why the app is static and the **gateway** is
-where the power and the policy meet.
-
-**Where each of those stands today** is the project plan's job, not this doc's — see
-[`platform-project-plan.md`](platform-project-plan.md) §5 for the per-milestone status and
-[`../TODO.md`](../TODO.md) for the open follow-ups. In one line: the mechanisms for the
-administrator's list exist and run in production; the depth (per-team policy, cryptographic
-tamper-evidence, spend alerting, warehouse export) is where the gaps are, and §6 names them.
+Owners manage their apps through self-service workflows; administrators set and
+enforce platform policy. See [project plan §5](platform-project-plan.md) and
+[TODO.md](../TODO.md) for remaining work on these workflows.
 
 ---
 
 ## 3. Architecture at a glance
 
-Helix is **three deployable containers plus managed storage**, split along the trust boundary. The
-split is the security model made physical: the data plane faces untrusted users, the control plane
-holds the privileged verbs, and the mechanism plane holds the two things most dangerous to co-locate
-with a public-facing process — *plaintext third-party secrets* and *a route to the open internet*.
+Three services separate app traffic, administration, and outbound requests.
+The edge handles untrusted traffic; the portal manages privileged changes;
+egress holds connection credentials and makes third-party API calls.
 
 ```
  app users ── HTTPS ─▶ *.azx.helix.azxlabs.io
@@ -92,21 +73,17 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
                        └──────────────────────────────────────────────┘
 ```
 
-- **`helix-edge` — data/policy plane.** Stateless; terminates all untrusted app-user traffic. Host
-  routing, session auth, CSP, static serving from Blob, and the `/_api/*` gateway *policy* (identity,
-  authorization, quota, audit). Runs as a least-privilege Postgres role with **no app-connection-secret
-  read** (no grant on `app_secrets`) and **no arbitrary outbound** — it can only ask egress to make
-  calls it has already authorized. (It is not secretless: it holds its own operational keys — auth,
-  instruction, OIDC — but the over-broad Blob account key ADR-0001 flagged as a P0 is gone: Blob reads
-  go out under a **managed identity** in production, with the hand-signed key path confined to
-  dev/Azurite. See [ADR-0001](adr/0001-three-runtime-split.md), [ADR-0027](adr/0027-blob-auth-managed-identity.md).)
-- **`helix-portal` — control plane.** Privileged: portal UI/API, deploys, registry writes, capability
-  approvals, secret writes. Owns the Postgres schema and migrations. Not routable from app subdomains.
-- **`helix-egress` — mechanism plane.** The only component holding plaintext connection secrets or a
-  route to the public internet. Internal-only: it verifies the edge's signed instruction, resolves +
-  injects the secret server-side, enforces SSRF controls, and streams the call back.
-- **Storage:** Postgres (registry, app-data, sessions, audit), Blob (immutable versioned app bundles),
-  Key Vault (secrets, prod).
+- **Edge:** routing, authentication, static serving, CSP, and gateway policy.
+  Its database role cannot read app connection secrets. It holds operational
+  auth/signing credentials and uses a read-only Blob managed identity in production
+  ([ADR-0001](adr/0001-three-runtime-split.md),
+  [ADR-0027](adr/0027-blob-auth-managed-identity.md)).
+- **Portal:** UI/API, deploys, registry updates, approvals, and secret writes.
+  Owns schema migrations and is not routed through app subdomains.
+- **Egress:** verifies signed edge instructions, injects credentials, applies
+  SSRF controls, and streams outbound responses. It is internal-only.
+- **Storage:** Postgres for registry, app data, sessions, and audit; Blob for
+  immutable bundles; Key Vault for production credentials.
 
 ### The request lifecycle
 
@@ -132,37 +109,30 @@ with a public-facing process — *plaintext third-party secrets* and *a route to
 
 ## 4. The security model, in five mechanisms
 
-1. **Per-app origin isolation.** Every app on its own subdomain with `__Host-` cookies → the browser's
-   same-origin policy is the isolation primitive; one app cannot touch another's session, storage, or
-   DOM. *(ADR-0019)*
-2. **The gateway is the only dynamic surface.** Apps are static (ADR-0020); all dynamic power (LLM,
-   storage, third-party HTTP) flows through the same-origin `/_api/*` choke point, where identity,
-   authorization, quota, and audit are enforced once. *(ADR-0014)*
-3. **Secrets never reach the app — or the edge.** The control plane writes secrets; only the isolated
-   egress plane resolves them to plaintext and injects them server-side. A compromise of the
-   public-facing edge reaches no third-party credential. *(ADR-0006, 0005, 0013)*
-4. **Capabilities are governed, not assumed.** A manifest declares each app's grants; privilege
-   *reductions* commit immediately, *increases* gate on platform-admin approval. The edge only ever
-   sees effective state. *(ADR-0016)*
-5. **Database-enforced least privilege.** The edge runs as a distinct least-privilege role
-   (`helix_edge`); app-data is Row-Level-Security-partitioned per user; collections are INSERT-only (an
-   app can write but never read back others' entries — defeating data-harvesting); metering is
-   append-only by grant. The process split is re-enforced inside the database. *(ADR-0002, 0015, 0021)*
-   *(Caveat, ADR-0002: the portal still connects as the schema owner. The edge's owner-DSN fallback is
-   closed — `EDGE_DATABASE_URL` (the `helix_edge` role) is **required** in production and the edge refuses
-   to start on the `DATABASE_URL` fallback, which would bypass RLS; the Azure deploy passes it explicitly.)*
+1. **Separate origins.** Each app has its own subdomain and host-only `__Host-`
+   cookie. Browser origin rules separate DOM and storage; gateway Origin checks
+   protect against sibling-app requests. (ADR-0019)
+2. **Gateway authorization.** Static apps use `/_api/*` for server-side work.
+   The gateway checks identity, capability grants, quotas, and audit. (ADR-0014, 0020)
+3. **Isolated connection secrets.** The portal stores credentials; egress resolves
+   and injects them. The edge's database role cannot read them. (ADR-0005, 0006, 0013)
+4. **Approved capabilities.** Baseline changes apply immediately; elevated grants
+   require admin approval. The edge sees only effective settings. (ADR-0016)
+5. **Database permissions.** Separate runtime roles limit table access. RLS scopes
+   app data; collection writes and metering use restricted grants. Production
+   requires role-specific database URLs, separate from the migration owner.
+   (ADR-0002, 0015, 0021)
 
-Honest residual: relaxed CSP (necessary for vibe-coded bundles) gives up XSS prevention by design, and
-granted channels (LLM prompts, approved origins, navigation) remain possible exfil paths — containment
-raises the bar, it does not eliminate every channel. Open hardening items live in
-[`TODO.md`](../TODO.md) (distilled from the ADRs, with the gating condition on each) and in the
-GitHub issue tracker; the review passes they came out of are in [`docs/reviews/`](reviews/).
+The relaxed CSP supports generated bundles but does not prevent all XSS or data
+exfiltration. Navigation, HTTPS images, LLM prompts, and approved external origins
+remain possible channels. A permitted API can also be misused within its grant.
+See [TODO.md](../TODO.md) for hardening work and [reviews](reviews/) for dated findings.
 
 ---
 
 ## 5. Where the decisions live
 
-The **35 Architecture Decision Records** in [`docs/adr/`](adr/) are the canonical record of *why* —
+The Architecture Decision Records in [`docs/adr/`](adr/) are the canonical record of *why* —
 where an ADR and older prose disagree, the ADR wins. Foundational set:
 
 - **Trust boundary & isolation:** 0001 three-plane split · 0019 subdomain-per-app · 0020 static-only
@@ -189,17 +159,14 @@ capability). [`docs/README.md`](README.md) maps the whole tree.
 
 ## 6. What's next
 
-- **A real pilot app end to end** — the last outstanding M5 exit criterion, and the only evidence
-  that isn't self-referential. The Azure deploy itself has landed: Container Apps, Key Vault custody
-  verified against a live vault, real Entra, and the production network zones that make the egress
-  isolation physical.
-- **Known hardening:** portal **per-app RBAC** (owner/editor/viewer — the BOLA half is closed, reads
-  are still authenticated-only), **channel-level defense on the edge→egress hop** (mTLS / workload
-  identity — the hop is authenticated by a signed, single-use, audience-bound instruction, not by the
-  channel), a **session-revocation / admin-kill path**, and moving untrusted apps onto their own
-  registrable domain before external URLs commit. Instruction replay and per-action scope are closed
-  (ADR-0013 steps 1–2), as is rate limiting across replicas (a shared Postgres counter, ADR-0011).
-  The full list is [`TODO.md`](../TODO.md).
+- **End-to-end pilot:** validate deploy, sign-in, and gateway use with a real app.
+  Also confirm that the optional egress firewall is enabled in live deployments.
+- **Hardening:** owner/editor/viewer roles, stronger authentication of the
+  edge-to-egress transport, and a separate registrable domain for hosted apps.
+  Signed instructions already prevent replay and bind method/path; session
+  revocation and shared rate-limit counters have shipped. See [TODO.md](../TODO.md).
+
+
 - **Capability catalog:** Anthropic and OpenAI-compatible upstreams are both wired today (ADR-0033) —
   next is making additional vendors and curated endpoints (e.g. geocoding) *first-class catalog
   entries* rather than per-deployment connection config.

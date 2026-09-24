@@ -1,37 +1,18 @@
 import { MODEL_PRICING, providerForModel } from "@azx-pbc/shared";
 
 /**
- * Operator policy for the **servable** LLM model set (ADR-0047) — which catalog
- * models this deployment advertises in the capability catalogue
- * (`GET /api/v1/capabilities`), the rendered skill, and the SPA's model picker.
+ * Models advertised by the catalogue, rendered skill, and SPA (ADR-0047).
+ * Read comma-separated env values on each call:
+ * - PORTAL_LLM_MODEL_ALLOWLIST, when non-empty, replaces the seeded-secret
+ *   heuristic. Intersect it with the priced catalogue. Bicep derives it from
+ *   foundryModels for keyless deployments, which have no vendor secret to detect.
+ * - PORTAL_LLM_MODEL_BLOCKLIST removes models from either selection mode.
  *
- * Two optional knobs, both comma-separated model ids:
- *
- * - `PORTAL_LLM_MODEL_ALLOWLIST` — when set (non-empty after parsing), it **is**
- *   the servable set: the operator has declared what the upstreams actually
- *   serve, replacing the ADR-0036 v1 heuristic (a model is servable when its
- *   provider family has a seeded `platform` secret). The heuristic cannot see
- *   keyless Foundry wiring — managed-identity connections seed no secret — so
- *   on a `deployFoundry` install the Bicep derives this list from
- *   `foundryModels` and the catalogue reports what was deployed rather than
- *   nothing. Entries are still intersected with the priced catalog: an id the
- *   platform cannot price is one the edge refuses, so advertising it would
- *   repeat the curated≠servable defect. There is deliberately no way to
- *   advertise an uncatalogued model — that is the fully-dynamic catalogue this
- *   deployment knob exists to avoid.
- * - `PORTAL_LLM_MODEL_BLOCKLIST` — subtracted in either mode; the first-party
- *   operator's "everything except these" knob.
- *
- * Both are display-surface policy only: the classifier (`classifyChange`) is
- * untouched, so a hand-written manifest naming a withheld-but-priced model
- * still auto-approves and then fails at the upstream — the documented backstop
- * for a model with no deployment (ADR-0047 §Consequences).
- *
- * Pure and env-injected (same shape as `visibilityPolicy.ts`) so tests override
- * env per case without rebuilding the app. Read per call, never frozen at boot.
+ * This controls discovery only. The approval classifier still accepts priced
+ * models omitted here, so a hand-written manifest may request one that the
+ * upstream cannot serve. Unknown, unpriced models cannot be advertised.
  */
 
-/** The parsed operator policy. */
 export interface ModelPolicy {
   /**
    * The declared servable ids (catalog order), or null when unset — `""`,

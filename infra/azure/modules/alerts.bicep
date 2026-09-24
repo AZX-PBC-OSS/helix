@@ -1,44 +1,13 @@
-// alerts.bicep — the consumer for the observability this platform emits.
+// Registry and trusted-proxy alerts (ADR-0025, ADR-0037, ADR-0011).
+// - Stale registry: helix.registry.stale_for_ms exceeds the error threshold.
+// - Never loaded: registry.never_loaded log event. No freshness gauge exists
+//   before the first load, and a cumulative failure counter does not indicate
+//   whether the service has recovered.
+// - Unresolved proxy: forwarded traffic never resolves beyond the socket peer,
+//   combining per-IP limits into ingress-wide buckets.
 //
-// ADR-0025 shipped the registry projection's staleness grading and left a
-// residual: the edge reports it on `/health` and in its logs, but nothing
-// consumed either, so a projection serving an out-of-date access rule forever
-// was visible only to a human who went looking. ADR-0037 turned it into a
-// metric. This is the rule that finally reads it.
-//
-// THREE rules. The first two exist because ADR-0025 grades TWO conditions and
-// they need different signals:
-//
-//   1. STALE — the served projection's age crossed the `error` line. A metric
-//      rule over `helix.registry.stale_for_ms`.
-//   2. NEVER LOADED — the projection has not loaded since boot, so every app
-//      host is serving 503. This one is deliberately LOG-based. The gauge is
-//      absent in this state on purpose (ADR-0037 Amendment 5: a gauge reading 0
-//      would claim "perfectly fresh" while nothing works), and the counter that
-//      does report it — `helix.registry.load_failures{helix.outcome}` — is
-//      cumulative, so any threshold on it keeps firing forever after the first
-//      failure even once the projection recovers. The `registry.never_loaded`
-//      log event is unambiguous, and is what `apps/edge/README.md` documents.
-//
-//   3. TRUST PROXY — the edge has proxied traffic but `req.ip` never resolved
-//      past the socket peer, i.e. `EDGE_TRUST_PROXY` does not name the address
-//      the ingress actually presents and every per-IP bucket has collapsed to
-//      one per proxy. A metric rule over `helix.edge.trust_proxy.unresolved`
-//      (ADR-0011, 2026-09-23 amendment), because a `degraded` /health alone
-//      alerts nobody: the availability tests fail only on `error`, and this is
-//      the only other condition in the platform worth its own page.
-//
-// Both scope to the ONE Log Analytics workspace: the environment already ships
-// container stdout there, and the Application Insights component is
-// workspace-based onto that same workspace, so metrics and logs are queryable
-// side by side. That is also why the metric rule reads `AppMetrics` and not
-// `customMetrics` — those are the same table under the two schemas, and the
-// workspace schema is the one a workspace-scoped rule sees. Note the workspace
-// schema DROPPED the `value` column: pre-aggregated rows carry
-// `Sum`/`ItemCount`/`Min`/`Max`, so a query written against `value` silently
-// matches nothing. A rule that never fires looks exactly like a healthy
-// platform, which is the same failure mode as the whole telemetry path.
-
+// Query the shared Log Analytics workspace. Its metric table is AppMetrics,
+// with Sum/ItemCount/Min/Max columns, not customMetrics.value.
 @description('Azure region.')
 param location string
 

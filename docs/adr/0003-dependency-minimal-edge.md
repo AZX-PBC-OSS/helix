@@ -5,7 +5,9 @@
 
 ## Context
 
-The edge is the trusted path that faces untrusted app users. Every npm runtime dependency there is code that runs inside the blast radius of the most-exposed process; a supply-chain compromise of any of them is a platform compromise.
+The edge accepts untrusted app traffic. Every runtime dependency executes with
+the edge's permissions, so dependency compromises affect the platform's trusted
+request path.
 
 ## Decision
 

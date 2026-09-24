@@ -2,13 +2,12 @@
 
 > **Related ADRs:** [ADR-0007](../adr/0007-portal-authz-v0.md) (portal authz v0) · [ADR-0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) (bearer JWT over JWKS) · [ADR-0016](../adr/0016-capability-manifest-approval-classifier.md) (approval classifier) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger).
 
-**What it is.** The owner-facing portal UI (`apps/portal-web`) — a Vite + **React 19** +
-**Mantine** + TanStack Query + React Router single-page app, pulled forward from v1. **Every
-screen is real and wired to the live `/api/v1/*` API** — apps, versions, capabilities, usage,
-approvals, CSP violations, the global registry, secrets, and the audit log. The single remaining
-`PreviewBadge` marks one not-yet-built sub-feature (per-app RBAC roles), milestone `v1`. Mantine
-is a deliberate house choice (the project's reference styling lives in this package's theme); it
-is also the one package on `moduleResolution: bundler` (the rest are nodenext).
+`apps/portal-web` is the owner-facing SPA, built with Vite, React 19, Mantine,
+TanStack Query, and React Router. Its pages use the `/api/v1/*` API for apps,
+versions, capabilities, usage, approvals, violations, secrets, and audit.
+The remaining `PreviewBadge` marks planned owner/editor/viewer roles.
+`src/theme` defines the shared styling. This package uses
+`moduleResolution: bundler`; the other packages use `nodenext`.
 
 ## How it works
 

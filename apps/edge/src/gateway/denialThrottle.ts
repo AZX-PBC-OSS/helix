@@ -1,32 +1,15 @@
 import type { CounterStore } from "./counterStore.js";
 
 /**
- * Caps how many allowlist-denial rows the fetch-proxy writes to `gateway_calls`
- * per app, per window.
+ * Limit fetch allowlist-denial ledger rows per app and time window.
+ * Authenticated callers bypass the anonymous limiter; denied origins return
+ * before the daily request budget, which also excludes forbidden outcomes.
+ * A retry loop could therefore write denial rows continuously.
  *
- * **Why this exists.** A `forbidden` row is the only ledger write the platform
- * makes for a request that is entirely app-chosen and authorized against
- * nothing, and it sits outside all three gates that bound every other write:
- * `anonRateLimited` returns early for authenticated callers, the allowlist check
- * returns *before* the `requestsPerDay` gate, and `fetchRequestsToday` excludes
- * `forbidden` so reordering wouldn't help either. Under the platform's stance
- * that every hosted app is untrusted, an app with a typo'd or rotated hostname
- * in a retry loop writes rows at line rate — into a table with no `DELETE` grant
- * for any role and no pruning job. No malice required.
- *
- * **In-memory, deliberately.** The other two limiters are Postgres-backed
- * because per-replica counters would *weaken a security control* (the anon
- * budget, the scrypt shield in front of shared-password login). This is not a
- * security control — it is a write-amplification damper — and DB-backing it
- * would be self-defeating: `PgCounterStore.bump` is an awaited pool checkout
- * plus a statement, so it would put a DB round-trip on the abusive path even for
- * requests it drops, which is exactly what the un-awaited metering write exists
- * to avoid. N per window per replica (≤3) is still a bound.
- *
- * **This is a damper, not the fix.** A fixed-window limiter bounds the *rate* of
- * ledger growth, not the *total*: N per window forever is still unbounded on an
- * append-only table. Retention is the actual fix — ADR-0021's fast-follow and
- * the deferred item in `TODO.md`. Do not read this class as closing that.
+ * Use memory to avoid a database round-trip for each dropped row. The bound is
+ * per replica, unlike the shared counters used for security rate limits.
+ * This limits write rate only. Total ledger size still needs retention
+ * (ADR-0021 and TODO.md).
  */
 
 export interface DenialThrottleOptions {

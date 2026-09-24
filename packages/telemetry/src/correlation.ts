@@ -1,23 +1,12 @@
 import { context, trace } from "@opentelemetry/api";
 
 /**
- * Log ↔ trace correlation: the pino `mixin` that stamps the active span's ids
- * on every log line.
+ * Pino mixin that adds active trace/span ids to logs. Import only the
+ * @opentelemetry/api facade because buildApp uses this module; SDK startup
+ * belongs to the package root and server.ts (ADR-0037 decision 3).
  *
- * **This module imports `@opentelemetry/api` and nothing else**, which is the
- * whole reason it is a separate subpath rather than part of the package root.
- * The root owns the SDK and only the three `server.ts` files may import it
- * (ADR-0037 decision 3); this is reached from inside `buildApp()`, so its module
- * graph has to stay the dependency-free facade. The ESLint boundary rule
- * encodes the split: the root specifier is banned outside `server.ts`, subpaths
- * are not.
- *
- * It does **not** live in `@azx-pbc/shared/logging` beside `loggerOption`, even
- * though that is where it is used. `packages/shared` is a dependency of
- * `packages/cli` (published to public npm, ADR-0032) and `apps/portal-web` (a
- * browser bundle); a subpath export would keep the facade out of their
- * *imports* but not out of their install graph, and decision 11 defers browser
- * telemetry precisely to avoid that direction.
+ * Keep this out of shared/logging: shared is also installed by the published
+ * CLI and browser SPA, which should not acquire telemetry dependencies.
  */
 
 /** What {@link traceContextMixin} adds to a log line. Empty when tracing is off. */

@@ -2,7 +2,7 @@
 
 > **Related ADRs:** [ADR-0004](../adr/0004-auth-model.md) (edge-terminated auth) · [ADR-0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) (portal/CLI JWT) · [ADR-0019](../adr/0019-subdomain-per-app-isolation.md) (subdomain isolation) · [ADR-0011](../adr/0011-in-memory-rate-limiting.md) (in-memory rate limiting) · [ADR-0007](../adr/0007-portal-authz-v0.md) (portal authz v0).
 
-There are **two** auth paths, deliberately separate:
+Helix has separate authentication paths for app users and portal/CLI users:
 
 1. **App-user auth** (the edge) — how a person signing into a hosted app gets a session. This
    is the platform's most security-sensitive code (architecture §4.2 / Appendix A) and carries
@@ -10,8 +10,8 @@ There are **two** auth paths, deliberately separate:
 2. **Portal/CLI auth** (the control plane) — how a deploy or registry mutation is authorized,
    via a bearer JWT verified statelessly over the issuer's JWKS.
 
-Both run against the local OIDC issuer in dev (see [dev-idp.md](./dev-idp.md)); production
-runs against **real Entra** — the swap was config-only, as designed. See the
+Both use the local OIDC issuer in development (see [dev-idp.md](./dev-idp.md))
+and Entra in production. Issuer settings select the environment; see the
 [Entra registration runbook](../runbooks/entra-app-registration.md).
 
 ---

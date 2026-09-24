@@ -8,9 +8,40 @@ The data plane (architecture §3): stateless, terminates all `*.azx.helix.azxlab
 
 `<slug>.local.helix.azxlabs.io` → registry projection (slug → live version + visibility) → **session gate** → `apps/<appId>/<n>/<path>` from Blob, streamed.
 
-The gate (architecture §4.2, Appendix A): no `__Host-session` cookie → top-level navigations 302 to `auth.<base>/start?app=<slug>&rd=<path>`; fetches/subresources get 401 (`Sec-Fetch-Mode` primary, Accept sniff fallback). The auth host runs OIDC code+PKCE+nonce against the issuer, checks the app's visibility rule (group membership for `group` mode), writes a _pending_ session row, and hands off via `GET <slug>.<base>/_auth/complete?token=<30s, single-use, audience-bound JWS>`. Redemption burns the token atomically (an `UPDATE … WHERE "tokenHash" IS NULL`), mints a fresh host-scoped cookie, and lands on the original path. Sessions are server-side (revocation is real — user-level admin kills land via the portal Sessions screen, a DELETE the next lookup simply misses), hard-capped (8 h default), and silently re-authenticated via `prompt=none` after the refresh interval (1 h default) — group membership is re-snapshotted there. Once the refresh is due, navigations take the silent-refresh detour and `/_api/*` fetches get `401 {code: "refresh_required"}` (the snapshot is stale — an authorization boundary, not just a hint); passive assets stay lenient until hard expiry. `POST /_auth/logout` (Origin-checked) deletes the row; `GET /_api/me` returns `{user: {id, displayName, email}}` and nothing more — `id` is the Entra `oid` claim (the directory object id, ADR-0048), `email` is the captured claim and is nullable (shared-password guests have none), and the group snapshot is never projected.
+The gate follows architecture §4.2 and Appendix A:
 
-Every app response carries the §4.4 baseline CSP (not just HTML — SVG/XML documents execute script too); HTML gets `Cache-Control: no-cache` (pointer flips are immediately visible) while other assets get `private, max-age=300` with ETag/304 revalidation. App-supplied service-worker registration is refused (403 on any request carrying the `Service-Worker` header): a root-scoped worker would observe the handoff token on `/_auth/complete`. Plain web workers are unaffected. The **offline capability** (ADR-0035) is the one exception and registers platform code rather than the app's — `/_helix/sw.js` serves a scope-confined worker (ungated, `no-cache`, carrying the app CSP, and the only response that emits `Service-Worker-Allowed`), the page-side registration is **inlined** into `<head>` at serve time (like the fetch shim — `/_helix/*` is unprecachable, so a `<script src>` there cannot load on an offline cold boot), and a withdrawn grant or archived app serves a self-unregistering tombstone instead of a 404. Misses that accept HTML fall back to `index.html` (SPA deep links). Unknown slug / no live version → 404; archived app → 410 + `Clear-Site-Data: "cache", "storage"` (both answered before the gate). `/_auth/*` and `/_api/*` are platform namespaces — they never reach the blob store. Platform hosts (`localhost`, anything not `<slug>.<base domain>`) only answer `GET /health`; `auth.<base>` additionally answers `/start` and `/callback`.
+1. Without a session cookie, top-level navigation redirects to `auth.<base>/start`;
+   fetches and subresources receive 401. Detection uses Sec-Fetch-Mode, then Accept.
+2. The auth host performs OIDC code exchange with PKCE and nonce checks, checks
+   app visibility, and creates a pending session.
+3. A 30-second, single-use, audience-bound token reaches `/_auth/complete` on
+   the app host. An atomic update redeems it and creates a host-only session cookie.
+4. Sessions expire after 8 hours by default. After the refresh interval (1 hour
+   by default), navigation attempts silent re-authentication with prompt=none;
+   gateway fetches receive `401 refresh_required`. Passive assets can still load
+   until hard expiry. Refresh captures current group membership.
+5. Origin-checked `POST /_auth/logout` deletes the session. Admin revocation
+   deletes all sessions for a user and takes effect on the next lookup.
+
+`GET /_api/me` returns `{user: {id, displayName, email}}`. The id is the canonical
+principal claim (Entra oid by default, ADR-0048); email is nullable. Group
+snapshots are not exposed to app code.
+
+Every app response carries CSP, including SVG and XML. HTML uses
+`Cache-Control: no-cache`; other assets use `private, max-age=300` with ETag
+revalidation. HTML-accepting paths that miss an asset fall back to `index.html`.
+Unknown apps or apps without a live version return 404. Archived apps return
+410 with `Clear-Site-Data: "cache", "storage"` before the session gate.
+
+App-supplied service workers are rejected because a root-scoped worker could
+intercept the auth handoff URL. Plain web workers remain allowed. The offline
+capability (ADR-0035) serves a platform worker at `/_helix/sw.js`, limited to the
+approved scope. Its registration script is inline so offline startup does not
+need a fetch to the uncached `/_helix/` namespace. Revocation or archive serves
+a worker that clears its cache and unregisters itself.
+
+Reserved platform routes never fall through to Blob. Platform hosts expose
+`GET /health`; the auth host also handles `/start` and `/callback`.
 
 ## Configuration
 

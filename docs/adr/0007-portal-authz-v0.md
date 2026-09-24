@@ -5,7 +5,10 @@
 
 ## Context
 
-The portal began (M1) with a single shared dev token: anyone holding it could do anything. M3 replaced the token with verified OIDC/bearer identity but kept the same authorization level, now attributed to a real actor. Per-app RBAC (owner/editor/viewer) is scoped as a v1 feature.
+M1 used a shared development token with unrestricted portal access. M3 added
+verified OIDC identities but retained that authorization model. This original
+decision records that limitation; the resolution and amendments below add
+owner-or-admin checks. Full owner/editor/viewer RBAC remains planned.
 
 ## Decision
 

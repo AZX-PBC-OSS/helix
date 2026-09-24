@@ -3,49 +3,25 @@ import type { SecretStore } from "./store.js";
 import type { GetVaultToken } from "./token.js";
 
 /**
- * Azure Key Vault as the store (secrets design §3; ADR-0006 and its 2026-07-29
- * amendment, which this implements).
+ * Key Vault storage (ADR-0006 and its 2026-07-29 amendment).
+ * `app_secrets.material` contains a reference; reading plaintext also requires
+ * vault access through an authorized identity.
  *
- * The value lives in Key Vault; the `app_secrets.material` column holds only a
- * reference, so a stolen database backup is inert without the vault *and* an
- * identity RBAC admits to it. Access is via managed identity — no app-held key.
+ * Uses global `fetch` to keep this egress-consumed package dependency-free.
+ * `GetVaultToken` lets egress supply managed-identity authentication and the
+ * portal supply `DefaultAzureCredential`.
  *
- * **Transport.** Hand-rolled Key Vault data-plane REST over Node's global
- * `fetch`, not `@azure/keyvault-secrets`. This package is consumed by
- * `helix-egress` — the mechanism plane, the one process holding plaintext — and
- * ADR-0031 asks that the edge's dependency-minimal reasoning extend to egress by
- * degree, so the package stays **zero-dependency**. The same REST call already
- * has a precedent at `apps/portal/scripts/migrate-deploy.ts`. The credential is
- * injected as a one-function {@link GetVaultToken} seam, so egress can supply a
- * hand-rolled managed-identity provider while the portal supplies
- * `DefaultAzureCredential` (which it already depends on, and which also lets
- * operator scripts run under `az login`).
+ * Material format: `kv:<name>/<version>`. Names are `hx-` plus 32 random hex
+ * characters, so vault metadata contains no app or secret names. Rotation uses
+ * a new name and immutable version, avoiding soft-delete name conflicts and
+ * making cached plaintext specific to that material token.
  *
- * **Material contract** — `kv:<name>/<version>`:
- *  - `name` is `hx-` + 32 random hex chars. Opaque on purpose: vault metadata
- *    (which is visible to anyone who can list the vault) leaks no app id, tenant,
- *    or secret name. Random names also never collide with a soft-delete tombstone.
- *  - `version` pins an **immutable** vault version. This is what makes the
- *    plaintext cache below safe: rotation mints a brand-new name *and* version, so
- *    the material token itself changes and a cache hit can never serve a stale
- *    value. That is a property of the format, not a hope.
- *
- * **Timeout / retry** (the ADR-0006 challenge amendment — the dev path is pure
- * CPU and cannot surface these failure modes):
- *  - Per-attempt timeout: 3 s on the `open()` hot path, 10 s for `seal()` /
- *    `destroy()` (control plane, not latency-critical). This covers **token
- *    acquisition as well as the vault call** — the identity endpoint is a network
- *    hop with its own failure modes, and leaving it unbounded made the deadline
- *    below unenforceable however healthy the vault was.
- *  - A **total deadline** bounds the whole call (8 s / 25 s), so retries can never
- *    stack past the egress request budget however slow the vault *or the identity
- *    endpoint* is.
- *  - Retry only on a transport error, `429`, or `5xx`; `2` extra attempts.
- *    `Retry-After` is honoured when present; a hint larger than the remaining
- *    budget fails immediately rather than sleeping out the budget to no purpose.
- *    Otherwise exponential backoff with jitter.
- *  - `403` / `404` / any other `4xx` are **terminal** — an RBAC or integrity
- *    failure must fail fast rather than burn the budget.
+ * Each attempt includes token acquisition and the vault request. Timeouts are
+ * 3 seconds for `open` and 10 seconds for `seal`/`destroy`; total deadlines are
+ * 8 and 25 seconds respectively. Retry transport errors, 429, and 5xx at most
+ * twice. Honor Retry-After if it fits the remaining deadline; otherwise fail.
+ * Without a hint, use exponential backoff with jitter. Other 4xx responses are
+ * terminal, including permission failures and missing secrets.
  */
 
 const API_VERSION = "7.4";

@@ -64,28 +64,13 @@ export function daysSince(iso: string): number {
 }
 
 /**
- * The last-resort rendering of an app-user principal, used when no directory
- * claims were captured for the row.
+ * Fallback labels when no user name or email was captured.
+ * Use recorded userKind to distinguish public visitors and password sessions.
+ * Do not infer kind from a pw_ prefix: a real principal id can share that prefix.
+ * Password pseudonyms identify one login session, not a person across sessions.
  *
- * Two of the four kinds are platform-minted sentinels rather than directory
- * subjects, and spelling them out beats making a reader recognise a convention:
- * a public visitor has no principal at all (there is no anonymous identity in
- * the system), and a shared-password session is a fresh pseudonym minted per
- * login, so it is unattributable *across* sessions by construction rather than
- * by omission.
- *
- * **It reads the recorded kind and parses nothing.** The previous version tested
- * `userOid.startsWith("pw_")`, which is unsound: Entra's `sub` is 32 random
- * bytes in base64url, an alphabet that includes `_`, so roughly one real subject
- * in 262,144 begins `pw_` — and for a tenant that also sends no name or address
- * (the `dana` fixture's shape) that person's calls were rendered as an anonymous
- * shared-password visitor. A wrong attribution in an audit log is worse than an
- * opaque one, which is the whole reason the labels exist.
- *
- * `userOid === "anon"` is still matched directly: that one is an exact sentinel,
- * not a prefix guess, so it safely labels rows written before `userKind` did.
- * Any other pre-column row falls through to the raw subject — unlabelled, never
- * mislabelled.
+ * The exact anon sentinel also labels legacy rows. Other rows without userKind
+ * retain the raw principal id rather than guessing an attribution.
  */
 export function principalLabel(userOid: string, userKind?: PrincipalKind | null): string {
   if (userKind === "anon" || userOid === "anon") return "anonymous";

@@ -1,24 +1,13 @@
 #!/usr/bin/env node
-// stack-env.mjs — resolve one complete, isolated local stack from a port offset.
-//
-// Why this exists: every local port was a bare literal in six `dev` scripts and
-// in the run-helix smoke driver, so a second stack could not exist and starting
-// one killed the first (see scripts/free-port.mjs, which the `dev` scripts run
-// as a preflight). One offset knob, `HELIX_PORT_OFFSET`, moves the whole stack:
-// ports, the derived public URLs, the dev-IdP redirect allowlist, the blob
-// container, and the database name.
-//
-// Offset 0 is the developer's stack and resolves to an EMPTY env map — nothing
-// is overridden, so `pnpm dev:*` behaves exactly as it always has. Any non-zero
-// offset is a second stack that shares nothing but the TLS cert (which is
-// port-agnostic) and the Postgres/Azurite servers themselves.
+// Resolve an isolated local stack from HELIX_PORT_OFFSET: ports, public URLs,
+// IdP redirects, Blob container, and database name. Offset 0 returns an empty
+// env map, preserving the developer's settings. Other stacks share only the
+// TLS certificate and the Postgres/Azurite server processes.
 //
 // Usage:
-//   node scripts/stack-env.mjs --ports          # "8080 8081 8082 3001 3002 5173"
-//   node scripts/stack-env.mjs --env            # KEY=value lines, for env $(...)
+//   node scripts/stack-env.mjs --ports
+//   node scripts/stack-env.mjs --env
 //   node scripts/stack-env.mjs --env --offset 1000
-//
-// Hand-rolled, no deps — matches the repo's dependency-minimal stance.
 
 /** Base ports, i.e. the developer stack. Offsets are added to these. */
 export const BASE_PORTS = {

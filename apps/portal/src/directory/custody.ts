@@ -44,39 +44,17 @@ export interface DirectoryChoice {
 }
 
 /**
- * Build the directory provider from the environment (ADR-0040 decision 3).
+ * Select the directory backend (ADR-0040 decision 3).
+ * PORTAL_DIRECTORY overrides auto-detection:
+ * - entra: Graph through DefaultAzureCredential; supports local az login.
+ * - fixtures: local test groups; refused in production.
+ * - off: unavailable, with manual group-id entry in the UI.
  *
- * **`PORTAL_DIRECTORY` is the explicit selector and always wins:**
+ * When unset, AZURE_CLIENT_ID selects Entra. Without it, use fixtures outside
+ * production and unavailable in production. Auth issuer configuration alone
+ * does not select the directory backend.
  *
- * - `entra` — Microsoft Graph, via `DefaultAzureCredential`. This is how you use
- *   a real tenant from a dev machine (`az login` first). Without it there was no
- *   way to ask for real Entra locally at all, because the auto-detection below
- *   keys on a variable only Container Apps sets — so a developer pointing the
- *   portal at real Entra for *auth* still silently got fixture groups for
- *   *search*, and a picker full of groups that do not exist in their tenant.
- * - `fixtures` — the in-memory dev set. Refused in production.
- * - `off` — report unavailable; the Access tab falls back to entering ids
- *   directly, which is also the permanent answer for a tenant that declines the
- *   Graph permission (decision 8).
- *
- * With it unset, the fallback is auto-detection: `AZURE_CLIENT_ID` (present only
- * under a managed identity, i.e. the deployed platform) selects Entra; otherwise
- * fixtures outside production, and unavailable in it.
- *
- * **Fixtures are refused in production**, the same idiom as
- * `createDevTokenVerifier` and the `PORTAL_OIDC_ALLOW_INSECURE` guard: a prod
- * portal answering searches from a hardcoded list would show an operator groups
- * that do not exist in their tenant and let them scope an app to an id nobody
- * holds — an app that then denies everyone, looking like a platform bug rather
- * than a configuration one.
- *
- * Returns the reason for its choice rather than just the provider, because a
- * directory that silently answers from the wrong backend is the failure this
- * function has already caused once, and a boot log is what makes it a five-second
- * diagnosis instead of an afternoon.
- *
- * Takes `env` as a parameter, never reading ambient `process.env`, so all of the
- * above is testable.
+ * Return the selection reason for boot logging. Inject env for isolated tests.
  */
 export function createDirectoryFromEnv(env: NodeJS.ProcessEnv = process.env): DirectoryChoice {
   const isProduction = env.NODE_ENV === "production";

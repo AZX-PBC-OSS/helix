@@ -1,34 +1,19 @@
 import { FETCH_PROXY_PREFIX } from "@azx-pbc/shared";
 
 /**
- * The transparent fetch shim (fetch-proxy design §3.2) — the zero-edit adoption
- * path. For apps that opt in (`capabilities.fetch.shim`), the edge builds this
- * tiny script per-app (with the proxied origins baked in) and inlines it at the
- * top of the document's `<head>`. The script monkeypatches `window.fetch` **and**
- * `XMLHttpRequest.prototype.open` so a call to a granted proxied origin is
- * transparently rewritten to the same-origin `/_api/fetch/…` path — covering both
- * `fetch` and the XHR adapter axios uses by default, with no app code change.
+ * For capabilities.fetch.shim, inline a per-app script at the start of head.
+ * It wraps window.fetch and XMLHttpRequest.open to route approved third-party
+ * origins through /_api/fetch, including calls made by axios's XHR adapter.
  *
- * It is **ergonomics, not a boundary**: it only ever adds reach the manifest
- * already granted (rewriting to an origin not in the allowlist would 403), so
- * deleting or bypassing it gains nothing — a direct call to a non-granted origin
- * still dies on `connect-src 'self'`. It fails safe.
+ * This is a convenience layer. Gateway permissions and CSP remain responsible
+ * for access control, including when an app bypasses the shim.
  */
 
 /**
- * Serialize a value for interpolation into an **inlined** script body.
- *
- * Identical to `JSON.stringify` except that every `<` becomes the `<`
- * escape — legal inside a JS string literal, and unable to produce a literal
- * `<` in the output. That is what keeps a manifest-derived value (the shim's
- * proxied origins) from closing the `<script>` tag it is embedded in and
- * injecting app-controlled markup into a platform script block.
- *
- * Note what is deliberately NOT done: the usual `<\/script` trick. Escaping a
- * slash is only legal *inside* a string literal, so a blanket regex over an
- * assembled script body would be a latent syntax error the moment a `</` shows
- * up in code rather than in data. Escaping at the interpolation point cannot
- * have that failure mode.
+ * JSON-serialize a value and escape every < before embedding it in an inline
+ * script. This prevents manifest-derived data from closing the script tag.
+ * Escape the serialized value, not the assembled JavaScript: a blanket slash
+ * escape could change code outside string literals.
  */
 export function jsonInline(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");

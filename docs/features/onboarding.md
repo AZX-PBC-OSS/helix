@@ -2,18 +2,13 @@
 
 > **Related ADRs:** [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — why hostnames can't be baked in) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps — the first thing anyone must be told) · [ADR-0032](../adr/0032-cli-naming-and-distribution.md) (CLI naming + distribution — where the `npm i -g` line comes from) · [ADR-0036](../adr/0036-deployment-capability-catalogue.md) (deployment capability catalogue — the instance endpoint that renders the skill and serves the values the docs site can't).
 
-**What it is.** The path from "I have a portal account" to "I have a deployed app", surfaced
-where people actually are. Two pieces:
+The portal provides two guides for building an app:
 
-- **The "How to develop" modal** in the portal SPA — a short, readable summary of the platform
-  for a human, reachable from the sidebar on every screen.
-- **`packages/deploy-skill`** — the same story in full, as a `SKILL.md` a coding agent can load,
-  handed out from that modal by **Copy** or **Download** with this deployment's real hostnames
-  already substituted in — and, since it is the thing people actually come for, from a band on
-  **My Apps** without opening the modal at all.
+- **How to develop**, a modal available from the sidebar and My Apps page.
+- An agent **SKILL.md** from `packages/deploy-skill`, available to copy or download
+  from either location. The rendered skill includes this deployment's hostnames.
 
-The platform's documentation is extensive and all of it lives in the repo. Someone building an
-app in a browser IDE will never see it. This is the surface that closes that gap.
+These guides let app authors get started without reading the contributor docs.
 
 ## How it works
 

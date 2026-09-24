@@ -191,22 +191,9 @@ export class EntraDirectory implements DirectoryProvider {
     const deadline = this.#now() + this.#totalMs;
     let lastError: DirectoryError | undefined;
     /**
-     * Whether the last failure was acquiring the token rather than calling Graph.
-     * Tracked because the two need different answers: a Graph 5xx is an outage
-     * worth an error and a retry, while "we cannot get a token at all" is almost
-     * always configuration — no managed identity, no `az login`, the wrong tenant
-     * — and surfacing that as an opaque 500 on the group picker tells the operator
-     * nothing about which. Still retried first, so a transient credential blip is
-     * not reported as a misconfiguration.
-     *
-     * BOTH flags are needed, and a single "was the last failure a credential one"
-     * flag was wrong. It recorded only the most recent attempt, so a real Graph
-     * outage plus one transient token hiccup on the final attempt reported
-     * `no-credential` — a permanent, operator-must-act outcome the SPA renders as
-     * "check that a managed identity is attached", which never surfaces as an error
-     * and never retries. That is exactly the "hide a real outage behind a consent
-     * banner" failure `DirectoryOutcome`'s own doc warns against. `no-credential`
-     * is now claimed only when Graph was never reached at all.
+     * Track token-acquisition failures separately from Graph failures. Retry both,
+     * but report no-credential only if no attempt reached Graph. Otherwise a final
+     * token error could hide an earlier Graph outage behind a configuration banner.
      */
     let sawCredentialFailure = false;
     /**

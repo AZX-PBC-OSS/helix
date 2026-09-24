@@ -6,11 +6,14 @@
 
 ## Context
 
-ADR [0017](0017-registry-listen-notify-projection.md)'s pattern — an in-memory `slug → entry` projection on the edge, refreshed via Postgres `LISTEN/NOTIFY` (DB trigger, fires on COMMIT), with a periodic reconcile poll as backstop and a **serve-stale-on-failure** stance — was put through a 5-model adversarial review (GLM, DeepSeek, Kimi, Qwen, MiniMax) + Brave best-practice grounding on 2026-06-26.
+The edge caches registry state using LISTEN/NOTIFY and periodic reconciliation
+(ADR-0017). A 2026-06-26 review confirmed reload-after-LISTEN, reload on reconnect,
+atomic map replacement, notification coalescing, and gating before the first load.
+Integration tests cover the trigger-to-reload path.
 
-**Outcome: the pattern is a best practice and the implementation is sound** — unanimous "Sound with caveats," **zero Critical findings**, zero correctness/availability bugs. Reviewers confirmed the hard parts are right: the LISTEN-setup race is closed (reload after `LISTEN`), the disconnect gap is backstopped (reload-on-reconnect + reconcile poll), reads are torn-free (atomic Map swap), NOTIFY bursts collapse (100 ms debounce + `#inFlight`/`#dirty` coalescing), and serving is gated until the first successful load. The integration test exercises the full trigger→NOTIFY→LISTEN→reload loop. Grounding matched the canonical recipe ("LISTEN, reset from source of truth, process events, *periodically reconcile* — be capable of missing events").
-
-The caveats are **operational hardening, not design flaws.** The one genuinely sharp edge: a **sustained DB failure serves stale data indefinitely with no signal** (`onLoadError` only logs; `isLoaded()` never flips back), flagged by **all 5 reviewers**.
+The remaining operational issue was sustained database failure: the edge could
+serve stale access rules indefinitely while only logging reload errors. This
+ADR adds freshness reporting so operators can detect that state.
 
 ## Decision
 

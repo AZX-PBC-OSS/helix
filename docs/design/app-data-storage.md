@@ -2,7 +2,10 @@
 
 **Status:** Design draft v1 · June 2026
 **Companion to:** `platform-architecture.md` (the _what & why_, §6.1 names this capability) and `platform-project-plan.md` (§4, the gateway milestones)
-**Why this exists:** App data is the second `/_api/*` capability after the LLM gateway (M4). The architecture sketches it in one line — "app-scoped and user-scoped KV/document storage, Postgres JSONB, user-scoped auto-partitioned by the authenticated user" (§6.1, line 170). That sentence hides the load-bearing decision: the naive "per-app KV with symmetric read/write" model is *unsafe* for a whole class of real apps. This doc names that decision, proposes the data model and API, and grounds it in the existing edge/portal trust split.
+**Purpose:** Design the data model and API for persistent app data. Read and
+write permissions must be independent: a form can accept visitor submissions
+without allowing app code to retrieve them. The three scopes below build on the
+edge/portal trust boundary and Postgres roles.
 
 > **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes).
 
@@ -10,7 +13,9 @@
 
 ## 1. The motivating app (why per-app KV is the wrong default)
 
-A real app from our CEO: a **public** static research site with a chatbot that **harvests visitor email/contact info**. The contacts it collects must reach the *owner* — but no visitor (and no attacker poking the API) may ever read them back. "Dump the contact list" is the headline breach.
+The motivating app is a public research site with a chatbot that collects
+visitor contact information. The owner must be able to retrieve submissions,
+but visitors and app code must not be able to read other visitors’ contacts.
 
 The naive model — one per-app bag of keys the frontend reads and writes symmetrically — cannot express this. The contact list is:
 

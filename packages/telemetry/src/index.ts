@@ -110,28 +110,14 @@ function formatDiagArg(arg: unknown): string {
 }
 
 /**
- * Route OTel's internal diagnostics into a single stderr line, capped at `warn`.
+ * Write OTel diagnostics as JSON to stderr before Fastify's logger exists.
+ * Downgrade export errors to warn and drop them: collector failures must not
+ * change application responses (ADR-0037 decision 5).
  *
- * `startTelemetry` runs before `buildApp()` in every service, so there is no
- * Fastify logger to borrow yet — this writes pino-ish JSON by hand rather than
- * inventing a logger seam nothing else would use.
- *
- * OTel reports a failed export at `diag.error`; here that becomes a `warn` and
- * stops. **A dead or hanging collector must never change a response status or
- * body** (ADR-0037 decision 5) — telemetry that can take the platform down is
- * worse than no telemetry.
- *
- * **The one log path in the repo that does NOT go through
- * `packages/shared/src/logging.ts`'s redacting serializer.** The original
- * argument for that being safe — "there are no spans yet" — expired the moment
- * spans landed, so here is the one that replaces it: OTel's diagnostics report
- * exporter failures, endpoint URLs and batch counts, never span payloads, so no
- * request data reaches this sink even now that ~14 spans exist.
- *
- * That is a property of the SDK rather than of our code, which is the weak part
- * of it. If a future OTel version logs rejected span content on an export
- * failure, this is where it would surface unredacted — so a diag line that ever
- * starts carrying attributes needs `redactUrl` here, not a note somewhere else.
+ * This sink bypasses the shared redacting serializer. It relies on SDK
+ * diagnostics containing exporter failures, endpoint URLs, and batch counts,
+ * not span payloads. Check that assumption when upgrading OTel; if diagnostics
+ * include request attributes, add redaction here before logging them.
  */
 function diagSink(serviceName: string): DiagLogger {
   const emit = (level: "warn", args: unknown[]): void => {

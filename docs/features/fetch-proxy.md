@@ -2,12 +2,11 @@
 
 > **Related ADRs:** [ADR-0005](../adr/0005-ssrf-egress-controls.md) (SSRF + secret injection) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model) · [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split / edge posture) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway).
 
-**What it is.** Governed outbound HTTP for hosted apps (architecture §6.1; design
-`docs/design/fetch-proxy.md`). An app calls a third-party API through a
-same-origin path — `fetch('/_api/fetch/https://api.github.com/...')` — and the
-platform makes the call on its behalf: audited, metered, SSRF-controlled, and
-(when configured) with a credential injected server-side so the app never holds
-it. The blocked-`connect-src` call has an on-platform answer.
+Apps call third-party APIs through a same-origin URL, for example
+`fetch('/_api/fetch/https://api.github.com/...')`. The platform checks permissions,
+meters and audits the call, applies SSRF controls, and injects a connection
+credential when configured. Credentials stay out of the app. See architecture
+§6.1 and `docs/design/fetch-proxy.md`.
 
 | Route | Who | What |
 | --- | --- | --- |

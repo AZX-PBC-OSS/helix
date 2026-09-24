@@ -15,52 +15,21 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
 /**
- * A recording telemetry provider pair, for tests.
+ * In-memory span and metric providers for tests. `startTelemetry` is disabled
+ * under NODE_ENV=test, so handler assertions need these providers to record
+ * telemetry. SDK imports stay in this package (ADR-0037 decisions 3 and 10).
+ * SimpleSpanProcessor makes ended spans immediately available to assertions.
  *
- * **Why this exists at all.** The whole suite runs under `NODE_ENV=test`, where
- * `startTelemetry` is inert by design, and `@opentelemetry/api` no-ops when no
- * provider is registered. So a test that drives a handler and asks "what did
- * the span carry?" gets nothing — which is exactly the shape of a test that
- * passes while proving nothing. ADR-0037 decision 10's adversarial tests (no
- * raw URL on any attribute, no inbound `traceparent` as a parent, no header on
- * an egress span) are unimplementable without a real in-memory provider.
+ * For span tests, create one recording in beforeAll, restore it in afterAll,
+ * and reset exported data in afterEach. Module-level ProxyTracers cache their
+ * first provider; replacing it within a file can leave those tracers recording
+ * to the old provider.
  *
- * **Why it lives here rather than in each app's `src/test/`.** Decision 3 keeps
- * every OpenTelemetry SDK import in this package. That rule is about *shipped*
- * code — a test-only import ships nowhere — but the cheapest way to keep it
- * true without arguing the exception at every call site is to put the SDK
- * import in the package that already owns one. The apps take
- * `@opentelemetry/sdk-*` as devDependencies to reach this module's types; the
- * ESLint boundary rule encodes where a runtime import is allowed.
- *
- * `SimpleSpanProcessor`, not `Batch`: a test wants the span the moment it ends,
- * and the never-block-the-event-loop rule that forbids Simple in the services
- * has nothing to say about a test process.
- *
- * **Lifecycle differs for spans and metrics, and getting it backwards breaks
- * things quietly in both directions.**
- *
- * *Span* assertions want **one recording per file**. A module-level
- * `const tracer = trace.getTracer(…)` is a `ProxyTracer`, and once it resolves
- * a delegate it caches it (`ProxyTracer._getTracer`) — so a tracer captured at
- * import time keeps pointing at the first provider that was registered, even
- * after {@link RecordingTelemetry.restore} unregisters it. A second
- * `startRecordingTelemetry()` in the same file therefore records **nothing**,
- * silently, and every assertion after the first fails on an empty array. Use
- * `beforeAll`/`afterAll` with {@link RecordingTelemetry.reset} in `afterEach`.
- *
- * *Metric* assertions want the opposite: **a fresh recording per test.**
- * `reset()` clears the exported batches, but CUMULATIVE accumulation lives in
- * the `MeterProvider`, not the exporter — so a counter incremented in one case
- * is still counted in the next. Only a new provider gives clean isolation, and
- * metric instruments have no caching problem to prevent it: `instruments()` is
- * keyed on provider identity precisely so it rebuilds.
- *
- * A file asserting both should use one recording and expect counters to
- * accumulate across its cases.
- *
- * Neither hazard exists in production, where exactly one provider is ever
- * registered.
+ * For metric-only tests, create a fresh recording per test. Cumulative counters
+ * live in MeterProvider and survive reset(); instruments() rebuilds instruments
+ * when the provider changes. Tests that assert both spans and metrics should
+ * share one recording and account for cumulative counters across cases.
+ * Production registers one provider, so these test lifecycle issues do not apply.
  */
 export interface RecordingTelemetry {
   /** Spans ended so far, oldest first. */

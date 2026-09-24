@@ -11,27 +11,20 @@ Accepted.
 
 ## Context
 
-The platform's model catalogue is a build-time constant (`MODEL_PRICING` in
-`packages/shared/src/pricing.ts`), and ADR-0036's catalogue endpoint derives the *servable* subset
-at runtime from seeded `platform` secrets. Two pressures showed that derivation is not enough:
+The build-time MODEL_PRICING catalogue defines models the platform can price
+and route. The deployment catalogue originally inferred availability from
+seeded platform secrets. That fails for keyless Foundry deployments: they seed
+no vendor secret, so the catalogue listed no models while the SPA offered all
+build-time models, including undeployed ones.
 
-1. **Keyless Foundry is invisible to it.** ADR-0046's default wires the LLM families to managed
-   identity (`foundry`/`foundry-openai` connections) and seeds no `anthropic`/`openai` secret at
-   all — so on exactly the deployment shape ADR-0046 sells, the heuristic reports **zero** servable
-   models and the rendered skill lists none, while the SPA's model picker (build-time
-   `Object.keys(MODEL_PRICING)` — it never called the catalogue endpoint) showed all ~20, including
-   models the account has no deployment for. Both surfaces wrong, in opposite directions.
-2. **Per-subscription liveness is real and per-model.** Measured against a live pay-as-you-go
-   subscription (eastus2, 2026-09-16): the Foundry RP refuses any model whose *default* version is
-   `Deprecating`, and `claude-sonnet-5` / the Fable line have **zero** `GlobalStandard` quota on a
-   fresh subscription — and because `foundry.bicep` applies `@batchSize(1)`, the first refusal
-   aborts the whole apply. Which models are live is a fact about *this* deployment's subscription
-   and upstreams, not about the platform build.
+Availability also varies by subscription and model. In the September 2026
+probe, deprecated default versions and missing GlobalStandard quota caused
+Foundry deployment failures. With serial model deployment, one failure stopped
+the remaining apply.
 
-The full-fat answer — a dynamic catalogue discovered from the upstream — was considered and
-rejected: pricing, routing, and structured-output capability are per-model code facts
-(`ModelPrice`), and a discovered model the code doesn't know would be unpriceable and uncallable.
-The investment isn't warranted.
+Dynamic upstream discovery was rejected because unknown models lack pricing,
+routing, and structured-output metadata. An operator-declared subset of the
+priced catalogue provides deployment-specific availability.
 
 ## Decision
 

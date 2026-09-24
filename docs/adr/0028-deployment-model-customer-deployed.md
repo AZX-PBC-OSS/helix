@@ -5,11 +5,13 @@
 
 ## Context
 
-Several earlier decisions were written implicitly against "our single hosted install on `azx.helix.azxlabs.io`" — most visibly architecture decision 11 ("custom domains rejected outright… apps live at `<app>.azx.helix.azxlabs.io`, **full stop**"), the ADR-0019 / issue #16 eTLD+1 split ("host untrusted apps on a separate registrable domain **we** own"), and the M5 framing of "the three planes on **Container Apps** [that we run]."
+Earlier documents assumed one hosted install at azx.helix.azxlabs.io. Helix is
+instead deployed as an independent instance in each customer's cloud, with their
+resources, domain, and identity provider. We do not operate customer instances.
 
-That framing is now wrong about the primary shape. The platform is **not** a SaaS product where customers are tenants on infrastructure we operate. It is **shipped software**: a full, independent instance of the platform is deployed into each customer's own cloud — their Azure, their resources, their domain, their IdP. We do not run customer instances.
-
-This was already foreseen — ADR-0022 chose a self-hosted, portable data plane precisely "because customers may run the platform on their own clouds," and `build-vs-buy` C8 records "not a multi-tenant SaaS business; an internal platform." This ADR elevates that from an aside to **the deployment model**, and parameterizes the decisions that were implicitly single-install.
+ADR-0022 already chose a portable self-hosted data plane. This ADR makes the
+customer-deployed model explicit and updates domain and deployment assumptions
+that were specific to our reference install.
 
 ## Decision
 

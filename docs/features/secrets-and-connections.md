@@ -2,12 +2,11 @@
 
 > **Related ADRs:** [ADR-0006](../adr/0006-secret-custody-seam.md) (secret custody seam) · [ADR-0005](../adr/0005-ssrf-egress-controls.md) (SSRF + secret injection) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (Postgres role split + RLS) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model).
 
-**What it is.** Third-party credentials the platform holds so a hosted app never
-does (architecture §6.1, §12; design `docs/design/secrets-and-connections.md`).
-A secret is stored sealed, referenced by name from a proxied origin
-(`capabilities.fetch.origins[].connection`), and injected server-side by
-`helix-egress` on the outbound hop — so an API key reaches the third party without
-ever reaching the browser, the edge, or the registry projection.
+The platform stores third-party credentials and references them by name in
+`capabilities.fetch.origins[].connection`. Egress resolves and injects the
+credential when making an outbound request. The browser, edge, and registry
+projection do not receive it. See architecture §6.1 and
+`docs/design/secrets-and-connections.md`.
 
 | Route | Who | What |
 | --- | --- | --- |
@@ -24,9 +23,8 @@ ever reaching the browser, the edge, or the registry projection.
   (`app_secret_grants`). "Global" never means "ambiently available": an app must
   both hold a grant *and* reference the secret in its manifest.
 
-A secret is the unit, and **one secret can back many connections** (it is not a
-bundle-per-app): it's the only model where "rotate the Stripe key once, all six
-apps follow" holds.
+One secret can serve several connections. Rotating it updates the credential used
+by every connection that references it.
 
 ### Injection recipes
 

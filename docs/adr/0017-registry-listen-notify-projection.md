@@ -5,7 +5,10 @@
 
 ## Context
 
-Every data-plane policy decision (resolve a slug to its serving entry, read a manifest's capabilities/visibility) needs the app registry on the hot path. The edge must be **stateless** and must stay up independently of the portal's availability; a per-request DB query for registry state is both a latency cost and a coupling to the control plane.
+The edge needs registry state for routing, visibility, and capability checks.
+It must keep serving independently of the portal. Querying the registry database
+on every request would add latency and make serving depend on that database's
+immediate availability.
 
 ## Decision
 

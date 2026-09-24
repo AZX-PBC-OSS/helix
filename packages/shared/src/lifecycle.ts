@@ -1,40 +1,16 @@
 /**
- * Graceful shutdown for the platform's server entrypoints.
+ * Graceful shutdown for server entrypoints. Fastify does not install signal
+ * handlers; server.ts uses this helper to close connections, pools, and
+ * telemetry on SIGTERM/SIGINT.
  *
- * Node's default handler for `SIGTERM`/`SIGINT` exits the process immediately:
- * before this module existed, nothing in any `onClose` hook ever ran — pools
- * were dropped unended, the final telemetry batch was lost, and every open
- * connection was cut mid-byte (on the edge, a truncated LLM stream for every
- * user mid-request on each revision swap). Fastify installs no signal handler
- * of its own, so the wiring lives in each `server.ts`, next to the boot code it
- * protects, through the one helper here.
+ * Fastify closes idle connections but waits for active requests. Long-lived
+ * SSE streams may outlast shutdown, so a hard deadline forces exit. The default
+ * 10-second grace period fits inside ACA's documented 30-second stop window.
+ * Signals may be missed and SIGKILL cannot be handled; the telemetry batch
+ * interval limits pending data loss in those cases.
  *
- * The shape is deliberate, in the order the graceful-shutdown TODO prescribed:
- *
- * 1. **A hard deadline is not optional.** Fastify 5 defaults
- *    `forceCloseConnections: 'idle'`, so `close()` drops idle keep-alives at
- *    once but *waits* on any connection with a request in flight — and the edge
- *    holds long-lived upstream SSE streams that will not finish under any
- *    grace period we would choose. Without the deadline, a 100 ms exit becomes
- *    a hang until the orchestrator `SIGKILL`s.
- * 2. **The deadline sits well inside the platform's documented window.** Azure
- *    Container Apps gives a stopped container 30 s from SIGTERM to SIGKILL —
- *    a documented, stable default — and its issue tracker shows it cannot be
- *    trusted with more (grace periods ignored on some paths, SIGTERM
- *    occasionally undelivered entirely). The default
- *    {@link DEFAULT_SHUTDOWN_GRACE_MS} is a third of that: the process exits
- *    before platform flakiness can intervene, and shortening the window is the
- *    only direction the platform honours reliably. Pinning
- *    `terminationGracePeriodSeconds` in `infra/azure` would be optional
- *    hardening — never a prerequisite for this to work.
- * 3. **The batch interval, not the handler, is the crash hedge.** A deadline
- *    covers only stops the process gets to react to; `BatchSpanProcessor`'s
- *    lowered `scheduledDelayMillis` (see `@azx-pbc/telemetry`) covers crashes,
- *    SIGKILL and never-delivered signals, which no handler can.
- *
- * Node-only (signals, timers, `process.exit`): exported as the
- * `@azx-pbc/shared/lifecycle` subpath, deliberately outside the browser-consumed
- * barrel — the same pattern as `./logging` and `./bodyCap`.
+ * Node-only: export through @azx-pbc/shared/lifecycle, outside the barrel used
+ * by browser code.
  */
 
 /** Structural logger — the pino surface, without importing Fastify. */

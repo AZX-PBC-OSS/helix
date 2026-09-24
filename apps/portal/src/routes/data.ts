@@ -39,26 +39,13 @@ function clampLimit(raw: unknown, fallback: number, max: number): number {
 }
 
 /**
- * Pick the export window from a **newest-first** query result: keep the newest
- * `max`, then emit them oldest-first.
+ * Select the newest max rows from a newest-first query, then emit oldest-first.
+ * This preserves recent submissions when the collection exceeds the export cap.
+ * Reverse the full selected window, including non-truncated results.
  *
- * The order the rows are *selected* in and the order they are *emitted* in are
- * two separate decisions, and conflating them is what made the first cut wrong —
- * it selected oldest-first and capped, which silently dropped every recent
- * submission from a drain while the UI reported the opposite. Selection has to be
- * newest-first: if a collection outgrows the cap, the rows an owner cannot afford
- * to lose are the ones that just arrived.
- *
- * Emission stays chronological for two reasons. A non-truncated export is then
- * byte-identical to what this route produced before, so the change is provably
- * "which rows" and not "what the file looks like". And `deriveCollectionColumns`
- * breaks equal-frequency ties by first appearance in array order, so holding the
- * scan oldest-first keeps the CSV's derived columns stable — not cosmetic, since
- * with more than `MAX_DERIVED_COLUMNS` eligible keys a tie at the last slot
- * decides which key gets a column at all.
- *
- * Note the whole window reverses, not just the truncated branch: reversing one
- * side only would leave short exports descending.
+ * Chronological output also keeps derived CSV columns stable: equal-frequency
+ * keys are ordered by first appearance, which can decide the last column when
+ * MAX_DERIVED_COLUMNS is reached.
  */
 export function exportWindow<T>(
   newestFirst: readonly T[],

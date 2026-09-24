@@ -29,22 +29,12 @@ export interface EgressPoolOpts {
 }
 
 /**
- * The single place egress Postgres pools are built (`PgBurnStore`,
- * `PgSecretResolver`). Egress is the mechanism plane — the only component
- * holding plaintext connection secrets — so a slow or stuck query must not be
- * able to hold a pooled connection open indefinitely and, in aggregate,
- * exhaust the pool. The timeout is enforced by Postgres itself, not a
- * client-side timer, so it survives even if the event loop is starved.
+ * Create egress pools with server-side query timeouts to prevent exhausted
+ * connections. An error listener handles dropped idle clients; without it,
+ * Node terminates on pg-pool's unhandled error event.
  *
- * **Every pool also gets an `'error'` listener, and that is load-bearing.**
- * When an *idle* pooled connection drops, `pg-pool` re-emits the error on the
- * Pool itself; with no listener Node treats it as an unhandled `'error'`
- * event and kills the process — turning a DB restart the service should ride
- * out into a fetch-proxy outage. The listener covers idle clients only; a
- * checked-out client is a second window this listener structurally cannot
- * see. Egress deliberately never calls `pool.connect()` (enforced in
- * `eslint.config.mjs`) — `Pool.query()` plugs its own temporary handler for
- * the checkout window.
+ * This listener does not cover checked-out clients. Egress uses pool.query
+ * rather than pool.connect, avoiding that separate error-handling window.
  */
 export function createEgressPool(databaseUrl: string, opts: EgressPoolOpts = {}): Pool {
   const statementTimeoutMs = opts.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS;

@@ -1,47 +1,24 @@
 /**
- * The Content-Security-Policy injected on every app response (architecture
- * §4.4). The baseline is static; an app's approved `externalOrigins` (manifest
- * capability, gated through the approvals write-gate — docs/design/approvals.md
- * §6.2) widen `connect-src`/`img-src` per app, and a same-origin `report-uri`
- * funnels violations to the edge sink.
+ * CSP for every app response (architecture §4.4, ADR-0009). Approved
+ * externalOrigins extend connect-src/img-src; report-uri sends violations to
+ * the edge. Apply it to all asset types because SVG, XHTML, and XML can execute
+ * scripts too.
  *
- * Two postures by design — the threat model is an *untrusted app*, so:
+ * Apps are untrusted. Restrict connections to approved destinations, forms to
+ * self, framing to none, and base URLs to self. form-action must be explicit;
+ * it does not inherit default-src. Inline scripts/styles, eval, wasm, and
+ * curated CDNs are allowed for generated-app compatibility. Open HTTPS images
+ * and navigation remain possible data-exfiltration channels.
  *
- * STRICT — data-flow directives. These are the containment and don't bend:
- * `connect-src 'self'` (the gateway is same-origin at /_api/*; everything
- * else is a declared capability), `form-action 'self'` (cross-subdomain CSRF
- * — §4.2; does NOT fall back to default-src), `frame-ancestors 'none'`,
- * `base-uri 'self'`.
+ * Keep unsafe-inline: the fetch shim and offline registration are inlined so
+ * they work on offline startup, and apps may have their own inline scripts.
+ * Adding a script hash or nonce makes CSP3 browsers ignore unsafe-inline.
  *
- * RELAXED — code-provenance directives. Blocking inline/eval in code we
- * already assume hostile buys nothing and breaks every single-file
- * vibe-coded app, so inline scripts/styles, eval, wasm and the curated CDN
- * allowlist are permitted; `img-src https:` stays open (navigation exfil
- * exists regardless — §4.4's honest trade-off).
- *
- * `'unsafe-inline'` in `script-src` is now **load-bearing for the platform**,
- * not only for apps: the fetch shim and the offline capability's worker
- * registration are inlined into the document (`serving/shim.ts`), because
- * `/_helix/*` is unprecachable and a `<script src>` there cannot load on an
- * offline cold boot. Do NOT "harden" that into a hash or nonce — under CSP3 the
- * presence of any hash or nonce source makes browsers **ignore**
- * `'unsafe-inline'`, which would break every app's own inline script. The
- * relaxation is the decision (ADR-0009); a hash would quietly reverse it.
- *
- * `worker-src 'self' blob:` covers dedicated and shared workers only — a `blob:`
- * URL can never register a SERVICE worker, which requires a same-origin http(s)
- * script URL. (An earlier version of this note claimed the relaxation was safe
- * *because* service workers were banned; that reasoning was wrong, and the two
- * are independent.) App-supplied service workers are refused at the asset
- * handler regardless, because a root-scoped one would observe the handoff token
- * on `/_auth/complete`; the offline capability (ADR-0035) registers a
- * platform-owned worker from a reserved route instead, and that worker is served
- * carrying this same policy — for a worker, the CSP on the script governs the
- * worker's own `fetch()`.
- *
- * The policy is attached to EVERY app response, not just HTML — any
- * browser-active document type (SVG, XHTML, XML) can carry script, and CSP
- * on inert assets is harmless.
+ * worker-src self/blob permits dedicated and shared workers. Service workers
+ * require HTTP(S) URLs; they cannot register from blob URLs. The asset handler
+ * rejects app-supplied service workers because a root-scoped worker could read
+ * the auth handoff URL. The offline worker is platform-owned and scope-limited
+ * (ADR-0035). This CSP also governs that worker's own fetch requests.
  */
 const CDN_ALLOWLIST = [
   "https://cdnjs.cloudflare.com",

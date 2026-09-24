@@ -2,7 +2,10 @@
 
 **Status:** Research memo v1 · 2026-09-11
 **Companion to:** [ADR-0045](../adr/0045-app-triggered-durable-jobs-plane.md) (the decision), `custom-backends.md` (the rung ladder this sits on), `fetch-proxy.md` and `secrets-and-connections.md` (the mechanism job #1 uses)
-**Why this exists:** ADR-0045 decides the shape of the jobs plane and deliberately leaves two things open — which runner implements it, and how the first job type reaches a model vendor. Both turn on findings that are too detailed for an ADR and too load-bearing to leave in a chat log. External claims here were verified against primary sources on the date above; anything reasoned from our own code says so.
+**Purpose:** Evaluate a job runner and the first job type's model-vendor access.
+ADR-0045 defines the jobs plane but leaves these implementation choices open.
+External claims were checked against primary sources on the date above;
+conclusions from repository code are identified separately.
 
 ---
 

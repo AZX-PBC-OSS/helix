@@ -160,23 +160,13 @@ export interface OidcLogger {
 
 /** openid-client implementation with never-throw boot discovery + retry. */
 /**
- * Did Entra replace the configured groups claim with a `_claim_names` pointer?
+ * Detect overage for the configured groups claim. Entra may replace a large
+ * group list with _claim_names/_claim_sources references. The edge does not
+ * resolve those references; it uses an empty group list and denies group apps.
  *
- * Above roughly 200 groups the claim is swapped for `_claim_names` /
- * `_claim_sources` referring the caller to Graph. The edge reads no groups in that
- * case and therefore denies every `group` app — fail-closed, which is right, but
- * indistinguishable from a bug, so it is worth a specific log line.
- *
- * The predicate asks whether the overage covers **our** claim, not merely whether
- * `_claim_names` exists at all. Testing for its bare presence attributed the wrong
- * cause on any deployment reading a different claim: on
- * `EDGE_OIDC_GROUPS_CLAIM=roles`, a user with no app-role assignment and an
- * unrelated `_claim_names` entry was told they had a group-overage problem —
- * sending an operator after Entra's 200-group limit when the real fix was one
- * assignment. Symmetrically, a genuine overage on a custom claim was missed.
- *
- * Extracted and exported only so it can be tested without standing up a token
- * exchange. The deny path does not consult it — `groups` is `[]` either way.
+ * Check the configured claim, not just the presence of _claim_names: unrelated
+ * overage must not be reported as the cause of a roles/custom-claim denial.
+ * This predicate controls diagnostic logging only and is exported for tests.
  */
 export function groupsClaimOverflowed(
   claims: Record<string, unknown>,

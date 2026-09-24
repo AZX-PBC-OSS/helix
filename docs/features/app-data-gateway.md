@@ -2,16 +2,15 @@
 
 > **Related ADRs:** [ADR-0015](../adr/0015-app-data-three-scope-model.md) (three-scope app-data) · [ADR-0002](../adr/0002-postgres-role-split-rls.md) (role split + RLS) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin `/_api/*` gateway) · [ADR-0010](../adr/0010-anonymous-shared-writes.md) (anonymous shared writes) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0023](../adr/0023-one-org-app-id-partitioning.md) (app-id partitioning) · [ADR-0041](../adr/0041-app-data-write-concurrency.md) (write concurrency: CAS on an opaque version, mandatory on `shared`) · [ADR-0042](../adr/0042-shared-prefix-grants-and-list-verb.md) (shared prefix grants + the list verb)
 
-**What it is.** `/_api/data/*` — the gateway's second capability (architecture §6.1, app-data
-design [§3/§5](../design/app-data-storage.md)). Untrusted apps get persistent storage without a
-backend of their own, in **three named access patterns** (not a symmetric KV — reader and
-writer can be different principals, so read and write are independent grants):
+`/_api/data/*` provides persistent storage for hosted apps without a custom
+backend (architecture §6.1; app-data design [§3/§5](../design/app-data-storage.md)).
+It supports three access patterns, with separate read and write permissions:
 
 - **`user`** (§3.1) — a per-user private store, auto-partitioned by the signed-in user. Public
   apps have no user scope.
 - **`collections`** (§3.2) — **append-only** from the app; the owner drains them via the portal.
-  There is deliberately **no app-facing read** — the absence is the security property.
-- **`shared`** (§3.3) — app-scoped, world-readable-within-the-gate keys. Rare and dangerous;
+  Apps cannot read collection entries, which prevents them from collecting other users’ submissions.
+- **`shared`** (§3.3) — app-scoped keys accessible to callers who pass the app’s access gate;
   a `sharedWrite` grant never implies `sharedRead`. Grants are literal keys or — since
   [ADR-0042](../adr/0042-shared-prefix-grants-and-list-verb.md) — **prefixes** covering every
   key that starts with them, which is how a shared namespace grows at runtime.

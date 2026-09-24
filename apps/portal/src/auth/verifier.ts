@@ -13,15 +13,10 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
  */
 
 /**
- * The authenticated principal behind a mutating request.
- *
- * Two halves, and the split is the point (ADR-0048): `oid` is the **identity
- * half** — Entra's `oid` claim, the directory object id, identical across
- * every app registration and therefore the one value that equals the edge
- * session's `user.oid` for the same human. `App.ownerId` stores it; `ownsApp`
- * and `scope=mine` compare it. `sub` is the **display/audit half** — the
- * subject collapsed to `email ?? preferred_username ?? sub`, human-readable,
- * stored as `AuditEvent.actor` and rendered; never compared, never joined on.
+ * Authenticated actor (ADR-0048). oid is the canonical principal used by
+ * App.ownerId, ownsApp, and scope=mine, matching the edge's principal claim.
+ * sub is the display/audit label (email ?? preferred_username ?? sub), stored
+ * as AuditEvent.actor. Never use that label for identity joins or access checks.
  */
 export interface Actor {
   /**

@@ -13,39 +13,19 @@ import { Prisma } from "../db/client.js";
 import { bumpSearchLimit, RATE_BUCKETS } from "../directory/rateLimit.js";
 
 /**
- * Admin session management (architecture §5.7, project plan §5.7): list the
- * live app-user sessions and revoke them, per user, across every app.
+ * Admin-only listing and per-user revocation of live app sessions.
+ * The edge looks up each session without caching, so deleting rows rejects the
+ * next request: navigations return to login and API requests receive 401.
  *
- * **Why this is a portal route and a table delete.** Sessions are server-side
- * precisely so revocation is real (Appendix A.4): the edge's gate consults
- * `session_lookup` on every request with no cache, so removing the row kills
- * the session on the *next* request — a 302 to login for navigations, a 401
- * for fetches, nothing to invalidate anywhere. That is also the whole
- * mechanism here: there is no edge change, no cookie blocklist, and no
- * "revoked" flag to project; the DELETE *is* the revocation.
+ * Revocation ends access based on stale group snapshots. It does not block a
+ * principal whose entitlement remains valid; that user can sign in again.
+ * Disable the account or remove membership in the identity provider to block
+ * future login. Both routes require admin because they expose identities and
+ * operate across apps.
  *
- * What the kill closes is ADR-0004's ISSUE-11 window: a user removed from an
- * Entra group keeps serving on the group snapshot captured at login/refresh
- * until the next silent refresh (≤ refresh interval; hard-capped at the
- * session TTL). Deleting the row ends it now — and re-login re-checks group
- * membership at the OIDC callback, so a user who actually lost the group
- * cannot get back in. **The kill revokes sessions, not principals**: a user
- * whose entitlement still stands simply logs in again, which is correct —
- * blocking a person is Entra's job (disable / group removal), and app-level
- * denial is the app archive (§410).
- *
- * **Both routes are `requireAdmin`** — the same gate and the same reasoning as
- * the gateway audit log (usage.ts): the rows carry a real name and address for
- * every app user of every hosted app, so "authenticated" is not enough. There
- * is no `ownsApp` half to grow into later, on purpose: sessions are not
- * per-app resources an owner holds, and the per-user kill spans apps by
- * definition. Per-app RBAC never gets a stake in this screen.
- *
- * Grant posture (migration 20260921120000): the portal holds SELECT + DELETE
- * on `sessions` and nothing else. It cannot mint a session (INSERT) or rebind
- * a `tokenHash` (UPDATE) — the handoff's single-use redeem stays edge-only by
- * grant, not just by convention. `role-split.integration.test.ts` holds that
- * line.
+ * The portal has only SELECT and DELETE on sessions (migration 20260921120000).
+ * It cannot create sessions or alter handoff token hashes. The role-split
+ * integration test verifies these grants.
  */
 
 /** Default page of live sessions; the sweeper bounds the table (~32 h dwell). */

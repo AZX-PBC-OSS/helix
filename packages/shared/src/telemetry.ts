@@ -171,29 +171,15 @@ export const DATA_LIST_DENIAL_REASONS = ["prefix_not_granted"] as const;
 export type DataListDenialReason = (typeof DATA_LIST_DENIAL_REASONS)[number];
 
 /**
- * Duration-histogram bucket boundaries, in milliseconds.
- *
- * OpenTelemetry's default explicit buckets top out at 10 000 ms. An LLM stream
- * routinely runs longer than that, so on the defaults every slow call lands in
- * the overflow bucket and p95/p99 answer nothing — a latency metric that looks
- * healthy because it cannot represent the tail is worse than none, the same
- * argument ADR-0037 decision 5 makes about a span ended at response headers.
+ * Duration buckets in milliseconds. LLM streams often exceed OTel's default
+ * 10-second upper bucket, so extend the range to measure tail latency.
  */
 /**
- * Max length of a recorded target path, before the ellipsis.
+ * Maximum recorded target-path length before the ellipsis. Match the
+ * gateway_calls.path cap on both edge and egress.
  *
- * The **same** bound the `gateway_calls.path` ledger column uses. Both planes
- * record `helix.target.path` for the same call, so a value that is capped on
- * the edge and raw on egress is one value with two lengths — and the edge's
- * comment at the span attribute says exactly why that must not happen: "the
- * span attribute and the `path` column cannot draw the line in different
- * places."
- *
- * The path is attacker-controlled — whatever the hosted app put in the URL —
- * and a span is a retained backend, so bounding it is the mitigation. It is
- * **not** sanitisation: plenty of APIs put a secret in a path segment
- * (Telegram `/bot<TOKEN>/…`), and no heuristic is applied, deliberately —
- * see `fetchPathOf` in `apps/edge/src/gateway/usage.ts` for the full reasoning.
+ * This bounds attacker-controlled retained data; it does not redact secrets
+ * embedded in path segments. See fetchPathOf in apps/edge/src/gateway/usage.ts.
  */
 export const TARGET_PATH_MAX = 512;
 

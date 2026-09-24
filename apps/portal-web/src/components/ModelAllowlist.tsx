@@ -7,23 +7,13 @@ import { Icon } from "./Icon";
 import { ToneBadge } from "./primitives";
 
 /**
- * The LLM model allowlist, picked from this deployment's **servable** set —
- * `GET /api/v1/capabilities`' `llm.models` (ADR-0036/ADR-0047) — rather than
- * typed blind, and rather than the bundle's build-time catalog: a model the
- * operator has withheld (or whose family has no seeded key) is never offered
- * as a checkbox, so an owner can't grant a model that would 404/502 at call
- * time. Rates still come from the bundle (`priceForModel`) — a price is a
- * per-model fact; only the list varies per deployment.
+ * Offer models from the deployment's /api/v1/capabilities catalogue
+ * (ADR-0036/0047); use bundled pricing for rates and daily-budget estimates.
+ * Keep estimate cells present with — until a budget is set to avoid layout shifts.
  *
- * One table with two halves: the static catalogue rate ($/Mtok) and the
- * budget-driven view (tok/day) of what the daily cap buys. A divider separates
- * them and the cap input lives in the header directly above the columns it
- * drives, so the control sits on its own data. The tok/day cells stay present
- * (showing `—` until a cap is set) so checking a row never reshapes the table.
- * Two off-list row classes keep saved state visible: a granted model the
- * deployment withholds renders flagged (uncheck to remove), and off-catalogue
- * customs keep the escape hatch — they're unpriced (the edge refuses them) and
- * route to admin approval.
+ * Preserve saved off-list models: flag withheld models and allow removal.
+ * Unknown custom models remain editable but are unpriced, require approval,
+ * and are refused by the edge.
  */
 
 /** The vertical rule splitting the static (catalogue) and dynamic (budget) halves. */

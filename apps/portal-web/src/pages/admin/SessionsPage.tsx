@@ -22,28 +22,14 @@ import { Hint, PageHead, Principal, Stat, ToneBadge } from "../../components/pri
 import { principalLabel, timeAgo, timeUntil } from "../../lib/format";
 
 /**
- * The admin Sessions screen (architecture §5.7): every live app-user session,
- * grouped by user, with one user-level kill.
+ * Group live sessions by user for admin revocation. Revoking a user deletes
+ * all their sessions across apps; the edge's uncached lookup rejects the next
+ * request. Display names and addresses captured at login identify the rows.
  *
- * Sessions are server-side (Appendix A.4), so the kill is a table delete — the
- * edge's uncached per-request lookup misses on the *next* request and the
- * browser's still-present cookie becomes a key to nothing. Nothing else needs
- * to happen, which is why this page is a list and a button rather than a
- * dashboard: the mechanism is one DELETE, and the value here is *aiming* it —
- * which is also why the rows carry the display half (name, address) captured at
- * login: `userOid` is an opaque principal id (Entra's `oid` claim since
- * ADR-0048; a pairwise `sub` on rows older than that) and identifies nobody
- * the platform can resolve.
- *
- * Grouping is client-side because the operation is user-level: one revoke
- * deletes every row of the subject, across apps. The group snapshot rides each
- * *session* row, not the user — a user's snapshots can differ across apps until
- * each one's silent refresh — so it renders per session, and an admin looking
- * at a group that was just revoked in Entra can *see* the staleness they are
- * about to kill.
+ * Show group snapshots per session because each app refreshes independently.
+ * An admin can then see stale membership before revoking sessions.
  */
 
-/** One user's sessions, folded from the flat list. */
 interface UserGroup {
   userOid: string;
   userName: string | null;

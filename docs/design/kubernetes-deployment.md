@@ -9,7 +9,9 @@
 
 ## 1. What's already portable (proven by the dev container)
 
-The codebase is unusually well-positioned for this: every Azure dependency already has a proven seam, because local development substitutes each one. The work is mostly _around_ the runtimes, not in them.
+Local development already replaces Azure dependencies through interfaces.
+A Kubernetes deployment can reuse those interfaces; most work concerns
+infrastructure and configuration rather than service code.
 
 - **The three runtimes are stateless, env-configured containers.** Edge and egress carry zero Azure SDK dependencies (hand-rolled REST over `fetch`/undici); portal alone uses `@azure/identity` + `@azure/storage-blob`. Images are already published to public GHCR and pulled anonymously.
 - **OIDC is a generic issuer swap, with one claimed name.** `EDGE_OIDC_*` / `PORTAL_OIDC_*` point at any compliant issuer; `apps/dev-idp` proves the swap is env-only. One caveat (ADR-0048, as amended): the canonical principal id is read from one claim — Entra's `oid` by default, `EDGE_OIDC_PRINCIPAL_CLAIM`/`PORTAL_OIDC_PRINCIPAL_CLAIM` for an issuer whose stable id lives elsewhere (Keycloak/Okta/dex/Google: their own `sub`, gated behind an explicit allow-flag). **Both services must be set to the same claim.**

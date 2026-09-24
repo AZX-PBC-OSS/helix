@@ -58,12 +58,9 @@ param portalAccessPrincipalIds array = []
 @description('Object (principal) id of the portal container app\'s user-assigned managed identity — the `portalIdentityPrincipalId` output of the sibling ../azure stack. Non-empty GRANTS it the GroupMember.Read.All Microsoft Graph application permission (ADR-0040 decision 4), which is the group picker\'s only directory credential. Empty on a first pass, because the Azure stack does not exist yet and has no identity to name; fill it on a second pass. Presence IS the grant, deliberately — the same idiom as edgeAccessPrincipalIds, and for the same reason: it makes "granted but pointed at nothing" unexpressible. NOTE this needs a deploy principal that can consent (Privileged Role Administrator / Global Administrator, or AppRoleAssignment.ReadWrite.All) — an app owner is NOT enough, same bar as grantAdminConsent.')
 param portalIdentityPrincipalId string = ''
 
-// Whether Entra refuses a token to an unassigned user. DERIVED from the lists
-// above rather than a separate flag, deliberately: the hazard with this switch is
-// enabling it before anyone is assigned, which locks out every user of the install
-// until you finish assigning. Deriving it makes that ordering unexpressible — the
-// requirement and the assignments land in the same deployment, or neither does.
-// Leaving both lists empty preserves the original open behaviour exactly.
+// Require assignments only when the corresponding list is non-empty, so the
+// restriction and initial assignments are deployed together. Empty lists keep
+// sign-in open to directory members, including guests.
 var edgeRequireAssignment = !empty(edgeAccessPrincipalIds)
 var portalRequireAssignment = !empty(portalAccessPrincipalIds)
 
@@ -366,32 +363,17 @@ resource portalSelfConsent 'Microsoft.Graph/oauth2PermissionGrants@v1.0' = if (g
 // ---------------------------------------------------------------------------
 // The one admin-consented Graph permission (ADR-0040 decision 2 + 4)
 // ---------------------------------------------------------------------------
-// Group visibility stores group GUIDs, so the portal needs to turn GUIDs into
-// names and let an operator search for a group by name. That is the ONLY thing
-// this grant is for, and it is deliberately the narrowest permission that can do
-// it. Grantee is the portal's MANAGED IDENTITY, not any registration above — a
-// credential that already exists, with nothing to rotate, and one the tenant's
-// app management policy cannot refuse (it bans client secrets; see the probe).
-//
-// GroupMember.Read.All, not Group.Read.All and not Directory.Read.All. This was
-// settled empirically, not from the docs: across sixteen probes Group.Read.All
-// showed ZERO incremental capability, including the query the whole design hinged
-// on — `GET /groups?$search="displayName:…"&$count=true` with
-// `ConsistencyLevel: eventual`, which returns 200 under the narrow permission.
-// Group.Read.All's consent string additionally grants group *conversations*, which
-// we will never call, so asking for it is indefensible in front of the customer
-// administrator we have to persuade. Evidence:
+// Grant the portal managed identity group search and name resolution
+// (ADR-0040 decisions 2 and 4). The permission probe found GroupMember.Read.All
+// sufficient; Group.Read.All added no needed capability. Evidence:
 // docs/reviews/2026-08-20-entra-group-permissions-probe.md.
 //
-// Be honest about the blast radius rather than reassured by the wording: "Read all
-// group memberships" does include `GET /groups/{id}/members` for every group in the
-// tenant (probe §7). What bounds us is not the grant but our usage — the
-// packages/directory seam exposes searchGroups + getGroups and NO member
-// enumeration, read app-only from the control plane, never from the edge (ADR-0003).
+// This permission also allows tenant-wide member enumeration. packages/directory
+// restricts its interface to searchGroups/getGroups and exposes no members API.
+// The edge never holds this Graph credential.
 //
-// Declaring this resource IS the admin consent; there is no separate approval step.
-// It is keyed off portalIdentityPrincipalId rather than a bool because the grant is
-// meaningless without a specific identity to hang it on.
+// Creating the assignment grants admin consent. Require a concrete principal id
+// so the grant cannot be enabled without its intended identity.
 var graphGroupMemberReadAllRoleId = '98830695-27a2-44f7-8c18-0c3ebc9698f6' // GroupMember.Read.All, application. Same id in every tenant.
 
 resource portalGraphGroupRead 'Microsoft.Graph/appRoleAssignedTo@v1.0' = if (!empty(portalIdentityPrincipalId)) {

@@ -1,9 +1,8 @@
 # Observability
 
-What the platform emits about **itself** today, and where it goes. Hosted apps
-are out of scope — per-app telemetry is a product surface with a tenancy model,
-deliberately deferred ([ADR-0037](../adr/0037-platform-observability-otlp-boundary.md)
-decision 11).
+This document lists platform logs, traces, and metrics. Telemetry for hosted apps
+is deferred because it needs a separate product and tenancy model
+([ADR-0037](../adr/0037-platform-observability-otlp-boundary.md), decision 11).
 
 Design: ADR-0037 (traces + metrics, and the OTLP-only boundary) and
 [`docs/design/logging.md`](../design/logging.md) (levels, correlation, the
@@ -17,11 +16,9 @@ Design: ADR-0037 (traces + metrics, and the OTLP-only boundary) and
 | **Traces** | OTLP/HTTP | Whatever `OTEL_EXPORTER_OTLP_ENDPOINT` names |
 | **Metrics** | OTLP/HTTP | Same |
 
-**Services speak OTLP and nothing else.** No vendor telemetry SDK appears in
-`apps/` or `packages/` — the destination is configured in `infra/azure`, and
-changing backends is a Bicep edit. Under ADR-0028's customer-deployed model that
-is not hypothetical: an operator running this on something other than Azure, or
-already standardised on Grafana or Datadog, should not need a code change.
+Services export traces and metrics through OTLP. Vendor telemetry SDKs stay out
+of `apps/` and `packages/`; `infra/azure` configures the destination. Operators
+can use a different telemetry backend without changing service code.
 
 ## Off unless configured
 

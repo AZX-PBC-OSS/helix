@@ -7,11 +7,10 @@ that ADR covers traces and metrics and **defers the OpenTelemetry log bridge**
 
 ## The shape
 
-Every Fastify service builds its logger from one factory,
-`loggerOption(nodeEnv, { prefix, mixin })` in
-[`packages/shared/src/logging.ts`](../../packages/shared/src/logging.ts). It is a
-function rather than an inline literal so the test-quiet branch is assertable —
-otherwise nothing catches a service that silently reverts to `logger: true`.
+Every Fastify service uses `loggerOption(nodeEnv, { prefix, mixin })` from
+[`packages/shared/src/logging.ts`](../../packages/shared/src/logging.ts).
+The shared factory makes log configuration consistent and lets tests verify
+that logging stays quiet under NODE_ENV=test.
 
 Lines are `pino.<level>(fields, message)`: an object first, a lowercase human
 message second. That is already universal across ~75 call sites; keep it.

@@ -1,45 +1,16 @@
 /**
- * The trust-proxy self-report (ADR-0011, 2026-09-23 amendment): turn "did the
- * forwarded walk ever move past the socket peer" into a `/health` sub-check an
- * operator and an alert rule read.
+ * Reports whether proxy address resolution works (ADR-0011, 2026-09-23).
+ * A valid trustProxy setting can still name the wrong network, leaving req.ip
+ * at the ingress address and combining users into one rate-limit/audit bucket.
  *
- * The failure it exists for is not a malformed `EDGE_TRUST_PROXY` — the boot
- * guards in `config.ts` (`parseTrustProxy`) and `main.bicep`
- * (`trustProxyIsAddress`) already refuse those. It is the **well-formed value
- * pointed at the wrong network**, which is exactly what shipped on M5: `auto`
- * resolved to the apps subnet, the ACA ingress actually connects from the RFC
- * 6598 range (`100.100.x.x`), so the edge trusted nothing, every `req.ip`
- * collapsed to the Envoy pod, and all three per-IP consumers — the anon
- * limiter, the login throttle, the collection audit hash — bucketed per
- * ingress pod with `/health` green throughout. No config check can catch that
- * (the config was internally consistent); only watching the *behaviour* can.
+ * Sample requests with non-empty X-Forwarded-For and check whether req.ip differs
+ * from the socket peer. Exclude direct probes and local requests without that
+ * header, where equality is expected. A ring of the last N samples detects
+ * failures that begin after startup; updates cost O(1) per request.
  *
- * The behaviour, in one question: **did `req.ip` ever differ from
- * `req.socket.remoteAddress` on a request that arrived through a proxy?** Not
- * "is `req.ip` plausible" and not "is it inside the configured CIDR" — both of
- * those pass on the broken config, since the config is the very thing being
- * graded.
- *
- * The denominator is **forwarded requests only** (a non-empty
- * `X-Forwarded-For`). ACA liveness/readiness probes, `containerapp exec` curls
- * and local dev carry no forwarded header, and for them `req.ip === socket
- * peer` is *correct* — counting them would degrade a quiet install for no
- * reason. Anything genuinely not behind a proxy also stays `ok` forever, which
- * is the right answer there too.
- *
- * Windowed, not latched, on purpose. Counting since boot would stay `ok` for
- * the life of the process once one request resolved — enough for a config
- * mistake (a config change is a new revision and a new process), but blind to
- * Azure moving the ingress range *under* a running replica. A ring of the last
- * N forwarded samples re-arms: the walk can stop resolving later and the check
- * goes bad again. Cost is O(1) per request — one counter increment and one
- * ring write — because this sits on the hot path of every hosted app.
- *
- * Known shape this accepts: a client that reaches the edge *directly* (not
- * through the ingress) while sending `X-Forwarded-For` also records unresolved
- * samples. On the deployed topology the container has no public address and is
- * only reachable through the ingress, so forwarded-header traffic that never
- * resolves **is** the anomaly, not noise to filter out.
+ * Direct clients sending X-Forwarded-For also count as unresolved. In the
+ * Azure deployment, the edge is reachable only through ingress, so repeated
+ * unresolved forwarded requests indicate a configuration or routing problem.
  */
 import type { ObservableResult } from "@opentelemetry/api";
 import type { HealthCheck } from "@azx-pbc/shared";

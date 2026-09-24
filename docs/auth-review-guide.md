@@ -1,14 +1,10 @@
 # Reviewer's guide: the auth & authorization surface
 
-This is a hand-off doc for reviewing **authentication and authorization** across the
-platform. It started life as the M3 handoff-token review and has grown with the surface:
-the OIDC handoff is still the crux, but the gate now fronts the `/_api/*` gateway, there is
-a second same-origin front door (shared-password apps), an anonymous tier for public apps,
-and a signed trust hop from the edge to `helix-egress`. This is the most security-sensitive
-code in the platform, and the project plan calls for a dedicated review pass before things
-build on it (project plan §6, architecture Appendix A.3). Read this first; it tells you
-what the code is trying to do, where the load-bearing pieces are, the invariants that must
-hold, and what to attack.
+Use this guide to review authentication and authorization: OIDC handoff,
+shared-password access, public callers, gateway permissions, and signed
+edge-to-egress instructions. It identifies implementation files, required
+invariants, and adversarial test cases. Auth changes require a dedicated review
+(project plan §6, architecture Appendix A.3).
 
 **Background you need:** `docs/platform-architecture.md` §4.2 (Authentication), §6
 (the gateway), and **Appendix A** (the full flow, step by step). The feature-level
@@ -25,14 +21,12 @@ it references its step numbers.
 
 ## 1. The one-paragraph model
 
-Apps are untrusted static files on per-app subdomains (`<slug>.azx.helix.azxlabs.io`;
-`<slug>.local.helix.azxlabs.io` in dev). The edge terminates auth so apps ship zero auth code. A user
-with no session is bounced to a **central** auth host (`auth.<base>`) because Entra allows
-only one registered callback — so auth completes on the *wrong* host and a **one-time
-handoff token** carries the authenticated state across to the app's own host, where a
-host-scoped `__Host-session` cookie is finally minted. The handoff token is the crux:
-**signed, 30 s, single-use, audience-bound**. Get its state validation, burning, and
-audience checks exactly right and the design holds; get any one wrong and it breaks.
+Apps are untrusted static files on separate subdomains. The edge authenticates
+visitors through a central auth host because Entra requires exact registered
+callback URLs. A signed, single-use, audience-bound handoff token with a
+30-second lifetime transfers the login result to the app host. Redemption creates
+a host-only __Host-session cookie. Review state validation, atomic redemption,
+and audience checks together.
 
 Three separate auth surfaces; don't conflate them:
 

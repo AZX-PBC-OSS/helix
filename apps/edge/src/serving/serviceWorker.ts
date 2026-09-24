@@ -26,27 +26,14 @@ import { jsonInline } from "./shim.js";
 export const SW_PATH = "/_helix/sw.js";
 
 /**
- * Query parameter carrying the registration's scope on the worker script URL.
+ * Carry the registration scope in the worker script URL. Browsers re-check
+ * Service-Worker-Allowed on every update; without it, the maximum scope falls
+ * back to /_helix/ and an existing /app/ registration cannot update.
  *
- * The scope has to travel in the URL because of how the spec's **Update**
- * algorithm works: `Service-Worker-Allowed` is re-read from the script response
- * on *every* update check, not just at registration, and absent it the maximum
- * scope falls back to the script's own directory — `/_helix/`. A registration
- * scoped `/app/` then fails the max-scope test with a `SecurityError` and the
- * response is never installed.
- *
- * That is fatal for the tombstone specifically ({@link buildTombstoneScript}),
- * which by definition is served when the grant is *gone* and there is no scope
- * left to read off the manifest. Without a self-describing URL, revocation and
- * archive silently do nothing: the old worker stays installed and keeps serving
- * its cache. So the registration bakes its scope into the script URL, and the
- * route echoes it back — the tombstone needs no stored state at all.
- *
- * It is safe because the value is never trusted: the route runs it through
- * `isValidServiceWorkerScope` before emitting it (so it can neither be root, a
- * `_` platform namespace, nor carry a header-injection payload), and the *real*
- * worker is served only when it matches the app's granted scope. A request
- * naming any other scope gets the tombstone, which unregisters itself.
+ * Revocation removes the manifest grant, so the tombstone must recover scope
+ * from the URL. Validate it with isValidServiceWorkerScope before returning a
+ * header. Serve the real worker only for the currently granted scope; other
+ * valid scopes receive a self-unregistering tombstone.
  */
 export const SW_SCOPE_PARAM = "scope";
 

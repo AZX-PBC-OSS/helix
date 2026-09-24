@@ -5,7 +5,9 @@
 
 ## Context
 
-v1 serves a single organization. Multi-org tenancy may come later. The common failure is to bake single-tenant assumptions in so deeply that adding tenants becomes a migration nightmare — or to build multi-org machinery now that nothing uses.
+v1 serves one organization. Data should be partitioned by app now so future
+organization-level tenancy can be added without building unused multi-org
+administration in v1.
 
 ## Decision
 

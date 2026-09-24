@@ -2,10 +2,9 @@
 
 > **Related ADRs:** [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps).
 
-**What they are.** Reference apps under `examples/` that you can `helix deploy` to the platform —
-the canonical answer to "what does a hosted AZX app look like?" They are **static frontends
-only**; every dynamic capability flows through the edge gateway at `/_api/*`. Full notes:
-[`examples/README.md`](../../examples/README.md).
+`examples/` contains deployable static frontends demonstrating Helix capabilities.
+Dynamic requests use the `/_api/*` gateway. See the
+[examples README](../../examples/README.md) for build and deploy instructions.
 
 | App | What it demonstrates | Gateway |
 | --- | --- | --- |

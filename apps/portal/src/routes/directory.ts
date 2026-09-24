@@ -16,56 +16,29 @@ import { bumpSearchLimit, RATE_BUCKETS, SEARCH_LIMIT } from "../directory/rateLi
 import { directorySearchAllowed, directorySearchTier } from "../policy/directoryPolicy.js";
 
 /**
- * Directory group lookup for the Access tab's group picker (ADR-0040 §4).
+ * Directory lookup for the Access tab (ADR-0040).
  *
- * **This is a new information-disclosure surface the platform adds to itself**,
- * distinct from anything Graph does: search turns a three-letter term into group
- * display names from anywhere in the tenant. It cannot be narrowed with `ownsApp`
- * — the picker is needed at app-*create* time, before an app exists — and portal
- * reads are still authenticated-only under ADR-0007 (per-app RBAC is the
- * outstanding `PreviewBadge`). So it ships restrictive on four axes, all of which
- * ADR-0040's consequences commit to: a minimum query length so there are no
- * bare-prefix directory dumps, a hard result cap, a per-actor rate limit, and an
- * audit row. Loosening any of them later is easy; tightening after someone depends
- * on it is not.
+ * Search exposes tenant-wide group names. It is needed before an app exists, so
+ * it cannot use `ownsApp`. It requires authentication, a minimum query length,
+ * a result cap, a per-actor rate limit, and an audit record.
  *
- * **Who may search at all is a deployment setting** — `PORTAL_DIRECTORY_SEARCH`,
- * decision 11, resolved in `../policy/directoryPolicy.ts`. It defaults to
- * `everyone`, which is the posture described above and the one ADR-0040 shipped;
- * `admins` and `none` narrow it.
+ * `PORTAL_DIRECTORY_SEARCH` controls who may search: everyone (default), admins,
+ * or nobody. `my-groups` resolves only the caller's verified group claim and is
+ * not subject to that policy. App-scoped resolution additionally requires
+ * owner-or-admin when search is restricted.
  *
- * The tier gates the search route outright. It does **not** gate `my-groups`,
- * which resolves the group claim on the caller's own verified token and so
- * genuinely hands back nothing new. The app-scoped resolve sits between the two
- * and is discussed at the route itself: a first pass excused it with the same
- * "nothing the caller could not already read" argument, which turned out to be
- * false, so on a restricted deployment it additionally requires owner-or-admin.
- *
- * Neither route can 500 on an unconfigured or unconsented directory: the provider
- * reports absence as a value and both routes answer **200 with
- * `available: false`** (decision 8). The Access tab then falls back to free-text
- * group ids behind a banner naming the missing permission, and group visibility
- * keeps working end to end — enforcement never depended on Graph, only the picker
- * does.
+ * An unconfigured or unconsented provider returns 200 with `available: false`.
+ * The UI then offers manual group-id entry. Group access enforcement does not
+ * depend on the directory provider.
  */
 
 /**
- * Require owner-or-admin on the app-scoped resolve, but **only where a tier is
- * actually set** (ADR-0040 decision 11).
+ * Require owner-or-admin for app group resolution when search is restricted
+ * (ADR-0040 decision 11). With the default `everyone` policy, any authenticated
+ * reader can resolve names for the app-table group badges.
  *
- * Conditional rather than always-on, because the resolve has a second consumer:
- * `GroupVisibilityBadge` (`apps/portal-web/src/components/primitives.tsx`) names
- * an app's groups on hover from the apps table, for *any* row the caller can see.
- * Gating unconditionally would degrade that to "unknown group" on every
- * deployment — including the `everyone` default, which by definition has no
- * disclosure posture to enforce. Paying a UX cost where there is no benefit is
- * how a security control gets removed later by someone who only sees the cost.
- *
- * `ownsApp` is reused verbatim rather than reimplemented as an `ownerId` compare:
- * it already allows owner-**or**-admin, already fails closed on a null `ownerId`,
- * and already emits the ownership-denied warn line. Its own 404-on-missing-app
- * also fires before the handler's, which keeps "no such app" indistinguishable
- * from "not yours" for a caller probing slugs.
+ * Reuse `ownsApp` for its admin override, null-owner denial, denial logging,
+ * and 404 response for missing or inaccessible apps.
  */
 async function ownsAppWhenSearchRestricted(req: FastifyRequest): Promise<void> {
   if (directorySearchTier() === "everyone") return;

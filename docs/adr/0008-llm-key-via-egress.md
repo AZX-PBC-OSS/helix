@@ -5,7 +5,9 @@
 
 ## Context
 
-The `/_api/llm/chat` proxy needs the vendor key, but the edge must never hold a secret (ADR [0001](0001-three-runtime-split.md)). Early development needed `pnpm dev:edge` to work without a running egress service.
+The LLM gateway needs a vendor credential, which must stay out of the edge
+(ADR-0001). Early local development allowed the edge to call the vendor without
+a running egress service; this ADR removes that fallback.
 
 ## Decision
 

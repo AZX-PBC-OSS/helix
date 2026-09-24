@@ -65,26 +65,10 @@ interface PluginLog {
 }
 
 /**
- * Build from the environment and **say which backend won, every time.**
- *
- * That log line is not decoration. Group names are not stored anywhere, so the
- * only evidence of which directory answered a search is the answer itself — and
- * a fixture-backed picker looks exactly like a working one, just with different
- * groups in it. Without this line, "my tenant's groups aren't showing up" is
- * indistinguishable from "that group doesn't exist" and from "the Graph grant is
- * missing", and the first thing anyone reaches for is the Entra config, which is
- * the one thing that is fine.
- *
- * Fixtures log at `warn`, not `info`: on a developer machine pointed at a real
- * tenant for auth — which is a normal setup — fixtures are almost certainly not
- * what was wanted.
- *
- * The **search tier** rides the same line (ADR-0040 decision 11). Same argument
- * one axis over: a caller who may not search sees a picker with no search box,
- * which looks identical to a directory that has nothing to say, and the tier is
- * the only thing that distinguishes them. An unrecognised value additionally
- * warns on its own line, because it means an operator tried to set a posture and
- * got a different one.
+ * Log the selected directory backend and search policy at boot so operators can
+ * diagnose missing groups or a hidden search box. Warn for fixture mode, which
+ * may be unintended when local authentication uses a real tenant. Also warn
+ * when an unrecognized policy value falls back to a different setting.
  */
 function buildFromEnv(log: PluginLog): DirectoryProvider {
   const search = directorySearchPolicy();

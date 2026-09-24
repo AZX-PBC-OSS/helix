@@ -5,7 +5,10 @@
 
 ## Context
 
-Helix hosts untrusted, vibe-coded AI apps. The two capabilities most dangerous to co-locate with a public-facing process are *plaintext third-party secrets* and *an unrestricted outbound network*. A single process means shared fate: a bug in the public-facing path exposes control-plane memory and secrets, and every control-plane deploy restarts the data path (killing in-flight LLM streams).
+Helix hosts untrusted apps. A public-facing process that also holds third-party
+credentials and unrestricted network access would expose both after a compromise.
+Running administration in the same process would also restart active app requests
+on every control-plane deploy.
 
 ## Decision
 

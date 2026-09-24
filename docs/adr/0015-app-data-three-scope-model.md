@@ -5,7 +5,9 @@
 
 ## Context
 
-Apps need persistent storage, but a naïve key/value store lets a hostile app harvest other users' data (the "contact-harvester": a form that collects submissions the app author then reads back). The storage model has to make that structurally impossible, not policy-dependent.
+Apps need persistent storage with different read and write permissions. A form
+may accept submissions without allowing app code to retrieve other visitors'
+submissions. A single shared read/write store would not enforce that separation.
 
 ## Decision
 

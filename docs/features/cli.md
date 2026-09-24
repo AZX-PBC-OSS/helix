@@ -2,10 +2,11 @@
 
 > **Related ADRs:** [ADR-0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) (portal/CLI JWT) · [ADR-0018](../adr/0018-deploy-model-immutable-versions.md) (immutable versions).
 
-**What it is.** `helix` (`packages/cli`, `@azx-pbc/helix-cli`) is a **per-app** deploy CLI — you run it
-from inside an app's directory, like `git` or `vercel`. It reads that app's `helix.json`, zips the
-build output, uploads it to the portal as a new version, and manages the live pointer. M3 added
-browser sign-in via the OIDC device flow. Full reference: [`packages/cli/README.md`](../../packages/cli/README.md).
+Run `helix` from an app's directory. It reads `helix.json`, packages the build
+output, uploads a version, and supports promotion and rollback. Sign in with
+`helix login` using the OIDC device flow. The CLI lives in `packages/cli` and is
+published as `@azx-pbc/helix-cli`; see its
+[reference](../../packages/cli/README.md).
 
 ## How it works
 
@@ -21,13 +22,11 @@ handled in `packages/cli/src/config.ts` / `args.ts`:
 | build dir | `--dir` | — | `dir` | `dist` |
 | token | `--token` | `HELIX_TOKEN` | — | _(`helix login` cache)_ |
 
-The portal URL is the one setting whose default is a trap: `http://localhost:3001`
-is right only for a portal on the same machine, and nothing about the failure says
-so. Against a deployed portal it must be set — as `portalUrl` in `helix.json` for
-anything persistent, since `login`, `create`, `deploy` and `promote` all resolve it
-the same way. The portal's **How to develop → On your machine** tab prints that
-file with this deployment's URL already in it, and so does the agent skill
-([onboarding.md](./onboarding.md)).
+The default portal URL, `http://localhost:3001`, works only for local development.
+For a deployed portal, set `portalUrl` in `helix.json` so login, create, deploy,
+and promote use the same endpoint. **How to develop → On your machine** provides
+a ready-to-copy file for this deployment, as does the
+[agent skill](./onboarding.md).
 
 ### Commands (`packages/cli/src/commands.ts`)
 
