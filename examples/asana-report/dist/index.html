@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>Asana Activity Report · AZX</title>
+    <script type="module" crossorigin src="./assets/index-CSVSraeS.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CnGqDTMf.css">
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>Asana Activity Report</h1>
+        <p id="whoami" class="whoami">…</p>
+      </header>
+
+      <nav class="tabs" aria-label="Sections">
+        <button id="tab-generate" type="button" class="tab active">New report</button>
+        <button id="tab-reports" type="button" class="tab">Reports</button>
+      </nav>
+
+      <!-- Generating needs the signed-in user's Asana connection. -->
+      <section id="view-generate" class="view">
+        <div id="connect-row" class="connect-row" hidden>
+          <p id="connect-status">
+            Connect your Asana account to generate reports — a popup asks Asana for
+            read access, and the platform stores the token server-side. Reading
+            reports below needs no connection.
+          </p>
+          <button id="connect-btn" type="button">Connect Asana</button>
+        </div>
+
+        <form id="gen-form" class="gen-form">
+          <label>
+            Workspace
+            <select id="wsp-sel"><option value="">Loading…</option></select>
+          </label>
+          <label>
+            Project
+            <select id="proj-sel"><option value="">Pick a workspace first</option></select>
+          </label>
+          <label>
+            From
+            <input id="start-date" type="date" required />
+          </label>
+          <label>
+            To
+            <input id="end-date" type="date" required />
+          </label>
+          <button id="gen-btn" type="submit">Generate report</button>
+        </form>
+
+        <p id="gen-status" class="status" role="status"></p>
+
+        <article id="report-view" class="report-view" hidden>
+          <div class="report-head">
+            <h2 id="report-title"></h2>
+            <p id="report-meta" class="meta"></p>
+          </div>
+          <div id="report-body" class="markdown"></div>
+        </article>
+      </section>
+
+      <!-- Reading needs nothing but the app gate — no Asana connection. -->
+      <section id="view-reports" class="view" hidden>
+        <div id="reports-list" class="reports-list"></div>
+        <article id="report-detail" class="report-detail" hidden>
+          <button id="close-detail" type="button" class="linkish">← All reports</button>
+          <div class="report-head">
+            <h2 id="detail-title"></h2>
+            <p id="detail-meta" class="meta"></p>
+          </div>
+          <div id="detail-body" class="markdown"></div>
+        </article>
+      </section>
+
+      <p class="footnote">
+        Activity is read through the platform's fetch proxy — the app bundle never sees your
+        Asana token. Disconnect anytime from the portal's <strong>My Connections</strong> page.
+      </p>
+    </main>
+  </body>
+</html>

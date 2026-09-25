@@ -17,6 +17,7 @@ Dynamic requests use the `/_api/*` gateway. See the
 | `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the transparent shim. | `/_api/fetch/*` |
 | `helix-help` | A docs-grounded chatbot: fetches the public docs site's markdown pages at runtime through the proxy, embeds them in the system prompt, and answers over the OpenAI-compatible surface — no key, no RAG. | `/_api/fetch/*` + `/_api/openai/v1/*` |
 | `offline` | Cold-boots with no network on the platform's scope-confined service worker; six probes separate what the platform caches from what the app still owns. | — (`/_helix/sw.js`) |
+| `asana-report` | Reads a real Asana project's activity (stories per task, range-filtered) through a provider-bound connection and streams a `gpt-5-nano` report into shared storage; reports list/read without any connection. | `/_api/fetch/*` + `/_api/llm/chat` + `/_api/data/*` |
 
 ## How they fit the platform
 

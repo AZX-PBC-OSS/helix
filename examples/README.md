@@ -22,6 +22,7 @@ shim, `oauth-demo` exercises the M4.5 delegated OAuth connections (ADR-0031), an
 | [`oauth-demo`](./oauth-demo)     | Exercises **delegated OAuth connections** against the fixture vendor — consent via `window.helix.connect`, then a provider-bound call with the token injected server-side. |
 | [`helix-help`](./helix-help)     | A docs-grounded chatbot: loads the public docs site at runtime through the fetch-proxy and answers over the OpenAI-compatible surface — no key, no RAG. |
 | [`offline`](./offline)           | Cold-boots with no network via the platform's scope-confined service worker, and shows what the app still owns. |
+| [`asana-report`](./asana-report) | Asana project activity → an AI-written report: delegated OAuth consent (`window.helix.connect`), provider-bound proxy calls, the LLM gateway, and shared prefix grants + the list verb. |
 
 Each app is a **standalone project** built with [Vite](https://vite.dev) — they
 are deliberately *not* part of the pnpm workspace, since they model the
