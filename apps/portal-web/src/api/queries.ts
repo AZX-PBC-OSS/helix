@@ -15,6 +15,7 @@ import {
   DevTokenMetadataSchema,
   GatewayAuditPageSchema,
   HealthStatusSchema,
+  MyConnectionsResponseSchema,
   PasswordCredentialResponseSchema,
   PlatformUsageSchema,
   PortalMeResponseSchema,
@@ -349,4 +350,19 @@ export const appVisibilityGroupsQuery = (slug: string) =>
 export const sessionsQuery = queryOptions({
   queryKey: ["sessions"],
   queryFn: () => fetchJson(SessionListResponseSchema, "/api/v1/sessions"),
+});
+
+/**
+ * The signed-in user's own provider connections (My Connections, I-02
+ * T-0024) — metadata only; the sealed material is structurally absent from
+ * the server's shape. Bearer-gated server-side like the rest of `/api/v1`.
+ *
+ * No `staleTime` — the default (0) is the point: this page's Disconnect
+ * explains what Helix still holds, and what it shows must be what the server
+ * would act on now. The page adds the visibility-aware 30 s cadence (criterion
+ * 46), which belongs to the screen, not the resource.
+ */
+export const myConnectionsQuery = queryOptions({
+  queryKey: ["connections", "mine"],
+  queryFn: () => fetchJson(MyConnectionsResponseSchema, "/api/v1/connections/mine"),
 });

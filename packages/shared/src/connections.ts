@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { EnvSchema } from "./env.js";
-import { ScopeTokenSchema } from "./providers.js";
+import { BoundAppSchema, ProviderRefSchema, ScopeTokenSchema } from "./providers.js";
 
 /**
  * User connections — the per-user consent substrate (I-02, ADR-0006 §Shared
@@ -123,3 +123,54 @@ export type UserConnection = z.infer<typeof UserConnectionSchema>;
  * apps/edge/src/registry/listener.ts duplicates 'helix_registry_changed').
  */
 export const PROVIDERS_CHANNEL = "helix_providers_changed";
+
+/**
+ * One card of the My Connections list (`GET /api/v1/connections/mine`, I-02
+ * T-0024) — the caller's own connection as **metadata only** (spec criterion
+ * 42): provider name, environment, connection date, granted permissions, and
+ * whether Helix knows reconnection is needed. It never claims to have
+ * verified the vendor grant, and no vendor profile travels — there is no
+ * route that reads the sealed material back, and the sealed reference itself
+ * is structurally absent from this shape.
+ *
+ * `status` is the stored vocabulary minus `invalidated`: the list is the
+ * user's working connections, and an invalidated tombstone is no card (the
+ * disconnect removes it). Re-using {@link ConnectionStatusSchema} minus the
+ * tombstone — rather than restating a two-word list — keeps this schema and
+ * the stored vocabulary from drifting.
+ *
+ * `sharedApps` names the apps bound to the provider's ref (ADR-0004: the
+ * binding is by ref, the environment by the connection) — the blast radius the
+ * disconnect confirmation must name (criteria 43, 45). The same shape the
+ * provider impact payload carries.
+ */
+export const MyConnectionSchema = z.strictObject({
+  id: z.uuid(),
+  providerRef: ProviderRefSchema,
+  providerDisplayName: z.string().min(1).max(200),
+  env: EnvSchema,
+  status: ConnectionStatusSchema.exclude(["invalidated"]),
+  grantedScopes: GrantedScopesSchema,
+  grantedAt: z.iso.datetime(),
+  sharedApps: z.array(BoundAppSchema),
+});
+export type MyConnection = z.infer<typeof MyConnectionSchema>;
+
+/** `GET /api/v1/connections/mine` — the caller's own list, newest first. */
+export const MyConnectionsResponseSchema = z.strictObject({
+  connections: z.array(MyConnectionSchema),
+});
+export type MyConnectionsResponse = z.infer<typeof MyConnectionsResponseSchema>;
+
+/**
+ * `DELETE /api/v1/connections/mine/:id` (I-02 T-0024, criterion 43's
+ * distinguishable outcomes): `disconnected` when this call removed the
+ * caller's access, `already_removed` when the named connection was already
+ * invalidated — an answer scoped to that id's own row state, which a newer
+ * connection re-established afterwards (a re-consent upsert over the same
+ * tombstone) never inherits.
+ */
+export const DisconnectResponseSchema = z.strictObject({
+  outcome: z.enum(["disconnected", "already_removed"]),
+});
+export type DisconnectResponse = z.infer<typeof DisconnectResponseSchema>;

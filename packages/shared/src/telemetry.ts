@@ -104,6 +104,8 @@ export const ATTR_CONSENT_OPERATION = "helix.consent.operation";
 export const ATTR_PROVIDER_REF = "helix.provider_ref";
 /** How many expired consent-attempt rows a sweep cycle removed. */
 export const ATTR_CONSENT_SWEEP_REMOVED = "helix.consent.sweep_removed";
+/** How many pending consent attempts a disconnect killed (I-02 T-0024). */
+export const ATTR_ATTEMPTS_KILLED = "helix.attempts_killed";
 
 /**
  * Span names. Like the instrument names these are queried by humans and by
@@ -140,6 +142,12 @@ export const SPAN_CONSENT_REDEEM = "helix.consent.redeem";
 /** The edge's app-facing cancel-acknowledgement route (I-02 T-0017), which
  * forwards to the portal's own cancel span (above) over the internal seam. */
 export const SPAN_CONSENT_CANCEL_EDGE = "helix.consent.cancel.edge";
+/** The portal's My Connections list route (I-02 T-0024) — the caller's own
+ * connections, metadata only. */
+export const SPAN_CONNECTIONS_MINE = "helix.connections.mine";
+/** The portal's disconnect route (I-02 T-0024) — the one-transaction
+ * invalidation that stops the caller's own Helix access. */
+export const SPAN_CONNECTIONS_DISCONNECT = "helix.connections.disconnect";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -159,6 +167,8 @@ export const ROUTE_CONSENT_START_DEV = "/:slug/_api/connections/:ref/start";
 export const ROUTE_CONSENT_CANCEL = "/_api/connections/attempt/cancel";
 export const ROUTE_CONNECTIONS_NONCE_ENTRY = "/connections/consent/start";
 export const ROUTE_CONNECTIONS_CALLBACK = "/connections/callback";
+export const ROUTE_CONNECTIONS_MINE = "/api/v1/connections/mine";
+export const ROUTE_CONNECTIONS_MINE_ID = "/api/v1/connections/mine/:id";
 export const ROUTE_EGRESS_EXCHANGE = "/exchange";
 
 /**

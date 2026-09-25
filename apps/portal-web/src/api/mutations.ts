@@ -3,6 +3,7 @@ import {
   AppSchema,
   ApprovalRequestSchema,
   DevTokenMintResponseSchema,
+  DisconnectResponseSchema,
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
   SecretMetadataSchema,
@@ -15,6 +16,7 @@ import {
   type App,
   type DeployReport,
   type DevTokenMintResponse,
+  type DisconnectResponse,
   type InjectionRecipe,
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
@@ -538,5 +540,27 @@ export function useRevokeSessions() {
         body: { userOid },
       }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * My Connections (I-02 T-0024). Disconnect ends the caller's own Helix access
+ * to one provider connection; the server answers `already_removed` for a
+ * repeat it did not act on.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Disconnect one of the caller's connections. The outcome rides a 200 either
+ * way, so the page can announce "already removed" instead of guessing —
+ * invalidation is the server's row state; this only refreshes the display.
+ */
+export function useDisconnectConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string }): Promise<DisconnectResponse> =>
+      fetchJson(DisconnectResponseSchema, `/api/v1/connections/mine/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["connections", "mine"] }),
   });
 }

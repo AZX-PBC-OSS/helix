@@ -54,6 +54,8 @@ terminates untrusted traffic (decision 4).
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
 | `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption (T-0016), and the vendor redirect's completion state machine (T-0020) |
+| `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route (I-02 T-0024) — My Connections' metadata-only list |
+| `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route (I-02 T-0024) — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
 
 Per-span attributes beyond the semconv keys, so a new one has one place to be
 looked up:

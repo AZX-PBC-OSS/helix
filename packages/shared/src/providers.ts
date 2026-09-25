@@ -701,22 +701,25 @@ export type ProviderImportResponse = z.infer<typeof ProviderImportResponseSchema
  * mutation would actually retire, so repeating it reads zero, not a
  * tombstone's history.
  */
+/**
+ * One app bound to a provider ref, as the impact payload and the My
+ * Connections confirmation dialog both name it — the ids, the slug, and the
+ * display name, and nothing else about the app.
+ */
+export const BoundAppSchema = z.strictObject({
+  id: z.uuid(),
+  slug: z.string().max(63).regex(SLUG_PATTERN, "must be a lowercase DNS label (a-z, 0-9, hyphen)"),
+  displayName: z.string().min(1).max(200),
+});
+export type BoundApp = z.infer<typeof BoundAppSchema>;
+
 export const ProviderImpactSchema = z.strictObject({
   providerId: z.uuid(),
   ref: ProviderRefSchema,
   env: EnvSchema,
   displayName: z.string().min(1).max(200),
   revision: z.int().positive(),
-  boundApps: z.array(
-    z.strictObject({
-      id: z.uuid(),
-      slug: z
-        .string()
-        .max(63)
-        .regex(SLUG_PATTERN, "must be a lowercase DNS label (a-z, 0-9, hyphen)"),
-      displayName: z.string().min(1).max(200),
-    }),
-  ),
+  boundApps: z.array(BoundAppSchema),
   connections: z.number().int().nonnegative(),
   pendingAttempts: z.number().int().nonnegative(),
 });

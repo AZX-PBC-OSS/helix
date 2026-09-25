@@ -34,6 +34,7 @@ interface NavItem {
 const WORKSPACE_NAV: NavItem[] = [
   { to: "/", label: "Apps", icon: "grid" },
   { to: "/usage", label: "Usage", icon: "gauge" },
+  { to: "/connections", label: "My connections", icon: "user" },
 ];
 
 const ADMIN_NAV: NavItem[] = [

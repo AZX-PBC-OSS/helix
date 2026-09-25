@@ -8,6 +8,7 @@ import { DeployProvider } from "./modals/DeployContext";
 import { HelpProvider } from "./modals/HelpContext";
 import { AppsListPage } from "./pages/AppsListPage";
 import { AppDetailPage } from "./pages/AppDetailPage";
+import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { UsagePage } from "./pages/UsagePage";
 import { ApprovalsPage } from "./pages/admin/ApprovalsPage";
 import { AuditPage } from "./pages/admin/AuditPage";
@@ -27,6 +28,7 @@ function Portal() {
       <Routes>
         <Route path="/" element={<AppsListPage />} />
         <Route path="/apps/:slug" element={<AppDetailPage />} />
+        <Route path="/connections" element={<ConnectionsPage />} />
         <Route path="/usage" element={<UsagePage />} />
         <Route path="/admin/approvals" element={admin(<ApprovalsPage />)} />
         <Route path="/admin/audit" element={admin(<AuditPage />)} />
