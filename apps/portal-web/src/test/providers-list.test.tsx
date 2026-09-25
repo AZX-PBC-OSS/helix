@@ -150,13 +150,15 @@ describe("ProvidersPage list", () => {
     expect(await navigator.clipboard.readText()).toBe(CALLBACK_URL);
   });
 
-  it("holds the import card's mount point as a disabled stub", async () => {
+  it("renders the import card with a labeled file picker and a gated apply button", async () => {
     stubFetch([]);
     renderPage();
     expect(await screen.findByText("Import")).toBeDefined();
-    expect(
-      (screen.getByRole("button", { name: "Import from JSON" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    // The file picker is a labeled control; apply is disabled until a file has
+    // been previewed and a mode chosen (T-0027).
+    expect(screen.getByText(/Provider export \(JSON\)/)).toBeDefined();
+    const apply = screen.getByRole("button", { name: "Apply import" }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
   });
 });
 

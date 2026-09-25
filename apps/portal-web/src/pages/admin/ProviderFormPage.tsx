@@ -61,8 +61,10 @@ type ReviewState =
   | { mode: "edit"; body: ProviderUpdateRequest; diff: ProviderDiffLine[]; impact: ProviderImpact }
   | { mode: "delete"; impact: ProviderImpact };
 
-/** The criterion-7 warning sentence, verbatim in meaning. */
-const SENSITIVE_WARNING =
+/** The criterion-7 warning sentence, verbatim in meaning. Exported because the
+ * import preview plays the review-panel role for an imported update (T-0027) —
+ * one sentence, so the two surfaces can never disagree. */
+export const SENSITIVE_WARNING =
   "Existing connections and pending consent attempts become invalid, and affected apps need approval again. Helix does not create reapproval requests for them.";
 /** The criterion-9 statement for deletion. */
 const DELETE_WARNING =

@@ -7,6 +7,7 @@ import {
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
   ProviderDeleteResponseSchema,
+  ProviderImportResponseSchema,
   ProviderMetadataSchema,
   CONFIRM_INVALIDATION_FIELD,
   SecretMetadataSchema,
@@ -24,6 +25,8 @@ import {
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
   type ProviderCreateRequest,
+  type ProviderImportRequest,
+  type ProviderImportResponse,
   type ProviderMetadata,
   type ProviderUpdateRequest,
   type SecretMetadata,
@@ -620,6 +623,22 @@ export function useDeleteProvider() {
         method: "DELETE",
         body: confirmInvalidation ? { [CONFIRM_INVALIDATION_FIELD]: true } : {},
       }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
+  });
+}
+
+/**
+ * Apply an import (I-02 T-0027) — the create/update mode is the caller's
+ * explicit choice (the preview never picks a target). The response's `outcome`
+ * word reports created/updated distinctly; a rejection changes nothing, so the
+ * list is invalidated onSuccess only — the rows an administrator is looking at
+ * after a rejected apply are the ones that were there before it.
+ */
+export function useImportProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProviderImportRequest): Promise<ProviderImportResponse> =>
+      fetchJson(ProviderImportResponseSchema, "/api/v1/providers/import", { method: "POST", body }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
   });
 }
