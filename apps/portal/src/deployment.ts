@@ -13,6 +13,8 @@
  * dev URLs.
  */
 
+import { CONNECTIONS_CALLBACK_PATH } from "@azx-pbc/shared";
+
 /** The dev edge, as reachable from the host browser: mkcert TLS on :8080. */
 const DEV_APP_PUBLIC_BASE = "https://local.helix.azxlabs.io:8080";
 
@@ -54,19 +56,14 @@ export function appPublicUrl(slug: string, env: NodeJS.ProcessEnv = process.env)
 }
 
 /**
- * The path under the auth host where the consent callback lands. The edge's
- * `/connections/*` reverse proxy forwards this prefix to this portal
- * (apps/edge/src/routing/connectionsProxy.ts `CONNECTIONS_PREFIX` — keep the
- * two in sync; the keep-in-sync convention REGISTRY_CHANNEL sets).
- */
-const CONNECTIONS_CALLBACK_PATH = "/connections/callback";
-
-/**
  * The fixed OAuth callback URL an administrator registers with the vendor
  * (spec criterion 2, design.md §Fixed callback visibility):
- * `auth.<APP_PUBLIC_BASE host>` + `/connections/callback` — the
+ * `auth.<APP_PUBLIC_BASE host>` + {@link CONNECTIONS_CALLBACK_PATH} — the
  * reserved-subdomain convention the edge's host classifier routes to the auth
- * host (apps/edge/src/routing/hosts.ts, `classifyHost`).
+ * host (apps/edge/src/routing/hosts.ts, `classifyHost`). The edge's
+ * `/connections/*` reverse proxy forwards that prefix to this portal, and the
+ * shared constant is the single source both planes read (the keep-in-sync
+ * convention REGISTRY_CHANNEL sets, sourced in @azx-pbc/shared).
  *
  * Derived, never configured: the edge owns the auth base as a single source,
  * and a second auth-base config field here could drift from it (architecture

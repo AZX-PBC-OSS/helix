@@ -51,7 +51,7 @@ terminates untrusted traffic (decision 4).
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
-| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel routes, the callback's claim probe, the expiry sweep, and the dev journey's nonce redemption (T-0016) |
+| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption (T-0016), and the vendor redirect's completion state machine (T-0020) |
 
 Per-span attributes beyond the semconv keys, so a new one has one place to be
 looked up:
@@ -119,8 +119,18 @@ looked up:
   bounded by the five-minute expiry). `helix.provider_ref` rides the decided
   paths, and `url.path` only (the body's attempt tag is a correlation tag, not
   secret material, but it is app-chosen — it is never an attribute).
+- `helix.consent.callback` (the vendor redirect lands here, T-0020) records
+  `helix.outcome` ∈ `CONSENT_CALLBACK_OUTCOMES` — design.md §Operator-visible
+  signals' ten-word terminal vocabulary (`connected`, `already_connected`,
+  `denied`, `expired`, `conflict`, `cancelled`, `disconnected`,
+  `failed_permissions`, `failed_provider`, `failed_service`), plus
+  `helix.provider_ref` and `helix.app_id` once the attempt claims, and
+  `url.path` only — the redirect's `code` and `state` are credential-class and
+  the query is dropped wholesale. Unknown-state refusals also answer `denied`
+  (there is no not-found word to emit; the page is the fixed refusal). Pinned
+  by `routes/connectionsCallback.integration.test.ts`'s global attribute scan.
 - The `helix.consent.*` spans carry `helix.consent.operation` (bounded to
-  consult/cancel/claim/sweep/redeem), `helix.outcome` from the operation's bounded
+  consult/cancel/claim/sweep/redeem/callback), `helix.outcome` from the operation's bounded
   vocabulary, and on the consult `helix.app.slug`, `helix.app_id` and
   `helix.provider_ref` — never the `state`, the nonce, the PKCE verifier, or any
   identity (pinned by `routes/connectionsInternal.test.ts`'s global attribute

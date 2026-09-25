@@ -204,6 +204,18 @@ export type AttemptCancelRequest = z.infer<typeof AttemptCancelRequestSchema>;
 export const CONSENT_NONCE_ENTRY_PATH = "/connections/consent/start";
 
 /**
+ * The fixed OAuth callback path the vendor redirects the popup to (I-02
+ * ADR-0001 — one fixed callback per install): the auth host plus this path,
+ * reached through the edge's `/connections/*` reverse proxy, portal-served.
+ * The edge's proxy prefix (`apps/edge/src/routing/connectionsProxy.ts`
+ * `CONNECTIONS_PREFIX`) and the portal's route registration must keep matching
+ * it — the `CONNECTIONS_CALLBACK_PATH` keep-in-sync convention
+ * (`apps/portal/src/deployment.ts`), now sourced here so both planes and the
+ * telemetry route constant cannot drift.
+ */
+export const CONNECTIONS_CALLBACK_PATH = "/connections/callback";
+
+/**
  * The dev-tier start route's response (I-02 design decision 4 — the one-time
  * popup handoff): the dev app POSTs with its bearer token and receives either
  * a terminal outcome or a single-use popup URL.

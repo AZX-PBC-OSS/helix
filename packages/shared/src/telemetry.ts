@@ -92,9 +92,10 @@ export const ATTR_DEPLOY_FILE_COUNT = "helix.deploy.file_count";
 export const ATTR_DEPLOY_WARNING_COUNT = "helix.deploy.warning_count";
 /**
  * Which consent-flow operation a signal is about — `consult`, `cancel`,
- * `claim`, `sweep`, or `redeem` (I-02 ADR-0002; `redeem` is the dev journey's
- * nonce redemption, T-0016). Bounded to those five; the identity the
- * operation is for is never a dimension.
+ * `claim`, `sweep`, `redeem`, or `callback` (I-02 ADR-0002; `redeem` is the
+ * dev journey's nonce redemption, T-0016; `callback` is the completion state
+ * machine the vendor redirect lands in, T-0020). Bounded to those six; the
+ * identity the operation is for is never a dimension.
  */
 export const ATTR_CONSENT_OPERATION = "helix.consent.operation";
 /** The provider `ref` a consent operation consults against — admin-chosen, ≤64 chars. */
@@ -128,6 +129,7 @@ export const SPAN_CONSENT_CONSULT = "helix.consent.consult";
 export const SPAN_CONSENT_CANCEL = "helix.consent.cancel";
 export const SPAN_CONSENT_CLAIM = "helix.consent.claim";
 export const SPAN_CONSENT_SWEEP = "helix.consent.sweep";
+export const SPAN_CONSENT_CALLBACK = "helix.consent.callback";
 export const SPAN_CONSENT_START = "helix.consent.start";
 export const SPAN_CONSENT_START_DEV = "helix.consent.start.dev";
 export const SPAN_CONSENT_REDEEM = "helix.consent.redeem";
@@ -152,6 +154,7 @@ export const ROUTE_CONSENT_START = "/_api/connections/:ref/start";
 export const ROUTE_CONSENT_START_DEV = "/:slug/_api/connections/:ref/start";
 export const ROUTE_CONSENT_CANCEL = "/_api/connections/attempt/cancel";
 export const ROUTE_CONNECTIONS_NONCE_ENTRY = "/connections/consent/start";
+export const ROUTE_CONNECTIONS_CALLBACK = "/connections/callback";
 export const ROUTE_EGRESS_EXCHANGE = "/exchange";
 
 /**
@@ -235,7 +238,14 @@ export type DataListDenialReason = (typeof DATA_LIST_DENIAL_REASONS)[number];
  *   callback renders — `expired`, `cancelled`, `not_found` — plus `error`.
  * - sweep: `ok` (cycle ran; the removed count rides the span) or `failed`.
  */
-export const CONSENT_OPERATIONS = ["consult", "cancel", "claim", "sweep", "redeem"] as const;
+export const CONSENT_OPERATIONS = [
+  "consult",
+  "cancel",
+  "claim",
+  "sweep",
+  "redeem",
+  "callback",
+] as const;
 export type ConsentOperation = (typeof CONSENT_OPERATIONS)[number];
 export const CONSENT_CONSULT_OUTCOMES_TELEMETRY = [
   "started",
@@ -261,6 +271,41 @@ export const CONSENT_REDEEM_OUTCOMES_TELEMETRY = [
   "provider_changed",
   "error",
 ] as const;
+
+/**
+ * Why the connect callback answered as it did (I-02 T-0020) — the
+ * `helix.outcome` values on the `helix.consent.callback` span and the
+ * `helix.consent.operations` counter's `callback` operation. This is design.md
+ * §Operator-visible signals' ten-word vocabulary, verbatim: the terminal
+ * outcomes the callback's completion pages render.
+ *
+ * - `connected` — the exchange succeeded and the row saved (CAS winner).
+ * - `already_connected` — in the vocabulary for the design's completeness; the
+ *   callback's CAS maps a live-row race to `conflict` (spec criterion 32 — a
+ *   competing attempt reports a conflict, never silent replacement), so today
+ *   no path emits this word.
+ * - `denied` — the vendor returned an OAuth error (the declined page), or the
+ *   `state` claimed nothing (forged, reused, cross-context — unknown states
+ *   render the fixed refusal page; there is no not-found word to emit).
+ * - `expired` / `cancelled` / `disconnected` — the attempt refused or the
+ *   connection row's state says this attempt can no longer establish anything.
+ * - `failed_permissions` / `failed_provider` / `failed_service` — the egress
+ *   exchange's rejections (`missing_permissions`), provider unavailability and
+ *   gate rejections, and transport/service failure respectively.
+ */
+export const CONSENT_CALLBACK_OUTCOMES = [
+  "connected",
+  "already_connected",
+  "denied",
+  "expired",
+  "conflict",
+  "cancelled",
+  "disconnected",
+  "failed_permissions",
+  "failed_provider",
+  "failed_service",
+] as const;
+export type ConsentCallbackOutcome = (typeof CONSENT_CALLBACK_OUTCOMES)[number];
 
 /**
  * Why the edge's consent-start route answered as it did (I-02 ADR-0002) — the

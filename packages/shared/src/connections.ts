@@ -45,6 +45,22 @@ export const ConnectionStatusSchema = z.enum(CONNECTION_STATUSES);
 export type ConnectionStatus = z.infer<typeof ConnectionStatusSchema>;
 
 /**
+ * The row's `material` field's inner envelope — how the TWO sealed references
+ * an exchange produces (the access and refresh materials are sealed separately,
+ * `ExchangeResponseSchema`'s `exchanged` variant) fit the ONE column both
+ * planes write. The portal's callback serializes this envelope into
+ * `user_connections.material`; egress parses it on every renewal and swap
+ * (T-0021). The values are `SecretStore.seal()` outputs — opaque references,
+ * never plaintext — so the envelope is data-shape only and no custody rule
+ * changes: opening happens in egress alone (ADR-0006).
+ */
+export const ConnectionMaterialSchema = z.strictObject({
+  access: z.string().min(1),
+  refresh: z.string().min(1),
+});
+export type ConnectionMaterial = z.infer<typeof ConnectionMaterialSchema>;
+
+/**
  * Sanity rail on the granted-scope list — bounded like the provider schemas'
  * arrays, not a security limit. Items parse as RFC 6749 §3.3 scope tokens
  * (`ScopeTokenSchema`), the same vocabulary `requestedScopes` speaks: the

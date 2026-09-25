@@ -27,5 +27,8 @@
     "@types/pg": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"
+  },
+  "exports": {
+    "./app": "./src/app.ts"
   }
 }
