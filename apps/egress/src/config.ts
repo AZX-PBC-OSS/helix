@@ -39,6 +39,13 @@ export interface EgressConfig {
    * notification (I-02 ADR-0011).
    */
   providersReconcileIntervalMs: number;
+  /**
+   * How often the credential-retirement sweep consumes the `pendingRetire`
+   * ledger (`EGRESS_RETIRE_SWEEP_INTERVAL_MS`; default 60s) — well inside
+   * criterion 47's 15-minute recovery bound even with a failed pass retried
+   * on top (I-02 T-0025, ADR-0008).
+   */
+  retireSweepIntervalMs: number;
   /** Shared with the edge; HKDF-derived into the instruction-verify key. >= 32 bytes. */
   instructionSecret: Buffer;
   /**
@@ -218,6 +225,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
       env.EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS,
       60_000,
       "EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS",
+    ),
+    retireSweepIntervalMs: requirePositiveMs(
+      env.EGRESS_RETIRE_SWEEP_INTERVAL_MS,
+      60_000,
+      "EGRESS_RETIRE_SWEEP_INTERVAL_MS",
     ),
     instructionSecret,
     exchangeSecret,

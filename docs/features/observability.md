@@ -50,6 +50,7 @@ terminates untrusted traffic (decision 4).
 | `helix.egress.resolution` | egress delegated-call resolution (I-02 T-0022) — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation (I-02 T-0019) |
 | `helix.egress.renewal` | egress token renewal (I-02 T-0021) — the operation the delegated-call resolution runs when an access token is expired; nests inside the resolution span, and its own duration is where the advisory lock's bounded wait is visible (ADR-0007) |
+| `helix.egress.retire` | egress credential-retirement sweep pass (I-02 T-0025, ADR-0008) — one background pass over the `pendingRetire` ledger; per-entry results ride the `helix.egress.retirements` counter |
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
@@ -174,6 +175,7 @@ looked up:
 | `helix.egress.proxy.duration` | histogram (ms) | `outcome` |
 | `helix.egress.exchanges` | counter | `outcome`, `env` (I-02 T-0019) |
 | `helix.egress.renewals` | counter | `outcome`, `env` (I-02 T-0021 — the renewal taxonomy; alert on a run of `temporary_failure`/`admin_action`, and treat any `uncertain_rotation` as a user-visible reconnection) |
+| `helix.egress.retirements` | counter | `outcome`, `env` (I-02 T-0025 — the retirement ledger's consumption: `retired` / `failed` / `claimed_lost`. `failed` is the alertable word — it also fires the fixed `egress.connection_retire_failed` warn event, and the entry is restored and retried on a later pass within criterion 47's 15-minute bound. `claimed_lost` is the sweep losing a claim race to a writer (a reconnect's swap, a newer mark) — the conditional re-check working, never a fault; see ADR-0008 for why the claim must be CAS) |
 | `helix.providers.reconciles` | counter | `outcome` |
 | `helix.providers.listen_status` | observable gauge | — |
 | `helix.session.gate_denied` | counter | `reason` |

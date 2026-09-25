@@ -36,6 +36,7 @@ export const INSTR_PROVIDERS_LISTEN_STATUS = "helix.providers.listen_status";
 export const INSTR_CONSENT_OPERATIONS = "helix.consent.operations";
 export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
 export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
+export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
 
 /**
  * Attribute keys.
@@ -120,6 +121,7 @@ export const SPAN_EGRESS_PROXY = "helix.egress.proxy";
 export const SPAN_EGRESS_RESOLUTION = "helix.egress.resolution";
 export const SPAN_EGRESS_EXCHANGE = "helix.egress.exchange";
 export const SPAN_EGRESS_RENEWAL = "helix.egress.renewal";
+export const SPAN_EGRESS_RETIRE = "helix.egress.retire";
 export const SPAN_REGISTRY_LOAD = "helix.registry.load";
 export const SPAN_PROVIDERS_RECONCILE = "helix.providers.reconcile";
 export const SPAN_AUTH_START = "helix.auth.oidc.start";
@@ -477,6 +479,35 @@ export const EGRESS_RESOLUTION_OUTCOMES = [
   "error",
 ] as const;
 export type EgressResolutionOutcome = (typeof EGRESS_RESOLUTION_OUTCOMES)[number];
+
+/**
+ * What the egress credential-retirement sweep did with one ledger entry
+ * (I-02 T-0025, ADR-0008) — the `helix.outcome` dimension on
+ * `helix.egress.retirements`. Bounded by construction — each value is one
+ * branch of the sweep's per-entry flow.
+ *
+ * - `retired` — the conditional claim won and the claimed material was
+ *   destroyed; the row's ledger field is clear.
+ * - `failed` — the claim won but the destroy did not succeed; the entry is
+ *   restored to the ledger and retried on a later pass (criterion 47), and
+ *   the fixed `egress.connection_retire_failed` warn event rides alongside.
+ * - `claimed_lost` — the conditional claim matched zero rows: a writer
+ *   (a reconnect's swap, a renewal's rotation, a newer mark) re-purposed the
+ *   single-slot ledger between the sweep's read and its claim, so the sweep
+ *   destroyed nothing (criterion 48 — a current connection's material is
+ *   never touched). Losing is the design working; it is counted, not alarmed.
+ */
+export const EGRESS_RETIREMENT_OUTCOMES = ["retired", "failed", "claimed_lost"] as const;
+export type EgressRetirementOutcome = (typeof EGRESS_RETIREMENT_OUTCOMES)[number];
+
+/**
+ * The retirement sweep's pass-level outcome (the `helix.egress.retire` span) —
+ * whether the pass could run at all. Per-entry results ride the
+ * `helix.egress.retirements` counter, not this span; a pass full of failed
+ * destroys still ran.
+ */
+export const EGRESS_RETIRE_PASS_OUTCOMES = ["ok", "failed"] as const;
+export type EgressRetirePassOutcome = (typeof EGRESS_RETIRE_PASS_OUTCOMES)[number];
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default

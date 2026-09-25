@@ -116,6 +116,22 @@ describe("loadConfig", () => {
     }
   });
 
+  // I-02 T-0025 (ADR-0008) — the retirement sweep's cadence, validated by the
+  // same requirePositiveMs rail: a hot zero loop or a NaN coerced to ~0ms
+  // would hammer the ledger read. The default (60s) sits well inside
+  // criterion 47's 15-minute recovery bound.
+  it("defaults the retirement sweep interval to 60s and honors EGRESS_RETIRE_SWEEP_INTERVAL_MS", () => {
+    expect(loadConfig(ENV).retireSweepIntervalMs).toBe(60_000);
+    expect(
+      loadConfig({ ...ENV, EGRESS_RETIRE_SWEEP_INTERVAL_MS: "30000" }).retireSweepIntervalMs,
+    ).toBe(30_000);
+    for (const bad of ["0", "-1", "NaN", "Infinity", "abc"]) {
+      expect(() => loadConfig({ ...ENV, EGRESS_RETIRE_SWEEP_INTERVAL_MS: bad })).toThrow(
+        /EGRESS_RETIRE_SWEEP_INTERVAL_MS/,
+      );
+    }
+  });
+
   // ADR-0046 — the keyless list is empty by default (resolution stays DB-only)
   // and malformed entries are boot errors, never silently dropped rules.
   describe("EGRESS_MANAGED_IDENTITY_CONNECTIONS", () => {

@@ -17,6 +17,7 @@ import { FOUNDRY_TOKEN_RESOURCE, ManagedIdentityResolver } from "./managedIdenti
 import { LiveProviders, type ProvidersLogger } from "./providerListener.js";
 import { PgSecretResolver, type SecretResolver } from "./secrets.js";
 import { PgBurnStore } from "./burn.js";
+import { CredentialRetirementSweep } from "./retire.js";
 
 /**
  * How often to drop expired `instruction_jti` rows. Shorter than the retention
@@ -219,6 +220,24 @@ const delegatedPool =
       })
     : null;
 
+// The credential-retirement sweep (I-02 T-0025, ADR-0008): consumes the
+// `pendingRetire` ledger every writer marks, destroying claimed material
+// through the delegated store. Wired exactly when delegated custody is —
+// with no store there is nothing to destroy, and unwired marks simply wait
+// (fail-closed) for a deployment that has one. Its logging rides the same
+// late-bound ref the pool errors and provider listener use.
+const retirementSweep =
+  delegatedStore && delegatedPool
+    ? new CredentialRetirementSweep({
+        pool: delegatedPool,
+        delegatedStore,
+        intervalMs: config.retireSweepIntervalMs,
+        log: {
+          warn: (obj, msg) => providersLogRef.current.warn(obj, msg),
+        },
+      })
+    : null;
+
 const app = buildApp({
   config,
   resolver,
@@ -266,8 +285,14 @@ const burnSweep = setInterval(() => {
 }, BURN_SWEEP_INTERVAL_MS);
 burnSweep.unref();
 
+// The retirement ledger's consumer starts with the process and stops before
+// its pool ends: `stop()` awaits any in-flight pass, so `delegatedPool.end()`
+// below never pulls a client out from under a live claim or destroy.
+retirementSweep?.start();
+
 app.addHook("onClose", async () => {
   clearInterval(burnSweep);
+  await retirementSweep?.stop();
   await providers.stop();
   await burnStore.close();
   // The wrapper owns the wrapped resolver (ManagedIdentityResolver.close), so
