@@ -129,6 +129,13 @@ failure mode.
 | `gateway.usage_record_failed` | the ledger-write failure path — ADR-0021 makes `gateway_calls` the billing and audit authority, so a dropped row matters |
 | `edge.unhandled_error` / `portal.unhandled_error` / `egress.unhandled_error` | each service's error handler |
 | `secret.destroy_failed` / `secret.audit_write_failed` | `apps/portal/src/routes/secrets.ts` |
+| `consent.start_consult_failed` / `consent.start_cross_site_refused` / `consent.cancel_ack_failed` | `apps/edge/src/routing/consentStart.ts`, `consentCancel.ts` — the consent-start route's consult seam failing, a navigation-guard refusal (fail closed), and the helper's cancel-acknowledgement failing (the attempt still expires at the five-minute TTL) |
+| `consent.dev_start_consult_failed` | `apps/edge/src/devGateway/consentStart.ts` — the dev-tier handoff's consult failure, mirror of the prod start route's |
+| `consent.nonce_entry_failed` | `apps/portal/src/connections/pages.ts` — the dev journey's nonce redemption failing |
+| `providers.load_failed` / `providers.load_recovered` / `providers.listen_down` / `providers.row_dropped` | `apps/egress/src/providerListener.ts` — the provider cache's listener lifecycle (ADR-0011); a dropped row is one that failed the shared row parse, so the cache stays fail-closed |
+| `exchange.failed` / `exchange.rejected` | `apps/egress/src/exchange.ts` — the code-exchange operation's opaque outcomes; fixed strings only, no vendor response content |
+| `egress.renewal.failed` / `egress.renewal.row_unparseable` / `egress.renewal.permissions_lost` / `egress.renewal.uncertain_rotation` / `egress.renewal.seal_failed_after_rotation` | `apps/egress/src/renewal.ts` — the renewal taxonomy's log half (ADR-0007); the last is the rotated-out orphan whose seal failed, which the retirement sweep's ledger re-covers |
+| `egress.connection_retire_failed` | `apps/egress/src/retire.ts` — a retirement-sweep destroy failed after its conditional claim; the ledger mark is restored and the pass retries (ADR-0008, criterion 47) |
 | `otel.diag` / `otel.config` / `log.level_invalid` | config resolution, written straight to stderr because no logger exists yet |
 
 ## What is deliberately not here
