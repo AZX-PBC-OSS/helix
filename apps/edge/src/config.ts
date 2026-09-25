@@ -216,6 +216,16 @@ export interface GatewayConfig {
      */
     maxBodyBytes: number;
   };
+  /**
+   * The edge↔portal internal-JWT key (HELIX_INTERNAL_SECRET, I-02 ADR-0003):
+   * the edge mints a per-call token (`apps/edge/src/internalJwt.ts`) that the
+   * portal's internal routes verify. Mint side, so optional exactly like
+   * `fetch.instructionSecret` — null leaves the edge→portal capability
+   * unwired and the consuming routes refuse rather than degrade; it is never a
+   * boot failure. The dev-gateway shares this parse (it consults the same
+   * portal for the dev tier).
+   */
+  internalSecret: Buffer | null;
 }
 
 /**
@@ -748,6 +758,7 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
       timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
       maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
     },
+    internalSecret: loadInternalSecret(env),
   };
 }
 
@@ -845,6 +856,17 @@ function loadInstructionSecret(env: NodeJS.ProcessEnv): Buffer | null {
   const buf = Buffer.from(raw);
   if (buf.byteLength < 32) {
     throw new Error("HELIX_INSTRUCTION_SECRET must be at least 32 bytes");
+  }
+  return buf;
+}
+
+/** Parse the shared edge↔portal internal-JWT key; refuse a too-short one (would weaken the key). */
+function loadInternalSecret(env: NodeJS.ProcessEnv): Buffer | null {
+  const raw = env.HELIX_INTERNAL_SECRET;
+  if (!raw) return null;
+  const buf = Buffer.from(raw);
+  if (buf.byteLength < 32) {
+    throw new Error("HELIX_INTERNAL_SECRET must be at least 32 bytes");
   }
   return buf;
 }

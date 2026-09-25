@@ -164,6 +164,11 @@ jobs:
       EDGE_OIDC_ALLOW_INSECURE: "true"
       EDGE_AUTH_SECRET: aGVsaXgtZGV2LWVkZ2UtYXV0aC1zZWNyZXQtMzItYiE=
       HELIX_INSTRUCTION_SECRET: aGVsaXgtZGV2LWluc3RydWN0aW9uLXNlY3JldC0zMmItbWluIQ==
+      # The two new internal-JWT keys (I-02 ADR-0003) — the portal's boot check
+      # requires the edge↔portal key, and egress's config requires the
+      # portal↔egress one, mirroring the devcontainer values.
+      HELIX_INTERNAL_SECRET: aGVsaXgtZGV2LWludGVybmFsLXNlY3JldC0zMmItbWluIQ==
+      HELIX_EXCHANGE_SECRET: aGVsaXgtZGV2LWV4Y2hhbmdlLXNlY3JldC0zMmItbWluIQ==
       EDGE_EGRESS_URL: http://localhost:8081
       # Dev secret-store KEK — generated below (mirrors post-create.sh); the
       # portal/egress boot paths read it, returning a null store (503) if absent.

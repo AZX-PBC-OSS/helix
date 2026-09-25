@@ -112,6 +112,11 @@ services:
       # Shared HS256 secret for the attested instruction the edge mints and egress
       # verifies (HKDF-derived both sides). Dev-only well-known value, ≥32 bytes.
       HELIX_INSTRUCTION_SECRET: aGVsaXgtZGV2LWluc3RydWN0aW9uLXNlY3JldC0zMmItbWluIQ==
+      # The two new internal-JWT keys (I-02 ADR-0003, same discipline as above):
+      # edge↔portal (edge mints, portal verifies) and portal↔egress (portal
+      # mints, egress verifies). Dev-only well-known values, ≥32 bytes.
+      HELIX_INTERNAL_SECRET: aGVsaXgtZGV2LWludGVybmFsLXNlY3JldC0zMmItbWluIQ==
+      HELIX_EXCHANGE_SECRET: aGVsaXgtZGV2LWV4Y2hhbmdlLXNlY3JldC0zMmItbWluIQ==
       # The edge forwards authorized /_api/fetch calls to egress over this URL
       # (same container in dev; a private internal address in prod).
       EDGE_EGRESS_URL: http://localhost:8081

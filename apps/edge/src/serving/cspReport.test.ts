@@ -49,6 +49,7 @@ function testConfig(): EdgeConfig {
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
+    internalSecret: null,
   };
 }
 

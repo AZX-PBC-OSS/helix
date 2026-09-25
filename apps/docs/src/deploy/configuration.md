@@ -165,6 +165,8 @@ never export them again.
 | `HELIX_EDGE_AUTH_SECRET` | Session cookie signing root |
 | `HELIX_PORTAL_SECRET` | Shared-password app encryption key |
 | `HELIX_INSTRUCTION_SECRET` | Shared edge→egress attestation key |
+| `HELIX_INTERNAL_SECRET` | Shared edge↔portal internal-JWT key (the edge mints, the portal verifies) |
+| `HELIX_EXCHANGE_SECRET` | Shared portal↔egress internal-JWT key (the portal mints, egress verifies) |
 | `HELIX_EDGE_OIDC_PRIVATE_KEY` / `HELIX_EDGE_OIDC_CERTIFICATE` | Edge OIDC client certificate (base64 PEMs) |
 | `HELIX_EDGE_OIDC_CLIENT_ID`, `HELIX_PORTAL_OIDC_AUDIENCE`, `HELIX_PORTAL_ADMIN_GROUP_ID`, `HELIX_AZX_CLI_CLIENT_ID`, `HELIX_AZX_WEB_CLIENT_ID` | The Entra values from [Entra setup](/deploy/entra-setup) — not secret, but env-sourced the same way |
 

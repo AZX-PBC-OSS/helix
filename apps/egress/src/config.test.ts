@@ -10,6 +10,7 @@ import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./pool.js";
  */
 const ENV = {
   HELIX_INSTRUCTION_SECRET: "0123456789abcdef0123456789abcdef",
+  HELIX_EXCHANGE_SECRET: "abcdef0123456789abcdef0123456789",
   EGRESS_DATABASE_URL: "postgres://helix_egress:helix_egress@db:5432/helix",
 };
 
@@ -60,9 +61,34 @@ describe("loadConfig", () => {
   it("throws a clear error on missing requirements", () => {
     expect(() => loadConfig({})).toThrow(/HELIX_INSTRUCTION_SECRET is required/);
     expect(() => loadConfig({ HELIX_INSTRUCTION_SECRET: "short" })).toThrow(/at least 32 bytes/);
+    // Both seam keys are required before the DSN check.
     expect(() => loadConfig({ HELIX_INSTRUCTION_SECRET: ENV.HELIX_INSTRUCTION_SECRET })).toThrow(
-      /EGRESS_DATABASE_URL or DATABASE_URL is required/,
+      /HELIX_EXCHANGE_SECRET is required/,
     );
+    expect(() =>
+      loadConfig({
+        HELIX_INSTRUCTION_SECRET: ENV.HELIX_INSTRUCTION_SECRET,
+        HELIX_EXCHANGE_SECRET: ENV.HELIX_EXCHANGE_SECRET,
+      }),
+    ).toThrow(/EGRESS_DATABASE_URL or DATABASE_URL is required/);
+  });
+
+  // I-02 ADR-0003 — the portal→egress exchange-JWT key. Verify side, so it is
+  // required exactly like the instruction secret, in dev too: the exchange
+  // route has no degraded mode that still serves it.
+  describe("HELIX_EXCHANGE_SECRET", () => {
+    it("is required, and parsed onto the config", () => {
+      expect(() => loadConfig({ ...ENV, HELIX_EXCHANGE_SECRET: undefined })).toThrow(
+        /HELIX_EXCHANGE_SECRET is required/,
+      );
+      expect(loadConfig(ENV).exchangeSecret).toEqual(Buffer.from(ENV.HELIX_EXCHANGE_SECRET));
+    });
+
+    it("refuses a too-short value (would weaken the derived key)", () => {
+      expect(() => loadConfig({ ...ENV, HELIX_EXCHANGE_SECRET: "short" })).toThrow(
+        /HELIX_EXCHANGE_SECRET must be at least 32 bytes/,
+      );
+    });
   });
 
   // ADR-0002 ISSUE-05 — the per-query ceiling both egress pools get from

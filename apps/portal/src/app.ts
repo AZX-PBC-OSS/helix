@@ -14,6 +14,7 @@ import { errorsPlugin } from "./plugins/errors.js";
 import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
 import { directoryPlugin } from "./plugins/directory.js";
 import { assertBundleLimits, resolveMaxTotalBytes } from "./deploy/limits.js";
+import { assertInternalJwtSecrets } from "./internalJwt.js";
 import { appRoutes } from "./routes/apps.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { devTokenRoutes } from "./routes/devTokens.js";
@@ -67,6 +68,10 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   // Likewise for the deploy size caps: a bad DEPLOY_MAX_*_MB should fail the
   // boot, not the first deploy that happens to hit the validator.
   assertBundleLimits();
+  // The internal-JWT verify key (ADR-0003) is the same class of boot check: the
+  // portal's internal routes have no degraded mode that still serves them, so a
+  // portal missing the edge↔portal key must not start at all.
+  assertInternalJwtSecrets();
 
   const app = Fastify({
     // The SPA's OIDC redirect URI is `/auth/callback?code=…` on this very

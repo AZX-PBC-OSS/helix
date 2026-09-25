@@ -95,6 +95,8 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
+    // Edge→portal mint key unset by default; the consult suites set it.
+    internalSecret: null,
     ...overrides,
   };
 }
@@ -129,6 +131,7 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
+    internalSecret: null,
     devGateway: {
       databaseUrl: "postgresql://helix_dev:unused@db/helix",
       allowDevMode: true,

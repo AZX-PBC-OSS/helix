@@ -34,6 +34,13 @@ export interface EgressConfig {
   statementTimeoutMs: number;
   /** Shared with the edge; HKDF-derived into the instruction-verify key. >= 32 bytes. */
   instructionSecret: Buffer;
+  /**
+   * Shared with the portal; HKDF-derived into the exchange-JWT verify key
+   * (HELIX_EXCHANGE_SECRET, I-02 ADR-0003 — `apps/egress/src/internalJwt.ts`).
+   * Verify side, so required exactly like `instructionSecret`: the exchange
+   * route has no degraded mode that still serves it. >= 32 bytes.
+   */
+  exchangeSecret: Buffer;
   /** Prod custody: Key Vault. */
   keyVaultUrl?: string;
   /** Dev custody: path to the locally-generated KEK file (post-create.sh). */
@@ -145,6 +152,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
   if (instructionSecret.byteLength < 32) {
     throw new Error("HELIX_INSTRUCTION_SECRET must be at least 32 bytes");
   }
+  const exchangeSecret = Buffer.from(required(env, "HELIX_EXCHANGE_SECRET"));
+  if (exchangeSecret.byteLength < 32) {
+    throw new Error("HELIX_EXCHANGE_SECRET must be at least 32 bytes");
+  }
   const databaseUrl = env.EGRESS_DATABASE_URL ?? env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("EGRESS_DATABASE_URL or DATABASE_URL is required");
@@ -171,6 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
     databaseUrl,
     statementTimeoutMs: Number(env.EGRESS_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),
     instructionSecret,
+    exchangeSecret,
     keyVaultUrl: env.AZURE_KEY_VAULT_URL || undefined,
     devKeyPath: env.DEV_SECRETS_KEK_FILE || undefined,
     limits: {
