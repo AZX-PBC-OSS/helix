@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { SLUG_PATTERN } from "./app.js";
 import { EnvSchema } from "./env.js";
 import { HeaderNameSchema } from "./secrets.js";
 
@@ -362,6 +363,16 @@ export const ProviderUpdateRequestSchema = z.preprocess(
     revision: z.int().positive(),
     clientId: z.string().min(1).optional(),
     clientSecret: z.string().min(1).optional(),
+    /**
+     * The invalidation acknowledgement ({@link CONFIRM_INVALIDATION_FIELD} —
+     * design.md §Sensitive-change review panel): the client sets it to `true`
+     * when submitting a sensitive delta through the review panel. Absent or
+     * `false` against a sensitive delta is the 409
+     * `confirmation_required` rejection — nothing is applied; against a
+     * non-sensitive edit it is irrelevant and ignored. Not stored: it is
+     * consent for the mutation, never provider state.
+     */
+    confirmInvalidation: z.boolean().optional(),
   }),
 );
 export type ProviderUpdateRequest = z.infer<typeof ProviderUpdateRequestSchema>;
@@ -495,3 +506,92 @@ export const SENSITIVE_PROVIDER_FIELDS = [
   "tokenPlacement",
 ] as const satisfies readonly (keyof ProviderUpdateRequest)[];
 export type SensitiveProviderField = (typeof SENSITIVE_PROVIDER_FIELDS)[number];
+
+/**
+ * The wire name of the invalidation acknowledgement, on both the edit and the
+ * delete request (design.md §Sensitive-change review panel; the PUT/DELETE
+ * rows in §Portal API endpoints): the field a client sets to `true` when
+ * submitting through the review panel. One name — the import path (T-0011)
+ * and the SPA's panel (T-0026) send the same field the form does.
+ */
+export const CONFIRM_INVALIDATION_FIELD = "confirmInvalidation";
+
+export const SensitiveProviderFieldSchema = z.enum(SENSITIVE_PROVIDER_FIELDS);
+
+/**
+ * What `GET /api/v1/providers/:id/impact` returns — the confirmation dialog's
+ * blast radius (criterion 9): the apps bound to the provider, the number of
+ * user connections, and the number of pending consent attempts, all of which
+ * a confirmed sensitive edit or deletion invalidates.
+ *
+ * `boundApps` lists the apps whose **effective manifest** binds this
+ * provider's `ref` — the conservative set: a manifest binding is by ref, and
+ * which tier a binding consults is decided by who connects, so every ref-bound
+ * app belongs in front of the administrator at confirm time. The tier-precise
+ * per-binding state (which bindings THIS row's edit actually stale-dates) is
+ * what the manifest read computes through
+ * {@link isProviderBindingEffective} over the revision this transaction
+ * advances — the badge, not the dialog.
+ *
+ * `connections` counts the rows that are not already `invalidated`, and
+ * `pendingAttempts` the attempts that could still be claimed — the counts the
+ * mutation would actually retire, so repeating it reads zero, not a
+ * tombstone's history.
+ */
+export const ProviderImpactSchema = z.strictObject({
+  providerId: z.uuid(),
+  ref: ProviderRefSchema,
+  env: EnvSchema,
+  displayName: z.string().min(1).max(200),
+  revision: z.int().positive(),
+  boundApps: z.array(
+    z.strictObject({
+      id: z.uuid(),
+      slug: z
+        .string()
+        .max(63)
+        .regex(SLUG_PATTERN, "must be a lowercase DNS label (a-z, 0-9, hyphen)"),
+      displayName: z.string().min(1).max(200),
+    }),
+  ),
+  connections: z.number().int().nonnegative(),
+  pendingAttempts: z.number().int().nonnegative(),
+});
+export type ProviderImpact = z.infer<typeof ProviderImpactSchema>;
+
+/**
+ * The `details` payload of the 409 `confirmation_required` rejection: the
+ * impact payload the review panel renders, plus — for an edit — the sensitive
+ * fields whose pending change demanded the confirmation (the diff lines;
+ * deletion's requirement is unconditional, so the field is absent there).
+ */
+export const ConfirmationRequiredDetailsSchema = z.strictObject({
+  impact: ProviderImpactSchema,
+  sensitiveFields: z.array(SensitiveProviderFieldSchema).optional(),
+});
+export type ConfirmationRequiredDetails = z.infer<typeof ConfirmationRequiredDetailsSchema>;
+
+/**
+ * `DELETE /api/v1/providers/:id` body — the same acknowledgement the edit
+ * carries ({@link CONFIRM_INVALIDATION_FIELD}). Deletion is always
+ * invalidating, so there is no delta to detect: absent (an absent body parses
+ * as an empty one) or `false` is the 409 `confirmation_required` rejection,
+ * with the impact payload. An unknown key is still refused — the strictness
+ * every provider body carries.
+ */
+export const ProviderDeleteRequestSchema = z.strictObject({
+  [CONFIRM_INVALIDATION_FIELD]: z.boolean().optional(),
+});
+export type ProviderDeleteRequest = z.infer<typeof ProviderDeleteRequestSchema>;
+
+/**
+ * `DELETE /api/v1/providers/:id` response (criterion 10's distinguishable
+ * outcomes): `deleted` when this call removed the row, `already_removed` when
+ * the id was removed earlier — a repeat that must never touch a replacement
+ * provider recreated under the same ref (the surrogate `id` comparison,
+ * ADR-0004).
+ */
+export const ProviderDeleteResponseSchema = z.strictObject({
+  outcome: z.enum(["deleted", "already_removed"]),
+});
+export type ProviderDeleteResponse = z.infer<typeof ProviderDeleteResponseSchema>;

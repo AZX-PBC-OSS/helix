@@ -377,7 +377,7 @@ describe("provider routes refuse a non-admin", () => {
   const plain = { authorization: "Bearer plain" };
 
   const ADMIN_ROUTES: [
-    method: "GET" | "POST" | "PUT",
+    method: "GET" | "POST" | "PUT" | "DELETE",
     name: string,
     urlOf: (id: string) => string,
   ][] = [
@@ -385,6 +385,8 @@ describe("provider routes refuse a non-admin", () => {
     ["POST", "create", () => "/api/v1/providers"],
     ["GET", "read", (id) => `/api/v1/providers/${id}`],
     ["PUT", "edit", (id) => `/api/v1/providers/${id}`],
+    ["GET", "impact", (id) => `/api/v1/providers/${id}/impact`],
+    ["DELETE", "delete", (id) => `/api/v1/providers/${id}`],
   ];
 
   let g: TestApp;
