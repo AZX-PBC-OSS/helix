@@ -34,7 +34,8 @@ describe("AttestedInstructionSchema (ADR-0005)", () => {
 
   it("carries exactly one credential source — provider XOR connection", () => {
     expect(
-      AttestedInstructionSchema.safeParse(validInstruction({ provider: "asana" })).success,
+      AttestedInstructionSchema.safeParse(validInstruction({ provider: "asana", userKind: "user" }))
+        .success,
     ).toBe(true);
     expect(
       AttestedInstructionSchema.safeParse(validInstruction({ connection: "gh" })).success,
@@ -43,15 +44,45 @@ describe("AttestedInstructionSchema (ADR-0005)", () => {
     expect(AttestedInstructionSchema.safeParse(validInstruction()).success).toBe(true);
     // Both is the unrepresentable state.
     expect(
-      AttestedInstructionSchema.safeParse(validInstruction({ provider: "asana", connection: "gh" }))
-        .success,
+      AttestedInstructionSchema.safeParse(
+        validInstruction({ provider: "asana", connection: "gh", userKind: "user" }),
+      ).success,
     ).toBe(false);
   });
 
   it("validates the provider reference against the shared charset", () => {
     expect(
-      AttestedInstructionSchema.safeParse(validInstruction({ provider: "Asana" })).success,
+      AttestedInstructionSchema.safeParse(validInstruction({ provider: "Asana", userKind: "user" }))
+        .success,
     ).toBe(false);
+  });
+
+  it("requires the caller's principal kind on a delegated instruction (I-02 T-0022)", () => {
+    // Egress refuses anonymous and shared-password callers BY KIND (criterion
+    // 21) — and kind is recorded, never inferred from userOid's shape (a
+    // shared-password pseudonym and an Entra sub share the base64url
+    // alphabet). So a provider-bearing instruction without the kind is
+    // unrepresentable: the edge cannot mint one, and egress's verify fails
+    // closed rather than guessing.
+    expect(
+      AttestedInstructionSchema.safeParse(validInstruction({ provider: "asana" })).success,
+    ).toBe(false);
+    // Every kind the edge knows parses; the eligibility decision is egress's.
+    for (const userKind of ["user", "dev", "anon", "password"]) {
+      expect(
+        AttestedInstructionSchema.safeParse(validInstruction({ provider: "asana", userKind }))
+          .success,
+      ).toBe(true);
+    }
+    // An unknown kind is not a kind.
+    expect(
+      AttestedInstructionSchema.safeParse(
+        validInstruction({ provider: "asana", userKind: "visitor" }),
+      ).success,
+    ).toBe(false);
+    // Secret-backed and keyless instructions keep minting without it — the
+    // widening is additive.
+    expect(AttestedInstructionSchema.safeParse(validInstruction()).success).toBe(true);
   });
 
   it("rejects registered-claim lookalikes — the egress strips them before parsing", () => {

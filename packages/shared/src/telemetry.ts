@@ -60,8 +60,9 @@ export const ATTR_UPSTREAM_STATUS = "helix.upstream.status";
 export const ATTR_CLIENT_DISCONNECTED = "helix.client_disconnected";
 /**
  * How egress sourced the injected credential — `secret` (a sealed `app_secrets`
- * row) or `managed-identity` (a minted Entra token, ADR-0046). Bounded to those
- * two values; never the credential itself, its header name, or a token claim.
+ * row), `managed-identity` (a minted Entra token, ADR-0046), or `delegated`
+ * (the caller's own OAuth connection, I-02 T-0022). Bounded to those three
+ * values; never the credential itself, its header name, or a token claim.
  */
 export const ATTR_CREDENTIAL_SOURCE = "helix.credential_source";
 export const ATTR_STREAM = "helix.stream";
@@ -114,6 +115,7 @@ export const SPAN_LLM = "helix.gateway.llm";
 export const SPAN_FETCH = "helix.gateway.fetch";
 export const SPAN_DATA = "helix.gateway.data";
 export const SPAN_EGRESS_PROXY = "helix.egress.proxy";
+export const SPAN_EGRESS_RESOLUTION = "helix.egress.resolution";
 export const SPAN_EGRESS_EXCHANGE = "helix.egress.exchange";
 export const SPAN_EGRESS_RENEWAL = "helix.egress.renewal";
 export const SPAN_REGISTRY_LOAD = "helix.registry.load";
@@ -424,6 +426,47 @@ export const EGRESS_RENEWAL_OUTCOMES = [
   "admin_action",
 ] as const;
 export type EgressRenewalOutcome = (typeof EGRESS_RENEWAL_OUTCOMES)[number];
+
+/**
+ * The egress delegated-resolution operation's outcome vocabulary (I-02 T-0022)
+ * — the `helix.outcome` values on the `helix.egress.resolution` span, the span
+ * the proxy opens around resolving one delegated instruction's connection.
+ * design.md §Operator-visible signals fixes this inventory; how each word
+ * answers the caller is design.md's error table:
+ *
+ * - `resolved` — a usable access token came off the row directly; the call
+ *   dispatches.
+ * - `refreshed` — the token was expired (or criterion 40's flag was set), the
+ *   renewal succeeded, and the call dispatches on the fresh token, invisible
+ *   to the caller (criterion 35). The renewal span inside this one carries the
+ *   same word.
+ * - `connection_required` — no or dead connection, a caller kind that can
+ *   never hold one, or a renewal that ended `uncertain_rotation` /
+ *   `reconnect_required` — the caller must Connect (403).
+ * - `reconnect_required` — the connection row itself is live but renewal said
+ *   reconnection is required and the row has been flipped; emitted beside
+ *   `connection_required`'s answer when the distinction matters on the span.
+ *   (The app-facing answer is still `connection_required`.)
+ * - `provider_unavailable` — the provider was deleted, or the row's revision
+ *   stamp is behind the cached current one (ADR-0004's defense in depth) —
+ *   503.
+ * - `provider_misconfigured` — the provider row is malformed or its renewal
+ *   answered `admin_action` — administrator action required (502).
+ * - `error` — resolution could not complete: a temporary renewal failure
+ *   (the state diagram's UpstreamError arm; the renewal span inside carries
+ *   the specific `temporary_failure` word) or a custody/infrastructure
+ *   failure. The app-facing answer is the existing 502 `upstream_error`.
+ */
+export const EGRESS_RESOLUTION_OUTCOMES = [
+  "resolved",
+  "refreshed",
+  "connection_required",
+  "reconnect_required",
+  "provider_unavailable",
+  "provider_misconfigured",
+  "error",
+] as const;
+export type EgressResolutionOutcome = (typeof EGRESS_RESOLUTION_OUTCOMES)[number];
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default

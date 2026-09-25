@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { EnvSchema } from "./env.js";
+import { PrincipalKindSchema } from "./principal.js";
 import { ProviderRefSchema } from "./providers.js";
 
 /**
@@ -50,6 +51,20 @@ export const AttestedInstructionSchema = z
     appId: z.string().min(1),
     /** Authenticated user, or the anonymous sentinel on `public` apps. */
     userOid: z.string().min(1),
+    /**
+     * Which kind of principal `userOid` is (the `PrincipalKind` vocabulary the
+     * edge records at capture time — recorded, never inferred). The delegated
+     * resolution (I-02 T-0022) refuses `anon` and `password` callers — they can
+     * never hold a connection (spec criterion 21) — and serving that refusal
+     * requires knowing the KIND: `userOid`'s shape proves nothing (a shared-
+     * password pseudonym and an Entra `sub` share the base64url alphabet, and
+     * the sentinel is only exact for `anon`). Optional on the payload as a
+     * whole so secret-backed and keyless instructions keep minting unchanged;
+     * mandatory on a delegated one — the refine below makes a provider-bearing
+     * instruction without it unrepresentable, so an old edge cannot mint a
+     * delegated call egress would have to guess about.
+     */
+    userKind: PrincipalKindSchema.optional(),
     capability: InstructionCapabilitySchema,
     /** The allowlisted origin the edge authorized (scheme + host + port). */
     origin: z.url(),
@@ -97,6 +112,14 @@ export const AttestedInstructionSchema = z
         path: ["provider"],
         message:
           "an instruction carries exactly one credential source — a connection secret or a provider reference, never both (ADR-0005)",
+      });
+    }
+    if (i.provider !== undefined && i.userKind === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["userKind"],
+        message:
+          "a delegated instruction must carry the caller's principal kind — egress refuses anonymous and shared-password callers by kind, never by inferring it from userOid (I-02 criterion 21)",
       });
     }
   });

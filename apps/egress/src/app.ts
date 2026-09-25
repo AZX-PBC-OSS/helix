@@ -5,6 +5,9 @@ import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
 import type { InstructionBurnStore } from "./burn.js";
+import type { DelegatedWiring } from "./delegated.js";
+import { DelegatedResolver } from "./delegated.js";
+import { ConnectionRenewer } from "./renewal.js";
 import { makeExchangeHandler, type ExchangeDeps } from "./exchange.js";
 import { makeProxyHandler } from "./proxy.js";
 import { ROUTE_EGRESS_EXCHANGE } from "@azx-pbc/shared/telemetry";
@@ -38,6 +41,14 @@ export interface EgressDeps {
    * wired operation with no custody still answers a verified caller 503.
    */
   exchange?: ExchangeDeps | null;
+  /**
+   * The delegated-call resolution (I-02 T-0022): the caller's-connection
+   * resolver + renewer ingredients behind the proxy's `provider` branch.
+   * null/omitted (existing constructions) unwires it: a delegated instruction
+   * is refused fail-closed (502, the mechanism not wired), and every other
+   * call is byte-identical to before.
+   */
+  delegated?: DelegatedWiring | null;
 }
 
 /**
@@ -123,6 +134,27 @@ export function buildApp(
     limits: deps.config.limits,
     allowPrivate: deps.config.allowPrivate,
     allowInsecureConnection: deps.config.allowInsecureConnection,
+    // The delegated resolution (I-02 T-0022), built against the proxy's own
+    // dispatcher so the renewer's vendor round-trips ride the same pinned
+    // transport as the exchange's (the one transport seam, ADR-0009).
+    delegated: deps.delegated
+      ? (dispatcher) =>
+          new DelegatedResolver({
+            pool: deps.delegated!.pool,
+            providers: deps.delegated!.providers,
+            delegatedStore: deps.delegated!.delegatedStore,
+            renewer: new ConnectionRenewer({
+              pool: deps.delegated!.pool,
+              providers: deps.delegated!.providers,
+              credentialStore: deps.delegated!.credentialStore,
+              delegatedStore: deps.delegated!.delegatedStore,
+              dispatcher,
+              timeoutMs: deps.delegated!.timeoutMs,
+              allowInsecureConnection: deps.delegated!.allowInsecureConnection,
+              lockAcquireTimeoutMs: deps.delegated!.lockAcquireTimeoutMs,
+            }),
+          })
+      : undefined,
   });
   // The proxy holds one shared, long-lived dispatcher (connection pooling +
   // per-connection SSRF pin); drain its pooled sockets on teardown so tests and

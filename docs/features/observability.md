@@ -47,6 +47,7 @@ terminates untrusted traffic (decision 4).
 | `helix.consent.start.dev` | the dev gateway's `/:slug/_api/connections/:ref/start` route (I-02 T-0016) — the dev tier's bearer POST → single-use popup URL |
 | `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route (I-02 T-0017) — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
 | `helix.egress.proxy` | egress `POST /proxy` |
+| `helix.egress.resolution` | egress delegated-call resolution (I-02 T-0022) — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation (I-02 T-0019) |
 | `helix.egress.renewal` | egress token renewal (I-02 T-0021) — the operation the delegated-call resolution runs when an access token is expired; nests inside the resolution span, and its own duration is where the advisory lock's bounded wait is visible (ADR-0007) |
 | `helix.registry.load` | the projection reload |
@@ -65,10 +66,21 @@ looked up:
   and attacker-choosable, so the wrapper records `http.route` + verb only.
   Pinned by `spanRedaction.test.ts`'s planted-key case.
 - `helix.egress.proxy` spans carry `helix.credential_source` ∈ {`secret`,
-  `managed-identity`} when a credential was injected — which custody path served
-  the call (ADR-0046), and the first thing to check when a Foundry-bound call
-  misauthenticates. Bounded to those two values; on the egress allowlist, so
-  never a header name, a credential, or a token claim.
+  `managed-identity`, `delegated`} when a credential was injected — which custody
+  path served the call (ADR-0046; `delegated` is the caller's own OAuth
+  connection, I-02 T-0022), and the first thing to check when a Foundry-bound
+  call misauthenticates. Bounded to those three values; on the egress allowlist,
+  so never a header name, a credential, or a token claim. A delegated dispatch
+  also carries `helix.provider_ref`.
+- `helix.egress.resolution` spans carry `helix.outcome` ∈
+  `EGRESS_RESOLUTION_OUTCOMES` (`resolved`, `refreshed`, `connection_required`,
+  `reconnect_required`, `provider_unavailable`, `provider_misconfigured`,
+  `error` — design.md's inventory plus the plane's generic `error` for the
+  temporary-renewal-failure/custody paths, whose specific word the renewal span
+  inside carries), `helix.env`, and `helix.provider_ref`. No token value, no
+  vendor content, and no identity (`userOid` is never a dimension) appears on
+  it; the app-facing answer for every 403 word is the ledger's
+  `connection_required`.
 - `helix.egress.proxy` spans' `helix.outcome` ∈ {`ok`, `upstream_throttled`,
   `refusal`, `error`} — `upstream_throttled` is a proxied upstream `429`: the
   proxy worked, the vendor said slow down. Without the distinct label a real

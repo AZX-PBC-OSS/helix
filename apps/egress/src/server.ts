@@ -10,6 +10,7 @@ import {
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig } from "./config.js";
+import { createEgressPool } from "./pool.js";
 import { deriveExchangeKey } from "./internalJwt.js";
 import { deriveInstructionKey } from "./instruction.js";
 import { FOUNDRY_TOKEN_RESOURCE, ManagedIdentityResolver } from "./managedIdentity.js";
@@ -206,6 +207,18 @@ const providers = new LiveProviders({
   },
 });
 
+// The delegated resolution + renewal pool (I-02 T-0022): built before
+// `buildApp` so the wiring below can reference it, closed in the hook below.
+// The renewer instance itself is built inside `buildApp`'s delegated factory
+// (it needs the proxy's dispatcher); the pool is what this file owns.
+const delegatedPool =
+  store && delegatedStore
+    ? createEgressPool(config.databaseUrl, {
+        statementTimeoutMs: config.statementTimeoutMs,
+        onIdleError: (err) => onClientError(err, "delegated"),
+      })
+    : null;
+
 const app = buildApp({
   config,
   resolver,
@@ -224,6 +237,23 @@ const app = buildApp({
     allowInsecureConnection: config.allowInsecureConnection,
     timeoutMs: config.limits.timeoutMs,
   },
+  // The delegated-call resolution (I-02 T-0022): wired exactly when custody
+  // is — it needs both stores (the provider rows' client credentials, and the
+  // delegated vault the row's token material opens from). Unwired, delegated
+  // instructions are refused fail-closed and every other call is unchanged.
+  delegated:
+    store && delegatedStore
+      ? {
+          // One pool for the resolution's row reads, the criterion-40 flag
+          // UPDATE, and the renewal advisory-lock clients (helix_egress).
+          pool: delegatedPool!,
+          providers,
+          credentialStore: store,
+          delegatedStore,
+          timeoutMs: config.limits.timeoutMs,
+          allowInsecureConnection: config.allowInsecureConnection,
+        }
+      : null,
 });
 logRef.current = (obj, msg) => app.log.warn(obj, msg);
 providersLogRef.current = app.log;
@@ -243,6 +273,7 @@ app.addHook("onClose", async () => {
   // The wrapper owns the wrapped resolver (ManagedIdentityResolver.close), so
   // this one call covers both shapes.
   await resolver?.close();
+  await delegatedPool?.end();
   await tokenProvider?.close();
   await miTokenProvider?.close();
   await telemetry.shutdown();
