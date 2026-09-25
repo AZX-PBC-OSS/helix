@@ -124,6 +124,16 @@ services:
       # (I-02 ADR-0001/0003 — same container in dev; the private internal
       # address in prod). Unset leaves the delegation unwired.
       PORTAL_EGRESS_URL: http://localhost:8081
+      # Edge → portal internal base (I-02 ADR-0002 part 3): the consent-start
+      # consult and the auth-host /connections/* reverse proxy. Fail-closed
+      # (503) when unset — without it the OAuth-consent surfaces cannot run.
+      EDGE_PORTAL_URL: http://localhost:3001
+      # Dev-tier escape hatches for exercising OAuth connections against the
+      # loopback fixture vendor (pnpm dev:vendor, :3003): egress's SSRF controls
+      # normally refuse private/loopback targets, and delegated calls require
+      # https. Both are refused under NODE_ENV=production.
+      EGRESS_ALLOW_PRIVATE: "true"
+      EGRESS_ALLOW_INSECURE_CONNECTION: "true"
       # OpenTelemetry (ADR-0037). Points every service at the local collector
       # below, the same shape as Azurite standing in for Blob: the OTLP path is
       # exercised locally rather than first discovered in Azure, where its

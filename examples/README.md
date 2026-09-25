@@ -7,7 +7,8 @@ the edge gateway (`/_api/*`). The LLM proxy landed in M4; `chatbot` exercises it
 `waitlist` exercises the app-data gateway, `oversell` exercises its write-concurrency
 contract (ADR-0041), `github-stars` exercises the CSP origin-grant approval loop,
 `fetch-proxy` exercises the M4.5 fetch-proxy + secret-backed connections + transparent
-shim, and `offline` exercises the offline capability (ADR-0035).
+shim, `oauth-demo` exercises the M4.5 delegated OAuth connections (ADR-0031), and
+`offline` exercises the offline capability (ADR-0035).
 
 | App                              | What it shows                                                                                         |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -18,6 +19,7 @@ shim, and `offline` exercises the offline capability (ADR-0035).
 | [`oversell`](./oversell)         | Compare-and-swap shared writes (ADR-0041) and prefix grants + the list verb (ADR-0042): ETags, mandatory preconditions, a runtime-growing waitlist, one-click 412/428/403 probes.  |
 | [`github-stars`](./github-stars) | Fetches a public API **directly** — CSP-blocked until an admin approves the origin (the approval loop). |
 | [`fetch-proxy`](./fetch-proxy)   | Reaches the GitHub API **through the fetch-proxy** — keyless, then secret-injected, then via the shim. |
+| [`oauth-demo`](./oauth-demo)     | Exercises **delegated OAuth connections** against the fixture vendor — consent via `window.helix.connect`, then a provider-bound call with the token injected server-side. |
 | [`helix-help`](./helix-help)     | A docs-grounded chatbot: loads the public docs site at runtime through the fetch-proxy and answers over the OpenAI-compatible surface — no key, no RAG. |
 | [`offline`](./offline)           | Cold-boots with no network via the platform's scope-confined service worker, and shows what the app still owns. |
 
