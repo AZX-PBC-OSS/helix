@@ -37,6 +37,12 @@
     "yauzl": "catalog:",
     "zod": "catalog:"
   },
+  "exports": {
+    "./app": "./src/app.ts",
+    "./db-client": "./src/db/client.ts",
+    "./internal-jwt": "./src/internalJwt.ts",
+    "./test-harness": "./src/test/harness.ts"
+  },
   "devDependencies": {
     "@azx-pbc/dev-idp": "workspace:*",
     "@azx-pbc/dev-oauth-vendor": "workspace:*",

@@ -23,6 +23,10 @@
   },
   "devDependencies": {
     "@azx-pbc/dev-idp": "workspace:*",
+    "@azx-pbc/dev-oauth-vendor": "workspace:*",
+    "@azx-pbc/egress": "workspace:*",
+    "@azx-pbc/portal": "workspace:*",
+    "@azx-pbc/secret-store": "workspace:*",
     "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
     "@types/pg": "catalog:",

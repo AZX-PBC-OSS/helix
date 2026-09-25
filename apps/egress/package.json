@@ -29,6 +29,8 @@
     "typescript": "catalog:"
   },
   "exports": {
-    "./app": "./src/app.ts"
+    "./app": "./src/app.ts",
+    "./retire": "./src/retire.ts",
+    "./providerListener": "./src/providerListener.ts"
   }
 }
