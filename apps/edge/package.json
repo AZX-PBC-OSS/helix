@@ -21,6 +21,12 @@
     "undici": "catalog:",
     "zod": "catalog:"
   },
+  "exports": {
+    "./app": "./src/app.ts",
+    "./test/config": "./src/test/config.ts",
+    "./test/fakes": "./src/test/fakes.ts",
+    "./test/support": "./src/test/support.ts"
+  },
   "devDependencies": {
     "@azx-pbc/dev-idp": "workspace:*",
     "@azx-pbc/dev-oauth-vendor": "workspace:*",

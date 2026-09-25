@@ -1,0 +1,47 @@
+import { defineConfig } from "@playwright/test";
+
+/**
+ * The connections browser lane (I-02 T-0031, ADR-0010 part 2) — real-Chromium
+ * acceptance for the OAuth-connections popup journeys, separate from the jsdom
+ * SPA project and from the vitest run entirely.
+ *
+ * Headed, under Xvfb (both locally and in CI): with Playwright's CDP defaults
+ * the popup blocker never fires, and the blocked-open journey (criterion 26)
+ * must be ENGINE evidence. Two changes make it fire:
+ *   - `--disable-popup-blocking` is removed from the default args, which
+ *     restores Chromium's one-popup-per-user-gesture blocking; and
+ *   - the browser runs headed (headless Chromium keeps popups unblocked under
+ *     automation even with the switch removed — measured).
+ * Run through `xvfb-run -a pnpm --filter @azx-pbc/connections-lane test`
+ * (README has the details; the CI job does exactly this).
+ */
+export default defineConfig({
+  testDir: "./src",
+  outputDir: "test-results",
+  timeout: 60_000,
+  expect: { timeout: 10_000 },
+  workers: 1,
+  fullyParallel: false,
+  retries: 0,
+  reporter: process.env.CI
+    ? [["list"], ["junit", { outputFile: "test-results/lane.xml" }]]
+    : [["list"]],
+  use: {
+    headless: false,
+    // The dev topology's TLS terminates at the lane's own pump with a
+    // self-signed cert the lane generated; the browser is a test instrument
+    // here, not a trust boundary.
+    ignoreHTTPSErrors: true,
+    launchOptions: {
+      ignoreDefaultArgs: ["--disable-popup-blocking"],
+      args: [
+        // The dev base domain maps to loopback — no /etc/hosts edit, so the
+        // lane is self-sufficient on a CI runner.
+        "--host-resolver-rules=MAP *.local.helix.azxlabs.io 127.0.0.1",
+      ],
+    },
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+    video: "retain-on-failure",
+  },
+});

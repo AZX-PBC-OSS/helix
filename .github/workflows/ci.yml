@@ -41,6 +41,13 @@ name: CI
 #
 # `bicep` is an independent lane — it shares no toolchain with the node stack,
 # gates nothing and is gated by nothing.
+#
+# `browser-lane` is the real-browser acceptance lane (I-02 T-0031): gated behind
+# `static` + `test` (a browser job on a commit a sub-minute gate already fails
+# is the cost the github-actions concern prices out), needs only Postgres as a
+# service — the fixture vendor, the dev IdP and the portal/edge/egress apps are
+# booted in-process by the lane itself — and uploads its traces/screenshots on
+# failure.
 
 on:
   push:
@@ -241,6 +248,94 @@ jobs:
 
       - name: Run checks (test)
         run: ./check-and-lint.sh test -- --shard=${{ matrix.shard }}
+
+  browser-lane:
+    name: browser lane (playwright · connections)
+    runs-on: ubuntu-latest
+    # The real-browser acceptance lane (I-02 T-0031, ADR-0010 part 2): a
+    # Chromium drives the assembled OAuth-connections journey against the real
+    # edge/portal/egress + the fixture vendor + the dev IdP — all booted
+    # in-process by the lane itself, so unlike `test` this job needs only
+    # Postgres (no Azurite: the lane's edge reads its app page from an
+    # in-memory blob double, and the fixture vendor/IdP are in-repo services
+    # the lane starts, not containers). Gated behind the cheaper lanes: a
+    # browser job on a commit a sub-minute gate already fails is the cost the
+    # github-actions concern prices out. The lane runs headed under Xvfb (its
+    # config explains why — the popup blocker never fires under CDP headless
+    # defaults), which is the standard headed-CI shape; xvfb-run + xauth ship
+    # on the runner image, and playwright's --with-deps covers the rest.
+    needs: [static, test]
+    timeout-minutes: 15
+
+    services:
+      db:
+        image: postgres:18
+        env:
+          POSTGRES_USER: helix
+          POSTGRES_PASSWORD: helix
+          POSTGRES_DB: helix
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U helix -d helix"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The lane's world derives the well-known dev values for everything else
+      # (the internal-JWT keys, the portal verifier env, the dev-token actor)
+      # so a local run needs zero env setup; these are the only two that name
+      # the runner's Postgres — the admin DSN for the role SQL, and the test
+      # DSN the lane's scratch database is carved from.
+      DATABASE_URL: postgresql://helix:helix@db:5432/helix
+      TEST_DATABASE_URL: postgresql://helix:helix@db:5432/helix_test
+      HELIX_EXCHANGE_SECRET: aGVsaXgtZGV2LWV4Y2hhbmdlLXNlY3JldC0zMmItbWluIQ==
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve db hostname to localhost
+        run: echo "127.0.0.1 db" | sudo tee -a /etc/hosts
+
+      - name: Create least-privilege Postgres roles
+        # Same db-init the dev container runs (helix_edge / helix_egress /
+        # helix_dev) — the lane fails loudly without the runtime roles, by
+        # design: an unprovisioned green run is not evidence.
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          # The lane pins @playwright/test exactly (catalog comment: the binary
+          # cache is keyed to the version's chromium revision).
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright chromium
+        run: pnpm --filter @azx-pbc/connections-lane exec playwright install --with-deps chromium
+
+      - name: Run the connections browser lane
+        run: xvfb-run -a pnpm --filter @azx-pbc/connections-lane test
+
+      - name: Upload lane artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connections-lane-artifacts
+          path: apps/connections-lane/test-results/
+          if-no-files-found: ignore
 
   bicep:
     name: bicep compiles
