@@ -422,6 +422,20 @@ export const ProviderMetadataSchema = ConnectionProviderSchema.omit({
 export type ProviderMetadata = z.infer<typeof ProviderMetadataSchema>;
 
 /**
+ * The admin providers-list response. `callbackUrl` is the fixed OAuth callback
+ * an administrator registers with the vendor (design.md §Fixed callback
+ * visibility, criterion 2), served at runtime beside the rows — derived by the
+ * portal from the apps base by the reserved-subdomain convention, never a
+ * build-time variable and never a second auth-base config field (architecture
+ * ADR-0001 §Implementation Notes). One value per deployment, not per row.
+ */
+export const ProviderListResponseSchema = z.strictObject({
+  callbackUrl: z.url(),
+  providers: z.array(ProviderMetadataSchema),
+});
+export type ProviderListResponse = z.infer<typeof ProviderListResponseSchema>;
+
+/**
  * The import/export document: one provider's credential-free configuration
  * as `{version, provider}` (criterion 11). The version is a literal — a
  * future format is a new literal and a new parser, so importing a document

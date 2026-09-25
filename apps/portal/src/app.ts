@@ -17,6 +17,7 @@ import { assertBundleLimits, resolveMaxTotalBytes } from "./deploy/limits.js";
 import { assertInternalJwtSecrets } from "./internalJwt.js";
 import { appRoutes } from "./routes/apps.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { providerRoutes } from "./routes/providers.js";
 import { devTokenRoutes } from "./routes/devTokens.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { cspRoutes } from "./routes/csp.js";
@@ -103,6 +104,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
 
   app.register(appRoutes);
   app.register(secretRoutes);
+  app.register(providerRoutes);
   app.register(devTokenRoutes);
   app.register(approvalRoutes);
   app.register(cspRoutes);

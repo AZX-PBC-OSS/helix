@@ -54,6 +54,31 @@ export function appPublicUrl(slug: string, env: NodeJS.ProcessEnv = process.env)
 }
 
 /**
+ * The path under the auth host where the consent callback lands. The edge's
+ * `/connections/*` reverse proxy forwards this prefix to this portal
+ * (apps/edge/src/routing/connectionsProxy.ts `CONNECTIONS_PREFIX` — keep the
+ * two in sync; the keep-in-sync convention REGISTRY_CHANNEL sets).
+ */
+const CONNECTIONS_CALLBACK_PATH = "/connections/callback";
+
+/**
+ * The fixed OAuth callback URL an administrator registers with the vendor
+ * (spec criterion 2, design.md §Fixed callback visibility):
+ * `auth.<APP_PUBLIC_BASE host>` + `/connections/callback` — the
+ * reserved-subdomain convention the edge's host classifier routes to the auth
+ * host (apps/edge/src/routing/hosts.ts, `classifyHost`).
+ *
+ * Derived, never configured: the edge owns the auth base as a single source,
+ * and a second auth-base config field here could drift from it (architecture
+ * ADR-0001 §Implementation Notes). Served at runtime through the providers
+ * payload, never a build-time variable.
+ */
+export function connectionsCallbackUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const base = resolveAppPublicBase(env);
+  return `${base.protocol}//auth.${base.host}${CONNECTIONS_CALLBACK_PATH}`;
+}
+
+/**
  * Base of the opt-in dev gateway (`DEV_API_PUBLIC_BASE`), or null when it is not
  * deployed. The dev gateway is off by default (`deployDevGateway` in the Bicep),
  * and the deploy sets this to an empty string when it is skipped — so empty is

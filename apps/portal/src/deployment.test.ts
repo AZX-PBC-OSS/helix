@@ -3,6 +3,7 @@ import {
   appPublicHost,
   appPublicUrl,
   assertDeploymentConfig,
+  connectionsCallbackUrl,
   resolveAppPublicBase,
   resolveDevApiBase,
   resolvePlatformMonthlyUsdCap,
@@ -69,6 +70,28 @@ describe("appPublicUrl / appPublicHost", () => {
     const dev = { APP_PUBLIC_BASE: "https://local.helix.azxlabs.io:8080" };
     expect(appPublicUrl("demo", dev)).toBe("https://demo.local.helix.azxlabs.io:8080");
     expect(appPublicHost("demo", dev)).toBe("demo.local.helix.azxlabs.io:8080");
+  });
+});
+
+describe("connectionsCallbackUrl", () => {
+  // The convention pin (architecture ADR-0001 §Implementation Notes): the
+  // callback is `auth.<APP_PUBLIC_BASE host>` + `/connections/callback` — the
+  // label apps/edge/src/routing/hosts.ts classifies as the auth host, under
+  // the prefix apps/edge/src/routing/connectionsProxy.ts forwards to this
+  // portal. A drift in either file's half of the convention must fail here.
+  it("derives the reserved-subdomain auth host from the apps base", () => {
+    expect(connectionsCallbackUrl({ APP_PUBLIC_BASE: "https://azx.helix.azxlabs.io" })).toBe(
+      "https://auth.azx.helix.azxlabs.io/connections/callback",
+    );
+  });
+
+  it("carries scheme and port through", () => {
+    expect(connectionsCallbackUrl({ APP_PUBLIC_BASE: "https://local.helix.azxlabs.io:8080" })).toBe(
+      "https://auth.local.helix.azxlabs.io:8080/connections/callback",
+    );
+    expect(connectionsCallbackUrl({ APP_PUBLIC_BASE: "http://localhost:8081" })).toBe(
+      "http://auth.localhost:8081/connections/callback",
+    );
   });
 });
 
