@@ -192,8 +192,9 @@ tenant (ADR-0031 decision 11). The process, prerequisites only:
    gate refuses an incomplete grant.
 
 The vendor-specific observed behavior from the live deployment exercise (the
-criterion-55 acceptance record) lives in its own dated record when performed —
-this doc carries the process, not the observations.
+criterion-55 acceptance record) lives in
+[`docs/runbooks/asana-deployment-acceptance.md`](../runbooks/asana-deployment-acceptance.md) —
+pending until performed; this doc carries the process, not the observations.
 
 ## What disconnection does — and does not do
 
