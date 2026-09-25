@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { PlatformUsageSchema, UsageSeriesPointSchema, UsageSummarySchema } from "./usage.js";
+import {
+  GATEWAY_OUTCOMES,
+  GatewayCallSchema,
+  GatewayOutcomeSchema,
+  PlatformUsageSchema,
+  UsageSeriesPointSchema,
+  UsageSummarySchema,
+} from "./usage.js";
 
 describe("usage schemas", () => {
   it("round-trips a usage series point", () => {
@@ -41,5 +48,51 @@ describe("usage schemas", () => {
     expect(platform.series).toHaveLength(1);
     // Old fixed-array shape is gone.
     expect("tokens14d" in platform).toBe(false);
+  });
+
+  it("widens the ledger outcomes with connection_required — and nothing else", () => {
+    // Pinned whole: the delegated-call label joins (criterion 50), and every
+    // pre-existing label keeps its place. `provider_unavailable` and
+    // `provider_misconfigured` deliberately do NOT appear here — they meter as
+    // `refusal` (design.md decision 13).
+    expect(GATEWAY_OUTCOMES).toEqual([
+      "ok",
+      "error",
+      "refusal",
+      "quota_blocked",
+      "conflict",
+      "forbidden",
+      "connection_required",
+    ]);
+    expect(GatewayOutcomeSchema.parse("connection_required")).toBe("connection_required");
+    expect(GatewayOutcomeSchema.safeParse("provider_unavailable").success).toBe(false);
+  });
+
+  it("round-trips an audit row carrying the connection_required outcome", () => {
+    const row = {
+      id: "22222222-2222-4222-8222-222222222222",
+      appId: "11111111-1111-4111-8111-111111111111",
+      slug: "demo",
+      userOid: "anon",
+      userName: null,
+      userEmail: null,
+      userKind: "anon",
+      capability: "fetch",
+      model: "api.asana.com",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0,
+      durationMs: 0,
+      statusCode: 403,
+      stopReason: null,
+      errorDetail: null,
+      path: "/_api/fetch/https://app.asana.com/api/1.0/tasks",
+      method: "GET",
+      outcome: "connection_required",
+      createdAt: "2026-09-25T00:00:00.000Z",
+    };
+    expect(GatewayCallSchema.parse(row).outcome).toBe("connection_required");
   });
 });

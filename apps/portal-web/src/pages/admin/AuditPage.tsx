@@ -43,6 +43,11 @@ const OUT_META: Record<GatewayOutcome, [Tone, string]> = {
   ok: ["live", "ok"],
   error: ["bad", "error"],
   refusal: ["warn", "refusal"],
+  // The delegated-consent outcome — violet, matching the provider-bound badge
+  // in the Capabilities tab. Kept distinct from `refusal` in both word and tone:
+  // "user not connected" asks for a Connect action, policy refusal does not
+  // (criterion 50).
+  connection_required: ["violet", "connect required"],
   quota_blocked: ["warn", "quota"],
   conflict: ["warn", "conflict"],
   forbidden: ["bad", "forbidden"],
@@ -152,6 +157,7 @@ export function AuditPage() {
             { value: "ok", label: "OK" },
             { value: "error", label: "Error" },
             { value: "refusal", label: "Refusal" },
+            { value: "connection_required", label: "Connect" },
             { value: "quota_blocked", label: "Quota" },
             { value: "forbidden", label: "Forbidden" },
             { value: "conflict", label: "Conflict" },
