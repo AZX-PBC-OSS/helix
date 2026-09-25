@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   APPROVAL_BASELINES,
   CapabilityCatalogueSchema,
+  CatalogueProviderSchema,
   ELEVATION_TRIGGERS,
   type CapabilityCatalogue,
 } from "@azx-pbc/shared";
@@ -109,6 +110,15 @@ async function buildCatalogue(app: FastifyInstance): Promise<CapabilityCatalogue
     orderBy: { name: "asc" },
   });
 
+  // ── Fetch providers (T-0009, Q16): every configured connection provider,
+  // metadata only — the discovery surface app authors bind against. Constructed
+  // field-by-field (never spread), so a credential column cannot ride into the
+  // payload even if the row grows one; the strict parse fails loudly on drift.
+  // Ordered ref-then-env so a ref registered in both tiers renders adjacently.
+  const providerRows = await app.prisma.connectionProvider.findMany({
+    orderBy: [{ ref: "asc" }, { env: "asc" }],
+  });
+
   const devApiBase = resolveDevApiBase();
 
   return CapabilityCatalogueSchema.parse({
@@ -125,6 +135,15 @@ async function buildCatalogue(app: FastifyInstance): Promise<CapabilityCatalogue
     fetch: {
       externalOriginsPermitted: true,
       connections: globalRows.map((r) => ({ name: r.name })),
+      providers: providerRows.map((p) =>
+        CatalogueProviderSchema.parse({
+          ref: p.ref,
+          kind: p.kind,
+          displayName: p.displayName,
+          apiOrigins: p.apiOrigins,
+          env: p.env === "dev" ? "dev" : "prod",
+        }),
+      ),
       baselineRequestsPerDay: APPROVAL_BASELINES.fetchRequestsPerDay,
     },
     mcp: { enforced: false },

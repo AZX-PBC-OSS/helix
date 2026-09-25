@@ -57,6 +57,7 @@ function catalogueBody(servable: readonly string[] = CURATED_LLM_MODELS): Capabi
     fetch: {
       externalOriginsPermitted: true,
       connections: [],
+      providers: [],
       baselineRequestsPerDay: APPROVAL_BASELINES.fetchRequestsPerDay,
     },
     mcp: { enforced: false },

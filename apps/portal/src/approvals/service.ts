@@ -1,11 +1,14 @@
 import {
   applyDeltas,
   captureSnapshot,
+  CapabilitiesSchema,
   classifyChange,
+  parseFetchOriginKey,
   touchedAreas,
   type Capabilities,
   type Delta,
   type ManifestUpdateResult,
+  type ProviderStamp,
   type Risk,
 } from "@azx-pbc/shared";
 import {
@@ -135,10 +138,118 @@ export function alreadyDecided(
 }
 
 /**
+ * The provider refs of a filing's elevated deltas — the `fetch.origins[+…]`
+ * adds whose canonical key is provider-bound. Other delta shapes (removals,
+ * keyless/secret-bound adds, scalars) never carry a provider.
+ */
+function providerRefOfDelta(d: Delta): string | null {
+  if (typeof d.to !== "string" || !d.path.startsWith("fetch.origins[+")) return null;
+  return parseFetchOriginKey(d.to).provider ?? null;
+}
+
+/**
+ * Validate every provider-bound origin a requested manifest declares against
+ * the provider rows (criterion 15): the declared origin must be one of THAT
+ * provider's permitted API destinations (`apiOrigins`) in the applicable
+ * environment, and the provider must exist. A manifest binding is
+ * env-agnostic — it resolves in the caller's tier at call time — so every
+ * env-partitioned row under the ref must permit the origin; a ref with no row
+ * at all binds nothing and is refused. Failing this refuses the whole save
+ * before any request is opened.
+ */
+async function validateProviderBindings(tx: Tx, requested: unknown): Promise<void> {
+  const caps = CapabilitiesSchema.parse(requested);
+  const refs = [
+    ...new Set(
+      (caps.fetch?.origins ?? [])
+        .map((o) => o.provider)
+        .filter((ref): ref is string => ref !== undefined),
+    ),
+  ];
+  if (refs.length === 0) return;
+
+  const rows = await tx.connectionProvider.findMany({ where: { ref: { in: refs } } });
+  const rowsByRef = new Map<string, { env: string; apiOrigins: unknown }[]>();
+  for (const row of rows) {
+    const list = rowsByRef.get(row.ref) ?? [];
+    list.push({ env: row.env, apiOrigins: row.apiOrigins });
+    rowsByRef.set(row.ref, list);
+  }
+
+  for (const o of caps.fetch?.origins ?? []) {
+    if (o.provider === undefined) continue;
+    // The provider's destinations are canonical origins (canonicalised at
+    // write); reduce the declared origin the same way so the comparison is
+    // canonical-to-canonical.
+    const declared = new URL(o.origin).origin;
+    const providerRows = rowsByRef.get(o.provider) ?? [];
+    if (providerRows.length === 0) {
+      throw new AppError(
+        "validation_failed",
+        `origin "${o.origin}" is bound to provider "${o.provider}", but no provider with that reference is configured`,
+      );
+    }
+    for (const row of providerRows) {
+      const destinations = Array.isArray(row.apiOrigins) ? (row.apiOrigins as string[]) : [];
+      if (!destinations.includes(declared)) {
+        throw new AppError(
+          "validation_failed",
+          `origin "${o.origin}" is not one of provider "${o.provider}"'s permitted API destinations in the ${row.env} environment`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Stamp a filing's elevated deltas (T-0009): every delta carries the app's
+ * visibility **at filing** (`publicApp` — criterion 16's warning is data on
+ * the request, so the queue card never fetches the app), and provider-bound
+ * origin adds carry one {@link ProviderStamp} per env-partitioned provider row
+ * under the bound ref (ADR-0004) — the apply-time conflict's comparison half.
+ */
+async function stampElevatedDeltas(tx: Tx, deltas: Delta[], publicApp: boolean): Promise<Delta[]> {
+  const refs = new Set<string>();
+  for (const d of deltas) {
+    const ref = providerRefOfDelta(d);
+    if (ref !== null) refs.add(ref);
+  }
+  const stampsByRef = new Map<string, ProviderStamp[]>();
+  if (refs.size > 0) {
+    const rows = await tx.connectionProvider.findMany({ where: { ref: { in: [...refs] } } });
+    for (const row of rows) {
+      const list = stampsByRef.get(row.ref) ?? [];
+      list.push({
+        ref: row.ref,
+        env: row.env === "dev" ? "dev" : "prod",
+        providerId: row.id,
+        revision: row.revision,
+      });
+      stampsByRef.set(row.ref, list);
+    }
+  }
+  return deltas.map((d) => {
+    const ref = providerRefOfDelta(d);
+    const stamps = ref === null ? [] : (stampsByRef.get(ref) ?? []);
+    return {
+      ...d,
+      publicApp,
+      ...(stamps.length > 0 ? { providerStamps: stamps } : {}),
+    };
+  });
+}
+
+/**
  * The capability write-gate (docs/design/approvals.md §3): split a requested
  * capability change into baseline deltas (committed now) and elevated deltas
  * (bundled into one pending request), in a single transaction. Shared by the
  * manifest PUT and the one-click origin-grant route.
+ *
+ * T-0009 extends the gate for provider bindings: the requested state is first
+ * validated against the provider rows ({@link validateProviderBindings} — a
+ * binding whose origin the provider does not serve refuses the whole save), and
+ * the elevated bundle is stamped at filing ({@link stampElevatedDeltas} — the
+ * provider stamps and the app's visibility, both read inside this transaction).
  *
  * `mutate` receives the effective capabilities **as read inside the transaction**,
  * which is what makes a relative change (the origin grant's array append) land on
@@ -161,10 +272,11 @@ export async function applyCapabilityChange(
   const { updated, pending, baselineDeltas } = await prisma.$transaction(async (tx) => {
     const row = await tx.app.findUniqueOrThrow({ where: { id: opts.appId } });
     const effective = capabilitiesFromRow(row);
-    const { baselineDeltas, elevatedDeltas, risk } = classifyChange(
-      effective,
-      opts.mutate(effective),
-    );
+    const requested = opts.mutate(effective);
+    // Refuse an invalid binding before classifying or writing anything: no
+    // baseline commit, no request.
+    await validateProviderBindings(tx, requested);
+    const { baselineDeltas, elevatedDeltas, risk } = classifyChange(effective, requested);
     // Apply only the baseline deltas now; elevated ones wait for approval.
     const applied = applyDeltas(effective, baselineDeltas);
 
@@ -188,6 +300,13 @@ export async function applyCapabilityChange(
     }
     let pending: string | null = null;
     if (elevatedDeltas.length > 0) {
+      // Stamp at filing, inside the txn that reads the visibility and the
+      // provider rows — the stamps must describe the state the filer saw.
+      const stamped = await stampElevatedDeltas(
+        tx,
+        elevatedDeltas,
+        row.visibilityMode === "public",
+      );
       // Snapshot the post-baseline state of the touched areas so a later approve
       // can detect a value that moved underneath the request.
       const baseSnapshot = captureSnapshot(
@@ -197,7 +316,7 @@ export async function applyCapabilityChange(
       );
       pending = await createApprovalRequest(tx, {
         appId: row.id,
-        deltas: elevatedDeltas,
+        deltas: stamped,
         risk,
         baseSnapshot,
         requestedOid: opts.actorOid,

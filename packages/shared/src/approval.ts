@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { AppSchema } from "./app.js";
+import { EnvSchema } from "./env.js";
 import { CapabilitiesSchema, type Capabilities, type FetchConnection } from "./manifest.js";
 import { AppManifestSchema } from "./manifest.js";
 import { MODEL_PRICING } from "./pricing.js";
+import { ProviderRefSchema } from "./providers.js";
 import { type VisibilityMode } from "./visibility.js";
 
 /**
@@ -35,6 +37,22 @@ export const ApprovalStatusSchema = z.enum(APPROVAL_STATUSES);
 export type ApprovalStatus = z.infer<typeof ApprovalStatusSchema>;
 
 /**
+ * One env-partitioned provider row's identity, as it read when an approval
+ * request was filed (ADR-0004). The unit of {@link Delta.providerStamps}.
+ */
+export const ProviderStampSchema = z.strictObject({
+  /** The env-unique reference the manifest binds (the catalogue/manifest key). */
+  ref: ProviderRefSchema,
+  /** Which partition the stamped row lives in — a ref may exist in both. */
+  env: EnvSchema,
+  /** The surrogate row id — delete+recreate mints a new one, dangling old stamps. */
+  providerId: z.uuid(),
+  /** The row's revision at filing; a sensitive edit advances it (ADR-0004). */
+  revision: z.int().positive(),
+});
+export type ProviderStamp = z.infer<typeof ProviderStampSchema>;
+
+/**
  * A typed, path-keyed change. `path` is the human-facing key (rendered in the
  * diff and the audit trail); for array membership it carries the affected item
  * (`mcp[+pagerduty]`, `externalOrigins[-https://api.foo.com]`). `from`/`to` hold
@@ -44,8 +62,62 @@ export const DeltaSchema = z.object({
   path: z.string(),
   from: z.union([z.string(), z.number(), z.boolean()]).optional(),
   to: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  /**
+   * The provider stamps recorded **at filing** for a provider-bound origin
+   * delta (T-0009) — one per env-partitioned `connection_providers` row that
+   * existed under the bound ref when the request was filed (ADR-0004: an
+   * approval records the provider's `ref` + `providerId` + `revision`, and
+   * env partitioning makes a ref's full identity the set of its rows).
+   *
+   * This is the payload half of the apply-time conflict: approving a request
+   * whose stamps no longer match the provider's current identity/revision
+   * approves nothing — an old pending approval cannot approve access to a
+   * newer configuration. Consumers read the rule itself from
+   * {@link isProviderBindingEffective}; none re-derives the comparison.
+   */
+  providerStamps: z.array(ProviderStampSchema).optional(),
+  /**
+   * The requesting app's visibility **at filing**: `true` when the app was
+   * `public`, `false` (stamped as not-public) otherwise. Criterion 16's
+   * warning — a public app's anonymous visitors can never connect a vendor
+   * account — is data on the request, so the queue card needs no extra fetch.
+   * The flag never auto-rejects.
+   */
+  publicApp: z.boolean().optional(),
 });
 export type Delta = z.infer<typeof DeltaSchema>;
+
+/**
+ * The binding-effectiveness rule (T-0009 — the ONE definition; ADR-0004's
+ * revision mechanism is its basis): an app's provider binding is effective
+ * exactly when the approval that granted it filed a stamp matching the
+ * provider row's **current** identity — same surrogate `id` (delete+recreate
+ * under the same ref mints a new one), same `ref`, same `revision` (every
+ * sensitive edit advances it). A `null`/`undefined` current row — the provider
+ * was deleted, or never existed — is never effective.
+ *
+ * Consumers pass the filed stamp and the row they loaded; none re-derives the
+ * comparison:
+ *  - the portal's approve route (the apply-time conflict — a stale stamp is a
+ *    409 that approves nothing),
+ *  - the manifest read (per-binding effectiveness → the SPA's Reapproval-needed
+ *    badge, T-0028),
+ *  - the consent consult (`not_available` for an ineffective binding, T-0012),
+ *  - T-0010's invalidation transaction, whose revision bump is what makes
+ *    previously-stamped bindings ineffective.
+ */
+export function isProviderBindingEffective(
+  stamp: ProviderStamp,
+  current: { id: string; ref: string; revision: number } | null | undefined,
+): boolean {
+  return (
+    current !== null &&
+    current !== undefined &&
+    current.id === stamp.providerId &&
+    current.ref === stamp.ref &&
+    current.revision === stamp.revision
+  );
+}
 
 /**
  * Prior-decision context for a *pending* request, joined into the global admin
@@ -179,14 +251,32 @@ function diffArray(before: string[], after: string[]): { added: string[]; remove
 
 /**
  * Canonical string key for a fetch proxy connection, used in delta paths and
- * diffing: `https://api.foo.com` (keyless) or `https://api.foo.com→secret:name`
- * (secret-bound). A secret-bound origin is strictly more sensitive, so changing
- * the bound secret is a remove+add of distinct keys.
+ * diffing: `https://api.foo.com` (keyless), `https://api.foo.com→secret:name`
+ * (secret-bound), or `https://api.foo.com→provider:ref` (provider-bound,
+ * T-0009). A secret-bound or provider-bound origin is strictly more sensitive,
+ * so changing the bound credential is a remove+add of distinct keys.
+ *
+ * Exported because the delta paths this key form appears in are rendered and
+ * matched by consumers beyond the classifier (the queue card, the portal's
+ * filing stamps); the parse must stay the exact inverse.
  */
-function fetchOriginKey(c: { origin: string; connection?: string }): string {
+export function fetchOriginKey(c: {
+  origin: string;
+  connection?: string;
+  provider?: string;
+}): string {
+  if (c.provider !== undefined) return `${c.origin}→provider:${c.provider}`;
   return c.connection ? `${c.origin}→secret:${c.connection}` : c.origin;
 }
-function parseFetchOriginKey(key: string): { origin: string; connection?: string } {
+export function parseFetchOriginKey(key: string): {
+  origin: string;
+  connection?: string;
+  provider?: string;
+} {
+  const p = key.indexOf("→provider:");
+  if (p !== -1) {
+    return { origin: key.slice(0, p), provider: key.slice(p + "→provider:".length) };
+  }
   const i = key.indexOf("→secret:");
   return i === -1
     ? { origin: key }
@@ -313,13 +403,14 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
   for (const o of origins.added) push({ path: `externalOrigins[+${o}]`, to: o }, true, "med");
   for (const o of origins.removed) push({ path: `externalOrigins[-${o}]`, from: o }, false, "low");
 
-  // ── fetch.origins ── (proxied origins; keyless = med, secret-bound = high)
+  // ── fetch.origins ── (proxied origins; keyless = med, secret/provider-bound = high)
   const effFetch = (eff.fetch?.origins ?? []).map(fetchOriginKey);
   const reqFetch = (req.fetch?.origins ?? []).map(fetchOriginKey);
   const fetchOrigins = diffArray(effFetch, reqFetch);
   for (const key of fetchOrigins.added) {
-    const bound = key.includes("→secret:");
-    push({ path: `fetch.origins[+${key}]`, to: key }, true, bound ? "high" : "med");
+    const bound = parseFetchOriginKey(key);
+    const credentialed = bound.connection !== undefined || bound.provider !== undefined;
+    push({ path: `fetch.origins[+${key}]`, to: key }, true, credentialed ? "high" : "med");
   }
   for (const key of fetchOrigins.removed) {
     push({ path: `fetch.origins[-${key}]`, from: key }, false, "low");
