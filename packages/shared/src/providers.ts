@@ -193,7 +193,7 @@ export type ApiOrigin = z.infer<typeof ApiOriginSchema>;
 const URL_PARSER_CONTROLS = /[\t\n\r]/g;
 const ENDPOINT_USERINFO = /^https?:\/\/[/\\]*[^/?#\\]*@/i;
 
-const OAuthEndpointSchema = z
+export const OAuthEndpointSchema = z
   .url({ protocol: /^https?$/ })
   .refine(
     (value) => !ENDPOINT_USERINFO.test(value.replace(URL_PARSER_CONTROLS, "")),
@@ -212,8 +212,15 @@ const noDuplicates = (values: readonly string[]) => new Set(values).size === val
  * bounded, and duplicate-free after canonicalisation. The stored row and the
  * catalogue entry both parse through this — a derived entry cannot be
  * looser than the row it mirrors.
+ *
+ * The field-group schemas (`OAuthEndpointSchema`, `ProviderDisplayNameSchema`,
+ * `RequestedScopesSchema`, `ApiOriginsSchema`) are exported because the SPA's
+ * form fields validate through the same parsers the server's 422s come from —
+ * a restated rule would drift, and the panel's inline errors would stop
+ * mirroring the rejection (T-0026's field contract; T-0027's import preview
+ * reuses them the same way).
  */
-const ApiOriginsSchema = z
+export const ApiOriginsSchema = z
   .array(ApiOriginSchema)
   .min(1, "a provider needs at least one API destination — nothing can bind to it otherwise")
   .max(MAX_API_ORIGINS)
@@ -226,7 +233,7 @@ const ApiOriginsSchema = z
  * requires it, so default-ness is applied at the consumer, not baked into
  * the rule.
  */
-const RequestedScopesSchema = z
+export const RequestedScopesSchema = z
   .array(ScopeTokenSchema)
   .max(MAX_REQUESTED_SCOPES)
   .refine(noDuplicates, "duplicate requested scope");
@@ -246,8 +253,10 @@ const RequestedScopesSchema = z
  * {@link SENSITIVE_PROVIDER_FIELDS}) out of a field the administrator never
  * touched.
  */
+export const ProviderDisplayNameSchema = z.string().min(1).max(200);
+
 const ProviderEditableFieldsSchema = z.strictObject({
-  displayName: z.string().min(1).max(200),
+  displayName: ProviderDisplayNameSchema,
   authorizeEndpoint: OAuthEndpointSchema,
   tokenEndpoint: OAuthEndpointSchema,
   requestedScopes: RequestedScopesSchema.default([]),

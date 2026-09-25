@@ -13,6 +13,8 @@ import { UsagePage } from "./pages/UsagePage";
 import { ApprovalsPage } from "./pages/admin/ApprovalsPage";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { PlatformPage } from "./pages/admin/PlatformPage";
+import { ProviderFormPage } from "./pages/admin/ProviderFormPage";
+import { ProvidersPage } from "./pages/admin/ProvidersPage";
 import { SecretsPage } from "./pages/admin/SecretsPage";
 import { SessionsPage } from "./pages/admin/SessionsPage";
 import { ViolationsPage } from "./pages/admin/ViolationsPage";
@@ -33,6 +35,11 @@ function Portal() {
         <Route path="/admin/approvals" element={admin(<ApprovalsPage />)} />
         <Route path="/admin/audit" element={admin(<AuditPage />)} />
         <Route path="/admin/platform" element={admin(<PlatformPage />)} />
+        <Route path="/admin/providers" element={admin(<ProvidersPage />)} />
+        {/* Static over dynamic ranking: `/new` never matches `/:id`. Both routes
+            render the same page — create is the edit form without a seed. */}
+        <Route path="/admin/providers/new" element={admin(<ProviderFormPage />)} />
+        <Route path="/admin/providers/:id" element={admin(<ProviderFormPage />)} />
         {/* The admin registry was a second, admin-only rendering of the same
             `GET /api/v1/apps` the apps page shows. It is now that page's `all`
             scope, open to any signed-in principal — so the old route keeps

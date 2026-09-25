@@ -31,6 +31,10 @@ describe("the shared barrel", () => {
       "CatalogueProviderSchema",
       "SENSITIVE_PROVIDER_FIELDS",
       "HeaderNameSchema",
+      "OAuthEndpointSchema",
+      "ProviderDisplayNameSchema",
+      "RequestedScopesSchema",
+      "ApiOriginsSchema",
     ]) {
       expect(Object.hasOwn(shared, name), name).toBe(true);
     }

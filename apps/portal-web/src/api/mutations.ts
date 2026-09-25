@@ -6,6 +6,9 @@ import {
   DisconnectResponseSchema,
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
+  ProviderDeleteResponseSchema,
+  ProviderMetadataSchema,
+  CONFIRM_INVALIDATION_FIELD,
   SecretMetadataSchema,
   SessionRevokeResultSchema,
   UploadVersionResponseSchema,
@@ -20,6 +23,9 @@ import {
   type InjectionRecipe,
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
+  type ProviderCreateRequest,
+  type ProviderMetadata,
+  type ProviderUpdateRequest,
   type SecretMetadata,
   type SessionRevokeResult,
   type UploadVersionResponse,
@@ -562,5 +568,58 @@ export function useDisconnectConnection() {
         method: "DELETE",
       }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["connections", "mine"] }),
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Connection providers (admin, I-02 T-0026). The three keys are disjoint
+ * subtrees (see queries.ts) so no invalidation can refetch under an open edit
+ * draft. `useUpdateProvider` invalidates onSuccess only — like useSetManifest,
+ * an edit page holds a draft, and refetching after a failure (409 stale, 422)
+ * must not reset the form at the moment we ask the admin to review it.
+ * ------------------------------------------------------------------------- */
+
+/** Create a provider from the form's validated values. */
+export function useCreateProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProviderCreateRequest): Promise<ProviderMetadata> =>
+      fetchJson(ProviderMetadataSchema, "/api/v1/providers", { method: "POST", body }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
+  });
+}
+
+/** Edit a provider — carries the loaded revision; sensitive deltas need the review confirmation. */
+export function useUpdateProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string;
+      body: ProviderUpdateRequest;
+    }): Promise<ProviderMetadata> =>
+      fetchJson(ProviderMetadataSchema, `/api/v1/providers/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body,
+      }),
+    onSuccess: (_res, { id }) => {
+      void queryClient.invalidateQueries({ queryKey: ["providers", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["providers", "detail", id] });
+    },
+  });
+}
+
+/** Delete a provider — the 200 answers `deleted` or `already_removed` (a repeat). */
+export function useDeleteProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, confirmInvalidation }: { id: string; confirmInvalidation?: boolean }) =>
+      fetchJson(ProviderDeleteResponseSchema, `/api/v1/providers/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        body: confirmInvalidation ? { [CONFIRM_INVALIDATION_FIELD]: true } : {},
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
   });
 }
