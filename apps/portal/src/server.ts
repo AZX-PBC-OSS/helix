@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
+import { sweepExpiredConsentAttempts } from "./connections/consent.js";
 
 /**
  * Dev convenience: load `apps/portal/.env.local` (gitignored) into process.env
@@ -46,10 +47,24 @@ const host = process.env.HOST ?? "0.0.0.0";
 
 const app = buildApp();
 
+// GC expired consent attempts on an interval (I-02 ADR-0002 §Implementation
+// Notes): the egress burn-sweep precedent — unref'd so it never holds the
+// process open, cleared in the onClose hook below, and its cadence well
+// inside the attempt TTL it retires. No material is involved: an attempt row
+// holds protocol state only, so the sweep is a plain portal-role delete.
+const CONSENT_SWEEP_INTERVAL_MS = 60_000;
+const consentSweep = setInterval(() => {
+  void sweepExpiredConsentAttempts(app.prisma).catch((err: unknown) =>
+    app.log.warn({ err }, "connection_consent_attempts sweep failed"),
+  );
+}, CONSENT_SWEEP_INTERVAL_MS);
+consentSweep.unref();
+
 // `buildApp()`'s plugins already close Prisma (`plugins/prisma.ts`) and the
 // directory client (`plugins/directory.ts`) in this hook; this adds the
-// telemetry flush to it (ADR-0037 decision 5).
+// telemetry flush to it (ADR-0037 decision 5), and stops the consent sweep.
 app.addHook("onClose", async () => {
+  clearInterval(consentSweep);
   await telemetry.shutdown();
 });
 

@@ -47,6 +47,7 @@ terminates untrusted traffic (decision 4).
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
+| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel routes, the callback's claim probe, the expiry sweep |
 
 Per-span attributes beyond the semconv keys, so a new one has one place to be
 looked up:
@@ -77,6 +78,11 @@ looked up:
   (`spanUrlAttributes`), and nothing about the internal JWT it mints — value,
   header name — is ever an attribute. Pinned by `spanRedaction.test.ts`'s
   T-0015 case and `traceBoundary.test.ts`'s route case.
+- The `helix.consent.*` spans carry `helix.consent.operation` (bounded to
+  consult/cancel/claim/sweep), `helix.outcome` from the operation's bounded
+  vocabulary, and on the consult `helix.app.slug`, `helix.app_id` and
+  `helix.provider_ref` — never the `state`, the PKCE verifier, or any identity
+  (pinned by `routes/connectionsInternal.test.ts`'s global attribute scan).
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |
@@ -89,6 +95,7 @@ looked up:
 | `helix.providers.listen_status` | observable gauge | — |
 | `helix.session.gate_denied` | counter | `reason` |
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
+| `helix.consent.operations` | counter | `operation`, `outcome` (I-02 ADR-0002; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained

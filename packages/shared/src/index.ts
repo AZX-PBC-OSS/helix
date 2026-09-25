@@ -21,6 +21,7 @@ export * from "./collectionTable.js";
 export * from "./secrets.js";
 export * from "./providers.js";
 export * from "./connections.js";
+export * from "./consent.js";
 export * from "./env.js";
 export * from "./principal.js";
 export * from "./devTokens.js";

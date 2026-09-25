@@ -33,6 +33,7 @@ export const INSTR_SESSION_GATE_DENIED = "helix.session.gate_denied";
 export const INSTR_TRUST_PROXY_UNRESOLVED = "helix.edge.trust_proxy.unresolved";
 export const INSTR_PROVIDERS_RECONCILES = "helix.providers.reconciles";
 export const INSTR_PROVIDERS_LISTEN_STATUS = "helix.providers.listen_status";
+export const INSTR_CONSENT_OPERATIONS = "helix.consent.operations";
 
 /**
  * Attribute keys.
@@ -88,6 +89,16 @@ export const ATTR_PROVIDERS = "helix.providers.rows";
 /** Files in a deployed bundle, and CSP lint warnings raised on it. */
 export const ATTR_DEPLOY_FILE_COUNT = "helix.deploy.file_count";
 export const ATTR_DEPLOY_WARNING_COUNT = "helix.deploy.warning_count";
+/**
+ * Which consent-flow operation a signal is about — `consult`, `cancel`,
+ * `claim`, or `sweep` (I-02 ADR-0002). Bounded to those four; the identity the
+ * operation is for is never a dimension.
+ */
+export const ATTR_CONSENT_OPERATION = "helix.consent.operation";
+/** The provider `ref` a consent operation consults against — admin-chosen, ≤64 chars. */
+export const ATTR_PROVIDER_REF = "helix.provider_ref";
+/** How many expired consent-attempt rows a sweep cycle removed. */
+export const ATTR_CONSENT_SWEEP_REMOVED = "helix.consent.sweep_removed";
 
 /**
  * Span names. Like the instrument names these are queried by humans and by
@@ -110,6 +121,10 @@ export const SPAN_DEPLOY_VALIDATE = "helix.deploy.validate";
 export const SPAN_DEPLOY_ALLOCATE = "helix.deploy.allocate";
 export const SPAN_DEPLOY_UPLOAD = "helix.deploy.upload";
 export const SPAN_DEPLOY_RECORD = "helix.deploy.record";
+export const SPAN_CONSENT_CONSULT = "helix.consent.consult";
+export const SPAN_CONSENT_CANCEL = "helix.consent.cancel";
+export const SPAN_CONSENT_CLAIM = "helix.consent.claim";
+export const SPAN_CONSENT_SWEEP = "helix.consent.sweep";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -188,6 +203,41 @@ export type ProvidersReconcileOutcome = (typeof PROVIDERS_RECONCILE_OUTCOMES)[nu
  */
 export const DATA_LIST_DENIAL_REASONS = ["prefix_not_granted"] as const;
 export type DataListDenialReason = (typeof DATA_LIST_DENIAL_REASONS)[number];
+
+/**
+ * Outcome vocabularies for the consent-flow operations (I-02 ADR-0002), the
+ * `helix.outcome` values on the `helix.consent.operations` counter and the
+ * operation spans. Bounded by construction — each list is exactly the early
+ * returns of its operation in `apps/portal/src/connections/consent.ts` — and
+ * deliberately free of identity: `userOid` is never a dimension.
+ *
+ * - consult: `started` (pending attempt written + authorize URL returned),
+ *   `already_connected`, `not_available`, `error` (custody/DB failure — the
+ *   edge's "couldn't start").
+ * - cancel: `cancelled` (owner won the CAS), `not_cancellable` (unknown,
+ *   expired, finished, or not the caller's attempt — indistinguishable on the
+ *   wire), `error`.
+ * - claim: `claimed` (single-use redeem won), or the refusal reason the
+ *   callback renders — `expired`, `cancelled`, `not_found` — plus `error`.
+ * - sweep: `ok` (cycle ran; the removed count rides the span) or `failed`.
+ */
+export const CONSENT_OPERATIONS = ["consult", "cancel", "claim", "sweep"] as const;
+export type ConsentOperation = (typeof CONSENT_OPERATIONS)[number];
+export const CONSENT_CONSULT_OUTCOMES_TELEMETRY = [
+  "started",
+  "already_connected",
+  "not_available",
+  "error",
+] as const;
+export const CONSENT_CANCEL_OUTCOMES_TELEMETRY = ["cancelled", "not_cancellable", "error"] as const;
+export const CONSENT_CLAIM_OUTCOMES_TELEMETRY = [
+  "claimed",
+  "expired",
+  "cancelled",
+  "not_found",
+  "error",
+] as const;
+export const CONSENT_SWEEP_OUTCOMES_TELEMETRY = ["ok", "failed"] as const;
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default
