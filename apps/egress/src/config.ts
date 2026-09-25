@@ -238,7 +238,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
     devKeyPath: env.DEV_SECRETS_KEK_FILE || undefined,
     limits: {
       maxBodyBytes: Number(env.EGRESS_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
-      timeoutMs: Number(env.EGRESS_TIMEOUT_MS ?? 30_000),
+      // 120s, not 30s: this bounds the vendor dispatcher's headers/body
+      // timeouts on the proxied LLM path, where a reasoning model can think
+      // well past 30s before its first byte. The connect half keeps its own
+      // tighter bound via the validating connector's budget.
+      timeoutMs: Number(env.EGRESS_TIMEOUT_MS ?? 120_000),
     },
     managedIdentityConnections: parseManagedIdentityConnections(env),
     managedIdentityResource: parseManagedIdentityResource(env),

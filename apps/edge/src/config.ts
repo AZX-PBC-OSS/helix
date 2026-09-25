@@ -765,7 +765,11 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     fetch: {
       egressUrl: env.EDGE_EGRESS_URL || null,
       instructionSecret: loadInstructionSecret(env),
-      timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
+      // 120s, not 30s: egress holds its response headers until the vendor's
+      // first byte, and a reasoning LLM (gpt-5-nano et al.) can easily think
+      // longer than 30s before streaming anything — the edge's headersTimeout
+      // was the failure that surfaced, not the vendor's own speed.
+      timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 120_000),
       maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
     },
     internalSecret: loadInternalSecret(env),

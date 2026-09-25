@@ -57,9 +57,10 @@ import { withSpan, instruments } from "../telemetry.js";
  */
 
 /** How long the portal waits for egress to answer the exchange. Egress bounds
- * its own vendor call (`EGRESS_TIMEOUT_MS`, default 30 s); the portal's budget
- * matches it, so a hung mechanism plane degrades to the failed-service page
- * instead of holding the popup open indefinitely. */
+ * its own vendor call (`EGRESS_TIMEOUT_MS`); the portal's budget is tighter on
+ * purpose — a code exchange is a seconds-long call, so a hung mechanism plane
+ * degrades to the failed-service page instead of holding the popup open for
+ * the full proxied-call budget. */
 const EXCHANGE_TIMEOUT_MS = 30_000;
 
 /** One counter add for the callback — bounded dims, never identity. */
