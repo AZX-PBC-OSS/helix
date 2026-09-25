@@ -66,9 +66,13 @@ describe("PgCounterStore (helix_edge)", () => {
   it("restarts the window once resetAt has passed", async () => {
     if (!ok) return;
     const k = key();
-    // A 0ms window is already elapsed by the next statement, so each bump restarts.
-    expect(await store.bump(k, 0)).toBe(1);
-    expect(await store.bump(k, 0)).toBe(1);
+    // Backdated by a second, not zero-length: `now()` is microsecond-precise
+    // while the `timestamp(3)` column rounds it up to the millisecond, so a
+    // zero-length window can still read as live to the very next statement
+    // that lands inside that round-up — an elapsed window that increments
+    // instead of restarting. A second of margin makes "elapsed" unambiguous.
+    expect(await store.bump(k, -1000)).toBe(1);
+    expect(await store.bump(k, -1000)).toBe(1);
   });
 
   it("sweep() drops expired rows", async () => {

@@ -2,8 +2,20 @@ import { afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 // Testing-library's auto-cleanup needs vitest globals, which we don't enable —
-// register it explicitly so the DOM doesn't accumulate across tests.
-afterEach(cleanup);
+// register it explicitly so the DOM doesn't accumulate across tests. The
+// macrotask yield after it closes a teardown race: TanStack Query's
+// notifyManager delivers subscriber updates on a 0ms setTimeout, and under a
+// fully parallel run that timer can fire after vitest has already torn this
+// file's jsdom environment down — react-dom then reads `window` from the dead
+// environment (ReferenceError: window is not defined) and vitest fails the
+// whole run on an unhandled error with every assertion green. A notification
+// armed during the test is ahead of this yield in the timer queue, so it runs
+// first, while the environment is still alive; nothing arms one later than
+// cleanup().
+afterEach(async () => {
+  cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
 
 // Mantine-in-jsdom shims (https://mantine.dev/guides/vitest/): components use
 // matchMedia, ResizeObserver, and scrollIntoView, none of which jsdom provides.

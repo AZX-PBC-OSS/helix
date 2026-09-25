@@ -197,6 +197,17 @@ export type InjectionRecipe = z.infer<typeof InjectionRecipeSchema>;
 export const StoredInjectionRecipeSchema = injectionRecipe("stored");
 
 /**
+ * The request-strict header-name parser on its own, for credential
+ * presentations that are not injection recipes: the connection-provider
+ * token placement (`providers.ts`) writes the user's delegated access token
+ * into an outbound header, so the reserved-name, `x-helix-`, and
+ * lowercase-normalisation constraints apply to it identically. Exported
+ * rather than repeated — two header-name regimes would drift apart where
+ * egress consumes both.
+ */
+export const HeaderNameSchema = headerName("request");
+
+/**
  * Injection recipe kinds, for UI selects / tests without restating strings. Hand
  * maintained because the order is the UI select order; a test asserts it against
  * the union's discriminators so it cannot drift.

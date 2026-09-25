@@ -24,4 +24,27 @@ export default function setup(): void {
     stdio: "inherit",
     env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
   });
+
+  // Empty every table before the run. Tests are written against CI's
+  // ephemeral databases: they seed their own rows with unique keys and never
+  // read what an earlier run left. A long-lived local test database breaks
+  // that assumption two ways once rows accumulate across runs — a paginated
+  // admin list can push a test's freshly-seeded rows off its default page
+  // (sessions: ~200 live rows re-accumulate in a dozen runs, and the test's
+  // random userOid then sorts past the cut), and an unbounded IN-list can
+  // cross Postgres's bind-parameter limit (GET /api/v1/apps?scope=all, P2029
+  // at ~32k apps). Truncating between runs keeps every local run as
+  // deterministic as CI's; within one run the few dozen seeded rows stay far
+  // below both thresholds. Roles, grants, and RLS policies are not table
+  // data, so role provisioning survives — and so does `_prisma_migrations`,
+  // which is a ledger, not test data: wiping it makes the next run's
+  // `migrate deploy` replay migration 1 against an existing schema and fail.
+  execSync(
+    `psql "${TEST_DATABASE_URL}" -c "DO \\$\\$ DECLARE r record; BEGIN ` +
+      `FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public' ` +
+      `AND tablename <> '_prisma_migrations') LOOP ` +
+      `EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE'; ` +
+      `END LOOP; END \\$\\$;"`,
+    { stdio: "inherit" },
+  );
 }

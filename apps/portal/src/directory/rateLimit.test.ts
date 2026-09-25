@@ -47,9 +47,15 @@ describe("directory search rate limit", () => {
 
   it("restarts the window once it has elapsed", async () => {
     const sub = actor();
-    // A zero-length window is already elapsed by the next statement.
-    await expect(bumpSearchLimit(prisma, sub, "search", 1, 0)).resolves.toMatchObject({ count: 1 });
-    await expect(bumpSearchLimit(prisma, sub, "search", 1, 0)).resolves.toMatchObject({
+    // A window backdated by a second is unambiguously elapsed. A zero-length
+    // window would sit exactly on the boundary instead: `now()` is
+    // microsecond-precise, the `timestamp(3)` column rounds it up to the
+    // millisecond, and the next statement's `now()` can land inside that
+    // round-up — making an elapsed window read as live.
+    await expect(bumpSearchLimit(prisma, sub, "search", 1, -1000)).resolves.toMatchObject({
+      count: 1,
+    });
+    await expect(bumpSearchLimit(prisma, sub, "search", 1, -1000)).resolves.toMatchObject({
       allowed: true,
       count: 1,
     });
@@ -75,7 +81,10 @@ describe("directory search rate limit", () => {
 
   it("sweeps elapsed windows, and only its own keys", async () => {
     const sub = actor();
-    await bumpSearchLimit(prisma, sub, "search", 1, 0); // already elapsed
+    // Backdated, not zero-length: the sweep's `resetAt < now()` is strict, and
+    // a zero-length window can round its `now()` up past the sweep's own
+    // `now()` (see the restart test above).
+    await bumpSearchLimit(prisma, sub, "search", 1, -1000); // already elapsed
     const foreign = `otherpurpose:${randomUUID()}`;
     await prisma.portalRateCounter.create({
       data: { bucketKey: foreign, count: 1, resetAt: new Date(0) },
@@ -115,8 +124,12 @@ describe("directory search rate limit", () => {
 
   it("sweeps both buckets, not just the search one", async () => {
     const sub = actor();
-    await bumpSearchLimit(prisma, sub, "search", 1, 0);
-    await bumpSearchLimit(prisma, sub, "resolve", 1, 0);
+    // Backdated by a second so both rows are strictly inside the sweep's
+    // `resetAt < now()` — a zero-length window raced the sweep's `now()`
+    // against the column's millisecond rounding and survived it about once
+    // per few dozen runs (observed 2026-09-25: `dirresolve` kept, count 1).
+    await bumpSearchLimit(prisma, sub, "search", 1, -1000);
+    await bumpSearchLimit(prisma, sub, "resolve", 1, -1000);
     await sweepSearchLimits(prisma);
     for (const prefix of ["dirsearch", "dirresolve"]) {
       expect(
