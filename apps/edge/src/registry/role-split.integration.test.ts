@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
+import { PROVIDERS_CHANNEL } from "@azx-pbc/shared";
 import { TEST_DATABASE_URL } from "../test/seed.js";
 
 /**
@@ -116,6 +117,43 @@ describe("helix_edge least-privilege grants", () => {
 
       // Not the owner — no DDL.
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  /**
+   * The connection substrate (T-0007, ADR-0006 part 2) — the strictest role
+   * split the platform has: the edge consults the portal over HTTP (ADR-0002),
+   * so it gains ZERO database grants on the provider catalog, the per-user
+   * connections, or the consent-flow table. Grant-absence is the containment:
+   * an edge RCE reaches no provider row, no user's delegated material, no
+   * consent-flow state — not even a status it could enumerate.
+   */
+  it("has no grant at all on connection_providers, user_connections, or the consent-flow table", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const pool = new Pool({ connectionString: edgeUrl(), max: 1 });
+    try {
+      await expect(pool.query("SELECT count(*) FROM connection_providers")).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query("SELECT count(*) FROM user_connections")).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query("SELECT count(*) FROM connection_consent_attempts")).rejects.toThrow(
+        /permission denied/i,
+      );
+      // The write half of the absence, on the table an older letter of Q5
+      // would have let the edge INSERT into (amended by ADR-0002).
+      await expect(
+        pool.query(
+          `INSERT INTO connection_consent_attempts (id, state, "codeVerifier", "userOid",
+             "providerId", "providerRevision", "appId", env, "openerOrigin", "expiresAt")
+           VALUES (gen_random_uuid(), 'rs-edge-state', 'verifier', 'rs-edge',
+                   gen_random_uuid(), 1, gen_random_uuid(), 'prod', 'https://app.example',
+                   now() + interval '5 minutes')`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
     } finally {
       await pool.end();
     }
@@ -485,6 +523,311 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
     } finally {
       await pool.end();
+    }
+  });
+});
+
+/**
+ * The connection substrate's grant matrix (T-0007, ADR-0006 part 2), asserted
+ * against the real cluster with the runtime roles provisioned: egress gets its
+ * exact narrow surface, the portal full DML, the edge nothing (asserted above),
+ * and env-literal RLS partitions every table from first commit. A green run
+ * with the roles unprovisioned is NOT evidence — each block reports visibly via
+ * its availability check, and CI provisions the roles from the same db-init
+ * SQL (github/workflows/ci.yml) before this suite runs.
+ */
+describe("connection substrate: grants, RLS, and the ADR-0011 NOTIFY channel", () => {
+  const PROVIDER_ID = randomUUID();
+  const REF = `rs-provider-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  const USER = `conn-user-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  const APP_ID = randomUUID();
+
+  beforeAll(async () => {
+    if (!(await portalRoleAvailable())) return;
+    // Seed as the superuser owner (bypasses RLS): one prod provider, a prod
+    // and a dev connection for the same (userOid, providerId) with DISTINCT
+    // sealed material so a cross-tier leak is observable, and one pending
+    // consent attempt.
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    try {
+      await owner.query(
+        `INSERT INTO connection_providers (id, ref, kind, "displayName", "authorizeEndpoint",
+           "tokenEndpoint", "requestedScopes", "apiOrigins", "tokenPlacement", env,
+           "clientIdMaterial", "clientSecretMaterial", revision, "createdAt", "updatedAt")
+         VALUES ($1, $2, 'rest-delegated', 'role-split fixture', 'https://vendor.example/authorize',
+           'https://vendor.example/token', '[]'::jsonb, '["https://app.example.com"]'::jsonb,
+           '{"kind":"header-bearer"}'::jsonb, 'prod', 'sealed-client-id', 'sealed-client-secret',
+           1, now(), now())`,
+        [PROVIDER_ID, REF],
+      );
+      await owner.query(
+        `INSERT INTO user_connections (id, "userOid", "providerId", "providerRevision", env,
+           status, material, "grantedScopes", "grantedAt", "expiresAt", "renewBeforeNext",
+           "pendingRetire", "lastRenewedAt", "createdAt", "updatedAt")
+         VALUES (gen_random_uuid(), $1, $2, 1, 'prod', 'live', 'PROD-MATERIAL', '[]'::jsonb,
+                 now(), now() + interval '1 hour', false, NULL, NULL, now(), now()),
+                (gen_random_uuid(), $1, $2, 1, 'dev',  'live', 'DEV-MATERIAL',  '[]'::jsonb,
+                 now(), now() + interval '1 hour', false, NULL, NULL, now(), now())`,
+        [USER, PROVIDER_ID],
+      );
+      await owner.query(
+        `INSERT INTO connection_consent_attempts (id, state, "codeVerifier", "userOid",
+           "providerId", "providerRevision", "appId", env, "openerOrigin", "expiresAt", "createdAt")
+         VALUES (gen_random_uuid(), 'rs-attempt-state', 'rs-verifier', $1, $2, 1, $3, 'prod',
+                 'https://app.example.com', now() + interval '5 minutes', now())`,
+        [USER, PROVIDER_ID, APP_ID],
+      );
+    } finally {
+      await owner.end();
+    }
+  });
+
+  afterAll(async () => {
+    if (!(await portalRoleAvailable())) return;
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    try {
+      // No FKs to cascade through (the substrate is deliberately FK-free —
+      // ADR-0004's dangle semantics), so delete each table explicitly.
+      await owner.query(`DELETE FROM connection_consent_attempts WHERE "userOid" = $1`, [USER]);
+      await owner.query(`DELETE FROM user_connections WHERE "providerId" = $1`, [PROVIDER_ID]);
+      await owner.query(`DELETE FROM connection_providers WHERE id = $1`, [PROVIDER_ID]);
+    } finally {
+      await owner.end();
+    }
+  });
+
+  it("helix_egress reads the provider catalog and connections but nothing on the flow table", async () => {
+    if (!(await egressRoleAvailable())) return;
+    const pool = new Pool({ connectionString: egressUrl(), max: 1 });
+    try {
+      // SELECT on the catalog — egress opens the sealed client credentials to
+      // build the vendor OAuth client (ADR-0006 part 1). The row must come
+      // back through FORCE RLS (its permissive pass — no literal can pin a
+      // role that legitimately serves both tiers).
+      const providers = await pool.query(`SELECT ref FROM connection_providers WHERE id = $1`, [
+        PROVIDER_ID,
+      ]);
+      expect(providers.rows).toEqual([{ ref: REF }]);
+
+      // SELECT on connections — the delegated resolver reads the row by
+      // (userOid, providerId, env).
+      await expect(pool.query("SELECT count(*) FROM user_connections")).resolves.toBeDefined();
+
+      // NOTHING on the flow table — consent state is control-plane-owned
+      // (ADR-0002); egress never sees a pending attempt.
+      for (const sql of [
+        "SELECT count(*) FROM connection_consent_attempts",
+        `INSERT INTO connection_consent_attempts (id, state, "codeVerifier", "userOid",
+           "providerId", "providerRevision", "appId", env, "openerOrigin", "expiresAt")
+         VALUES (gen_random_uuid(), 's', 'v', 'x', gen_random_uuid(), 1, gen_random_uuid(),
+                 'prod', 'https://app.example', now() + interval '5 minutes')`,
+        `UPDATE connection_consent_attempts SET "codeVerifier" = 'x' WHERE id = gen_random_uuid()`,
+        `DELETE FROM connection_consent_attempts WHERE id = gen_random_uuid()`,
+      ]) {
+        await expect(pool.query(sql)).rejects.toThrow(/permission denied/i);
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("helix_egress UPDATEs user_connections ONLY within the scoped column list", async () => {
+    if (!(await egressRoleAvailable())) return;
+    const pool = new Pool({ connectionString: egressUrl(), max: 1 });
+    try {
+      // The renewal writer's whole surface (ADR-0006 part 2 + ADR-0008): the
+      // material swap, expiry, granted scopes, the status the renewal outcome
+      // records, the ledger fields, and criterion 40's renew-before-next flag
+      // — in one UPDATE, the way the renewal actually writes them.
+      const connId = (
+        await pool.query(
+          `SELECT id FROM user_connections WHERE "userOid" = $1 AND "providerId" = $2 AND env = 'prod'`,
+          [USER, PROVIDER_ID],
+        )
+      ).rows[0]!.id;
+      await expect(
+        pool.query(
+          `UPDATE user_connections SET material = 'NEW-MATERIAL', "expiresAt" = now() + interval '2 hours',
+             "grantedScopes" = '["projects:read"]'::jsonb, status = 'live', "renewBeforeNext" = false,
+             "pendingRetire" = 'PROD-MATERIAL', "lastRenewedAt" = now()
+           WHERE id = $1`,
+          [connId],
+        ),
+      ).resolves.toBeDefined();
+
+      // Out of scope — identity, key, provenance, provenance stamps. Permission
+      // is refused ahead of any row match, so the WHERE never matters.
+      for (const column of [
+        "id",
+        '"userOid"',
+        '"providerId"',
+        '"providerRevision"',
+        "env",
+        '"grantedAt"',
+        '"createdAt"',
+        '"updatedAt"',
+      ]) {
+        await expect(
+          pool.query(`UPDATE user_connections SET ${column} = NULL WHERE id = $1`, [connId]),
+        ).rejects.toThrow(/permission denied/i);
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("helix_portal holds full DML on all three tables", async () => {
+    if (!(await portalRoleAvailable())) return;
+    const pool = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      // The control plane's whole lifecycle on the catalog: create …
+      const ref = `rs-portal-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+      await expect(
+        pool.query(
+          `INSERT INTO connection_providers (id, ref, kind, "displayName", "authorizeEndpoint",
+             "tokenEndpoint", "requestedScopes", "apiOrigins", "tokenPlacement", env,
+             "clientIdMaterial", "clientSecretMaterial", revision, "createdAt", "updatedAt")
+           VALUES (gen_random_uuid(), $1, 'rest-delegated', 'x', 'https://vendor.example/authorize',
+             'https://vendor.example/token', '[]'::jsonb, '["https://app.example.com"]'::jsonb,
+             '{"kind":"header-bearer"}'::jsonb, 'prod', 'sealed', 'sealed', 1, now(), now())`,
+          [ref],
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`UPDATE connection_providers SET "displayName" = 'y' WHERE ref = $1`, [ref]),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`SELECT count(*) FROM connection_providers WHERE ref = $1`, [ref]),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`DELETE FROM connection_providers WHERE ref = $1`, [ref]),
+      ).resolves.toBeDefined();
+
+      // … the connections ledger (callback CAS upsert, invalidation, disconnect) …
+      await expect(
+        pool.query(`UPDATE user_connections SET status = 'invalidated' WHERE "userOid" = $1`, [
+          USER,
+        ]),
+      ).resolves.toBeDefined();
+
+      // … and the consent-flow table (consult writes, cancel, the sweep).
+      const attemptId = (
+        await pool.query(`SELECT id FROM connection_consent_attempts WHERE "userOid" = $1`, [USER])
+      ).rows[0]!.id;
+      await expect(
+        pool.query(`UPDATE connection_consent_attempts SET "cancelledAt" = now() WHERE id = $1`, [
+          attemptId,
+        ]),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`DELETE FROM connection_consent_attempts WHERE id = $1`, [attemptId]),
+      ).resolves.toBeDefined();
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("env-literal RLS holds per role on the new tables too (dev-mode §5.3)", async () => {
+    if (!(await devRoleAvailable())) return;
+    // The data-plane roles hold no grant on these tables (asserted above), so
+    // "cannot touch the other tier" is enforced at its strongest form —
+    // permission denied, not RLS-filtered. The env-LITERAL policies on these
+    // tables (helix_edge → 'prod', helix_dev → 'dev') are the second layer
+    // that already stands if a future migration ever grants a verb.
+    const dev = new Pool({ connectionString: devUrl(), max: 1 });
+    const edge = new Pool({ connectionString: edgeUrl(), max: 1 });
+    try {
+      for (const table of [
+        "connection_providers",
+        "user_connections",
+        "connection_consent_attempts",
+      ]) {
+        await expect(dev.query(`SELECT count(*) FROM ${table}`)).rejects.toThrow(
+          /permission denied/i,
+        );
+        await expect(edge.query(`SELECT count(*) FROM ${table}`)).rejects.toThrow(
+          /permission denied/i,
+        );
+      }
+    } finally {
+      await dev.end();
+      await edge.end();
+    }
+
+    // The roles WITH access: egress legitimately sees both tiers (resolution
+    // is keyed (userOid, providerId, env) from the verified instruction —
+    // this is the permissive pass doing its job, not a leak), and so does the
+    // cross-env control plane. A missing egress policy under FORCE RLS would
+    // silently return zero rows here — exactly the failure this catches.
+    const egress = new Pool({ connectionString: egressUrl(), max: 1 });
+    const portal = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      const seenByEgress = await egress.query(
+        `SELECT env FROM user_connections WHERE "userOid" = $1 AND "providerId" = $2 ORDER BY env`,
+        [USER, PROVIDER_ID],
+      );
+      expect(seenByEgress.rows).toEqual([{ env: "dev" }, { env: "prod" }]);
+      const seenByPortal = await portal.query(
+        `SELECT env FROM user_connections WHERE "userOid" = $1 AND "providerId" = $2 ORDER BY env`,
+        [USER, PROVIDER_ID],
+      );
+      expect(seenByPortal.rows).toEqual([{ env: "dev" }, { env: "prod" }]);
+    } finally {
+      await egress.end();
+      await portal.end();
+    }
+
+    // And the partition label is a CHECK'd vocabulary: no writer can mint an
+    // off-value row that every env-literal policy would orphan.
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    try {
+      await expect(
+        owner.query(
+          `INSERT INTO user_connections (id, "userOid", "providerId", "providerRevision", env,
+             status, material, "grantedScopes", "grantedAt", "expiresAt", "renewBeforeNext",
+             "pendingRetire", "lastRenewedAt", "createdAt", "updatedAt")
+           VALUES (gen_random_uuid(), $1, $2, 1, 'staging', 'live', 'x', '[]'::jsonb,
+                   now(), now() + interval '1 hour', false, NULL, NULL, now(), now())`,
+          [USER, PROVIDER_ID],
+        ),
+      ).rejects.toThrow(/violates check constraint/i);
+    } finally {
+      await owner.end();
+    }
+  });
+
+  it("a provider mutation fires the NOTIFY channel, delivered on commit (ADR-0011)", async () => {
+    if (!(await portalRoleAvailable())) return;
+    // A dedicated LISTEN client (never a pool client — the listener pattern
+    // the edge's LiveRegistry and egress's future listener copy), receiving
+    // the notification the statement-level trigger sends on COMMIT.
+    const listener = new Client({ connectionString: TEST_DATABASE_URL });
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    try {
+      await listener.connect();
+      await listener.query(`LISTEN ${PROVIDERS_CHANNEL}`);
+
+      let notified: ((value: { channel: string; payload?: string }) => void) | undefined;
+      const notification = new Promise<{ channel: string; payload?: string }>((resolve, reject) => {
+        notified = resolve;
+        setTimeout(() => reject(new Error("no notification arrived within 5s")), 5000);
+      });
+      listener.on("notification", (message) => notified?.(message));
+
+      // The mutation commits on a DIFFERENT connection than the listener's —
+      // the delivery must ride the trigger + commit, not the same session.
+      await owner.query(
+        `UPDATE connection_providers SET "displayName" = 'role-split notify' WHERE id = $1`,
+        [PROVIDER_ID],
+      );
+
+      const received = await notification;
+      expect(received.channel).toBe(PROVIDERS_CHANNEL);
+      expect(received.payload).toBe("connection_providers");
+    } finally {
+      listener.removeAllListeners("notification");
+      await listener.end();
+      await owner.end();
     }
   });
 });
