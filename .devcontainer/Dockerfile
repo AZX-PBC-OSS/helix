@@ -51,6 +51,10 @@ USER node
 # so logins survive rebuilds; the binaries are baked into the image.
 RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN npm install -g @openai/codex opencode-ai
+# pi (pi.dev), same npm route but with --ignore-scripts as its install docs
+# prescribe; its whole agent dir (~/.pi/agent — settings, auth, sessions) is
+# one named volume in compose.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # claude installs to ~/.local/bin
 RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/node/.zshrc \

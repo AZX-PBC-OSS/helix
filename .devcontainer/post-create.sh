@@ -10,7 +10,9 @@ sudo chown "$(id -u):$(id -g)" \
   /home/node/.codex \
   /home/node/.config \
   /home/node/.config/opencode \
-  /home/node/.local/share/opencode
+  /home/node/.local/share/opencode \
+  /home/node/.pi \
+  /home/node/.pi/agent
 sudo chown -R "$(id -u):$(id -g)" /home/node/.claude
 
 echo "── Initializing Claude config ──"

@@ -147,6 +147,9 @@ services:
       - codex-config:/home/node/.codex
       - opencode-config:/home/node/.config/opencode
       - opencode-data:/home/node/.local/share/opencode
+      # ~/.pi/agent is pi's entire agent dir: settings.json, auth.json,
+      # extensions, and sessions — one volume covers logins and history.
+      - pi-config:/home/node/.pi/agent
     command: sleep infinity
     depends_on:
       db:
@@ -219,3 +222,4 @@ volumes:
   codex-config:
   opencode-config:
   opencode-data:
+  pi-config:
