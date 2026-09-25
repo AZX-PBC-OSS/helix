@@ -32,6 +32,13 @@ export interface EgressConfig {
    * edge's pools carry (ADR-0002 ISSUE-05).
    */
   statementTimeoutMs: number;
+  /**
+   * How often the provider cache reconciles from current state regardless of
+   * NOTIFY (`EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS`; default 60s) — the
+   * self-heal cadence that bounds how stale the cache can be after a missed
+   * notification (I-02 ADR-0011).
+   */
+  providersReconcileIntervalMs: number;
   /** Shared with the edge; HKDF-derived into the instruction-verify key. >= 32 bytes. */
   instructionSecret: Buffer;
   /**
@@ -79,6 +86,22 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
   const v = env[key];
   if (!v) throw new Error(`${key} is required`);
   return v;
+}
+
+/**
+ * A positive-milliseconds env value with a fallback (the edge's
+ * `requirePositiveMs`): a non-finite or non-positive interval would coerce to a
+ * hot reconcile loop in `setTimeout`, so it is a boot error, not a runtime surprise.
+ */
+function requirePositiveMs(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      `${name} must be a positive number of milliseconds (got ${JSON.stringify(raw)})`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -181,6 +204,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
     host: env.HOST ?? "0.0.0.0",
     databaseUrl,
     statementTimeoutMs: Number(env.EGRESS_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),
+    providersReconcileIntervalMs: requirePositiveMs(
+      env.EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS,
+      60_000,
+      "EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS",
+    ),
     instructionSecret,
     exchangeSecret,
     keyVaultUrl: env.AZURE_KEY_VAULT_URL || undefined,

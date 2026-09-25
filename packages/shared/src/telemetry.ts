@@ -31,6 +31,8 @@ export const INSTR_GATEWAY_DURATION = "helix.gateway.duration";
 export const INSTR_EGRESS_PROXY_DURATION = "helix.egress.proxy.duration";
 export const INSTR_SESSION_GATE_DENIED = "helix.session.gate_denied";
 export const INSTR_TRUST_PROXY_UNRESOLVED = "helix.edge.trust_proxy.unresolved";
+export const INSTR_PROVIDERS_RECONCILES = "helix.providers.reconciles";
+export const INSTR_PROVIDERS_LISTEN_STATUS = "helix.providers.listen_status";
 
 /**
  * Attribute keys.
@@ -78,6 +80,11 @@ export const ATTR_DATA_VERB = "helix.data.verb";
 export const ATTR_DATA_MATCH_COUNT = "helix.data.match_count";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
+/**
+ * How many provider rows the egress cache holds after a reconcile (I-02
+ * ADR-0011). Bounded by the tenant — the table is administrator-created.
+ */
+export const ATTR_PROVIDERS = "helix.providers.rows";
 /** Files in a deployed bundle, and CSP lint warnings raised on it. */
 export const ATTR_DEPLOY_FILE_COUNT = "helix.deploy.file_count";
 export const ATTR_DEPLOY_WARNING_COUNT = "helix.deploy.warning_count";
@@ -93,6 +100,7 @@ export const SPAN_FETCH = "helix.gateway.fetch";
 export const SPAN_DATA = "helix.gateway.data";
 export const SPAN_EGRESS_PROXY = "helix.egress.proxy";
 export const SPAN_REGISTRY_LOAD = "helix.registry.load";
+export const SPAN_PROVIDERS_RECONCILE = "helix.providers.reconcile";
 export const SPAN_AUTH_START = "helix.auth.oidc.start";
 export const SPAN_AUTH_CALLBACK = "helix.auth.oidc.callback";
 export const SPAN_AUTH_COMPLETE = "helix.auth.handoff.complete";
@@ -160,6 +168,15 @@ export type SessionDenialReason = (typeof SESSION_DENIAL_REASONS)[number];
  */
 export const REGISTRY_LOAD_OUTCOMES = ["failed", "never_loaded"] as const;
 export type RegistryLoadOutcome = (typeof REGISTRY_LOAD_OUTCOMES)[number];
+
+/**
+ * Why a provider-cache reconcile was counted — the `helix.providers.reconciles`
+ * dimension. An attempt counter, not a failures-only counter: the cache has no
+ * `/health` grade to ladder into (egress reports liveness only), so the alert
+ * is a *rate* — a run of `failed` with no `ok` is a stale-config cache.
+ */
+export const PROVIDERS_RECONCILE_OUTCOMES = ["ok", "failed"] as const;
+export type ProvidersReconcileOutcome = (typeof PROVIDERS_RECONCILE_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

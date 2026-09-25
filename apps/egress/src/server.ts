@@ -12,6 +12,7 @@ import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig } from "./config.js";
 import { deriveInstructionKey } from "./instruction.js";
 import { FOUNDRY_TOKEN_RESOURCE, ManagedIdentityResolver } from "./managedIdentity.js";
+import { LiveProviders } from "./providerListener.js";
 import { PgSecretResolver, type SecretResolver } from "./secrets.js";
 import { PgBurnStore } from "./burn.js";
 
@@ -168,6 +169,23 @@ const burnStore = new PgBurnStore(config.databaseUrl, {
 const app = buildApp({ config, resolver, instructionKey, burnStore });
 logRef.current = (obj, msg) => app.log.warn(obj, msg);
 
+// The provider-config cache and its LISTEN listener (I-02 ADR-0011): egress is
+// the channel's only listener, and exchange, refresh, resolution and the
+// availability/revision checks all read this cache. Started before we accept
+// traffic — `start()` never throws (a down DB logs and retries), so it cannot
+// block boot, and nothing on the proxy hot path waits on it afterwards: the
+// cache serves synchronous in-memory reads.
+const providers = new LiveProviders({
+  databaseUrl: config.databaseUrl,
+  reconcileIntervalMs: config.providersReconcileIntervalMs,
+  statementTimeoutMs: config.statementTimeoutMs,
+  log: {
+    info: (obj, msg) => app.log.info(obj, msg),
+    warn: (obj, msg) => app.log.warn(obj, msg),
+    error: (obj, msg) => app.log.error(obj, msg),
+  },
+});
+
 // GC expired burn rows on an interval; unref so it never holds the process open.
 const burnSweep = setInterval(() => {
   void burnStore
@@ -178,6 +196,7 @@ burnSweep.unref();
 
 app.addHook("onClose", async () => {
   clearInterval(burnSweep);
+  await providers.stop();
   await burnStore.close();
   // The wrapper owns the wrapped resolver (ManagedIdentityResolver.close), so
   // this one call covers both shapes.
@@ -196,6 +215,7 @@ app.addHook("onClose", async () => {
 installGracefulShutdown(app, app.log);
 
 try {
+  await providers.start();
   await app.listen({ port: config.port, host: config.host });
   app.log.info(
     {

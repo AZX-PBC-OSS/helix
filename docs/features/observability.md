@@ -45,6 +45,7 @@ terminates untrusted traffic (decision 4).
 | `helix.auth.connections.proxy` | the auth host's `/connections/*` reverse proxy |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.registry.load` | the projection reload |
+| `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
 
 Per-span attributes beyond the semconv keys, so a new one has one place to be
@@ -84,6 +85,8 @@ looked up:
 | `helix.gateway.calls` | counter | `capability`, `outcome`, `appId` |
 | `helix.gateway.duration` | histogram (ms) | `capability`, `outcome` |
 | `helix.egress.proxy.duration` | histogram (ms) | `outcome` |
+| `helix.providers.reconciles` | counter | `outcome` |
+| `helix.providers.listen_status` | observable gauge | — |
 | `helix.session.gate_denied` | counter | `reason` |
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
 
@@ -120,6 +123,15 @@ metrics backend.
   same reasoning as the slug bullet, but with data rather than noise). The
   wrapper records `http.route` + `helix.data.verb` instead;
   `spanRedaction.test.ts` fails if a path is re-added.
+- **`helix.providers.reconciles{outcome="failed"}` is an attempt counter, and
+  the alert is a run, not a rate.** A provider-config cache reconcile fails
+  when the DB does; the cache serves its previous snapshot meanwhile (egress
+  has no `/health` grade to ladder into — it reports liveness only), so the
+  signal that matters is a streak of `failed` with no `ok`, not a single blip.
+  `helix.providers.listen_status` is the second half: `1` while a dedicated
+  LISTEN client is connected, `0` while down, absent before start and after
+  stop — a missed NOTIFY self-heals at the next reconcile (I-02 ADR-0011), so
+  a `0` is a page about cadence, not correctness.
 
 ## The rules that are easy to break
 

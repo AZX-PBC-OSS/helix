@@ -100,6 +100,22 @@ describe("loadConfig", () => {
     );
   });
 
+  // I-02 ADR-0011 — the provider cache's reconcile cadence: the self-heal that
+  // bounds staleness after a missed NOTIFY. A non-positive value would coerce
+  // to a hot reconcile loop in `setTimeout`, so it boots noisily instead.
+  it("defaults the provider reconcile interval to 60s and honors EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS", () => {
+    expect(loadConfig(ENV).providersReconcileIntervalMs).toBe(60_000);
+    expect(
+      loadConfig({ ...ENV, EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS: "5000" })
+        .providersReconcileIntervalMs,
+    ).toBe(5000);
+    for (const bad of ["0", "-1", "NaN", "Infinity", "abc"]) {
+      expect(() => loadConfig({ ...ENV, EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS: bad })).toThrow(
+        /EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS/,
+      );
+    }
+  });
+
   // ADR-0046 — the keyless list is empty by default (resolution stays DB-only)
   // and malformed entries are boot errors, never silently dropped rules.
   describe("EGRESS_MANAGED_IDENTITY_CONNECTIONS", () => {
