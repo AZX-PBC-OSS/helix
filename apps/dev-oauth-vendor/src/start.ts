@@ -8,7 +8,12 @@ import {
   type TokenMode,
   type VendorModes,
 } from "./modes.js";
-import { buildVendor, VendorOptionsSchema, type DevOAuthVendorOptions } from "./vendor.js";
+import {
+  buildVendor,
+  VendorOptionsSchema,
+  type DevOAuthVendorOptions,
+  type TokenEndpointCall,
+} from "./vendor.js";
 
 export interface StartDevOAuthVendorOptions extends DevOAuthVendorOptions {
   /** 0 (default) binds an ephemeral port — parallel test files never collide. */
@@ -28,6 +33,15 @@ export interface RunningDevOAuthVendor {
    * per instance, so concurrent suites never see each other's modes.
    */
   setModes(modes: { tokenMode?: TokenMode; authorizeMode?: AuthorizeMode }): void;
+  /**
+   * The token endpoint's call log, oldest first (I-02 T-0021): grant types and
+   * whether a refresh token was presented — never token values. The
+   * single-flight evidence lives here: a concurrent-renewal invariant is
+   * exactly "the refresh token was presented once".
+   */
+  tokenCalls(): TokenEndpointCall[];
+  /** Drop the call log — a suite's per-test reset. */
+  resetTokenCalls(): void;
   close(): Promise<void>;
 }
 
@@ -62,6 +76,10 @@ export async function startDevOAuthVendor(
       if (partial.authorizeMode !== undefined) {
         modes.authorizeMode = AuthorizeModeSchema.parse(partial.authorizeMode);
       }
+    },
+    tokenCalls: () => [...app.tokenLog],
+    resetTokenCalls: () => {
+      app.tokenLog.length = 0;
     },
     close: async () => {
       if (closing) return;

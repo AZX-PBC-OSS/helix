@@ -1,8 +1,10 @@
 export {
   buildVendor,
   ApiTokenReportSchema,
+  TokenEndpointCallSchema,
   type ApiTokenReport,
   type DevOAuthVendorOptions,
+  type TokenEndpointCall,
 } from "./vendor.js";
 export {
   startDevOAuthVendor,

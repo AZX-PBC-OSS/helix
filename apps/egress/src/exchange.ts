@@ -7,12 +7,7 @@ import {
   trace,
 } from "@opentelemetry/api";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import {
-  Configuration,
-  authorizationCodeGrant,
-  allowInsecureRequests,
-  customFetch as CUSTOM_FETCH,
-} from "openid-client";
+import { authorizationCodeGrant } from "openid-client";
 import type { Agent } from "undici";
 import {
   EXCHANGE_AUTH_HEADER,
@@ -37,7 +32,7 @@ import type { ProviderCacheReader } from "./providerCache.js";
 import { verifyExchangeToken } from "./internalJwt.js";
 import { egressSpanAttributes } from "./spanAttributes.js";
 import { instruments, tracer } from "./telemetry.js";
-import { makePinnedFetch } from "./exchangeTransport.js";
+import { buildDelegatedClientConfiguration } from "./providerClient.js";
 
 /**
  * `POST /exchange` — the code-exchange operation (I-02 T-0019, architecture
@@ -80,12 +75,6 @@ import { makePinnedFetch } from "./exchangeTransport.js";
  * generous ceiling, and a body past it is malformed by definition. Not the
  * proxy's streaming cap; this one bounds a JSON parse. */
 const EXCHANGE_MAX_BODY_BYTES = 16_384;
-
-/** The vendor token endpoint's timeout, in the seconds `Configuration.timeout`
- * wants. The whole operation must fit inside the request-timeout budget. */
-function vendorTimeoutSeconds(timeoutMs: number): number {
-  return Math.max(1, Math.ceil(timeoutMs / 1000));
-}
 
 export interface ExchangeDeps {
   /** HKDF-derived exchange-JWT verify key (shared derivation with the portal). */
@@ -142,45 +131,10 @@ async function parseRequest(req: FastifyRequest): Promise<ExchangeRequest | null
 }
 
 /**
- * Assemble the library Configuration for ONE provider revision — static
- * metadata from the cached row, no discovery (ADR-0009 §Implementation
- * Notes). `issuer` is required to be a string by the library but is never
- * validated in a pure code flow (no id_token); the token endpoint's origin
- * stands in, because the provider row deliberately has no issuer field.
+ * Assemble the library Configuration for ONE provider revision — moved to
+ * `providerClient.ts` (T-0021) so the renewal operation assembles it with the
+ * same version-verified setup instead of a drifting copy.
  */
-async function buildConfiguration(
-  provider: ConnectionProvider,
-  credentialStore: SecretStore,
-  opts: { allowInsecureConnection: boolean; timeoutMs: number; dispatcher: Agent },
-): Promise<Configuration> {
-  // Unsealed in-memory only, and only for this call — the row holds sealed
-  // material and nothing writes it back.
-  const clientId = await credentialStore.open(provider.clientIdMaterial);
-  const clientSecret = await credentialStore.open(provider.clientSecretMaterial);
-  const config = new Configuration(
-    {
-      issuer: new URL(provider.tokenEndpoint).origin,
-      authorization_endpoint: provider.authorizeEndpoint,
-      token_endpoint: provider.tokenEndpoint,
-    },
-    clientId,
-    clientSecret,
-  );
-  // Version-verified against the pinned lockfile (6.8.4): `timeout` defaults
-  // to undefined and NO AbortSignal is applied to the token request — the
-  // docs' "default is 30 seconds" describes a later version. A hung token
-  // endpoint would hang the operation forever without setting this.
-  config.timeout = vendorTimeoutSeconds(opts.timeoutMs);
-  // Also verified: a directly-constructed Configuration is `tlsOnly: true` —
-  // http endpoints are refused outright unless this flips. The dev fixture
-  // vendor and localhost endpoints are http (EGRESS_ALLOW_*; refused in prod).
-  if (opts.allowInsecureConnection) allowInsecureRequests(config);
-  // The ONE transport seam: every library HTTP call rides the same DNS-pinned
-  // dispatcher the fetch-proxy uses, so the SSRF controls and the trace
-  // boundary survive the library boundary (ADR-0009 §Shared ground).
-  config[CUSTOM_FETCH] = makePinnedFetch(opts.dispatcher);
-  return config;
-}
 
 type TokenResponse = Awaited<ReturnType<typeof authorizationCodeGrant>>;
 
@@ -269,7 +223,7 @@ export function makeExchangeHandler(deps: ExchangeDeps & { dispatcher: Agent }) 
 
     let result: TokenResponse;
     try {
-      const config = await buildConfiguration(provider, credentialStore, {
+      const config = await buildDelegatedClientConfiguration(provider, credentialStore, {
         allowInsecureConnection: deps.allowInsecureConnection,
         timeoutMs: deps.timeoutMs,
         dispatcher: deps.dispatcher,

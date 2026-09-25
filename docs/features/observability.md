@@ -48,6 +48,7 @@ terminates untrusted traffic (decision 4).
 | `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route (I-02 T-0017) — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation (I-02 T-0019) |
+| `helix.egress.renewal` | egress token renewal (I-02 T-0021) — the operation the delegated-call resolution runs when an access token is expired; nests inside the resolution span, and its own duration is where the advisory lock's bounded wait is visible (ADR-0007) |
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
@@ -86,6 +87,14 @@ looked up:
   fixed-string discipline (I-02 ADR-0009) keeps vendor error bodies — which can
   echo client credentials — off the wire, out of logs, and off this span; the
   span records no exception, like every egress span.
+- `helix.egress.renewal` spans carry `helix.outcome` ∈ `EGRESS_RENEWAL_OUTCOMES`
+  (`refreshed`, `temporary_failure`, `uncertain_rotation`, `reconnect_required`,
+  `admin_action` — design.md's renewal vocabulary, criteria 35/37–39),
+  `helix.env`, and `helix.provider_ref`. No token value and no vendor error
+  content appears anywhere on it: the OAuth error code is read only to choose
+  the bounded outcome word, never recorded. Span status is graded ERROR for
+  `temporary_failure` and `admin_action` (operator-actionable); the
+  reconnect-needing outcomes are the platform working as designed.
 - `helix.auth.connections.proxy` (the auth host's `/connections/*` reverse
   proxy) records `url.path` only — the vendor's redirect lands there with
   `code` and `state` in the URL, so the query is dropped wholesale
@@ -144,6 +153,7 @@ looked up:
 | `helix.gateway.duration` | histogram (ms) | `capability`, `outcome` |
 | `helix.egress.proxy.duration` | histogram (ms) | `outcome` |
 | `helix.egress.exchanges` | counter | `outcome`, `env` (I-02 T-0019) |
+| `helix.egress.renewals` | counter | `outcome`, `env` (I-02 T-0021 — the renewal taxonomy; alert on a run of `temporary_failure`/`admin_action`, and treat any `uncertain_rotation` as a user-visible reconnection) |
 | `helix.providers.reconciles` | counter | `outcome` |
 | `helix.providers.listen_status` | observable gauge | — |
 | `helix.session.gate_denied` | counter | `reason` |

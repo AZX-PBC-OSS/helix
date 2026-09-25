@@ -35,6 +35,7 @@ export const INSTR_PROVIDERS_RECONCILES = "helix.providers.reconciles";
 export const INSTR_PROVIDERS_LISTEN_STATUS = "helix.providers.listen_status";
 export const INSTR_CONSENT_OPERATIONS = "helix.consent.operations";
 export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
+export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 
 /**
  * Attribute keys.
@@ -114,6 +115,7 @@ export const SPAN_FETCH = "helix.gateway.fetch";
 export const SPAN_DATA = "helix.gateway.data";
 export const SPAN_EGRESS_PROXY = "helix.egress.proxy";
 export const SPAN_EGRESS_EXCHANGE = "helix.egress.exchange";
+export const SPAN_EGRESS_RENEWAL = "helix.egress.renewal";
 export const SPAN_REGISTRY_LOAD = "helix.registry.load";
 export const SPAN_PROVIDERS_RECONCILE = "helix.providers.reconcile";
 export const SPAN_AUTH_START = "helix.auth.oidc.start";
@@ -391,6 +393,37 @@ export const EGRESS_EXCHANGE_OUTCOMES = [
   "unconfigured",
 ] as const;
 export type EgressExchangeOutcome = (typeof EGRESS_EXCHANGE_OUTCOMES)[number];
+
+/**
+ * The egress token-renewal operation's outcome vocabulary (I-02 T-0021,
+ * ADR-0007) — the `helix.outcome` values on the `helix.egress.renewal` span
+ * and the `helix.egress.renewals` counter. This is design.md
+ * §Operator-visible signals' renewal vocabulary, verbatim; the delegated-call
+ * resolver (T-0022) maps each word onto the gateway outcome the caller sees.
+ *
+ * - `refreshed` — fresh usable material is committed (renewed here, or a
+ *   concurrent winner's renewal re-read after the advisory lock — ADR-0007).
+ * - `temporary_failure` — vendor outage, rate limit, or a timeout with no
+ *   certain token consumption; the connection row is untouched and a later
+ *   request may try again (criterion 37). No vendor retry within the call.
+ * - `uncertain_rotation` — the refresh token may have been consumed with no
+ *   usable replacement saved; the row moves to reconnect-needed and the old
+ *   token is never re-presented (criterion 39). Takes precedence over
+ *   `temporary_failure`.
+ * - `reconnect_required` — an explicit loss of required permissions; the row
+ *   moves to reconnect-needed (criterion 35/38).
+ * - `admin_action` — malformed client credentials or a missing usable
+ *   lifetime; provider incompatibility an administrator must fix (criterion
+ *   38). The row is untouched (the connection is not the problem).
+ */
+export const EGRESS_RENEWAL_OUTCOMES = [
+  "refreshed",
+  "temporary_failure",
+  "uncertain_rotation",
+  "reconnect_required",
+  "admin_action",
+] as const;
+export type EgressRenewalOutcome = (typeof EGRESS_RENEWAL_OUTCOMES)[number];
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default

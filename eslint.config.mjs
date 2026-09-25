@@ -27,7 +27,7 @@ const RLS_TEMPLATE = {
 const POOL_CONNECT_MESSAGE =
   "Bare `pool.connect()`: pg-pool REMOVES the client's 'error' listener for the duration of a checkout (_acquireClient), and pg emits 'error' SYNCHRONOUSLY on a socket death while deferring the query rejection to nextTick — so a mid-transaction connection drop is an unhandled 'error' event that kills the edge before your `await client.query()` ever rejects. Use `withPooledClient` (or `withPartition`, which composes it) from apps/edge/src/db/pool.ts: it covers the window and destroys the dead client instead of returning it to the pool.";
 const EGRESS_POOL_CONNECT_MESSAGE =
-  "Bare `pool.connect()`: pg-pool REMOVES the client's 'error' listener for the duration of a checkout (_acquireClient), and pg emits 'error' SYNCHRONOUSLY on a socket death while deferring the query rejection to nextTick — so a mid-transaction connection drop is an unhandled 'error' event that kills egress before your `await client.query()` ever rejects — on the plane that holds plaintext connection secrets. Use `Pool.query()` (it plugs its own temporary handler for the window), and build pools through `createEgressPool` (apps/egress/src/pool.ts) so every pool carries the per-query `statement_timeout` (ADR-0002 ISSUE-05) and the idle-error listener.";
+  "Bare `pool.connect()`: pg-pool REMOVES the client's 'error' listener for the duration of a checkout (_acquireClient), and pg emits 'error' SYNCHRONOUSLY on a socket death while deferring the query rejection to nextTick — so a mid-transaction connection drop is an unhandled 'error' event that kills egress before your `await client.query()` ever rejects — on the plane that holds plaintext connection secrets. Use `withPooledClient` (apps/egress/src/pool.ts — renewal's advisory-lock client is its one consumer) or `Pool.query()` (it plugs its own temporary handler for the window), and build pools through `createEgressPool` (apps/egress/src/pool.ts) so every pool carries the per-query `statement_timeout` (ADR-0002 ISSUE-05) and the idle-error listener.";
 // Two selectors for the two shapes a pool reference takes: a bare identifier
 // (`pool.connect()`) and a member/private field (`this.#pool.connect()`).
 // Deliberately matched on the NAME, not the type — same coarseness the RLS rule
@@ -208,10 +208,15 @@ export default defineConfig([
     // to it. Tests are exempt — the adversarial suites name these very keys in
     // order to assert they are absent. The pool-connect selectors are the same
     // guard the edge blocks carry (same hole, same crash), with egress's own
-    // escape hatch in the message — egress has no withPooledClient because its
-    // stores run `Pool.query()` only.
+    // escape hatch in the message.
     files: ["apps/egress/src/**/*.ts"],
-    ignores: ["apps/egress/src/**/*.test.ts"],
+    ignores: [
+      "apps/egress/src/**/*.test.ts",
+      // The one sanctioned `pool.connect()` lives here, inside `withPooledClient`
+      // (I-02 T-0021: the advisory-lock client token renewal holds across the
+      // vendor call) — the edge's db/pool.ts exemption, copied.
+      "apps/egress/src/pool.ts",
+    ],
     rules: {
       "no-restricted-syntax": [
         "error",

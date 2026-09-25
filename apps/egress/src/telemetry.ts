@@ -11,6 +11,7 @@ import {
   DURATION_BUCKETS_MS,
   INSTR_EGRESS_EXCHANGES,
   INSTR_EGRESS_PROXY_DURATION,
+  INSTR_EGRESS_RENEWALS,
   INSTR_PROVIDERS_LISTEN_STATUS,
   INSTR_PROVIDERS_RECONCILES,
 } from "@azx-pbc/shared/telemetry";
@@ -38,6 +39,11 @@ export interface EgressInstruments {
   providersListenStatus: ObservableGauge;
   /** Code-exchange operations by `outcome` and `env` (I-02 T-0019). */
   exchanges: Counter;
+  /**
+   * Token-renewal operations by `outcome` and `env` (I-02 T-0021) — the
+   * EGRESS_RENEWAL_OUTCOMES vocabulary. No identity dimension.
+   */
+  renewals: Counter;
 }
 
 /**
@@ -70,6 +76,9 @@ export function instruments(): EgressInstruments {
     }),
     exchanges: meter.createCounter(INSTR_EGRESS_EXCHANGES, {
       description: "Code-exchange operations by outcome and provider env.",
+    }),
+    renewals: meter.createCounter(INSTR_EGRESS_RENEWALS, {
+      description: "Token-renewal operations by outcome and provider env.",
     }),
   };
   return cached;

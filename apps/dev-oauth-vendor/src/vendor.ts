@@ -10,6 +10,13 @@ import {
   type VendorModes,
 } from "./modes.js";
 
+declare module "fastify" {
+  interface FastifyInstance {
+    /** The token endpoint's call log (see {@link TokenEndpointCallSchema}). */
+    tokenLog: TokenEndpointCall[];
+  }
+}
+
 export const VendorOptionsSchema = z.object({
   tokenMode: TokenModeSchema.default("rotating"),
   authorizeMode: AuthorizeModeSchema.default("approve"),
@@ -37,6 +44,19 @@ export const ApiTokenReportSchema = z.object({
   path: z.string(),
 });
 export type ApiTokenReport = z.infer<typeof ApiTokenReportSchema>;
+
+/**
+ * One token-endpoint request, as the fixture's call log records it (I-02
+ * T-0021's single-flight evidence): the grant type asked and whether a
+ * refresh token was PRESENTED — counts and shapes only, never values, so the
+ * log itself is not a credential store.
+ */
+export const TokenEndpointCallSchema = z.object({
+  at: z.number(),
+  grantType: z.string(),
+  refreshPresented: z.boolean(),
+});
+export type TokenEndpointCall = z.infer<typeof TokenEndpointCallSchema>;
 
 interface StoredGrant {
   clientId: string;
@@ -106,8 +126,15 @@ export function buildVendor(
   const opts = VendorOptionsSchema.parse(options ?? {});
   const grants = new Map<string, StoredGrant>();
   const refreshTokens = new Map<string, StoredRefresh>();
+  // The call log (T-0021): appended at the top of the token endpoint, fault
+  // modes included, so "the refresh token was presented exactly once" is
+  // observable even when the presentation hung or was consumed-then-dropped.
+  const tokenLog: TokenEndpointCall[] = [];
 
   const app = fastify({ logger: false });
+  // Exposed for in-process consumers; `startDevOAuthVendor` surfaces it on the
+  // running handle suites actually drive.
+  app.decorate("tokenLog", tokenLog);
 
   // OAuth token requests are form-encoded; @fastify/formbody is deliberately
   // not a dependency (the fixture adds nothing the workspace does not already
@@ -180,6 +207,11 @@ export function buildVendor(
     reply.header("pragma", "no-cache");
 
     const form = req.body as URLSearchParams;
+    tokenLog.push({
+      at: Date.now(),
+      grantType: form.get("grant_type") ?? "",
+      refreshPresented: form.get("refresh_token") !== null,
+    });
     const basic =
       req.headers.authorization !== undefined
         ? basicClientCredentials(req.headers.authorization)
