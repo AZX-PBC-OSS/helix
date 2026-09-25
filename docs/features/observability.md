@@ -42,6 +42,7 @@ terminates untrusted traffic (decision 4).
 | --- | --- |
 | `helix.gateway.llm` / `.fetch` / `.data` | the `/_api/*` handlers |
 | `helix.auth.oidc.start` / `.callback`, `helix.auth.handoff.complete` | the auth routes |
+| `helix.auth.connections.proxy` | the auth host's `/connections/*` reverse proxy |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.registry.load` | the projection reload |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
@@ -69,6 +70,12 @@ looked up:
   records `http.route` per surface — `/_api/llm/chat` or
   `/_api/openai/v1/chat/completions` — so throttles on the OpenAI-compatible
   route are findable by route.
+- `helix.auth.connections.proxy` (the auth host's `/connections/*` reverse
+  proxy) records `url.path` only — the vendor's redirect lands there with
+  `code` and `state` in the URL, so the query is dropped wholesale
+  (`spanUrlAttributes`), and nothing about the internal JWT it mints — value,
+  header name — is ever an attribute. Pinned by `spanRedaction.test.ts`'s
+  T-0015 case and `traceBoundary.test.ts`'s route case.
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |

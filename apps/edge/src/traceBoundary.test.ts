@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import {
   context,
   defaultTextMapGetter,
@@ -9,7 +10,18 @@ import {
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import { propagatorFor } from "@azx-pbc/telemetry";
 import { REQUEST_HEADER_SAFELIST } from "@azx-pbc/shared";
+import { SPAN_CONNECTIONS_PROXY } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
+import { buildApp } from "./app.js";
+import { testAuthConfig, testEdgeConfig } from "./test/config.js";
+import {
+  FakeBlobReader,
+  FakeOidcClient,
+  FakePortalProvider,
+  FakeRegistry,
+  FakeSessionStore,
+  registryEntry,
+} from "./test/fakes.js";
 
 /**
  * ADR-0037 decision 7, end to end: propagation runs **inward only**.
@@ -98,5 +110,47 @@ describe("the edge → egress hop is one trace", () => {
     // from regressing.
     expect(REQUEST_HEADER_SAFELIST).not.toContain("traceparent");
     expect(REQUEST_HEADER_SAFELIST).not.toContain("tracestate");
+  });
+});
+
+describe("the /connections/* proxy route is a fresh root too (T-0015)", () => {
+  /**
+   * Driven through the real route: the callback URL is where a vendor's
+   * redirect lands, so an inbound `traceparent` on it is exactly as
+   * untrustworthy as on any app host — the proxy's root span must not adopt
+   * it, and the portal-ward hop must inject the edge's own context.
+   */
+  it("an inbound traceparent never parents the route span", async () => {
+    propagation.setGlobalPropagator(propagatorFor("inject-only"));
+    const app: FastifyInstance = buildApp({
+      config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+      registry: new FakeRegistry([
+        registryEntry({
+          appId: "11111111-1111-4111-8111-111111111111",
+          slug: "demo",
+          blobPrefix: "apps/a/1/",
+        }),
+      ]),
+      blob: new FakeBlobReader(),
+      sessions: new FakeSessionStore(),
+      oidc: new FakeOidcClient(),
+      portal: new FakePortalProvider(),
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/connections/callback?code=x&state=y",
+      headers: {
+        host: "auth.local.helix.azxlabs.io",
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+
+    const span = recording.spans().find((sp) => sp.name === SPAN_CONNECTIONS_PROXY);
+    expect(span).toBeDefined();
+    expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
+    expect(span?.parentSpanContext).toBeUndefined();
   });
 });

@@ -226,6 +226,17 @@ export interface GatewayConfig {
    * portal for the dev tier).
    */
   internalSecret: Buffer | null;
+  /**
+   * Internal base URL of helix-portal (EDGE_PORTAL_URL, I-02 ADR-0002 part 3) —
+   * the origin the auth host's `/connections/*` reverse proxy forwards to over
+   * plain HTTP behind the ingress (on ACA one hostname binds one container app,
+   * so the portal cannot be reached at the auth host directly). Null ⇒ the
+   * proxy surface 503s fail-closed, exactly like an unconfigured egress URL;
+   * it is never a boot failure. The consult/cancel seams (same initiative)
+   * consume the same field, which is why it lives on the shared gateway config
+   * beside {@link internalSecret} — the key those calls authorize with.
+   */
+  portalUrl: string | null;
 }
 
 /**
@@ -759,6 +770,7 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
       maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
     },
     internalSecret: loadInternalSecret(env),
+    portalUrl: env.EDGE_PORTAL_URL || null,
   };
 }
 

@@ -50,6 +50,7 @@ function testConfig(): EdgeConfig {
       maxBodyBytes: 10 * 1024 * 1024,
     },
     internalSecret: null,
+    portalUrl: null,
   };
 }
 

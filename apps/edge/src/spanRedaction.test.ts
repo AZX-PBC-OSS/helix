@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
-import { DataCapabilitySchema } from "@azx-pbc/shared";
+import { DataCapabilitySchema, INTERNAL_AUTH_HEADER } from "@azx-pbc/shared";
 import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import { FORBIDDEN_URL_ATTRS } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
@@ -13,6 +13,7 @@ import {
   FakeAppDataStore,
   FakeBlobReader,
   FakeOidcClient,
+  FakePortalProvider,
   FakeRegistry,
   FakeSessionStore,
   FakeUsageStore,
@@ -245,6 +246,66 @@ describe("span attributes never carry a credential", () => {
 
       const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
       expect(dump, "an app-data span leaked the written key").not.toContain(PLANTED_KEY);
+    });
+  });
+
+  /**
+   * T-0015: the auth host's `/connections/*` reverse proxy. The vendor's
+   * redirect lands here with `code` and `state` in the URL (design.md
+   * §Operator-visible signals fixes this route's spans to `url.path` only),
+   * and the request carries material an attacker can plant themselves — the
+   * forged internal header the proxy must strip. Drives the REAL route
+   * through `buildApp` with everything planted, then scans every attribute of
+   * every span, so a later attribute addition fails here instead of leaking.
+   */
+  describe("the /connections/* proxy route (T-0015)", () => {
+    const CONSENT_CODE = "PLANTED-CONSENT-CODE";
+    const CONSENT_STATE = "PLANTED-CONSENT-STATE";
+    const FORGED_INTERNAL = "PLANTED-FORGED-INTERNAL-TOKEN";
+    const AUTH_HOST = { host: "auth.local.helix.azxlabs.io" };
+
+    function buildProxyEdge() {
+      return buildApp({
+        config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({
+            appId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            slug: "notes",
+            blobPrefix: "apps/e/1/",
+          }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions: new FakeSessionStore(),
+        oidc: new FakeOidcClient(),
+        portal: new FakePortalProvider(),
+      });
+    }
+
+    it("leaks no code, state, or internal-header value — across every attribute", async () => {
+      const app = buildProxyEdge();
+      const res = await app.inject({
+        method: "GET",
+        url: `/connections/callback?code=${CONSENT_CODE}&state=${CONSENT_STATE}`,
+        headers: { ...AUTH_HOST, [INTERNAL_AUTH_HEADER]: FORGED_INTERNAL },
+      });
+      expect(res.statusCode).toBe(200);
+      await app.close();
+
+      expect(recording.spans().length).toBeGreaterThan(0);
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      for (const secret of [CONSENT_CODE, CONSENT_STATE, FORGED_INTERNAL]) {
+        expect(dump, `a span attribute leaked ${secret}`).not.toContain(secret);
+      }
+      // The query is dropped wholesale — not even a `?` survives.
+      expect(dump).not.toContain("?");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
+      // And the route is still identifiable — `url.path` only, no query.
+      const routeSpan = recording.spans().find((s) => s.name === "helix.auth.connections.proxy");
+      expect(routeSpan?.attributes["url.path"]).toBe("/connections/callback");
     });
   });
 });

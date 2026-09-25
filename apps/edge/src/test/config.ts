@@ -97,6 +97,9 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     },
     // Edge→portal mint key unset by default; the consult suites set it.
     internalSecret: null,
+    // Auth-host /connections reverse proxy unset by default; the proxy suites
+    // set it (and pass a portal provider into buildApp).
+    portalUrl: null,
     ...overrides,
   };
 }
@@ -132,6 +135,7 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
       maxBodyBytes: 10 * 1024 * 1024,
     },
     internalSecret: null,
+    portalUrl: null,
     devGateway: {
       databaseUrl: "postgresql://helix_dev:unused@db/helix",
       allowDevMode: true,

@@ -25,6 +25,11 @@ import { SHARED_LIST_PAGE, encodeListCursor } from "../gateway/data.js";
 import type { MeterIdentity } from "../auth/gate.js";
 import type { Session, SessionStore } from "../auth/sessions.js";
 import type {
+  PortalProvider,
+  PortalProxyRequest,
+  PortalProxyResponse,
+} from "../routing/portalProvider.js";
+import type {
   AuthorizeParams,
   ExchangeChecks,
   ExchangeOutcome,
@@ -384,6 +389,39 @@ export class FakeAppDataStore implements AppDataStore {
     precondition: SharedWritePrecondition,
   ): Promise<PutResult> {
     return this.#put(this.#sharedKey(appId, key), value, precondition);
+  }
+
+  async close(): Promise<void> {}
+}
+
+/**
+ * Scripted portal provider for the auth-host `/connections/*` proxy (I-02
+ * ADR-0002 part 3) — the `FakeEgress` of the portal-ward seam. Captures what
+ * the edge forwards (method, target, the safelisted headers, the minted
+ * internal token) and answers a fixed page.
+ */
+export class FakePortalProvider implements PortalProvider {
+  readonly requests: PortalProxyRequest[] = [];
+  status = 200;
+  headers: Record<string, string | string[]> = { "content-type": "text/html; charset=utf-8" };
+  body = "<html>served by portal</html>";
+  /** When set, `proxy` rejects — the portal hop failed. */
+  error: Error | null = null;
+
+  async proxy(req: PortalProxyRequest): Promise<PortalProxyResponse> {
+    this.requests.push(req);
+    if (this.error) throw this.error;
+    // Drain the request body the way a real consumer does — this is what
+    // makes a body cap observable at the seam (the cap transform errors when
+    // drained past its limit, which surfaces as a failed proxy call).
+    if (req.body) {
+      for await (const chunk of req.body) void chunk;
+    }
+    return {
+      status: this.status,
+      headers: this.headers,
+      body: Readable.from([Buffer.from(this.body)]),
+    };
   }
 
   async close(): Promise<void> {}

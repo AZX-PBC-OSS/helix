@@ -52,6 +52,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
       maxBodyBytes: 10 * 1024 * 1024,
     },
     internalSecret: null,
+    portalUrl: null,
     ...overrides,
   };
 }

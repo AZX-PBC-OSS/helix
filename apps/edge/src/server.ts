@@ -12,6 +12,7 @@ import { EgressLlmProvider } from "./gateway/egressLlmProvider.js";
 import { RoutingLlmProvider } from "./gateway/routingLlmProvider.js";
 import { HttpEgressProvider, type EgressProvider } from "./gateway/egressProvider.js";
 import { deriveInstructionKey } from "./gateway/instruction.js";
+import { HttpPortalProvider, type PortalProvider } from "./routing/portalProvider.js";
 import { PgUsageStore, type UsageStore } from "./gateway/usage.js";
 import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
@@ -182,6 +183,16 @@ const instructionKey = config.fetch.instructionSecret
   ? deriveInstructionKey(config.fetch.instructionSecret)
   : null;
 
+// The auth-host `/connections/*` reverse proxy (I-02 ADR-0002 part 3): the
+// consent surface is portal-rendered but auth-host-terminated, so the edge
+// forwards it over the internal PortalProvider seam, authorized per call by a
+// minted internal JWT (T-0006 — the key is config.internalSecret). Enabled
+// only when the portal URL is present; otherwise the surface 503s
+// (fail-closed, like egress).
+const portal: PortalProvider | null = config.portalUrl
+  ? new HttpPortalProvider(config.portalUrl)
+  : null;
+
 // LLM provider selection (secrets design §1). Two states only — the edge never
 // holds the vendor key:
 //  1. egress configured → route the vendor call through egress; the key is a
@@ -223,6 +234,7 @@ const app = buildApp({
   appData,
   egress,
   instructionKey,
+  portal,
   cspReports,
   anonRateLimiter,
   loginThrottle,
@@ -261,6 +273,7 @@ app.addHook("onClose", async () => {
   await usage?.close();
   await appData?.close();
   await egress?.close();
+  await portal?.close();
   await cspReports.close();
   await llmProvider?.close();
   await counterStore.close();

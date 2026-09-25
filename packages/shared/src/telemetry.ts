@@ -96,6 +96,7 @@ export const SPAN_REGISTRY_LOAD = "helix.registry.load";
 export const SPAN_AUTH_START = "helix.auth.oidc.start";
 export const SPAN_AUTH_CALLBACK = "helix.auth.oidc.callback";
 export const SPAN_AUTH_COMPLETE = "helix.auth.handoff.complete";
+export const SPAN_CONNECTIONS_PROXY = "helix.auth.connections.proxy";
 export const SPAN_DEPLOY_BUNDLE = "helix.deploy.bundle";
 export const SPAN_DEPLOY_VALIDATE = "helix.deploy.validate";
 export const SPAN_DEPLOY_ALLOCATE = "helix.deploy.allocate";
@@ -114,6 +115,7 @@ export const ROUTE_DATA = "/_api/data/*";
 export const ROUTE_AUTH_START = "/start";
 export const ROUTE_AUTH_CALLBACK = "/callback";
 export const ROUTE_AUTH_COMPLETE = "/_auth/complete";
+export const ROUTE_CONNECTIONS = "/connections/*";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
