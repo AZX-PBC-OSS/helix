@@ -17,6 +17,7 @@ import {
   type PrismaClient,
 } from "../db/client.js";
 import { capabilitiesFromRow, toManifest } from "../db/mappers.js";
+import { manifestWithBindings } from "../connections/bindings.js";
 import { AppError } from "../plugins/errors.js";
 import { casPolicyWrite } from "../policy/policyWrite.js";
 
@@ -327,5 +328,9 @@ export async function applyCapabilityChange(
     return { updated, pending, baselineDeltas };
   });
 
-  return { manifest: toManifest(updated), applied: baselineDeltas, pending };
+  return {
+    manifest: await manifestWithBindings(prisma, opts.appId, toManifest(updated)),
+    applied: baselineDeltas,
+    pending,
+  };
 }

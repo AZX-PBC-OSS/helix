@@ -9,6 +9,7 @@ import {
   Group,
   Loader,
   NumberInput,
+  Select,
   Stack,
   Switch,
   TagsInput,
@@ -23,6 +24,7 @@ import {
   isValidServiceWorkerScope,
   type App,
   type Capabilities,
+  type CatalogueProvider,
   type FetchConnection,
   visibilityLabel,
 } from "@azx-pbc/shared";
@@ -31,6 +33,7 @@ import { manifestQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
 import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
+import { useCatalogue } from "../../lib/catalogue";
 import { ModelAllowlist } from "../../components/ModelAllowlist";
 import { fmtUsd } from "../../lib/format";
 import { SecretsCard } from "./SecretsCard";
@@ -88,6 +91,26 @@ function CapBlock({
   );
 }
 
+/** The 3-way credential select's values (spec decision 28). */
+type CredentialMode = "none" | "secret" | "provider";
+
+/**
+ * One origin row's editor state. The credential MODE is the select; the mode
+ * decides which sibling control renders, so an origin can never carry both a
+ * stored secret and a provider at once — exclusivity is structural (spec
+ * decision 28), not a validation error.
+ */
+interface OriginDraft {
+  origin: string;
+  credential: CredentialMode;
+  /** Stored-secret mode: the connection name ("" while freshly selected). */
+  connection: string;
+  /** Provider mode: the bound catalogue ref (null while unchosen). */
+  provider: string | null;
+  /** Provider mode: the app's dependency hint — a manifest field, nothing more (criterion 17). */
+  required: boolean;
+}
+
 /** Normalized, comparable view of a Capabilities grant for the editor state. */
 interface Draft {
   models: string[];
@@ -108,9 +131,11 @@ interface Draft {
   dataWritesPerDay: number | undefined;
   mcp: string[];
   externalOrigins: string[];
-  /** Fetch-proxy: proxied origins (each with an optional secret connection). */
-  fetchOrigins: FetchConnection[];
-  fetchShim: boolean;
+  /** Fetch-proxy: proxied origins, each through the 3-way credential select. */
+  fetchOrigins: OriginDraft[];
+  /** Injected helpers (design decisions 5/7) — two independent sub-options. */
+  shimFetch: boolean;
+  shimConnect: boolean;
   fetchRequestsPerDay: number | undefined;
   /** Offline (ADR-0035): the worker's scope prefix; undefined = no grant. */
   offlineScope: string | undefined;
@@ -118,6 +143,35 @@ interface Draft {
 
 /** Default offered when the offline toggle is switched on. */
 const DEFAULT_OFFLINE_SCOPE = "/app/";
+
+/**
+ * A stored origin's editor state, legacy-safe: a provider binding reads its
+ * ref and dependency hint, a secret binding its connection name, and anything
+ * else is the keyless mode. The parse keeps the legacy boolean shim
+ * synchronized with the first-class block, so the two helper switches read
+ * either spelling identically.
+ */
+function toOriginDraft(o: FetchConnection): OriginDraft {
+  if (o.provider !== undefined) {
+    return {
+      origin: o.origin,
+      credential: "provider",
+      connection: "",
+      provider: o.provider,
+      required: o.required ?? false,
+    };
+  }
+  if (o.connection !== undefined) {
+    return {
+      origin: o.origin,
+      credential: "secret",
+      connection: o.connection,
+      provider: null,
+      required: false,
+    };
+  }
+  return { origin: o.origin, credential: "none", connection: "", provider: null, required: false };
+}
 
 function toDraft(c: Capabilities): Draft {
   return {
@@ -132,8 +186,9 @@ function toDraft(c: Capabilities): Draft {
     dataWritesPerDay: c.data?.writesPerDay,
     mcp: c.mcp,
     externalOrigins: c.externalOrigins,
-    fetchOrigins: c.fetch?.origins ?? [],
-    fetchShim: c.fetch?.shim ?? false,
+    fetchOrigins: (c.fetch?.origins ?? []).map(toOriginDraft),
+    shimFetch: c.shim?.fetch ?? c.fetch?.shim ?? false,
+    shimConnect: c.shim?.connect ?? false,
     fetchRequestsPerDay: c.fetch?.requestsPerDay,
     offlineScope: c.offline?.scope,
   };
@@ -149,6 +204,23 @@ function hasDataGrant(d: Draft): boolean {
     d.sharedWritePrefixes.length > 0 ||
     d.dataWritesPerDay !== undefined
   );
+}
+
+/**
+ * The wire origin from one editor row. The select's mode picks the single
+ * credential source; an incomplete row (no origin) is not a grant and drops,
+ * as it always has.
+ */
+function originFromDraft(o: OriginDraft): FetchConnection | null {
+  const origin = o.origin.trim();
+  if (origin === "") return null;
+  if (o.credential === "provider" && o.provider !== null) {
+    return { origin, provider: o.provider, ...(o.required ? { required: true } : {}) };
+  }
+  if (o.credential === "secret" && o.connection.trim() !== "") {
+    return { origin, connection: o.connection.trim() };
+  }
+  return { origin };
 }
 
 /** Build the wire Capabilities from the editor draft, omitting empty blocks. */
@@ -176,11 +248,16 @@ function fromDraft(d: Draft): Capabilities {
         }
       : {}),
     ...(() => {
-      const origins = d.fetchOrigins.filter((o) => o.origin.trim() !== "");
-      return origins.length || d.fetchShim || d.fetchRequestsPerDay !== undefined
+      const origins = d.fetchOrigins
+        .map(originFromDraft)
+        .filter((o): o is FetchConnection => o !== null);
+      return origins.length || d.shimFetch || d.fetchRequestsPerDay !== undefined
         ? {
             fetch: {
-              shim: d.fetchShim,
+              // The synchronized legacy view rides beside the first-class block
+              // below — a consumer applying a shim change writes BOTH views
+              // (T-0002's convention; the parse OR-merges, so they agree).
+              shim: d.shimFetch,
               origins,
               ...(d.fetchRequestsPerDay !== undefined
                 ? { requestsPerDay: d.fetchRequestsPerDay }
@@ -189,6 +266,12 @@ function fromDraft(d: Draft): Capabilities {
           }
         : {};
     })(),
+    // Injected helpers are first-class (design decision 6): the editor writes
+    // only the new form, and the server's parse re-synchronizes the legacy
+    // boolean the edge's per-block fetch read consumes.
+    ...(d.shimFetch || d.shimConnect
+      ? { shim: { fetch: d.shimFetch, connect: d.shimConnect } }
+      : {}),
     ...(d.offlineScope !== undefined ? { offline: { scope: d.offlineScope } } : {}),
     mcp: d.mcp,
     externalOrigins: d.externalOrigins,
@@ -223,24 +306,37 @@ function renderYaml(app: App, d: Draft): string {
   }
   lines.push(`  mcp: [${d.mcp.join(", ")}]`);
   lines.push(`  external_origins: [${d.externalOrigins.join(", ")}]`);
-  const proxied = d.fetchOrigins.filter((o) => o.origin.trim() !== "");
-  if (proxied.length || d.fetchShim || d.fetchRequestsPerDay !== undefined) {
+  const proxied = d.fetchOrigins
+    .map(originFromDraft)
+    .filter((o): o is FetchConnection => o !== null);
+  if (proxied.length || d.fetchRequestsPerDay !== undefined) {
     lines.push(`  fetch:`);
-    if (d.fetchShim) lines.push(`    shim: true`);
     if (d.fetchRequestsPerDay !== undefined)
       lines.push(`    requests_per_day: ${d.fetchRequestsPerDay.toLocaleString()}`);
     if (proxied.length) {
       lines.push(`    origins:`);
       for (const o of proxied) {
-        lines.push(
-          `      - origin: ${o.origin}${o.connection ? `  (secret: ${o.connection})` : ""}`,
-        );
+        const annotation =
+          o.provider !== undefined
+            ? `  (provider: ${o.provider}, ${o.required ? "required" : "optional"})`
+            : o.connection !== undefined
+              ? `  (secret: ${o.connection})`
+              : "";
+        lines.push(`      - origin: ${o.origin}${annotation}`);
       }
     }
   }
   if (d.offlineScope !== undefined) {
     lines.push(`  offline:`);
     lines.push(`    scope: ${d.offlineScope}`);
+  }
+  // The first-class shim block (design decision 6): rendered from the merged
+  // grant, so a legacy boolean-shim app projects the same block as a new-form
+  // one — the projection writes only the new form, for both.
+  if (d.shimFetch || d.shimConnect) {
+    lines.push(`  shim:`);
+    lines.push(`    fetch: ${d.shimFetch}`);
+    lines.push(`    connect: ${d.shimConnect}`);
   }
   return lines.join("\n");
 }
@@ -249,6 +345,7 @@ export function CapabilitiesTab({ app }: { app: App }) {
   const { authenticated, login, loginAvailable } = useAuth();
   const manifest = useQuery(manifestQuery(app.slug));
   const setManifest = useSetManifest();
+  const { catalogue } = useCatalogue();
 
   const [draft, setDraft] = useState<Draft | null>(null);
   // Sync the editor to fresh server state by adjusting state during render
@@ -268,6 +365,48 @@ export function CapabilitiesTab({ app }: { app: App }) {
     return JSON.stringify(draft) !== JSON.stringify(toDraft(manifest.data.capabilities));
   }, [draft, manifest.data]);
 
+  // The provider catalogue (GET /api/v1/capabilities at runtime — no
+  // build-time provider config), grouped by reference: the raw rows are
+  // env-pinned and a ref may exist in both tiers, so one option per ref is
+  // labeled like "asana — Asana · dev+prod".
+  const providersByRef = useMemo(() => {
+    const byRef = new Map<string, CatalogueProvider[]>();
+    for (const p of catalogue?.fetch.providers ?? []) {
+      const rows = byRef.get(p.ref) ?? [];
+      rows.push(p);
+      byRef.set(p.ref, rows);
+    }
+    return byRef;
+  }, [catalogue]);
+  const providerOptions = useMemo(
+    () =>
+      [...providersByRef.entries()].map(([ref, rows]) => ({
+        value: ref,
+        label: `${ref} — ${rows[0]!.displayName} · ${[...new Set(rows.map((r) => r.env))]
+          .sort()
+          .join("+")}`,
+      })),
+    [providersByRef],
+  );
+  const providersConfigured = providerOptions.length > 0;
+  /**
+   * The credential select's three values (spec decision 28). With no providers
+   * in the catalogue, the OAuth-provider option renders disabled with the
+   * ask-an-administrator guidance — a deployment that has none configured can
+   * still express the other two credential modes.
+   */
+  const credentialData = [
+    { value: "none", label: "None" },
+    { value: "secret", label: "Stored secret" },
+    providersConfigured
+      ? { value: "provider", label: "OAuth provider" }
+      : {
+          value: "provider",
+          label: "OAuth provider — none configured on this deployment, ask an administrator",
+          disabled: true,
+        },
+  ];
+
   if (manifest.isPending || !draft) {
     return (
       <Center py={60}>
@@ -284,14 +423,33 @@ export function CapabilitiesTab({ app }: { app: App }) {
   }
 
   const patch = (next: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...next } : d));
-  const patchFetchOrigin = (i: number, next: Partial<FetchConnection>) =>
+  const patchFetchOrigin = (i: number, next: Partial<OriginDraft>) =>
     setDraft((d) =>
       d
         ? { ...d, fetchOrigins: d.fetchOrigins.map((o, j) => (j === i ? { ...o, ...next } : o)) }
         : d,
     );
+  // The 3-way select IS the exclusivity (spec decision 28): switching the mode
+  // swaps the sibling control, and each mode's own value survives a round trip
+  // through the others so a mis-click doesn't silently lose typing.
+  const setCredential = (i: number, credential: CredentialMode) =>
+    setDraft((d) =>
+      d
+        ? { ...d, fetchOrigins: d.fetchOrigins.map((o, j) => (j === i ? { ...o, credential } : o)) }
+        : d,
+    );
   const addFetchOrigin = () =>
-    setDraft((d) => (d ? { ...d, fetchOrigins: [...d.fetchOrigins, { origin: "" }] } : d));
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            fetchOrigins: [
+              ...d.fetchOrigins,
+              { origin: "", credential: "none", connection: "", provider: null, required: false },
+            ],
+          }
+        : d,
+    );
   const removeFetchOrigin = (i: number) =>
     setDraft((d) => (d ? { ...d, fetchOrigins: d.fetchOrigins.filter((_, j) => j !== i) } : d));
 
@@ -319,6 +477,44 @@ export function CapabilitiesTab({ app }: { app: App }) {
   // states the requirement instead of letting the save 400.
   const budgetMissing =
     draft.sharedWritePrefixes.length > 0 && draft.dataWritesPerDay === undefined;
+
+  /**
+   * The server's binding rules, run here so a bad binding is a field error
+   * rather than a 400 on save (the same posture as the offline-scope rule).
+   * The destination check mirrors `validateProviderBindings` exactly: the
+   * declared origin must be one of the provider's API destinations in EVERY
+   * environment the ref is configured in — a manifest binding is env-agnostic,
+   * it resolves in the caller's tier at call time. Skipped while the catalogue
+   * has not loaded (or failed); the server re-checks either way.
+   */
+  const rowErrors = (o: OriginDraft): { origin?: string; secret?: string; provider?: string } => {
+    if (o.origin.trim() === "") return {};
+    if (o.credential === "secret" && o.connection.trim() === "") {
+      return { secret: "name the stored secret, or set the credential back to None" };
+    }
+    if (o.credential === "provider") {
+      if (o.provider === null) return { provider: "pick a provider for this origin" };
+      if (catalogue !== null) {
+        const rows = providersByRef.get(o.provider) ?? [];
+        if (rows.length > 0) {
+          try {
+            const declared = new URL(o.origin.trim()).origin;
+            if (rows.some((p) => !p.apiOrigins.includes(declared))) {
+              const destinations = [...new Set(rows.flatMap((p) => p.apiOrigins))].join(", ");
+              return {
+                origin: `not one of provider "${o.provider}"'s permitted API destinations (${destinations})`,
+              };
+            }
+          } catch {
+            // Not a URL yet — the server's z.url() rejection covers it; no
+            // local error until the destination rule can even compare.
+          }
+        }
+      }
+    }
+    return {};
+  };
+  const bindingInvalid = draft.fetchOrigins.some((o) => Object.keys(rowErrors(o)).length > 0);
 
   return (
     <Stack gap={18}>
@@ -512,42 +708,105 @@ export function CapabilitiesTab({ app }: { app: App }) {
             <CapBlock
               icon="globe"
               title="Fetch proxy"
-              desc="Governed outbound HTTP through helix-egress — audited, metered, SSRF-controlled. Each origin is reached via /_api/fetch; attach a connection secret and it's injected server-side (the app never sees it)."
+              desc="Governed outbound HTTP through helix-egress — audited, metered, SSRF-controlled. Each origin is reached via /_api/fetch; bind a stored secret or an OAuth provider and the credential is injected server-side (the app never sees it)."
             >
               <Stack gap={10}>
-                {draft.fetchOrigins.map((o, i) => (
-                  <Group key={i} gap={8} align="flex-end" wrap="nowrap">
-                    <TextInput
-                      label={i === 0 ? "Proxied origin" : undefined}
-                      placeholder="https://api.example.com"
-                      value={o.origin}
-                      onChange={(e) => patchFetchOrigin(i, { origin: e.currentTarget.value })}
-                      style={{ flex: 2 }}
-                      size="xs"
-                      classNames={{ input: "az-mono" }}
-                    />
-                    <TextInput
-                      label={i === 0 ? "Secret (optional)" : undefined}
-                      placeholder="connection name"
-                      value={o.connection ?? ""}
-                      onChange={(e) =>
-                        patchFetchOrigin(i, { connection: e.currentTarget.value || undefined })
-                      }
-                      style={{ flex: 1 }}
-                      size="xs"
-                      classNames={{ input: "az-mono" }}
-                    />
-                    <Button
-                      variant="subtle"
-                      color="red"
-                      size="compact-xs"
-                      onClick={() => removeFetchOrigin(i)}
-                      aria-label="remove origin"
-                    >
-                      <Icon name="x" size={12} />
-                    </Button>
-                  </Group>
-                ))}
+                {draft.fetchOrigins.map((o, i) => {
+                  const errors = rowErrors(o);
+                  // The Reapproval-needed badge is computed from the manifest
+                  // read alone (providerBindings on GET …/manifest) — no
+                  // second request, and no connection-status discovery.
+                  const staleBinding =
+                    o.credential === "provider" && o.provider !== null
+                      ? manifest.data?.providerBindings?.find(
+                          (b) => b.origin === o.origin && b.ref === o.provider,
+                        )
+                      : undefined;
+                  return (
+                    <Stack key={i} gap={6}>
+                      <Group gap={8} align="flex-end" wrap="wrap">
+                        <TextInput
+                          label={i === 0 ? "Proxied origin" : undefined}
+                          aria-label={i === 0 ? undefined : "Proxied origin"}
+                          placeholder="https://api.example.com"
+                          value={o.origin}
+                          onChange={(e) => patchFetchOrigin(i, { origin: e.currentTarget.value })}
+                          style={{ flex: "2 1 220px" }}
+                          size="xs"
+                          error={errors.origin}
+                          classNames={{ input: "az-mono" }}
+                        />
+                        <Select
+                          label={i === 0 ? "Credential" : undefined}
+                          aria-label={i === 0 ? undefined : "Credential"}
+                          data={credentialData}
+                          value={o.credential}
+                          onChange={(v) => setCredential(i, (v ?? "none") as CredentialMode)}
+                          allowDeselect={false}
+                          style={{ flex: "1 1 150px" }}
+                          size="xs"
+                        />
+                        {o.credential === "secret" && (
+                          <TextInput
+                            label={i === 0 ? "Secret (optional)" : undefined}
+                            aria-label={i === 0 ? undefined : "Secret (optional)"}
+                            placeholder="connection name"
+                            value={o.connection}
+                            onChange={(e) =>
+                              patchFetchOrigin(i, { connection: e.currentTarget.value })
+                            }
+                            style={{ flex: "1 1 160px" }}
+                            size="xs"
+                            error={errors.secret}
+                            classNames={{ input: "az-mono" }}
+                          />
+                        )}
+                        {o.credential === "provider" && (
+                          <Box style={{ flex: "1 1 260px" }}>
+                            <Select
+                              label={i === 0 ? "OAuth provider" : undefined}
+                              aria-label={i === 0 ? undefined : "OAuth provider"}
+                              placeholder="pick a provider"
+                              data={providerOptions}
+                              value={o.provider}
+                              onChange={(v) => patchFetchOrigin(i, { provider: v })}
+                              size="xs"
+                              error={errors.provider}
+                            />
+                            {o.provider !== null && (
+                              <Switch
+                                mt={6}
+                                size="xs"
+                                label="Required"
+                                description="Dependency hint only — never blocks app loading, checks the connection, opens a popup, or retries."
+                                checked={o.required}
+                                onChange={(e) =>
+                                  patchFetchOrigin(i, { required: e.currentTarget.checked })
+                                }
+                              />
+                            )}
+                          </Box>
+                        )}
+                        <Button
+                          variant="subtle"
+                          color="red"
+                          size="compact-xs"
+                          onClick={() => removeFetchOrigin(i)}
+                          aria-label={`remove origin ${i + 1}`}
+                        >
+                          <Icon name="x" size={12} />
+                        </Button>
+                      </Group>
+                      {staleBinding && !staleBinding.effective && (
+                        <div>
+                          <ToneBadge tone="warn" icon="alert">
+                            Reapproval needed — save the manifest to resubmit this binding
+                          </ToneBadge>
+                        </div>
+                      )}
+                    </Stack>
+                  );
+                })}
                 <Group>
                   <Button
                     variant="default"
@@ -558,17 +817,20 @@ export function CapabilitiesTab({ app }: { app: App }) {
                     Add proxied origin
                   </Button>
                 </Group>
-                {draft.fetchOrigins.some((o) => o.connection) && (
+                {draft.fetchOrigins.some(
+                  (o) => o.credential === "secret" && o.connection.trim() !== "",
+                ) && (
                   <ToneBadge tone="violet" icon="shield">
                     secret-bound origins need admin approval
                   </ToneBadge>
                 )}
-                <Switch
-                  checked={draft.fetchShim}
-                  onChange={(e) => patch({ fetchShim: e.currentTarget.checked })}
-                  label="Transparent shim"
-                  description="Auto-rewrite the app's fetch() and XMLHttpRequest calls (so axios works too) to the proxied origins above — no app code change. Opt-in."
-                />
+                {draft.fetchOrigins.some(
+                  (o) => o.credential === "provider" && o.provider !== null,
+                ) && (
+                  <ToneBadge tone="violet" icon="shield">
+                    provider-bound origins need admin approval
+                  </ToneBadge>
+                )}
                 <div>
                   <Switch
                     checked={draft.fetchRequestsPerDay !== undefined}
@@ -594,6 +856,27 @@ export function CapabilitiesTab({ app }: { app: App }) {
                     />
                   )}
                 </div>
+              </Stack>
+            </CapBlock>
+
+            <CapBlock
+              icon="bolt"
+              title="Injected helpers"
+              desc="Platform-injected JavaScript ships only on explicit opt-in — nothing is injected unbidden. Both are serve-time ergonomics, never a privilege grant, and they are independent: either can be granted alone."
+            >
+              <Stack gap={12}>
+                <Switch
+                  checked={draft.shimFetch}
+                  onChange={(e) => patch({ shimFetch: e.currentTarget.checked })}
+                  label="Rewrite fetch/XHR to the proxy"
+                  description="The transparent shim — the app's fetch() and XMLHttpRequest calls (axios included) are rewritten to the proxied origins above. No app code change."
+                />
+                <Switch
+                  checked={draft.shimConnect}
+                  onChange={(e) => patch({ shimConnect: e.currentTarget.checked })}
+                  label="Connect helper — window.helix.connect()"
+                  description="Injects window.helix.connect(providerRef), which opens the platform consent popup on explicit user action. Apps that don't opt in keep the documented raw popup entry."
+                />
               </Stack>
             </CapBlock>
 
@@ -681,7 +964,14 @@ export function CapabilitiesTab({ app }: { app: App }) {
               <Button
                 fullWidth
                 mt={14}
-                disabled={!dirty || capMissing || scopeInvalid || prefixInvalid || budgetMissing}
+                disabled={
+                  !dirty ||
+                  capMissing ||
+                  scopeInvalid ||
+                  prefixInvalid ||
+                  budgetMissing ||
+                  bindingInvalid
+                }
                 loading={setManifest.isPending}
                 leftSection={<Icon name="check" size={14} />}
                 onClick={() =>
@@ -696,9 +986,11 @@ export function CapabilitiesTab({ app }: { app: App }) {
                       ? "Fix the invalid prefix to save"
                       : budgetMissing
                         ? "Set a write budget to save"
-                        : dirty
-                          ? "Save manifest"
-                          : "Saved"}
+                        : bindingInvalid
+                          ? "Fix the origin binding to save"
+                          : dirty
+                            ? "Save manifest"
+                            : "Saved"}
               </Button>
             )}
             {setManifest.isError && (

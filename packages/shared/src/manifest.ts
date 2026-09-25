@@ -348,10 +348,37 @@ export const CapabilitiesSchema = z
     };
   });
 
+/**
+ * Per-binding effectiveness for one provider-bound origin, computed by the
+ * portal when it serves a manifest read (T-0028). The SPA renders the
+ * Reapproval-needed badge from this alone — no second request — and the owner
+ * resubmits by saving the manifest again.
+ */
+export const ProviderBindingStatusSchema = z.strictObject({
+  /** The manifest origin as declared (matches `FetchConnection.origin`). */
+  origin: z.string(),
+  /** The bound provider reference. */
+  ref: ProviderRefSchema,
+  /**
+   * Whether an approval that granted this binding still matches the provider
+   * row's current identity — T-0009's {@link isProviderBindingEffective} rule
+   * (the one definition; the portal never re-derives the comparison). `false`
+   * means the provider was deleted or a sensitive edit stale-dated the stamp.
+   */
+  effective: z.boolean(),
+});
+export type ProviderBindingStatus = z.infer<typeof ProviderBindingStatusSchema>;
+
 export const AppManifestSchema = z.object({
   /** App slug; matches `App.slug`. */
   app: z.string().min(1),
   visibility: VisibilitySchema,
   capabilities: CapabilitiesSchema.default({ mcp: [], externalOrigins: [] }),
+  /**
+   * Effectiveness of every provider-bound origin in `capabilities`, computed
+   * server-side on the read (never stored). Absent when the manifest declares
+   * no provider binding — every payload without one keeps its exact shape.
+   */
+  providerBindings: z.array(ProviderBindingStatusSchema).optional(),
 });
 export type AppManifest = z.infer<typeof AppManifestSchema>;

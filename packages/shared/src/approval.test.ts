@@ -242,6 +242,38 @@ describe("classifyChange — fetch proxy", () => {
     expect(paths(r.baselineDeltas)).toContain("fetch.shim");
   });
 
+  it("the connect helper is its own baseline delta — a connect-only change persists", () => {
+    // T-0028: the connect sub-option has no legacy alias to ride, so without
+    // its own path the classifier produced no delta and the grant silently
+    // failed to persist (the reported manifest never changed).
+    const requested: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      shim: { fetch: false, connect: true },
+    };
+    const r = classifyChange(EMPTY, requested);
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["shim.connect"]);
+    const applied = applyDeltas(EMPTY, r.baselineDeltas);
+    expect(applied.shim).toEqual({ fetch: false, connect: true });
+    // Independent sub-options: toggling both at once emits both paths and
+    // applies in either order.
+    const both = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      shim: { fetch: true, connect: true },
+    });
+    expect(paths(both.baselineDeltas).sort()).toEqual(["fetch.shim", "shim.connect"]);
+    expect(applyDeltas(EMPTY, both.baselineDeltas).shim).toEqual({ fetch: true, connect: true });
+    // Revoking connect while the fetch rewrite stays on keeps the rewrite.
+    const revoke = applyDeltas(
+      { mcp: [], externalOrigins: [], shim: { fetch: true, connect: true } },
+      [{ path: "shim.connect", from: true, to: false }],
+    );
+    expect(revoke.shim).toEqual({ fetch: true, connect: false });
+    expect(revoke.fetch?.shim).toBe(true);
+  });
+
   it("gates a fetch request budget above baseline only", () => {
     const under = classifyChange(EMPTY, {
       mcp: [],

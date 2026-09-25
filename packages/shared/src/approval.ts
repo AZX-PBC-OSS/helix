@@ -423,6 +423,17 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     push({ path: "fetch.shim", from: effShim, to: reqShim }, false, "low");
   }
 
+  // ── shim.connect ── (the connect helper's opt-in, same ergonomics tier)
+  // Its own scalar path: the legacy-alias merge synchronizes only the FETCH
+  // flag into `fetch.shim`, so a connect-only change would otherwise produce
+  // no delta at all and silently fail to persist. The fetch sub-option keeps
+  // the established `fetch.shim` path — one fact, one delta.
+  const effConnect = eff.shim?.connect ?? false;
+  const reqConnect = req.shim?.connect ?? false;
+  if (effConnect !== reqConnect) {
+    push({ path: "shim.connect", from: effConnect, to: reqConnect }, false, "low");
+  }
+
   // ── fetch.requestsPerDay budget ──
   const effFetchReq = eff.fetch?.requestsPerDay;
   const reqFetchReq = req.fetch?.requestsPerDay;
@@ -680,6 +691,13 @@ function applyScalar(caps: Capabilities, d: Delta): void {
       }
       return;
     }
+    case "shim.connect": {
+      const on = Boolean(d.to);
+      // The parse has already synchronized the fetch view (the transform writes
+      // both positions), so the block is rebuilt with the merged fetch flag.
+      caps.shim = { fetch: caps.shim?.fetch ?? caps.fetch?.shim ?? false, connect: on };
+      return;
+    }
     case "fetch.requestsPerDay":
       caps.fetch = { ...ensureFetch(caps), requestsPerDay: d.to as number | undefined };
       return;
@@ -721,7 +739,9 @@ function deltaArea(path: string): Area {
   if (path.startsWith("llm")) return "llm";
   if (path.startsWith("data")) return "data";
   if (path.startsWith("mcp")) return "mcp";
-  if (path.startsWith("fetch")) return "fetch";
+  // The shim block's own sub-option paths (`shim.connect`) area with the fetch
+  // ergonomics they serve — the block stays at the fetch-shim classification.
+  if (path.startsWith("fetch") || path.startsWith("shim")) return "fetch";
   if (path.startsWith("offline")) return "offline";
   return "externalOrigins";
 }
