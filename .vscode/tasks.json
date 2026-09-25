@@ -3,7 +3,16 @@
   "tasks": [
     {
       "label": "dev: all",
-      "dependsOn": ["dev:idp", "dev:portal", "dev:edge", "dev:egress", "dev:devgw", "dev:web"],
+      "dependsOn": [
+        "dev:idp",
+        "dev:portal",
+        "dev:edge",
+        "dev:egress",
+        "dev:vendor",
+        "dev:vendor-tls",
+        "dev:devgw",
+        "dev:web"
+      ],
       "dependsOrder": "parallel",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
@@ -41,6 +50,11 @@
       "command": "pnpm dev:edge",
       "isBackground": true,
       "problemMatcher": [],
+      "options": {
+        "env": {
+          "EDGE_PORTAL_URL": "http://localhost:3001"
+        }
+      },
       "presentation": {
         "group": "dev",
         "panel": "dedicated",
@@ -54,8 +68,40 @@
       "command": "pnpm dev:egress",
       "isBackground": true,
       "problemMatcher": [],
+      "options": {
+        "env": {
+          "EGRESS_ALLOW_PRIVATE": "true",
+          "EGRESS_ALLOW_INSECURE_CONNECTION": "true"
+        }
+      },
       "presentation": {
         "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:vendor",
+      "detail": "dev-oauth-vendor (:3003, fixture OAuth vendor — demo-vendor's token/API plane)",
+      "type": "shell",
+      "command": "pnpm dev:vendor",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "vendor",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:vendor-tls",
+      "detail": "vendor TLS front (:3443 — https for the authorize hop; needs dev:vendor up)",
+      "type": "shell",
+      "command": "pnpm dev:vendor-tls",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "vendor",
         "panel": "dedicated",
         "reveal": "always"
       }
