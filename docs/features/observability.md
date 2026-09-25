@@ -116,6 +116,12 @@ looked up:
   the bounded outcome word, never recorded. Span status is graded ERROR for
   `temporary_failure` and `admin_action` (operator-actionable); the
   reconnect-needing outcomes are the platform working as designed.
+- `helix.providers.reconcile` spans carry `helix.providers.rows` — how many
+  provider rows the cache holds after the reconcile (I-02 ADR-0011; bounded by
+  the tenant, the table is administrator-created) — and `helix.providers.rows.dropped`
+  when rows failed their parse and were dropped from the cache (the fixed
+  `providers.row_dropped` warn event rides alongside; a dropped row answers
+  `provider_unavailable` until the next good reconcile).
 - `helix.auth.connections.proxy` (the auth host's `/connections/*` reverse
   proxy) records `url.path` only — the vendor's redirect lands there with
   `code` and `state` in the URL, so the query is dropped wholesale
@@ -161,9 +167,10 @@ looked up:
   by `routes/connectionsCallback.integration.test.ts`'s global attribute scan.
 - The `helix.consent.*` spans carry `helix.consent.operation` (bounded to
   consult/cancel/claim/sweep/redeem/callback), `helix.outcome` from the operation's bounded
-  vocabulary, and on the consult `helix.app.slug`, `helix.app_id` and
-  `helix.provider_ref` — never the `state`, the nonce, the PKCE verifier, or any
-  identity (pinned by `routes/connectionsInternal.test.ts`'s global attribute
+  vocabulary, on the consult `helix.app.slug`, `helix.app_id` and
+  `helix.provider_ref`, and on the sweep the removed count
+  (`helix.consent.sweep_removed`) — never the `state`, the nonce, the PKCE
+  verifier, or any identity (pinned by `routes/connectionsInternal.test.ts`'s global attribute
   scan and `routes/connectionsPages.test.ts`'s redemption scan).
 
 | Instrument | Kind | Attributes |
@@ -185,6 +192,34 @@ looked up:
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained
 metrics backend.
+
+### Audit events and ledger outcomes (the ledger, not OTel)
+
+Two I-02 signal families live in platform tables rather than the telemetry
+pipelines — listed here because the operator-facing inventory is the point, and
+because they are what the audit and usage pages show.
+
+**Audit events** (the portal's `AuditEvent` table; dotted actions on the
+`secret.*` precedent, actor-stamped, metadata bounded to refs, envs, ids,
+counts, and changed-field names — never a credential, sealed material, or an
+endpoint URL):
+
+| Action | Actor | Metadata (bounded) |
+| --- | --- | --- |
+| `provider.created` / `provider.updated` | admin | ref, env, kind, whether the secret rotated or the client identity changed; a sensitive edit adds the sensitive field names and the impact counts (invalidated connections, killed attempts) |
+| `provider.deleted` | admin | ref, env, providerId, bound apps, connections, pending attempts — the repeat-delete `already_removed` answer reads this row, so it commits with the removal or not at all |
+| `provider.imported` | admin | mode (`create`/`update`), ref, env, kind; an update carries the same sensitive/impact metadata as `provider.updated` |
+| `provider.exported` | admin | providerId, ref, env, kind |
+| `provider.destroy_failed` | admin (the failed release) | ref, env, field, reason, and the `kv:` vault reference when the material is vault-held — dev envelope ciphertext is never copied anywhere |
+| `connection.connected` | connecting user | providerRef, env, appId |
+| `connection.disconnected` | disconnecting user | providerRef, env |
+
+**Ledger outcome**: `gateway_calls` gains one outcome label,
+`connection_required` — the delegated call answered "the caller has no usable
+connection". It is kept distinct from `refusal` so the audit page and usage
+rollups separate "user not connected" from "policy refused" (I-02 spec
+criterion 50); the other provider-shaped codes (`provider_unavailable`,
+`provider_misconfigured`) meter as the existing `refusal`.
 
 ### Things to know before writing an alert on these
 
