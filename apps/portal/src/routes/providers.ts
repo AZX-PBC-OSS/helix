@@ -7,11 +7,20 @@ import {
   ProviderCreateRequestSchema,
   ProviderDeleteRequestSchema,
   ProviderDeleteResponseSchema,
+  ProviderExportDocumentSchema,
+  ProviderImportPreviewDiffEntrySchema,
+  ProviderImportPreviewRequestSchema,
+  ProviderImportPreviewResponseSchema,
+  ProviderImportRequestSchema,
+  ProviderImportResponseSchema,
   ProviderImpactSchema,
   ProviderListResponseSchema,
   ProviderMetadataSchema,
   ProviderUpdateRequestSchema,
   type ConnectionProvider,
+  type ProviderConfig,
+  type ProviderCreateRequest,
+  type ProviderExportDocument,
   type ProviderImpact,
   type ProviderMetadata,
   type ProviderUpdateRequest,
@@ -19,7 +28,7 @@ import {
 } from "@azx-pbc/shared";
 import type { SecretStore } from "@azx-pbc/secret-store";
 import { Prisma, type PrismaClient } from "../db/client.js";
-import { authenticate, requireAdmin } from "../plugins/auth.js";
+import { authenticate, requireAdmin, type Actor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
 import { connectionsCallbackUrl } from "../deployment.js";
@@ -100,6 +109,89 @@ function sensitiveDelta(
     delta.push("tokenPlacement");
   }
   return delta;
+}
+
+/**
+ * The imported document's fields as an update request — the shape the shared
+ * apply path ({@link applyProviderUpdate}) and its `sensitiveDelta` consume.
+ * The document carries no credential and no acknowledgement, so both arrive
+ * only from the import request's own optional fields; `revision` is the CAS
+ * input the caller owns (the target revision the preview showed).
+ */
+function importUpdateRequest(
+  provider: ProviderConfig,
+  revision: number,
+  extra: Pick<ProviderUpdateRequest, "clientId" | "clientSecret" | "confirmInvalidation"> = {},
+): ProviderUpdateRequest {
+  return {
+    displayName: provider.displayName,
+    authorizeEndpoint: provider.authorizeEndpoint,
+    tokenEndpoint: provider.tokenEndpoint,
+    requestedScopes: provider.requestedScopes,
+    apiOrigins: provider.apiOrigins,
+    tokenPlacement: provider.tokenPlacement,
+    revision,
+    ...extra,
+  };
+}
+
+/**
+ * The import preview's full diff (criterion 12): every editable field whose
+ * imported value differs from the target's, one line each. The comparisons
+ * are the sensitive-delta's — set-compared arrays, identity placement
+ * serialization — so a field absent here can never turn sensitive at apply,
+ * and an empty diff is exactly the apply path's no-op.
+ */
+function previewDiff(
+  stored: ConnectionProvider,
+  imported: ProviderConfig,
+): z.output<typeof ProviderImportPreviewDiffEntrySchema>[] {
+  const diff: z.output<typeof ProviderImportPreviewDiffEntrySchema>[] = [];
+  if (stored.displayName !== imported.displayName) {
+    diff.push({
+      field: "displayName",
+      current: stored.displayName,
+      imported: imported.displayName,
+    });
+  }
+  if (stored.authorizeEndpoint !== imported.authorizeEndpoint) {
+    diff.push({
+      field: "authorizeEndpoint",
+      current: stored.authorizeEndpoint,
+      imported: imported.authorizeEndpoint,
+    });
+  }
+  if (stored.tokenEndpoint !== imported.tokenEndpoint) {
+    diff.push({
+      field: "tokenEndpoint",
+      current: stored.tokenEndpoint,
+      imported: imported.tokenEndpoint,
+    });
+  }
+  if (
+    JSON.stringify(sortedCopy(stored.requestedScopes)) !==
+    JSON.stringify(sortedCopy(imported.requestedScopes))
+  ) {
+    diff.push({
+      field: "requestedScopes",
+      current: stored.requestedScopes,
+      imported: imported.requestedScopes,
+    });
+  }
+  if (
+    JSON.stringify(sortedCopy(stored.apiOrigins)) !==
+    JSON.stringify(sortedCopy(imported.apiOrigins))
+  ) {
+    diff.push({ field: "apiOrigins", current: stored.apiOrigins, imported: imported.apiOrigins });
+  }
+  if (JSON.stringify(stored.tokenPlacement) !== JSON.stringify(imported.tokenPlacement)) {
+    diff.push({
+      field: "tokenPlacement",
+      current: stored.tokenPlacement,
+      imported: imported.tokenPlacement,
+    });
+  }
+  return diff;
 }
 
 /**
@@ -233,6 +325,19 @@ async function removedProviderEventExists(prisma: PrismaClient, id: string): Pro
  * credentials are sealed before it and released after it, so an interrupted
  * mutation leaves revision, connections, and attempts exactly as before
  * (criterion 10) and strands nothing.
+ *
+ * **Import and export (T-0011)**: the export is a credential-free read of one
+ * provider's editable configuration against the shared document schema — a
+ * failed or drifted read is an export failure, never a partial file, and
+ * repeating it changes nothing. Import applies one document with an explicit
+ * mode: create (credentials required — they are never imported) rides
+ * {@link sealAndCreateProvider}, the form's sealed, audited create path;
+ * update names the administrator-selected target by id and rides
+ * {@link applyProviderUpdate}, the form's PUT path — validation, the revision
+ * CAS, the confirmation gate, and the invalidation transaction included — so
+ * an imported sensitive edit and a form edit are indistinguishable in effect.
+ * The preview parses and proposes without applying; a name collision never
+ * selects a target.
  */
 export async function providerRoutes(app: FastifyInstance): Promise<void> {
   /**
@@ -249,6 +354,27 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
         "provider request validation failed",
         result.error.issues,
         422,
+      );
+    }
+    return result.data;
+  };
+
+  /**
+   * The import preview's parse (T-0011) rejects with **400**, not the module's
+   * 422: design.md §Portal API endpoints fixes "400 malformed" for the
+   * preview — its job is telling the SPA a picked file is not a provider
+   * export, a request-shape mistake, while the apply route below keeps the
+   * create/PUT convention (422, field errors render on form inputs). The zod
+   * issues ride `details` either way.
+   */
+  const parsePreviewBody = <S extends z.ZodType>(schema: S, body: unknown): z.output<S> => {
+    const result = schema.safeParse(body);
+    if (!result.success) {
+      throw new AppError(
+        "validation_failed",
+        "import preview request is malformed",
+        result.error.issues,
+        400,
       );
     }
     return result.data;
@@ -287,6 +413,46 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     });
+
+  /**
+   * The export document (T-0011), from the stored row — field-by-field like
+   * `toMetadata`, never a spread, so a future credential column cannot ride
+   * into the one artifact administrators move between deployments. A row that
+   * fails the shared document schema is a data-integrity failure: reported as
+   * an internal export failure (criterion 11 — a failed read is never a
+   * successful partial export), issues logged, never echoed.
+   */
+  const toExportDocument = (row: ProviderRow): ProviderExportDocument => {
+    const parsed = ProviderExportDocumentSchema.safeParse({
+      version: 1,
+      provider: {
+        ref: row.ref,
+        kind: row.kind,
+        displayName: row.displayName,
+        authorizeEndpoint: row.authorizeEndpoint,
+        tokenEndpoint: row.tokenEndpoint,
+        requestedScopes: row.requestedScopes,
+        apiOrigins: row.apiOrigins,
+        tokenPlacement: row.tokenPlacement,
+      },
+    });
+    if (!parsed.success) {
+      app.log.error(
+        {
+          event: "provider.export_read_failed",
+          providerId: row.id,
+          ref: row.ref,
+          issues: parsed.error.issues,
+        },
+        "stored provider configuration failed the export document schema",
+      );
+      throw new AppError(
+        "internal",
+        `provider "${row.ref}" could not be exported — its stored configuration is invalid`,
+      );
+    }
+    return parsed.data;
+  };
 
   type ReleaseReason = "create-rollback" | "edit-rollback" | "rotate" | "delete";
   type CredentialRelease = { material: string; field: "clientId" | "clientSecret" };
@@ -351,15 +517,23 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.post("/api/v1/providers", { preHandler: authenticate }, async (req, reply) => {
-    const actor = requireAdmin(req);
-    const body = parseBody(ProviderCreateRequestSchema, req.body);
+  /**
+   * The create path the form route and the import's create mode (T-0011)
+   * share: seal both credentials, land the row, and on any failure release
+   * what was sealed — nothing strands an unreferenced vault entry. The 409
+   * maps the ref+env uniqueness violation, naming the conflict (criterion
+   * 10's duplicate class).
+   */
+  const sealAndCreateProvider = async (
+    actor: Actor,
+    body: ProviderCreateRequest,
+  ): Promise<ProviderRow> => {
     // seal() writes to the vault before the row exists — same window as the
     // secrets routes, so anything that stops the row landing releases both
     // materials (no path strands an unreferenced vault entry).
     const clientIdMaterial = await store().seal(body.clientId);
     const clientSecretMaterial = await store().seal(body.clientSecret);
-    let row;
+    let row: ProviderRow;
     try {
       row = await app.prisma.connectionProvider.create({
         data: {
@@ -392,6 +566,13 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
       }
       throw err;
     }
+    return row;
+  };
+
+  app.post("/api/v1/providers", { preHandler: authenticate }, async (req, reply) => {
+    const actor = requireAdmin(req);
+    const body = parseBody(ProviderCreateRequestSchema, req.body);
+    const row = await sealAndCreateProvider(actor, body);
     await audit("provider.created", actor.sub, { ref: body.ref, env: body.env, kind: body.kind });
     reply.status(201);
     return toMetadata(row);
@@ -410,6 +591,200 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/providers/:id/export",
+    { preHandler: authenticate },
+    async (req) => {
+      const actor = requireAdmin(req);
+      // The read is the export's failure surface (criterion 11): an unknown id
+      // is a 404, a failed or drifted read a 5xx — never a successful partial
+      // document the SPA could save as if it were the provider's configuration.
+      const row = await app.prisma.connectionProvider.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!row) throw new AppError("not_found", `provider "${req.params.id}" not found`);
+      const document = toExportDocument(row);
+      // A read-only mutation of nothing: repeating an export re-reads the same
+      // configuration and changes it nowhere — the audit trail is the only
+      // trace (bounded metadata; no endpoint URL, no material).
+      await audit("provider.exported", actor.sub, {
+        providerId: row.id,
+        ref: row.ref,
+        env: row.env,
+        kind: row.kind,
+      });
+      return document;
+    },
+  );
+
+  /**
+   * The edit path the form route and the import's update mode (T-0011) share:
+   * the sensitive-delta detection, the `confirmation_required` gate, the
+   * sealed-credential CAS, the one all-or-nothing transaction, and the
+   * releases. The audit action is the caller's — `provider.updated` for the
+   * form, `provider.imported` for an import — with the same bounded metadata
+   * plus the caller's extra. An imported update and a form edit are
+   * indistinguishable in effect by construction: there is no second
+   * implementation of any of these rules.
+   */
+  const applyProviderUpdate = async (
+    actor: Actor,
+    row: ProviderRow,
+    body: ProviderUpdateRequest,
+    auditEvent: {
+      action: "provider.updated" | "provider.imported";
+      extra?: Record<string, unknown>;
+    },
+  ): Promise<ProviderMetadata> => {
+    const stored = parseStoredRow(row);
+    const delta = sensitiveDelta(stored, body);
+
+    // The acknowledgement gate, BEFORE any custody work: a sensitive delta
+    // submitted without the review panel's confirmation applies nothing and
+    // must not even seal — the impact payload answers from stored state
+    // alone. Display-name changes and secret rotations never reach this
+    // (they are not on SENSITIVE_PROVIDER_FIELDS).
+    if (delta.length > 0 && body.confirmInvalidation !== true) {
+      throw new AppError(
+        "confirmation_required",
+        `editing ${delta.join(", ")} of provider "${row.ref}" invalidates its ` +
+          `existing user connections and pending consent attempts, and affected ` +
+          `apps need approval again — confirm to apply`,
+        ConfirmationRequiredDetailsSchema.parse({
+          impact: await providerImpact(app.prisma, row),
+          sensitiveFields: delta,
+        }),
+      );
+    }
+
+    const secretRotated = body.clientSecret !== undefined;
+    const clientIdentityChanged = body.clientId !== undefined;
+    // Seal any supplied credential before the CAS: a lost race must release
+    // what was sealed, and a won race swaps the row to material that already
+    // exists. Absent means keep — the stored material is never read back, so
+    // "blank" is the only way an edit form says "unchanged". Sealing (a vault
+    // write) happens OUTSIDE the transaction below — the all-or-nothing
+    // boundary never spans the vault.
+    const clientIdMaterial = body.clientId === undefined ? null : await store().seal(body.clientId);
+    const clientSecretMaterial =
+      body.clientSecret === undefined ? null : await store().seal(body.clientSecret);
+    const supplied: CredentialRelease[] = [
+      ...(clientIdMaterial !== null
+        ? [{ material: clientIdMaterial, field: "clientId" as const }]
+        : []),
+      ...(clientSecretMaterial !== null
+        ? [{ material: clientSecretMaterial, field: "clientSecret" as const }]
+        : []),
+    ];
+
+    // The mutation itself, all-or-nothing (ADR-0004 §Implementation Notes;
+    // criterion 10): the CAS'd settings write — with the revision bump when
+    // the delta is sensitive — plus the connection and attempt
+    // invalidations, in one transaction. An interrupted edit leaves
+    // revision, connections, and attempts exactly as before, and nothing
+    // intermediate is observable.
+    let updated: ProviderRow;
+    let invalidatedConnections = 0;
+    let killedAttempts = 0;
+    try {
+      const applied = await app.prisma.$transaction(async (tx) => {
+        // The CAS: the loaded revision, plus — for each supplied credential —
+        // the row's current material, so two concurrent rotations arbitrate
+        // even though neither advances the revision (the `rotateOrRelease`
+        // pattern; without it, both land and the loser's sealed material is
+        // stranded).
+        const { count } = await tx.connectionProvider.updateMany({
+          where: {
+            id: row.id,
+            revision: body.revision,
+            ...(clientIdMaterial !== null ? { clientIdMaterial: row.clientIdMaterial } : {}),
+            ...(clientSecretMaterial !== null
+              ? { clientSecretMaterial: row.clientSecretMaterial }
+              : {}),
+          },
+          data: {
+            displayName: body.displayName,
+            authorizeEndpoint: body.authorizeEndpoint,
+            tokenEndpoint: body.tokenEndpoint,
+            requestedScopes: body.requestedScopes,
+            apiOrigins: body.apiOrigins,
+            tokenPlacement: body.tokenPlacement,
+            ...(clientIdMaterial !== null ? { clientIdMaterial } : {}),
+            ...(clientSecretMaterial !== null ? { clientSecretMaterial } : {}),
+            // Only a sensitive mutation advances the revision (ADR-0004) —
+            // the bump IS the binding block: T-0009's
+            // isProviderBindingEffective turns false for every stamp filed
+            // against the old revision, which is what the manifest read's
+            // reapproval-needed badge and the consult's not_available
+            // outcome report. No separate blocked-state storage exists.
+            ...(delta.length > 0 ? { revision: { increment: 1 } } : {}),
+          },
+        });
+        if (count === 0) throw new CasLost();
+
+        if (delta.length > 0) {
+          invalidatedConnections = await invalidateConnections(tx, row);
+          killedAttempts = await killPendingAttempts(tx, row);
+        }
+
+        return tx.connectionProvider.findUniqueOrThrow({ where: { id: row.id } });
+      });
+      updated = applied;
+    } catch (err) {
+      // Every failure path releases what was sealed — nothing referenced the
+      // new materials, so no path strands them (the create/CAS-loss
+      // discipline, widened to the whole transaction).
+      await releaseAll(supplied, {
+        actor: actor.sub,
+        ref: row.ref,
+        env: row.env,
+        reason: "edit-rollback",
+      });
+      if (err instanceof CasLost) {
+        throw new AppError(
+          "conflict",
+          `provider "${row.ref}" changed since it was loaded — reload the current settings, review them, and confirm again`,
+        );
+      }
+      throw err;
+    }
+
+    // Post-commit: the swapped-out materials are unreferenced now — release
+    // the old, like a secret rotation. The identity half is sealed too, so a
+    // client-id change retires its material the same way.
+    if (clientIdentityChanged) {
+      await release(row.clientIdMaterial, {
+        actor: actor.sub,
+        ref: row.ref,
+        env: row.env,
+        field: "clientId",
+        reason: "rotate",
+      });
+    }
+    if (secretRotated) {
+      await release(row.clientSecretMaterial, {
+        actor: actor.sub,
+        ref: row.ref,
+        env: row.env,
+        field: "clientSecret",
+        reason: "rotate",
+      });
+    }
+
+    await audit(auditEvent.action, actor.sub, {
+      ref: row.ref,
+      env: row.env,
+      secretRotated,
+      clientIdentityChanged,
+      sensitive: delta.length > 0,
+      ...(delta.length > 0
+        ? { sensitiveFields: delta, invalidatedConnections, killedAttempts }
+        : {}),
+      ...(auditEvent.extra ?? {}),
+    });
+    return toMetadata(updated);
+  };
+
   app.put<{ Params: { id: string } }>(
     "/api/v1/providers/:id",
     { preHandler: authenticate },
@@ -420,156 +795,122 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
         where: { id: req.params.id },
       });
       if (!row) throw new AppError("not_found", `provider "${req.params.id}" not found`);
-
-      const stored = parseStoredRow(row);
-      const delta = sensitiveDelta(stored, body);
-
-      // The acknowledgement gate, BEFORE any custody work: a sensitive delta
-      // submitted without the review panel's confirmation applies nothing and
-      // must not even seal — the impact payload answers from stored state
-      // alone. Display-name changes and secret rotations never reach this
-      // (they are not on SENSITIVE_PROVIDER_FIELDS).
-      if (delta.length > 0 && body.confirmInvalidation !== true) {
-        throw new AppError(
-          "confirmation_required",
-          `editing ${delta.join(", ")} of provider "${row.ref}" invalidates its ` +
-            `existing user connections and pending consent attempts, and affected ` +
-            `apps need approval again — confirm to apply`,
-          ConfirmationRequiredDetailsSchema.parse({
-            impact: await providerImpact(app.prisma, row),
-            sensitiveFields: delta,
-          }),
-        );
-      }
-
-      const secretRotated = body.clientSecret !== undefined;
-      const clientIdentityChanged = body.clientId !== undefined;
-      // Seal any supplied credential before the CAS: a lost race must release
-      // what was sealed, and a won race swaps the row to material that already
-      // exists. Absent means keep — the stored material is never read back, so
-      // "blank" is the only way an edit form says "unchanged". Sealing (a vault
-      // write) happens OUTSIDE the transaction below — the all-or-nothing
-      // boundary never spans the vault.
-      const clientIdMaterial =
-        body.clientId === undefined ? null : await store().seal(body.clientId);
-      const clientSecretMaterial =
-        body.clientSecret === undefined ? null : await store().seal(body.clientSecret);
-      const supplied: CredentialRelease[] = [
-        ...(clientIdMaterial !== null
-          ? [{ material: clientIdMaterial, field: "clientId" as const }]
-          : []),
-        ...(clientSecretMaterial !== null
-          ? [{ material: clientSecretMaterial, field: "clientSecret" as const }]
-          : []),
-      ];
-
-      // The mutation itself, all-or-nothing (ADR-0004 §Implementation Notes;
-      // criterion 10): the CAS'd settings write — with the revision bump when
-      // the delta is sensitive — plus the connection and attempt
-      // invalidations, in one transaction. An interrupted edit leaves
-      // revision, connections, and attempts exactly as before, and nothing
-      // intermediate is observable.
-      let updated: ProviderRow;
-      let invalidatedConnections = 0;
-      let killedAttempts = 0;
-      try {
-        const applied = await app.prisma.$transaction(async (tx) => {
-          // The CAS: the loaded revision, plus — for each supplied credential —
-          // the row's current material, so two concurrent rotations arbitrate
-          // even though neither advances the revision (the `rotateOrRelease`
-          // pattern; without it, both land and the loser's sealed material is
-          // stranded).
-          const { count } = await tx.connectionProvider.updateMany({
-            where: {
-              id: row.id,
-              revision: body.revision,
-              ...(clientIdMaterial !== null ? { clientIdMaterial: row.clientIdMaterial } : {}),
-              ...(clientSecretMaterial !== null
-                ? { clientSecretMaterial: row.clientSecretMaterial }
-                : {}),
-            },
-            data: {
-              displayName: body.displayName,
-              authorizeEndpoint: body.authorizeEndpoint,
-              tokenEndpoint: body.tokenEndpoint,
-              requestedScopes: body.requestedScopes,
-              apiOrigins: body.apiOrigins,
-              tokenPlacement: body.tokenPlacement,
-              ...(clientIdMaterial !== null ? { clientIdMaterial } : {}),
-              ...(clientSecretMaterial !== null ? { clientSecretMaterial } : {}),
-              // Only a sensitive mutation advances the revision (ADR-0004) —
-              // the bump IS the binding block: T-0009's
-              // isProviderBindingEffective turns false for every stamp filed
-              // against the old revision, which is what the manifest read's
-              // reapproval-needed badge and the consult's not_available
-              // outcome report. No separate blocked-state storage exists.
-              ...(delta.length > 0 ? { revision: { increment: 1 } } : {}),
-            },
-          });
-          if (count === 0) throw new CasLost();
-
-          if (delta.length > 0) {
-            invalidatedConnections = await invalidateConnections(tx, row);
-            killedAttempts = await killPendingAttempts(tx, row);
-          }
-
-          return tx.connectionProvider.findUniqueOrThrow({ where: { id: row.id } });
-        });
-        updated = applied;
-      } catch (err) {
-        // Every failure path releases what was sealed — nothing referenced the
-        // new materials, so no path strands them (the create/CAS-loss
-        // discipline, widened to the whole transaction).
-        await releaseAll(supplied, {
-          actor: actor.sub,
-          ref: row.ref,
-          env: row.env,
-          reason: "edit-rollback",
-        });
-        if (err instanceof CasLost) {
-          throw new AppError(
-            "conflict",
-            `provider "${row.ref}" changed since it was loaded — reload the current settings, review them, and confirm again`,
-          );
-        }
-        throw err;
-      }
-
-      // Post-commit: the swapped-out materials are unreferenced now — release
-      // the old, like a secret rotation. The identity half is sealed too, so a
-      // client-id change retires its material the same way.
-      if (clientIdentityChanged) {
-        await release(row.clientIdMaterial, {
-          actor: actor.sub,
-          ref: row.ref,
-          env: row.env,
-          field: "clientId",
-          reason: "rotate",
-        });
-      }
-      if (secretRotated) {
-        await release(row.clientSecretMaterial, {
-          actor: actor.sub,
-          ref: row.ref,
-          env: row.env,
-          field: "clientSecret",
-          reason: "rotate",
-        });
-      }
-
-      await audit("provider.updated", actor.sub, {
-        ref: row.ref,
-        env: row.env,
-        secretRotated,
-        clientIdentityChanged,
-        sensitive: delta.length > 0,
-        ...(delta.length > 0
-          ? { sensitiveFields: delta, invalidatedConnections, killedAttempts }
-          : {}),
-      });
-      return toMetadata(updated);
+      return applyProviderUpdate(actor, row, body, { action: "provider.updated" });
     },
   );
+
+  app.post("/api/v1/providers/import/preview", { preHandler: authenticate }, async (req) => {
+    requireAdmin(req);
+    const body = parsePreviewBody(ProviderImportPreviewRequestSchema, req.body);
+    const imported = body.document.provider;
+    // The cross-field consistency the request schema deliberately leaves to
+    // the route (see the schema's docblock) — one readable 400 per mistake.
+    const malformed = (message: string) =>
+      new AppError("validation_failed", message, undefined, 400);
+    if (body.mode === undefined) {
+      if (body.env !== undefined || body.targetId !== undefined) {
+        throw malformed("a preview without a mode proposes nothing — drop env and targetId");
+      }
+      // The file-picker's validate-only call: the document parsed against the
+      // shared schema — no mode chosen, nothing proposed yet.
+      return ProviderImportPreviewResponseSchema.parse({ mode: null, provider: imported });
+    }
+    if (body.mode === "create") {
+      if (body.env === undefined) {
+        throw malformed(
+          "a create-mode preview names the environment the provider would be created in",
+        );
+      }
+      if (body.targetId !== undefined) {
+        throw malformed("a create-mode proposal targets nothing — drop targetId");
+      }
+      // The collision preview (design.md §Import/export): an existing ref+env
+      // row is surfaced here, before apply — a collision never becomes an
+      // implicit update; the administrator switches modes or environments.
+      const existing = await app.prisma.connectionProvider.findUnique({
+        where: { ref_env: { ref: imported.ref, env: body.env } },
+      });
+      return ProviderImportPreviewResponseSchema.parse({
+        mode: "create",
+        env: body.env,
+        provider: imported,
+        collision: existing
+          ? {
+              providerId: existing.id,
+              ref: existing.ref,
+              env: existing.env === "dev" ? "dev" : "prod",
+            }
+          : null,
+      });
+    }
+    if (body.targetId === undefined) {
+      throw malformed(
+        "an update-mode preview names its target provider explicitly — a name collision never selects one",
+      );
+    }
+    if (body.env !== undefined) {
+      throw malformed("an update applies to the target's own environment — drop env");
+    }
+    const row = await app.prisma.connectionProvider.findUnique({
+      where: { id: body.targetId },
+    });
+    if (!row) throw new AppError("not_found", `provider "${body.targetId}" not found`);
+    const stored = parseStoredRow(row);
+    return ProviderImportPreviewResponseSchema.parse({
+      mode: "update",
+      target: {
+        providerId: row.id,
+        ref: row.ref,
+        env: row.env === "dev" ? "dev" : "prod",
+        displayName: row.displayName,
+        revision: row.revision,
+      },
+      diff: previewDiff(stored, imported),
+      // The same comparison the apply path's confirmation gate runs — the
+      // panel's sensitive-field list can never disagree with the 409.
+      sensitiveFields: sensitiveDelta(stored, importUpdateRequest(imported, row.revision)),
+    });
+  });
+
+  app.post("/api/v1/providers/import", { preHandler: authenticate }, async (req, reply) => {
+    const actor = requireAdmin(req);
+    const body = parseBody(ProviderImportRequestSchema, req.body);
+    if (body.mode === "create") {
+      // The document supplies the configuration, the request the partition and
+      // the required credentials — the only place credential input is accepted
+      // on this surface (criteria 5, 12).
+      const row = await sealAndCreateProvider(actor, {
+        ...body.document.provider,
+        env: body.env,
+        clientId: body.clientId,
+        clientSecret: body.clientSecret,
+      });
+      await audit("provider.imported", actor.sub, {
+        mode: "create",
+        ref: row.ref,
+        env: row.env,
+        kind: row.kind,
+      });
+      reply.status(201);
+      return ProviderImportResponseSchema.parse({ outcome: "created", provider: toMetadata(row) });
+    }
+    const row = await app.prisma.connectionProvider.findUnique({
+      where: { id: body.targetId },
+    });
+    if (!row) throw new AppError("not_found", `provider "${body.targetId}" not found`);
+    const confirm = body[CONFIRM_INVALIDATION_FIELD];
+    const provider = await applyProviderUpdate(
+      actor,
+      row,
+      importUpdateRequest(body.document.provider, body.revision, {
+        ...(body.clientId !== undefined ? { clientId: body.clientId } : {}),
+        ...(body.clientSecret !== undefined ? { clientSecret: body.clientSecret } : {}),
+        ...(confirm !== undefined ? { confirmInvalidation: confirm } : {}),
+      }),
+      { action: "provider.imported", extra: { mode: "update", providerId: row.id } },
+    );
+    return ProviderImportResponseSchema.parse({ outcome: "updated", provider });
+  });
 
   app.get<{ Params: { id: string } }>(
     "/api/v1/providers/:id/impact",

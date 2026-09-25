@@ -519,6 +519,159 @@ export const CONFIRM_INVALIDATION_FIELD = "confirmInvalidation";
 export const SensitiveProviderFieldSchema = z.enum(SENSITIVE_PROVIDER_FIELDS);
 
 /**
+ * The fields an import preview can diff (criterion 12) — the editable
+ * configuration minus the credential replaces, i.e. exactly what an export
+ * document carries. The SPA renders one line per entry; the sensitive subset
+ * of these is what {@link SENSITIVE_PROVIDER_FIELDS} names, so a field the
+ * diff shows is never a credential.
+ */
+export const PROVIDER_DIFF_FIELDS = [
+  "displayName",
+  "authorizeEndpoint",
+  "tokenEndpoint",
+  "requestedScopes",
+  "apiOrigins",
+  "tokenPlacement",
+] as const;
+export const ProviderDiffFieldSchema = z.enum(PROVIDER_DIFF_FIELDS);
+export type ProviderDiffField = z.infer<typeof ProviderDiffFieldSchema>;
+
+/**
+ * `POST /api/v1/providers/import/preview` body (T-0011) — parse, validate,
+ * propose; never apply (criterion 12). The `document` parses against the same
+ * {@link ProviderExportDocumentSchema} the export route emits, so a preview
+ * validates exactly what an export can produce and the round-trip cannot gain
+ * a field.
+ *
+ * `mode` is optional: a preview without one is the file-picker's validate-only
+ * call — parsed fields or blocking errors, before a mode is chosen. The
+ * cross-field consistency (create needs `env` and refuses `targetId`; update
+ * needs the explicit `targetId` — a name collision never silently selects an
+ * update target (criterion 12) — and refuses `env`, for a provider never
+ * moves between environments, criterion 5) is the route's 400, not a schema
+ * refinement, so the refusal carries one readable message instead of a union
+ * of issues and the narrowed fields stay typed.
+ */
+export const ProviderImportPreviewRequestSchema = z.strictObject({
+  document: ProviderExportDocumentSchema,
+  mode: z.enum(["create", "update"]).optional(),
+  env: EnvSchema.optional(),
+  targetId: z.uuid().optional(),
+});
+export type ProviderImportPreviewRequest = z.infer<typeof ProviderImportPreviewRequestSchema>;
+
+/** An existing ref+env row a create-mode import would collide with (criterion 10's duplicate class), for the preview panel to surface before apply. */
+export const ProviderImportCollisionSchema = z.strictObject({
+  providerId: z.uuid(),
+  ref: ProviderRefSchema,
+  env: EnvSchema,
+});
+export type ProviderImportCollision = z.infer<typeof ProviderImportCollisionSchema>;
+
+/**
+ * The update-mode preview's target — bounded metadata: enough for the SPA to
+ * carry `providerId` + `revision` into the apply request (the CAS input the
+ * form's loaded revision is) and to name the target in the panel, and nothing
+ * that overlaps the diff itself.
+ */
+export const ProviderImportPreviewTargetSchema = z.strictObject({
+  providerId: z.uuid(),
+  ref: ProviderRefSchema,
+  env: EnvSchema,
+  displayName: z.string().min(1).max(200),
+  revision: z.int().positive(),
+});
+export type ProviderImportPreviewTarget = z.infer<typeof ProviderImportPreviewTargetSchema>;
+
+/**
+ * One diff line: the field, the target's current value, and the document's
+ * imported value. Values are the three shapes an editable field takes —
+ * strings (display name, endpoints), string lists (scopes, destinations), and
+ * the token placement — so the SPA renders them without a second parse.
+ */
+export const ProviderImportPreviewDiffEntrySchema = z.strictObject({
+  field: ProviderDiffFieldSchema,
+  current: z.union([z.string(), z.array(z.string()), TokenPlacementSchema]),
+  imported: z.union([z.string(), z.array(z.string()), TokenPlacementSchema]),
+});
+export type ProviderImportPreviewDiffEntry = z.infer<typeof ProviderImportPreviewDiffEntrySchema>;
+
+/**
+ * The import preview's response, by mode (criterion 12's preview panel):
+ * `null` mode — the document parsed, nothing proposed yet; `create` — the
+ * proposed create with the document's field values verbatim (credentials are
+ * never in it; they are entered at apply) plus any ref+env collision;
+ * `update` — the target, the per-field diff (empty = no-op), and the sensitive
+ * fields among the changed ones, computed by the same comparison the apply
+ * path's confirmation gate runs, so the panel's warning can never disagree
+ * with the rejection it is about to hit.
+ */
+export const ProviderImportPreviewResponseSchema = z.discriminatedUnion("mode", [
+  z.strictObject({ mode: z.literal(null), provider: ProviderConfigSchema }),
+  z.strictObject({
+    mode: z.literal("create"),
+    env: EnvSchema,
+    provider: ProviderConfigSchema,
+    collision: ProviderImportCollisionSchema.nullable(),
+  }),
+  z.strictObject({
+    mode: z.literal("update"),
+    target: ProviderImportPreviewTargetSchema,
+    diff: z.array(ProviderImportPreviewDiffEntrySchema),
+    sensitiveFields: z.array(SensitiveProviderFieldSchema),
+  }),
+]);
+export type ProviderImportPreviewResponse = z.infer<typeof ProviderImportPreviewResponseSchema>;
+
+/**
+ * `POST /api/v1/providers/import` body (T-0011) — the apply half, explicit
+ * mode (criterion 12). Create requires credential entry — credentials are
+ * never imported (criteria 5, 11), and this route is the one place credential
+ * input is accepted. Update names the administrator-selected target by id —
+ * never resolved from the document's names — and carries the revision the
+ * preview showed, the same optimistic-lock input a form edit's CAS consumes.
+ * Optional `clientId`/`clientSecret` are explicit replaces; absent keeps,
+ * exactly like the edit form's blank-keeps, and
+ * {@link CONFIRM_INVALIDATION_FIELD} is the same acknowledgement the form
+ * sends with a sensitive delta.
+ */
+export const ProviderImportCreateRequestSchema = z.strictObject({
+  mode: z.literal("create"),
+  document: ProviderExportDocumentSchema,
+  env: EnvSchema,
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+});
+
+export const ProviderImportUpdateRequestSchema = z.strictObject({
+  mode: z.literal("update"),
+  document: ProviderExportDocumentSchema,
+  targetId: z.uuid(),
+  revision: z.int().positive(),
+  clientId: z.string().min(1).optional(),
+  clientSecret: z.string().min(1).optional(),
+  [CONFIRM_INVALIDATION_FIELD]: z.boolean().optional(),
+});
+
+export const ProviderImportRequestSchema = z.discriminatedUnion("mode", [
+  ProviderImportCreateRequestSchema,
+  ProviderImportUpdateRequestSchema,
+]);
+export type ProviderImportRequest = z.infer<typeof ProviderImportRequestSchema>;
+
+/**
+ * `POST /api/v1/providers/import` response — the outcome word the design's
+ * apply report names ("created"/"updated") beside the metadata the list
+ * refetches with. The same `outcome` envelope as the delete route, so the
+ * SPA's outcome-not-confirmed posture covers imports with no new shape.
+ */
+export const ProviderImportResponseSchema = z.strictObject({
+  outcome: z.enum(["created", "updated"]),
+  provider: ProviderMetadataSchema,
+});
+export type ProviderImportResponse = z.infer<typeof ProviderImportResponseSchema>;
+
+/**
  * What `GET /api/v1/providers/:id/impact` returns — the confirmation dialog's
  * blast radius (criterion 9): the apps bound to the provider, the number of
  * user connections, and the number of pending consent attempts, all of which
