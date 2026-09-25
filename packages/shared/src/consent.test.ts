@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   CancelRequestSchema,
   CancelResponseSchema,
+  ConnectOutcomeMessageSchema,
   ConsultRequestSchema,
   ConsultResponseSchema,
   CONSENT_ATTEMPT_TTL_SECONDS,
+  CONSENT_MESSAGE_OUTCOMES,
+  CONSENT_MESSAGE_REASONS,
+  CONNECT_MESSAGE_VERSION,
+  HELIX_CONNECT_MESSAGE_SOURCE,
 } from "./consent.js";
 
 /**
@@ -124,5 +129,146 @@ describe("ConsultResponseSchema / CancelRequestSchema / CancelResponseSchema", (
 
   it("keeps the five-minute TTL the field list fixes", () => {
     expect(CONSENT_ATTEMPT_TTL_SECONDS).toBe(300);
+  });
+});
+
+describe("ConnectOutcomeMessageSchema (T-0014 — design.md §Completion message)", () => {
+  const base = { provider: "asana", outcome: "connected", reason: null };
+
+  it("accepts the design's exact shape: source, version, attempt, provider, outcome, reason", () => {
+    const msg = ConnectOutcomeMessageSchema.parse({
+      source: HELIX_CONNECT_MESSAGE_SOURCE,
+      version: CONNECT_MESSAGE_VERSION,
+      attempt: "corr-tag-1",
+      ...base,
+    });
+    expect(msg).toEqual({
+      source: "helix-connect",
+      version: 1,
+      attempt: "corr-tag-1",
+      provider: "asana",
+      outcome: "connected",
+      reason: null,
+    });
+  });
+
+  it("the attempt tag is optional — a raw entry without ?attempt posts none", () => {
+    const msg = ConnectOutcomeMessageSchema.parse({ ...base, source: "helix-connect", version: 1 });
+    expect(msg.attempt).toBeUndefined();
+  });
+
+  it("is strict and version-pinned — producer skew fails closed at the receiver", () => {
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        ...base,
+        source: "helix-connect",
+        version: 1,
+        extra: "smuggled",
+      }).success,
+    ).toBe(false);
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({ ...base, source: "helix-connect", version: 2 })
+        .success,
+    ).toBe(false);
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({ ...base, source: "someone-else", version: 1 })
+        .success,
+    ).toBe(false);
+  });
+
+  it("carries reason only with the error outcome", () => {
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        source: "helix-connect",
+        version: 1,
+        provider: "asana",
+        outcome: "error",
+        reason: "service_unavailable",
+      }).success,
+    ).toBe(true);
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        source: "helix-connect",
+        version: 1,
+        provider: "asana",
+        outcome: "connected",
+        reason: "conflict",
+      }).success,
+    ).toBe(false);
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        source: "helix-connect",
+        version: 1,
+        provider: "asana",
+        outcome: "connected",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("bounds the outcome and reason vocabularies to the helper contract", () => {
+    expect(CONSENT_MESSAGE_OUTCOMES).toEqual([
+      "connected",
+      "already_connected",
+      "denied",
+      "cancelled",
+      "timeout",
+      "blocked",
+      "signin_required",
+      "error",
+    ]);
+    expect(CONSENT_MESSAGE_REASONS).toEqual([
+      "conflict",
+      "provider_unavailable",
+      "provider_misconfigured",
+      "provider_incompatible",
+      "service_unavailable",
+    ]);
+    for (const outcome of CONSENT_MESSAGE_OUTCOMES) {
+      expect(
+        ConnectOutcomeMessageSchema.safeParse({
+          source: "helix-connect",
+          version: 1,
+          provider: "asana",
+          outcome,
+          reason: null,
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        source: "helix-connect",
+        version: 1,
+        provider: "asana",
+        outcome: "something-else",
+        reason: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the attempt tag is URL-safe punctuation, bounded", () => {
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        source: "helix-connect",
+        version: 1,
+        attempt: "abc-123._~",
+        ...base,
+      }).success,
+    ).toBe(true);
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        source: "helix-connect",
+        version: 1,
+        attempt: "not safe</script>",
+        ...base,
+      }).success,
+    ).toBe(false);
+    expect(
+      ConnectOutcomeMessageSchema.safeParse({
+        source: "helix-connect",
+        version: 1,
+        attempt: "x".repeat(129),
+        ...base,
+      }).success,
+    ).toBe(false);
   });
 });

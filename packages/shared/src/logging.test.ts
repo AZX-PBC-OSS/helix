@@ -16,20 +16,33 @@ describe("redactUrl — platform-minted credentials", () => {
     );
   });
 
-  it("redacts the OIDC authorization code on both callbacks, keeping state", () => {
+  it("redacts the OIDC authorization code and the consent-flow state on both callbacks", () => {
     // The edge's auth host...
     expect(redactUrl("/callback?code=SplxlOBeZQQYbYS6WxSbIA&state=xyz")).toBe(
-      "/callback?code=REDACTED&state=xyz",
+      "/callback?code=REDACTED&state=REDACTED",
     );
-    // ...and the portal SPA's own redirect URI.
+    // ...and the portal SPA's own redirect URI. `state` is credential-class
+    // now: the consent attempt's single-use lookup key (I-02 T-0014).
     expect(redactUrl("/auth/callback?code=SplxlOBeZQQYbYS6WxSbIA&state=xyz")).toBe(
-      "/auth/callback?code=REDACTED&state=xyz",
+      "/auth/callback?code=REDACTED&state=REDACTED",
+    );
+  });
+
+  it("redacts the OAuth state and PKCE verifier wherever they ride a URL", () => {
+    // The consent callback's lookup key, and the PKCE secret (research.md
+    // §Existing Patterns found both missing; T-0014 owns the addition).
+    expect(redactUrl("/connections/callback?code=x&state=STATE-VALUE")).toBe(
+      "/connections/callback?code=REDACTED&state=REDACTED",
+    );
+    expect(redactUrl("/x?code_verifier=PKCE-VERIFIER-VALUE")).toBe("/x?code_verifier=REDACTED");
+    expect(redactUrl("/x?STATE=upper&Code_Verifier=mixed-case")).toBe(
+      "/x?STATE=REDACTED&Code_Verifier=REDACTED",
     );
   });
 
   it("redacts IdP-chosen error_description but keeps the enumerated error", () => {
     expect(redactUrl("/callback?error=invalid_request&error_description=free+text&state=x")).toBe(
-      "/callback?error=invalid_request&error_description=REDACTED&state=x",
+      "/callback?error=invalid_request&error_description=REDACTED&state=REDACTED",
     );
   });
 

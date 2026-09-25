@@ -66,9 +66,10 @@ Rules:
 ## Redacting URLs
 
 Several platform URLs carry a live credential in the query string: the
-Appendix A handoff `token`, the OIDC `code`, and — uncoverable by any name list
-— the fetch-proxy target's own query, which may hold an app's API key or an
-Azure SAS `sig`.
+Appendix A handoff `token`, the OIDC `code`, the consent flow's `state` (the
+pending attempt's single-use lookup key) and PKCE `code_verifier`, and —
+uncoverable by any name list — the fetch-proxy target's own query, which may
+hold an app's API key or an Azure SAS `sig`.
 
 **Log a URL under the top-level key `url`.** `loggerOption` installs a `url`
 serializer, so that field is redacted automatically. That is the positive form

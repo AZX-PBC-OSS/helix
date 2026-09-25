@@ -125,6 +125,7 @@ export const SPAN_CONSENT_CONSULT = "helix.consent.consult";
 export const SPAN_CONSENT_CANCEL = "helix.consent.cancel";
 export const SPAN_CONSENT_CLAIM = "helix.consent.claim";
 export const SPAN_CONSENT_SWEEP = "helix.consent.sweep";
+export const SPAN_CONSENT_START = "helix.consent.start";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -139,6 +140,7 @@ export const ROUTE_AUTH_START = "/start";
 export const ROUTE_AUTH_CALLBACK = "/callback";
 export const ROUTE_AUTH_COMPLETE = "/_auth/complete";
 export const ROUTE_CONNECTIONS = "/connections/*";
+export const ROUTE_CONSENT_START = "/_api/connections/:ref/start";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
@@ -238,6 +240,26 @@ export const CONSENT_CLAIM_OUTCOMES_TELEMETRY = [
   "error",
 ] as const;
 export const CONSENT_SWEEP_OUTCOMES_TELEMETRY = ["ok", "failed"] as const;
+
+/**
+ * Why the edge's consent-start route answered as it did (I-02 ADR-0002) — the
+ * `helix.outcome` values on the `helix.consent.start` span. Distinct from the
+ * consult vocabulary above because the edge decides things the consult never
+ * sees: `signin_required` (no usable session — detected before any consult is
+ * made) and `forbidden` (the same-origin navigation guard refused). The
+ * consult's own outcomes map onto `started` / `already_connected` /
+ * `unavailable` (`not_available`), and every failure path — portal hop,
+ * unconfigured seam, malformed response — is `error`.
+ */
+export const CONSENT_START_OUTCOMES = [
+  "started",
+  "signin_required",
+  "already_connected",
+  "unavailable",
+  "forbidden",
+  "error",
+] as const;
+export type ConsentStartOutcome = (typeof CONSENT_START_OUTCOMES)[number];
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default

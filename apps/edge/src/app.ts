@@ -37,6 +37,7 @@ import { makeFetchHandler } from "./gateway/fetch.js";
 import { DenialThrottle } from "./gateway/denialThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
+import { makeConsentStartHandler } from "./routing/consentStart.js";
 import type { PortalProvider } from "./routing/portalProvider.js";
 import { deriveInternalKey } from "./internalJwt.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
@@ -308,6 +309,19 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
   });
 
+  // I-02 T-0014: the consent popup's prod entry — app hosts only, inside the
+  // existing `/_api` reservation. The route always exists and fail-closes
+  // inward (sign-in required without a session, couldn't-start without the
+  // portal seam); the terminal pages are its designed answers, so unlike the
+  // gateway handlers this needs no null-guard for an unwired runtime.
+  const handleConsentStart = makeConsentStartHandler({
+    config,
+    registry: deps.registry,
+    sessions: authRuntime?.sessions ?? null,
+    portal: deps.portal ?? null,
+    internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+  });
+
   // The two-router discipline (architecture §3, decision 12): every request
   // is classified by hostname exactly once, and the two worlds never mix —
   // platform handlers are unreachable on app hosts and vice versa. Explicit
@@ -502,6 +516,21 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleMe) {
         await handleMe(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // I-02 T-0014: the consent popup's entry — `GET /_api/connections/:ref/start`
+  // (design.md §Raw platform entry). A GET navigation endpoint, so no body
+  // parser concerns; app hosts only (the two-router discipline).
+  app.route({
+    method: "GET",
+    url: "/_api/connections/:ref/start",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app") {
+        await handleConsentStart(req, reply, req.hostClass.slug);
         return;
       }
       sendNotFound(reply);

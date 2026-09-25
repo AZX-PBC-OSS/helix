@@ -43,6 +43,7 @@ terminates untrusted traffic (decision 4).
 | `helix.gateway.llm` / `.fetch` / `.data` | the `/_api/*` handlers |
 | `helix.auth.oidc.start` / `.callback`, `helix.auth.handoff.complete` | the auth routes |
 | `helix.auth.connections.proxy` | the auth host's `/connections/*` reverse proxy |
+| `helix.consent.start` | the app host's `/_api/connections/:ref/start` route (I-02 T-0014) — the consent popup's prod entry |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
@@ -78,6 +79,16 @@ looked up:
   (`spanUrlAttributes`), and nothing about the internal JWT it mints — value,
   header name — is ever an attribute. Pinned by `spanRedaction.test.ts`'s
   T-0015 case and `traceBoundary.test.ts`'s route case.
+- `helix.consent.start` (the consent popup's entry route) records
+  `helix.outcome` ∈ {`started`, `signin_required`, `already_connected`,
+  `unavailable`, `forbidden`, `error`} (`CONSENT_START_OUTCOMES` — the six
+  answers the route can give; `forbidden` is the same-origin navigation guard,
+  `signin_required` the pre-consult session check), plus `helix.provider_ref`
+  and `helix.app.slug`, and `url.path` only — the start URL's `attempt`
+  correlation tag is app-chosen and the 302's target is the vendor authorize
+  URL carrying `state` + the PKCE challenge, so the query is dropped wholesale
+  and no redirect target is ever an attribute. Pinned by `spanRedaction`'s
+  T-0014 cases and `traceBoundary`'s route case.
 - The `helix.consent.*` spans carry `helix.consent.operation` (bounded to
   consult/cancel/claim/sweep), `helix.outcome` from the operation's bounded
   vocabulary, and on the consult `helix.app.slug`, `helix.app_id` and

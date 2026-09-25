@@ -5,16 +5,23 @@ import { context, propagation } from "@opentelemetry/api";
 import { REQUEST_ID_HEADER } from "@azx-pbc/shared/logging";
 
 /**
- * The edge → portal seam (I-02 architecture ADR-0002 part 3), shaped like the
- * `EgressProvider`: the auth host's `/connections/*` reverse proxy forwards the
- * browser-facing consent surface to `helix-portal` — on ACA one hostname binds
- * one container app, so the portal cannot answer at the auth host directly.
- * Authorization is T-0006's per-call internal JWT (`aud: portal`), minted by
- * the caller and written here; the upstream body streams through untouched.
+ * The edge → portal seam (I-02 architecture ADR-0002, parts 1 and 3), shaped
+ * like the `EgressProvider`: the auth host's `/connections/*` reverse proxy
+ * forwards the browser-facing consent surface to `helix-portal` — on ACA one
+ * hostname binds one container app, so the portal cannot answer at the auth
+ * host directly — and the consent start route's internal consult (T-0014)
+ * calls the same client. Authorization is T-0006's per-call internal JWT
+ * (`aud: portal`), minted by the caller and written here; the upstream body
+ * streams through untouched.
  */
 export interface PortalProxyRequest {
   method: string;
-  /** Path + query on the portal — always under the `/connections` prefix. */
+  /**
+   * Path + query on the portal. Two shapes ride this seam: the auth host's
+   * browser-facing proxy forwards under the `/connections` prefix, and the
+   * consent start route's internal consult (T-0014) targets
+   * `/internal/connections/consult`.
+   */
   target: string;
   /**
    * Safelisted request headers to forward upstream. Never includes

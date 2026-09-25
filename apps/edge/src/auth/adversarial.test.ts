@@ -192,7 +192,7 @@ describe("the happy path (everything the attacks try to subvert)", () => {
     const handoff = completeUrl.searchParams.get("token") as string;
     expect(handoff).toBeTruthy();
     expect(redactUrl(`/callback?code=good&state=${state}`)).toBe(
-      `/callback?code=REDACTED&state=${state}`,
+      `/callback?code=REDACTED&state=REDACTED`,
     );
     expect(redactUrl(completeUrl.pathname + completeUrl.search)).toBe(
       "/_auth/complete?token=REDACTED",

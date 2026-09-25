@@ -10,7 +10,7 @@ import {
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import { propagatorFor } from "@azx-pbc/telemetry";
 import { REQUEST_HEADER_SAFELIST } from "@azx-pbc/shared";
-import { SPAN_CONNECTIONS_PROXY } from "@azx-pbc/shared/telemetry";
+import { SPAN_CONNECTIONS_PROXY, SPAN_CONSENT_START } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
 import { testAuthConfig, testEdgeConfig } from "./test/config.js";
@@ -152,5 +152,54 @@ describe("the /connections/* proxy route is a fresh root too (T-0015)", () => {
     expect(span).toBeDefined();
     expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
     expect(span?.parentSpanContext).toBeUndefined();
+  });
+});
+
+describe("the consent start route is a fresh root too (T-0014)", () => {
+  /**
+   * The start route is a plain app-host navigation — an untrusted opener can
+   * plant a `traceparent` on it as easily as on a gateway call, and the route
+   * must open its own trace regardless.
+   */
+  it("an inbound traceparent never parents the route span", async () => {
+    propagation.setGlobalPropagator(propagatorFor("inject-only"));
+    const app: FastifyInstance = buildApp({
+      config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+      registry: new FakeRegistry([
+        registryEntry({
+          appId: "22222222-2222-4222-8222-222222222222",
+          slug: "demo",
+          blobPrefix: "apps/a/1/",
+        }),
+      ]),
+      blob: new FakeBlobReader(),
+      sessions: new FakeSessionStore(),
+      oidc: new FakeOidcClient(),
+      portal: new FakePortalProvider(),
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/connections/asana/start?attempt=x",
+      headers: {
+        host: "demo.local.helix.azxlabs.io",
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+    });
+    // The navigation guard refuses this one (no same-origin headers beyond the
+    // trace headers) — the span fires anyway, and that is the span under test.
+    expect(res.statusCode).toBe(403);
+    await app.close();
+
+    const span = recording.spans().find((sp) => sp.name === SPAN_CONSENT_START);
+    expect(span).toBeDefined();
+    expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
+    expect(span?.parentSpanContext).toBeUndefined();
+    // And nothing from the app's trace headers lands anywhere.
+    const dump = JSON.stringify(
+      recording.spans().map((sp) => ({ ...sp.attributes, ...sp.spanContext() })),
+    );
+    expect(dump).not.toContain(APP_TRACE_ID);
+    expect(dump).not.toContain("vendor=app-chosen");
   });
 });

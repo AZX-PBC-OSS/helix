@@ -124,6 +124,10 @@ p.foot { margin: 18px 0 0; font-size: 11px; color: #756f77; text-align: center;
  * Wrap page-specific content in the shared chrome. `title`/`heading`/`sub` are
  * escaped as text; `bodyHtml`/`footHtml` are caller-built raw HTML (escape your
  * own interpolations there). Defaults to a "Protected by AZX" footer.
+ *
+ * The heading carries `tabindex="-1"` so a page that owns a script (the consent
+ * popups) can focus it on load — the popup a11y contract. A negative tabindex
+ * never enters tab order, so pages without a script are unchanged.
  */
 export function renderAuthPage(opts: {
   title: string;
@@ -131,10 +135,14 @@ export function renderAuthPage(opts: {
   sub?: string;
   bodyHtml?: string;
   footHtml?: string;
+  /** Raw HTML appended at the end of `<body>` — the script/style hook the
+   * consent popup pages use. Caller-built; escape your own interpolations. */
+  bodyEndHtml?: string;
 }): string {
   const sub = opts.sub ? `<p class="sub">${escapeHtml(opts.sub)}</p>` : "";
   const body = opts.bodyHtml ?? "";
   const foot = opts.footHtml ?? `<p class="foot">Protected by AZX</p>`;
+  const bodyEnd = opts.bodyEndHtml ?? "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -147,11 +155,12 @@ export function renderAuthPage(opts: {
 <div class="scene" aria-hidden="true"><div class="glow"></div><div class="sun"></div><div class="refl"></div><div class="floor"></div></div>
 <main class="card">
 ${LOGO_SVG}
-<h1>${escapeHtml(opts.heading)}</h1>
+<h1 tabindex="-1">${escapeHtml(opts.heading)}</h1>
 ${sub}
 ${body}
 ${foot}
 </main>
+${bodyEnd}
 </body>
 </html>
 `;

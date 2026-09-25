@@ -160,3 +160,79 @@ export const CancelResponseSchema = z.strictObject({
   outcome: z.enum(CONSENT_CANCEL_OUTCOMES),
 });
 export type CancelResponse = z.infer<typeof CancelResponseSchema>;
+
+/**
+ * The app-facing outcome message every consent popup page posts to its opener
+ * through `window.postMessage` before closing (I-02 design.md §Completion
+ * message). Three parties build or consume this exact shape — the edge's
+ * start-route terminal pages (T-0014), the documented helper's receiver
+ * (T-0017), and the portal's completion pages (T-0020) — so it is defined once,
+ * here, and parsed at every producer; a receiver that type-checks its
+ * `message` events against this schema can trust nothing else about the event.
+ *
+ * It is a notification, never an authorization grant: completion messages
+ * carry outcomes only — never credentials, dev bearer tokens, or token values
+ * (spec criterion 22) — and a message alone can never read as successful
+ * consent to the platform (criterion 28's verification is about who sent it,
+ * enforced on the receiving side).
+ */
+export const HELIX_CONNECT_MESSAGE_SOURCE = "helix-connect";
+/** The message contract's version — bumped only for a breaking shape change. */
+export const CONNECT_MESSAGE_VERSION = 1;
+
+/** The correlation tag an app may attach to a consent start (`?attempt=`). */
+export const ConsentAttemptTagSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9._~-]+$/, "must be URL-safe punctuation, letters, or digits");
+
+/**
+ * The message's outcome vocabulary — the helper's observable outcome set
+ * (design.md §The connect helper). Platform pages post a subset of it; the
+ * full set is the contract so a receiver's parsing never has to widen.
+ */
+export const CONSENT_MESSAGE_OUTCOMES = [
+  "connected",
+  "already_connected",
+  "denied",
+  "cancelled",
+  "timeout",
+  "blocked",
+  "signin_required",
+  "error",
+] as const;
+
+/**
+ * Why an `error` outcome happened (design.md §The connect helper — `reason`
+ * rides outcome `error` only). Bounded so an app can branch on it.
+ */
+export const CONSENT_MESSAGE_REASONS = [
+  "conflict",
+  "provider_unavailable",
+  "provider_misconfigured",
+  "provider_incompatible",
+  "service_unavailable",
+] as const;
+
+/**
+ * Strict: an unknown key is a producer skew and the message is a notification —
+ * a receiver dropping an unexpected shape is the fail-closed posture (the
+ * ADR-0005 discipline). `attempt` is the app-supplied correlation tag, present
+ * only when the start URL carried one; receivers verify it matches when
+ * supplied (criterion 28). `reason` is `null` unless the outcome is `error`
+ * (design.md §The connect helper: "`reason` — outcome `error` only").
+ */
+export const ConnectOutcomeMessageSchema = z
+  .strictObject({
+    source: z.literal(HELIX_CONNECT_MESSAGE_SOURCE),
+    version: z.literal(CONNECT_MESSAGE_VERSION),
+    attempt: ConsentAttemptTagSchema.optional(),
+    provider: ProviderRefSchema,
+    outcome: z.enum(CONSENT_MESSAGE_OUTCOMES),
+    reason: z.enum(CONSENT_MESSAGE_REASONS).nullable(),
+  })
+  .refine((message) => message.outcome === "error" || message.reason === null, {
+    error: "reason is only carried with the error outcome",
+  });
+export type ConnectOutcomeMessage = z.infer<typeof ConnectOutcomeMessageSchema>;
