@@ -25,6 +25,7 @@ import {
   SPAN_CONSENT_CANCEL,
   SPAN_CONSENT_CLAIM,
   SPAN_CONSENT_CONSULT,
+  SPAN_CONSENT_REDEEM,
   SPAN_CONSENT_SWEEP,
 } from "@azx-pbc/shared/telemetry";
 import type { SecretStore } from "@azx-pbc/secret-store";
@@ -37,9 +38,10 @@ import { withSpan, instruments } from "../telemetry.js";
  * The consent-flow state machine (I-02 ADR-0002 — the control plane owns all
  * consent-flow state): the start consult the edge's start route and the dev
  * gateway call, the own-attempts-only cancel the helper's acknowledgement
- * rides, the claim-shaped probe the callback redeems an attempt with, and the
- * expiry sweep. The routes (`routes/connectionsInternal.ts`) authorize the
- * internal calls and parse the shared contracts; every state decision lives
+ * rides, the claim-shaped probe the callback redeems an attempt with, the dev
+ * journey's nonce redemption (T-0016), and the expiry sweep. The routes
+ * (`routes/connectionsInternal.ts`, `routes/connectionsPages.ts`) authorize
+ * their calls and parse the shared contracts; every state decision lives
  * here.
  *
  * **The edge writes nothing.** `helix_edge` holds no grant on
@@ -59,7 +61,10 @@ function identityOid(identity: ConsultRequest["identity"]): string {
 }
 
 /** One counter add for a consent operation — bounded dims, never identity. */
-function count(operation: "consult" | "cancel" | "claim" | "sweep", outcome: string): void {
+function count(
+  operation: "consult" | "cancel" | "claim" | "sweep" | "redeem",
+  outcome: string,
+): void {
   instruments().consentOperations.add(1, {
     [ATTR_CONSENT_OPERATION]: operation,
     [ATTR_OUTCOME]: outcome,
@@ -76,6 +81,36 @@ function newVerifier(): string {
 /** RFC 7636 §4.2: base64url(SHA256(verifier)) — the S256 challenge. */
 export function pkceChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
+}
+
+/**
+ * Assemble the vendor authorize URL from a provider's configuration plus the
+ * attempt's protocol state — the ONE assembly both the consult (below) and
+ * the dev journey's nonce redemption (T-0016, ADR-0002 §Implementation Notes)
+ * use, so the two cannot drift. Only OAuth protocol parameters ride it: the
+ * client secret stays sealed, the PKCE verifier stays server-side (only its
+ * S256 challenge enters the URL), and no token or bearer material is ever
+ * appended (spec criterion 22).
+ */
+function assembleAuthorizeUrl(opts: {
+  authorizeEndpoint: string;
+  clientId: string;
+  requestedScopes: readonly string[];
+  codeVerifier: string;
+  state: string;
+  callbackUrl: string;
+}): string {
+  const url = new URL(opts.authorizeEndpoint);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", opts.clientId);
+  url.searchParams.set("redirect_uri", opts.callbackUrl);
+  url.searchParams.set("state", opts.state);
+  url.searchParams.set("code_challenge", pkceChallenge(opts.codeVerifier));
+  url.searchParams.set("code_challenge_method", "S256");
+  if (opts.requestedScopes.length > 0) {
+    url.searchParams.set("scope", opts.requestedScopes.join(" "));
+  }
+  return url.toString();
 }
 
 /** The stored provider row through its one shared definition (dates → ISO). */
@@ -250,21 +285,17 @@ async function consult(
   }
   if (inserted.length === 0) return { outcome: "already_connected" };
 
-  // 7 — assemble the vendor authorize URL: the provider's authorize endpoint
-  // plus only OAuth protocol parameters (response_type, client id, the
-  // edge-supplied callback URL, state, S256 challenge, requested scopes). No
-  // credential, token, or secret material is ever appended (criterion 22).
-  const authorizeUrl = new URL(provider.authorizeEndpoint);
-  authorizeUrl.searchParams.set("response_type", "code");
-  authorizeUrl.searchParams.set("client_id", clientId);
-  authorizeUrl.searchParams.set("redirect_uri", req.callbackUrl);
-  authorizeUrl.searchParams.set("state", state);
-  authorizeUrl.searchParams.set("code_challenge", pkceChallenge(codeVerifier));
-  authorizeUrl.searchParams.set("code_challenge_method", "S256");
-  if (provider.requestedScopes.length > 0) {
-    authorizeUrl.searchParams.set("scope", provider.requestedScopes.join(" "));
-  }
-  return { outcome: "started", authorizeUrl: authorizeUrl.toString() };
+  // 7 — assemble the vendor authorize URL (the one shared assembly): only
+  // OAuth protocol parameters, never credential material (criterion 22).
+  const authorizeUrl = assembleAuthorizeUrl({
+    authorizeEndpoint: provider.authorizeEndpoint,
+    clientId,
+    requestedScopes: provider.requestedScopes,
+    codeVerifier,
+    state,
+    callbackUrl: req.callbackUrl,
+  });
+  return { outcome: "started", authorizeUrl };
 }
 
 /**
@@ -389,6 +420,143 @@ export async function claimConsentAttempt(
     count("claim", claim.claimed ? "claimed" : claim.reason);
     return claim;
   });
+}
+
+/** The nonce redemption's refusal reasons — what the entry page keys on. */
+export type ConsentNonceRedeemRefusal =
+  | "not_found"
+  | "replayed"
+  | "expired"
+  | "cancelled"
+  | "provider_changed";
+
+export type ConsentNonceRedemption =
+  | { redeemed: true; authorizeUrl: string }
+  | { redeemed: false; reason: ConsentNonceRedeemRefusal };
+
+/**
+ * The dev journey's one-time handoff redemption (I-02 T-0016; ADR-0002 §
+ * Implementation Notes — the nonce entry on the auth host, proxied, redeemed
+ * portal-side). The popup URL carries only the nonce; this is where it buys
+ * the vendor redirect.
+ *
+ * **The redeem is one conditional UPDATE** — the indivisible claim rule: the
+ * statement marks `nonceRedeemedAt` and returns the attempt in the same
+ * breath, so exactly one concurrent redemption can ever win and a replayed
+ * popup URL is refused after first use (the ticket's security property).
+ * A cancelled or expired attempt refuses WITHOUT being redeemed, the same
+ * posture the claim probe holds — a refusal consumes nothing that could
+ * still complete.
+ *
+ * The vendor authorize URL is then **re-derived from the portal's stored
+ * attempt data** — the attempt row (state, PKCE verifier, provider
+ * id+revision) plus the provider row's configuration — through the one
+ * shared {@link assembleAuthorizeUrl}. The URL is deliberately not stored on
+ * the attempt: the verifier stays server-side and only its S256 challenge
+ * enters the re-derived URL (spec criterion 22). A provider deleted or
+ * edited since the attempt refuses (`provider_changed`) — an attempt
+ * recorded against a revision must not send the user through configuration
+ * that attempt never saw.
+ *
+ * `callbackUrl` is the caller's (the portal's own convention-derived value,
+ * `deployment.ts connectionsCallbackUrl`): the redemption has no edge call
+ * to supply it, and the reserved-subdomain derivation is the value the
+ * consistency session test-pins to the edge's topology.
+ */
+export async function redeemConsentNonce(
+  prisma: PrismaClient,
+  secretStore: SecretStore,
+  nonce: string,
+  callbackUrl: string,
+): Promise<ConsentNonceRedemption> {
+  return withSpan(SPAN_CONSENT_REDEEM, { [ATTR_CONSENT_OPERATION]: "redeem" }, async (span) => {
+    let result: ConsentNonceRedemption;
+    try {
+      result = await redeem(prisma, secretStore, nonce, callbackUrl, span);
+      const outcome = result.redeemed ? "redeemed" : result.reason;
+      span.setAttributes({ [ATTR_OUTCOME]: outcome });
+      count("redeem", outcome);
+      return result;
+    } catch (err) {
+      span.setAttributes({ [ATTR_OUTCOME]: "error" });
+      count("redeem", "error");
+      throw err;
+    }
+  });
+}
+
+async function redeem(
+  prisma: PrismaClient,
+  secretStore: SecretStore,
+  nonce: string,
+  callbackUrl: string,
+  span: Span,
+): Promise<ConsentNonceRedemption> {
+  // 1 — the indivisible claim (above).
+  const rows = await prisma.$queryRaw<
+    Array<{
+      state: string;
+      codeVerifier: string;
+      providerId: string;
+      providerRevision: number;
+      env: string;
+    }>
+  >(
+    Prisma.sql`UPDATE connection_consent_attempts
+      SET "nonceRedeemedAt" = now()
+      WHERE nonce = ${nonce} AND "nonceRedeemedAt" IS NULL
+        AND "cancelledAt" IS NULL AND "expiresAt" > now()
+      RETURNING state, "codeVerifier", "providerId", "providerRevision", env`,
+  );
+  if (rows.length === 0) {
+    // Best-effort reason (the claim probe's posture): a sweep racing this
+    // read turns "expired" into "not_found". Every reason refuses, so the
+    // race only ever narrows the operator's signal, never the page.
+    const row = await prisma.connectionConsentAttempt.findUnique({
+      where: { nonce },
+      select: { nonceRedeemedAt: true, cancelledAt: true, expiresAt: true },
+    });
+    const reason: ConsentNonceRedeemRefusal = !row
+      ? "not_found"
+      : row.nonceRedeemedAt
+        ? "replayed"
+        : row.cancelledAt
+          ? "cancelled"
+          : row.expiresAt.getTime() <= Date.now()
+            ? "expired"
+            : "not_found";
+    return { redeemed: false, reason };
+  }
+  const attempt = rows[0]!;
+
+  // 2 — the provider row as of NOW, through its one shared definition. The
+  // env must still match the attempt's tier: defense in depth behind the
+  // consult's env-pinned resolution (a dev attempt must never redirect
+  // through a prod registration, whatever row reorganization happens).
+  const providerRow = await prisma.connectionProvider.findUnique({
+    where: { id: attempt.providerId },
+  });
+  const provider = providerRow ? parseProviderRow(providerRow) : null;
+  if (!provider || provider.revision !== attempt.providerRevision || provider.env !== attempt.env) {
+    return { redeemed: false, reason: "provider_changed" };
+  }
+  span.setAttributes({ [ATTR_PROVIDER_REF]: provider.ref });
+
+  // 3 — the client id is OAuth protocol state; the client secret stays
+  // sealed and is never opened here. Opened AFTER the claim: a custody
+  // failure burns this nonce (fail-closed) but can never race a second
+  // redemption into a second redirect.
+  const clientId = await secretStore.open(provider.clientIdMaterial);
+
+  const authorizeUrl = assembleAuthorizeUrl({
+    authorizeEndpoint: provider.authorizeEndpoint,
+    clientId,
+    requestedScopes: provider.requestedScopes,
+    codeVerifier: attempt.codeVerifier,
+    state: attempt.state,
+    callbackUrl,
+  });
+  return { redeemed: true, authorizeUrl };
 }
 
 /**

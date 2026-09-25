@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { hashDevToken } from "@azx-pbc/shared/devToken";
 import {
   context,
   defaultTextMapGetter,
@@ -10,10 +11,16 @@ import {
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import { propagatorFor } from "@azx-pbc/telemetry";
 import { REQUEST_HEADER_SAFELIST } from "@azx-pbc/shared";
-import { SPAN_CONNECTIONS_PROXY, SPAN_CONSENT_START } from "@azx-pbc/shared/telemetry";
+import {
+  SPAN_CONNECTIONS_PROXY,
+  SPAN_CONSENT_START,
+  SPAN_CONSENT_START_DEV,
+} from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
-import { testAuthConfig, testEdgeConfig } from "./test/config.js";
+import { buildDevGateway } from "./devGateway/app.js";
+import type { DevTokenStore } from "./devGateway/devTokenStore.js";
+import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "./test/config.js";
 import {
   FakeBlobReader,
   FakeOidcClient,
@@ -196,6 +203,82 @@ describe("the consent start route is a fresh root too (T-0014)", () => {
     expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
     expect(span?.parentSpanContext).toBeUndefined();
     // And nothing from the app's trace headers lands anywhere.
+    const dump = JSON.stringify(
+      recording.spans().map((sp) => ({ ...sp.attributes, ...sp.spanContext() })),
+    );
+    expect(dump).not.toContain(APP_TRACE_ID);
+    expect(dump).not.toContain("vendor=app-chosen");
+  });
+});
+
+describe("the dev-gateway consent start route is a fresh root too (T-0016)", () => {
+  /**
+   * The dev tier's POST comes from a foreign-origin dev app — the same
+   * untrusted caller class, so an inbound `traceparent` is exactly as
+   * untrustworthy there. The dev-gateway is inject-only by default
+   * (`devGateway/server.ts`), and the route's span must show it.
+   */
+  it("an inbound traceparent never parents the route span", async () => {
+    propagation.setGlobalPropagator(propagatorFor("inject-only"));
+    const tokens: DevTokenStore = {
+      async resolve(tokenHash) {
+        return tokenHash === hashDevToken("PLANTED-DEV-BEARER")
+          ? {
+              appId: "33333333-3333-4333-8333-333333333333",
+              developerOid: "oid-developer",
+              origins: ["https://myapp.lovable.app"],
+              expiresAt: new Date(Date.now() + 60_000),
+              revokedAt: null,
+            }
+          : null;
+      },
+      async originAllowed() {
+        return false;
+      },
+      async close() {},
+    };
+    const portal = new FakePortalProvider();
+    portal.status = 200;
+    portal.headers = { "content-type": "application/json" };
+    portal.body = JSON.stringify({
+      outcome: "started",
+      authorizeUrl: "https://vendor.example/authorize",
+    });
+    const app: FastifyInstance = buildDevGateway({
+      config: testDevGatewayConfig({ internalSecret: Buffer.alloc(32, 7) }),
+      registry: new FakeRegistry([
+        registryEntry({
+          appId: "33333333-3333-4333-8333-333333333333",
+          slug: "myapp",
+          blobPrefix: "apps/a/1/",
+        }),
+      ]),
+      devTokens: tokens,
+      appData: null,
+      usage: null,
+      llmProvider: null,
+      egress: null,
+      instructionKey: null,
+      portal,
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/myapp/_api/connections/asana/start",
+      headers: {
+        host: "dev-api.local.helix.azxlabs.io",
+        authorization: "Bearer PLANTED-DEV-BEARER",
+        origin: "https://myapp.lovable.app",
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+
+    const span = recording.spans().find((sp) => sp.name === SPAN_CONSENT_START_DEV);
+    expect(span).toBeDefined();
+    expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
+    expect(span?.parentSpanContext).toBeUndefined();
     const dump = JSON.stringify(
       recording.spans().map((sp) => ({ ...sp.attributes, ...sp.spanContext() })),
     );

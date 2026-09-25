@@ -237,6 +237,16 @@ export interface GatewayConfig {
    * beside {@link internalSecret} — the key those calls authorize with.
    */
   portalUrl: string | null;
+  /**
+   * Scheme for externally built URLs (redirect targets, cookie origins, the
+   * dev journey's popup URL). The platform is **HTTPS-only** — always `https`.
+   * Dev terminates TLS at the edge (mkcert); prod terminates at ingress and the
+   * edge speaks plain HTTP behind it, but the *public* origin is https either
+   * way.
+   */
+  publicScheme: "https";
+  /** Public port for built URLs; scheme-default ports are omitted. */
+  publicPort: number;
 }
 
 /**
@@ -276,18 +286,7 @@ export interface EdgeConfig extends GatewayConfig {
    * "allow"/default-off polarity as {@link allowPublicApps}.
    */
   allowPasswordApps: boolean;
-  /**
-   * Scheme for externally built URLs (redirect targets, cookie origins). The
-   * platform is **HTTPS-only** — always `https`. Dev terminates TLS at the
-   * edge (mkcert); prod terminates at ingress and the edge speaks plain HTTP
-   * behind it, but the *public* origin is https either way.
-   */
-  publicScheme: "https";
-  /** Public port for built URLs; scheme-default ports are omitted. */
-  publicPort: number;
-  /**
-   * Per-IP rate limit for the anonymous tier on `public` apps (app-data design
-   * §7). Caps every anonymous `/_api/*` gateway call, keyed per IP+app within a
+  /** Per-IP rate limit for the anonymous tier on `public` apps (app-data design §7). Caps every anonymous `/_api/*` gateway call, keyed per IP+app within a
    * fixed window — the anonymous writer/visitor has no per-user budget to
    * charge, so this is the only per-source cap on an open public surface.
    * Authenticated callers are never limited here (they answer to per-app
@@ -771,6 +770,8 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     },
     internalSecret: loadInternalSecret(env),
     portalUrl: env.EDGE_PORTAL_URL || null,
+    publicScheme: "https",
+    publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
   };
 }
 
@@ -823,8 +824,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     // EdgeConfig); a deployment opts a surface back in per environment.
     allowPublicApps: env.EDGE_ALLOW_PUBLIC_APPS === "true",
     allowPasswordApps: env.EDGE_ALLOW_PASSWORD_APPS === "true",
-    publicScheme: "https",
-    publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     anonRateLimit: {
       max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),
       windowMs: Number(env.EDGE_ANON_RATE_WINDOW_MS ?? 60_000),
@@ -885,10 +884,13 @@ function loadInternalSecret(env: NodeJS.ProcessEnv): Buffer | null {
 
 /**
  * The externally visible origin for a given host label + base domain —
- * redirect targets and cookie URLs are always built from config, never from
- * request headers. Scheme-default ports are omitted.
+ * redirect targets, cookie URLs, and the dev journey's popup URL are always
+ * built from config, never from request headers. Scheme-default ports are
+ * omitted. Takes the shared {@link GatewayConfig} because the dev-gateway
+ * builds public URLs too (the popup URL's auth host) and structurally omits
+ * the edge-only fields.
  */
-export function publicOrigin(config: EdgeConfig, hostLabelOrNull: string | null): string {
+export function publicOrigin(config: GatewayConfig, hostLabelOrNull: string | null): string {
   const host = hostLabelOrNull ? `${hostLabelOrNull}.${config.baseDomain}` : config.baseDomain;
   // HTTPS-only: omit the port only when it is the https default (443).
   const port = config.publicPort === 443 ? "" : `:${config.publicPort}`;

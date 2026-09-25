@@ -65,7 +65,7 @@ export function instruments(): PortalInstruments {
 
 /**
  * Run `fn` inside one span, failed-and-ended when it throws — the
- * `deploy/upload.ts` shape, extracted so the consent state machine's four
+ * `deploy/upload.ts` shape, extracted so the consent state machine's
  * operations (and the next portal span) don't re-roll the try/finally.
  * Portal callers are verified platform planes, but the span is still a fresh
  * root: the portal never extracts an inbound `traceparent` (ADR-0037

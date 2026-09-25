@@ -12,6 +12,7 @@ import { deriveInstructionKey } from "../gateway/instruction.js";
 import { PgUsageStore } from "../gateway/usage.js";
 import { PgAppDataStore } from "../gateway/data.js";
 import type { LlmProvider } from "../gateway/provider.js";
+import { HttpPortalProvider } from "../routing/portalProvider.js";
 import { PgDevTokenStore } from "./devTokenStore.js";
 import type { PoolClientErrorPhase } from "../db/pool.js";
 
@@ -158,6 +159,11 @@ const llmProvider: LlmProvider | null =
       })
     : null;
 
+// The dev tier's consent consult (T-0016) rides the same portal seam as the
+// edge's reverse proxy — EDGE_PORTAL_URL + the internal mint key, both already
+// on the shared gateway config. Unset ⇒ the consent route 503s fail-closed.
+const portal = config.portalUrl ? new HttpPortalProvider(config.portalUrl) : null;
+
 const app = buildDevGateway({
   config,
   registry,
@@ -167,6 +173,7 @@ const app = buildDevGateway({
   llmProvider,
   egress,
   instructionKey,
+  portal,
   https,
 });
 logRef.current = {
@@ -181,6 +188,7 @@ app.addHook("onClose", async () => {
   await devTokens.close();
   await egress?.close();
   await llmProvider?.close();
+  await portal?.close();
   // Last, after everything that could still record.
   await telemetry.shutdown();
 });

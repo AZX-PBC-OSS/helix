@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import { DataCapabilitySchema, INTERNAL_AUTH_HEADER } from "@azx-pbc/shared";
+import { hashDevToken } from "@azx-pbc/shared/devToken";
 import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import { FORBIDDEN_URL_ATTRS } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
+import { buildDevGateway } from "./devGateway/app.js";
+import type { DevTokenStore } from "./devGateway/devTokenStore.js";
 import { SESSION_COOKIE } from "./auth/cookies.js";
 import { hashSessionToken, newSessionToken } from "./auth/sessions.js";
-import { testAuthConfig, testEdgeConfig } from "./test/config.js";
+import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "./test/config.js";
 import {
   FakeAppDataStore,
   FakeBlobReader,
@@ -416,6 +420,97 @@ describe("span attributes never carry a credential", () => {
       expect(dump).not.toContain("vendor.example");
       const routeSpan = recording.spans().find((s) => s.name === "helix.consent.start");
       expect(routeSpan?.attributes["url.path"]).toBe("/_api/connections/asana/start");
+    });
+  });
+
+  /**
+   * T-0016: the dev-gateway's consent start route. The whole point of the
+   * journey is that the dev bearer token never leaves the authenticated POST
+   * (spec criterion 22) — and the popup URL the route returns carries only
+   * the single-use nonce, while the consult's vendor state + PKCE challenge
+   * stay protocol-internal. Drives the REAL dev-gateway route on the started
+   * path with everything planted, then scans every attribute of every span.
+   */
+  describe("the dev-gateway consent start route (T-0016)", () => {
+    const DEV_BEARER = "PLANTED-DEV-BEARER-TOKEN-VALUE";
+    const VENDOR_STATE = "PLANTED-VENDOR-OAUTH-STATE";
+    const VENDOR_CHALLENGE = "PLANTED-PKCE-CHALLENGE";
+    const DEV_APP_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+    function buildDevConsentGateway(portal: FakePortalProvider): FastifyInstance {
+      const tokens: DevTokenStore = {
+        async resolve(tokenHash) {
+          return tokenHash === hashDevToken(DEV_BEARER)
+            ? {
+                appId: DEV_APP_ID,
+                developerOid: "oid-developer",
+                origins: ["https://myapp.lovable.app"],
+                expiresAt: new Date(Date.now() + 60_000),
+                revokedAt: null,
+              }
+            : null;
+        },
+        async originAllowed() {
+          return false;
+        },
+        async close() {},
+      };
+      return buildDevGateway({
+        config: testDevGatewayConfig({ internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({ appId: DEV_APP_ID, slug: "myapp", blobPrefix: "apps/d/1/" }),
+        ]),
+        devTokens: tokens,
+        appData: null,
+        usage: null,
+        llmProvider: null,
+        egress: null,
+        instructionKey: null,
+        portal,
+      });
+    }
+
+    it("leaks no dev bearer token or vendor protocol value — across every attribute", async () => {
+      const portal = new FakePortalProvider();
+      portal.status = 200;
+      portal.headers = { "content-type": "application/json" };
+      portal.body = JSON.stringify({
+        outcome: "started",
+        authorizeUrl: `https://vendor.example/oauth/authorize?state=${VENDOR_STATE}&code_challenge=${VENDOR_CHALLENGE}&code_challenge_method=S256`,
+      });
+      const app = buildDevConsentGateway(portal);
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/myapp/_api/connections/asana/start",
+        headers: {
+          host: "dev-api.local.helix.azxlabs.io",
+          authorization: `Bearer ${DEV_BEARER}`,
+          origin: "https://myapp.lovable.app",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const popupUrl = res.json<{ popupUrl: string }>().popupUrl;
+      // The response's URL itself is the first scan surface: the bearer token
+      // must never leave the authenticated POST.
+      expect(popupUrl).not.toContain(DEV_BEARER);
+      expect(popupUrl).not.toContain(VENDOR_STATE);
+      expect(popupUrl).not.toContain(VENDOR_CHALLENGE);
+      await app.close();
+
+      // Then every span on the path — the route span and any it carries.
+      const nonce = new URL(popupUrl).searchParams.get("nonce") ?? "absent";
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      for (const secret of [DEV_BEARER, VENDOR_STATE, VENDOR_CHALLENGE, nonce]) {
+        expect(dump, `a span attribute leaked ${secret}`).not.toContain(secret);
+      }
+      expect(dump).not.toContain("?");
+      expect(dump).not.toContain("vendor.example");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
     });
   });
 });

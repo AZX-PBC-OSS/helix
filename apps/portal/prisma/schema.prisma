@@ -690,6 +690,11 @@ model ConnectionConsentAttempt {
   openerOrigin     String
   /// The dev journey's single-use handoff nonce (dev-tier consults only).
   nonce            String?   @unique
+  /// Set by the nonce entry's one-shot redemption (T-0016, portal-side): the
+  /// indivisible claim that makes a replayed popup URL refuse after first
+  /// use. The row itself survives until claim or expiry — the callback still
+  /// redeems it by `state`.
+  nonceRedeemedAt  DateTime?
   /// Five-minute TTL — completion at or after this cannot establish a connection.
   expiresAt        DateTime
   /// Set by the helper's acknowledged cancel; a claimed-or-cancelled attempt

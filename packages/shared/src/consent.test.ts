@@ -8,7 +8,9 @@ import {
   CONSENT_ATTEMPT_TTL_SECONDS,
   CONSENT_MESSAGE_OUTCOMES,
   CONSENT_MESSAGE_REASONS,
+  CONSENT_NONCE_ENTRY_PATH,
   CONNECT_MESSAGE_VERSION,
+  DevConsentStartResponseSchema,
   HELIX_CONNECT_MESSAGE_SOURCE,
 } from "./consent.js";
 
@@ -129,6 +131,39 @@ describe("ConsultResponseSchema / CancelRequestSchema / CancelResponseSchema", (
 
   it("keeps the five-minute TTL the field list fixes", () => {
     expect(CONSENT_ATTEMPT_TTL_SECONDS).toBe(300);
+  });
+});
+
+describe("DevConsentStartResponseSchema (T-0016 — design decision 4)", () => {
+  it("accepts the started outcome with the popup URL and the two terminal outcomes", () => {
+    expect(
+      DevConsentStartResponseSchema.safeParse({
+        outcome: "started",
+        popupUrl: "https://auth.example.test/connections/consent/start?nonce=0123456789abcdef",
+      }).success,
+    ).toBe(true);
+    expect(DevConsentStartResponseSchema.safeParse({ outcome: "already_connected" }).success).toBe(
+      true,
+    );
+    expect(DevConsentStartResponseSchema.safeParse({ outcome: "not_available" }).success).toBe(
+      true,
+    );
+    // No url without started; no unknown outcome; strict against skew.
+    expect(DevConsentStartResponseSchema.safeParse({ outcome: "started" }).success).toBe(false);
+    expect(DevConsentStartResponseSchema.safeParse({ outcome: "signin_required" }).success).toBe(
+      false,
+    );
+    expect(
+      DevConsentStartResponseSchema.safeParse({
+        outcome: "started",
+        popupUrl: "https://auth.example.test/x",
+        bearerToken: "smuggled",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the entry path is the keep-in-sync constant both planes build against", () => {
+    expect(CONSENT_NONCE_ENTRY_PATH).toBe("/connections/consent/start");
   });
 });
 

@@ -91,7 +91,8 @@ export const ATTR_DEPLOY_FILE_COUNT = "helix.deploy.file_count";
 export const ATTR_DEPLOY_WARNING_COUNT = "helix.deploy.warning_count";
 /**
  * Which consent-flow operation a signal is about — `consult`, `cancel`,
- * `claim`, or `sweep` (I-02 ADR-0002). Bounded to those four; the identity the
+ * `claim`, `sweep`, or `redeem` (I-02 ADR-0002; `redeem` is the dev journey's
+ * nonce redemption, T-0016). Bounded to those five; the identity the
  * operation is for is never a dimension.
  */
 export const ATTR_CONSENT_OPERATION = "helix.consent.operation";
@@ -126,6 +127,8 @@ export const SPAN_CONSENT_CANCEL = "helix.consent.cancel";
 export const SPAN_CONSENT_CLAIM = "helix.consent.claim";
 export const SPAN_CONSENT_SWEEP = "helix.consent.sweep";
 export const SPAN_CONSENT_START = "helix.consent.start";
+export const SPAN_CONSENT_START_DEV = "helix.consent.start.dev";
+export const SPAN_CONSENT_REDEEM = "helix.consent.redeem";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -141,6 +144,8 @@ export const ROUTE_AUTH_CALLBACK = "/callback";
 export const ROUTE_AUTH_COMPLETE = "/_auth/complete";
 export const ROUTE_CONNECTIONS = "/connections/*";
 export const ROUTE_CONSENT_START = "/_api/connections/:ref/start";
+export const ROUTE_CONSENT_START_DEV = "/:slug/_api/connections/:ref/start";
+export const ROUTE_CONNECTIONS_NONCE_ENTRY = "/connections/consent/start";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
@@ -223,7 +228,7 @@ export type DataListDenialReason = (typeof DATA_LIST_DENIAL_REASONS)[number];
  *   callback renders — `expired`, `cancelled`, `not_found` — plus `error`.
  * - sweep: `ok` (cycle ran; the removed count rides the span) or `failed`.
  */
-export const CONSENT_OPERATIONS = ["consult", "cancel", "claim", "sweep"] as const;
+export const CONSENT_OPERATIONS = ["consult", "cancel", "claim", "sweep", "redeem"] as const;
 export type ConsentOperation = (typeof CONSENT_OPERATIONS)[number];
 export const CONSENT_CONSULT_OUTCOMES_TELEMETRY = [
   "started",
@@ -240,6 +245,15 @@ export const CONSENT_CLAIM_OUTCOMES_TELEMETRY = [
   "error",
 ] as const;
 export const CONSENT_SWEEP_OUTCOMES_TELEMETRY = ["ok", "failed"] as const;
+export const CONSENT_REDEEM_OUTCOMES_TELEMETRY = [
+  "redeemed",
+  "not_found",
+  "replayed",
+  "expired",
+  "cancelled",
+  "provider_changed",
+  "error",
+] as const;
 
 /**
  * Why the edge's consent-start route answered as it did (I-02 ADR-0002) — the
@@ -260,6 +274,23 @@ export const CONSENT_START_OUTCOMES = [
   "error",
 ] as const;
 export type ConsentStartOutcome = (typeof CONSENT_START_OUTCOMES)[number];
+
+/**
+ * The dev-tier start route's outcome vocabulary (I-02 design decision 4) — the
+ * `helix.outcome` values on the `helix.consent.start.dev` span. The prod
+ * vocabulary minus `signin_required`: a dev caller's identity is the bearer
+ * token, not a session, so there is no sign-in state — the resolver's
+ * refusals (missing/invalid token, wrong app, unregistered Origin, refused
+ * before any consult) are `forbidden`.
+ */
+export const CONSENT_START_DEV_OUTCOMES = [
+  "started",
+  "already_connected",
+  "unavailable",
+  "forbidden",
+  "error",
+] as const;
+export type ConsentStartDevOutcome = (typeof CONSENT_START_DEV_OUTCOMES)[number];
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default

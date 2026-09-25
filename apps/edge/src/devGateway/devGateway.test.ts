@@ -119,6 +119,7 @@ function build(devTokens: FakeDevTokenStore, store: AppDataStore = new FakeAppDa
     llmProvider: null,
     egress: null,
     instructionKey: null,
+    portal: null,
   });
   return app;
 }
@@ -169,6 +170,7 @@ describe("dev-gateway /health", () => {
       llmProvider: null,
       egress: null,
       instructionKey: null,
+      portal: null,
     });
     const res = await app.inject({ url: "/health" });
     expect(res.statusCode).toBe(200);
@@ -186,6 +188,7 @@ describe("dev-gateway /health", () => {
       llmProvider: null,
       egress: null,
       instructionKey: null,
+      portal: null,
     });
     await app.ready();
     for (let i = 0; i < TRUST_PROXY_WINDOW; i++) {
@@ -353,6 +356,7 @@ describe("dev-gateway CORS preflight", () => {
       llmProvider: null,
       egress: null,
       instructionKey: null,
+      portal: null,
     });
 
     const res = await app.inject({

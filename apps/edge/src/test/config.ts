@@ -117,6 +117,10 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
     reconcileIntervalMs: 60_000,
     statementTimeoutMs: 10_000,
     trustProxy: false,
+    // Same public topology the edge test config uses: the popup URL and the
+    // consult's callback URL are built from these, never from the request.
+    publicScheme: "https",
+    publicPort: 8080,
     llm: {
       endpoint: "https://api.anthropic.com",
       path: "/v1/messages",

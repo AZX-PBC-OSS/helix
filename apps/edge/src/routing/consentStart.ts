@@ -1,4 +1,3 @@
-import { Readable } from "node:stream";
 import { trace } from "@opentelemetry/api";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -6,7 +5,6 @@ import {
   ConsentAttemptTagSchema,
   ConnectOutcomeMessageSchema,
   ConsultRequestSchema,
-  ConsultResponseSchema,
   type ConsultResponse,
   type ConnectOutcomeMessage,
   HELIX_CONNECT_MESSAGE_SOURCE,
@@ -28,9 +26,9 @@ import { SESSION_COOKIE, parseCookieHeader } from "../auth/cookies.js";
 import { hashSessionToken, type Session, type SessionStore } from "../auth/sessions.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
 import { visibilityAllows } from "../auth/validate.js";
-import { mintInternalToken } from "../internalJwt.js";
 import { renderConsentTerminalPage, sendConsentPage } from "../serving/consentPages.js";
 import { spanRoute } from "../telemetry.js";
+import { callConsult } from "./consultCall.js";
 import type { PortalProvider } from "./portalProvider.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 
@@ -76,12 +74,7 @@ export interface ConsentStartRuntime {
   internalKey: Buffer | null;
 }
 
-/** The consult's path on the portal (apps/portal/src/routes/connectionsInternal.ts). */
-const CONSULT_TARGET = "/internal/connections/consult";
-
 /** The consult's JSON answer is tiny; anything bigger is not a consult response. */
-const MAX_CONSULT_RESPONSE_BYTES = 1024 * 1024;
-
 /**
  * The fail-closed same-origin navigation guard (ADR-0002 §Implementation Notes:
  * "require Sec-Fetch-Site: same-origin, fall back to Origin/Referer header
@@ -196,22 +189,6 @@ function outcomeMessage(
     outcome,
     reason,
   });
-}
-
-/** Read the consult's JSON response body under a hard cap (the portal is a
- * trusted plane, but a cap is cheaper than trusting that). */
-async function readCappedJson(body: Readable): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of body) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
-    total += buf.length;
-    if (total > MAX_CONSULT_RESPONSE_BYTES) {
-      throw new Error("consult response exceeded the size cap");
-    }
-    chunks.push(buf);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
 }
 
 /** The couldn't-start terminal page (design.md's page table: service failure
@@ -343,22 +320,13 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
 
       let consult: ConsultResponse;
       try {
-        const internalToken = await mintInternalToken(rt.internalKey);
-        const res = await rt.portal.proxy({
-          method: "POST",
-          target: CONSULT_TARGET,
-          headers: { "content-type": "application/json" },
-          body: Readable.from([Buffer.from(JSON.stringify(consultRequest))]),
-          signal: abort.signal,
-          correlationId: String(req.id),
-          internalToken,
-        });
-        if (res.status !== 200) {
-          setOutcome("error");
-          sendCouldntStart(reply, { providerRef, attempt, appOrigin });
-          return;
-        }
-        consult = ConsultResponseSchema.parse(await readCappedJson(res.body));
+        consult = await callConsult(
+          rt.portal,
+          rt.internalKey,
+          consultRequest,
+          String(req.id),
+          abort.signal,
+        );
       } catch {
         // No exception is recorded on the span: the fixed outcome attribute is
         // the operator signal, and the 503 below grades the span ERROR. (The

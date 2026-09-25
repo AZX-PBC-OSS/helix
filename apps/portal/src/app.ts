@@ -31,6 +31,7 @@ import { configRoutes } from "./routes/config.js";
 import { catalogueRoutes } from "./routes/catalogue.js";
 import { directoryRoutes } from "./routes/directory.js";
 import { connectionsInternalRoutes } from "./routes/connectionsInternal.js";
+import { connectionsPageRoutes } from "./routes/connectionsPages.js";
 import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
 import { assertDeploymentConfig } from "./deployment.js";
 import { SERVICE_NAME } from "./serviceName.js";
@@ -120,6 +121,10 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   // The internal edge→portal consent seam (I-02 ADR-0002): consult + cancel,
   // authorized by T-0006's minted internal JWT — never bearer-token routes.
   app.register(connectionsInternalRoutes);
+  // The popup's browser-facing consent pages under the `/connections/*` proxy
+  // prefix (same initiative): the dev journey's nonce entry (T-0016) — the
+  // callback's completion pages are T-0020's.
+  app.register(connectionsPageRoutes);
 
   // The real dashboard when a built SPA is present; the M2 stopgap otherwise.
   const spaDist = opts.spaDist !== undefined ? opts.spaDist : resolveSpaDist();

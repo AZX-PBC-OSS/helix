@@ -162,6 +162,37 @@ export const CancelResponseSchema = z.strictObject({
 export type CancelResponse = z.infer<typeof CancelResponseSchema>;
 
 /**
+ * The auth-host path the dev journey's popup opens — the one-time nonce entry
+ * page (design.md §Dev-tier consent journey). The edge builds the returned
+ * popup URL from this constant and the portal serves the route at it, through
+ * the `/connections/*` reverse proxy (T-0015): one definition, so the two
+ * planes cannot drift (the `CONNECTIONS_CALLBACK_PATH` keep-in-sync
+ * convention, `apps/portal/src/deployment.ts`).
+ */
+export const CONSENT_NONCE_ENTRY_PATH = "/connections/consent/start";
+
+/**
+ * The dev-tier start route's response (I-02 design decision 4 — the one-time
+ * popup handoff): the dev app POSTs with its bearer token and receives either
+ * a terminal outcome or a single-use popup URL.
+ *
+ * `popupUrl` is {@link CONSENT_NONCE_ENTRY_PATH} on the auth host with the
+ * attempt's single-use `nonce` as the one query parameter — every component is
+ * nonce/reference material, because the dev bearer token must never leave the
+ * authenticated POST (spec criterion 22). The vendor authorize URL is
+ * deliberately **not** carried: the consult's assembled URL answers the prod
+ * start route, and the dev journey re-derives it at nonce redemption from the
+ * portal's stored attempt data (ADR-0002 §Implementation Notes), keeping the
+ * PKCE verifier server-side.
+ */
+export const DevConsentStartResponseSchema = z.discriminatedUnion("outcome", [
+  z.strictObject({ outcome: z.literal("started"), popupUrl: z.url() }),
+  z.strictObject({ outcome: z.literal("already_connected") }),
+  z.strictObject({ outcome: z.literal("not_available") }),
+]);
+export type DevConsentStartResponse = z.infer<typeof DevConsentStartResponseSchema>;
+
+/**
  * The app-facing outcome message every consent popup page posts to its opener
  * through `window.postMessage` before closing (I-02 design.md §Completion
  * message). Three parties build or consume this exact shape — the edge's

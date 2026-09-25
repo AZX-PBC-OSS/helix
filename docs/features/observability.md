@@ -44,11 +44,12 @@ terminates untrusted traffic (decision 4).
 | `helix.auth.oidc.start` / `.callback`, `helix.auth.handoff.complete` | the auth routes |
 | `helix.auth.connections.proxy` | the auth host's `/connections/*` reverse proxy |
 | `helix.consent.start` | the app host's `/_api/connections/:ref/start` route (I-02 T-0014) — the consent popup's prod entry |
+| `helix.consent.start.dev` | the dev gateway's `/:slug/_api/connections/:ref/start` route (I-02 T-0016) — the dev tier's bearer POST → single-use popup URL |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
-| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel routes, the callback's claim probe, the expiry sweep |
+| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel routes, the callback's claim probe, the expiry sweep, and the dev journey's nonce redemption (T-0016) |
 
 Per-span attributes beyond the semconv keys, so a new one has one place to be
 looked up:
@@ -89,11 +90,19 @@ looked up:
   URL carrying `state` + the PKCE challenge, so the query is dropped wholesale
   and no redirect target is ever an attribute. Pinned by `spanRedaction`'s
   T-0014 cases and `traceBoundary`'s route case.
+- `helix.consent.start.dev` (the dev tier's bearer POST, T-0016) records the
+  same shape with `CONSENT_START_DEV_OUTCOMES` — the prod vocabulary minus
+  `signin_required` (a dev caller's identity is the token, not a session; the
+  resolver's refusals are `forbidden`) — and `url.path` only: the returned
+  popup URL carries the single-use nonce, so the query is dropped wholesale
+  and the dev bearer token is never an attribute. Pinned by `spanRedaction`'s
+  T-0016 case and `traceBoundary`'s route case.
 - The `helix.consent.*` spans carry `helix.consent.operation` (bounded to
-  consult/cancel/claim/sweep), `helix.outcome` from the operation's bounded
+  consult/cancel/claim/sweep/redeem), `helix.outcome` from the operation's bounded
   vocabulary, and on the consult `helix.app.slug`, `helix.app_id` and
-  `helix.provider_ref` — never the `state`, the PKCE verifier, or any identity
-  (pinned by `routes/connectionsInternal.test.ts`'s global attribute scan).
+  `helix.provider_ref` — never the `state`, the nonce, the PKCE verifier, or any
+  identity (pinned by `routes/connectionsInternal.test.ts`'s global attribute
+  scan and `routes/connectionsPages.test.ts`'s redemption scan).
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |
