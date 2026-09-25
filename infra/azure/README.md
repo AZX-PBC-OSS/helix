@@ -12,14 +12,14 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 
 ## What it provisions
 
-| Layer    | Resources                                                                                                                       |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                     |
-| Data     | Postgres Flexible Server (private), Storage (blob, private)                                                                     |
-| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) — both private                                         |
-| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`)  |
-| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) |
-| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                      |
+| Layer    | Resources                                                                                                                                            |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                          |
+| Data     | Postgres Flexible Server (private), Storage (blob, private)                                                                                          |
+| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private |
+| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`)                       |
+| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`)                      |
+| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                                           |
 
 ### The security shape, in one diagram
 
@@ -33,7 +33,7 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
         │   UDR → Firewall DENY  │       │  UDR → Firewall ALLOW│
         └───────────┬───────────┘       └────────┬────────────┘
                     └──────── same VNet ──────────┘
-            private endpoints → Postgres · Blob · KV×2
+            private endpoints → Postgres · Blob · KV×3
        (app images pulled from public GHCR, not a private registry)
 ```
 
@@ -44,6 +44,14 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 - All data services are private-endpoint only; `publicNetworkAccess` is off.
 - The **edge identity has no role on `kv-connections`** — an edge RCE cannot read
   an app connection secret. (Mirrors the `helix_edge` Postgres grant hole.)
+- **`kv-delegated` is egress-only** (initiative I-02, ADR-0006):
+  it holds user-delegated OAuth token material, and the egress managed identity
+  is the **only** principal with any role on it (Secrets Officer — the built-in
+  roles have no "set without delete", and egress must seal/open/destroy). The
+  portal gets **no role**, so "the control plane never sees a plaintext
+  delegated token" is enforced by RBAC absence, not convention. The
+  `kv-connections` matrix is unchanged (portal Officer / egress User for
+  provider client credentials).
 - **dev-gateway** (opt-in, `deployDevGateway`) is the edge image run as the
   `helix_dev` role on `dev-api.<appsDomain>`, external in the apps env like the
   edge. Its identity mirrors the edge's holes — no blob, no `kv-connections` —
@@ -213,8 +221,11 @@ value.)
 ## Platform secret delivery ([ADR-0029](../../docs/adr/0029-platform-secret-delivery.md))
 
 The container apps receive their **platform/bootstrap** secrets (per-role Postgres
-DSNs, `EDGE_AUTH_SECRET`, `HELIX_INSTRUCTION_SECRET`, the edge OIDC cert) as
-**ACA Key Vault references** against `kv-platform` (`containerapp.bicep`'s
+DSNs, `EDGE_AUTH_SECRET`, the internal seam keys `HELIX_INSTRUCTION_SECRET` /
+`HELIX_INTERNAL_SECRET` / `HELIX_EXCHANGE_SECRET` — one bilateral key per trust
+direction (initiative I-02, ADR-0003) — and the
+edge OIDC cert) as **ACA Key Vault references** against `kv-platform`
+(`containerapp.bicep`'s
 `secretValues` entries of the form `{ keyVaultUrl, identity }`). ACA resolves
 them **from inside the environment's VNet** at revision-provisioning time and
 materializes them into the same env vars (`secretRef`) as before — the app reads
@@ -265,7 +276,13 @@ Two scope notes:
 and is the canonical store. **Connection** secrets are different: they stay in
 `kv-connections` and are read by egress **at runtime from inside the VNet** (a
 data-plane path that works with a private vault) via the `@azx-pbc/secret-store`
-seam ([ADR-0006](../../docs/adr/0006-secret-custody-seam.md)).
+seam ([ADR-0006](../../docs/adr/0006-secret-custody-seam.md)). **Delegated** token
+material (user OAuth tokens) is a third thing: it lives in `kv-delegated`, same
+runtime path and seam, but egress holds **Secrets Officer** there — seal at
+exchange/refresh, open at resolution, destroy at retirement — and is the vault's
+**only** RBAC principal (initiative I-02, ADR-0006):
+the portal has no role on it at all, so nothing in the control plane can open a
+delegated token.
 
 ## Wildcard TLS (`deployCertbot`, [ADR-0029](../../docs/adr/0029-platform-secret-delivery.md))
 
@@ -458,7 +475,7 @@ modules/
   privatedns.bicep    private DNS zones + VNet links
   private-endpoint.bicep  reusable PE + DNS zone group
   storage.bicep       storage account + app-bundles container + PE
-  keyvault.bicep      kv-platform + kv-connections + PEs
+  keyvault.bicep      kv-platform + kv-connections + kv-delegated + PEs
   postgres.bicep      Flexible Server (private) + helix DB
   identity.bicep      4 user-assigned managed identities (edge/portal/egress + dev-gateway)
   rbac.bicep          role assignments (the grant matrix)
@@ -589,6 +606,8 @@ export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
 export HELIX_INSTRUCTION_SECRET=$(openssl rand -base64 48)
+export HELIX_INTERNAL_SECRET=$(openssl rand -base64 48)
+export HELIX_EXCHANGE_SECRET=$(openssl rand -base64 48)
 # Edge auth is a CERTIFICATE (private_key_jwt) — the tenant blocks client secrets.
 # Upload the public cert to the edge app registration; feed both PEMs here (base64
 # avoids multiline env headaches). See docs/runbooks/entra-app-registration.md.
@@ -1192,7 +1211,9 @@ if a deploy misbehaves:
   around:
   - **Scope deploy principals accordingly.** Anything holding Contributor on the
     resource group can read every per-role Postgres DSN, `EDGE_AUTH_SECRET`,
-    `PORTAL_SECRET`, `HELIX_INSTRUCTION_SECRET`, and the edge OIDC private key.
+    `PORTAL_SECRET`, the internal seam keys (`HELIX_INSTRUCTION_SECRET`,
+    `HELIX_INTERNAL_SECRET`, `HELIX_EXCHANGE_SECRET`), and the edge OIDC private key.
+    Nothing delegated lands in `kv-platform` — that is what `kv-delegated` is for.
   - **It is also the recovery path.** Secrets generated at deploy time and never
     captured are _not_ lost — they can be read back from a running install (the
     same values are in `kv-platform`). When the dev surface is off the `helix_dev`

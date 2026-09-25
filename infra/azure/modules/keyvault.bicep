@@ -1,4 +1,4 @@
-// keyvault.bicep — the two Key Vaults.
+// keyvault.bicep — the three Key Vaults.
 //
 // The split mirrors the database role split (architecture §3, secrets design):
 //   - kv-platform     : infra config secrets surfaced to the container apps as
@@ -10,9 +10,15 @@
 //                       them, egress reads them, EDGE NEVER TOUCHES THIS VAULT —
 //                       no role assignment for the edge MI exists (rbac.bicep),
 //                       so an edge RCE can't read a single credential.
+//   - kv-delegated    : user-delegated OAuth token material (I-02 ADR-0006).
+//                       Egress seals/opens/destroys with Secrets Officer and
+//                       is the ONLY principal with any role on it — the portal
+//                       gets no role, so "the control plane never opens a
+//                       delegated token" is enforced by RBAC absence
+//                       (rbac.bicep), not convention.
 //
-// Both vaults: RBAC authorization (no access policies), purge protection on,
-// public access disabled, reached over private endpoints through
+// All three vaults: RBAC authorization (no access policies), purge protection
+// on, public access disabled, reached over private endpoints through
 // privatelink.vaultcore.azure.net.
 
 @description('Azure region.')
@@ -23,6 +29,9 @@ param platformVaultName string
 
 @description('Globally-unique name for the connections vault (3-24 chars).')
 param connectionsVaultName string
+
+@description('Globally-unique name for the delegated-custody vault (3-24 chars).')
+param delegatedVaultName string
 
 @description('Subnet id for the private endpoints (snet-pe).')
 param privateEndpointSubnetId string
@@ -67,6 +76,15 @@ resource connectionsVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   properties: commonProperties
 }
 
+// No enabledForTemplateDeployment here: nothing sources deploy-time params
+// from this vault (kv-platform is the only one the bicepparam reads), and the
+// narrower surface is the point of the dedicated vault.
+resource delegatedVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+  name: delegatedVaultName
+  location: location
+  properties: commonProperties
+}
+
 module platformPe 'private-endpoint.bicep' = {
   name: 'pe-${platformVaultName}'
   params: {
@@ -91,9 +109,24 @@ module connectionsPe 'private-endpoint.bicep' = {
   }
 }
 
+module delegatedPe 'private-endpoint.bicep' = {
+  name: 'pe-${delegatedVaultName}'
+  params: {
+    location: location
+    name: '${delegatedVaultName}-pe'
+    subnetId: privateEndpointSubnetId
+    targetResourceId: delegatedVault.id
+    groupId: 'vault'
+    privateDnsZoneId: keyVaultPrivateDnsZoneId
+  }
+}
+
 output platformVaultId string = platformVault.id
 output platformVaultName string = platformVault.name
 output platformVaultUri string = platformVault.properties.vaultUri
 output connectionsVaultId string = connectionsVault.id
 output connectionsVaultName string = connectionsVault.name
 output connectionsVaultUri string = connectionsVault.properties.vaultUri
+output delegatedVaultId string = delegatedVault.id
+output delegatedVaultName string = delegatedVault.name
+output delegatedVaultUri string = delegatedVault.properties.vaultUri

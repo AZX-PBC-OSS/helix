@@ -3,12 +3,12 @@
 // The grant matrix is the runtime trust boundary expressed in Azure RBAC, the
 // mirror of the Postgres role split:
 //
-//   identity | Blob           | kv-platform   | kv-connections
-//   ---------|----------------|---------------|----------------
-//   edge     | Data Reader    | Secrets User  |  —  (none)
-//   portal   | Data Contrib.  | Secrets User  | Secrets Officer
-//   egress   |  —             | Secrets User  | Secrets User
-//   dev      |  —             | Secrets User  |  —  (none)
+//   identity | Blob           | kv-platform   | kv-connections  | kv-delegated
+//   ---------|----------------|---------------|-----------------|----------------
+//   edge     | Data Reader    | Secrets User  |  —  (none)      |  —  (none)
+//   portal   | Data Contrib.  | Secrets User  | Secrets Officer |  —  (none)
+//   egress   |  —             | Secrets User  | Secrets User    | Secrets Officer
+//   dev      |  —             | Secrets User  |  —  (none)      |  —  (none)
 //
 // (No AcrPull: app images are pulled anonymously from public GHCR, not a private
 // ACR, so no registry role assignment is needed.)
@@ -18,6 +18,15 @@
 // identity has the same hole (and no blob) for the same reason — it reaches
 // third-party APIs through egress and never resolves a connection secret. Its
 // only kv-platform read is its own helix_dev DSN + the shared instruction key.
+//
+// kv-delegated (ADR-0006) holds user-delegated OAuth token material and is
+// egress-ONLY: egress is the sole principal with any role on it — Officer,
+// because the built-in roles have no "set without delete" and egress must
+// seal/open/destroy — and the portal (and edge, and dev) get none. RBAC
+// absence is what enforces "the control plane never opens a delegated
+// token"; it is not a convention the code can forget. The kv-connections
+// column is unchanged: provider client credentials stay sealed material on
+// the provider row (portal Officer / egress User).
 
 @description('Storage account name (to scope blob roles).')
 param storageAccountName string
@@ -27,6 +36,9 @@ param platformVaultName string
 
 @description('Connections vault name (to scope secret roles).')
 param connectionsVaultName string
+
+@description('Delegated-custody vault name (user-delegated token material; egress-only).')
+param delegatedVaultName string
 
 @description('Principal id of the edge managed identity.')
 param edgePrincipalId string
@@ -54,6 +66,9 @@ resource platformVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 }
 resource connectionsVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: connectionsVaultName
+}
+resource delegatedVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: delegatedVaultName
 }
 
 // --- Blob (edge: reader, portal: contributor; egress: none) ---
@@ -129,6 +144,17 @@ resource egressConnectionsUser 'Microsoft.Authorization/roleAssignments@2022-04-
   scope: connectionsVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+    principalId: egressPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// --- kv-delegated (egress Officer, NO other assignment exists — ADR-0006) ---
+resource egressDelegatedOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(delegatedVault.id, egressPrincipalId, kvSecretsOfficerRoleId)
+  scope: delegatedVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsOfficerRoleId)
     principalId: egressPrincipalId
     principalType: 'ServicePrincipal'
   }

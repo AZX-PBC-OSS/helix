@@ -2,7 +2,7 @@
 //
 // Stands up the three-plane platform (architecture §3) on Azure Container Apps:
 //   - networking with the egress-zone isolation enforced by firewall + UDRs
-//   - private Postgres / Blob / Key Vault (×2), all behind private endpoints
+//   - private Postgres / Blob / Key Vault (×3), all behind private endpoints
 //     (app images are pulled from public GHCR, so there is no private registry)
 //   - four user-assigned identities with a least-privilege RBAC matrix (the
 //     fourth, dev-gateway, is idle unless deployDevGateway is set)
@@ -35,6 +35,9 @@ param platformVaultName string
 
 @description('Globally-unique connections Key Vault name (3-24 chars).')
 param connectionsVaultName string
+
+@description('Globally-unique delegated-custody Key Vault name (3-24 chars). Holds user-delegated OAuth token material; the egress managed identity is its only RBAC principal (I-02 ADR-0006).')
+param delegatedVaultName string
 
 @description('Postgres flexible server name (globally unique, lowercase).')
 param postgresServerName string
@@ -121,6 +124,16 @@ param portalSecret string
 @secure()
 @description('HELIX_INSTRUCTION_SECRET — shared edge<->egress attestation key.')
 param instructionSecret string
+// The two ADR-0003 internal-JWT keys: edge mints edge->portal tokens with the
+// internal key, portal mints portal->egress tokens with the exchange key (and
+// verifies the first). Key separation per pair keeps rotation and blast radius
+// bilateral — a token minted for one seam cannot be redeemed at another.
+@secure()
+@description('HELIX_INTERNAL_SECRET — shared edge<->portal internal-JWT key (ADR-0003).')
+param internalSecret string
+@secure()
+@description('HELIX_EXCHANGE_SECRET — shared portal<->egress exchange-JWT key (ADR-0003).')
+param exchangeSecret string
 // The tenant blocks symmetric client secrets, so the edge authenticates to Entra
 // with a certificate (private_key_jwt). Both halves travel as PEM (or base64
 // PEM); the public cert is also uploaded to the edge app registration.
@@ -529,6 +542,7 @@ module keyvault 'modules/keyvault.bicep' = {
     location: location
     platformVaultName: platformVaultName
     connectionsVaultName: connectionsVaultName
+    delegatedVaultName: delegatedVaultName
     privateEndpointSubnetId: network.outputs.privateEndpointSubnetId
     keyVaultPrivateDnsZoneId: privateDns.outputs.keyVaultZoneId
   }
@@ -568,6 +582,7 @@ module rbac 'modules/rbac.bicep' = {
     storageAccountName: storage.outputs.storageAccountName
     platformVaultName: keyvault.outputs.platformVaultName
     connectionsVaultName: keyvault.outputs.connectionsVaultName
+    delegatedVaultName: keyvault.outputs.delegatedVaultName
     edgePrincipalId: identity.outputs.edgeIdentityPrincipalId
     portalPrincipalId: identity.outputs.portalIdentityPrincipalId
     egressPrincipalId: identity.outputs.egressIdentityPrincipalId
@@ -683,6 +698,8 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     edgeAuthSecret: edgeAuthSecret
     portalSecret: portalSecret
     instructionSecret: instructionSecret
+    internalSecret: internalSecret
+    exchangeSecret: exchangeSecret
     edgeOidcPrivateKey: edgeOidcPrivateKey
     edgeOidcCertificate: edgeOidcCertificate
     edgeDevDatabaseUrl: devDbConn
@@ -1026,6 +1043,11 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
         keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
         identity: identity.outputs.egressIdentityId
       }
+      // ADR-0003: egress verifies portal->egress exchange tokens.
+      'helix-exchange-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-exchange-secret'
+        identity: identity.outputs.egressIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1052,6 +1074,7 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EGRESS_MANAGED_IDENTITY_CONNECTIONS', value: foundryMiConnections }
       { name: 'EGRESS_DATABASE_URL', secretRef: 'egress-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+      { name: 'HELIX_EXCHANGE_SECRET', secretRef: 'helix-exchange-secret' }
     ]
   }
   dependsOn: [
@@ -1114,6 +1137,11 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       }
       'helix-instruction-secret': {
         keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
+        identity: identity.outputs.edgeIdentityId
+      }
+      // ADR-0003: the edge mints edge->portal internal tokens.
+      'helix-internal-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
         identity: identity.outputs.edgeIdentityId
       }
     }
@@ -1183,6 +1211,7 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EDGE_OIDC_CLIENT_CERTIFICATE', secretRef: 'edge-oidc-certificate' }
       { name: 'EDGE_AUTH_SECRET', secretRef: 'edge-auth-secret' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
     ]
   }
   dependsOn: [
@@ -1220,6 +1249,16 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       }
       'portal-secret': {
         keyVaultUrl: '${platformSecretsUri}portal-secret'
+        identity: identity.outputs.portalIdentityId
+      }
+      // ADR-0003: the portal verifies edge->portal internal tokens and mints
+      // portal->egress exchange tokens, so it holds both bilateral keys.
+      'helix-internal-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+        identity: identity.outputs.portalIdentityId
+      }
+      'helix-exchange-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-exchange-secret'
         identity: identity.outputs.portalIdentityId
       }
     }
@@ -1275,6 +1314,8 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       // resolvePortalRuntimeUrl). Migrations run as the admin out-of-band.
       { name: 'PORTAL_DATABASE_URL', secretRef: 'portal-database-url' }
       { name: 'PORTAL_SECRET', secretRef: 'portal-secret' }
+      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
+      { name: 'HELIX_EXCHANGE_SECRET', secretRef: 'helix-exchange-secret' }
     ]
   }
   dependsOn: [
@@ -1330,6 +1371,13 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
         keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
         identity: identity.outputs.devIdentityId
       }
+      // Same keys the edge image holds (it IS the edge image): the instruction
+      // key and the edge->portal internal key — never the portal<->egress
+      // exchange key, which the dev-gateway has no half of.
+      'helix-internal-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+        identity: identity.outputs.devIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1360,6 +1408,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       // The one DSN it holds — the least-privilege helix_dev role.
       { name: 'EDGE_DEV_DATABASE_URL', secretRef: 'edge-dev-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
     ]
   }
   dependsOn: [

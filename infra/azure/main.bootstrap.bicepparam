@@ -21,6 +21,7 @@ param location = 'eastus2'
 param storageAccountName = 'helixprodbundles'
 param platformVaultName = 'helix-prod-kvp'
 param connectionsVaultName = 'helix-prod-kvc'
+param delegatedVaultName = 'helix-prod-kvd'
 param postgresServerName = 'helix-prod-pg'
 // Postgres compute. Burstable (Standard_B1ms / Standard_B2s) is plenty for light
 // or smoketest installs; GeneralPurpose Standard_D2ds_v5 is the default here.
@@ -156,6 +157,8 @@ param devDbPassword = readEnvironmentVariable('HELIX_DEV_DB_PASSWORD', '')
 param edgeAuthSecret = readEnvironmentVariable('HELIX_EDGE_AUTH_SECRET', '')
 param portalSecret = readEnvironmentVariable('HELIX_PORTAL_SECRET', '')
 param instructionSecret = readEnvironmentVariable('HELIX_INSTRUCTION_SECRET', '')
+param internalSecret = readEnvironmentVariable('HELIX_INTERNAL_SECRET', '')
+param exchangeSecret = readEnvironmentVariable('HELIX_EXCHANGE_SECRET', '')
 // Edge cert (private_key_jwt) — the tenant blocks client secrets. PEM or base64 PEM.
 param edgeOidcPrivateKey = readEnvironmentVariable('HELIX_EDGE_OIDC_PRIVATE_KEY', '')
 param edgeOidcCertificate = readEnvironmentVariable('HELIX_EDGE_OIDC_CERTIFICATE', '')
