@@ -34,6 +34,7 @@ export const INSTR_TRUST_PROXY_UNRESOLVED = "helix.edge.trust_proxy.unresolved";
 export const INSTR_PROVIDERS_RECONCILES = "helix.providers.reconciles";
 export const INSTR_PROVIDERS_LISTEN_STATUS = "helix.providers.listen_status";
 export const INSTR_CONSENT_OPERATIONS = "helix.consent.operations";
+export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
 
 /**
  * Attribute keys.
@@ -111,6 +112,7 @@ export const SPAN_LLM = "helix.gateway.llm";
 export const SPAN_FETCH = "helix.gateway.fetch";
 export const SPAN_DATA = "helix.gateway.data";
 export const SPAN_EGRESS_PROXY = "helix.egress.proxy";
+export const SPAN_EGRESS_EXCHANGE = "helix.egress.exchange";
 export const SPAN_REGISTRY_LOAD = "helix.registry.load";
 export const SPAN_PROVIDERS_RECONCILE = "helix.providers.reconcile";
 export const SPAN_AUTH_START = "helix.auth.oidc.start";
@@ -150,6 +152,7 @@ export const ROUTE_CONSENT_START = "/_api/connections/:ref/start";
 export const ROUTE_CONSENT_START_DEV = "/:slug/_api/connections/:ref/start";
 export const ROUTE_CONSENT_CANCEL = "/_api/connections/attempt/cancel";
 export const ROUTE_CONNECTIONS_NONCE_ENTRY = "/connections/consent/start";
+export const ROUTE_EGRESS_EXCHANGE = "/exchange";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
@@ -315,6 +318,34 @@ export const CONSENT_CANCEL_EDGE_OUTCOMES = [
   "error",
 ] as const;
 export type ConsentCancelEdgeOutcome = (typeof CONSENT_CANCEL_EDGE_OUTCOMES)[number];
+
+/**
+ * The egress code-exchange operation's outcome vocabulary (I-02 T-0019,
+ * ADR-0001) — the `helix.outcome` dimension on `helix.egress.exchanges` and
+ * the `helix.egress.exchange` span. Bounded by construction: each value is
+ * exactly one early-return class of the handler.
+ *
+ * - `exchanged` — the criterion-27 gate passed and both materials sealed.
+ * - `rejected` — the gate refused at receipt (the distinguishable reason rides
+ *   the span's `helix.reason`, never a metric dimension); nothing was sealed.
+ * - `provider_unavailable` — unknown id, deleted, or stale revision (ADR-0004).
+ * - `exchange_failed` — the vendor token endpoint failed or sealing failed;
+ *   the fixed-string outcome, no vendor content anywhere.
+ * - `unauthorized` — the portal→egress token did not verify (refused before
+ *   any vendor call).
+ * - `malformed` — the body failed its schema parse.
+ * - `unconfigured` — the exchange operation has no custody/providers wired.
+ */
+export const EGRESS_EXCHANGE_OUTCOMES = [
+  "exchanged",
+  "rejected",
+  "provider_unavailable",
+  "exchange_failed",
+  "unauthorized",
+  "malformed",
+  "unconfigured",
+] as const;
+export type EgressExchangeOutcome = (typeof EGRESS_EXCHANGE_OUTCOMES)[number];
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default

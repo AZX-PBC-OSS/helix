@@ -120,6 +120,10 @@ services:
       # The edge forwards authorized /_api/fetch calls to egress over this URL
       # (same container in dev; a private internal address in prod).
       EDGE_EGRESS_URL: http://localhost:8081
+      # The portal delegates the OAuth code exchange to egress over this URL
+      # (I-02 ADR-0001/0003 — same container in dev; the private internal
+      # address in prod). Unset leaves the delegation unwired.
+      PORTAL_EGRESS_URL: http://localhost:8081
       # OpenTelemetry (ADR-0037). Points every service at the local collector
       # below, the same shape as Azurite standing in for Blob: the OTLP path is
       # exercised locally rather than first discovered in Azure, where its

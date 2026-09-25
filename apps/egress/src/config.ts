@@ -50,6 +50,16 @@ export interface EgressConfig {
   exchangeSecret: Buffer;
   /** Prod custody: Key Vault. */
   keyVaultUrl?: string;
+  /**
+   * Prod custody for DELEGATED token material: the dedicated, egress-only vault
+   * (I-02 ADR-0006 part 1; T-0004's `delegatedVaultName` topology). Read from
+   * `AZURE_DELEGATED_KEY_VAULT_URL` — the same injection posture as
+   * `AZURE_KEY_VAULT_URL` for the connections vault. Unset in prod leaves the
+   * exchange operation unwired (it refuses fail-closed); the deployment
+   * coupling (the vault must exist and egress must be its Officer before prod
+   * use) is proven by T-0034, not by this config.
+   */
+  delegatedKeyVaultUrl?: string;
   /** Dev custody: path to the locally-generated KEK file (post-create.sh). */
   devKeyPath?: string;
   limits: { maxBodyBytes: number; timeoutMs: number };
@@ -212,6 +222,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
     instructionSecret,
     exchangeSecret,
     keyVaultUrl: env.AZURE_KEY_VAULT_URL || undefined,
+    delegatedKeyVaultUrl: env.AZURE_DELEGATED_KEY_VAULT_URL || undefined,
     devKeyPath: env.DEV_SECRETS_KEK_FILE || undefined,
     limits: {
       maxBodyBytes: Number(env.EGRESS_MAX_BODY_BYTES ?? 10 * 1024 * 1024),

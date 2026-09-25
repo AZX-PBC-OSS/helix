@@ -77,10 +77,14 @@ export const ConsentIdentitySchema = z.discriminatedUnion("kind", [
 ]);
 export type ConsentIdentity = z.infer<typeof ConsentIdentitySchema>;
 
-/** http(s) URL without userinfo — the shape of both URL fields below. The
- * userinfo refusal is the provider-endpoint rule (client auth never rides a
- * URL), applied to the two consult-carried URLs for the same reason. */
-function httpUrlNoUserinfo(): z.ZodType<string> {
+/**
+ * http(s) URL without userinfo — the shape of both consult-carried URLs below
+ * and of the exchange operation's `redirectUri` (the same edge-supplied
+ * callback value, T-0019). The userinfo refusal is the provider-endpoint rule
+ * (client auth never rides a URL), applied to every URL the consent/exchange
+ * seams carry for the same reason.
+ */
+export const HttpUrlNoUserinfoSchema = (() => {
   // Mirrors the ENDPOINT_USERINFO guard in providers.ts (see its parser-input
   // rationale); restated here rather than exported so that file's guard keeps
   // its own single reader.
@@ -91,7 +95,7 @@ function httpUrlNoUserinfo(): z.ZodType<string> {
       (value) => !userinfo.test(value.replace(/[\t\n\r]/g, "")),
       "URL must not carry userinfo",
     );
-}
+})();
 
 /**
  * `POST` body of the internal consult (ADR-0002 Decision — the edge sends the
@@ -115,8 +119,8 @@ export const ConsultRequestSchema = z.strictObject({
   identity: ConsentIdentitySchema,
   appSlug: z.string().regex(SLUG_PATTERN, "must be a lowercase DNS label (a-z, 0-9, hyphen)"),
   providerRef: ProviderRefSchema,
-  openerOrigin: httpUrlNoUserinfo().transform((value) => new URL(value).origin),
-  callbackUrl: httpUrlNoUserinfo(),
+  openerOrigin: HttpUrlNoUserinfoSchema.transform((value) => new URL(value).origin),
+  callbackUrl: HttpUrlNoUserinfoSchema,
 });
 export type ConsultRequest = z.infer<typeof ConsultRequestSchema>;
 

@@ -10,9 +10,10 @@ import {
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig } from "./config.js";
+import { deriveExchangeKey } from "./internalJwt.js";
 import { deriveInstructionKey } from "./instruction.js";
 import { FOUNDRY_TOKEN_RESOURCE, ManagedIdentityResolver } from "./managedIdentity.js";
-import { LiveProviders } from "./providerListener.js";
+import { LiveProviders, type ProvidersLogger } from "./providerListener.js";
 import { PgSecretResolver, type SecretResolver } from "./secrets.js";
 import { PgBurnStore } from "./burn.js";
 
@@ -79,6 +80,12 @@ const instructionKey = deriveInstructionKey(config.instructionSecret);
 let store: SecretStore | null = null;
 let tokenProvider: TokenProvider | null = null;
 let custody: "keyvault" | "dev" | "off" = "off";
+// The DELEGATED custody (I-02 ADR-0006 part 1): the dedicated, egress-only
+// vault for user token material in prod; the dev envelope shares the app-
+// secrets KEK (dev envelope parity — no Azure needed, T-0019). Sealed at
+// exchange receipt, opened at renewal/resolution, destroyed at retirement.
+let delegatedStore: SecretStore | null = null;
+let delegatedCustody: "keyvault" | "dev" | "off" = "off";
 if (config.keyVaultUrl) {
   // The mechanism plane stays off `@azure/identity` (ADR-0031 extends the edge's
   // dependency-minimal reasoning here by degree) — the managed-identity token
@@ -96,9 +103,19 @@ if (config.keyVaultUrl) {
   const getToken = tokenProvider.getToken.bind(tokenProvider);
   store = createSecretStore({ keyVaultUrl: config.keyVaultUrl, getToken });
   custody = "keyvault";
+  if (config.delegatedKeyVaultUrl) {
+    delegatedStore = createSecretStore({
+      keyVaultUrl: config.delegatedKeyVaultUrl,
+      getToken,
+    });
+    delegatedCustody = "keyvault";
+  }
 } else if (config.devKeyPath) {
-  store = createSecretStore({ devMasterKey: readDevKey(config.devKeyPath) });
+  const devKey = readDevKey(config.devKeyPath);
+  store = createSecretStore({ devMasterKey: devKey });
   custody = "dev";
+  delegatedStore = createSecretStore({ devMasterKey: devKey });
+  delegatedCustody = "dev";
 }
 // Both pools are built before `buildApp`, so their reporting rides a late-bound
 // ref (the same shape the edge uses). Without the `'error'` listener underneath
@@ -166,25 +183,50 @@ const burnStore = new PgBurnStore(config.databaseUrl, {
   onIdleError: (err) => onClientError(err, "instruction-jti"),
 });
 
-const app = buildApp({ config, resolver, instructionKey, burnStore });
-logRef.current = (obj, msg) => app.log.warn(obj, msg);
-
 // The provider-config cache and its LISTEN listener (I-02 ADR-0011): egress is
 // the channel's only listener, and exchange, refresh, resolution and the
-// availability/revision checks all read this cache. Started before we accept
-// traffic — `start()` never throws (a down DB logs and retries), so it cannot
-// block boot, and nothing on the proxy hot path waits on it afterwards: the
-// cache serves synchronous in-memory reads.
+// availability/revision checks all read this cache. Built BEFORE `buildApp` —
+// the exchange operation's constructor takes the cache reader — and started
+// before we accept traffic: `start()` never throws (a down DB logs and
+// retries), so it cannot block boot, and nothing on the proxy hot path waits
+// on it afterwards: the cache serves synchronous in-memory reads. Its logging
+// rides the same late-bound ref the pool errors use, because the app (and so
+// its logger) does not exist until `buildApp` runs below.
+const providersLogRef: { current: ProvidersLogger } = {
+  current: { info: () => {}, warn: () => {}, error: () => {} },
+};
 const providers = new LiveProviders({
   databaseUrl: config.databaseUrl,
   reconcileIntervalMs: config.providersReconcileIntervalMs,
   statementTimeoutMs: config.statementTimeoutMs,
   log: {
-    info: (obj, msg) => app.log.info(obj, msg),
-    warn: (obj, msg) => app.log.warn(obj, msg),
-    error: (obj, msg) => app.log.error(obj, msg),
+    info: (obj, msg) => providersLogRef.current.info(obj, msg),
+    warn: (obj, msg) => providersLogRef.current.warn(obj, msg),
+    error: (obj, msg) => providersLogRef.current.error(obj, msg),
   },
 });
+
+const app = buildApp({
+  config,
+  resolver,
+  instructionKey,
+  burnStore,
+  exchange: {
+    exchangeKey: deriveExchangeKey(config.exchangeSecret),
+    providers,
+    // The provider row's client credentials open through the EXISTING
+    // app-secrets custody (kv-connections — ADR-0006 part 1); the delegated
+    // tokens seal into the dedicated store beside it. Deliberately two
+    // instances: the delegated vault's grant matrix is single-purpose.
+    credentialStore: store,
+    delegatedStore,
+    allowPrivate: config.allowPrivate,
+    allowInsecureConnection: config.allowInsecureConnection,
+    timeoutMs: config.limits.timeoutMs,
+  },
+});
+logRef.current = (obj, msg) => app.log.warn(obj, msg);
+providersLogRef.current = app.log;
 
 // GC expired burn rows on an interval; unref so it never holds the process open.
 const burnSweep = setInterval(() => {
@@ -223,6 +265,7 @@ try {
       service: SERVICE_NAME,
       port: config.port,
       secretStore: custody,
+      delegatedStore: delegatedCustody,
       // Connection names + vendor host suffixes are operator-chosen config
       // labels, safe beside the connection names the error path already logs.
       managedIdentityConnections: config.managedIdentityConnections.map(

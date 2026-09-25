@@ -110,6 +110,24 @@ export function resolvePlatformMonthlyUsdCap(env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * Internal base URL of helix-egress (`PORTAL_EGRESS_URL`), or null when it is
+ * not configured — the same opt-in posture as the edge's `EDGE_EGRESS_URL`.
+ * The code-exchange delegation (I-02 architecture ADR-0001/0003: the callback
+ * delegates the vendor token exchange to the mechanism plane) rides this base;
+ * null leaves the delegation unwired and the consuming route refuses rather
+ * than degrades — a plausible-but-wrong URL is worse than a clear absence.
+ */
+export function resolveEgressBaseUrl(env: NodeJS.ProcessEnv = process.env): URL | null {
+  const raw = env.PORTAL_EGRESS_URL?.trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw);
+  } catch {
+    throw new Error(`PORTAL_EGRESS_URL is not a valid absolute URL: ${raw}`);
+  }
+}
+
+/**
  * Validate the deployment config at boot so a bad value is a startup error, not
  * a per-request surprise. Called from `buildApp`; the resolvers themselves stay
  * lazy so tests can override env per case.
@@ -117,4 +135,5 @@ export function resolvePlatformMonthlyUsdCap(env: NodeJS.ProcessEnv = process.en
 export function assertDeploymentConfig(env: NodeJS.ProcessEnv = process.env): void {
   resolveAppPublicBase(env);
   resolveDevApiBase(env);
+  resolveEgressBaseUrl(env);
 }

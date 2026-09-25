@@ -384,6 +384,9 @@ importers:
       jose:
         specifier: 'catalog:'
         version: 6.2.9
+      openid-client:
+        specifier: 'catalog:'
+        version: 6.8.4
       pg:
         specifier: 'catalog:'
         version: 8.21.0
@@ -394,6 +397,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@azx-pbc/dev-oauth-vendor':
+        specifier: workspace:*
+        version: link:../dev-oauth-vendor
       '@opentelemetry/sdk-metrics':
         specifier: 'catalog:'
         version: 2.10.0(@opentelemetry/api@1.9.1)

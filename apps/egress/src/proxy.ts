@@ -7,7 +7,7 @@ import {
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
-import { Agent, buildConnector, request } from "undici";
+import { Agent, request } from "undici";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   type AttestedInstruction,
@@ -42,7 +42,7 @@ import {
 } from "@azx-pbc/shared/telemetry";
 import { instruments, tracer } from "./telemetry.js";
 import { egressSpanAttributes } from "./spanAttributes.js";
-import { SsrfBlockedError, resolveAndValidate } from "./ssrf.js";
+import { SsrfBlockedError, makeValidatingConnector } from "./ssrf.js";
 
 /**
  * `POST /proxy` — the one route that touches plaintext secrets and the public
@@ -182,45 +182,6 @@ function redactQueryParam(
     }
   };
   return Array.isArray(value) ? value.map(redactOne) : redactOne(value);
-}
-
-/**
- * A shared connector that resolves + validates the target host and **pins the
- * socket to the validated IP** on every new connection, then hands off to
- * undici's default connector — so one long-lived {@link Agent} keeps connection
- * pooling (keep-alive across requests to the same origin) without losing the
- * SSRF IP-pin (ADR-0005 perf note). We dial the real origin (undici pools by
- * origin and sets SNI/Host from it); the connector only rewrites the socket
- * target to the validated IP.
- *
- * Validation runs per *new* socket. A pooled/keep-alive socket is already bonded
- * to a validated IP, so reuse can only ever reach that same address — a DNS
- * rebind between requests cannot redirect a live connection, and the next fresh
- * connection re-resolves and re-validates. `resolveAndValidate` throws
- * {@link SsrfBlockedError} for a blocked or unresolvable host; undici propagates
- * it verbatim to the `request()` rejection, where the handler maps it to a 403
- * `blocked` (preserving the old upfront-check semantics).
- */
-function makeValidatingConnector(
-  allowPrivate: boolean,
-  timeoutMs: number,
-): buildConnector.connector {
-  const base = buildConnector({ timeout: timeoutMs });
-  return function connect(opts, callback): void {
-    resolveAndValidate(opts.hostname, allowPrivate).then(
-      (pinned) => {
-        // Dial the validated IP literal; keep SNI + cert identity on the real
-        // hostname. undici leaves `servername` unset for the connector, so it
-        // must be pinned here exactly as the old per-request `connect.servername`
-        // did — otherwise the default connector would derive SNI from the IP.
-        base(
-          { ...opts, hostname: pinned.address, servername: opts.servername ?? opts.hostname },
-          callback,
-        );
-      },
-      (err: unknown) => callback(err instanceof Error ? err : new Error(String(err)), null),
-    );
-  };
 }
 
 /** What `proxyHandler` establishes before it decides the span's parent. */

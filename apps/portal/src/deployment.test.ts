@@ -6,6 +6,7 @@ import {
   connectionsCallbackUrl,
   resolveAppPublicBase,
   resolveDevApiBase,
+  resolveEgressBaseUrl,
   resolvePlatformMonthlyUsdCap,
 } from "./deployment.js";
 
@@ -130,6 +131,33 @@ describe("resolvePlatformMonthlyUsdCap", () => {
 
   it("parses a positive cap", () => {
     expect(resolvePlatformMonthlyUsdCap({ PLATFORM_MONTHLY_USD_CAP: "2500" })).toBe(2500);
+  });
+});
+
+describe("resolveEgressBaseUrl", () => {
+  // The exchange delegation (I-02 ADR-0001/0003) is opt-in exactly like the
+  // edge's EDGE_EGRESS_URL: null unwires it, and the consuming route refuses
+  // rather than degrades.
+  it("is null when unset — the exchange delegation is opt-in", () => {
+    expect(resolveEgressBaseUrl({})).toBeNull();
+  });
+
+  it("honours PORTAL_EGRESS_URL", () => {
+    expect(
+      resolveEgressBaseUrl({ PORTAL_EGRESS_URL: "http://helix-egress.internal:8081" })?.origin,
+    ).toBe("http://helix-egress.internal:8081");
+  });
+
+  it("rejects a non-URL value", () => {
+    expect(() => resolveEgressBaseUrl({ PORTAL_EGRESS_URL: "egress" })).toThrow(
+      /not a valid absolute URL/,
+    );
+  });
+
+  it("is part of the boot assertion", () => {
+    expect(() => assertDeploymentConfig({ PORTAL_EGRESS_URL: "nope" })).toThrow(
+      /PORTAL_EGRESS_URL/,
+    );
   });
 });
 

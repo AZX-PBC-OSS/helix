@@ -1,5 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { Agent, buildConnector } from "undici";
 
 /**
  * SSRF hardening (fetch-proxy design §6). An outbound proxy driven by untrusted
@@ -190,4 +191,57 @@ export async function resolveAndValidate(
   }
   const chosen = addrs[0]!;
   return { address: chosen.address, family: chosen.family === 6 ? 6 : 4 };
+}
+
+/**
+ * A shared connector that resolves + validates the target host and **pins the
+ * socket to the validated IP** on every new connection, then hands off to
+ * undici's default connector — so one long-lived {@link Agent} keeps connection
+ * pooling (keep-alive across requests to the same origin) without losing the
+ * SSRF IP-pin (ADR-0005 perf note). We dial the real origin (undici pools by
+ * origin and sets SNI/Host from it); the connector only rewrites the socket
+ * target to the validated IP.
+ *
+ * Validation runs per *new* socket. A pooled/keep-alive socket is already bonded
+ * to a validated IP, so reuse can only ever reach that same address — a DNS
+ * rebind between requests cannot redirect a live connection, and the next fresh
+ * connection re-resolves and re-validates. `resolveAndValidate` throws
+ * {@link SsrfBlockedError} for a blocked or unresolvable host; undici propagates
+ * it verbatim to the `request()` rejection, where the handler maps it to a 403
+ * `blocked` (preserving the old upfront-check semantics).
+ *
+ * This is the ONE definition of the pinned transport (I-02 ADR-0009 §Shared
+ * ground): the fetch-proxy's dispatcher and the exchange operation's
+ * `customFetch` adapter both build on it, so the SSRF controls survive every
+ * outbound hop this plane makes — an OAuth library's own fetch would not
+ * inherit them.
+ */
+export function makeValidatingConnector(
+  allowPrivate: boolean,
+  timeoutMs: number,
+): buildConnector.connector {
+  const base = buildConnector({ timeout: timeoutMs });
+  return function connect(opts, callback): void {
+    resolveAndValidate(opts.hostname, allowPrivate).then(
+      (pinned) => {
+        // Dial the validated IP literal; keep SNI + cert identity on the real
+        // hostname. undici leaves `servername` unset for the connector, so it
+        // must be pinned here exactly as the old per-request `connect.servername`
+        // did — otherwise the default connector would derive SNI from the IP.
+        base(
+          { ...opts, hostname: pinned.address, servername: opts.servername ?? opts.hostname },
+          callback,
+        );
+        return;
+      },
+      (err: unknown) => callback(err instanceof Error ? err : new Error(String(err)), null),
+    );
+  };
+}
+
+/** An {@link Agent} over {@link makeValidatingConnector} — the pinned dispatcher. */
+export function makePinnedDispatcher(allowPrivate: boolean, timeoutMs: number): Agent {
+  return new Agent({
+    connect: makeValidatingConnector(allowPrivate, timeoutMs),
+  });
 }

@@ -47,6 +47,7 @@ terminates untrusted traffic (decision 4).
 | `helix.consent.start.dev` | the dev gateway's `/:slug/_api/connections/:ref/start` route (I-02 T-0016) — the dev tier's bearer POST → single-use popup URL |
 | `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route (I-02 T-0017) — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
 | `helix.egress.proxy` | egress `POST /proxy` |
+| `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation (I-02 T-0019) |
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
@@ -75,6 +76,16 @@ looked up:
   records `http.route` per surface — `/_api/llm/chat` or
   `/_api/openai/v1/chat/completions` — so throttles on the OpenAI-compatible
   route are findable by route.
+- `helix.egress.exchange` spans carry `helix.outcome` ∈
+  `EGRESS_EXCHANGE_OUTCOMES` (`exchanged`, `rejected`, `provider_unavailable`,
+  `exchange_failed`, `unauthorized`, `malformed`, `unconfigured` — the seven
+  early-return classes of the handler), `helix.provider_ref`, and
+  `helix.reason` on a criterion-27 rejection (the bounded gate vocabulary —
+  `unusable_lifetime`, `missing_refresh_token`, `missing_permissions`). The
+  vendor token endpoint's failures are the ONE word `exchange_failed`: the
+  fixed-string discipline (I-02 ADR-0009) keeps vendor error bodies — which can
+  echo client credentials — off the wire, out of logs, and off this span; the
+  span records no exception, like every egress span.
 - `helix.auth.connections.proxy` (the auth host's `/connections/*` reverse
   proxy) records `url.path` only — the vendor's redirect lands there with
   `code` and `state` in the URL, so the query is dropped wholesale
@@ -122,6 +133,7 @@ looked up:
 | `helix.gateway.calls` | counter | `capability`, `outcome`, `appId` |
 | `helix.gateway.duration` | histogram (ms) | `capability`, `outcome` |
 | `helix.egress.proxy.duration` | histogram (ms) | `outcome` |
+| `helix.egress.exchanges` | counter | `outcome`, `env` (I-02 T-0019) |
 | `helix.providers.reconciles` | counter | `outcome` |
 | `helix.providers.listen_status` | observable gauge | — |
 | `helix.session.gate_denied` | counter | `reason` |

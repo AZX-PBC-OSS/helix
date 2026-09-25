@@ -9,6 +9,7 @@ import {
 } from "@opentelemetry/api";
 import {
   DURATION_BUCKETS_MS,
+  INSTR_EGRESS_EXCHANGES,
   INSTR_EGRESS_PROXY_DURATION,
   INSTR_PROVIDERS_LISTEN_STATUS,
   INSTR_PROVIDERS_RECONCILES,
@@ -35,6 +36,8 @@ export interface EgressInstruments {
    * Attached/detached by whoever holds the listener's lifecycle.
    */
   providersListenStatus: ObservableGauge;
+  /** Code-exchange operations by `outcome` and `env` (I-02 T-0019). */
+  exchanges: Counter;
 }
 
 /**
@@ -64,6 +67,9 @@ export function instruments(): EgressInstruments {
     providersListenStatus: meter.createObservableGauge(INSTR_PROVIDERS_LISTEN_STATUS, {
       description:
         "1 while the provider LISTEN client is connected; 0 while down; absent before start / after stop.",
+    }),
+    exchanges: meter.createCounter(INSTR_EGRESS_EXCHANGES, {
+      description: "Code-exchange operations by outcome and provider env.",
     }),
   };
   return cached;
