@@ -576,9 +576,19 @@ function applyScalar(caps: Capabilities, d: Delta): void {
     case "data.bytesPerDay":
       caps.data = { ...ensureData(caps), bytesPerDay: d.to as number | undefined };
       return;
-    case "fetch.shim":
-      caps.fetch = { ...ensureFetch(caps), shim: Boolean(d.to) };
+    case "fetch.shim": {
+      const on = Boolean(d.to);
+      caps.fetch = { ...ensureFetch(caps), shim: on };
+      // CapabilitiesSchema's parse normalizes the legacy alias and the
+      // first-class block into each other (OR-merge), so applying the delta to
+      // the legacy boolean alone would let a stale canonical block merge the
+      // old value back on the re-parse below — a revoked shim that stayed on.
+      // Write both views, then let the parse confirm them.
+      if (on || caps.shim) {
+        caps.shim = { fetch: on, connect: caps.shim?.connect ?? false };
+      }
       return;
+    }
     case "fetch.requestsPerDay":
       caps.fetch = { ...ensureFetch(caps), requestsPerDay: d.to as number | undefined };
       return;

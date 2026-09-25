@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AppManifestSchema, isValidServiceWorkerScope } from "./manifest.js";
+import { AppManifestSchema, FetchConnectionSchema, isValidServiceWorkerScope } from "./manifest.js";
 import { VisibilitySchema } from "./visibility.js";
 
 describe("AppManifestSchema", () => {
@@ -237,3 +237,138 @@ function CapabilitiesParse(capabilities: unknown) {
     capabilities,
   });
 }
+
+// T-0002 / ADR-0005: the origin's credential select is 3-way (none / stored
+// secret / OAuth provider), the shim is a first-class capability with the
+// boolean as a normalized legacy alias, and the origin schema is strict.
+describe("fetch origin credential exclusivity (spec decision 28)", () => {
+  it("rejects an origin declaring both a stored secret and a provider", () => {
+    const result = FetchConnectionSchema.safeParse({
+      origin: "https://api.vendor.example",
+      connection: "vendor-live",
+      provider: "vendor",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("still parses keyless and secret-bound origins to exactly today's shape", () => {
+    // Regression: no deployed app's declaration changes meaning.
+    const keyless = FetchConnectionSchema.parse({ origin: "https://api.github.com" });
+    expect(keyless).toEqual({ origin: "https://api.github.com" });
+    const bound = FetchConnectionSchema.parse({
+      origin: "https://api.stripe.com",
+      connection: "stripe-live",
+    });
+    expect(bound).toEqual({ origin: "https://api.stripe.com", connection: "stripe-live" });
+  });
+
+  it("parses a provider binding with its required/optional dependency hint", () => {
+    const result = AppManifestSchema.safeParse({
+      app: "vendor-app",
+      visibility: { mode: "internal" },
+      capabilities: {
+        fetch: {
+          origins: [{ origin: "https://app.asana.com", provider: "asana", required: true }],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const bound = result.data.capabilities.fetch?.origins[0];
+      expect(bound?.provider).toBe("asana");
+      // `required` is the app's dependency hint only — it never blocks app
+      // loading or triggers anything platform-side (criterion 17).
+      expect(bound?.required).toBe(true);
+    }
+  });
+
+  it("enforces the provider reference charset on the binding", () => {
+    expect(
+      FetchConnectionSchema.safeParse({ origin: "https://a.example", provider: "Asana" }).success,
+    ).toBe(false);
+    expect(
+      FetchConnectionSchema.safeParse({ origin: "https://a.example", provider: "" }).success,
+    ).toBe(false);
+  });
+
+  it("is strict — an unknown origin key is rejected, not stripped (ADR-0005)", () => {
+    const result = FetchConnectionSchema.safeParse({
+      origin: "https://api.github.com",
+      connection: "gh",
+      // The silent-strip hazard: today's non-strict schema would drop this and
+      // store a binding the author never reviewed.
+      credintial: "typo",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("strictness does not leak beyond the origin schema", () => {
+    // Only the origin schema and the instruction schema went strict; the
+    // enclosing blocks keep today's lenient parse.
+    expect(CapabilitiesParse({ fetch: { bogus: 1, origins: [] } }).success).toBe(true);
+    expect(CapabilitiesParse({ bogus: 1 }).success).toBe(true);
+  });
+});
+
+describe("first-class shim capability with legacy alias (design decision 6)", () => {
+  it("a legacy boolean-shim manifest parses to the same capability set as the new form", () => {
+    const legacy = CapabilitiesParse({ fetch: { shim: true } });
+    const modern = CapabilitiesParse({ shim: { fetch: true } });
+    expect(legacy.success).toBe(true);
+    expect(modern.success).toBe(true);
+    if (legacy.success && modern.success) {
+      // Behaviorally indistinguishable after parse — in fact identical.
+      expect(modern.data).toEqual(legacy.data);
+      expect(legacy.data.capabilities.fetch?.shim).toBe(true);
+      expect(legacy.data.capabilities.shim).toEqual({ fetch: true, connect: false });
+    }
+  });
+
+  it("keeps the boolean view synchronized on every parse, both directions", () => {
+    // Old form → the canonical block appears...
+    const legacy = CapabilitiesParse({
+      fetch: { shim: true, origins: [{ origin: "https://a.example" }] },
+    });
+    if (legacy.success) {
+      expect(legacy.data.capabilities.fetch?.shim).toBe(true);
+      expect(legacy.data.capabilities.shim).toEqual({ fetch: true, connect: false });
+    }
+    // ...and the new form → the legacy boolean reads the same grant, which is
+    // what the edge's per-block fetch parse consumes until the projection
+    // migrates (T-0013).
+    const modern = CapabilitiesParse({ shim: { fetch: true } });
+    if (modern.success) {
+      expect(modern.data.capabilities.fetch?.shim).toBe(true);
+      expect(modern.data.capabilities.fetch?.origins).toEqual([]);
+    }
+  });
+
+  it("leaves shim-less manifests without a shim block", () => {
+    const parsed = CapabilitiesParse({ fetch: { origins: [{ origin: "https://a.example" }] } });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.capabilities.shim).toBeUndefined();
+      expect(parsed.data.capabilities.fetch?.shim).toBe(false); // today's default
+    }
+  });
+
+  it("connect is a separate opt-in that never implies the fetch rewrite", () => {
+    const parsed = CapabilitiesParse({ shim: { connect: true } });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.capabilities.shim).toEqual({ fetch: false, connect: true });
+      expect(parsed.data.capabilities.fetch).toBeUndefined();
+    }
+  });
+
+  it("an explicit new-form false beats nothing — the alias only adds a grant", () => {
+    // Both spellings present: the merge is ON if either says on (failing here
+    // would silently strip a grant written by the pre-T-0002 editor).
+    const parsed = CapabilitiesParse({ fetch: { shim: true }, shim: { fetch: false } });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.capabilities.shim).toEqual({ fetch: true, connect: false });
+      expect(parsed.data.capabilities.fetch?.shim).toBe(true);
+    }
+  });
+});

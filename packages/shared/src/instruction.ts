@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { EnvSchema } from "./env.js";
+import { ProviderRefSchema } from "./providers.js";
 
 /**
  * The attested instruction (architecture §3, §6.2; secrets design §4) — the
@@ -32,43 +33,73 @@ export const INSTRUCTION_CAPABILITIES = ["fetch", "llm"] as const;
 export const InstructionCapabilitySchema = z.enum(INSTRUCTION_CAPABILITIES);
 export type InstructionCapability = z.infer<typeof InstructionCapabilitySchema>;
 
-export const AttestedInstructionSchema = z.object({
-  /** App the call is attributed to (registry app id). */
-  appId: z.string().min(1),
-  /** Authenticated user, or the anonymous sentinel on `public` apps. */
-  userOid: z.string().min(1),
-  capability: InstructionCapabilitySchema,
-  /** The allowlisted origin the edge authorized (scheme + host + port). */
-  origin: z.url(),
-  /** Connection (secret) name to inject, if this is a secret-backed call. */
-  connection: z.string().min(1).optional(),
-  /** Correlates the edge audit row with the egress call. */
-  requestId: z.string().min(1),
-  /**
-   * The HTTP method + URL pathname the edge authorized (ADR-0013 step 2, issue #6).
-   * Egress refuses a mismatched verb/resource, so a captured instruction can't be
-   * redirected to a different request on the same origin (origin is already bound
-   * above; the `jti` burn already blocks replay — this closes the residual
-   * same-origin-different-request gap). Bound to `pathname` only (not query): the
-   * app controls the query, and origin + jti already constrain the call.
-   *
-   * Optional for rollout safety (like `env`): within one instance edge+egress
-   * deploy together and instructions live 30 s, but a rolling restart may briefly
-   * verify an old-edge token that lacks these. Only the edge can sign, so absence
-   * means "old edge", not tampering — egress asserts ONLY when the claim is
-   * present. Make required once a fleet is reliably past deploy.
-   */
-  method: z.string().min(1).optional(),
-  path: z.string().optional(),
-  /**
-   * Environment tier this call is scoped to (dev-mode design §6). Egress resolves
-   * the connection secret within this tier — a `dev` instruction can never reach a
-   * `prod` connection secret and vice-versa. Carried by the attested (signed)
-   * claim, never an app/request parameter; defaults `prod` so any instruction
-   * minted before this field existed verifies as production.
-   */
-  env: EnvSchema.default("prod"),
-});
+/**
+ * The attested instruction payload — **strict** (ADR-0005): unknown keys are
+ * rejected, not stripped. The verifier that parses this payload runs on the
+ * mechanism plane, so a _future_ claim an older egress does not know must fail
+ * its verify closed instead of silently disappearing — a non-strict parse would
+ * let a new-form instruction lose its credential field during a version skew
+ * and go out unauthenticated. The registered JWT claims (`exp`/`iat`/`jti`/
+ * `aud`) are the signer/verifier's business (freshness, burn key, trust
+ * domain), not this schema's — a verifier must separate them from the payload
+ * before this strict parse runs (`apps/egress/src/instruction.ts`).
+ */
+export const AttestedInstructionSchema = z
+  .strictObject({
+    /** App the call is attributed to (registry app id). */
+    appId: z.string().min(1),
+    /** Authenticated user, or the anonymous sentinel on `public` apps. */
+    userOid: z.string().min(1),
+    capability: InstructionCapabilitySchema,
+    /** The allowlisted origin the edge authorized (scheme + host + port). */
+    origin: z.url(),
+    /** Connection (secret) name to inject, if this is a secret-backed call. */
+    connection: z.string().min(1).optional(),
+    /**
+     * Provider reference for a delegated call — the user's connection to this
+     * provider is what egress injects (clarifications §Gateway path). Exactly
+     * one credential source travels: this and `connection` are XOR-enforced
+     * below (ADR-0005) — a delegated instruction carries a provider ref or a
+     * secret name, never both.
+     */
+    provider: ProviderRefSchema.optional(),
+    /** Correlates the edge audit row with the egress call. */
+    requestId: z.string().min(1),
+    /**
+     * The HTTP method + URL pathname the edge authorized (ADR-0013 step 2, issue #6).
+     * Egress refuses a mismatched verb/resource, so a captured instruction can't be
+     * redirected to a different request on the same origin (origin is already bound
+     * above; the `jti` burn already blocks replay — this closes the residual
+     * same-origin-different-request gap). Bound to `pathname` only (not query): the
+     * app controls the query, and origin + jti already constrain the call.
+     *
+     * Optional for rollout safety (like `env`): within one instance edge+egress
+     * deploy together and instructions live 30 s, but a rolling restart may briefly
+     * verify an old-edge token that lacks these. Only the edge can sign, so absence
+     * means "old edge", not tampering — egress asserts ONLY when the claim is
+     * present. Make required once a fleet is reliably past deploy.
+     */
+    method: z.string().min(1).optional(),
+    path: z.string().optional(),
+    /**
+     * Environment tier this call is scoped to (dev-mode design §6). Egress resolves
+     * the connection secret within this tier — a `dev` instruction can never reach a
+     * `prod` connection secret and vice-versa. Carried by the attested (signed)
+     * claim, never an app/request parameter; defaults `prod` so any instruction
+     * minted before this field existed verifies as production.
+     */
+    env: EnvSchema.default("prod"),
+  })
+  .superRefine((i, ctx) => {
+    if (i.connection !== undefined && i.provider !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["provider"],
+        message:
+          "an instruction carries exactly one credential source — a connection secret or a provider reference, never both (ADR-0005)",
+      });
+    }
+  });
 export type AttestedInstruction = z.infer<typeof AttestedInstructionSchema>;
 
 /** JWT `typ` header — keeps instructions unredeemable as handoff/flow tokens. */

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProviderRefSchema } from "./providers.js";
 import { VisibilitySchema } from "./visibility.js";
 
 /**
@@ -150,19 +151,51 @@ export type DataCapability = z.infer<typeof DataCapabilitySchema>;
  * A proxied outbound origin (fetch-proxy design §4/§5). An origin listed here is
  * reached **through `/_api/fetch`** (the `helix-egress` mechanism plane) — audited,
  * metered, SSRF-controlled — as opposed to a `direct` browser call widened into
- * CSP via `externalOrigins`. `connection` names a stored secret
- * (`docs/design/secrets-and-connections.md`) injected server-side; absent ⇒ a
- * keyless proxied call.
+ * CSP via `externalOrigins`. The credential select is 3-way and mutually
+ * exclusive (spec decision 28 — one origin expresses at most one credential
+ * source, enforced below):
+ *  - neither `connection` nor `provider` ⇒ a keyless proxied call;
+ *  - `connection` names a stored secret (`docs/design/secrets-and-connections.md`)
+ *    injected server-side;
+ *  - `provider` names an OAuth provider (spec §App bindings) whose user
+ *    connection egress injects; `required` is the app's dependency hint for
+ *    that binding and nothing more — it never blocks app loading or triggers
+ *    anything platform-side (criterion 17).
+ *
+ * **Strict** (ADR-0005): unknown keys are rejected, not stripped. This schema
+ * is re-parsed by every plane that reads a manifest; a future field an older
+ * plane does not know must fail that parse closed rather than silently
+ * disappear — the silent-strip version skew is the hazard ADR-0005 exists to
+ * close.
  */
-export const FetchConnectionSchema = z.object({
-  origin: z.url(),
-  connection: z.string().min(1).optional(),
-});
+export const FetchConnectionSchema = z
+  .strictObject({
+    origin: z.url(),
+    connection: z.string().min(1).optional(),
+    provider: ProviderRefSchema.optional(),
+    required: z.boolean().optional(),
+  })
+  .superRefine((c, ctx) => {
+    if (c.connection !== undefined && c.provider !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["provider"],
+        message:
+          "an origin binds at most one credential source — declare a stored secret (connection) or an OAuth provider (provider), not both",
+      });
+    }
+  });
 export type FetchConnection = z.infer<typeof FetchConnectionSchema>;
 
 /** The fetch-proxy capability: proxied origins + ergonomics + abuse budget. */
 export const FetchCapabilitySchema = z.object({
-  /** Opt-in transparent `fetch` shim injected at serve time (fetch-proxy §3.2). */
+  /**
+   * Legacy view of the fetch-shim grant. The grant is declared first-class as
+   * {@link ShimCapabilitySchema} (`capabilities.shim.fetch`); this boolean is
+   * the pre-T-0002 spelling, still accepted on input and kept synchronized
+   * with the canonical block on every parse (see {@link CapabilitiesSchema}) —
+   * new manifests should declare `capabilities.shim`, not this field.
+   */
   shim: z.boolean().default(false),
   /** Origins reached through the proxy (mode `proxy`); direct stays in `externalOrigins`. */
   origins: z.array(FetchConnectionSchema).default([]),
@@ -170,6 +203,23 @@ export const FetchCapabilitySchema = z.object({
   requestsPerDay: z.int().positive().optional(),
 });
 export type FetchCapability = z.infer<typeof FetchCapabilitySchema>;
+
+/**
+ * The injected platform helpers an app opts into (design decision 5 — the
+ * platform does not inject JavaScript into app documents unbidden). Both
+ * sub-options are serve-time ergonomics, never a privilege grant: they stay at
+ * the fetch-shim block's low-risk baseline classification in the approval
+ * classifier (`packages/shared/src/approval.ts`).
+ *
+ *  - `fetch`: the transparent `fetch`/XHR rewrite to the proxy (fetch-proxy §3.2).
+ *  - `connect`: the `window.helix.connect()` consent-popup helper (spec §Consent,
+ *    criterion 19) — the raw platform entry stays available without it.
+ */
+export const ShimCapabilitySchema = z.object({
+  fetch: z.boolean().default(false),
+  connect: z.boolean().default(false),
+});
+export type ShimCapability = z.infer<typeof ShimCapabilitySchema>;
 
 /**
  * Is `scope` a legal service-worker scope prefix (ADR-0035 §3)? Exported so the
@@ -234,19 +284,69 @@ export const OfflineCapabilitySchema = z.object({
 });
 export type OfflineCapability = z.infer<typeof OfflineCapabilitySchema>;
 
-export const CapabilitiesSchema = z.object({
-  llm: LlmCapabilitySchema.optional(),
-  data: DataCapabilitySchema.optional(),
-  /** Platform-registered MCP servers this app may reach (§6.1, exposed as REST). */
-  mcp: z.array(z.string()).default([]),
-  /** Extra CSP `connect-src` origins for **direct** browser calls (§4.4). */
-  externalOrigins: z.array(z.url()).default([]),
-  /** Governed outbound HTTP via the fetch-proxy / egress plane (in build, M4.5). */
-  fetch: FetchCapabilitySchema.optional(),
-  /** Platform-owned, scope-confined service worker for offline cold boot (ADR-0035). */
-  offline: OfflineCapabilitySchema.optional(),
-});
-export type Capabilities = z.infer<typeof CapabilitiesSchema>;
+/**
+ * The parsed capabilities shape — the transform below normalizes the legacy
+ * shim alias, so this is declared by hand rather than inferred: inferring the
+ * transform's object-literal return marks every optional key
+ * required-with-`undefined`, which would break every partial `Capabilities`
+ * literal consumers build. A type alias (not an interface) so the shape keeps
+ * its implicit index signature — the portal stores parsed capabilities
+ * straight into a Prisma `InputJsonValue` column. Kept adjacent to the schema
+ * so the two cannot drift.
+ */
+export type Capabilities = {
+  llm?: LlmCapability;
+  data?: DataCapability;
+  mcp: string[];
+  externalOrigins: string[];
+  fetch?: FetchCapability;
+  offline?: OfflineCapability;
+  shim?: ShimCapability;
+};
+
+export const CapabilitiesSchema = z
+  .object({
+    llm: LlmCapabilitySchema.optional(),
+    data: DataCapabilitySchema.optional(),
+    /** Platform-registered MCP servers this app may reach (§6.1, exposed as REST). */
+    mcp: z.array(z.string()).default([]),
+    /** Extra CSP `connect-src` origins for **direct** browser calls (§4.4). */
+    externalOrigins: z.array(z.url()).default([]),
+    /** Governed outbound HTTP via the fetch-proxy / egress plane (in build, M4.5). */
+    fetch: FetchCapabilitySchema.optional(),
+    /** Platform-owned, scope-confined service worker for offline cold boot (ADR-0035). */
+    offline: OfflineCapabilitySchema.optional(),
+    /** Injected platform helpers — the first-class shim grant (design decision 5). */
+    shim: ShimCapabilitySchema.optional(),
+  })
+  /**
+   * Legacy shim-alias normalization (design decision 6): `capabilities.fetch.shim`
+   * predates the first-class block, and both spellings must stay behaviorally
+   * indistinguishable after parse — existing boolean-shim apps keep their grant,
+   * and the edge's per-block fetch parse keeps reading the synchronized boolean
+   * until the projection migrates to the canonical form. On every parse the two
+   * views are OR-merged and written back to BOTH positions, so `parse(oldForm)`
+   * and `parse(newForm)` produce the same capability set and the merge is
+   * idempotent. The one way to lose a grant would be a parse that dropped the
+   * alias's `true` because a stale canonical block said `false` (or vice versa),
+   * so a conflict merges ON — the same direction every default here reads.
+   * Consumers that APPLY a shim change must write both views (the classifier's
+   * `applyScalar` does); a parse alone can never desynchronize them.
+   */
+  .transform((caps): Capabilities => {
+    const legacyShim = caps.fetch?.shim ?? false;
+    const fetchOn = legacyShim || (caps.shim?.fetch ?? false);
+    const connectOn = caps.shim?.connect ?? false;
+    // `shim.fetch: true` without a fetch block is the new spelling of today's
+    // `{fetch: {shim: true}}` — materialize the block so the parsed shapes of
+    // the old and new forms are identical, not merely equivalent.
+    const fetch = caps.fetch ?? (fetchOn ? { shim: fetchOn, origins: [] } : undefined);
+    return {
+      ...caps,
+      fetch: fetch === undefined ? undefined : { ...fetch, shim: fetchOn },
+      ...(fetchOn || connectOn ? { shim: { fetch: fetchOn, connect: connectOn } } : {}),
+    };
+  });
 
 export const AppManifestSchema = z.object({
   /** App slug; matches `App.slug`. */
