@@ -66,8 +66,14 @@ export const METHOD_HEADER = "x-helix-method";
  * Values (by convention — the edge's `toOutcome` folds anything unrecognized
  * into `error`): `ok` a clean proxied round-trip; `upstream_throttled` the
  * upstream answered 429 (the proxy worked, the vendor said slow down);
- * `refusal` egress itself refused the call (4xx from `fail`); `error` an
- * egress-side failure (5xx from `fail`, a throw).
+ * `refusal` egress itself refused the call (4xx from `fail`, and the delegated
+ * `provider_unavailable` / `provider_misconfigured` codes, which meter as
+ * `refusal` per design.md's error table); `error` an egress-side failure (5xx
+ * from `fail`, a throw, a temporary renewal failure); and — I-02 —
+ * `connection_required`, the delegated answer for "the caller has no usable
+ * connection to the bound provider", which the edge ledgers under its OWN
+ * label so usage accounting separates "user not connected" from "policy
+ * refused" (criterion 50; clarifications Q15).
  */
 export const OUTCOME_HEADER = "x-helix-egress-outcome";
 

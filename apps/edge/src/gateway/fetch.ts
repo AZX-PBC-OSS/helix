@@ -24,6 +24,7 @@ import {
   ATTR_CAPABILITY,
   ATTR_CONNECTION,
   ATTR_METHOD,
+  ATTR_PROVIDER_REF,
   ATTR_TARGET_ORIGIN,
   ATTR_TARGET_PATH,
   ROUTE_FETCH,
@@ -93,10 +94,27 @@ function safeRequestHeaders(headers: FastifyRequest["headers"]): Record<string, 
   return out;
 }
 
-/** Map the egress outcome label to a ledger outcome. */
+/**
+ * Map the egress outcome label to a ledger outcome — design.md decision 13's
+ * granularity, restated at the consumer. `connection_required` is its own
+ * label: "the caller has no usable connection" is a consent state, not a
+ * policy refusal, and criterion 50's whole point is that the ledger separates
+ * the two. The provider-shaped codes (`provider_unavailable`,
+ * `provider_misconfigured`) ledger as `refusal`, like egress's other 4xx
+ * refusals. Everything else — a vendor throttle, a temporary renewal failure,
+ * any future word — folds to `error`, so an unknown label can never masquerade
+ * as a clean `ok`.
+ */
 function toOutcome(egressOutcome: string): GatewayOutcome {
   if (egressOutcome === "ok") return "ok";
-  if (egressOutcome === "refusal") return "refusal";
+  if (egressOutcome === "connection_required") return "connection_required";
+  if (
+    egressOutcome === "refusal" ||
+    egressOutcome === "provider_unavailable" ||
+    egressOutcome === "provider_misconfigured"
+  ) {
+    return "refusal";
+  }
   return "error";
 }
 
@@ -115,7 +133,10 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     // Kept as its own binding on purpose: `userOid` alone crosses the egress
     // trust boundary below, and the captured labels must not follow it there —
     // AttestedInstructionSchema is deliberately the opaque id and nothing more.
-    const { userOid } = identity;
+    // `userKind` joins it only on a delegated mint, where egress needs the
+    // recorded kind to refuse anon/password callers (spec criterion 21); the
+    // display half (`userName`/`userEmail`) still never crosses.
+    const { userOid, userKind } = identity;
 
     if (await anonRateLimited(rt.anonLimiter, req, entry, caller)) {
       sendFetchError(reply, 429, "rate_limited", "per-IP request budget exhausted");
@@ -211,11 +232,17 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       sendFetchError(reply, 403, "forbidden", `origin ${target.origin} is not a proxied origin`);
       return;
     }
-    // The origin is allowlisted; unwrap its credential source. Only a
-    // secret-bound origin yields a secret name — a keyless or provider-bound
-    // one carries none, so the minted instruction stays credential-free.
+    // The origin is allowlisted; unwrap its credential source. Exactly one of
+    // the three shapes mints a credential field: a secret-bound origin names
+    // the stored secret, a provider-bound origin names the delegated provider
+    // ref (the user's connection to that provider is what egress injects — the
+    // edge holds no provider state and evaluates none, ADR-0004), and a
+    // keyless one carries neither. The union makes secret and provider
+    // mutually exclusive, so the instruction's XOR (ADR-0005) holds by
+    // construction.
     const credential = entry.fetch.connections.get(target.origin);
     const connection = credential?.kind === "secret" ? credential.connection : null;
+    const provider = credential?.kind === "provider" ? credential.provider : null;
 
     // Recorded only now: the origin has been matched against the manifest
     // allowlist, so it is a value the operator granted rather than one the app
@@ -225,6 +252,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       [ATTR_TARGET_ORIGIN]: target.origin,
       [ATTR_TARGET_PATH]: fetchPathOf(target.pathname),
       ...(connection ? { [ATTR_CONNECTION]: connection } : {}),
+      ...(provider ? { [ATTR_PROVIDER_REF]: provider } : {}),
     });
 
     // Quota (block-new): the per-app daily request budget from the manifest.
@@ -280,6 +308,16 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         method: req.method,
         path: target.pathname,
         ...(connection ? { connection } : {}),
+        // The delegated mint (I-02 T-0023): the provider ref, never a
+        // connection name — and T-0022 makes the caller's principal kind
+        // mandatory on a delegated instruction, stamped from the session's
+        // recorded kind (the dev gateway's dev identity yields `dev` the same
+        // way, through `meterIdentity`). A kindless caller — a session
+        // predating the kind column — is never fabricated into one: the
+        // instruction mints without it and egress's strict verify refuses it,
+        // which is the fail-closed answer for a kind the edge does not know.
+        ...(provider ? { provider } : {}),
+        ...(provider && userKind ? { userKind } : {}),
       },
       rt.instructionKey,
     );

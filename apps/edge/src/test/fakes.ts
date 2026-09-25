@@ -236,8 +236,9 @@ export class FakeUsageStore implements UsageStore {
   async fetchRequestsToday(): Promise<number> {
     if (this.fetchToday !== undefined) return this.fetchToday;
     // Mirrors PgUsageStore's predicate: the platform's own pre-egress refusals
-    // don't consume the budget. Keep the two in step — a fake that counts
-    // differently from the real store makes the unit tests lie.
+    // don't consume the budget, and `connection_required` — an egress outcome —
+    // does. Keep the two in step — a fake that counts differently from the
+    // real store makes the unit tests lie.
     return this.records.filter(
       (r) => r.capability === "fetch" && r.outcome !== "quota_blocked" && r.outcome !== "forbidden",
     ).length;

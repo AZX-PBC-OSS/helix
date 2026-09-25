@@ -1,13 +1,19 @@
+import { randomBytes } from "node:crypto";
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { type JWTPayload, jwtVerify } from "jose";
 import { hashDevToken, newDevToken } from "@azx-pbc/shared/devToken";
-import type { HealthCheck } from "@azx-pbc/shared";
+import { INSTRUCTION_JWT_TYP, type HealthCheck } from "@azx-pbc/shared";
 import { buildDevGateway } from "./app.js";
 import type { DevTokenRow, DevTokenStore } from "./devTokenStore.js";
 import { testDevGatewayConfig } from "../test/config.js";
 import { FakeAppDataStore, FakeRegistry, FakeUsageStore, registryEntry } from "../test/fakes.js";
 import { TRUST_PROXY_CHECK_NAME, TRUST_PROXY_WINDOW } from "../routing/trustProxyHealth.js";
 import type { AppDataStore, PutResult, SharedKeyPage, StoredValue } from "../gateway/data.js";
+import type { EgressProvider, EgressRequest, EgressResponse } from "../gateway/egressProvider.js";
+import { deriveInstructionKey } from "../gateway/instruction.js";
+import type { ProxiedOriginCredential } from "../registry/projection.js";
 import type { Env } from "@azx-pbc/shared";
 
 /**
@@ -422,6 +428,106 @@ describe("dev-gateway CORS preflight", () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+    await app.close();
+  });
+});
+
+/**
+ * The delegated mint on the dev tier (I-02 T-0023). The dev gateway reuses the
+ * edge's fetch handler unchanged, so a provider-bound origin mints a delegated
+ * instruction there too — and the caller kind it must carry (T-0022) is the
+ * dev token's `dev` (Q10: dev-tier delegation keys to the developer identity).
+ * A capturing egress fake stands in for the mechanism plane, the same seam
+ * `fetch.test.ts` uses on the prod path.
+ */
+describe("dev-gateway delegated fetch minting", () => {
+  const INSTRUCTION_SECRET = randomBytes(32);
+  const instructionKey = deriveInstructionKey(INSTRUCTION_SECRET);
+
+  /** Captures forwarded instructions; answers a clean proxied 200. */
+  class CapturingEgress implements EgressProvider {
+    readonly calls: EgressRequest[] = [];
+    async proxy(req: EgressRequest): Promise<EgressResponse> {
+      this.calls.push(req);
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: Readable.from([Buffer.from("{}")]),
+        outcome: "ok",
+      };
+    }
+    async close(): Promise<void> {}
+  }
+
+  async function decode(token: string): Promise<JWTPayload> {
+    const { payload } = await jwtVerify(token, instructionKey, { typ: INSTRUCTION_JWT_TYP });
+    return payload;
+  }
+
+  function buildDelegated(tokens: FakeDevTokenStore) {
+    const egress = new CapturingEgress();
+    const usage = new FakeUsageStore();
+    const app: FastifyInstance = buildDevGateway({
+      config: testDevGatewayConfig(),
+      registry: new FakeRegistry([
+        registryEntry({
+          slug: "myapp",
+          appId: APP_A,
+          fetch: {
+            connections: new Map<string, ProxiedOriginCredential>([
+              [
+                "https://api.github.com",
+                { kind: "provider", provider: "github-app", required: false },
+              ],
+            ]),
+            requestsPerDay: null,
+            shim: false,
+          },
+        }),
+      ]),
+      devTokens: tokens,
+      appData: new FakeAppDataStore(),
+      usage,
+      llmProvider: null,
+      egress,
+      instructionKey,
+      portal: null,
+    });
+    return { app, egress, usage };
+  }
+
+  it("stamps the dev caller's kind and the provider ref into the instruction", async () => {
+    const tokens = new FakeDevTokenStore();
+    const token = newDevToken();
+    tokens.add(token, {
+      appId: APP_A,
+      developerOid: "oid-developer",
+      origins: [GOOD_ORIGIN],
+      expiresAt: future(),
+      revokedAt: null,
+    });
+    const { app, egress, usage } = buildDelegated(tokens);
+    const res = await app.inject({
+      method: "GET",
+      url: "/myapp/_api/fetch/https://api.github.com/users/octocat",
+      headers: { authorization: `Bearer ${token}`, origin: GOOD_ORIGIN },
+    });
+    expect(res.statusCode).toBe(200);
+    const claims = await decode(egress.calls[0]!.instruction);
+    expect(claims.provider).toBe("github-app");
+    expect(claims.connection).toBeUndefined();
+    // The dev token's developer identity is kind `dev` — attested, never
+    // inferred — and the instruction is env-partitioned to `dev` (Q10).
+    expect(claims.userKind).toBe("dev");
+    expect(claims.userOid).toBe("oid-developer");
+    expect(claims.env).toBe("dev");
+    expect(usage.records).toContainEqual(
+      expect.objectContaining({
+        capability: "fetch",
+        outcome: "ok",
+        userKind: "dev",
+      }),
+    );
     await app.close();
   });
 });

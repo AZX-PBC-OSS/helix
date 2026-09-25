@@ -65,6 +65,12 @@ looked up:
   path's last segment, and prefix grants (ADR-0042) make those keys unbounded
   and attacker-choosable, so the wrapper records `http.route` + verb only.
   Pinned by `spanRedaction.test.ts`'s planted-key case.
+- `helix.gateway.fetch` spans carry `helix.target.origin`, `helix.target.path`,
+  and — per credential source, once the target matched the manifest allowlist —
+  `helix.connection` for a secret-bound origin or `helix.provider_ref` for a
+  provider-bound one (I-02 T-0023; the ref is the admin-granted catalogue key,
+  bounded by `PROVIDER_REF_MAX`). Nothing is recorded for a keyless origin, and
+  an origin that failed the allowlist check is never recorded under either key.
 - `helix.egress.proxy` spans carry `helix.credential_source` ∈ {`secret`,
   `managed-identity`, `delegated`} when a credential was injected — which custody
   path served the call (ADR-0046; `delegated` is the caller's own OAuth
