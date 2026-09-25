@@ -211,7 +211,11 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
       sendFetchError(reply, 403, "forbidden", `origin ${target.origin} is not a proxied origin`);
       return;
     }
-    const connection = entry.fetch.connections.get(target.origin) ?? null;
+    // The origin is allowlisted; unwrap its credential source. Only a
+    // secret-bound origin yields a secret name — a keyless or provider-bound
+    // one carries none, so the minted instruction stays credential-free.
+    const credential = entry.fetch.connections.get(target.origin);
+    const connection = credential?.kind === "secret" ? credential.connection : null;
 
     // Recorded only now: the origin has been matched against the manifest
     // allowlist, so it is a value the operator granted rather than one the app

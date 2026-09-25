@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
 import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
+import type { ProxiedOriginCredential } from "../registry/projection.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import { until, withServer } from "../test/socket.js";
 import {
@@ -127,7 +128,7 @@ interface FetchEdge {
 
 function buildFetchEdge(
   opts: {
-    connections?: Map<string, string | null>;
+    connections?: Map<string, ProxiedOriginCredential>;
     requestsPerDay?: number | null;
     withEgress?: boolean;
     maxBodyBytes?: number;
@@ -137,9 +138,9 @@ function buildFetchEdge(
   const usage = new FakeUsageStore();
   const connections =
     opts.connections ??
-    new Map<string, string | null>([
-      ["https://api.github.com", null],
-      ["https://api.stripe.com", "stripe"],
+    new Map<string, ProxiedOriginCredential>([
+      ["https://api.github.com", { kind: "keyless" }],
+      ["https://api.stripe.com", { kind: "secret", connection: "stripe" }],
     ]);
   const app = buildApp({
     config: testEdgeConfig({

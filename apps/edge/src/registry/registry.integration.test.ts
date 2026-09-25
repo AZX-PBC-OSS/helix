@@ -94,4 +94,60 @@ describe("LiveRegistry against the test database", () => {
     seeded.splice(seeded.indexOf(late), 1);
     await eventually(() => registry.getApp(late.slug) === undefined);
   });
+
+  // I-02 T-0013: the fetch grant's binding map carries the manifest's provider
+  // bindings (manifest data only — no provider rows cross to the edge), and the
+  // existing registry NOTIFY loop refreshes the widened shape without restart.
+  it("projects provider-bound fetch origins and refreshes the widened grant on NOTIFY", async () => {
+    const app = await seed({
+      live: true,
+      capabilities: {
+        fetch: {
+          origins: [
+            { origin: "https://api.asana.com", provider: "asana", required: true },
+            { origin: "https://api.github.com" },
+            { origin: "https://api.stripe.com", connection: "stripe" },
+          ],
+        },
+      },
+    });
+
+    // Own LiveRegistry: the shared instance's lifecycle belongs to the test
+    // above.
+    const live = new LiveRegistry({
+      databaseUrl: TEST_DATABASE_URL,
+      reconcileIntervalMs: 60_000,
+      log: QUIET,
+    });
+    try {
+      await live.start();
+      expect(live.getApp(app.slug)?.fetch.connections).toEqual(
+        new Map([
+          ["https://api.asana.com", { kind: "provider", provider: "asana", required: true }],
+          ["https://api.github.com", { kind: "keyless" }],
+          ["https://api.stripe.com", { kind: "secret", connection: "stripe" }],
+        ]),
+      );
+
+      // An updated manifest — the provider binding replaced by a secret
+      // binding — must arrive through the same trigger → NOTIFY → reload loop,
+      // no restart.
+      await pool.query(`UPDATE apps SET capabilities = $1::jsonb WHERE id = $2`, [
+        JSON.stringify({
+          fetch: { origins: [{ origin: "https://api.asana.com", connection: "asana-prod" }] },
+        }),
+        app.appId,
+      ]);
+      await eventually(
+        () =>
+          live.getApp(app.slug)?.fetch.connections.get("https://api.asana.com")?.kind === "secret",
+      );
+      expect(live.getApp(app.slug)?.fetch.connections.get("https://api.asana.com")).toEqual({
+        kind: "secret",
+        connection: "asana-prod",
+      });
+    } finally {
+      await live.stop();
+    }
+  });
 });

@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import type { LlmChatRequest, LlmUsage, Env } from "@azx-pbc/shared";
 import type { BlobGetOptions, BlobGetResult, BlobReader } from "../blob/client.js";
 import type {
+  ProxiedOriginCredential,
   RegistryEntry,
   RegistryFreshness,
   RegistryFreshnessReader,
@@ -44,7 +45,14 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     llm: null,
     data: null,
     externalOrigins: [],
-    fetch: { connections: new Map(), requestsPerDay: null, shim: false },
+    // The one place the widened fetch-grant shape is restated for every edge
+    // test: `connections` maps a canonical origin to exactly one credential
+    // source (keyless | secret | provider — never both).
+    fetch: {
+      connections: new Map<string, ProxiedOriginCredential>(),
+      requestsPerDay: null,
+      shim: false,
+    },
     offline: null,
     ...overrides,
   };
