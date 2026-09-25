@@ -39,6 +39,18 @@ export const ConsentStateSchema = z.string().min(43).max(128);
 export const ConsentNonceSchema = z.string().min(16).max(128);
 
 /**
+ * The correlation tag an app may attach to a consent start (`?attempt=`, the
+ * raw entry) or that the helper mints per call (T-0017). The platform pages
+ * echo it into the completion message, and receivers verify it matches when
+ * supplied (criterion 28) — so its shape is bounded and URL-safe.
+ */
+export const ConsentAttemptTagSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9._~-]+$/, "must be URL-safe punctuation, letters, or digits");
+
+/**
  * Who the consult (or cancel) is for, as the edge attested it:
  *
  * - `user` — a signed-in Helix user on the app host; the prod tier. `userOid`
@@ -162,6 +174,22 @@ export const CancelResponseSchema = z.strictObject({
 export type CancelResponse = z.infer<typeof CancelResponseSchema>;
 
 /**
+ * The app-facing body of `POST /_api/connections/attempt/cancel` (T-0017) —
+ * the helper's cancellation acknowledgement after it observes the popup closed
+ * without a completion message. The caller is the app's own page (the session
+ * cookie authorizes it; the route re-checks origin), and it knows only what it
+ * chose itself: the provider ref and the attempt correlation tag it put on the
+ * start URL. The edge maps the tag to the attempt's OAuth `state`
+ * (CancelRequestSchema above) — the one lookup key the control plane's cancel
+ * arbitrates over. Strict, same fail-closed discipline as every boundary here.
+ */
+export const AttemptCancelRequestSchema = z.strictObject({
+  provider: ProviderRefSchema,
+  attempt: ConsentAttemptTagSchema,
+});
+export type AttemptCancelRequest = z.infer<typeof AttemptCancelRequestSchema>;
+
+/**
  * The auth-host path the dev journey's popup opens — the one-time nonce entry
  * page (design.md §Dev-tier consent journey). The edge builds the returned
  * popup URL from this constant and the portal serves the route at it, through
@@ -210,13 +238,6 @@ export type DevConsentStartResponse = z.infer<typeof DevConsentStartResponseSche
 export const HELIX_CONNECT_MESSAGE_SOURCE = "helix-connect";
 /** The message contract's version — bumped only for a breaking shape change. */
 export const CONNECT_MESSAGE_VERSION = 1;
-
-/** The correlation tag an app may attach to a consent start (`?attempt=`). */
-export const ConsentAttemptTagSchema = z
-  .string()
-  .min(1)
-  .max(128)
-  .regex(/^[A-Za-z0-9._~-]+$/, "must be URL-safe punctuation, letters, or digits");
 
 /**
  * The message's outcome vocabulary — the helper's observable outcome set
@@ -267,3 +288,24 @@ export const ConnectOutcomeMessageSchema = z
     error: "reason is only carried with the error outcome",
   });
 export type ConnectOutcomeMessage = z.infer<typeof ConnectOutcomeMessageSchema>;
+
+/**
+ * What `window.helix.connect()` resolves with (design.md §The connect helper)
+ * — the app-facing result type the helper's script implements and the journey
+ * suites assert against. One outcome per call, never a rejection: `blocked`
+ * (no popup — nothing was started, so no `attempt`), `cancelled` and `timeout`
+ * (the helper's own exits), and every verified message outcome relayed with
+ * the fields the message carried. `reason` rides outcome `error` only, the
+ * same rule {@link ConnectOutcomeMessageSchema} enforces for the message.
+ */
+export const ConnectResultSchema = z
+  .object({
+    outcome: z.enum(CONSENT_MESSAGE_OUTCOMES),
+    provider: z.string(),
+    attempt: ConsentAttemptTagSchema.optional(),
+    reason: z.enum(CONSENT_MESSAGE_REASONS).optional(),
+  })
+  .refine((result) => result.outcome === "error" || result.reason === undefined, {
+    error: "reason is only carried with the error outcome",
+  });
+export type ConnectResult = z.infer<typeof ConnectResultSchema>;

@@ -16,10 +16,12 @@ import {
   FetchCapabilitySchema,
   LlmCapabilitySchema,
   OfflineCapabilitySchema,
+  ShimCapabilitySchema,
   isValidServiceWorkerScope,
   type DataCapability,
   type FetchConnection,
   type LlmCapability,
+  type ShimCapability,
   type VisibilityMode,
 } from "@azx-pbc/shared";
 import { normalizeRequestPath } from "../serving/paths.js";
@@ -113,6 +115,13 @@ export interface RegistryEntry {
    * Parsed fail-closed, and the scope is **re-validated here** (below).
    */
   offline: { scope: string } | null;
+  /**
+   * The injected-helpers grant (manifest `capabilities.shim`, design decision
+   * 5), or null when the app declares none — no platform script is injected
+   * then. `connect` gates the `window.helix.connect` helper's head injection
+   * (serve time only; never a privilege grant). Parsed fail-closed.
+   */
+  shim: ShimCapability | null;
 }
 
 /**
@@ -222,6 +231,19 @@ function parseOfflineGrant(capabilities: unknown): { scope: string } | null {
   const normalized = normalizeRequestPath(scope);
   if (normalized === null || `${normalized}/` !== scope) return null;
   return { scope };
+}
+
+/**
+ * Extract `capabilities.shim` (design decision 5 — the injected-helpers grant),
+ * fail-closed to null. `connect` is first-class here: it never rides the legacy
+ * `fetch.shim` alias, so the block's own parse is the whole grant.
+ */
+function parseShimCapability(capabilities: unknown): ShimCapability | null {
+  if (typeof capabilities !== "object" || capabilities === null) return null;
+  const raw = (capabilities as Record<string, unknown>).shim;
+  if (raw === undefined) return null;
+  const parsed = ShimCapabilitySchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -482,6 +504,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           externalOrigins: parseExternalOrigins(row.capabilities),
           fetch: parseFetchGrant(row.capabilities),
           offline: parseOfflineGrant(row.capabilities),
+          shim: parseShimCapability(row.capabilities),
         });
       }
       this.#map = next;

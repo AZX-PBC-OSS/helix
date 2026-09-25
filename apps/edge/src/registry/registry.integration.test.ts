@@ -69,6 +69,7 @@ describe("LiveRegistry against the test database", () => {
       externalOrigins: [],
       fetch: { connections: new Map(), requestsPerDay: null, shim: false },
       offline: null,
+      shim: null,
     });
     // Preview-only app: known, but nothing live to serve.
     expect(registry.getApp(preview.slug)?.blobPrefix).toBeNull();

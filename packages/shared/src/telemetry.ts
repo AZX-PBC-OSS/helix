@@ -129,6 +129,9 @@ export const SPAN_CONSENT_SWEEP = "helix.consent.sweep";
 export const SPAN_CONSENT_START = "helix.consent.start";
 export const SPAN_CONSENT_START_DEV = "helix.consent.start.dev";
 export const SPAN_CONSENT_REDEEM = "helix.consent.redeem";
+/** The edge's app-facing cancel-acknowledgement route (I-02 T-0017), which
+ * forwards to the portal's own cancel span (above) over the internal seam. */
+export const SPAN_CONSENT_CANCEL_EDGE = "helix.consent.cancel.edge";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -145,6 +148,7 @@ export const ROUTE_AUTH_COMPLETE = "/_auth/complete";
 export const ROUTE_CONNECTIONS = "/connections/*";
 export const ROUTE_CONSENT_START = "/_api/connections/:ref/start";
 export const ROUTE_CONSENT_START_DEV = "/:slug/_api/connections/:ref/start";
+export const ROUTE_CONSENT_CANCEL = "/_api/connections/attempt/cancel";
 export const ROUTE_CONNECTIONS_NONCE_ENTRY = "/connections/consent/start";
 
 /**
@@ -291,6 +295,26 @@ export const CONSENT_START_DEV_OUTCOMES = [
   "error",
 ] as const;
 export type ConsentStartDevOutcome = (typeof CONSENT_START_DEV_OUTCOMES)[number];
+
+/**
+ * Why the edge's cancel-acknowledgement route answered as it did (I-02 T-0017)
+ * — the `helix.outcome` values on the `helix.consent.cancel.edge` span. The
+ * forwarded call's own outcomes (`cancelled`/`not_cancellable`) pass through;
+ * the edge adds what only it decides: `unauthorized` (no usable session or a
+ * cross-origin POST — the caller learns nothing either way) and
+ * `unknown_attempt` (no live tag correlation on this replica — the helper's
+ * acknowledgement then degrades to the attempt's five-minute expiry, the bound
+ * the design already documents; the response body stays the indistinguishable
+ * `not_cancellable`).
+ */
+export const CONSENT_CANCEL_EDGE_OUTCOMES = [
+  "cancelled",
+  "not_cancellable",
+  "unknown_attempt",
+  "unauthorized",
+  "error",
+] as const;
+export type ConsentCancelEdgeOutcome = (typeof CONSENT_CANCEL_EDGE_OUTCOMES)[number];
 
 /**
  * Duration buckets in milliseconds. LLM streams often exceed OTel's default

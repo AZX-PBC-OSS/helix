@@ -37,6 +37,16 @@ export const ProviderKindSchema = z.enum(PROVIDER_KINDS);
 export type ProviderKind = z.infer<typeof ProviderKindSchema>;
 
 /**
+ * The ref's character rule, exported so consumers that must re-run the
+ * identical rule outside zod cannot drift from the schema — the connect
+ * helper's script (T-0017) bakes it to validate `window.helix.connect`'s
+ * argument before it ever becomes a URL path segment.
+ */
+export const PROVIDER_REF_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+/** The ref's length cap, beside the pattern for the same reason. */
+export const PROVIDER_REF_MAX = 64;
+
+/**
  * The provider's stable, human-readable reference — the key manifests and
  * the catalogue use, and the join the export document carries. Env-unique
  * (a `dev` and a `prod` row may share one); immutable after create.
@@ -48,8 +58,8 @@ export type ProviderKind = z.infer<typeof ProviderKindSchema>;
 export const ProviderRefSchema = z
   .string()
   .min(1)
-  .max(64)
-  .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters, digits, and hyphens");
+  .max(PROVIDER_REF_MAX)
+  .regex(PROVIDER_REF_PATTERN, "lowercase letters, digits, and hyphens");
 export type ProviderRef = z.infer<typeof ProviderRefSchema>;
 
 /**

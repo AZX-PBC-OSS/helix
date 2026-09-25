@@ -1,6 +1,8 @@
 import { trace } from "@opentelemetry/api";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
+  CONSENT_ATTEMPT_TTL_SECONDS,
+  ConsentStateSchema,
   CONNECT_MESSAGE_VERSION,
   ConsentAttemptTagSchema,
   ConnectOutcomeMessageSchema,
@@ -29,6 +31,7 @@ import { visibilityAllows } from "../auth/validate.js";
 import { renderConsentTerminalPage, sendConsentPage } from "../serving/consentPages.js";
 import { spanRoute } from "../telemetry.js";
 import { callConsult } from "./consultCall.js";
+import type { AttemptCorrelations } from "./consentCancel.js";
 import type { PortalProvider } from "./portalProvider.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 
@@ -72,6 +75,13 @@ export interface ConsentStartRuntime {
   portal: PortalProvider | null;
   /** null ⇒ HELIX_INTERNAL_SECRET unset; same couldn't-start answer. */
   internalKey: Buffer | null;
+  /**
+   * The helper's attempt-tag → OAuth-state correlation (T-0017). Recorded when
+   * a tagged consult starts; the cancel-acknowledgement route consumes it.
+   * Optional so the existing standalone shape (tests wiring the start route
+   * alone) keeps working — undefined simply records nothing.
+   */
+  correlations?: AttemptCorrelations | null;
 }
 
 /** The consult's JSON answer is tiny; anything bigger is not a consult response. */
@@ -125,10 +135,11 @@ export function isSameOriginNavigation(
 }
 
 /**
- * The usable-session half of the session gate, with this route's own response
- * posture (the sign-in-required page — never the gate's login redirect,
- * criterion 20). Same machinery: cookie parse → hash → store lookup, then the
- * per-request visibility check.
+ * The usable-session half of the session gate, with the consent routes' own
+ * response posture (the sign-in-required page — never the gate's login
+ * redirect, criterion 20). Same machinery: cookie parse → hash → store lookup,
+ * then the per-request visibility check. Shared with the cancel-acknowledgement
+ * route (`consentCancel.ts`), whose caller renders a JSON 401 on the null.
  *
  * Two deliberate narrowings:
  * - A shared-password pseudonym (`kind: "password"`) is not an identified user
@@ -138,16 +149,16 @@ export function isSameOriginNavigation(
  *   resume through login, so bouncing a warm session to the refresh flow would
  *   strand every session older than the refresh window; identity is what
  *   consent keys on, and the group snapshot's authorization decision still
- *   runs (visibilityAllows above).
+ *   runs (visibilityAllows below).
  */
-async function usableSession(
-  rt: ConsentStartRuntime,
+export async function usableSession(
+  sessions: SessionStore | null,
   req: FastifyRequest,
   entry: RegistryEntry,
 ): Promise<Session | null> {
-  if (!rt.sessions) return null;
+  if (!sessions) return null;
   const token = parseCookieHeader(req.headers.cookie).get(SESSION_COOKIE);
-  const session = token ? await rt.sessions.lookup(hashSessionToken(token), entry.appId) : null;
+  const session = token ? await sessions.lookup(hashSessionToken(token), entry.appId) : null;
   if (!session) return null;
   if (session.user.kind !== "user") return null;
   if (!visibilityAllows(entry, session.user.groups)) return null;
@@ -275,7 +286,7 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
       }
 
       // Gate 2 — session, edge-side, before the consult (criterion 20).
-      const session = await usableSession(rt, req, entry);
+      const session = await usableSession(rt.sessions, req, entry);
       if (!session) {
         setOutcome("signin_required");
         sendConsentPage(
@@ -347,6 +358,22 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
             setOutcome("error");
             sendCouldntStart(reply, { providerRef, attempt, appOrigin });
             return;
+          }
+          // The helper's cancel (T-0017) names its attempt by the correlation
+          // tag, and the control plane's cancel arbitrates over the OAuth
+          // state — the edge saw both in this one exchange, so this is where
+          // the correlation is learned. State is read from the consult's own
+          // URL and validated before it is ever used as a lookup key.
+          const state = target.searchParams.get("state");
+          if (attempt !== undefined && state !== null) {
+            const parsedState = ConsentStateSchema.safeParse(state);
+            if (parsedState.success) {
+              rt.correlations?.remember(attempt, {
+                state: parsedState.data,
+                userOid: session.user.oid,
+                expiresAtMs: Date.now() + CONSENT_ATTEMPT_TTL_SECONDS * 1000,
+              });
+            }
           }
           setOutcome("started");
           reply

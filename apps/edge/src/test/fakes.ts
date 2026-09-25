@@ -59,6 +59,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
       shim: false,
     },
     offline: null,
+    shim: null,
     ...overrides,
   };
 }

@@ -45,6 +45,7 @@ terminates untrusted traffic (decision 4).
 | `helix.auth.connections.proxy` | the auth host's `/connections/*` reverse proxy |
 | `helix.consent.start` | the app host's `/_api/connections/:ref/start` route (I-02 T-0014) — the consent popup's prod entry |
 | `helix.consent.start.dev` | the dev gateway's `/:slug/_api/connections/:ref/start` route (I-02 T-0016) — the dev tier's bearer POST → single-use popup URL |
+| `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route (I-02 T-0017) — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
@@ -97,6 +98,16 @@ looked up:
   popup URL carries the single-use nonce, so the query is dropped wholesale
   and the dev bearer token is never an attribute. Pinned by `spanRedaction`'s
   T-0016 case and `traceBoundary`'s route case.
+- `helix.consent.cancel.edge` (the helper's cancellation acknowledgement,
+  T-0017) records `helix.outcome` ∈ {`cancelled`, `not_cancellable`,
+  `unknown_attempt`, `unauthorized`, `error`} (`CONSENT_CANCEL_EDGE_OUTCOMES`)
+  — the forwarded call's outcomes pass through, and the edge adds what only it
+  decides: `unauthorized` (no usable session / cross-origin POST) and
+  `unknown_attempt` (no live tag correlation on this replica — the response
+  body stays the indistinguishable `not_cancellable`, and the attempt is still
+  bounded by the five-minute expiry). `helix.provider_ref` rides the decided
+  paths, and `url.path` only (the body's attempt tag is a correlation tag, not
+  secret material, but it is app-chosen — it is never an attribute).
 - The `helix.consent.*` spans carry `helix.consent.operation` (bounded to
   consult/cancel/claim/sweep/redeem), `helix.outcome` from the operation's bounded
   vocabulary, and on the consult `helix.app.slug`, `helix.app_id` and

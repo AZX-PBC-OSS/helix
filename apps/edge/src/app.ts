@@ -38,6 +38,7 @@ import { DenialThrottle } from "./gateway/denialThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
 import { makeConsentStartHandler } from "./routing/consentStart.js";
+import { AttemptCorrelations, makeConsentCancelHandler } from "./routing/consentCancel.js";
 import type { PortalProvider } from "./routing/portalProvider.js";
 import { deriveInternalKey } from "./internalJwt.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
@@ -51,7 +52,7 @@ import {
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
-import { ROUTE_OPENAI } from "@azx-pbc/shared/telemetry";
+import { ROUTE_OPENAI, ROUTE_CONSENT_CANCEL } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -314,12 +315,26 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // inward (sign-in required without a session, couldn't-start without the
   // portal seam); the terminal pages are its designed answers, so unlike the
   // gateway handlers this needs no null-guard for an unwired runtime.
+  //
+  // The correlation map is the helper-cancel half (T-0017): the start route
+  // records each tagged consult's tag→state pair, and the cancellation route
+  // below consumes it — one instance, shared by both handlers.
+  const correlations = new AttemptCorrelations();
   const handleConsentStart = makeConsentStartHandler({
     config,
     registry: deps.registry,
     sessions: authRuntime?.sessions ?? null,
     portal: deps.portal ?? null,
     internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+    correlations,
+  });
+  const handleConsentCancel = makeConsentCancelHandler({
+    config,
+    registry: deps.registry,
+    sessions: authRuntime?.sessions ?? null,
+    portal: deps.portal ?? null,
+    internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+    correlations,
   });
 
   // The two-router discipline (architecture §3, decision 12): every request
@@ -531,6 +546,21 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app") {
         await handleConsentStart(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // I-02 T-0017: the connect helper's cancellation acknowledgement — the
+  // JSON POST `window.helix.connect` fires when its popup closed without a
+  // completion message. App hosts only; session-gated inward.
+  app.route({
+    method: "POST",
+    url: ROUTE_CONSENT_CANCEL,
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app") {
+        await handleConsentCancel(req, reply, req.hostClass.slug);
         return;
       }
       sendNotFound(reply);

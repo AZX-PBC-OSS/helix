@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { EdgeConfig } from "../config.js";
+import { publicOrigin, type EdgeConfig } from "../config.js";
 import type { BlobReader, BlobGetResult } from "../blob/client.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 import type { SessionGate } from "../auth/gate.js";
@@ -9,6 +9,7 @@ import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../error
 import { normalizeRequestPath } from "./paths.js";
 import { buildAppCsp } from "./csp.js";
 import { buildShimScript, injectHeadScripts } from "./shim.js";
+import { buildConnectScript } from "./connectHelper.js";
 import { buildRegistrationSnippet } from "./serviceWorker.js";
 
 /**
@@ -108,15 +109,18 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // Per-app CSP: baseline widened with this app's approved external origins.
     const csp = buildAppCsp(entry.externalOrigins);
 
-    // Serve-time HTML rewrites: the fetch-proxy shim (§3.2) and/or the offline
-    // capability's service-worker registration (ADR-0035). Either one means we
-    // rewrite the document, so force the full body for the doc we'll inject into
-    // (a 304 would skip injection) and serve it without an etag below. Only the
-    // GET of an HTML-ish path is affected; other assets keep their conditional
-    // path. An app may hold both grants, so the scripts compose.
+    // Serve-time HTML rewrites: the fetch-proxy shim (§3.2), the connect
+    // helper's opt-in grant (I-02 design decision 5 — only the manifest's
+    // `shim.connect` injects it; a provider binding alone never does) and/or
+    // the offline capability's service-worker registration (ADR-0035). Any one
+    // means we rewrite the document, so force the full body for the doc we'll
+    // inject into (a 304 would skip injection) and serve it without an etag
+    // below. Only the GET of an HTML-ish path is affected; other assets keep
+    // their conditional path. Grants compose.
     const wantsShim = method === "GET" && entry.fetch.shim;
+    const wantsConnect = method === "GET" && entry.shim?.connect === true;
     const wantsRegistration = method === "GET" && entry.offline !== null;
-    const wantsInjection = wantsShim || wantsRegistration;
+    const wantsInjection = wantsShim || wantsConnect || wantsRegistration;
     const likelyHtml = relPath === "index.html" || (req.headers.accept ?? "").includes("text/html");
     const effectiveInm = wantsInjection && likelyHtml ? undefined : ifNoneMatch;
 
@@ -173,10 +177,19 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // opt-in app doesn't pay for them, and inlined rather than referenced —
     // `/_helix/*` is unprecachable, so a `<script src>` there is exactly what an
     // offline cold boot cannot load (see `injectHeadScripts`). Shim first: it
-    // must patch `fetch` before anything else on the page runs.
+    // must patch `fetch` before anything else on the page runs. The connect
+    // helper's receiver-verification origins are the app's own host (start-route
+    // pages) plus the auth host (completion pages).
     if (wantsInjection && isHtml) {
       const scripts: string[] = [];
       if (wantsShim) scripts.push(buildShimScript([...entry.fetch.connections.keys()]));
+      if (wantsConnect) {
+        scripts.push(
+          buildConnectScript({
+            platformOrigins: [publicOrigin(config, slug), publicOrigin(config, "auth")],
+          }),
+        );
+      }
       if (entry.offline) scripts.push(buildRegistrationSnippet(entry.offline.scope));
       const injected = injectHeadScripts(await streamToString(result.body), scripts);
       reply
