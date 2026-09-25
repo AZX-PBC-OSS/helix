@@ -12,7 +12,12 @@ import {
   Textarea,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { ApprovalRequest, ApprovalStatus, Delta } from "@azx-pbc/shared";
+import {
+  parseFetchOriginKey,
+  type ApprovalRequest,
+  type ApprovalStatus,
+  type Delta,
+} from "@azx-pbc/shared";
 import { PortalApiError } from "../../api/client";
 import { approvalsQuery } from "../../api/queries";
 import { useApproveRequest, useDenyRequest, useRequestChanges } from "../../api/mutations";
@@ -47,9 +52,25 @@ const ageTone = (days: number): Tone => (days >= 30 ? "bad" : days >= 7 ? "warn"
 /** Uppercase to sit alongside the risk badges (`HIGH RISK` / `ELEVATED`). */
 const ageLabel = (days: number) => (days === 0 ? "PENDING <1D" : `PENDING ${days}D`);
 
+/**
+ * The provider ref a delta binds, when it is a provider-bound fetch-origin add —
+ * the path form `fetch.origins[+origin→provider:ref]` (fetchOriginKey's key, so
+ * the parse stays its exact inverse). Anchored greedy like shared's ARRAY_PATH,
+ * so an origin containing brackets still splits at the last `]`.
+ */
+function providerBoundFetchOrigin(d: Delta): string | null {
+  const m = /^fetch\.origins\[\+(.+)\]$/.exec(d.path);
+  if (!m) return null;
+  return parseFetchOriginKey(m[1]!).provider ?? null;
+}
+
 /** Derive a human label + icon for a request from the kinds of deltas it carries. */
 function kindMeta(deltas: Delta[]): [IconName, string] {
   if (deltas.some((d) => d.path === "visibility")) return ["globe", "Go public"];
+  // Delegated providers outrank the generic origin grant: the binding is the
+  // decision an approver can't take back lightly (high risk, consent-gated).
+  if (deltas.some((d) => providerBoundFetchOrigin(d) !== null))
+    return ["bolt", "Delegated provider"];
   if (deltas.some((d) => d.path.startsWith("mcp"))) return ["key", "MCP grant"];
   if (deltas.some((d) => d.path.startsWith("externalOrigins"))) return ["globe", "Origin grant"];
   if (deltas.some((d) => d.path.startsWith("llm"))) return ["cpu", "LLM budget"];
@@ -84,6 +105,21 @@ function landedStatus(err: unknown): string | null {
   if (typeof details !== "object" || details === null) return null;
   const status: unknown = (details as { status?: unknown }).status;
   return typeof status === "string" ? status : null;
+}
+
+/**
+ * The apply-time provider conflict (T-0009): the approve answered 409 `conflict`
+ * with the stamped ref in `details` — the shape `assertProviderStampsCurrent`
+ * throws, and nothing else 409s approve with a `ref`. Nothing landed and nothing
+ * was applied; the request stays pending for the owner to withdraw or resubmit,
+ * so like a lost decision race this reads as guidance, not failure.
+ */
+function providerConflict(err: unknown): boolean {
+  if (!(err instanceof PortalApiError) || err.status !== 409 || err.code !== "conflict")
+    return false;
+  const details: unknown = err.details;
+  if (typeof details !== "object" || details === null) return false;
+  return typeof (details as { ref?: unknown }).ref === "string";
 }
 
 /** Membership deltas (`mcp[+x]`) are self-describing; scalar deltas show from → to. */
@@ -216,12 +252,21 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
   const days = daysSince(a.createdAt);
   const ask = a.deltas.length === 1 ? diffLine(a.deltas[0]!) : `${a.deltas.length} changes`;
   const signal = priorSignal(a.priorDecisions);
+  // Criterion 16's warning is data stamped at filing (T-0009), so the card
+  // renders it with no extra fetch. Advisory only — it qualifies the ask for
+  // delegated requests and never disables the approve action or re-grades risk.
+  const publicAppWarning =
+    a.deltas.some((d) => providerBoundFetchOrigin(d) !== null) &&
+    a.deltas.some((d) => d.publicApp === true);
 
   // Surface a failed decision instead of just stopping the spinner. A 409 means
   // someone else decided this row first — the mutations refetch the queue on
   // settle, so the message reads as "already handled", not an error to retry.
+  // The provider conflict is the other expected 409: nothing approved, the
+  // request stays pending, and the owner must resubmit against the new config.
   const decisionError = approve.error ?? deny.error ?? requestChanges.error;
   const landed = landedStatus(decisionError);
+  const staleProvider = decisionError !== undefined && providerConflict(decisionError);
 
   return (
     <Card>
@@ -251,7 +296,7 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
           </Group>
 
           {/* The ask: kind + the delta being requested. */}
-          <Group gap={8} mb={a.reason ? 8 : 0} wrap="wrap">
+          <Group gap={8} mb={a.reason || publicAppWarning ? 8 : 0} wrap="wrap">
             <Icon name={kindIcon} size={14} style={{ color: "var(--mantine-color-dark-2)" }} />
             <Text fz={13} c="dark.1">
               {kindLabel}
@@ -260,6 +305,14 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
               {ask}
             </Text>
           </Group>
+
+          {publicAppWarning && (
+            <div style={{ marginBottom: a.reason ? 8 : 0 }}>
+              <Hint icon="alert" tone="warn">
+                This app is public — its anonymous visitors can never connect a vendor account.
+              </Hint>
+            </div>
+          )}
 
           {a.reason && (
             <Text size="sm" c="dark.2" maw={620} lh={1.5} fs="italic">
@@ -334,10 +387,12 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
 
           {decisionError && (
             <div style={{ marginTop: 12 }}>
-              <Hint icon="alert" tone={landed ? "warn" : "bad"}>
-                {landed
-                  ? `This request was already ${LANDED[landed] ?? landed} — the queue has been refreshed.`
-                  : `Couldn't record that decision: ${decisionError.message}`}
+              <Hint icon="alert" tone={landed || staleProvider ? "warn" : "bad"}>
+                {staleProvider
+                  ? "The provider changed after this request was filed — the app owner must resubmit."
+                  : landed
+                    ? `This request was already ${LANDED[landed] ?? landed} — the queue has been refreshed.`
+                    : `Couldn't record that decision: ${decisionError.message}`}
               </Hint>
             </div>
           )}
