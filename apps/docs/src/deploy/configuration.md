@@ -33,6 +33,7 @@ which is the complete and current list.
 | `storageAccountName` | — | Globally unique, 3–24 lowercase alphanumerics |
 | `platformVaultName` | — | Globally unique Key Vault name (platform config secrets) |
 | `connectionsVaultName` | — | Globally unique Key Vault name (app connection secrets) |
+| `delegatedVaultName` | — | Globally unique Key Vault name (user-delegated OAuth token material, egress-only — I-02 ADR-0006) |
 | `postgresServerName` | — | Globally unique Postgres Flexible Server name |
 | `blobContainerName` | `app-bundles` | Blob container for app bundles |
 
@@ -188,6 +189,15 @@ build-time configuration at all):
 | `APP_PUBLIC_BASE` | `https://<appsDomain>` | The portal refuses to boot |
 | `DEV_API_PUBLIC_BASE` | set when `deployDevGateway` | The SPA reports dev mode as disabled |
 | `PLATFORM_MONTHLY_USD_CAP` | `platformMonthlyUsdCap` | No spend line on the Activity page |
+
+The OAuth connections feature (I-02) adds three more template-derived URLs —
+each is the target app's ingress FQDN, so there is nothing to configure:
+
+| Variable | App(s) | Set from | If absent |
+| --- | --- | --- | --- |
+| `EDGE_PORTAL_URL` | edge, dev-gateway | the portal's ingress FQDN | `/connections/*` proxy and consent surfaces answer fail-closed 503 |
+| `PORTAL_EGRESS_URL` | portal | egress's ingress FQDN | the OAuth callback's code-exchange delegation is unwired; completion refuses |
+| `AZURE_DELEGATED_KEY_VAULT_URL` | egress | the `kv-delegated` vault URI (I-02 ADR-0006) | no delegated store is built; delegated-token operations fail closed |
 
 Per-service variables (OIDC endpoints, feature flags, database URLs) are read
 in each service's `config.ts`: [`apps/edge/src/config.ts`](https://github.com/AZX-PBC-OSS/helix/blob/main/apps/edge/src/config.ts),

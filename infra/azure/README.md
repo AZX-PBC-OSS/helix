@@ -284,6 +284,17 @@ exchange/refresh, open at resolution, destroy at retirement — and is the vault
 the portal has no role on it at all, so nothing in the control plane can open a
 delegated token.
 
+Egress is pointed at that vault by the template, not by an operator: it sets
+`AZURE_DELEGATED_KEY_VAULT_URL` from the keyvault module's `delegatedVaultUri`
+output. The same holds for the I-02 inter-app URLs — `EDGE_PORTAL_URL` on the
+edge and dev-gateway (the `/connections/*` proxy and consent surfaces consult
+the portal), and `PORTAL_EGRESS_URL` on the portal (the callback delegates the
+vendor code exchange to egress). All three are derived from the target app's
+ingress FQDN (the portal's is the `<app>.internal.<domain>` form when
+`portalExternal=false`, still reachable from the shared apps environment), so
+they are never set by hand — an out-of-band value is reverted by the next apply,
+like any other template-managed env var.
+
 ## Wildcard TLS (`deployCertbot`, [ADR-0029](../../docs/adr/0029-platform-secret-delivery.md))
 
 Apps live on per-app subdomains (`<app>.<appsDomain>`, ADR-0019), so serving them
@@ -1291,6 +1302,12 @@ script -q /dev/null az containerapp exec -g <rg> -n helix-prod-edge --command \
 
 script -q /dev/null az containerapp exec -g <rg> -n helix-prod-edge --command \
   "node -e \"fetch(process.env.EDGE_EGRESS_URL+'/health').then(r=>console.log(r.status)).catch(e=>console.log('ERR',e.cause?.code))\"" < /dev/null
+# expect: 200
+
+# edge -> portal rides EDGE_PORTAL_URL — probe it before trusting the
+# connections surfaces, the same way
+script -q /dev/null az containerapp exec -g <rg> -n helix-prod-edge --command \
+  "node -e \"fetch(process.env.EDGE_PORTAL_URL+'/health').then(r=>console.log(r.status)).catch(e=>console.log('ERR',e.cause?.code))\"" < /dev/null
 # expect: 200
 
 # from an egress replica: outbound internet must SUCCEED

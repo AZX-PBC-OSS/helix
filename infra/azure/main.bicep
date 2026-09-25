@@ -712,6 +712,22 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
 
 var connectionsVaultUri = keyvault.outputs.connectionsVaultUri
 
+// Delegated custody vault (I-02 ADR-0006) — user OAuth token material.
+var delegatedVaultUri = keyvault.outputs.delegatedVaultUri
+
+// Internal base URLs for the I-02 cross-app hops, hoisted so the four call
+// sites cannot drift (EDGE_EGRESS_URL was already duplicated between the edge
+// and the dev-gateway). Same `https://` + ingress-FQDN shape as the egress URL
+// always used: internal ingress terminates TLS and does not serve plaintext.
+// With portalExternal = false the portal FQDN is the `<app>.internal.<domain>`
+// form, which the edge and dev-gateway resolve inside the shared apps
+// environment; with portalExternal = true it is the env-domain FQDN. Either
+// way the module output is the reachable value — never hard-code
+// portal.<appsDomain> here. Egress references no other app, so these
+// references add no dependency cycle (edge -> portal -> egress).
+var egressBaseUrl = 'https://${egressApp.?outputs.fqdn ?? ''}'
+var portalBaseUrl = 'https://${portalApp.?outputs.fqdn ?? ''}'
+
 // Base for the apps' ACA Key Vault references (vaultUri ends in '/').
 // Versionless on purpose: rotation becomes "write the vault" and ACA picks the
 // new value up within ~30 min, restarting revisions — no redeploy. The refs
@@ -1062,6 +1078,10 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EGRESS_PORT', value: '8081' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
+      // Delegated custody (I-02 ADR-0006): user OAuth token material,
+      // egress-only. Read at boot — without it the delegated store is not
+      // built and every delegated-token operation fails closed.
+      { name: 'AZURE_DELEGATED_KEY_VAULT_URL', value: delegatedVaultUri }
       // Egress reads connection secrets from kv-connections under its own managed
       // identity. It does NOT use @azure/identity (the mechanism plane stays
       // dependency-minimal — ADR-0031); it calls the ACA identity endpoint
@@ -1204,7 +1224,10 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       // ingress address named to recover the real client IP (issue #13). See
       // edgeTrustProxy / effectiveEdgeTrustProxy.
       { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
-      { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
+      { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+      // I-02 ADR-0002: the /connections/* proxy and both consent surfaces
+      // consult the portal over this base; unset they answer fail-closed 503.
+      { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
       { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
       // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
       { name: 'EDGE_OIDC_CLIENT_PRIVATE_KEY', secretRef: 'edge-oidc-private-key' }
@@ -1309,6 +1332,10 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'DEPLOY_MAX_FILE_MB', value: string(deployMaxFileMb) }
       { name: 'DEPLOY_MAX_BUNDLE_MB', value: string(deployMaxBundleMb) }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
+      // I-02 ADR-0001/0003: the OAuth callback delegates the vendor code
+      // exchange to egress over this base. Read at boot; unset would leave the
+      // delegation unwired and the completion route refusing.
+      { name: 'PORTAL_EGRESS_URL', value: egressBaseUrl }
       // helix_portal DSN. The portal runtime reads PORTAL_DATABASE_URL and (in
       // production) refuses the DATABASE_URL owner fallback (ADR-0002,
       // resolvePortalRuntimeUrl). Migrations run as the admin out-of-band.
@@ -1401,7 +1428,10 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
       { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
       { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
-      { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
+      { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+      // I-02 ADR-0002: the dev-gateway's consent surface consults the portal
+      // over this base, same as the edge.
+      { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
       // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
       // dev throttle keys on the real client IP behind ingress too.
       { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
@@ -1505,6 +1535,7 @@ output appsEnvStaticIp string = appsEnv.outputs.staticIp
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output migrateJobName string = migrateJob.?outputs.jobName ?? ''
 output connectionsVaultUri string = connectionsVaultUri
+output delegatedVaultUri string = delegatedVaultUri
 output dnsNameServers array = dns.outputs.nameServers
 output edgeFqdn string = edgeApp.?outputs.fqdn ?? ''
 output egressFqdn string = egressApp.?outputs.fqdn ?? ''
