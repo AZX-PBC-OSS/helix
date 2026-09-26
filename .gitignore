@@ -50,3 +50,4 @@ apps/docs/.vitepress/cache/
 # apps/docs/scripts/render-skill.ts before every build and dev start
 # (ADR-0036 decision 7). The template is the single authored source.
 apps/docs/src/apps/quickstart.md
+logs_*.zip

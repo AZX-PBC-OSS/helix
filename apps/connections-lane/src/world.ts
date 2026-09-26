@@ -358,7 +358,10 @@ export class LaneWorld {
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
+      // No host ⇒ dual-stack (::): the browser resolves `localhost` and may
+      // dial either family first — a single-family bind made the held-authorize
+      // race lose on runners whose resolver orders ::1 first.
+      server.listen(0, () => resolve());
     });
     front.origin = `https://localhost:${(server.address() as AddressInfo).port}`;
     this.#vendorClosers.push(async () => {
@@ -438,7 +441,8 @@ export class LaneWorld {
     });
     await new Promise<void>((resolve, reject) => {
       edgeTerminator.once("error", reject);
-      edgeTerminator.listen(0, "127.0.0.1", () => resolve());
+      // Dual-stack (no host): the browser's `localhost` may resolve ::1-first.
+      edgeTerminator.listen(0, () => resolve());
     });
     this.#edgeTerminator = edgeTerminator;
 

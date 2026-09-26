@@ -5,8 +5,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("node:dns/promises", () => ({ lookup: vi.fn() }));
 
 import type { LookupAddress } from "node:dns";
+import type { AddressInfo } from "node:net";
 import { lookup } from "node:dns/promises";
-import { isBlockedAddress, resolveAndValidate, SsrfBlockedError } from "./ssrf.js";
+import {
+  isBlockedAddress,
+  makeValidatingConnector,
+  resolveAndValidate,
+  SsrfBlockedError,
+} from "./ssrf.js";
 
 const mockLookup = vi.mocked(lookup);
 
@@ -122,10 +128,20 @@ describe("resolveAndValidate — DNS AAAA rebind (mocked lookup)", () => {
 
   it("resolves a genuinely public AAAA", async () => {
     resolveTo([{ address: "2606:4700:4700::1111", family: 6 }]);
-    await expect(resolveAndValidate("api.partner.com", false)).resolves.toEqual({
-      address: "2606:4700:4700::1111",
-      family: 6,
-    });
+    await expect(resolveAndValidate("api.partner.com", false)).resolves.toEqual([
+      { address: "2606:4700:4700::1111", family: 6 },
+    ]);
+  });
+
+  it("returns the full validated set in resolver order (the connector dials them in turn)", async () => {
+    resolveTo([
+      { address: "2606:4700:4700::1111", family: 6 },
+      { address: "8.8.8.8", family: 4 },
+    ]);
+    await expect(resolveAndValidate("api.partner.com", false)).resolves.toEqual([
+      { address: "2606:4700:4700::1111", family: 6 },
+      { address: "8.8.8.8", family: 4 },
+    ]);
   });
 
   it("rejects the whole host when any address is blocked (dual-record)", async () => {
@@ -140,10 +156,9 @@ describe("resolveAndValidate — DNS AAAA rebind (mocked lookup)", () => {
 
   it("bypasses validation under the allowPrivate dev/test seam", async () => {
     resolveTo([{ address: "64:ff9b::a9fe:a9fe", family: 6 }]);
-    await expect(resolveAndValidate("api.partner.com", true)).resolves.toEqual({
-      address: "64:ff9b::a9fe:a9fe",
-      family: 6,
-    });
+    await expect(resolveAndValidate("api.partner.com", true)).resolves.toEqual([
+      { address: "64:ff9b::a9fe:a9fe", family: 6 },
+    ]);
   });
 });
 
@@ -156,4 +171,85 @@ describe("resolveAndValidate — IP-literal branch", () => {
     );
     expect(mockLookup).not.toHaveBeenCalled();
   });
+});
+
+describe("makeValidatingConnector — dial the validated addresses in order", () => {
+  beforeEach(() => mockLookup.mockReset());
+
+  // The CI-run regression, end to end at the connector layer: the runner's
+  // resolver ordered `localhost` ::1-first, the fixture listened on IPv4 only,
+  // and the old pin-to-addrs[0] connector handed undici one dead address —
+  // `connect ECONNREFUSED ::1` with no fallback (undici cannot happy-eyeball a
+  // single literal). The connector must dial the validated addresses in turn.
+  it("falls back to the next validated address when the first refuses", async () => {
+    const net = await import("node:net");
+    const server = net.createServer((socket) => socket.end());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      resolveTo([
+        { address: "::1", family: 6 }, // nothing listens here
+        { address: "127.0.0.1", family: 4 }, // the real listener
+      ]);
+      const connector = makeValidatingConnector(true, 5_000);
+      await new Promise<void>((resolve, reject) => {
+        connector(
+          {
+            hostname: "localhost",
+            servername: undefined,
+            port: String(port),
+            protocol: "http:",
+          } as Parameters<ReturnType<typeof makeValidatingConnector>>[0],
+          (err, socket) => {
+            if (err !== null || socket === null) {
+              reject(err ?? new Error("no socket"));
+              return;
+            }
+            try {
+              expect(socket.remoteAddress).toBe("127.0.0.1");
+              socket.destroy();
+              resolve();
+            } catch (e) {
+              reject(e as Error);
+            }
+          },
+        );
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("reports the last dial error when every validated address refuses", async () => {
+    // A port with no listener on either family: the OS assigns nobody.
+    const net = await import("node:net");
+    const gate = net.createServer();
+    await new Promise<void>((resolve) => gate.listen(0, "127.0.0.1", () => resolve()));
+    const deadPort = (gate.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => gate.close(() => resolve()));
+    resolveTo([
+      { address: "::1", family: 6 },
+      { address: "127.0.0.1", family: 4 },
+    ]);
+    const connector = makeValidatingConnector(true, 5_000);
+    await new Promise<void>((resolve, reject) => {
+      connector(
+        {
+          hostname: "localhost",
+          servername: undefined,
+          port: String(deadPort),
+          protocol: "http:",
+        } as Parameters<ReturnType<typeof makeValidatingConnector>>[0],
+        (err, socket) => {
+          try {
+            expect(err).toBeInstanceOf(Error);
+            expect(socket).toBeNull();
+            resolve();
+          } catch (e) {
+            reject(e as Error);
+          }
+        },
+      );
+    });
+  }, 30_000);
 });

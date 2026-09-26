@@ -53,7 +53,14 @@ export interface RunningDevOAuthVendor {
 export async function startDevOAuthVendor(
   opts: StartDevOAuthVendorOptions = {},
 ): Promise<RunningDevOAuthVendor> {
-  const host = opts.host ?? "localhost";
+  // The listen bind is deliberately NOT `localhost`: node binds one address
+  // per listen call, and which one `localhost` resolves first differs per
+  // machine — an IPv6-first runner handed clients `::1` against an IPv4-only
+  // listener (ECONNREFUSED, flaky by resolver order). No host ⇒ the dual-stack
+  // `::` bind, which accepts both families; the issuer stays the readable
+  // `localhost` name either way.
+  const host = opts.host;
+  const issuerHost = host ?? "localhost";
   const parsed = VendorOptionsSchema.parse(opts ?? {});
   const modes: VendorModes = VendorModesSchema.parse({
     tokenMode: parsed.tokenMode,
@@ -61,9 +68,9 @@ export async function startDevOAuthVendor(
   });
 
   const app = buildVendor(modes, opts);
-  await app.listen({ port: opts.port ?? 0, host });
+  await app.listen({ port: opts.port ?? 0, ...(host === undefined ? {} : { host }) });
   const port = (app.server.address() as AddressInfo).port;
-  const issuer = `http://${host}:${port}`;
+  const issuer = `http://${issuerHost}:${port}`;
 
   let closing = false;
   return {

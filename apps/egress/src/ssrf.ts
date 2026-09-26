@@ -159,16 +159,16 @@ export interface ValidatedTarget {
 }
 
 /**
- * Resolve a hostname and validate **every** returned address, returning the one
- * we will pin the connection to. An IP literal is validated directly. Throws
- * {@link SsrfBlockedError} if anything resolves into a blocked range — refusing
- * the whole host if any address is blocked, so a dual-A-record trick can't pick
- * the public one for the check and the private one for the connect.
+ * Resolve a hostname and validate **every** returned address, returning the
+ * validated set in resolver order. An IP literal is validated directly.
+ * Throws {@link SsrfBlockedError} if anything resolves into a blocked range —
+ * refusing the whole host if any address is blocked, so a dual-A-record trick
+ * can't pick the public one for the check and the private one for the connect.
  */
 export async function resolveAndValidate(
   hostname: string,
   allowPrivate: boolean,
-): Promise<ValidatedTarget> {
+): Promise<ValidatedTarget[]> {
   // URL.hostname keeps IPv6 brackets ("[::1]"); strip them for isIP/lookup.
   const host =
     hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
@@ -177,7 +177,7 @@ export async function resolveAndValidate(
     if (!allowPrivate && isBlockedAddress(host)) {
       throw new SsrfBlockedError(`${host} is a blocked address`);
     }
-    return { address: host, family: literal === 6 ? 6 : 4 };
+    return [{ address: host, family: literal === 6 ? 6 : 4 }];
   }
 
   const addrs = await dnsLookup(host, { all: true });
@@ -189,8 +189,7 @@ export async function resolveAndValidate(
       }
     }
   }
-  const chosen = addrs[0]!;
-  return { address: chosen.address, family: chosen.family === 6 ? 6 : 4 };
+  return addrs.map((a) => ({ address: a.address, family: a.family === 6 ? 6 : 4 }));
 }
 
 /**
@@ -223,16 +222,50 @@ export function makeValidatingConnector(
   const base = buildConnector({ timeout: timeoutMs });
   return function connect(opts, callback): void {
     resolveAndValidate(opts.hostname, allowPrivate).then(
-      (pinned) => {
-        // Dial the validated IP literal; keep SNI + cert identity on the real
-        // hostname. undici leaves `servername` unset for the connector, so it
-        // must be pinned here exactly as the old per-request `connect.servername`
-        // did — otherwise the default connector would derive SNI from the IP.
-        base(
-          { ...opts, hostname: pinned.address, servername: opts.servername ?? opts.hostname },
-          callback,
-        );
-        return;
+      (targets) => {
+        // Dial the validated addresses in resolver order; the first that
+        // CONNECTS wins. A host legitimately publishes ::1 and 127.0.0.1 while
+        // the service listens on one family, and a resolver that orders the
+        // other family first made every call to addrs[0] dead (measured:
+        // ECONNREFUSED ::1 on GitHub's runners against an IPv4-only dev
+        // fixture). undici's own happy-eyeballs cannot help here — the pin
+        // hands it a single IP literal — so the fallback is ours. Every
+        // candidate was validated above, so whichever socket wins is bonded to
+        // a checked address; a live connection is never re-pointed (the
+        // anti-rebind property is per-connection, and the next fresh
+        // connection re-resolves and re-validates).
+        let index = 0;
+        const attempt = (lastErr: Error): void => {
+          const target = targets[index];
+          index += 1;
+          if (target === undefined) {
+            // Unreachable: resolveAndValidate refuses an empty resolution.
+            callback(lastErr, null);
+            return;
+          }
+          // Dial the validated IP literal; keep SNI + cert identity on the real
+          // hostname. undici leaves `servername` unset for the connector, so it
+          // must be pinned here exactly as the old per-request `connect.servername`
+          // did — otherwise the default connector would derive SNI from the IP.
+          base(
+            { ...opts, hostname: target.address, servername: opts.servername ?? opts.hostname },
+            (err, socket) => {
+              // undici's failure path calls back with the error and NO socket —
+              // sometimes one-arg (socket undefined), which is why the guard is
+              // loose rather than `socket === null`.
+              if (err !== null && err !== undefined) {
+                attempt(err instanceof Error ? err : new Error(String(err)));
+                return;
+              }
+              if (socket === null || socket === undefined) {
+                attempt(new Error(`${target.address}: dial returned no socket`));
+                return;
+              }
+              callback(null, socket);
+            },
+          );
+        };
+        attempt(new Error(`${opts.hostname}: no validated address connected`));
       },
       (err: unknown) => callback(err instanceof Error ? err : new Error(String(err)), null),
     );
