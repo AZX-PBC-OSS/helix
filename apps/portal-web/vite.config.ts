@@ -30,5 +30,11 @@ export default defineConfig({
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
+    // 20s, not the 5s default: jsdom renders the SPA's real form pages, and the
+    // full submit/approval flows (msw-fetched, react-query-settled) measure
+    // past 5s on a 2-core CI runner — a local pass and a CI pass must not
+    // disagree about speed. A per-test timeout still applies where a test
+    // wants one.
+    testTimeout: 20_000,
   },
 });

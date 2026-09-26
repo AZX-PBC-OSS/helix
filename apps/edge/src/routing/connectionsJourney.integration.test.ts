@@ -297,6 +297,20 @@ async function seedFixture(
     providerRevision = made.body.revision as number;
   }
 
+  // TEMP-DEBUG: time the cache wait
+  {
+    const t0 = Date.now();
+    await pollUntil(
+      async () =>
+        opts.envs.every((env) => providers.get(providerIds[env]!)?.revision === providerRevision)
+          ? true
+          : null,
+      "egress's provider cache catching up to the seeded providers",
+      15_000,
+    );
+    console.log(`TEMP-DEBUG cache wait took ${Date.now() - t0}ms`);
+  }
+
   // The manifest binding + its approval — the provider-stamped filing the
   // consult later re-checks.
   const put = await portalApi("PUT", `/api/v1/apps/${slug}/manifest`, "owner", {
@@ -327,6 +341,31 @@ async function seedFixture(
   }
 
   await waitForRegistry(slug);
+
+  // The journeys consume two projections, both NOTIFY-driven with reconcile
+  // cadences (the edge's registry, egress's provider cache), and both can lose
+  // a just-seeded race on a slow runner: the delegated call then answers the
+  // EDGE's allowlist 403 ("not a proxied origin"), or the exchange answers
+  // provider_unavailable (the failed-provider page) — for a fixture the very
+  // next moment serves fine. Wait for each projection to hold what the
+  // journeys will actually consume; 15s, not the 5s poll default, because the
+  // caches' own reconcile intervals (5s egress / 60s edge) outlast it.
+  await pollUntil(
+    async () =>
+      opts.envs.every((env) => providers.get(providerIds[env]!)?.revision === providerRevision)
+        ? true
+        : null,
+    "egress's provider cache catching up to the seeded providers",
+    15_000,
+  );
+  await pollUntil(
+    async () =>
+      liveRegistry.getApp(slug)?.fetch.connections.has(opts.vendorToUse.issuer) === true
+        ? true
+        : null,
+    "the edge's registry projection carrying the bound fetch origin",
+    15_000,
+  );
   return {
     slug,
     appId,
@@ -730,7 +769,11 @@ beforeAll(async () => {
   liveRegistry = new LiveRegistry({
     databaseUrl: roleUrl("helix_edge"),
     reconcileIntervalMs: 60_000,
-    log: { info: () => {}, warn: () => {}, error: () => {} },
+    log: {
+      info: (...a) => console.log("REGISTRY:", ...a),
+      warn: (...a) => console.log("REGISTRY-WARN:", ...a),
+      error: (...a) => console.log("REGISTRY-ERROR:", ...a),
+    },
   });
   await liveRegistry.start();
   sessionsStore = new PgSessionStore(roleUrl("helix_edge"), { max: 4 });
@@ -870,7 +913,7 @@ describe("the prod consent journey through the real entry points (criterion 52a)
     // the fixture's API destination: the token arrives in the configured
     // placement.
     const call = await delegatedCall(f.slug, sessionCookie, `${vendor.issuer}/api/echo`);
-    expect(call.status).toBe(200);
+    expect(call.status, call.body).toBe(200);
     const echo = JSON.parse(call.body) as { placement: string; token: string | null };
     expect(echo.placement).toBe("header-bearer");
     expect(echo.token).toBe(material.access);
@@ -1299,10 +1342,12 @@ describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => 
     // same eventual consistency the edge's registry projection has. The new
     // attempt will stamp the edit's revision, so wait for the cache to hold it
     // (an exchange against the stale cache answers provider_unavailable).
+    // 15s, not the 5s default: the cache's own reconcile interval is 5s.
     await pollUntil(
       async () =>
         providers.get(providerIdOf(f, "prod"))?.revision === f.providerRevision + 1 ? true : null,
       "egress's provider cache catching up to the edited revision",
+      15_000,
     );
 
     // And the binding serves again: the start consults effective stamps and
@@ -1338,6 +1383,17 @@ describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => 
       confirmInvalidation: true,
     });
     expect(put.statusCode).toBe(200);
+
+    // Wait out egress's provider cache (NOTIFY + reconcile cadence): a
+    // delegated call against the stale cache answers provider_unavailable —
+    // the wrong refusal for this leg, which is about the invalidated
+    // CONNECTION, not the provider's identity.
+    await pollUntil(
+      async () =>
+        providers.get(providerIdOf(f, "prod"))?.revision === f.providerRevision + 1 ? true : null,
+      "egress's provider cache catching up to the edited revision",
+      15_000,
+    );
 
     // …which can never serve a call again (the resolution refuses a non-live
     // row) — while the edge still mints the instruction, because the edge
