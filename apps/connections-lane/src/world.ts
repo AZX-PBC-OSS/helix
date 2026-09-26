@@ -465,6 +465,10 @@ export class LaneWorld {
     process.env.PORTAL_OIDC_ALLOW_INSECURE = "true";
     process.env.PORTAL_ADMIN_GROUP_ID ??= "platform-admin";
     process.env.PORTAL_DEV_TOKEN ??= "lane-arrange-token";
+    // The SECOND arrange actor (a distinct fixed oid — the approvals gate's
+    // separation of duty compares oids, and CI runs with self-approve off):
+    // the arrange identity files, this one decides.
+    process.env.PORTAL_DEV_ADMIN_TOKEN ??= "lane-admin-arrange-token";
     process.env.PORTAL_DEV_ACTOR_GROUPS ??= "platform-admin";
     process.env.PORTAL_SECRET ??= "lane-portal-secret-lane-portal-secret-32b";
     process.env.HELIX_INTERNAL_SECRET ??= internalSecret().toString("utf8");
@@ -635,6 +639,13 @@ export class LaneWorld {
     return { authorization: `Bearer ${process.env.PORTAL_DEV_TOKEN}` };
   }
 
+  /** The admin arrange actor's bearer header — the identity that DECIDES
+   * approval requests (a distinct dev-token actor, so CI's separation of
+   * duty — self-approve unset — holds). */
+  adminAuth(): { authorization: string } {
+    return { authorization: `Bearer ${process.env.PORTAL_DEV_ADMIN_TOKEN}` };
+  }
+
   async waitForRegistry(slug: string): Promise<void> {
     if (!this.#registry) throw new Error("lane world not started");
     const deadline = Date.now() + 10_000;
@@ -738,7 +749,7 @@ export class LaneWorld {
     const pending = ((await put.json()) as { pending: string }).pending;
     const approved = await fetch(`${this.portalOrigin}/api/v1/approvals/${pending}/approve`, {
       method: "POST",
-      headers: { "content-type": "application/json", ...this.arrangeAuth() },
+      headers: { "content-type": "application/json", ...this.adminAuth() },
       body: "{}",
     });
     if (approved.status !== 200) throw new Error(`approval failed: ${approved.status}`);

@@ -43,11 +43,12 @@ name: CI
 # gates nothing and is gated by nothing.
 #
 # `browser-lane` is the real-browser acceptance lane (I-02 T-0031): gated behind
-# `static` + `test` (a browser job on a commit a sub-minute gate already fails
-# is the cost the github-actions concern prices out), needs only Postgres as a
-# service — the fixture vendor, the dev IdP and the portal/edge/egress apps are
-# booted in-process by the lane itself — and uploads its traces/screenshots on
-# failure.
+# `static` only (a type error in the lane would otherwise pay for the browser
+# install) and running CONCURRENTLY with `test` — it needs only Postgres as a
+# service, because the fixture vendor, the dev IdP and the portal/edge/egress
+# apps are booted in-process by the lane itself — and it is a GATE: `package`
+# and `images` wait on it, so a real-browser failure blocks the publish path.
+# It uploads its traces/screenshots on failure.
 
 on:
   push:
@@ -258,13 +259,15 @@ jobs:
     # in-process by the lane itself, so unlike `test` this job needs only
     # Postgres (no Azurite: the lane's edge reads its app page from an
     # in-memory blob double, and the fixture vendor/IdP are in-repo services
-    # the lane starts, not containers). Gated behind the cheaper lanes: a
-    # browser job on a commit a sub-minute gate already fails is the cost the
-    # github-actions concern prices out. The lane runs headed under Xvfb (its
-    # config explains why — the popup blocker never fires under CDP headless
-    # defaults), which is the standard headed-CI shape; xvfb-run + xauth ship
-    # on the runner image, and playwright's --with-deps covers the rest.
-    needs: [static, test]
+    # the lane starts, not containers). It is a GATE, not a follow-up: it runs
+    # concurrently with `test` (behind `static` only — a type error in the
+    # lane would otherwise pay for the browser install), and `package`/`images`
+    # wait on it, so a lane failure blocks the publish path. The lane runs
+    # headed under Xvfb (its config explains why — the popup blocker never
+    # fires under CDP headless defaults), which is the standard headed-CI
+    # shape; xvfb-run + xauth ship on the runner image, and playwright's
+    # --with-deps covers the rest.
+    needs: [static]
     timeout-minutes: 15
 
     services:
@@ -365,7 +368,7 @@ jobs:
   package:
     name: pack helix CLI
     runs-on: ubuntu-latest
-    needs: [static, test]
+    needs: [static, test, browser-lane]
     timeout-minutes: 15
     # The CLI is the one package we publish (ADR-0032), and the only one that
     # emits JS. Nothing in the unit suite touches the packaged artifact, so
@@ -450,7 +453,7 @@ jobs:
   images:
     name: build ${{ matrix.app }} image
     runs-on: ubuntu-latest
-    needs: [static, test]
+    needs: [static, test, browser-lane]
     timeout-minutes: 30
     permissions:
       contents: read

@@ -5,6 +5,7 @@ import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPoli
 import {
   createDevTokenVerifier,
   createOidcVerifier,
+  DEV_TOKEN_ADMIN_ACTOR_OID,
   type Actor,
   type TokenVerifier,
 } from "../auth/verifier.js";
@@ -92,18 +93,33 @@ function verifiersFromEnv(log: { warn(obj: object, msg: string): void }): TokenV
     throw new Error("PORTAL_OIDC_ISSUER and PORTAL_OIDC_AUDIENCE must be set together");
   }
   if (process.env.PORTAL_DEV_TOKEN) {
+    const devGroups = (process.env.PORTAL_DEV_ACTOR_GROUPS ?? "")
+      .split(",")
+      .map((g) => g.trim())
+      .filter(Boolean);
     chain.push(
       createDevTokenVerifier(
         process.env.PORTAL_DEV_TOKEN,
         process.env.PORTAL_DEV_ACTOR ?? "dev@azx.io",
         // Dev/CI: let the dev-token actor carry admin groups so scripts can
         // drive the approval loop. Comma-separated; defaults to none.
-        (process.env.PORTAL_DEV_ACTOR_GROUPS ?? "")
-          .split(",")
-          .map((g) => g.trim())
-          .filter(Boolean),
+        devGroups,
       ),
     );
+    // The SECOND script actor (a distinct fixed oid — separation of duty
+    // compares oids, so a script that both files a request and decides it
+    // needs two identities, not one token with two jobs). Same dev-only
+    // posture as the primary: refused in production with it.
+    if (process.env.PORTAL_DEV_ADMIN_TOKEN) {
+      chain.push(
+        createDevTokenVerifier(
+          process.env.PORTAL_DEV_ADMIN_TOKEN,
+          process.env.PORTAL_DEV_ADMIN_ACTOR ?? "dev-admin@azx.io",
+          devGroups,
+          DEV_TOKEN_ADMIN_ACTOR_OID,
+        ),
+      );
+    }
   }
   return chain;
 }

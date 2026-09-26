@@ -256,11 +256,18 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
  * `App.ownerId` written by a real login (so a dev-token actor owns only what
  * it created itself), and is stable so CI fixtures and `scope=mine` behave
  * deterministically.
+ *
+ * `actorOid` exists for the SECOND script actor: the approvals write-gate's
+ * separation of duty compares the requester's oid against the decider's, and
+ * a script that both files and decides needs two actors with two fixed oids
+ * (the browser lane's arrange half, `PORTAL_DEV_ADMIN_TOKEN`). Same synthetic
+ * shape, never a directory-shaped id, for the same reasons.
  */
 export function createDevTokenVerifier(
   expected: string,
   actorSub: string,
   groups: string[] = [],
+  actorOid: string = DEV_TOKEN_ACTOR_OID,
 ): TokenVerifier {
   if (process.env.NODE_ENV === "production") {
     throw new Error("PORTAL_DEV_TOKEN is a dev/CI verifier and is refused in production");
@@ -277,10 +284,15 @@ export function createDevTokenVerifier(
       if (tokenBuf.length !== expectedBuf.length || !timingSafeEqual(tokenBuf, expectedBuf)) {
         return null;
       }
-      return { oid: DEV_TOKEN_ACTOR_OID, sub: actorSub, via: "dev-token", groups };
+      return { oid: actorOid, sub: actorSub, via: "dev-token", groups };
     },
   };
 }
 
 /** The dev-token actor's fixed synthetic `oid` — see `createDevTokenVerifier`. */
 export const DEV_TOKEN_ACTOR_OID = "dev-token-actor";
+
+/** The dev-token ADMIN actor's fixed synthetic `oid` — the second arrange
+ * identity (`PORTAL_DEV_ADMIN_TOKEN`), distinct so an approval it decides is
+ * not a self-decision of what the primary dev-token actor filed. */
+export const DEV_TOKEN_ADMIN_ACTOR_OID = "dev-token-admin-actor";

@@ -2,6 +2,7 @@ import { generateKeyPair, exportJWK, SignJWT, createLocalJWKSet, type JWK } from
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   DEV_TOKEN_ACTOR_OID,
+  DEV_TOKEN_ADMIN_ACTOR_OID,
   createDevTokenVerifier,
   createOidcVerifier,
   type TokenVerifier,
@@ -381,5 +382,23 @@ describe("createDevTokenVerifier", () => {
     vi.stubEnv("NODE_ENV", "production");
     expect(() => createDevTokenVerifier("t", "a")).toThrow(/production/);
     vi.unstubAllEnvs();
+  });
+
+  it("the admin-arrange variant carries its own distinct fixed oid — separation of duty can tell the two script actors apart", async () => {
+    const filer = createDevTokenVerifier("file-token", "dev@azx.io", ["platform-admin"]);
+    const decider = createDevTokenVerifier(
+      "admin-token",
+      "dev-admin@azx.io",
+      ["platform-admin"],
+      DEV_TOKEN_ADMIN_ACTOR_OID,
+    );
+    expect(await decider.verify("file-token")).toBeNull();
+    expect(await filer.verify("admin-token")).toBeNull();
+    const decidedBy = await decider.verify("admin-token");
+    const requestedBy = await filer.verify("file-token");
+    expect(decidedBy?.oid).toBe(DEV_TOKEN_ADMIN_ACTOR_OID);
+    expect(requestedBy?.oid).toBe(DEV_TOKEN_ACTOR_OID);
+    expect(decidedBy?.oid).not.toBe(requestedBy?.oid);
+    expect(decidedBy?.groups).toEqual(["platform-admin"]);
   });
 });
