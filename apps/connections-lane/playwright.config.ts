@@ -22,7 +22,14 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   workers: 1,
   fullyParallel: false,
-  retries: 0,
+  // One CI retry, fresh fixture per attempt. The lane's specs drive real
+  // popups through cross-origin navigations, and the runner has twice eaten
+  // one spec per run with a transient popup-close the helper (correctly,
+  // per criterion 29's design) read as a cancellation — not reproducible
+  // locally in 20+ pressured runs. A genuine platform failure fails both
+  // attempts and stays red; the retry only absorbs runner noise, and the
+  // failed attempt's trace/screenshot is retained either way.
+  retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI
     ? [["list"], ["junit", { outputFile: "test-results/lane.xml" }]]
     : [["list"]],
