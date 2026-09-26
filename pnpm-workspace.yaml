@@ -152,6 +152,12 @@ catalog:
   postcss-preset-mantine: ^1.18.0
   postcss-simple-vars: ^7.0.1
   jsdom: ^29.1.1
+  # Real-browser lane (I-02 ADR-0010 part 2) — devDependency of the lane
+  # package only, never a runtime package. EXACT-pinned: the browser binaries
+  # the dev container caches (and CI installs) are keyed to this version's
+  # chromium revision (1.63.0 → 1243); a range that floats would silently
+  # download a different browser on every bump.
+  "@playwright/test": 1.63.0
   "@testing-library/react": ^16.3.2
   "@testing-library/user-event": ^14.6.1
   eslint-plugin-react-hooks: ^7.1.1

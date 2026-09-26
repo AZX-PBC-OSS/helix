@@ -14,8 +14,10 @@ import { errorsPlugin } from "./plugins/errors.js";
 import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
 import { directoryPlugin } from "./plugins/directory.js";
 import { assertBundleLimits, resolveMaxTotalBytes } from "./deploy/limits.js";
+import { assertInternalJwtSecrets } from "./internalJwt.js";
 import { appRoutes } from "./routes/apps.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { providerRoutes } from "./routes/providers.js";
 import { devTokenRoutes } from "./routes/devTokens.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { cspRoutes } from "./routes/csp.js";
@@ -28,6 +30,9 @@ import { authRoutes } from "./routes/auth.js";
 import { configRoutes } from "./routes/config.js";
 import { catalogueRoutes } from "./routes/catalogue.js";
 import { directoryRoutes } from "./routes/directory.js";
+import { connectionsInternalRoutes } from "./routes/connectionsInternal.js";
+import { connectionsPageRoutes } from "./routes/connectionsPages.js";
+import { myConnectionsRoutes } from "./routes/connectionsMine.js";
 import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
 import { assertDeploymentConfig } from "./deployment.js";
 import { SERVICE_NAME } from "./serviceName.js";
@@ -67,6 +72,10 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   // Likewise for the deploy size caps: a bad DEPLOY_MAX_*_MB should fail the
   // boot, not the first deploy that happens to hit the validator.
   assertBundleLimits();
+  // The internal-JWT verify key (ADR-0003) is the same class of boot check: the
+  // portal's internal routes have no degraded mode that still serves them, so a
+  // portal missing the edge↔portal key must not start at all.
+  assertInternalJwtSecrets();
 
   const app = Fastify({
     // The SPA's OIDC redirect URI is `/auth/callback?code=…` on this very
@@ -98,6 +107,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
 
   app.register(appRoutes);
   app.register(secretRoutes);
+  app.register(providerRoutes);
   app.register(devTokenRoutes);
   app.register(approvalRoutes);
   app.register(cspRoutes);
@@ -109,6 +119,16 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(configRoutes);
   app.register(catalogueRoutes);
   app.register(directoryRoutes);
+  // The internal edge→portal consent seam (I-02 ADR-0002): consult + cancel,
+  // authorized by T-0006's minted internal JWT — never bearer-token routes.
+  app.register(connectionsInternalRoutes);
+  // The popup's browser-facing consent pages under the `/connections/*` proxy
+  // prefix (same initiative): the dev journey's nonce entry (T-0016) — the
+  // callback's completion pages are T-0020's.
+  app.register(connectionsPageRoutes);
+  // My Connections (I-02 T-0024): the principal-scoped list + disconnect —
+  // the one user-scoped portal surface, no owner/admin gate.
+  app.register(myConnectionsRoutes);
 
   // The real dashboard when a built SPA is present; the M2 stopgap otherwise.
   const spaDist = opts.spaDist !== undefined ? opts.spaDist : resolveSpaDist();

@@ -44,7 +44,9 @@ export interface SeededApp {
 
 /**
  * Insert an app with one version into the test DB. `live: true` points the
- * app's currentVersionId at it (the M1 promote shape).
+ * app's currentVersionId at it (the M1 promote shape). `capabilities` is the
+ * raw JSONB document the projection re-parses (the manifest's capabilities
+ * block, as the portal stores it).
  */
 export async function seedApp(
   pool: PgPool,
@@ -54,6 +56,7 @@ export async function seedApp(
     archived?: boolean;
     visibilityMode?: VisibilityMode;
     visibilityGroupIds?: string[];
+    capabilities?: Record<string, unknown>;
   } = {},
 ): Promise<SeededApp> {
   const appId = randomUUID();
@@ -62,14 +65,15 @@ export async function seedApp(
   const blobPrefix = `apps/${appId}/1/`;
 
   await pool.query(
-    `INSERT INTO apps (id, slug, "displayName", "visibilityMode", "visibilityGroupIds", "archivedAt", "createdAt", "updatedAt")
-     VALUES ($1, $2, $2, $3::"VisibilityMode", $4, $5, now(), now())`,
+    `INSERT INTO apps (id, slug, "displayName", "visibilityMode", "visibilityGroupIds", "archivedAt", capabilities, "createdAt", "updatedAt")
+     VALUES ($1, $2, $2, $3::"VisibilityMode", $4, $5, $6::jsonb, now(), now())`,
     [
       appId,
       slug,
       opts.visibilityMode ?? "internal",
       opts.visibilityGroupIds ?? [],
       opts.archived ? new Date() : null,
+      JSON.stringify(opts.capabilities ?? {}),
     ],
   );
   await pool.query(

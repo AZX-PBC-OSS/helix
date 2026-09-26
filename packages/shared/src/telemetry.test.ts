@@ -67,6 +67,20 @@ describe("the telemetry vocabulary", () => {
     expect([...REGISTRY_LOAD_OUTCOMES]).toEqual(["failed", "never_loaded"]);
   });
 
+  it("keeps the consent-start outcome vocabulary bounded and duplicate-free", () => {
+    // The edge's start-route span (I-02 T-0014) — design.md §Operator-visible
+    // signals fixes the six values; a seventh would be a vocabulary nobody
+    // dashboards.
+    expect([...telemetry.CONSENT_START_OUTCOMES]).toEqual([
+      "started",
+      "signin_required",
+      "already_connected",
+      "unavailable",
+      "forbidden",
+      "error",
+    ]);
+  });
+
   it("orders the duration buckets ascending and covers past a slow LLM stream", () => {
     const buckets = [...telemetry.DURATION_BUCKETS_MS];
     expect(buckets).toEqual([...buckets].sort((a, b) => a - b));

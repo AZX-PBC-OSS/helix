@@ -95,6 +95,11 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
+    // Edge→portal mint key unset by default; the consult suites set it.
+    internalSecret: null,
+    // Auth-host /connections reverse proxy unset by default; the proxy suites
+    // set it (and pass a portal provider into buildApp).
+    portalUrl: null,
     ...overrides,
   };
 }
@@ -112,6 +117,10 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
     reconcileIntervalMs: 60_000,
     statementTimeoutMs: 10_000,
     trustProxy: false,
+    // Same public topology the edge test config uses: the popup URL and the
+    // consult's callback URL are built from these, never from the request.
+    publicScheme: "https",
+    publicPort: 8080,
     llm: {
       endpoint: "https://api.anthropic.com",
       path: "/v1/messages",
@@ -129,6 +138,8 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
       timeoutMs: 30_000,
       maxBodyBytes: 10 * 1024 * 1024,
     },
+    internalSecret: null,
+    portalUrl: null,
     devGateway: {
       databaseUrl: "postgresql://helix_dev:unused@db/helix",
       allowDevMode: true,

@@ -15,15 +15,22 @@
     "@opentelemetry/api": "catalog:",
     "fastify": "catalog:",
     "jose": "catalog:",
+    "openid-client": "catalog:",
     "pg": "catalog:",
     "undici": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@azx-pbc/dev-oauth-vendor": "workspace:*",
     "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
     "@types/pg": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:"
+  },
+  "exports": {
+    "./app": "./src/app.ts",
+    "./retire": "./src/retire.ts",
+    "./providerListener": "./src/providerListener.ts"
   }
 }

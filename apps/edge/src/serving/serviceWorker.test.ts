@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
+import type { ProxiedOriginCredential } from "../registry/projection.js";
 import { testEdgeConfig } from "../test/config.js";
 import { FakeBlobReader, FakeRegistry, registryEntry } from "../test/fakes.js";
 import { buildRegistrationSnippet, buildServiceWorkerScript } from "./serviceWorker.js";
@@ -66,7 +67,9 @@ beforeAll(async () => {
       offline: { scope: "/app/" },
       fetch: {
         shim: true,
-        connections: new Map([["https://api.github.com", null]]),
+        connections: new Map<string, ProxiedOriginCredential>([
+          ["https://api.github.com", { kind: "keyless" }],
+        ]),
         requestsPerDay: null,
       },
     }),

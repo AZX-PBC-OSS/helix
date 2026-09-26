@@ -22,6 +22,7 @@ See [the tour](../../TOUR.md) for the security boundaries and repository map.
 | [app-data-gateway.md](./app-data-gateway.md) | `/_api/data/*` user / collection / shared storage + owner drain | `apps/edge`, `apps/portal` |
 | [fetch-proxy.md](./fetch-proxy.md) | `/_api/fetch/<url>` — governed outbound HTTP via the `helix-egress` plane | `apps/edge`, `apps/egress` |
 | [secrets-and-connections.md](./secrets-and-connections.md) | Connection secrets: sealed credentials injected server-side | `apps/portal`, `apps/egress`, `packages/secret-store` |
+| [connection-providers.md](./connection-providers.md) | OAuth connection providers: the admin catalog, import/export, My Connections | `apps/portal`, `apps/egress` |
 | [dev-mode.md](./dev-mode.md) | Develop an app against an isolated `env=dev` tier via the dev-gateway | `apps/edge`, `apps/portal` |
 | [registry-and-deploys.md](./registry-and-deploys.md) | App CRUD, version lifecycle, zip upload, promote/rollback, archive | `apps/portal` |
 | [capabilities-and-manifests.md](./capabilities-and-manifests.md) | The per-app manifest the gateway enforces | `packages/shared`, `apps/portal` |

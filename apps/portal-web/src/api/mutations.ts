@@ -3,8 +3,13 @@ import {
   AppSchema,
   ApprovalRequestSchema,
   DevTokenMintResponseSchema,
+  DisconnectResponseSchema,
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
+  ProviderDeleteResponseSchema,
+  ProviderImportResponseSchema,
+  ProviderMetadataSchema,
+  CONFIRM_INVALIDATION_FIELD,
   SecretMetadataSchema,
   SessionRevokeResultSchema,
   UploadVersionResponseSchema,
@@ -15,9 +20,15 @@ import {
   type App,
   type DeployReport,
   type DevTokenMintResponse,
+  type DisconnectResponse,
   type InjectionRecipe,
   type ManifestUpdateResult,
   type PasswordCredentialResponse,
+  type ProviderCreateRequest,
+  type ProviderImportRequest,
+  type ProviderImportResponse,
+  type ProviderMetadata,
+  type ProviderUpdateRequest,
   type SecretMetadata,
   type SessionRevokeResult,
   type UploadVersionResponse,
@@ -538,5 +549,96 @@ export function useRevokeSessions() {
         body: { userOid },
       }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * My Connections (I-02 T-0024). Disconnect ends the caller's own Helix access
+ * to one provider connection; the server answers `already_removed` for a
+ * repeat it did not act on.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Disconnect one of the caller's connections. The outcome rides a 200 either
+ * way, so the page can announce "already removed" instead of guessing —
+ * invalidation is the server's row state; this only refreshes the display.
+ */
+export function useDisconnectConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string }): Promise<DisconnectResponse> =>
+      fetchJson(DisconnectResponseSchema, `/api/v1/connections/mine/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["connections", "mine"] }),
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Connection providers (admin, I-02 T-0026). The three keys are disjoint
+ * subtrees (see queries.ts) so no invalidation can refetch under an open edit
+ * draft. `useUpdateProvider` invalidates onSuccess only — like useSetManifest,
+ * an edit page holds a draft, and refetching after a failure (409 stale, 422)
+ * must not reset the form at the moment we ask the admin to review it.
+ * ------------------------------------------------------------------------- */
+
+/** Create a provider from the form's validated values. */
+export function useCreateProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProviderCreateRequest): Promise<ProviderMetadata> =>
+      fetchJson(ProviderMetadataSchema, "/api/v1/providers", { method: "POST", body }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
+  });
+}
+
+/** Edit a provider — carries the loaded revision; sensitive deltas need the review confirmation. */
+export function useUpdateProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string;
+      body: ProviderUpdateRequest;
+    }): Promise<ProviderMetadata> =>
+      fetchJson(ProviderMetadataSchema, `/api/v1/providers/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body,
+      }),
+    onSuccess: (_res, { id }) => {
+      void queryClient.invalidateQueries({ queryKey: ["providers", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["providers", "detail", id] });
+    },
+  });
+}
+
+/** Delete a provider — the 200 answers `deleted` or `already_removed` (a repeat). */
+export function useDeleteProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, confirmInvalidation }: { id: string; confirmInvalidation?: boolean }) =>
+      fetchJson(ProviderDeleteResponseSchema, `/api/v1/providers/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        body: confirmInvalidation ? { [CONFIRM_INVALIDATION_FIELD]: true } : {},
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
+  });
+}
+
+/**
+ * Apply an import (I-02 T-0027) — the create/update mode is the caller's
+ * explicit choice (the preview never picks a target). The response's `outcome`
+ * word reports created/updated distinctly; a rejection changes nothing, so the
+ * list is invalidated onSuccess only — the rows an administrator is looking at
+ * after a rejected apply are the ones that were there before it.
+ */
+export function useImportProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ProviderImportRequest): Promise<ProviderImportResponse> =>
+      fetchJson(ProviderImportResponseSchema, "/api/v1/providers/import", { method: "POST", body }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
   });
 }

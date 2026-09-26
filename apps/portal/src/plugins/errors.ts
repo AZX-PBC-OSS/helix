@@ -13,6 +13,9 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   not_found: 404,
   slug_taken: 409,
   conflict: 409,
+  // The sensitive-edit/delete acknowledgement rejection (I-02 T-0010) — 409
+  // like conflict, but a distinct code so the SPA's review panel opens on it.
+  confirmation_required: 409,
   // Gateway codes (emitted by the edge, but the map is exhaustive over the
   // shared code set).
   model_not_allowed: 403,

@@ -13,6 +13,8 @@
  * dev URLs.
  */
 
+import { CONNECTIONS_CALLBACK_PATH } from "@azx-pbc/shared";
+
 /** The dev edge, as reachable from the host browser: mkcert TLS on :8080. */
 const DEV_APP_PUBLIC_BASE = "https://local.helix.azxlabs.io:8080";
 
@@ -54,6 +56,26 @@ export function appPublicUrl(slug: string, env: NodeJS.ProcessEnv = process.env)
 }
 
 /**
+ * The fixed OAuth callback URL an administrator registers with the vendor
+ * (spec criterion 2, design.md §Fixed callback visibility):
+ * `auth.<APP_PUBLIC_BASE host>` + {@link CONNECTIONS_CALLBACK_PATH} — the
+ * reserved-subdomain convention the edge's host classifier routes to the auth
+ * host (apps/edge/src/routing/hosts.ts, `classifyHost`). The edge's
+ * `/connections/*` reverse proxy forwards that prefix to this portal, and the
+ * shared constant is the single source both planes read (the keep-in-sync
+ * convention REGISTRY_CHANNEL sets, sourced in @azx-pbc/shared).
+ *
+ * Derived, never configured: the edge owns the auth base as a single source,
+ * and a second auth-base config field here could drift from it (architecture
+ * ADR-0001 §Implementation Notes). Served at runtime through the providers
+ * payload, never a build-time variable.
+ */
+export function connectionsCallbackUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const base = resolveAppPublicBase(env);
+  return `${base.protocol}//auth.${base.host}${CONNECTIONS_CALLBACK_PATH}`;
+}
+
+/**
  * Base of the opt-in dev gateway (`DEV_API_PUBLIC_BASE`), or null when it is not
  * deployed. The dev gateway is off by default (`deployDevGateway` in the Bicep),
  * and the deploy sets this to an empty string when it is skipped — so empty is
@@ -85,6 +107,24 @@ export function resolvePlatformMonthlyUsdCap(env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * Internal base URL of helix-egress (`PORTAL_EGRESS_URL`), or null when it is
+ * not configured — the same opt-in posture as the edge's `EDGE_EGRESS_URL`.
+ * The code-exchange delegation (I-02 architecture ADR-0001/0003: the callback
+ * delegates the vendor token exchange to the mechanism plane) rides this base;
+ * null leaves the delegation unwired and the consuming route refuses rather
+ * than degrades — a plausible-but-wrong URL is worse than a clear absence.
+ */
+export function resolveEgressBaseUrl(env: NodeJS.ProcessEnv = process.env): URL | null {
+  const raw = env.PORTAL_EGRESS_URL?.trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw);
+  } catch {
+    throw new Error(`PORTAL_EGRESS_URL is not a valid absolute URL: ${raw}`);
+  }
+}
+
+/**
  * Validate the deployment config at boot so a bad value is a startup error, not
  * a per-request surprise. Called from `buildApp`; the resolvers themselves stay
  * lazy so tests can override env per case.
@@ -92,4 +132,5 @@ export function resolvePlatformMonthlyUsdCap(env: NodeJS.ProcessEnv = process.en
 export function assertDeploymentConfig(env: NodeJS.ProcessEnv = process.env): void {
   resolveAppPublicBase(env);
   resolveDevApiBase(env);
+  resolveEgressBaseUrl(env);
 }

@@ -112,9 +112,28 @@ services:
       # Shared HS256 secret for the attested instruction the edge mints and egress
       # verifies (HKDF-derived both sides). Dev-only well-known value, ≥32 bytes.
       HELIX_INSTRUCTION_SECRET: aGVsaXgtZGV2LWluc3RydWN0aW9uLXNlY3JldC0zMmItbWluIQ==
+      # The two new internal-JWT keys (I-02 ADR-0003, same discipline as above):
+      # edge↔portal (edge mints, portal verifies) and portal↔egress (portal
+      # mints, egress verifies). Dev-only well-known values, ≥32 bytes.
+      HELIX_INTERNAL_SECRET: aGVsaXgtZGV2LWludGVybmFsLXNlY3JldC0zMmItbWluIQ==
+      HELIX_EXCHANGE_SECRET: aGVsaXgtZGV2LWV4Y2hhbmdlLXNlY3JldC0zMmItbWluIQ==
       # The edge forwards authorized /_api/fetch calls to egress over this URL
       # (same container in dev; a private internal address in prod).
       EDGE_EGRESS_URL: http://localhost:8081
+      # The portal delegates the OAuth code exchange to egress over this URL
+      # (I-02 ADR-0001/0003 — same container in dev; the private internal
+      # address in prod). Unset leaves the delegation unwired.
+      PORTAL_EGRESS_URL: http://localhost:8081
+      # Edge → portal internal base (I-02 ADR-0002 part 3): the consent-start
+      # consult and the auth-host /connections/* reverse proxy. Fail-closed
+      # (503) when unset — without it the OAuth-consent surfaces cannot run.
+      EDGE_PORTAL_URL: http://localhost:3001
+      # Dev-tier escape hatches for exercising OAuth connections against the
+      # loopback fixture vendor (pnpm dev:vendor, :3003): egress's SSRF controls
+      # normally refuse private/loopback targets, and delegated calls require
+      # https. Both are refused under NODE_ENV=production.
+      EGRESS_ALLOW_PRIVATE: "true"
+      EGRESS_ALLOW_INSECURE_CONNECTION: "true"
       # OpenTelemetry (ADR-0037). Points every service at the local collector
       # below, the same shape as Azurite standing in for Blob: the OTLP path is
       # exercised locally rather than first discovered in Azure, where its

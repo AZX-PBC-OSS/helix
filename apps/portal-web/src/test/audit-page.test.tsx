@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { GatewayCall } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
@@ -246,5 +246,59 @@ describe("AuditPage failure detail", () => {
     // Same `!== "ok"` stance as the count itself, so the two can't drift.
     expect(await screen.findByText("2 error · 1 quota")).toBeDefined();
     expect(screen.getByText("3")).toBeDefined();
+  });
+});
+
+describe("AuditPage outcome labels", () => {
+  it("renders connection_required distinguishably from refusal", async () => {
+    // Criterion 50's surface leg: the delegated-consent outcome may not render
+    // as a policy refusal. Distinct word AND distinct tone — violet, the
+    // provider-bound badge's color, versus refusal's warn.
+    stubFetch([
+      call({ capability: "fetch", outcome: "connection_required" }),
+      call({ outcome: "refusal" }),
+    ]);
+    renderAudit();
+    const connect = await screen.findByText("connect required");
+    const refusal = screen.getByText("refusal");
+    const connectTone = (connect.closest("span") as HTMLElement).style.color;
+    const refusalTone = (refusal.closest("span") as HTMLElement).style.color;
+    expect(connectTone).toBe("var(--az-violet)");
+    expect(refusalTone).toBe("var(--az-warn)");
+    expect(connectTone).not.toBe(refusalTone);
+  });
+
+  it("counts connection_required rows in the not-delivered breakdown", async () => {
+    stubFetch([
+      call({ outcome: "connection_required" }),
+      call({ outcome: "connection_required" }),
+      call({ outcome: "refusal" }),
+    ]);
+    renderAudit();
+    expect(await screen.findByText("1 refusal · 2 connect required")).toBeDefined();
+  });
+
+  it("filters the table down to connection_required rows", async () => {
+    // The stub honours the outcome param, like the audit route does — the
+    // filter selects the ledger label, and only those rows come back.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (typeof url === "string" && url.includes("/gateway/audit")) {
+          const outcome = new URL(url, "https://portal.test").searchParams.get("outcome");
+          const rows = [
+            call({ outcome: "connection_required" }),
+            call({ outcome: "refusal" }),
+          ].filter((r) => !outcome || r.outcome === outcome);
+          return Promise.resolve({ ok: true, status: 200, json: async () => ({ rows }) });
+        }
+        return new Promise(() => {}); // /me — pending forever
+      }),
+    );
+    renderAudit();
+    await screen.findByText("connect required");
+    await userEvent.click(screen.getByRole("radio", { name: "Connect" }));
+    await waitFor(() => expect(screen.queryByText("refusal")).toBeNull());
+    expect(screen.getByText("connect required")).toBeDefined();
   });
 });

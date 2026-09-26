@@ -30,6 +30,7 @@ import {
   type DeployAggregates,
 } from "../db/mappers.js";
 import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
+import { manifestWithBindings } from "../connections/bindings.js";
 import { Prisma } from "../db/client.js";
 import {
   decryptPassword,
@@ -256,7 +257,9 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // Get an app's manifest (slug + visibility + capability grants, §6.3). Read —
-  // sign-in required.
+  // sign-in required. Provider-bound origins carry their per-binding
+  // effectiveness (T-0028) — computed here, on the read, so the SPA's
+  // Reapproval-needed badge needs no second request.
   app.get<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/manifest",
     { preHandler: authenticate },
@@ -265,7 +268,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      return toManifest(row);
+      return manifestWithBindings(app.prisma, row.id, toManifest(row));
     },
   );
 

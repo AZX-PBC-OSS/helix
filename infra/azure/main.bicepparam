@@ -7,6 +7,7 @@ param location = 'eastus2'
 param storageAccountName = 'helixprodbundles'
 param platformVaultName = 'helix-prod-kvp'
 param connectionsVaultName = 'helix-prod-kvc'
+param delegatedVaultName = 'helix-prod-kvd'
 param postgresServerName = 'helix-prod-pg'
 // Postgres compute. Burstable (Standard_B1ms / Standard_B2s) is plenty for light
 // or smoketest installs; GeneralPurpose Standard_D2ds_v5 is the default here.
@@ -153,6 +154,8 @@ param egressDatabaseUrl = az.getSecret('00000000-0000-0000-0000-000000000000', '
 param edgeAuthSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-auth-secret')
 param portalSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'portal-secret')
 param instructionSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'helix-instruction-secret')
+param internalSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'helix-internal-secret')
+param exchangeSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'helix-exchange-secret')
 // Edge cert (private_key_jwt) — the tenant blocks client secrets. PEM or base64 PEM.
 param edgeOidcPrivateKey = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-oidc-private-key')
 param edgeOidcCertificate = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-oidc-certificate')

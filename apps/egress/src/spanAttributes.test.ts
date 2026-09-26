@@ -103,6 +103,28 @@ describe("egressSpanAttributes", () => {
     });
     expect(Object.keys(attrs)).toHaveLength(6);
   });
+
+  it("carries the delegated dimensions (I-02 T-0022) and nothing credential-shaped", () => {
+    // The delegated call path widens the VALUE set of helix.credential_source
+    // with `delegated` and rides helix.provider_ref — both allowlisted keys,
+    // neither a header name nor credential material. The token itself has no
+    // key it could ride on, which is the point: even a caller that tries to
+    // record one under a plausible name loses it here.
+    const attrs = egressSpanAttributes({
+      "helix.credential_source": "delegated",
+      "helix.provider_ref": "asana",
+      "helix.outcome": "connection_required",
+      // Plausible credential-shaped keys a delegated path might reach for.
+      "helix.access_token": "planted-delegated-token",
+      "helix.token": "planted-delegated-token",
+      "helix.refresh_token": "planted-delegated-token",
+      authorization: "Bearer planted-delegated-token",
+    } as Parameters<typeof egressSpanAttributes>[0]);
+    expect(attrs["helix.credential_source"]).toBe("delegated");
+    expect(attrs["helix.provider_ref"]).toBe("asana");
+    expect(Object.keys(attrs)).toHaveLength(3);
+    expect(JSON.stringify(attrs)).not.toContain("planted-delegated-token");
+  });
 });
 
 describe("a recorded egress span", () => {
@@ -123,6 +145,38 @@ describe("a recorded egress span", () => {
     expect(recorded).toBeDefined();
     for (const key of Object.keys(recorded?.attributes ?? {})) {
       expect(EGRESS_SPAN_ATTRS, `${key} is not on the egress allowlist`).toContain(key);
+    }
+  });
+
+  it("carries the delegated resolution's span word vocabulary (I-02 T-0022)", async () => {
+    // The resolution span is a new span name on this plane; its outcome words
+    // are design.md's inventory, and every one must ride allowlisted KEYS
+    // only. Asserted on a recorded span per outcome word, so a future word
+    // that arrives carrying a non-allowlisted key fails here.
+    for (const outcome of [
+      "resolved",
+      "refreshed",
+      "connection_required",
+      "reconnect_required",
+      "provider_unavailable",
+      "provider_misconfigured",
+      "error",
+    ]) {
+      const span = tracer.startSpan("helix.egress.resolution");
+      span.setAttributes(
+        egressSpanAttributes({
+          "helix.outcome": outcome,
+          "helix.env": "prod",
+          "helix.provider_ref": "asana",
+        }),
+      );
+      span.end();
+      const recorded = recording.spans().at(-1);
+      expect(recorded?.attributes["helix.outcome"]).toBe(outcome);
+      for (const key of Object.keys(recorded?.attributes ?? {})) {
+        expect(EGRESS_SPAN_ATTRS, `${key} is not on the egress allowlist`).toContain(key);
+      }
+      expect(recorded?.events.filter((e) => e.name === "exception")).toEqual([]);
     }
   });
 

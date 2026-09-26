@@ -40,7 +40,7 @@ it("does not echo an authorization code into the 404 envelope", async () => {
     expect(res.statusCode).toBe(404);
     expect(res.body).not.toContain("SENTINEL_AUTHZ_CODE");
     expect(res.json().error.message).toBe(
-      "route GET /auth/callback?code=REDACTED&state=xyz not found",
+      "route GET /auth/callback?code=REDACTED&state=REDACTED not found",
     );
   } finally {
     await noSpa.close();

@@ -258,6 +258,17 @@ export interface UsageStore {
    * would also be pointless as a bound — the allowlist check returns *before*
    * this gate, so a denial loop never reaches it and writes rows either way;
    * counting them would only starve the app's legitimate traffic.
+   *
+   * `connection_required` (I-02) is deliberately **counted** — it consumes
+   * budget. It is not a policy refusal (criterion 50's separation from
+   * `refusal` is the label's whole point), but the exclusion above is about
+   * *where* the refusal happens, not why: this one happens at egress, after
+   * the call was authorized, an instruction minted, and egress did real work
+   * (verify, provider-cache read, connection resolution). Excluding it would
+   * leave a not-connected retry loop — which the allowlist denial throttle
+   * cannot bound, because the origin IS granted — an unmetered ride on the
+   * egress hop. The audit separation criterion 50 asks for lives in the
+   * `outcome` label itself, not in the budget arithmetic.
    */
   fetchRequestsToday(appId: string, env: Env): Promise<number>;
   /** Append one call to the ledger. */
@@ -322,6 +333,9 @@ export class PgUsageStore implements UsageStore {
   async fetchRequestsToday(appId: string, env: Env): Promise<number> {
     return withPartition(this.#pool, appId, null, env, async (client) => {
       const result = await client.query(
+        // `connection_required` stays counted on purpose — it is an egress
+        // outcome, not a pre-egress refusal of ours. See the interface
+        // docblock above for the full reasoning.
         `SELECT COUNT(*)::int AS n
          FROM gateway_calls
          WHERE "appId" = $1 AND env = $2 AND capability = 'fetch'

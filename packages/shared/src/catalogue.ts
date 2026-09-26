@@ -5,6 +5,7 @@ import {
   BASELINE_BYTES_PER_DAY,
   BASELINE_FETCH_REQUESTS_PER_DAY,
 } from "./approval.js";
+import { CatalogueProviderSchema } from "./providers.js";
 import { VisibilityModeSchema, type VisibilityMode } from "./visibility.js";
 
 /**
@@ -92,12 +93,21 @@ export const CapabilityCatalogueSchema = z.object({
    * values, and without the origin each one fronts: a global secret has no
    * stored origin (the origin is declared per-app in each manifest), so listing
    * one here would be a guess. An agent learns "this connection exists and is
-   * referenceable" and supplies the origin itself. `baselineRequestsPerDay` is
-   * the proxied-request budget at/under which a fetch grant auto-approves.
+   * referenceable" and supplies the origin itself. `providers` is the configured
+   * OAuth connection providers an app may bind from
+   * `capabilities.fetch.origins[].provider` (T-0009; Q16) — metadata-only
+   * {@link CatalogueProviderSchema} entries (ref, kind, display name, API
+   * destinations, env), never a credential field, served to every
+   * authenticated principal exactly like `connections`. An origin bound to a
+   * provider must be one of that provider's `apiOrigins` in the applicable
+   * environment, so an app author picks both from this list.
+   * `baselineRequestsPerDay` is the proxied-request budget at/under which a
+   * fetch grant auto-approves.
    */
   fetch: z.object({
     externalOriginsPermitted: z.boolean(),
     connections: z.array(z.object({ name: z.string().min(1) })),
+    providers: z.array(CatalogueProviderSchema),
     baselineRequestsPerDay: z.number().positive(),
   }),
 

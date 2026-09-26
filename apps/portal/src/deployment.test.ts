@@ -3,8 +3,10 @@ import {
   appPublicHost,
   appPublicUrl,
   assertDeploymentConfig,
+  connectionsCallbackUrl,
   resolveAppPublicBase,
   resolveDevApiBase,
+  resolveEgressBaseUrl,
   resolvePlatformMonthlyUsdCap,
 } from "./deployment.js";
 
@@ -72,6 +74,28 @@ describe("appPublicUrl / appPublicHost", () => {
   });
 });
 
+describe("connectionsCallbackUrl", () => {
+  // The convention pin (architecture ADR-0001 §Implementation Notes): the
+  // callback is `auth.<APP_PUBLIC_BASE host>` + `/connections/callback` — the
+  // label apps/edge/src/routing/hosts.ts classifies as the auth host, under
+  // the prefix apps/edge/src/routing/connectionsProxy.ts forwards to this
+  // portal. A drift in either file's half of the convention must fail here.
+  it("derives the reserved-subdomain auth host from the apps base", () => {
+    expect(connectionsCallbackUrl({ APP_PUBLIC_BASE: "https://azx.helix.azxlabs.io" })).toBe(
+      "https://auth.azx.helix.azxlabs.io/connections/callback",
+    );
+  });
+
+  it("carries scheme and port through", () => {
+    expect(connectionsCallbackUrl({ APP_PUBLIC_BASE: "https://local.helix.azxlabs.io:8080" })).toBe(
+      "https://auth.local.helix.azxlabs.io:8080/connections/callback",
+    );
+    expect(connectionsCallbackUrl({ APP_PUBLIC_BASE: "http://localhost:8081" })).toBe(
+      "http://auth.localhost:8081/connections/callback",
+    );
+  });
+});
+
 describe("resolveDevApiBase", () => {
   it("is null when unset — the dev gateway is opt-in", () => {
     expect(resolveDevApiBase({})).toBeNull();
@@ -107,6 +131,33 @@ describe("resolvePlatformMonthlyUsdCap", () => {
 
   it("parses a positive cap", () => {
     expect(resolvePlatformMonthlyUsdCap({ PLATFORM_MONTHLY_USD_CAP: "2500" })).toBe(2500);
+  });
+});
+
+describe("resolveEgressBaseUrl", () => {
+  // The exchange delegation (I-02 ADR-0001/0003) is opt-in exactly like the
+  // edge's EDGE_EGRESS_URL: null unwires it, and the consuming route refuses
+  // rather than degrades.
+  it("is null when unset — the exchange delegation is opt-in", () => {
+    expect(resolveEgressBaseUrl({})).toBeNull();
+  });
+
+  it("honours PORTAL_EGRESS_URL", () => {
+    expect(
+      resolveEgressBaseUrl({ PORTAL_EGRESS_URL: "http://helix-egress.internal:8081" })?.origin,
+    ).toBe("http://helix-egress.internal:8081");
+  });
+
+  it("rejects a non-URL value", () => {
+    expect(() => resolveEgressBaseUrl({ PORTAL_EGRESS_URL: "egress" })).toThrow(
+      /not a valid absolute URL/,
+    );
+  });
+
+  it("is part of the boot assertion", () => {
+    expect(() => assertDeploymentConfig({ PORTAL_EGRESS_URL: "nope" })).toThrow(
+      /PORTAL_EGRESS_URL/,
+    );
   });
 });
 

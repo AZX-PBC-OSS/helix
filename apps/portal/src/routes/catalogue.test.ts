@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   BASELINE_BYTES_PER_DAY,
@@ -214,6 +215,71 @@ describe("GET /api/v1/capabilities", () => {
       expect(names).toContain(globalName);
       expect(names).not.toContain(appName);
       await cleanupSeeded();
+    });
+  });
+
+  describe("fetch providers (T-0009)", () => {
+    /** Unique per-run ref, so parallel suites' provider rows never collide. */
+    const ref = `cat-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+
+    /** Seed a provider row directly — the catalogue reads rows, not the vault. */
+    async function seedProvider(env: "prod" | "dev"): Promise<void> {
+      await t.prisma.connectionProvider.deleteMany({ where: { ref, env } });
+      await t.prisma.connectionProvider.create({
+        data: {
+          ref,
+          kind: "rest-delegated",
+          displayName: "Asana",
+          authorizeEndpoint: "https://vendor.example/oauth/authorize",
+          tokenEndpoint: "https://vendor.example/oauth/token",
+          requestedScopes: ["default"],
+          apiOrigins: ["https://api.asana.com"],
+          tokenPlacement: { kind: "header-bearer" },
+          env,
+          clientIdMaterial: "sealed-client-id",
+          clientSecretMaterial: "sealed-client-secret",
+        },
+      });
+    }
+
+    afterAll(async () => {
+      await t.prisma.connectionProvider.deleteMany({ where: { ref } });
+    });
+
+    it("returns every configured provider to a signed-in principal, metadata only", async () => {
+      await seedProvider("prod");
+      await seedProvider("dev");
+      // Raw env-pinned rows: the same ref appears once per environment (Q16).
+      const body = await catalogue();
+      const entries = body.fetch.providers.filter((p) => p.ref === ref);
+      expect(entries.map((p) => `${p.env}`).sort()).toEqual(["dev", "prod"]);
+      for (const entry of entries) {
+        expect(entry).toMatchObject({
+          ref,
+          kind: "rest-delegated",
+          displayName: "Asana",
+          apiOrigins: ["https://api.asana.com"],
+        });
+      }
+
+      // No credential field anywhere in the payload — not even an empty one.
+      const raw = await t.app.inject({
+        url: "/api/v1/capabilities",
+        headers: authHeader(),
+      });
+      expect(raw.statusCode).toBe(200);
+      const rawBody = raw.body;
+      expect(rawBody).not.toContain("clientIdMaterial");
+      expect(rawBody).not.toContain("clientSecretMaterial");
+      expect(rawBody).not.toContain("sealed-client");
+    });
+
+    it("leaves the existing catalogue sections unchanged beside the providers list", async () => {
+      const body = await catalogue();
+      expect(body.fetch.connections).toBeInstanceOf(Array);
+      expect(body.fetch.externalOriginsPermitted).toBe(true);
+      expect(body.fetch.baselineRequestsPerDay).toBe(BASELINE_FETCH_REQUESTS_PER_DAY);
+      expect(body.fetch.providers).toBeInstanceOf(Array);
     });
   });
 

@@ -29,6 +29,12 @@ param portalSecret string
 @description('HELIX_INSTRUCTION_SECRET.')
 param instructionSecret string
 @secure()
+@description('HELIX_INTERNAL_SECRET — shared edge<->portal internal-JWT key (ADR-0003).')
+param internalSecret string
+@secure()
+@description('HELIX_EXCHANGE_SECRET — shared portal<->egress exchange-JWT key (ADR-0003).')
+param exchangeSecret string
+@secure()
 @description('EDGE_OIDC_CLIENT_PRIVATE_KEY (edge cert private key, PEM or base64 PEM).')
 param edgeOidcPrivateKey string
 @secure()
@@ -59,6 +65,8 @@ var secrets = {
   'edge-auth-secret': edgeAuthSecret
   'portal-secret': portalSecret
   'helix-instruction-secret': instructionSecret
+  'helix-internal-secret': internalSecret
+  'helix-exchange-secret': exchangeSecret
   'edge-oidc-private-key': edgeOidcPrivateKey
   'edge-oidc-certificate': edgeOidcCertificate
   'postgres-admin-password': postgresAdminPassword

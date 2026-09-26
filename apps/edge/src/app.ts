@@ -36,6 +36,11 @@ import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
 import { DenialThrottle } from "./gateway/denialThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
+import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
+import { makeConsentStartHandler } from "./routing/consentStart.js";
+import { AttemptCorrelations, makeConsentCancelHandler } from "./routing/consentCancel.js";
+import type { PortalProvider } from "./routing/portalProvider.js";
+import { deriveInternalKey } from "./internalJwt.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
 import { CSP_REPORT_PATH, buildAppCsp } from "./serving/csp.js";
 import {
@@ -47,7 +52,7 @@ import {
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
-import { ROUTE_OPENAI } from "@azx-pbc/shared/telemetry";
+import { ROUTE_OPENAI, ROUTE_CONSENT_CANCEL } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -82,6 +87,11 @@ export interface EdgeDeps {
   appData?: AppDataStore | null;
   /** Egress client for the fetch-proxy (M4.5); null = the capability 503s. */
   egress?: EgressProvider | null;
+  /**
+   * Portal client for the auth-host `/connections/*` reverse proxy (I-02
+   * ADR-0002 part 3); null = the surface 503s fail-closed.
+   */
+  portal?: PortalProvider | null;
   /** HKDF-derived instruction signing key; null = the fetch capability 503s. */
   instructionKey?: Buffer | null;
   /** CSP-violation report sink (§6.2); null = accept-and-drop. */
@@ -291,6 +301,42 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     store: deps.cspReports ?? null,
   });
 
+  // The auth-host `/connections/*` reverse proxy (I-02 ADR-0002 part 3). The
+  // route always exists; with either the portal URL or the internal mint key
+  // unconfigured it answers a distinguishable 503 (fail-closed, like every
+  // other seam) rather than disappearing.
+  const handleConnections = makeConnectionsProxyHandler({
+    portal: deps.portal ?? null,
+    internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+  });
+
+  // I-02 T-0014: the consent popup's prod entry — app hosts only, inside the
+  // existing `/_api` reservation. The route always exists and fail-closes
+  // inward (sign-in required without a session, couldn't-start without the
+  // portal seam); the terminal pages are its designed answers, so unlike the
+  // gateway handlers this needs no null-guard for an unwired runtime.
+  //
+  // The correlation map is the helper-cancel half (T-0017): the start route
+  // records each tagged consult's tag→state pair, and the cancellation route
+  // below consumes it — one instance, shared by both handlers.
+  const correlations = new AttemptCorrelations();
+  const handleConsentStart = makeConsentStartHandler({
+    config,
+    registry: deps.registry,
+    sessions: authRuntime?.sessions ?? null,
+    portal: deps.portal ?? null,
+    internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+    correlations,
+  });
+  const handleConsentCancel = makeConsentCancelHandler({
+    config,
+    registry: deps.registry,
+    sessions: authRuntime?.sessions ?? null,
+    portal: deps.portal ?? null,
+    internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+    correlations,
+  });
+
   // The two-router discipline (architecture §3, decision 12): every request
   // is classified by hostname exactly once, and the two worlds never mix —
   // platform handlers are unreachable on app hosts and vice versa. Explicit
@@ -400,6 +446,33 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     });
   }
 
+  // I-02 ADR-0002 part 3: the `/connections/*` reverse proxy — auth host only
+  // (the two-router discipline: app hosts never proxy to the portal).
+  // Encapsulated with a passthrough body parser so a POST body streams to the
+  // portal unbuffered, exactly like the fetch-proxy scope below; on app hosts
+  // the prefix stays an ordinary asset path (an app may ship files under
+  // `connections/` — the asset handler sees the same URL it always did).
+  void app.register((connectionsScope, _opts, doneRegister) => {
+    connectionsScope.removeAllContentTypeParsers();
+    connectionsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+    connectionsScope.route({
+      method: ["GET", "HEAD", "POST"],
+      url: "/connections/*",
+      handler: async (req, reply) => {
+        if (req.hostClass.kind === "auth") {
+          await handleConnections(req, reply);
+          return;
+        }
+        if (req.hostClass.kind === "app") {
+          await serveAsset(req, reply, req.hostClass.slug);
+          return;
+        }
+        sendNotFound(reply);
+      },
+    });
+    doneRegister();
+  });
+
   // Shared-password challenge (`password` visibility), on app hosts only. GET
   // serves the login page; POST verifies and mints the session. Non-password
   // apps 404 inside the handler (no signal).
@@ -458,6 +531,36 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleMe) {
         await handleMe(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // I-02 T-0014: the consent popup's entry — `GET /_api/connections/:ref/start`
+  // (design.md §Raw platform entry). A GET navigation endpoint, so no body
+  // parser concerns; app hosts only (the two-router discipline).
+  app.route({
+    method: "GET",
+    url: "/_api/connections/:ref/start",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app") {
+        await handleConsentStart(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // I-02 T-0017: the connect helper's cancellation acknowledgement — the
+  // JSON POST `window.helix.connect` fires when its popup closed without a
+  // completion message. App hosts only; session-gated inward.
+  app.route({
+    method: "POST",
+    url: ROUTE_CONSENT_CANCEL,
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app") {
+        await handleConsentCancel(req, reply, req.hostClass.slug);
         return;
       }
       sendNotFound(reply);

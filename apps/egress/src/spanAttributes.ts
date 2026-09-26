@@ -8,6 +8,9 @@ import {
   ATTR_ENV,
   ATTR_METHOD,
   ATTR_OUTCOME,
+  ATTR_PROVIDERS,
+  ATTR_PROVIDER_REF,
+  ATTR_REASON,
   ATTR_TARGET_ORIGIN,
   ATTR_TARGET_PATH,
   ATTR_UPSTREAM_STATUS,
@@ -23,8 +26,13 @@ import {
  * or errors can echo credentials.
  *
  * Allowed values come from signed instruction claims, status codes, or bounded
- * resolution outcomes. helix.credential_source is secret or managed-identity;
- * helix.connection is the configured connection name, never secret material.
+ * resolution outcomes. helix.credential_source is secret, managed-identity, or
+ * delegated (I-02 T-0022 — the caller's own OAuth connection); helix.connection
+ * is the configured connection name, never secret material; helix.provider_ref
+ * is the admin-chosen provider ref. On the exchange route (I-02 T-0019),
+ * helix.provider_ref is that same admin-chosen ref and helix.reason a bounded
+ * gate-rejection word — never vendor response content, which the fixed-string
+ * discipline keeps off this plane entirely.
  */
 export const EGRESS_SPAN_ATTRS = [
   ATTR_APP_ID,
@@ -38,6 +46,9 @@ export const EGRESS_SPAN_ATTRS = [
   ATTR_CONNECTION,
   ATTR_CREDENTIAL_SOURCE,
   ATTR_CLIENT_DISCONNECTED,
+  ATTR_PROVIDERS,
+  ATTR_PROVIDER_REF,
+  ATTR_REASON,
 ] as const;
 
 export type EgressSpanAttr = (typeof EGRESS_SPAN_ATTRS)[number];

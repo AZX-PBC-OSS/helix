@@ -718,6 +718,39 @@ describe("LLM upstream config (ADR-0046)", () => {
   });
 });
 
+describe("the edge↔portal internal-JWT key (HELIX_INTERNAL_SECRET, I-02 ADR-0003)", () => {
+  const ENV = {
+    DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
+    EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
+    AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
+  };
+
+  it("is null when unset — the mint side gates, it does not boot-fail", () => {
+    expect(loadConfig({ ...ENV }).internalSecret).toBeNull();
+    // The dev-gateway shares the parse and the optional treatment.
+    expect(
+      loadDevGatewayConfig({ ...ENV, EDGE_DEV_DATABASE_URL: "postgresql://helix_dev@db/helix" })
+        .internalSecret,
+    ).toBeNull();
+  });
+
+  it("parses the secret when set", () => {
+    const config = loadConfig({
+      ...ENV,
+      HELIX_INTERNAL_SECRET: "0123456789abcdef0123456789abcdef",
+    });
+    expect(config.internalSecret).toEqual(Buffer.from("0123456789abcdef0123456789abcdef"));
+  });
+
+  it("refuses a too-short secret (would weaken the derived key)", () => {
+    expect(() => loadConfig({ ...ENV, HELIX_INTERNAL_SECRET: "short" })).toThrow(
+      /HELIX_INTERNAL_SECRET must be at least 32 bytes/,
+    );
+  });
+});
+
 describe("loadDevGatewayConfig", () => {
   // The dev-gateway's ONLY required env is its own helix_dev DSN (+ TLS in dev).
   const DEV_ENV = {

@@ -16,9 +16,12 @@ import {
   FetchCapabilitySchema,
   LlmCapabilitySchema,
   OfflineCapabilitySchema,
+  ShimCapabilitySchema,
   isValidServiceWorkerScope,
   type DataCapability,
+  type FetchConnection,
   type LlmCapability,
+  type ShimCapability,
   type VisibilityMode,
 } from "@azx-pbc/shared";
 import { normalizeRequestPath } from "../serving/paths.js";
@@ -26,14 +29,29 @@ import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { ATTR_OUTCOME, ATTR_REGISTRY_APPS, SPAN_REGISTRY_LOAD } from "@azx-pbc/shared/telemetry";
 import { tracer } from "../telemetry.js";
 
+/**
+ * One proxied origin's credential source — the manifest's 3-way select (spec
+ * decision 28) carried as **manifest data, nothing more**: a keyless proxied
+ * call, a stored secret name, or an OAuth provider binding (the ref plus the
+ * manifest's `required` dependency hint — the only display metadata a manifest
+ * declares; provider rows never cross to the edge). A union, not two nullable
+ * fields, so a grant cannot represent both a secret name and a provider ref
+ * for one origin — `FetchConnectionSchema` refuses that at parse, and this
+ * shape preserves the exclusivity structurally (ADR-0005).
+ */
+export type ProxiedOriginCredential =
+  | { readonly kind: "keyless" }
+  | { readonly kind: "secret"; readonly connection: string }
+  | { readonly kind: "provider"; readonly provider: string; readonly required: boolean };
+
 /** The edge's per-app view of the fetch-proxy grant (fetch-proxy design §7). */
 export interface FetchProxyGrant {
   /**
-   * Canonical proxied origin → connection (secret) name, or null for a keyless
-   * proxied origin. The egress allowlist: a target origin not present here is
-   * 403'd before anything leaves the edge.
+   * Canonical proxied origin → that origin's credential source. The egress
+   * allowlist: a target origin not present here is 403'd before anything
+   * leaves the edge.
    */
-  connections: Map<string, string | null>;
+  connections: Map<string, ProxiedOriginCredential>;
   /** Per-app daily proxied-request budget; null ⇒ unbounded. */
   requestsPerDay: number | null;
   /** Whether to inject the transparent fetch shim at serve time (§3.2). */
@@ -84,9 +102,10 @@ export interface RegistryEntry {
   externalOrigins: string[];
   /**
    * The fetch-proxy grant (manifest `capabilities.fetch`): the **proxied**
-   * origins the edge will route through `helix-egress`, with their secret
-   * connections, plus the per-app budget and shim flag. Always present (empty
-   * allowlist when the app has no fetch capability). Parsed fail-closed.
+   * origins the edge will route through `helix-egress`, each with its
+   * credential source (secret name, provider binding, or keyless), plus the
+   * per-app budget and shim flag. Always present (empty allowlist when the app
+   * has no fetch capability). Parsed fail-closed.
    */
   fetch: FetchProxyGrant;
   /**
@@ -96,6 +115,13 @@ export interface RegistryEntry {
    * Parsed fail-closed, and the scope is **re-validated here** (below).
    */
   offline: { scope: string } | null;
+  /**
+   * The injected-helpers grant (manifest `capabilities.shim`, design decision
+   * 5), or null when the app declares none — no platform script is injected
+   * then. `connect` gates the `window.helix.connect` helper's head injection
+   * (serve time only; never a privilege grant). Parsed fail-closed.
+   */
+  shim: ShimCapability | null;
 }
 
 /**
@@ -144,13 +170,17 @@ function parseFetchGrant(capabilities: unknown): FetchProxyGrant {
   if (typeof capabilities !== "object" || capabilities === null) return empty;
   const raw = (capabilities as Record<string, unknown>).fetch;
   if (raw === undefined) return empty;
+  // The shared schema is the strict parse (ADR-0005): one malformed origin — a
+  // bad URL, secret name, or provider ref — fails the WHOLE capability here,
+  // degrading this app's grant to an empty allowlist rather than serving a
+  // credential binding the schema refused.
   const parsed = FetchCapabilitySchema.safeParse(raw);
   if (!parsed.success) return empty;
-  const connections = new Map<string, string | null>();
+  const connections = new Map<string, ProxiedOriginCredential>();
   for (const o of parsed.data.origins) {
     try {
       // Canonicalize the origin so request-time `new URL(target).origin` matches.
-      connections.set(new URL(o.origin).origin, o.connection ?? null);
+      connections.set(new URL(o.origin).origin, originCredential(o));
     } catch {
       // A malformed origin (shouldn't pass zod's url()) is simply skipped.
     }
@@ -160,6 +190,20 @@ function parseFetchGrant(capabilities: unknown): FetchProxyGrant {
     requestsPerDay: parsed.data.requestsPerDay ?? null,
     shim: parsed.data.shim,
   };
+}
+
+/**
+ * Project one parsed manifest origin into the edge's credential view. The
+ * exclusivity the schema enforced is preserved one-to-one: `provider` wins the
+ * union arm it can only occupy alone, and `required` — the app's dependency
+ * hint, the binding's display metadata — normalizes to `false` when absent.
+ */
+function originCredential(o: FetchConnection): ProxiedOriginCredential {
+  if (o.provider !== undefined) {
+    return { kind: "provider", provider: o.provider, required: o.required ?? false };
+  }
+  if (o.connection !== undefined) return { kind: "secret", connection: o.connection };
+  return { kind: "keyless" };
 }
 
 /**
@@ -187,6 +231,19 @@ function parseOfflineGrant(capabilities: unknown): { scope: string } | null {
   const normalized = normalizeRequestPath(scope);
   if (normalized === null || `${normalized}/` !== scope) return null;
   return { scope };
+}
+
+/**
+ * Extract `capabilities.shim` (design decision 5 — the injected-helpers grant),
+ * fail-closed to null. `connect` is first-class here: it never rides the legacy
+ * `fetch.shim` alias, so the block's own parse is the whole grant.
+ */
+function parseShimCapability(capabilities: unknown): ShimCapability | null {
+  if (typeof capabilities !== "object" || capabilities === null) return null;
+  const raw = (capabilities as Record<string, unknown>).shim;
+  if (raw === undefined) return null;
+  const parsed = ShimCapabilitySchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -447,6 +504,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           externalOrigins: parseExternalOrigins(row.capabilities),
           fetch: parseFetchGrant(row.capabilities),
           offline: parseOfflineGrant(row.capabilities),
+          shim: parseShimCapability(row.capabilities),
         });
       }
       this.#map = next;

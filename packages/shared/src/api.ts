@@ -127,6 +127,14 @@ export const API_ERROR_CODES = [
   /** Authenticated but not allowed — reserved for v1 RBAC. */
   "forbidden",
   "conflict",
+  /**
+   * Portal: a sensitive provider edit (or a deletion) arrived without its
+   * invalidation acknowledgement (I-02 T-0010 — design.md §Sensitive-change
+   * review panel). HTTP 409 like `conflict`, but distinguishable: the SPA's
+   * review panel opens on this code, and `details` carries the impact payload
+   * (`ConfirmationRequiredDetailsSchema` in providers.ts) it renders.
+   */
+  "confirmation_required",
   /** Gateway: requested model is not in the app's manifest allowlist (§6.3). */
   "model_not_allowed",
   /** Gateway: the app's daily token budget is exhausted (§6.1). */

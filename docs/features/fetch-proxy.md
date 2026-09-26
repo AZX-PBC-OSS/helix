@@ -1,6 +1,6 @@
 # Fetch proxy
 
-> **Related ADRs:** [ADR-0005](../adr/0005-ssrf-egress-controls.md) (SSRF + secret injection) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model) · [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split / edge posture) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway).
+> **Related ADRs:** [ADR-0005](../adr/0005-ssrf-egress-controls.md) (SSRF + secret injection) · [ADR-0013](../adr/0013-egress-trust-model.md) (egress trust model) · [ADR-0001](../adr/0001-three-runtime-split.md) (three-runtime split / edge posture) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway) · [ADR-0031](../adr/0031-connection-providers-delegated-auth.md) (connection providers — the delegated-auth catalog).
 
 Apps call third-party APIs through a same-origin URL, for example
 `fetch('/_api/fetch/https://api.github.com/...')`. The platform checks permissions,
@@ -152,13 +152,227 @@ so deleting or bypassing it gains nothing — a direct call still dies on
 `connect-src 'self'`. It fails safe. Toggle it in the portal's **Capabilities →
 Fetch proxy** card.
 
+## Delegated providers (per-user OAuth connections)
+
+A proxied origin can bind an **OAuth connection provider** instead of a stored
+secret. In the manifest, a `capabilities.fetch.origins` entry names `provider:
+"<ref>"` — a provider the operator registered in the portal's catalog — as a
+sibling of `connection` (the two are mutually exclusive: the manifest parse
+refuses an origin with both, and an origin with neither is a keyless proxied
+call):
+
+```yaml
+fetch:
+  origins:
+    - origin: https://app.acme.example
+      provider: acme # the operator's catalog ref
+      required: true # a dependency hint — see below
+```
+
+At call time, egress resolves **the calling user's own connection** to that
+provider — the access token the user granted through OAuth consent, sealed
+server-side and renewed automatically as it expires — and injects it into the
+outbound request per the provider's token placement. The app never sees a
+token; each user's calls carry that user's own grant. The token is issued only
+to the provider's registered API destinations, and only over `https` (a
+provider-bound call to a cleartext origin is refused `403 forbidden`). A user
+with no connection to the provider gets an error — never someone else's
+credential, never an unauthenticated call.
+
+Consent is how a connection comes to exist, and it is **explicit, never
+automatic**: the platform does not watch responses, does not open a popup when
+a call fails, and does not retry anything. The app decides to offer a Connect
+control, and calls one of the two entry paths below from inside it. Both paths
+require a user gesture — that is the browser's popup rule, and the platform
+never works around it.
+
+### Entry path 1 — the connect helper (`window.helix.connect`)
+
+Apps that grant `capabilities.shim.connect` get a `window.helix.connect()`
+helper inlined into their HTML at serve time — the same injection discipline as
+the fetch shim (opt-in, never unconditional; a provider binding alone never
+injects it). It is a function, not UI, and has no automatic behavior: it does
+not watch your `fetch` responses, does not open a popup on
+`connection_required`, and does not retry anything.
+
+```js
+// inside the Connect button's click handler
+const result = await window.helix.connect("acme"); // the provider ref
+// { outcome: "connected", provider: "acme", attempt: "9f1c…" }
+```
+
+- It must be called inside a user gesture. Without one the browser refuses the
+  popup and the result is `blocked`.
+- It never throws and the promise never rejects — every flow result is an
+  outcome.
+- One popup per call. Concurrent calls for the same provider each get their own
+  attempt and their own outcome (a losing concurrent saver reports
+  `error`/`conflict`).
+
+The result is `{ outcome, provider, attempt?, reason? }` — `attempt` is the
+correlation tag (absent on `blocked`, where nothing was started), and `reason`
+is present only with the `error` outcome. The outcomes:
+
+| Outcome | What happened |
+| --- | --- |
+| `connected` | The user approved at the provider; the connection is saved. |
+| `already_connected` | A working connection already existed — nothing was sent to the vendor. |
+| `denied` | The user declined the provider's consent screen. |
+| `cancelled` | The popup closed without completing. The helper acknowledges the cancellation so a late vendor completion cannot claim the attempt — and honestly: if the popup completed just before closing, the connection exists and your next call succeeds. |
+| `timeout` | Five minutes elapsed with the popup open (the attempt expires server-side regardless). |
+| `blocked` | The browser refused the popup (no user gesture, or a blocker). Control returns immediately; the platform never navigates the current tab and never retries the open. Offer Connect again. |
+| `signin_required` | The caller has no usable app session. Sign in to the app, then Connect again. |
+| `error` | A platform-side failure; `reason` names it: `conflict`, `provider_unavailable`, `provider_misconfigured`, `provider_incompatible`, `service_unavailable`. |
+
+### Entry path 2 — the raw platform entry (no helper)
+
+Without the shim grant, open the start route in a popup from a user gesture and
+listen for the completion message yourself:
+
+```
+GET /_api/connections/:ref/start          optionally ?attempt=<correlation tag>
+```
+
+The start is a same-origin navigation on the app host — it runs the app's
+session gates, so it must ride the app's own cookies; cross-site navigations
+are refused. With a session, the popup is redirected straight to the provider's
+consent screen. Every other outcome renders a platform page that posts the
+outcome message (below) before offering Close.
+
+On the dev tier the entry is a POST — the dev token must never ride a popup
+URL: `POST /<slug>/_api/connections/:ref/start` with the bearer token answers
+`{outcome: "started", popupUrl}` (open the returned single-use URL on the auth
+host), or a terminal `already_connected` / `not_available`.
+
+**The completion message.** Every platform page in the popup posts one message
+to its opener before closing:
+
+```json
+{
+  "source": "helix-connect",
+  "version": 1,
+  "attempt": "9f1c…",
+  "provider": "acme",
+  "outcome": "connected",
+  "reason": null
+}
+```
+
+`attempt` is your correlation tag, echoed when the sender knows it (the
+start-route pages echo it; the auth-host completion pages do not) — present
+only when the start URL carried one. `outcome` uses the same vocabulary as the
+helper's result; `reason` is `null` unless the outcome is `error`.
+
+**Verify a message before trusting it** — a message is a notification, never
+an authorization grant (it carries no token), and any window on the web can
+`postMessage` at yours:
+
+1. the sender (`event.source`) is the popup you opened;
+2. `event.origin` is one of the platform origins that may message you — the
+   app's own host (start-route pages) or the auth host (completion pages, and
+   every page of the dev journey);
+3. the shape parses: `source` is `"helix-connect"`, `version` is `1`,
+   `provider` matches the ref you are connecting, `outcome` is in the set,
+   `reason` is `null` unless the outcome is `error`, and `attempt` — when the
+   message carries one — matches the tag you put on the start URL.
+
+Discard everything else. The helper implements exactly these checks; an app on
+the raw entry must too.
+
+### Delegated-call errors
+
+When a provider-bound call cannot be served, the proxy answers JSON instead of
+an upstream response — `{code, message, provider?}`. Every `message` is a fixed
+platform string: never vendor error text, never credential material, never
+internal detail. As shipped:
+
+| Situation | HTTP | `code` | Body | Ledger outcome |
+| --- | --- | --- | --- | --- |
+| The caller has no usable connection to the bound provider — never connected, the user declined the vendor's consent, the token is dead or invalidated, a renewal ended in an uncertain rotation or an explicit permission loss, the user disconnected elsewhere, or the caller's kind can never hold a connection | 403 | `connection_required` | `provider: {ref, displayName?}` | `connection_required` |
+| The provider was deleted, or the binding is blocked by a sensitive provider edit (the connection was invalidated; the origin is no longer one of the provider's API destinations) | 503 | `provider_unavailable` | `provider: {ref}` | `refusal` |
+| The provider's configuration is invalid (malformed row, or renewal reported the provider's credentials rejected) | 502 | `provider_misconfigured` | — | `refusal` |
+| Temporary renewal failure / vendor outage — the connection is preserved | 502 | `upstream_error` | — | `error` |
+| The origin was never granted for this app (the binding was never approved) | 403 | `forbidden` | — | `forbidden` |
+
+`connection_required` carries `provider.ref` — and `displayName` when the
+platform can name the provider — so the app can offer Connect for exactly that
+provider. It is also a distinct `gateway_calls` outcome label: the Usage and
+Audit pages separate "the user was not connected" from "policy refused", which
+is what the other provider-shaped codes deliberately do not do (they meter as
+the existing `refusal`).
+
+### What the user can fix, and how
+
+Every outcome above is either something the user can remedy by connecting, or
+something only an administrator can. The remedy for every connection-shaped
+failure is the same control the app already offers:
+
+- **No connection yet, `denied`, dead or invalidated token, reconnection
+  required (an uncertain rotation or a permission loss), disconnected by the
+  user in the portal** — offer Connect again. Re-consenting replaces the stale
+  state; a `reconnect-needed` or invalidated row is replaceable through consent.
+  If Connect answers `already_connected`, the connection had landed after all —
+  re-issue the call.
+- **`error`/`conflict` from a concurrent connect** — the same user's other
+  Connect for this provider finished first, so the connection already exists;
+  re-issue the call.
+- **`signin_required`** — the user signs in to the app, then Connect again.
+  **For anonymous visitors (public apps) and shared-password pseudonyms there
+  is nothing to sign in as, and `connection_required` is unremediable for that
+  identity** — those callers can never hold a delegated connection, no matter
+  how many times they connect. An app whose audience includes them should not
+  offer Connect at all.
+- **`provider_unavailable`, `provider_misconfigured`** — not user-remediable.
+  An administrator restores or fixes the provider, the app's owner re-saves the
+  binding for re-approval if it changed, and then the user connects again.
+- **`upstream_error`** — temporary; the connection is preserved. A later call
+  may simply succeed.
+
+Users see and manage their own connections in the portal's **My Connections**
+page — per-provider status (`Connected` / `Reconnect needed`) and disconnect.
+A disconnect there is what makes the next API call answer
+`connection_required`.
+
+**Retry is the app's decision.** After any of these outcomes, the app decides
+whether and when to try again — the platform never replays a call, not after a
+consent error and not after an upstream failure. The typical loop: on
+`connection_required`, offer Connect; on a `connected` or `already_connected`
+outcome, re-issue the call that failed.
+
+### `required` is a dependency hint, nothing more
+
+`required: true` on a provider-bound origin documents that the app depends on
+that connection. That is all it is — a hint for reviewers and the portal UI. It
+never blocks the app from loading, never triggers a popup, never gates a call,
+and never runs a check platform-side. An unmet `required` binding behaves
+exactly like the error table above — the call answers `connection_required`,
+and the app decides what to show.
+
+### The Connect control is app-authored — accessibility included
+
+The platform injects no UI into your app, so the Connect control is yours to
+build well:
+
+- **A visible label naming the provider** ("Connect to …"), on a **real
+  `<button>`** — keyboard-reachable, announced by assistive tech, not a
+  click-handled `<div>`.
+- **Focus stays on the control through the popup cycle.** Opening the popup
+  never navigates the app's own tab, and the helper resolves in place — so keep
+  focus where the user left it and surface the outcome there: update the
+  control's label/state and announce it (a polite live region, or focus the
+  control), rather than replacing the page or stealing focus with a modal.
+
 ## Key files
 
 - `apps/edge/src/gateway/fetch.ts` — `makeFetchHandler`, the policy plane.
 - `apps/edge/src/serving/shim.ts` + `assets.ts` — the shim script + serve-time injection.
+- `apps/edge/src/serving/connectHelper.ts` — the `window.helix.connect` helper script.
+- `apps/edge/src/routing/consentStart.ts` — the raw consent entry route + its terminal pages.
 - `apps/edge/src/gateway/instruction.ts` — mints the attested instruction.
 - `apps/egress/src/{proxy,ssrf,instruction}.ts` — the mechanism plane: verify, inject, SSRF, stream.
+- `apps/egress/src/delegated.ts` — delegated-call resolution: the caller's connection, renewal, and the error taxonomy.
 - `packages/shared/src/{instruction,manifest}.ts` — the instruction payload + `capabilities.fetch` schema.
+- `packages/shared/src/consent.ts` — the completion-message and helper-result contracts.
 
 ## Design notes (the why)
 

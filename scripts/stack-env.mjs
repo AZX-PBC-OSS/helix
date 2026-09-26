@@ -17,6 +17,8 @@ export const BASE_PORTS = {
   portal: 3001,
   idp: 3002,
   web: 5173,
+  vendor: 3003,
+  vendorTls: 3443,
 };
 
 /** Chrome DevTools port the smoke driver's browser group binds (cdp.mjs). */
@@ -71,6 +73,8 @@ export function resolveStack(opts = {}) {
     PORTAL_PORT: String(ports.portal),
     IDP_PORT: String(ports.idp),
     PORTAL_WEB_PORT: String(ports.web),
+    OAUTH_VENDOR_PORT: String(ports.vendor),
+    OAUTH_VENDOR_TLS_PORT: String(ports.vendorTls),
 
     // Derived public URLs. APP_PUBLIC_BASE is what the control plane stamps
     // onto every app's `url`, so it must carry this stack's edge port.

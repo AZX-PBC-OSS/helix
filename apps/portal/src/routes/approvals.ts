@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   ApprovalDecisionRequestSchema,
   applyDeltas,
+  isProviderBindingEffective,
   snapshotConflicts,
   summarizePriorDecisions,
   type Delta,
@@ -124,6 +125,40 @@ function assertSeparationOfDuty(
   }
 }
 
+/**
+ * The apply-time provider conflict (T-0009, ADR-0004): a provider-bound
+ * request's stamps were recorded at filing, and approving after the provider
+ * moved on — a sensitive edit advanced the revision, or the row was deleted —
+ * would approve access to a configuration nobody reviewed. The rule itself is
+ * {@link isProviderBindingEffective}, the one definition the manifest read and
+ * the consult also consume.
+ *
+ * Throws a conflict the caller surfaces as a 409; throwing inside the
+ * transaction approves nothing and leaves the request pending for the owner to
+ * withdraw or resubmit (a fresh manifest save files a fresh stamp).
+ */
+async function assertProviderStampsCurrent(
+  tx: Prisma.TransactionClient,
+  request: { deltas: unknown },
+): Promise<void> {
+  const stamps = (request.deltas as unknown as Delta[]).flatMap((d) => d.providerStamps ?? []);
+  if (stamps.length === 0) return;
+  const rows = await tx.connectionProvider.findMany({
+    where: { id: { in: stamps.map((s) => s.providerId) } },
+    select: { id: true, ref: true, revision: true },
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  for (const stamp of stamps) {
+    if (!isProviderBindingEffective(stamp, byId.get(stamp.providerId))) {
+      throw new AppError(
+        "conflict",
+        "the provider changed after this request was filed — the app owner must resubmit",
+        { ref: stamp.ref, env: stamp.env },
+      );
+    }
+  }
+}
+
 export async function approvalRoutes(app: FastifyInstance): Promise<void> {
   // List requests. `?app=<slug>` scopes to one app (owner or admin); without it
   // the global admin queue (admin only). `?status=` filters by lifecycle state.
@@ -202,6 +237,12 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         // the dev self-approve flag is set (§4). Identity halves, per
         // assertSeparationOfDuty.
         assertSeparationOfDuty(request, actor, canSelfApprove());
+
+        // A provider-bound request filed against a configuration that has since
+        // moved (sensitive edit or delete) approves nothing — checked before the
+        // snapshot bounce, which would otherwise close a request that must
+        // resubmit against the provider, not the manifest state.
+        await assertProviderStampsCurrent(tx, request);
 
         const appRow = await tx.app.findUniqueOrThrow({ where: { id: request.appId } });
         const effective = capabilitiesFromRow(appRow);

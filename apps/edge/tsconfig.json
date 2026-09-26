@@ -1,7 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src"
+    // No `rootDir`: noEmit makes it inert, and the connections journey suite
+    // (src/routing/connectionsJourney.integration.test.ts) legitimately composes
+    // the real portal/egress apps through their workspace exports, pulling
+    // sources from outside this directory. The portal's ambient fastify
+    // decorators (prisma/actor/…) are declared in a .d.ts its own tsconfig
+    // picks up; this program reaches the portal's sources through its
+    // test-harness export, so the augmentation file is included explicitly.
+    "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src", "../portal/src/types/fastify.d.ts"]
 }

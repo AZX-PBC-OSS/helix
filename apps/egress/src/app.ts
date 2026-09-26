@@ -1,11 +1,16 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyServerOptions, type FastifyInstance } from "fastify";
 import { HealthStatusSchema, OUTCOME_HEADER } from "@azx-pbc/shared";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
 import type { InstructionBurnStore } from "./burn.js";
+import type { DelegatedWiring } from "./delegated.js";
+import { DelegatedResolver } from "./delegated.js";
+import { ConnectionRenewer } from "./renewal.js";
+import { makeExchangeHandler, type ExchangeDeps } from "./exchange.js";
 import { makeProxyHandler } from "./proxy.js";
+import { ROUTE_EGRESS_EXCHANGE } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -28,15 +33,54 @@ export interface EgressDeps {
   instructionKey: Buffer;
   /** One-time `jti` burn (issue #3). null ⇒ replay protection off (tests only). */
   burnStore: InstructionBurnStore | null;
+  /**
+   * The code-exchange operation (I-02 T-0019). null (the default, so existing
+   * constructions and tests without it keep working) unwires the operation:
+   * the route stays registered and refuses every caller fail-closed (the zero
+   * verify key verifies nothing legitimate → 401, disclosing nothing). A
+   * wired operation with no custody still answers a verified caller 503.
+   */
+  exchange?: ExchangeDeps | null;
+  /**
+   * The delegated-call resolution (I-02 T-0022): the caller's-connection
+   * resolver + renewer ingredients behind the proxy's `provider` branch.
+   * null/omitted (existing constructions) unwires it: a delegated instruction
+   * is refused fail-closed (502, the mechanism not wired), and every other
+   * call is byte-identical to before.
+   */
+  delegated?: DelegatedWiring | null;
 }
 
-export function buildApp(deps: EgressDeps): FastifyInstance {
+/**
+ * The unwired operation: a zero verify key — which verifies nothing legitimate,
+ * so the unwired route answers 401 to every caller (fail closed, disclosing
+ * nothing) — and no custody/cache. Real deployments always build real exchange
+ * deps in `server.ts` (the exchange secret is required at boot); this shape
+ * exists for constructions without the field (existing tests).
+ */
+const UNWIRED_EXCHANGE: ExchangeDeps = {
+  exchangeKey: Buffer.alloc(32),
+  providers: null,
+  credentialStore: null,
+  delegatedStore: null,
+  allowPrivate: false,
+  allowInsecureConnection: false,
+  timeoutMs: 30_000,
+};
+
+export function buildApp(
+  deps: EgressDeps,
+  /** Test seam: replace the pino logger wholesale (a capture stream for the
+   * log-scan suites). Production always uses the redacting `loggerOption`. */
+  loggerOverride?: FastifyServerOptions["logger"],
+): FastifyInstance {
   // The same redacting serializer the edge and portal use (issue #20). Nothing
   // here is query-borne today — `POST /proxy` carries the attested instruction
   // in a header and the target in another — so this is for the next route, not
   // a live leak.
   const app = Fastify({
-    logger: loggerOption(undefined, { prefix: "EGRESS", mixin: traceContextMixin }),
+    logger:
+      loggerOverride ?? loggerOption(undefined, { prefix: "EGRESS", mixin: traceContextMixin }),
     // The ONE service that adopts its caller's request id. Its only caller is
     // the edge, over a hop whose authority comes from the signed instruction
     // (ADR-0013) — and adopting it is what joins the two halves of a
@@ -90,6 +134,27 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
     limits: deps.config.limits,
     allowPrivate: deps.config.allowPrivate,
     allowInsecureConnection: deps.config.allowInsecureConnection,
+    // The delegated resolution (I-02 T-0022), built against the proxy's own
+    // dispatcher so the renewer's vendor round-trips ride the same pinned
+    // transport as the exchange's (the one transport seam, ADR-0009).
+    delegated: deps.delegated
+      ? (dispatcher) =>
+          new DelegatedResolver({
+            pool: deps.delegated!.pool,
+            providers: deps.delegated!.providers,
+            delegatedStore: deps.delegated!.delegatedStore,
+            renewer: new ConnectionRenewer({
+              pool: deps.delegated!.pool,
+              providers: deps.delegated!.providers,
+              credentialStore: deps.delegated!.credentialStore,
+              delegatedStore: deps.delegated!.delegatedStore,
+              dispatcher,
+              timeoutMs: deps.delegated!.timeoutMs,
+              allowInsecureConnection: deps.delegated!.allowInsecureConnection,
+              lockAcquireTimeoutMs: deps.delegated!.lockAcquireTimeoutMs,
+            }),
+          })
+      : undefined,
   });
   // The proxy holds one shared, long-lived dispatcher (connection pooling +
   // per-connection SSRF pin); drain its pooled sockets on teardown so tests and
@@ -100,6 +165,19 @@ export function buildApp(deps: EgressDeps): FastifyInstance {
     method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     url: "/proxy",
     handler: proxy.handler,
+  });
+
+  // The code-exchange operation (I-02 T-0019): a NEW internal route, not a
+  // bend of /proxy — the instruction contract binds origin/method/path per app
+  // call and an exchange has no app-side counterpart (architecture ADR-0001).
+  // It rides the proxy's SAME pinned dispatcher, so the SSRF controls and the
+  // trace boundary are process-wide facts, not per-route choices. Unwired, the
+  // route refuses every caller fail-closed (see UNWIRED_EXCHANGE).
+  const exchange = deps.exchange ?? UNWIRED_EXCHANGE;
+  app.route({
+    method: "POST",
+    url: ROUTE_EGRESS_EXCHANGE,
+    handler: makeExchangeHandler({ ...exchange, dispatcher: proxy.dispatcher }),
   });
 
   return app;

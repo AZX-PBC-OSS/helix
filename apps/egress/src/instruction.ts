@@ -53,7 +53,17 @@ export async function verifyInstruction(
     // `jti` is the one-time burn key; it must be present and equal the payload
     // requestId the edge minted from (defense against a jti/requestId mismatch).
     if (typeof payload.jti !== "string" || payload.jti !== payload.requestId) return null;
-    const parsed = AttestedInstructionSchema.safeParse(payload);
+    // The payload schema is strict (ADR-0005) — unknown keys fail the verify
+    // closed instead of being stripped. The registered claims above are the
+    // signer/verifier's business, not the schema's, so they are separated here
+    // first; any OTHER unregistered claim (iss, nbf, a future helix claim an
+    // older egress does not know) now fails the parse, which is the point.
+    const claims: Record<string, unknown> = { ...payload };
+    delete claims.exp;
+    delete claims.iat;
+    delete claims.jti;
+    delete claims.aud;
+    const parsed = AttestedInstructionSchema.safeParse(claims);
     return parsed.success ? parsed.data : null;
   } catch {
     return null;

@@ -216,6 +216,37 @@ export interface GatewayConfig {
      */
     maxBodyBytes: number;
   };
+  /**
+   * The edge↔portal internal-JWT key (HELIX_INTERNAL_SECRET, I-02 ADR-0003):
+   * the edge mints a per-call token (`apps/edge/src/internalJwt.ts`) that the
+   * portal's internal routes verify. Mint side, so optional exactly like
+   * `fetch.instructionSecret` — null leaves the edge→portal capability
+   * unwired and the consuming routes refuse rather than degrade; it is never a
+   * boot failure. The dev-gateway shares this parse (it consults the same
+   * portal for the dev tier).
+   */
+  internalSecret: Buffer | null;
+  /**
+   * Internal base URL of helix-portal (EDGE_PORTAL_URL, I-02 ADR-0002 part 3) —
+   * the origin the auth host's `/connections/*` reverse proxy forwards to over
+   * plain HTTP behind the ingress (on ACA one hostname binds one container app,
+   * so the portal cannot be reached at the auth host directly). Null ⇒ the
+   * proxy surface 503s fail-closed, exactly like an unconfigured egress URL;
+   * it is never a boot failure. The consult/cancel seams (same initiative)
+   * consume the same field, which is why it lives on the shared gateway config
+   * beside {@link internalSecret} — the key those calls authorize with.
+   */
+  portalUrl: string | null;
+  /**
+   * Scheme for externally built URLs (redirect targets, cookie origins, the
+   * dev journey's popup URL). The platform is **HTTPS-only** — always `https`.
+   * Dev terminates TLS at the edge (mkcert); prod terminates at ingress and the
+   * edge speaks plain HTTP behind it, but the *public* origin is https either
+   * way.
+   */
+  publicScheme: "https";
+  /** Public port for built URLs; scheme-default ports are omitted. */
+  publicPort: number;
 }
 
 /**
@@ -255,18 +286,7 @@ export interface EdgeConfig extends GatewayConfig {
    * "allow"/default-off polarity as {@link allowPublicApps}.
    */
   allowPasswordApps: boolean;
-  /**
-   * Scheme for externally built URLs (redirect targets, cookie origins). The
-   * platform is **HTTPS-only** — always `https`. Dev terminates TLS at the
-   * edge (mkcert); prod terminates at ingress and the edge speaks plain HTTP
-   * behind it, but the *public* origin is https either way.
-   */
-  publicScheme: "https";
-  /** Public port for built URLs; scheme-default ports are omitted. */
-  publicPort: number;
-  /**
-   * Per-IP rate limit for the anonymous tier on `public` apps (app-data design
-   * §7). Caps every anonymous `/_api/*` gateway call, keyed per IP+app within a
+  /** Per-IP rate limit for the anonymous tier on `public` apps (app-data design §7). Caps every anonymous `/_api/*` gateway call, keyed per IP+app within a
    * fixed window — the anonymous writer/visitor has no per-user budget to
    * charge, so this is the only per-source cap on an open public surface.
    * Authenticated callers are never limited here (they answer to per-app
@@ -745,9 +765,17 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     fetch: {
       egressUrl: env.EDGE_EGRESS_URL || null,
       instructionSecret: loadInstructionSecret(env),
-      timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 30_000),
+      // 120s, not 30s: egress holds its response headers until the vendor's
+      // first byte, and a reasoning LLM (gpt-5-nano et al.) can easily think
+      // longer than 30s before streaming anything — the edge's headersTimeout
+      // was the failure that surfaced, not the vendor's own speed.
+      timeoutMs: Number(env.EDGE_FETCH_TIMEOUT_MS ?? 120_000),
       maxBodyBytes: Number(env.EDGE_FETCH_MAX_BODY_BYTES ?? 10 * 1024 * 1024),
     },
+    internalSecret: loadInternalSecret(env),
+    portalUrl: env.EDGE_PORTAL_URL || null,
+    publicScheme: "https",
+    publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
   };
 }
 
@@ -800,8 +828,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EdgeConfig {
     // EdgeConfig); a deployment opts a surface back in per environment.
     allowPublicApps: env.EDGE_ALLOW_PUBLIC_APPS === "true",
     allowPasswordApps: env.EDGE_ALLOW_PASSWORD_APPS === "true",
-    publicScheme: "https",
-    publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
     anonRateLimit: {
       max: Number(env.EDGE_ANON_RATE_LIMIT ?? 60),
       windowMs: Number(env.EDGE_ANON_RATE_WINDOW_MS ?? 60_000),
@@ -849,12 +875,26 @@ function loadInstructionSecret(env: NodeJS.ProcessEnv): Buffer | null {
   return buf;
 }
 
+/** Parse the shared edge↔portal internal-JWT key; refuse a too-short one (would weaken the key). */
+function loadInternalSecret(env: NodeJS.ProcessEnv): Buffer | null {
+  const raw = env.HELIX_INTERNAL_SECRET;
+  if (!raw) return null;
+  const buf = Buffer.from(raw);
+  if (buf.byteLength < 32) {
+    throw new Error("HELIX_INTERNAL_SECRET must be at least 32 bytes");
+  }
+  return buf;
+}
+
 /**
  * The externally visible origin for a given host label + base domain —
- * redirect targets and cookie URLs are always built from config, never from
- * request headers. Scheme-default ports are omitted.
+ * redirect targets, cookie URLs, and the dev journey's popup URL are always
+ * built from config, never from request headers. Scheme-default ports are
+ * omitted. Takes the shared {@link GatewayConfig} because the dev-gateway
+ * builds public URLs too (the popup URL's auth host) and structurally omits
+ * the edge-only fields.
  */
-export function publicOrigin(config: EdgeConfig, hostLabelOrNull: string | null): string {
+export function publicOrigin(config: GatewayConfig, hostLabelOrNull: string | null): string {
   const host = hostLabelOrNull ? `${hostLabelOrNull}.${config.baseDomain}` : config.baseDomain;
   // HTTPS-only: omit the port only when it is the https default (443).
   const port = config.publicPort === 443 ? "" : `:${config.publicPort}`;

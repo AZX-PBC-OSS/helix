@@ -539,6 +539,174 @@ model AppSecretGrant {
   @@map("app_secret_grants")
 }
 
+/// An administrator-configured vendor OAuth registration — one vendor
+/// integration in one environment (I-02 ADR-0004). `ref` is the stable,
+/// human-readable key manifests/catalogue/imports use (env-unique, immutable);
+/// `id` is the surrogate everything inside the platform joins on; `revision`
+/// starts at 1 and advances on every sensitive mutation and delete — one field
+/// serving admin concurrency (the edit route's CAS), cache invalidation (the
+/// NOTIFY channel, ADR-0011) and consent staleness (rows recorded against a
+/// stale revision conflict). Shape is `@azx-pbc/shared ConnectionProviderSchema`.
+///
+/// `clientIdMaterial`/`clientSecretMaterial` are **sealed material** — the
+/// opaque token the portal's SecretStore `seal()` produces (dev AES-GCM
+/// envelope / prod Key Vault reference), following `AppSecret.material`'s
+/// convention; never plaintext, never returned by any read. Egress opens them
+/// (its SELECT grant + the delegated vault) to build the vendor OAuth client.
+///
+/// No model relation to anything: deleting a provider (hard DELETE, portal
+/// role) must leave connections and attempts dangling against a nonexistent
+/// id — delete+recreate under the same `ref` mints a new `id` and restores
+/// nothing (ADR-0004) — so `user_connections`/`connection_consent_attempts`
+/// carry a bare `providerId` column, no FK (the `GatewayCall`→`App` precedent:
+/// the referencing rows outlive the referenced one by design).
+model ConnectionProvider {
+  id                  String   @id @default(uuid()) @db.Uuid
+  /// Env-unique stable reference (`@@unique([ref, env])`); immutable after create.
+  ref                 String
+  /// `PROVIDER_KINDS` in @azx-pbc/shared — `rest-delegated` only at first commit.
+  kind                String
+  displayName         String
+  authorizeEndpoint   String
+  tokenEndpoint       String
+  /// RFC 6749 §3.3 scope tokens requested at authorize time (may be empty).
+  requestedScopes     Json
+  /// Canonical API destinations (`scheme://host[:port]`) the binding may call.
+  apiOrigins          Json
+  /// @azx-pbc/shared TokenPlacement — how the user's delegated token is
+  /// presented outbound (`header-bearer` or a named `header`).
+  tokenPlacement      Json
+  /// Partition tier (dev-mode §5.1): 'prod' | 'dev'. Client credentials are
+  /// per-tier (criterion 5); the env-literal RLS policy + env CHECK pin the row.
+  env                 String   @default("prod")
+  clientIdMaterial    String
+  clientSecretMaterial String
+  /// ADR-0004 — bumped on every sensitive mutation and delete; consumers
+  /// stamp it at consent/approval filing and compare it at resolution.
+  revision            Int      @default(1)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([ref, env])
+  @@map("connection_providers")
+}
+
+/// One user's consent to one provider in one environment — keyed
+/// `(userOid, providerId, env)`, platform-wide: every approved app reuses it
+/// (clarifications Q2/Q10). Written by BOTH planes: the portal (callback save
+/// as a CAS upsert, invalidation, disconnect) and egress (renewal outcomes:
+/// material swap + expiry + ledger, reconnect-needed) — which is why the row
+/// shape is the @azx-pbc/shared `UserConnectionSchema` zod contract, the single
+/// definition every writer and reader parses (ADR-0006 §Shared ground).
+///
+/// `material` is **sealed** (AppSecret.material's convention): the opaque
+/// `SecretStore.seal()` token holding the access + refresh material. Only
+/// egress opens it; the portal reads/writes the row without plaintext access.
+/// `providerRevision` stamps the provider row's revision at consent (ADR-0004).
+///
+/// The renewal/retirement ledger (ADR-0008) lives in-row: a material swap
+/// writes the OLD sealed reference into `pendingRetire` in the same UPDATE —
+/// egress's sweep claims it by CAS (`WHERE "pendingRetire" = X`) before
+/// destroying the vault entry, so a racing reconnect can never lose new
+/// material. `renewBeforeNext` is criterion 40's flag: set after a pre-expiry
+/// vendor 401 so the next call renews first.
+///
+/// No FK to `connection_providers` (see ConnectionProvider): provider deletion
+/// invalidates the rows (status flips to `invalidated` in the same portal
+/// transaction) but the rows dangle, not vanish. No FK to `apps` either —
+/// a connection is platform-wide, not per-app.
+model UserConnection {
+  id               String    @id @default(uuid()) @db.Uuid
+  /// The consenting principal (`actor.oid`; a dev-token caller's
+  /// `developerOid` in the dev tier, Q10). Compared and joined on, never
+  /// rendered — the display halves resolve portal-side.
+  userOid          String
+  providerId       String    @db.Uuid
+  /// The provider row's revision at consent (ADR-0004) — a sensitive edit
+  /// invalidates the row, so a stale stamp fails closed at resolution.
+  providerRevision Int
+  /// Partition tier: 'prod' | 'dev'. Env-literal RLS + env CHECK pin it;
+  /// dev and prod connections never see each other (criterion 5).
+  env              String    @default("prod")
+  /// `CONNECTION_STATUSES` in @azx-pbc/shared: 'live' | 'reconnect-needed' |
+  /// 'invalidated' — a DB CHECK mirrors the bounded vocabulary (fail closed).
+  status           String
+  /// Sealed access + refresh material (SecretStore output — never plaintext).
+  material         String
+  /// The scopes the vendor actually granted (superset checks at consult).
+  grantedScopes    Json
+  grantedAt        DateTime  @default(now())
+  /// Access-token expiry; egress renews when a call lands past it (criterion 35).
+  expiresAt        DateTime
+  /// Criterion 40 — a pre-expiry vendor 401 demands renewal before the next call.
+  renewBeforeNext  Boolean   @default(false)
+  /// ADR-0008's in-row retirement ledger: the old sealed reference awaiting
+  /// the egress sweep's conditional destroy; NULL once claimed and destroyed.
+  pendingRetire    String?
+  /// Last successful egress renewal (the renewal half of the in-row ledger).
+  lastRenewedAt    DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  /// The connection partition key — one row per (user, provider, env).
+  @@unique([userOid, providerId, env])
+  /// The retirement sweep's claim scan (`WHERE "pendingRetire" IS NOT NULL`).
+  @@index([pendingRetire])
+  @@map("user_connections")
+}
+
+/// One pending consent attempt — the control-plane-owned consent-flow state
+/// (I-02 ADR-0002): the portal's consult writes it, the callback claims it
+/// (single-use redeem pattern), the helper's cancel marks it, the portal sweep
+/// drops expired rows. Field list is ADR-0002's fixed list: state, PKCE
+/// verifier, identity, provider id+revision, app, env, opener origin,
+/// five-minute TTL — plus the dev journey's single-use nonce (ADR-0002
+/// §Implementation Notes) and `cancelledAt`, the marker a late completion
+/// tests so a cancelled attempt can never be claimed.
+///
+/// No FKs (the ConnectionProvider precedent): attempts outlive mid-flow
+/// provider/app deletion and fail closed at claim; the five-minute sweep
+/// retires them regardless. Portal-role only — `helix_edge` holds no grant
+/// (it consults over HTTP; the strictest role split the platform has).
+model ConnectionConsentAttempt {
+  id               String    @id @default(uuid()) @db.Uuid
+  /// The OAuth `state` parameter — the callback's lookup key (unique, single-use).
+  state            String    @unique
+  /// PKCE code verifier generated at consult; redeemed against the vendor at claim.
+  codeVerifier     String
+  /// The verified caller identity (`userOid`; the dev gateway's
+  /// `developerOid` in the dev tier) — captured, never a request input.
+  userOid          String
+  providerId       String    @db.Uuid
+  /// The provider row's revision at attempt time (ADR-0004) — completion
+  /// against a since-edited provider fails closed.
+  providerRevision Int
+  /// The app the consent started from — the consult checked its binding.
+  appId            String    @db.Uuid
+  /// Partition tier: 'prod' | 'dev'. Env-literal RLS + env CHECK pin it.
+  env              String    @default("prod")
+  /// Where the completion message may be posted — the completion page's
+  /// exact target origin (criterion 28); nothing else may derive it.
+  openerOrigin     String
+  /// The dev journey's single-use handoff nonce (dev-tier consults only).
+  nonce            String?   @unique
+  /// Set by the nonce entry's one-shot redemption (T-0016, portal-side): the
+  /// indivisible claim that makes a replayed popup URL refuse after first
+  /// use. The row itself survives until claim or expiry — the callback still
+  /// redeems it by `state`.
+  nonceRedeemedAt  DateTime?
+  /// Five-minute TTL — completion at or after this cannot establish a connection.
+  expiresAt        DateTime
+  /// Set by the helper's acknowledged cancel; a claimed-or-cancelled attempt
+  /// can never complete.
+  cancelledAt      DateTime?
+  createdAt        DateTime  @default(now())
+
+  /// The portal sweep's expiry scan.
+  @@index([expiresAt])
+  @@map("connection_consent_attempts")
+}
+
 /// A scoped credential for developing an app against its env=dev partition
 /// (dev-mode design §4, Appendix A.3). Minted/rotated/revoked from the portal
 /// (owner-gated, control-plane); verified by the step-3 dev-gateway, which hashes

@@ -10,6 +10,7 @@ import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./pool.js";
  */
 const ENV = {
   HELIX_INSTRUCTION_SECRET: "0123456789abcdef0123456789abcdef",
+  HELIX_EXCHANGE_SECRET: "abcdef0123456789abcdef0123456789",
   EGRESS_DATABASE_URL: "postgres://helix_egress:helix_egress@db:5432/helix",
 };
 
@@ -60,9 +61,34 @@ describe("loadConfig", () => {
   it("throws a clear error on missing requirements", () => {
     expect(() => loadConfig({})).toThrow(/HELIX_INSTRUCTION_SECRET is required/);
     expect(() => loadConfig({ HELIX_INSTRUCTION_SECRET: "short" })).toThrow(/at least 32 bytes/);
+    // Both seam keys are required before the DSN check.
     expect(() => loadConfig({ HELIX_INSTRUCTION_SECRET: ENV.HELIX_INSTRUCTION_SECRET })).toThrow(
-      /EGRESS_DATABASE_URL or DATABASE_URL is required/,
+      /HELIX_EXCHANGE_SECRET is required/,
     );
+    expect(() =>
+      loadConfig({
+        HELIX_INSTRUCTION_SECRET: ENV.HELIX_INSTRUCTION_SECRET,
+        HELIX_EXCHANGE_SECRET: ENV.HELIX_EXCHANGE_SECRET,
+      }),
+    ).toThrow(/EGRESS_DATABASE_URL or DATABASE_URL is required/);
+  });
+
+  // I-02 ADR-0003 — the portal→egress exchange-JWT key. Verify side, so it is
+  // required exactly like the instruction secret, in dev too: the exchange
+  // route has no degraded mode that still serves it.
+  describe("HELIX_EXCHANGE_SECRET", () => {
+    it("is required, and parsed onto the config", () => {
+      expect(() => loadConfig({ ...ENV, HELIX_EXCHANGE_SECRET: undefined })).toThrow(
+        /HELIX_EXCHANGE_SECRET is required/,
+      );
+      expect(loadConfig(ENV).exchangeSecret).toEqual(Buffer.from(ENV.HELIX_EXCHANGE_SECRET));
+    });
+
+    it("refuses a too-short value (would weaken the derived key)", () => {
+      expect(() => loadConfig({ ...ENV, HELIX_EXCHANGE_SECRET: "short" })).toThrow(
+        /HELIX_EXCHANGE_SECRET must be at least 32 bytes/,
+      );
+    });
   });
 
   // ADR-0002 ISSUE-05 — the per-query ceiling both egress pools get from
@@ -72,6 +98,38 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...ENV, EGRESS_STATEMENT_TIMEOUT_MS: "3000" }).statementTimeoutMs).toBe(
       3000,
     );
+  });
+
+  // I-02 ADR-0011 — the provider cache's reconcile cadence: the self-heal that
+  // bounds staleness after a missed NOTIFY. A non-positive value would coerce
+  // to a hot reconcile loop in `setTimeout`, so it boots noisily instead.
+  it("defaults the provider reconcile interval to 60s and honors EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS", () => {
+    expect(loadConfig(ENV).providersReconcileIntervalMs).toBe(60_000);
+    expect(
+      loadConfig({ ...ENV, EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS: "5000" })
+        .providersReconcileIntervalMs,
+    ).toBe(5000);
+    for (const bad of ["0", "-1", "NaN", "Infinity", "abc"]) {
+      expect(() => loadConfig({ ...ENV, EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS: bad })).toThrow(
+        /EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS/,
+      );
+    }
+  });
+
+  // I-02 T-0025 (ADR-0008) — the retirement sweep's cadence, validated by the
+  // same requirePositiveMs rail: a hot zero loop or a NaN coerced to ~0ms
+  // would hammer the ledger read. The default (60s) sits well inside
+  // criterion 47's 15-minute recovery bound.
+  it("defaults the retirement sweep interval to 60s and honors EGRESS_RETIRE_SWEEP_INTERVAL_MS", () => {
+    expect(loadConfig(ENV).retireSweepIntervalMs).toBe(60_000);
+    expect(
+      loadConfig({ ...ENV, EGRESS_RETIRE_SWEEP_INTERVAL_MS: "30000" }).retireSweepIntervalMs,
+    ).toBe(30_000);
+    for (const bad of ["0", "-1", "NaN", "Infinity", "abc"]) {
+      expect(() => loadConfig({ ...ENV, EGRESS_RETIRE_SWEEP_INTERVAL_MS: bad })).toThrow(
+        /EGRESS_RETIRE_SWEEP_INTERVAL_MS/,
+      );
+    }
   });
 
   // ADR-0046 — the keyless list is empty by default (resolution stays DB-only)

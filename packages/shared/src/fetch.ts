@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ProviderRefSchema } from "./providers.js";
+
 /**
  * The fetch-proxy wire contract (design doc `docs/design/fetch-proxy.md`).
  *
@@ -64,8 +66,14 @@ export const METHOD_HEADER = "x-helix-method";
  * Values (by convention — the edge's `toOutcome` folds anything unrecognized
  * into `error`): `ok` a clean proxied round-trip; `upstream_throttled` the
  * upstream answered 429 (the proxy worked, the vendor said slow down);
- * `refusal` egress itself refused the call (4xx from `fail`); `error` an
- * egress-side failure (5xx from `fail`, a throw).
+ * `refusal` egress itself refused the call (4xx from `fail`, and the delegated
+ * `provider_unavailable` / `provider_misconfigured` codes, which meter as
+ * `refusal` per design.md's error table); `error` an egress-side failure (5xx
+ * from `fail`, a throw, a temporary renewal failure); and — I-02 —
+ * `connection_required`, the delegated answer for "the caller has no usable
+ * connection to the bound provider", which the edge ledgers under its OWN
+ * label so usage accounting separates "user not connected" from "policy
+ * refused" (criterion 50; clarifications Q15).
  */
 export const OUTCOME_HEADER = "x-helix-egress-outcome";
 
@@ -126,6 +134,21 @@ export const RESPONSE_HEADER_BLOCKLIST: readonly string[] = [
  * *response* over the cap cannot use this code — status + headers are already
  * flushed by the time the byte counter trips, so the body is truncated instead;
  * see issue #8 and `@azx-pbc/shared` `capBody`.)
+ *
+ * The delegated-call codes (I-02) name why a provider-bound call could not be
+ * served, each distinguishable from a consent problem (spec criteria 33–34;
+ * design.md §App-facing contracts, the error table): `connection_required`
+ * (403) — no or dead connection, a definitive grant rejection, an uncertain
+ * rotation, or a caller that can never hold a connection (anonymous,
+ * shared-password); the body carries {@link FetchErrorProvider} so the app can
+ * offer Connect. `provider_unavailable` (503) — the provider was deleted or its
+ * binding blocked by a sensitive edit. `provider_misconfigured` (502) — invalid
+ * provider configuration; administrator action required. The first code is a
+ * consent problem and the other two are not — that is the distinction the
+ * ledger's `connection_required` outcome label tracks.
+ *
+ * Every code's message is a fixed platform string — never vendor error content,
+ * credentials, or internal detail.
  */
 export const FETCH_ERROR_CODES = [
   "forbidden",
@@ -135,12 +158,32 @@ export const FETCH_ERROR_CODES = [
   "too_large",
   "replay",
   "upstream_error",
+  "connection_required",
+  "provider_unavailable",
+  "provider_misconfigured",
 ] as const;
 export const FetchErrorCodeSchema = z.enum(FETCH_ERROR_CODES);
 export type FetchErrorCode = z.infer<typeof FetchErrorCodeSchema>;
 
+/**
+ * Provider metadata on a delegated-call error — sufficient for the app to offer
+ * Connect (spec criterion 33): which provider to reference and, when the
+ * platform can name it, what to call it. Keys are bounded by a **strict** object
+ * — an unknown key fails the parse, not a silent strip — so credential-shaped
+ * fields (`accessToken`, `client_secret`, …) cannot ride the error body to the
+ * app. `ref` is the same reference manifests and the catalogue key on;
+ * `displayName` mirrors the provider row's bound.
+ */
+export const FetchErrorProviderSchema = z.strictObject({
+  ref: ProviderRefSchema,
+  displayName: z.string().min(1).max(200).optional(),
+});
+export type FetchErrorProvider = z.infer<typeof FetchErrorProviderSchema>;
+
 export const FetchProxyErrorSchema = z.object({
   code: FetchErrorCodeSchema,
   message: z.string(),
+  /** Present only on the delegated-call codes that carry it (`connection_required`, `provider_unavailable`). */
+  provider: FetchErrorProviderSchema.optional(),
 });
 export type FetchProxyError = z.infer<typeof FetchProxyErrorSchema>;

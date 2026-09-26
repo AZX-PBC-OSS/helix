@@ -41,13 +41,21 @@ need a fetch to the uncached `/_helix/` namespace. Revocation or archive serves
 a worker that clears its cache and unregisters itself.
 
 Reserved platform routes never fall through to Blob. Platform hosts expose
-`GET /health`; the auth host also handles `/start` and `/callback`.
+`GET /health`; the auth host also handles `/start` and `/callback` — and
+proxies `/connections/*` to the portal (I-02 ADR-0002 part 3): the consent
+callback and the portal-rendered completion pages are control-plane surfaces
+reached at the auth host through one narrow reverse proxy. The proxy carries a
+per-call internal JWT (`aud: portal`), strips any inbound version of that
+header, forwards only a three-name header safelist, and 503s fail-closed when
+`EDGE_PORTAL_URL` is unset. On app hosts `/connections/` stays an ordinary
+asset path.
 
 ## Configuration
 
 | Env var                                           | Default                                  | Meaning                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                                    | (required)                               | Postgres: registry projection (read) + sessions (read/write)                                                                                                                                                                                                                                                                                                                                      |
+| `EDGE_PORTAL_URL`                                 | unset                                    | Internal base URL of helix-portal (plain HTTP behind the ingress). Without it — or without `HELIX_INTERNAL_SECRET` — the auth host's `/connections/*` proxy 503s fail-closed; nothing else changes                                                                                                                                                                                                |
 | `AZURE_STORAGE_BLOB_ENDPOINT`                     | (prod)                                   | Blob endpoint for **managed-identity** reads (with `AZURE_CLIENT_ID`); refused-in-prod alternative below. Wins when both are set (issue #15)                                                                                                                                                                                                                                                      |
 | `AZURE_CLIENT_ID`                                 | (prod)                                   | User-assigned MI client id for the AAD token fetch (`IDENTITY_ENDPOINT`/`IDENTITY_HEADER` injected by Container Apps)                                                                                                                                                                                                                                                                             |
 | `AZURE_STORAGE_CONNECTION_STRING`                 | (dev)                                    | Blob/Azurite for asset reads via SharedKey — **dev/Azurite only, refused when `NODE_ENV=production`**                                                                                                                                                                                                                                                                                             |

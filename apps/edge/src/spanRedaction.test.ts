@@ -1,18 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
-import { DataCapabilitySchema } from "@azx-pbc/shared";
+import { DataCapabilitySchema, INTERNAL_AUTH_HEADER } from "@azx-pbc/shared";
+import { hashDevToken } from "@azx-pbc/shared/devToken";
 import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import { FORBIDDEN_URL_ATTRS } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
+import { buildDevGateway } from "./devGateway/app.js";
+import type { DevTokenStore } from "./devGateway/devTokenStore.js";
 import { SESSION_COOKIE } from "./auth/cookies.js";
 import { hashSessionToken, newSessionToken } from "./auth/sessions.js";
-import { testAuthConfig, testEdgeConfig } from "./test/config.js";
+import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "./test/config.js";
 import {
   FakeAppDataStore,
   FakeBlobReader,
   FakeOidcClient,
+  FakePortalProvider,
   FakeRegistry,
   FakeSessionStore,
   FakeUsageStore,
@@ -245,6 +250,267 @@ describe("span attributes never carry a credential", () => {
 
       const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
       expect(dump, "an app-data span leaked the written key").not.toContain(PLANTED_KEY);
+    });
+  });
+
+  /**
+   * T-0015: the auth host's `/connections/*` reverse proxy. The vendor's
+   * redirect lands here with `code` and `state` in the URL (design.md
+   * §Operator-visible signals fixes this route's spans to `url.path` only),
+   * and the request carries material an attacker can plant themselves — the
+   * forged internal header the proxy must strip. Drives the REAL route
+   * through `buildApp` with everything planted, then scans every attribute of
+   * every span, so a later attribute addition fails here instead of leaking.
+   */
+  describe("the /connections/* proxy route (T-0015)", () => {
+    const CONSENT_CODE = "PLANTED-CONSENT-CODE";
+    const CONSENT_STATE = "PLANTED-CONSENT-STATE";
+    const FORGED_INTERNAL = "PLANTED-FORGED-INTERNAL-TOKEN";
+    const AUTH_HOST = { host: "auth.local.helix.azxlabs.io" };
+
+    function buildProxyEdge() {
+      return buildApp({
+        config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({
+            appId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            slug: "notes",
+            blobPrefix: "apps/e/1/",
+          }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions: new FakeSessionStore(),
+        oidc: new FakeOidcClient(),
+        portal: new FakePortalProvider(),
+      });
+    }
+
+    it("leaks no code, state, or internal-header value — across every attribute", async () => {
+      const app = buildProxyEdge();
+      const res = await app.inject({
+        method: "GET",
+        url: `/connections/callback?code=${CONSENT_CODE}&state=${CONSENT_STATE}`,
+        headers: { ...AUTH_HOST, [INTERNAL_AUTH_HEADER]: FORGED_INTERNAL },
+      });
+      expect(res.statusCode).toBe(200);
+      await app.close();
+
+      expect(recording.spans().length).toBeGreaterThan(0);
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      for (const secret of [CONSENT_CODE, CONSENT_STATE, FORGED_INTERNAL]) {
+        expect(dump, `a span attribute leaked ${secret}`).not.toContain(secret);
+      }
+      // The query is dropped wholesale — not even a `?` survives.
+      expect(dump).not.toContain("?");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
+      // And the route is still identifiable — `url.path` only, no query.
+      const routeSpan = recording.spans().find((s) => s.name === "helix.auth.connections.proxy");
+      expect(routeSpan?.attributes["url.path"]).toBe("/connections/callback");
+    });
+  });
+
+  /**
+   * T-0014: the consent start route. The URL carries an app-chosen `attempt`
+   * correlation tag (unbounded, attacker-choosable on a public-URL route — the
+   * ADR-0042 finding-1 class of value), and the consult's answer is a vendor
+   * authorize URL carrying `state` + the PKCE challenge, which the route 302s
+   * to. Neither may reach a span: the query is dropped wholesale, and the
+   * redirect target is never an attribute. Drives the REAL route on both the
+   * guarded-refusal and the started paths, then scans every attribute of
+   * every span.
+   */
+  describe("the consent start route (T-0014)", () => {
+    const APP_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const HOST = { host: "notes.local.helix.azxlabs.io" };
+    const ORIGIN = `https://notes.local.helix.azxlabs.io:8080`;
+    const POPUP_HEADERS = {
+      "sec-fetch-site": "same-origin",
+      referer: `${ORIGIN}/page`,
+    };
+    const ATTEMPT_TAG = "PLANTED-ATTEMPT-CORRELATION-TAG";
+    const VENDOR_STATE = "PLANTED-VENDOR-OAUTH-STATE";
+    const VENDOR_CHALLENGE = "PLANTED-PKCE-CHALLENGE";
+    const START = `/_api/connections/asana/start?attempt=${ATTEMPT_TAG}`;
+
+    it("leaks no attempt tag or vendor protocol value — on the refusal path", async () => {
+      // A cross-site navigation (every hostile header combination refuses) —
+      // the cheapest route to the span, and the one a prober drives.
+      const app = buildApp({
+        config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({ appId: APP_ID, slug: "notes", blobPrefix: "apps/f/1/" }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions: new FakeSessionStore(),
+        oidc: new FakeOidcClient(),
+        portal: new FakePortalProvider(),
+      });
+      const res = await app.inject({ method: "GET", url: START, headers: HOST });
+      expect(res.statusCode).toBe(403);
+      await app.close();
+
+      expect(recording.spans().length).toBeGreaterThan(0);
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      expect(dump, "a span attribute leaked the attempt tag").not.toContain(ATTEMPT_TAG);
+      expect(dump).not.toContain("?");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
+    });
+
+    it("leaks nothing from the started path — the authorize URL never touches a span", async () => {
+      const sessions = new FakeSessionStore();
+      // The consult answers `started` with a vendor authorize URL carrying the
+      // state + PKCE challenge; the route 302s it. Neither value may reach a
+      // span attribute.
+      const portal = new FakePortalProvider();
+      portal.status = 200;
+      portal.headers = { "content-type": "application/json" };
+      portal.body = JSON.stringify({
+        outcome: "started",
+        authorizeUrl: `https://vendor.example/oauth/authorize?state=${VENDOR_STATE}&code_challenge=${VENDOR_CHALLENGE}&code_challenge_method=S256`,
+      });
+
+      const token = newSessionToken();
+      const id = randomUUID();
+      await sessions.createPending({
+        id,
+        appId: APP_ID,
+        user: {
+          oid: "alice",
+          displayName: "Alice",
+          name: null,
+          email: null,
+          kind: "user",
+          groups: [],
+        },
+        refreshDueAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+      await sessions.redeem(id, APP_ID, hashSessionToken(token));
+      const app = buildApp({
+        config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({ appId: APP_ID, slug: "notes", blobPrefix: "apps/f/1/" }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions,
+        oidc: new FakeOidcClient(),
+        portal,
+      });
+      const res = await app.inject({
+        method: "GET",
+        url: START,
+        headers: { ...HOST, cookie: `${SESSION_COOKIE}=${token}`, ...POPUP_HEADERS },
+      });
+      expect(res.statusCode).toBe(302);
+      await app.close();
+
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      for (const secret of [ATTEMPT_TAG, VENDOR_STATE, VENDOR_CHALLENGE]) {
+        expect(dump, `a span attribute leaked ${secret}`).not.toContain(secret);
+      }
+      expect(dump).not.toContain("?");
+      expect(dump).not.toContain("vendor.example");
+      const routeSpan = recording.spans().find((s) => s.name === "helix.consent.start");
+      expect(routeSpan?.attributes["url.path"]).toBe("/_api/connections/asana/start");
+    });
+  });
+
+  /**
+   * T-0016: the dev-gateway's consent start route. The whole point of the
+   * journey is that the dev bearer token never leaves the authenticated POST
+   * (spec criterion 22) — and the popup URL the route returns carries only
+   * the single-use nonce, while the consult's vendor state + PKCE challenge
+   * stay protocol-internal. Drives the REAL dev-gateway route on the started
+   * path with everything planted, then scans every attribute of every span.
+   */
+  describe("the dev-gateway consent start route (T-0016)", () => {
+    const DEV_BEARER = "PLANTED-DEV-BEARER-TOKEN-VALUE";
+    const VENDOR_STATE = "PLANTED-VENDOR-OAUTH-STATE";
+    const VENDOR_CHALLENGE = "PLANTED-PKCE-CHALLENGE";
+    const DEV_APP_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+    function buildDevConsentGateway(portal: FakePortalProvider): FastifyInstance {
+      const tokens: DevTokenStore = {
+        async resolve(tokenHash) {
+          return tokenHash === hashDevToken(DEV_BEARER)
+            ? {
+                appId: DEV_APP_ID,
+                developerOid: "oid-developer",
+                origins: ["https://myapp.lovable.app"],
+                expiresAt: new Date(Date.now() + 60_000),
+                revokedAt: null,
+              }
+            : null;
+        },
+        async originAllowed() {
+          return false;
+        },
+        async close() {},
+      };
+      return buildDevGateway({
+        config: testDevGatewayConfig({ internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({ appId: DEV_APP_ID, slug: "myapp", blobPrefix: "apps/d/1/" }),
+        ]),
+        devTokens: tokens,
+        appData: null,
+        usage: null,
+        llmProvider: null,
+        egress: null,
+        instructionKey: null,
+        portal,
+      });
+    }
+
+    it("leaks no dev bearer token or vendor protocol value — across every attribute", async () => {
+      const portal = new FakePortalProvider();
+      portal.status = 200;
+      portal.headers = { "content-type": "application/json" };
+      portal.body = JSON.stringify({
+        outcome: "started",
+        authorizeUrl: `https://vendor.example/oauth/authorize?state=${VENDOR_STATE}&code_challenge=${VENDOR_CHALLENGE}&code_challenge_method=S256`,
+      });
+      const app = buildDevConsentGateway(portal);
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/myapp/_api/connections/asana/start",
+        headers: {
+          host: "dev-api.local.helix.azxlabs.io",
+          authorization: `Bearer ${DEV_BEARER}`,
+          origin: "https://myapp.lovable.app",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const popupUrl = res.json<{ popupUrl: string }>().popupUrl;
+      // The response's URL itself is the first scan surface: the bearer token
+      // must never leave the authenticated POST.
+      expect(popupUrl).not.toContain(DEV_BEARER);
+      expect(popupUrl).not.toContain(VENDOR_STATE);
+      expect(popupUrl).not.toContain(VENDOR_CHALLENGE);
+      await app.close();
+
+      // Then every span on the path — the route span and any it carries.
+      const nonce = new URL(popupUrl).searchParams.get("nonce") ?? "absent";
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      for (const secret of [DEV_BEARER, VENDOR_STATE, VENDOR_CHALLENGE, nonce]) {
+        expect(dump, `a span attribute leaked ${secret}`).not.toContain(secret);
+      }
+      expect(dump).not.toContain("?");
+      expect(dump).not.toContain("vendor.example");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
     });
   });
 });

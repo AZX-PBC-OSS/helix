@@ -7,12 +7,13 @@ import {
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
-import { Agent, buildConnector, request } from "undici";
+import { Agent, request } from "undici";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   type AttestedInstruction,
   type FetchErrorCode,
   type InjectionRecipe,
+  type TokenPlacement,
   INSTRUCTION_HEADER,
   METHOD_HEADER,
   OUTCOME_HEADER,
@@ -26,6 +27,7 @@ import { hmacTimestampNow, renderHmacAuth, signTimestamp, substitute } from "./h
 import { verifyInstruction } from "./instruction.js";
 import { RecipeDriftError, type SecretResolver } from "./secrets.js";
 import { type InstructionBurnStore } from "./burn.js";
+import type { DelegatedResolution, DelegatedResolver } from "./delegated.js";
 import {
   ATTR_APP_ID,
   ATTR_CAPABILITY,
@@ -35,6 +37,7 @@ import {
   ATTR_ENV,
   ATTR_METHOD,
   ATTR_OUTCOME,
+  ATTR_PROVIDER_REF,
   ATTR_TARGET_ORIGIN,
   ATTR_TARGET_PATH,
   ATTR_UPSTREAM_STATUS,
@@ -42,7 +45,7 @@ import {
 } from "@azx-pbc/shared/telemetry";
 import { instruments, tracer } from "./telemetry.js";
 import { egressSpanAttributes } from "./spanAttributes.js";
-import { SsrfBlockedError, resolveAndValidate } from "./ssrf.js";
+import { SsrfBlockedError, makeValidatingConnector } from "./ssrf.js";
 
 /**
  * `POST /proxy` — the one route that touches plaintext secrets and the public
@@ -63,6 +66,13 @@ export interface ProxyDeps {
   allowPrivate: boolean;
   /** Dev/test seam — permit secret injection into a cleartext http target (false in prod). */
   allowInsecureConnection: boolean;
+  /**
+   * Builds the delegated resolution (I-02 T-0022) against the proxy's shared
+   * dispatcher — the renewer's vendor calls ride the same pinned transport.
+   * null/omitted ⇒ delegated instructions are refused fail-closed (the
+   * mechanism not wired is an egress misconfiguration, answered as such).
+   */
+  delegated?: (dispatcher: Agent) => DelegatedResolver | null;
 }
 
 const REQUEST_SAFE = new Set(REQUEST_HEADER_SAFELIST);
@@ -72,6 +82,26 @@ const BODYLESS = new Set(["GET", "HEAD"]);
 function fail(reply: FastifyReply, status: number, code: FetchErrorCode, message: string): void {
   reply.header(OUTCOME_HEADER, status >= 500 ? "error" : "refusal");
   reply.code(status).send({ code, message });
+}
+
+/**
+ * The delegated-call refusal — the same fixed-body shape as `fail()` plus the
+ * optional provider metadata, with the OUTCOME HEADER made EXPLICIT. `fail()`
+ * derives the label from the status, and the delegated codes break that
+ * mapping in both directions: `connection_required` is a 403 whose ledger
+ * label is its own new word (not `refusal`), and `provider_unavailable` /
+ * `provider_misconfigured` are 5xx whose ledger label is `refusal` (not
+ * `error`) — design.md's error table is authoritative (T-0003's note).
+ */
+function failDelegated(reply: FastifyReply, resolution: DelegatedResolution & { ok: false }): void {
+  reply.header(OUTCOME_HEADER, resolution.outcome);
+  reply
+    .code(resolution.status)
+    .send(
+      resolution.provider
+        ? { code: resolution.code, message: resolution.message, provider: resolution.provider }
+        : { code: resolution.code, message: resolution.message },
+    );
 }
 
 /** Forward only the safelisted request headers; cookie/authorization never go out. */
@@ -99,6 +129,28 @@ interface Injected {
 }
 
 const NOTHING_INJECTED: Injected = { headerNames: [], queryParam: null };
+
+/**
+ * Apply the DELEGATED access token to the outbound request per the provider's
+ * configured placement — `Authorization: Bearer` (the default) or the one
+ * named header, verbatim (I-02 criterion 33). A delegated token has no query
+ * and no signing recipe by construction (`TokenPlacementSchema` refuses
+ * them): it is the user's credential, and neither a logged URL nor a signing
+ * recipe is an acceptable presentation for it. The recorded `headerNames`
+ * feed the response reflection strip exactly as the static recipes' do.
+ */
+function applyTokenPlacement(
+  headers: Record<string, string>,
+  placement: TokenPlacement,
+  token: string,
+): Injected {
+  if (placement.kind === "header-bearer") {
+    headers["authorization"] = `Bearer ${token}`;
+    return { headerNames: ["authorization"], queryParam: null };
+  }
+  headers[placement.name] = token;
+  return { headerNames: [placement.name], queryParam: null };
+}
 
 /**
  * Apply the resolved credential to the outbound request.
@@ -184,45 +236,6 @@ function redactQueryParam(
   return Array.isArray(value) ? value.map(redactOne) : redactOne(value);
 }
 
-/**
- * A shared connector that resolves + validates the target host and **pins the
- * socket to the validated IP** on every new connection, then hands off to
- * undici's default connector — so one long-lived {@link Agent} keeps connection
- * pooling (keep-alive across requests to the same origin) without losing the
- * SSRF IP-pin (ADR-0005 perf note). We dial the real origin (undici pools by
- * origin and sets SNI/Host from it); the connector only rewrites the socket
- * target to the validated IP.
- *
- * Validation runs per *new* socket. A pooled/keep-alive socket is already bonded
- * to a validated IP, so reuse can only ever reach that same address — a DNS
- * rebind between requests cannot redirect a live connection, and the next fresh
- * connection re-resolves and re-validates. `resolveAndValidate` throws
- * {@link SsrfBlockedError} for a blocked or unresolvable host; undici propagates
- * it verbatim to the `request()` rejection, where the handler maps it to a 403
- * `blocked` (preserving the old upfront-check semantics).
- */
-function makeValidatingConnector(
-  allowPrivate: boolean,
-  timeoutMs: number,
-): buildConnector.connector {
-  const base = buildConnector({ timeout: timeoutMs });
-  return function connect(opts, callback): void {
-    resolveAndValidate(opts.hostname, allowPrivate).then(
-      (pinned) => {
-        // Dial the validated IP literal; keep SNI + cert identity on the real
-        // hostname. undici leaves `servername` unset for the connector, so it
-        // must be pinned here exactly as the old per-request `connect.servername`
-        // did — otherwise the default connector would derive SNI from the IP.
-        base(
-          { ...opts, hostname: pinned.address, servername: opts.servername ?? opts.hostname },
-          callback,
-        );
-      },
-      (err: unknown) => callback(err instanceof Error ? err : new Error(String(err)), null),
-    );
-  };
-}
-
 /** What `proxyHandler` establishes before it decides the span's parent. */
 interface AuthenticatedRequest {
   instruction: AttestedInstruction;
@@ -260,6 +273,10 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     headersTimeout: deps.limits.timeoutMs,
     bodyTimeout: deps.limits.timeoutMs,
   });
+
+  // The delegated resolution (I-02 T-0022), built against the shared
+  // dispatcher so the renewer's vendor calls ride the same pinned transport.
+  const delegated = deps.delegated?.(dispatcher) ?? null;
 
   /**
    * Header reads + instruction verification, and nothing else.
@@ -381,6 +398,9 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     // Set for a recipe whose credential is derived from the local clock, so the
     // response can be checked for skew (see below).
     let clockDerived = false;
+    // Set when the call dispatched on a DELEGATED token — the connection row
+    // the criterion-40 flag targets if the vendor answers 401 before expiry.
+    let delegatedDispatch: { connectionId: string } | null = null;
     if (instruction.connection) {
       // A connection secret must never cross the wire in cleartext. Egress is the
       // credential broker, so it enforces this independently of the edge's origin
@@ -475,6 +495,93 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         // probe *why* a credential did not work.
         return fail(reply, 502, "upstream_error", "connection secret unavailable");
       }
+    } else if (instruction.provider) {
+      // ── The delegated branch (I-02 T-0022) ──────────────────────────────
+      // The instruction carries a provider ref, not a secret name: resolve
+      // the CALLER'S connection for (userOid, providerRef, env), renew if
+      // due, and inject the access token per the provider's placement. The
+      // resolution's refusals are dispatch-before-refusal — no vendor traffic
+      // of any kind fires behind them — and never fall back to another
+      // user's connection, a static secret, or an unauthenticated call.
+      //
+      // The same cleartext rule as the secret path: a delegated access token
+      // must never cross the wire in cleartext (the fixture vendor is http —
+      // the dev/test seam opens it, prod refuses).
+      if (target.protocol !== "https:" && !deps.allowInsecureConnection) {
+        return fail(reply, 403, "forbidden", "delegated calls require https");
+      }
+      if (!delegated) {
+        return fail(reply, 502, "upstream_error", "delegated resolution not configured");
+      }
+      let resolution: DelegatedResolution;
+      try {
+        if (instruction.userKind === undefined) {
+          // Unreachable: the strict instruction parse refuses a provider
+          // instruction without the caller kind. Guarded fail-closed anyway —
+          // an identity this plane cannot name is never served a delegated
+          // call, and the reason rides the bounded log word only.
+          req.log.warn(
+            { appId: instruction.appId, provider: instruction.provider, reason: "identity_absent" },
+            "delegated instruction carried no caller kind",
+          );
+          return fail(reply, 502, "upstream_error", "delegated credential unavailable");
+        }
+        resolution = await delegated.resolve(
+          {
+            userOid: instruction.userOid,
+            // The caller-kind discrimination never infers identity from
+            // userOid's shape — the edge records the kind (criterion 21).
+            userKind: instruction.userKind,
+            providerRef: instruction.provider,
+            env: instruction.env,
+          },
+          target.origin,
+        );
+      } catch {
+        // An unexpected throw inside resolution (a DB failure beyond the
+        // resolver's own containment). Contained to the opaque 502 like the
+        // secret path's resolve guard — the log carries no error text: this
+        // plane's error paths can embed credential material.
+        req.log.warn(
+          {
+            appId: instruction.appId,
+            provider: instruction.provider,
+            reason: "resolution_failed",
+          },
+          "delegated resolution failed unexpectedly",
+        );
+        return fail(reply, 502, "upstream_error", "delegated credential unavailable");
+      }
+      if (!resolution.ok) {
+        req.log.warn(
+          {
+            appId: instruction.appId,
+            provider: instruction.provider,
+            reason: resolution.spanOutcome,
+          },
+          "delegated call refused before dispatch",
+        );
+        return failDelegated(reply, resolution);
+      }
+
+      // The caller's connection resolved. Record the plane's two delegated
+      // dimensions — where the credential came from, and which provider —
+      // and inject the token into the configured placement. The token value
+      // itself never enters a span, a log field, or the response.
+      trace.getActiveSpan()?.setAttributes(
+        egressSpanAttributes({
+          [ATTR_CREDENTIAL_SOURCE]: "delegated",
+          [ATTR_PROVIDER_REF]: resolution.provider.ref,
+        }),
+      );
+      injected = applyTokenPlacement(
+        headers,
+        resolution.provider.tokenPlacement,
+        resolution.accessToken,
+      );
+      // The criterion-40 arm: a vendor 401 on THIS dispatch sets the
+      // renew-before-next flag (below, at the response head).
+      delegatedDispatch = { connectionId: resolution.connectionId };
     }
 
     // SSRF: the shared dispatcher's connector resolves + validates every address
@@ -536,6 +643,17 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       // refused.
       reply.header(OUTCOME_HEADER, upstream.statusCode === 429 ? "upstream_throttled" : "ok");
       reply.code(upstream.statusCode);
+
+      // Criterion 40 (I-02): a vendor 401 on a delegated call — before or
+      // after the recorded expiry — requires renewal before the NEXT app
+      // request. The response itself passes through byte-unchanged below (no
+      // replay: Helix never re-sends the call), and the flag is set
+      // fire-and-forget so the vendor's answer streams immediately; the
+      // status-CAS'd, column-scoped UPDATE cannot resurrect a dead row
+      // (criterion 41) and a failed write costs only one extra renewal later.
+      if (delegatedDispatch && upstream.statusCode === 401 && delegated) {
+        delegated.flagRenewBeforeNext(delegatedDispatch.connectionId);
+      }
       // Dynamically strip the exact headers we injected so an upstream that
       // reflects them (echo/debug endpoints, CORS reflection) can't leak the
       // credential back to the app (issue #7). This covers the arbitrary

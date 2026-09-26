@@ -2,7 +2,7 @@
 //
 // Stands up the three-plane platform (architecture §3) on Azure Container Apps:
 //   - networking with the egress-zone isolation enforced by firewall + UDRs
-//   - private Postgres / Blob / Key Vault (×2), all behind private endpoints
+//   - private Postgres / Blob / Key Vault (×3), all behind private endpoints
 //     (app images are pulled from public GHCR, so there is no private registry)
 //   - four user-assigned identities with a least-privilege RBAC matrix (the
 //     fourth, dev-gateway, is idle unless deployDevGateway is set)
@@ -35,6 +35,9 @@ param platformVaultName string
 
 @description('Globally-unique connections Key Vault name (3-24 chars).')
 param connectionsVaultName string
+
+@description('Globally-unique delegated-custody Key Vault name (3-24 chars). Holds user-delegated OAuth token material; the egress managed identity is its only RBAC principal (I-02 ADR-0006).')
+param delegatedVaultName string
 
 @description('Postgres flexible server name (globally unique, lowercase).')
 param postgresServerName string
@@ -121,6 +124,16 @@ param portalSecret string
 @secure()
 @description('HELIX_INSTRUCTION_SECRET — shared edge<->egress attestation key.')
 param instructionSecret string
+// The two ADR-0003 internal-JWT keys: edge mints edge->portal tokens with the
+// internal key, portal mints portal->egress tokens with the exchange key (and
+// verifies the first). Key separation per pair keeps rotation and blast radius
+// bilateral — a token minted for one seam cannot be redeemed at another.
+@secure()
+@description('HELIX_INTERNAL_SECRET — shared edge<->portal internal-JWT key (ADR-0003).')
+param internalSecret string
+@secure()
+@description('HELIX_EXCHANGE_SECRET — shared portal<->egress exchange-JWT key (ADR-0003).')
+param exchangeSecret string
 // The tenant blocks symmetric client secrets, so the edge authenticates to Entra
 // with a certificate (private_key_jwt). Both halves travel as PEM (or base64
 // PEM); the public cert is also uploaded to the edge app registration.
@@ -529,6 +542,7 @@ module keyvault 'modules/keyvault.bicep' = {
     location: location
     platformVaultName: platformVaultName
     connectionsVaultName: connectionsVaultName
+    delegatedVaultName: delegatedVaultName
     privateEndpointSubnetId: network.outputs.privateEndpointSubnetId
     keyVaultPrivateDnsZoneId: privateDns.outputs.keyVaultZoneId
   }
@@ -568,6 +582,7 @@ module rbac 'modules/rbac.bicep' = {
     storageAccountName: storage.outputs.storageAccountName
     platformVaultName: keyvault.outputs.platformVaultName
     connectionsVaultName: keyvault.outputs.connectionsVaultName
+    delegatedVaultName: keyvault.outputs.delegatedVaultName
     edgePrincipalId: identity.outputs.edgeIdentityPrincipalId
     portalPrincipalId: identity.outputs.portalIdentityPrincipalId
     egressPrincipalId: identity.outputs.egressIdentityPrincipalId
@@ -683,6 +698,8 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     edgeAuthSecret: edgeAuthSecret
     portalSecret: portalSecret
     instructionSecret: instructionSecret
+    internalSecret: internalSecret
+    exchangeSecret: exchangeSecret
     edgeOidcPrivateKey: edgeOidcPrivateKey
     edgeOidcCertificate: edgeOidcCertificate
     edgeDevDatabaseUrl: devDbConn
@@ -694,6 +711,22 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
 }
 
 var connectionsVaultUri = keyvault.outputs.connectionsVaultUri
+
+// Delegated custody vault (I-02 ADR-0006) — user OAuth token material.
+var delegatedVaultUri = keyvault.outputs.delegatedVaultUri
+
+// Internal base URLs for the I-02 cross-app hops, hoisted so the four call
+// sites cannot drift (EDGE_EGRESS_URL was already duplicated between the edge
+// and the dev-gateway). Same `https://` + ingress-FQDN shape as the egress URL
+// always used: internal ingress terminates TLS and does not serve plaintext.
+// With portalExternal = false the portal FQDN is the `<app>.internal.<domain>`
+// form, which the edge and dev-gateway resolve inside the shared apps
+// environment; with portalExternal = true it is the env-domain FQDN. Either
+// way the module output is the reachable value — never hard-code
+// portal.<appsDomain> here. Egress references no other app, so these
+// references add no dependency cycle (edge -> portal -> egress).
+var egressBaseUrl = 'https://${egressApp.?outputs.fqdn ?? ''}'
+var portalBaseUrl = 'https://${portalApp.?outputs.fqdn ?? ''}'
 
 // Base for the apps' ACA Key Vault references (vaultUri ends in '/').
 // Versionless on purpose: rotation becomes "write the vault" and ACA picks the
@@ -1026,6 +1059,11 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
         keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
         identity: identity.outputs.egressIdentityId
       }
+      // ADR-0003: egress verifies portal->egress exchange tokens.
+      'helix-exchange-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-exchange-secret'
+        identity: identity.outputs.egressIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1040,6 +1078,10 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EGRESS_PORT', value: '8081' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
+      // Delegated custody (I-02 ADR-0006): user OAuth token material,
+      // egress-only. Read at boot — without it the delegated store is not
+      // built and every delegated-token operation fails closed.
+      { name: 'AZURE_DELEGATED_KEY_VAULT_URL', value: delegatedVaultUri }
       // Egress reads connection secrets from kv-connections under its own managed
       // identity. It does NOT use @azure/identity (the mechanism plane stays
       // dependency-minimal — ADR-0031); it calls the ACA identity endpoint
@@ -1052,6 +1094,7 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EGRESS_MANAGED_IDENTITY_CONNECTIONS', value: foundryMiConnections }
       { name: 'EGRESS_DATABASE_URL', secretRef: 'egress-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+      { name: 'HELIX_EXCHANGE_SECRET', secretRef: 'helix-exchange-secret' }
     ]
   }
   dependsOn: [
@@ -1116,6 +1159,11 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
         keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
         identity: identity.outputs.edgeIdentityId
       }
+      // ADR-0003: the edge mints edge->portal internal tokens.
+      'helix-internal-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+        identity: identity.outputs.edgeIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1176,13 +1224,17 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       // ingress address named to recover the real client IP (issue #13). See
       // edgeTrustProxy / effectiveEdgeTrustProxy.
       { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
-      { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
+      { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+      // I-02 ADR-0002: the /connections/* proxy and both consent surfaces
+      // consult the portal over this base; unset they answer fail-closed 503.
+      { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
       { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
       // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
       { name: 'EDGE_OIDC_CLIENT_PRIVATE_KEY', secretRef: 'edge-oidc-private-key' }
       { name: 'EDGE_OIDC_CLIENT_CERTIFICATE', secretRef: 'edge-oidc-certificate' }
       { name: 'EDGE_AUTH_SECRET', secretRef: 'edge-auth-secret' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
     ]
   }
   dependsOn: [
@@ -1220,6 +1272,16 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       }
       'portal-secret': {
         keyVaultUrl: '${platformSecretsUri}portal-secret'
+        identity: identity.outputs.portalIdentityId
+      }
+      // ADR-0003: the portal verifies edge->portal internal tokens and mints
+      // portal->egress exchange tokens, so it holds both bilateral keys.
+      'helix-internal-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+        identity: identity.outputs.portalIdentityId
+      }
+      'helix-exchange-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-exchange-secret'
         identity: identity.outputs.portalIdentityId
       }
     }
@@ -1270,11 +1332,17 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'DEPLOY_MAX_FILE_MB', value: string(deployMaxFileMb) }
       { name: 'DEPLOY_MAX_BUNDLE_MB', value: string(deployMaxBundleMb) }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
+      // I-02 ADR-0001/0003: the OAuth callback delegates the vendor code
+      // exchange to egress over this base. Read at boot; unset would leave the
+      // delegation unwired and the completion route refusing.
+      { name: 'PORTAL_EGRESS_URL', value: egressBaseUrl }
       // helix_portal DSN. The portal runtime reads PORTAL_DATABASE_URL and (in
       // production) refuses the DATABASE_URL owner fallback (ADR-0002,
       // resolvePortalRuntimeUrl). Migrations run as the admin out-of-band.
       { name: 'PORTAL_DATABASE_URL', secretRef: 'portal-database-url' }
       { name: 'PORTAL_SECRET', secretRef: 'portal-secret' }
+      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
+      { name: 'HELIX_EXCHANGE_SECRET', secretRef: 'helix-exchange-secret' }
     ]
   }
   dependsOn: [
@@ -1330,6 +1398,13 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
         keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
         identity: identity.outputs.devIdentityId
       }
+      // Same keys the edge image holds (it IS the edge image): the instruction
+      // key and the edge->portal internal key — never the portal<->egress
+      // exchange key, which the dev-gateway has no half of.
+      'helix-internal-secret': {
+        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+        identity: identity.outputs.devIdentityId
+      }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1353,13 +1428,17 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
       { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
       { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
-      { name: 'EDGE_EGRESS_URL', value: 'https://${egressApp.?outputs.fqdn ?? ''}' }
+      { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+      // I-02 ADR-0002: the dev-gateway's consent surface consults the portal
+      // over this base, same as the edge.
+      { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
       // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
       // dev throttle keys on the real client IP behind ingress too.
       { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
       // The one DSN it holds — the least-privilege helix_dev role.
       { name: 'EDGE_DEV_DATABASE_URL', secretRef: 'edge-dev-database-url' }
       { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
     ]
   }
   dependsOn: [
@@ -1456,6 +1535,7 @@ output appsEnvStaticIp string = appsEnv.outputs.staticIp
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output migrateJobName string = migrateJob.?outputs.jobName ?? ''
 output connectionsVaultUri string = connectionsVaultUri
+output delegatedVaultUri string = delegatedVaultUri
 output dnsNameServers array = dns.outputs.nameServers
 output edgeFqdn string = edgeApp.?outputs.fqdn ?? ''
 output egressFqdn string = egressApp.?outputs.fqdn ?? ''

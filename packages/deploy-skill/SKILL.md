@@ -159,13 +159,14 @@ you did not declare returns `403` — that is the expected failure, not a bug.
     "mcp": [], // carried, not yet enforced — no transport exists
     "externalOrigins": [], // direct browser calls: widens CSP connect-src/img-src
     "fetch": {
-      "shim": false, // see §3.4
       "origins": [
-        { "origin": "https://api.github.com" },
-        { "origin": "https://api.stripe.com", "connection": "stripe-test" }
+        { "origin": "https://api.github.com" }, // keyless proxied call
+        { "origin": "https://api.stripe.com", "connection": "stripe-test" }, // stored secret, injected server-side
+        { "origin": "https://app.acme.example", "provider": "acme", "required": true } // OAuth provider — see §3.5
       ],
       "requestsPerDay": 10000
-    }
+    },
+    "shim": { "fetch": false, "connect": false } // injected helpers — see §3.4 (fetch) and §3.5 (connect)
   }
 }
 ```
@@ -185,6 +186,15 @@ say, hardcoding a key in the bundle.
 
 `connection` names a secret the platform stores and injects server-side. You never
 see its value, and you never put credentials in app code or in the manifest.
+
+`provider` names an OAuth **connection provider** the operator registered (the
+Capabilities tab lists the refs you can bind, per environment). At call time the
+platform injects the signed-in user's own connection to that provider — their
+OAuth access token, custodied server-side — so each user brings their own grant
+and no token ever reaches your code. One credential source per origin: an origin
+binds `connection` or `provider`, never both. `required` on a provider binding
+is a dependency hint for reviewers — it never blocks anything; an unmet binding
+just fails the call (§3.5).
 
 ---
 
@@ -397,9 +407,10 @@ const prefs = await (await fetch("/_api/data/user/prefs")).json();
 ### 3.3 Outbound HTTP — `/_api/fetch/<url>`
 
 Prefix the absolute target URL onto the path. The method, headers, and body pass
-through; the platform resolves and injects any `connection` credential, blocks
-private/loopback/metadata addresses, refuses redirects, and streams the response
-back.
+through; the platform resolves and injects any `connection` credential — or, on
+a provider-bound origin, the signed-in user's own OAuth connection token
+(§3.5) — blocks private/loopback/metadata addresses, refuses redirects, and
+streams the response back.
 
 ```js
 const r = await fetch("/_api/fetch/https://api.github.com/repos/vercel/next.js");
@@ -412,13 +423,87 @@ those need `externalOrigins` instead.
 
 ### 3.4 The transparent shim
 
-Setting `capabilities.fetch.shim: true` makes the edge inject a small script into
+Setting `capabilities.shim.fetch: true` makes the edge inject a small script into
 your HTML that patches `fetch` and `XMLHttpRequest` so calls to granted origins are
 rewritten onto `/_api/fetch/<url>` automatically. Useful when porting code that
 already calls a third-party API directly. Prefer writing the `/_api/fetch/` path
-yourself in new code — it is explicit and it works without the shim.
+yourself in new code — it is explicit and it works without the shim. (The legacy
+spelling `capabilities.fetch.shim: true` still parses; declare the `shim` block.)
 
-### 3.5 Errors worth handling
+### 3.5 Connected accounts — OAuth providers and the connect flow
+
+An origin bound to a `provider` uses **the signed-in user's own OAuth connection**
+to that provider. Connections are per user and are created only by **explicit
+consent**: the platform never opens a popup on its own, never watches your
+responses, and never retries anything. Your app offers the user a Connect
+control — a visible, labelled `<button>` ("Connect to …") — and calls one of the
+two entries below **from inside its click handler**. Both require a user gesture;
+without one the browser refuses the popup.
+
+**Entry 1 — the helper (opt-in).** Grant `"shim": { "connect": true }` and the
+platform inlines `window.helix.connect()` into your HTML. It never throws and
+never rejects — every result is an outcome:
+
+```js
+connectButton.addEventListener("click", async () => {
+  const result = await window.helix.connect("acme"); // the provider ref
+  // result = { outcome, provider, attempt?, reason? }
+  if (result.outcome === "connected" || result.outcome === "already_connected") {
+    await refetchVendorData(); // re-issue the call that failed with connection_required
+  }
+});
+```
+
+Outcomes: `connected` (the user approved; connection saved),
+`already_connected` (a working connection existed — nothing was sent to the
+vendor), `denied` (the user declined at the vendor), `cancelled` (popup closed
+without completing — the helper tells the platform so a late completion cannot
+claim the attempt; if it completed just before closing, your next call
+succeeds), `timeout` (five minutes with the popup open), `blocked` (the browser
+refused the popup — offer Connect again; the platform never navigates your tab
+or retries the open), `signin_required` (no app session — sign in, then Connect
+again), and `error` (platform-side; `reason` ∈ `conflict`,
+`provider_unavailable`, `provider_misconfigured`, `provider_incompatible`,
+`service_unavailable`).
+
+**Entry 2 — no helper.** Open the start route in a popup from the same click
+handler and listen for the completion message yourself:
+
+```
+GET /_api/connections/:ref/start          optionally ?attempt=<correlation tag>
+```
+
+Same-origin navigation on your app's host (it runs the session gates). On
+success the popup goes straight to the vendor's consent screen; otherwise a
+platform page posts the outcome message and offers Close. **Verify every
+message before trusting it** — it is a notification, never an authorization
+grant (it carries no token):
+
+1. `event.source` is the popup you opened;
+2. `event.origin` is a platform origin — your app's own host, or the auth host
+   (completion pages);
+3. the body parses: `source: "helix-connect"`, `version: 1`, `provider` matches
+   the ref you are connecting, `outcome` in the helper's set, `reason: null`
+   unless the outcome is `error`, and `attempt` matches the tag you sent — when
+   the message carries one.
+
+Discard anything else.
+
+**When the call fails.** A provider-bound API call answers `{code, message,
+provider?}` when it cannot be served. The one the user can fix is `403
+connection_required` (no connection yet, declined consent, dead token,
+disconnected, reconnection required): offer Connect again, and on a
+`connected`/`already_connected` outcome re-issue the call. **Helix never
+replays a call — retrying, or not, is your decision.** `provider_unavailable`
+(503) and `provider_misconfigured` (502) are administrator problems; retrying
+does nothing. For anonymous visitors on a `public` app and shared-password
+pseudonyms, `connection_required` is permanent — those identities cannot hold
+connections, so do not show them a Connect control.
+
+**`required: true` is a hint, not a check** — it documents the dependency for
+reviewers and never blocks, gates, or pops anything.
+
+### 3.6 Errors worth handling
 
 | Status | Code                     | Meaning                                                              |
 | ------ | ------------------------ | -------------------------------------------------------------------- |
@@ -426,11 +511,15 @@ yourself in new code — it is explicit and it works without the shim.
 | 400    | `validation_failed`      | Bad request body — or a `responseFormat` this model can't enforce    |
 | 403    | `forbidden`              | Not in the manifest — or a key/prefix no grant covers (incl. list)   |
 | 403    | `model_not_allowed`      | Model isn't in `capabilities.llm.models`                             |
+| 403    | `connection_required`    | No user connection to a provider-bound origin — offer Connect (§3.5) |
 | 412    | `conflict`               | Lost a shared-write race — re-read and retry with the new `ETag`     |
 | 428    | `precondition_required`  | Shared write without `If-Match`/`If-None-Match` — fix the code       |
 | 429    | `quota_exceeded`         | Daily budget spent — in-flight calls finish, new ones are refused    |
 | 429    | `rate_limited`           | Anonymous per-IP limit on a `public` app                             |
 | 429    | `rate_limited`           | The upstream model is throttled — retry after the `retry-after` delay |
+| 502    | `upstream_error`         | Delegated token renewal failed temporarily / vendor outage — the connection is preserved; retrying later is your call |
+| 502    | `provider_misconfigured` | The OAuth provider's configuration is invalid — administrator action (§3.5) |
+| 503    | `provider_unavailable`   | The OAuth provider was deleted or its binding is blocked — administrator action (§3.5) |
 | 503    | `capability_unavailable` | The platform isn't configured for this capability here               |
 | 502    | —                        | Upstream provider failed                                             |
 
@@ -526,6 +615,15 @@ await fetch(`${API}/_api/llm/chat`, {
 Deploying moves **code**, never data — there is no "copy my dev rows to prod", and
 the portal offers a reset for the throwaway dev partition.
 
+**Connecting a provider in dev (§3.5) changes shape, not behavior.** The helper
+is not injected on your dev origin — the platform serves only your `/_api/*`
+calls there — so use the raw entry: `POST {{DEV_API_BASE}}/<slug>/_api/connections/:ref/start`
+with the dev bearer token answers `{outcome: "started", popupUrl}` — open the
+returned single-use URL in a popup — or a terminal `already_connected` /
+`not_available`. The completion message arrives from the auth host; verify it
+exactly as §3.5 says. The connection is the dev partition's, like every other
+dev credential.
+
 <!-- /IF:DEV_API -->
 
 ---
@@ -537,6 +635,10 @@ the portal offers a reset for the throwaway dev partition.
       `externalOrigins` grant) — nothing relies on plain cross-origin `fetch`.
 - [ ] Every capability the code uses is declared in the manifest, with a budget.
 - [ ] `403` and `429` from the gateway are handled and shown to the user.
+- [ ] A provider-bound origin has a visible, labelled Connect `<button>` calling
+      the connect entry from its click handler (§3.5); `connection_required`
+      offers Connect and the app re-issues the call — nothing retries
+      automatically.
 - [ ] User-specific state is in `/_api/data/user/*`, not in `shared`.
 - [ ] Every `shared` write goes through the read → `If-Match` → retry-on-`412`
       loop (or `If-None-Match: *` to create) — a plain shared PUT is refused.

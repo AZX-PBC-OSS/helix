@@ -88,6 +88,7 @@ describe("RegistryProjection", () => {
       externalOrigins: [],
       fetch: { connections: new Map(), requestsPerDay: null, shim: false },
       offline: null,
+      shim: null,
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();
@@ -241,6 +242,135 @@ describe("RegistryProjection", () => {
     ]) {
       expect(projection.getApp(slug)?.offline, slug).toBeNull();
     }
+  });
+
+  // The fetch grant's parse (I-02 T-0013): the widened credential view —
+  // keyless | secret name | provider binding — is manifest data only, fails
+  // closed, and leaves the keyless/secret/shim meanings exactly as before.
+  describe("fetch grant", () => {
+    it("projects each origin's credential source: keyless, secret-bound, or provider-bound", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            {
+              ...ROW,
+              slug: "mixed",
+              capabilities: {
+                fetch: {
+                  origins: [
+                    // Provider binding with the display metadata the manifest
+                    // declares (the `required` dependency hint)…
+                    { origin: "https://api.asana.com", provider: "asana", required: true },
+                    // …and without — normalized to `false`, never undefined.
+                    { origin: "https://gitlab.example.com", provider: "gitlab" },
+                    // Keyless stays a keyless proxied origin.
+                    { origin: "https://api.github.com" },
+                    // Secret-bound keeps its secret name.
+                    { origin: "https://api.stripe.com", connection: "stripe" },
+                  ],
+                },
+              },
+            },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.getApp("mixed")?.fetch).toEqual({
+        connections: new Map([
+          ["https://api.asana.com", { kind: "provider", provider: "asana", required: true }],
+          ["https://gitlab.example.com", { kind: "provider", provider: "gitlab", required: false }],
+          ["https://api.github.com", { kind: "keyless" }],
+          ["https://api.stripe.com", { kind: "secret", connection: "stripe" }],
+        ]),
+        requestsPerDay: null,
+        shim: false,
+      });
+    });
+
+    it("carries the shim flag through the legacy boolean unchanged", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            { ...ROW, slug: "on", capabilities: { fetch: { shim: true, origins: [] } } },
+            { ...ROW, slug: "off", capabilities: { fetch: { origins: [] } } },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.getApp("on")?.fetch.shim).toBe(true);
+      expect(projection.getApp("off")?.fetch.shim).toBe(false);
+    });
+
+    it("never represents both credential sources for one origin — the schema refuses it, the grant degrades to empty", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            {
+              ...ROW,
+              slug: "both",
+              capabilities: {
+                fetch: {
+                  origins: [
+                    { origin: "https://api.asana.com", connection: "s", provider: "asana" },
+                  ],
+                },
+              },
+            },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.getApp("both")?.fetch).toEqual({
+        connections: new Map(),
+        requestsPerDay: null,
+        shim: false,
+      });
+    });
+
+    it("degrades to an empty grant on malformed capabilities without failing the load", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
+            { ...ROW, slug: "bad-fetch", capabilities: { fetch: { origins: "nope" } } },
+            // A malformed provider ref fails the strict origin schema, so the
+            // whole grant degrades closed — never a half-parsed binding.
+            {
+              ...ROW,
+              slug: "bad-provider-ref",
+              capabilities: {
+                fetch: { origins: [{ origin: "https://api.asana.com", provider: "NOT_A_REF" }] },
+              },
+            },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.isLoaded()).toBe(true);
+      for (const slug of ["bad-json", "bad-fetch", "bad-provider-ref"]) {
+        expect(projection.getApp(slug)?.fetch, slug).toEqual({
+          connections: new Map(),
+          requestsPerDay: null,
+          shim: false,
+        });
+      }
+    });
+
+    it("keeps requestsPerDay on the widened shape", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            {
+              ...ROW,
+              slug: "budgeted",
+              capabilities: { fetch: { origins: [], requestsPerDay: 5000 } },
+            },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.getApp("budgeted")?.fetch.requestsPerDay).toBe(5000);
+    });
   });
 
   it("keeps serving the previous map when a reload fails", async () => {

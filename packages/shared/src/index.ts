@@ -19,10 +19,15 @@ export * from "./usage.js";
 export * from "./data.js";
 export * from "./collectionTable.js";
 export * from "./secrets.js";
+export * from "./providers.js";
+export * from "./connections.js";
+export * from "./consent.js";
+export * from "./exchange.js";
 export * from "./env.js";
 export * from "./principal.js";
 export * from "./devTokens.js";
 export * from "./instruction.js";
+export * from "./internalJwt.js";
 export * from "./fetch.js";
 export * from "./sessions.js";
 // NB: `./bodyCap.js`, `./devToken.js` and `./logging.js` are deliberately NOT

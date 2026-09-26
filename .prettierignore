@@ -7,6 +7,10 @@ pnpm-lock.yaml
 # Dual-review outputs (gitignored): transient review prose, not repo source.
 review-*.md
 
+# The shipwright workflow tree (gitignored via .git/info/exclude): generated
+# initiative/run artifacts, not repo source — same class as review-*.md above.
+.shipwright
+
 # Generated Prisma client
 apps/portal/src/db/generated
 

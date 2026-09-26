@@ -1,0 +1,25 @@
+{
+  "name": "@azx-pbc/connections-lane",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@azx-pbc/dev-idp": "workspace:*",
+    "@azx-pbc/dev-oauth-vendor": "workspace:*",
+    "@azx-pbc/edge": "workspace:*",
+    "@azx-pbc/egress": "workspace:*",
+    "@azx-pbc/portal": "workspace:*",
+    "@azx-pbc/secret-store": "workspace:*",
+    "@azx-pbc/shared": "workspace:*",
+    "@playwright/test": "catalog:",
+    "@types/pg": "catalog:",
+    "fastify": "catalog:",
+    "pg": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>OAuth demo · AZX</title>
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>→ OAuth demo</h1>
+        <p id="whoami" class="whoami">…</p>
+      </header>
+
+      <p class="lede">
+        Exercises the platform's <strong>delegated OAuth connections</strong> end to end
+        (docs/features/fetch-proxy.md §Delegated providers): consent through
+        <code>window.helix.connect()</code>, then a provider-bound call through
+        <code>/_api/fetch</code> where helix-egress injects <em>your</em> access token
+        server-side. The app bundle never sees a token — only the vendor's echo of one.
+      </p>
+
+      <div class="actions">
+        <button id="connect-btn" type="button">Connect demo-vendor</button>
+        <button id="call-btn" type="button">Call vendor API</button>
+      </div>
+
+      <section class="probes">
+        <article class="probe" id="probe-connect">
+          <h2>1 · Consent <code>window.helix.connect("demo-vendor")</code></h2>
+          <p class="desc">
+            Runs inside this click's user gesture: one popup to the platform's start route,
+            which consults the control plane and 302s to the vendor's authorize screen. The
+            vendor auto-approves (it is a fixture), the callback completes on the auth host,
+            and the popup posts the outcome back. Watch it travel.
+          </p>
+          <div class="out">not run yet</div>
+        </article>
+
+        <article class="probe" id="probe-call">
+          <h2>2 · Delegated call <code>POST /_api/fetch/http://localhost:3003/api/echo</code></h2>
+          <p class="desc">
+            The bound origin rides the provider binding (<code>demo-vendor</code>), so egress
+            resolves <em>your</em> connection and injects <code>Authorization: Bearer</code>.
+            Before connecting: <code>403 connection_required</code>. After: the vendor echoes
+            which header the token arrived in (masked below — the app never gets the token).
+          </p>
+          <div class="out">not run yet</div>
+        </article>
+      </section>
+
+      <p class="footnote">
+        Connected and want it gone? Open the portal's <strong>My Connections</strong> page and
+        disconnect — the next call reads <code>403 connection_required</code> again.
+      </p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

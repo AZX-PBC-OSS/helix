@@ -620,6 +620,36 @@ describe("egress instruction forgery", () => {
     expect(res.statusCode).toBe(401);
     await app.close();
   });
+
+  it("rejects an unknown claim instead of stripping it (ADR-0005 strict parse)", async () => {
+    // A future edge widening verified here must fail closed: the unknown claim
+    // fails the payload schema rather than vanishing (which could drop the
+    // credential field and send the call out unauthenticated).
+    const app = makeApp(true);
+    const rid = randomUUID();
+    const skewed = await new SignJWT({
+      appId: "app-1",
+      userOid: "u",
+      capability: "fetch",
+      origin,
+      requestId: rid,
+      connection: "gh",
+      credentialV2: "a-claim-an-older-egress-never-heard-of",
+    })
+      .setProtectedHeader({ alg: "HS256", typ: INSTRUCTION_JWT_TYP })
+      .setJti(rid)
+      .setAudience(INSTRUCTION_AUDIENCE)
+      .setIssuedAt()
+      .setExpirationTime("30s")
+      .sign(key);
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: { [INSTRUCTION_HEADER]: skewed, [TARGET_HEADER]: `${origin}/` },
+    });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+  });
 });
 
 describe("egress instruction replay + audience (ADR-0013 Step 1, issue #3)", () => {

@@ -31,6 +31,9 @@ const OUTCOME_TONE: Record<GatewayOutcome, Tone> = {
   ok: "live",
   error: "bad",
   refusal: "warn",
+  // Violet, matching the audit page and the provider-bound badge: "user not
+  // connected" is a consent problem, not policy refusal (criterion 50).
+  connection_required: "violet",
   quota_blocked: "warn",
   conflict: "warn",
   forbidden: "bad",

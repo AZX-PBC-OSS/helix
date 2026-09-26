@@ -26,6 +26,14 @@ import { PrincipalKindSchema } from "./principal.js";
  * `forbidden` is the fetch-proxy's allowlist denial — the app asked for an
  * origin its manifest never granted. Like `quota_blocked` it is the platform's
  * own pre-egress refusal: no instruction is minted and nothing is dialled.
+ *
+ * `connection_required` is the delegated-call outcome "the caller has no usable
+ * connection to the bound provider" (I-02). It stays distinct from `refusal` so
+ * the ledger separates "user not connected" from "policy refused" (criterion 50;
+ * clarifications Q15) — that separation is the label's whole point. The other
+ * delegated error codes do not get labels of their own: `provider_unavailable`
+ * and `provider_misconfigured` meter as `refusal`, temporary failure as `error`
+ * (design.md decision 13).
  */
 export const GATEWAY_OUTCOMES = [
   "ok",
@@ -34,6 +42,7 @@ export const GATEWAY_OUTCOMES = [
   "quota_blocked",
   "conflict",
   "forbidden",
+  "connection_required",
 ] as const;
 export const GatewayOutcomeSchema = z.enum(GATEWAY_OUTCOMES);
 export type GatewayOutcome = z.infer<typeof GatewayOutcomeSchema>;

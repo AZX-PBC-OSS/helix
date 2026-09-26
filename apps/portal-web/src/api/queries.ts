@@ -15,9 +15,13 @@ import {
   DevTokenMetadataSchema,
   GatewayAuditPageSchema,
   HealthStatusSchema,
+  MyConnectionsResponseSchema,
   PasswordCredentialResponseSchema,
   PlatformUsageSchema,
   PortalMeResponseSchema,
+  ProviderImpactSchema,
+  ProviderListResponseSchema,
+  ProviderMetadataSchema,
   SecretMetadataSchema,
   SessionListResponseSchema,
   UsageSummarySchema,
@@ -350,3 +354,56 @@ export const sessionsQuery = queryOptions({
   queryKey: ["sessions"],
   queryFn: () => fetchJson(SessionListResponseSchema, "/api/v1/sessions"),
 });
+
+/**
+ * The signed-in user's own provider connections (My Connections, I-02
+ * T-0024) — metadata only; the sealed material is structurally absent from
+ * the server's shape. Bearer-gated server-side like the rest of `/api/v1`.
+ *
+ * No `staleTime` — the default (0) is the point: this page's Disconnect
+ * explains what Helix still holds, and what it shows must be what the server
+ * would act on now. The page adds the visibility-aware 30 s cadence (criterion
+ * 46), which belongs to the screen, not the resource.
+ */
+export const myConnectionsQuery = queryOptions({
+  queryKey: ["connections", "mine"],
+  queryFn: () => fetchJson(MyConnectionsResponseSchema, "/api/v1/connections/mine"),
+});
+
+/* ---------------------------------------------------------------------------
+ * Connection providers (admin, I-02 T-0026). Metadata-only reads — the sealed
+ * credentials are structurally absent from every shape. The three keys are
+ * deliberately disjoint subtrees, not one `["providers"]` prefix: TanStack
+ * invalidation is prefix-based, so a list invalidation matching `["providers",
+ * "detail", id]` would refetch under the open edit form and — through the
+ * reseed sync — risk discarding the administrator's draft. The list key is the
+ * only thing provider mutations invalidate wholesale; a detail refetch happens
+ * through the edit page's own save/Reload, which reseed the draft deliberately.
+ * ------------------------------------------------------------------------- */
+
+/** Admin provider list — metadata rows + the deployment's fixed callback URL. */
+export const providersQuery = queryOptions({
+  queryKey: ["providers", "list"],
+  queryFn: () => fetchJson(ProviderListResponseSchema, "/api/v1/providers"),
+});
+
+/** One provider's metadata — the edit form's reseed source. */
+export const providerQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["providers", "detail", id],
+    queryFn: () => fetchJson(ProviderMetadataSchema, `/api/v1/providers/${encodeURIComponent(id)}`),
+    retry: false,
+  });
+
+/**
+ * The impact counts a sensitive edit or deletion is about to invalidate (bound
+ * apps, live connections, pending consent attempts). Fetched before the review
+ * panel renders, via `queryClient.fetchQuery`.
+ */
+export const providerImpactQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["providers", "impact", id],
+    queryFn: () =>
+      fetchJson(ProviderImpactSchema, `/api/v1/providers/${encodeURIComponent(id)}/impact`),
+    retry: false,
+  });

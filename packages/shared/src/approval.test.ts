@@ -7,7 +7,10 @@ import {
   captureSnapshot,
   classifyChange,
   classifyVisibilityChange,
+  fetchOriginKey,
+  isProviderBindingEffective,
   maxRisk,
+  parseFetchOriginKey,
   snapshotConflicts,
   summarizePriorDecisions,
   touchedAreas,
@@ -239,6 +242,38 @@ describe("classifyChange — fetch proxy", () => {
     expect(paths(r.baselineDeltas)).toContain("fetch.shim");
   });
 
+  it("the connect helper is its own baseline delta — a connect-only change persists", () => {
+    // T-0028: the connect sub-option has no legacy alias to ride, so without
+    // its own path the classifier produced no delta and the grant silently
+    // failed to persist (the reported manifest never changed).
+    const requested: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      shim: { fetch: false, connect: true },
+    };
+    const r = classifyChange(EMPTY, requested);
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["shim.connect"]);
+    const applied = applyDeltas(EMPTY, r.baselineDeltas);
+    expect(applied.shim).toEqual({ fetch: false, connect: true });
+    // Independent sub-options: toggling both at once emits both paths and
+    // applies in either order.
+    const both = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      shim: { fetch: true, connect: true },
+    });
+    expect(paths(both.baselineDeltas).sort()).toEqual(["fetch.shim", "shim.connect"]);
+    expect(applyDeltas(EMPTY, both.baselineDeltas).shim).toEqual({ fetch: true, connect: true });
+    // Revoking connect while the fetch rewrite stays on keeps the rewrite.
+    const revoke = applyDeltas(
+      { mcp: [], externalOrigins: [], shim: { fetch: true, connect: true } },
+      [{ path: "shim.connect", from: true, to: false }],
+    );
+    expect(revoke.shim).toEqual({ fetch: true, connect: false });
+    expect(revoke.fetch?.shim).toBe(true);
+  });
+
   it("gates a fetch request budget above baseline only", () => {
     const under = classifyChange(EMPTY, {
       mcp: [],
@@ -281,6 +316,147 @@ describe("classifyChange — fetch proxy", () => {
     expect(applied.fetch?.origins).toEqual([
       { origin: "https://api.stripe.com", connection: "stripe" },
     ]);
+  });
+});
+
+// T-0009: a provider-bound origin classifies like a secret-bound one (high),
+// on the extended canonical key form `origin→provider:ref` (design.md §Approvals
+// queue additions). Keyless/secret-bound classifications are unchanged above.
+describe("classifyChange — provider-bound origins (T-0009)", () => {
+  it("gates a provider-bound origin add as high, on the provider key form", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: {
+        shim: false,
+        origins: [{ origin: "https://api.asana.com", provider: "asana", required: true }],
+      },
+    });
+    expect(paths(r.elevatedDeltas)).toEqual([
+      "fetch.origins[+https://api.asana.com→provider:asana]",
+    ]);
+    expect(r.risk).toBe("high");
+  });
+
+  it("round-trips a provider-bound origin through applyDeltas", () => {
+    const requested: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.asana.com", provider: "asana" }] },
+    };
+    const r = classifyChange(EMPTY, requested);
+    expect(applyDeltas(EMPTY, r.elevatedDeltas).fetch?.origins).toEqual([
+      { origin: "https://api.asana.com", provider: "asana" },
+    ]);
+  });
+
+  it("treats a change of bound provider as remove (baseline) + add (elevated high)", () => {
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.asana.com", provider: "asana" }] },
+    };
+    const r = classifyChange(eff, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.asana.com", provider: "github" }] },
+    });
+    expect(paths(r.baselineDeltas)).toEqual([
+      "fetch.origins[-https://api.asana.com→provider:asana]",
+    ]);
+    expect(paths(r.elevatedDeltas)).toEqual([
+      "fetch.origins[+https://api.asana.com→provider:github]",
+    ]);
+    expect(r.risk).toBe("high");
+  });
+
+  it("treats removing a provider binding as baseline, and the removal round-trips", () => {
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [{ origin: "https://api.asana.com", provider: "asana" }] },
+    };
+    const r = classifyChange(eff, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: { shim: false, origins: [] },
+    });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual([
+      "fetch.origins[-https://api.asana.com→provider:asana]",
+    ]);
+    expect(applyDeltas(eff, r.baselineDeltas).fetch?.origins).toEqual([]);
+  });
+
+  it("keys the three credential kinds apart — the canonical key is the parse's inverse", () => {
+    const keyless = { origin: "https://a.example" };
+    const secret = { origin: "https://b.example", connection: "s1" };
+    const provider = { origin: "https://c.example", provider: "p1" };
+    expect(fetchOriginKey(keyless)).toBe("https://a.example");
+    expect(fetchOriginKey(secret)).toBe("https://b.example→secret:s1");
+    expect(fetchOriginKey(provider)).toBe("https://c.example→provider:p1");
+    expect(parseFetchOriginKey(fetchOriginKey(keyless))).toEqual(keyless);
+    expect(parseFetchOriginKey(fetchOriginKey(secret))).toEqual(secret);
+    expect(parseFetchOriginKey(fetchOriginKey(provider))).toEqual(provider);
+  });
+
+  it("classifies a mixed submission by its worst elevated delta", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      fetch: {
+        shim: false,
+        origins: [
+          { origin: "https://a.example" }, // med, elevated
+          { origin: "https://b.example", connection: "s" }, // high
+          { origin: "https://c.example", provider: "p" }, // high
+        ],
+      },
+    });
+    expect(r.risk).toBe("high");
+    expect(r.elevatedDeltas).toHaveLength(3);
+  });
+});
+
+describe("isProviderBindingEffective (T-0009 — the one binding-effectiveness rule)", () => {
+  const stamp = {
+    ref: "asana",
+    env: "prod" as const,
+    providerId: "0d7e2c2e-6a1c-4f5e-9a2b-3c4d5e6f7a8b",
+    revision: 3,
+  };
+
+  it("is effective when id, ref and revision all match the current row", () => {
+    expect(
+      isProviderBindingEffective(stamp, { id: stamp.providerId, ref: "asana", revision: 3 }),
+    ).toBe(true);
+  });
+
+  it("is not effective once a sensitive edit advanced the revision", () => {
+    expect(
+      isProviderBindingEffective(stamp, { id: stamp.providerId, ref: "asana", revision: 4 }),
+    ).toBe(false);
+  });
+
+  it("is not effective when the provider row is gone (deleted)", () => {
+    expect(isProviderBindingEffective(stamp, null)).toBe(false);
+    expect(isProviderBindingEffective(stamp, undefined)).toBe(false);
+  });
+
+  it("is not effective against a recreated row under the same ref (new surrogate id)", () => {
+    expect(
+      isProviderBindingEffective(stamp, {
+        id: "11111111-1111-4111-8111-111111111111",
+        ref: "asana",
+        revision: 3,
+      }),
+    ).toBe(false);
+  });
+
+  it("is not effective when the ref moved to a different row", () => {
+    expect(
+      isProviderBindingEffective(stamp, { id: stamp.providerId, ref: "other", revision: 3 }),
+    ).toBe(false);
   });
 });
 

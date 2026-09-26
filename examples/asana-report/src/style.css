@@ -1,0 +1,256 @@
+:root {
+  color-scheme: light;
+  --ink: #1e1f21;
+  --muted: #6d6e6f;
+  --line: #e3e4e6;
+  --accent: #f06a6a;
+  --accent-dark: #d84d4d;
+  --surface: #ffffff;
+  --bg: #f7f5f4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+}
+
+.whoami {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 1.25rem;
+}
+
+.tab {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.view {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.connect-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: #fdf3f2;
+  border: 1px solid #f2c9c7;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.connect-row p {
+  margin: 0;
+  color: var(--ink);
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+#connect-btn,
+#gen-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#connect-btn:disabled,
+#gen-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#connect-btn:hover:not(:disabled),
+#gen-btn:hover:not(:disabled) {
+  background: var(--accent-dark);
+}
+
+.gen-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: end;
+}
+
+.gen-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.gen-form select,
+.gen-form input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  background: #fff;
+  min-width: 10rem;
+}
+
+.gen-form button {
+  align-self: end;
+}
+
+.status {
+  min-height: 1.4em;
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.report-view,
+.report-detail {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.report-head h2 {
+  margin: 0 0 0.15rem;
+  font-size: 1.1rem;
+}
+
+.meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.reports-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.report-row {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
+}
+
+.report-row:hover {
+  border-color: var(--accent);
+}
+
+.report-row .meta {
+  font-size: 0.85rem;
+}
+
+.linkish {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-dark);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 0.75rem;
+}
+
+/* Markdown-lite output — every node is built via textContent, never HTML. */
+.markdown {
+  margin-top: 0.75rem;
+}
+
+.markdown .md-heading {
+  font-weight: 700;
+  font-size: 1.02rem;
+  margin: 1.1em 0 0.4em;
+}
+
+.markdown ul {
+  margin: 0.4em 0 0.8em;
+  padding-left: 1.3em;
+}
+
+.markdown li {
+  margin: 0.25em 0;
+}
+
+.markdown pre {
+  background: #f4f3f2;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  overflow-x: auto;
+}
+
+.markdown code {
+  font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #f4f3f2;
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown a {
+  color: var(--accent-dark);
+}
+
+.footnote {
+  margin-top: 1.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}

@@ -1,12 +1,100 @@
 # 0031. Connection providers: MCP-first delegated auth, tenant-key as fallback
 
-**Status:** Proposed (2026-07-29)
+**Status:** Accepted (2026-09-25 — proposed 2026-07-29). Phases 1–4 are implemented — see the 2026-09-25 amendment below for the deviations implementation carries, and the 2026-08-04 amendment note above for what this ADR does and does not own. Phases 5–7 remain future work.
 **Related:** ADR [0006](0006-secret-custody-seam.md) (`SecretStore` custody — the seam per-user tokens reuse), [0005](0005-ssrf-egress-controls.md) (SSRF + secret injection — the outbound mechanism), [0013](0013-egress-trust-model.md) (egress trust model — the attested instruction this extends), [0002](0002-postgres-role-split-rls.md) (role split — why `helix_edge` still cannot read a token), [0007](0007-portal-authz-v0.md) (portal authz v0 — **blocks** the group-policy half), [0016](0016-capability-manifest-approval-classifier.md) (approval classifier — catalog edits ride it), [0014](0014-same-origin-api-gateway.md) (same-origin gateway), [0017](0017-registry-listen-notify-projection.md) (LISTEN/NOTIFY projection — the no-redeploy mechanism), [0028](0028-deployment-model-customer-deployed.md) (customer-deployed — why registration is per-deployment), [0021](0021-metering-ledger.md) (metering — where "who used what" is already answered). **Design:** `docs/design/secrets-and-connections.md` §10 q2 and `docs/design/fetch-proxy.md` §10 q2 both defer "injection recipes beyond the three"; this ADR answers them and supersedes that deferral.
 
 > **Amendment (2026-08-04) — a stateless derived recipe landed ahead of this ADR, and is independent of it.**
 > The Related line below claims this ADR supersedes the design docs' "injection recipes beyond the three" deferral. That over-reaches, and while this ADR is still **Proposed** and unimplemented it would read as though *all* recipe evolution must wait for the provider catalog. It does not. A fourth recipe — **`hmac-timestamp`** (secrets design §2.1) — has shipped: a credential derived per request from the key and the clock, with no token cache, no second network hop, and no request context.
 >
 > The line the design docs now draw is **stateless vs. stateful**, not static vs. dynamic. Stateless derivations are sibling kinds in code, reviewed with tests, and cost a pure function plus a schema variant. What this ADR actually owns is the **stateful and delegated** half: per-user OAuth, refresh-token custody, and the authorization question of who may use which provider. Those are untouched by the above, and remain the reason this ADR exists.
+
+## Amendment (2026-09-25) — Accepted, with the accumulated implementation amendments
+
+Implemented through phases 1–4 of the Phasing section (I-02, tickets
+T-0001–T-0032): the catalog as Postgres data with admin CRUD + import/export,
+the per-user connection substrate, and one `rest-delegated` provider (Asana in
+the deployment, a fixture vendor in CI) end to end. The decision letters below
+amended as the operator ratified during that work; every rider is also
+enumerated in the initiative's `clarifications.md` §Architecture-session
+amendments, which is the cross-referenced record. They are restated here
+because this ADR is where a reader checks what the decision actually says now.
+
+1. **The connect UX is a platform popup, not an in-page shim interstitial**
+   (decision 8, Q7). The platform renders the consent flow in a popup window —
+   pre-vendor gates, terminal pages, and the completion page — and the
+   documented `window.helix.connect` helper *opens* it. No UI is injected into
+   app documents.
+2. **Egress gains seal-and-persist for refresh** (decision 7's custody split,
+   Q6). The portal seals at connect; egress seals rotated material at renewal.
+   Both ride the same `SecretStore` seam and the same egress-only read
+   posture.
+3. **Catalog writes are admin-direct and audited; the privilege change rides
+   the approval queue** (decision 5, Q14). Adding an origin or a provider
+   binding to a manifest is still classified high-risk; editing the catalog
+   row itself is an admin write, not an approval request.
+4. **Two editors means form + import/export** (decision 4, Q13). The JSON
+   export/import document *is* the text backstop — no raw-YAML editor, no
+   second editor surface to keep parse-compatible.
+5. **A fifth deviation from the design session:** the connect helper ships
+   inside the opt-in, first-class shim capability (`capabilities.shim:
+   {fetch, connect}`, with `fetch.shim` accepted as a legacy alias normalized
+   on parse) rather than being injected for every provider-bound app. The
+   platform does not inject JavaScript unbidden; opting in is a manifest
+   grant.
+6. **The pending-flow row is written by the control plane, not the edge**
+   (Q5's letter amended). A start consult over one internal edge→portal seam
+   is what the edge calls; the edge gains **zero** new database grants.
+7. **Egress is the sole sealer, opener, and destroyer of user-delegated token
+   material** (Q6's letter amended). The portal never handles plaintext
+   delegated tokens; it seals only provider client credentials.
+8. **Client credentials live as sealed material on the env-partitioned
+   provider row**, not in env-agnostic platform-scoped `app_secrets` rows
+   (decision 9's storage letter narrowed; I-02 ADR-0006). Env binding is
+   structural — row env + env-literal RLS — not resolver discipline. The
+   platform-scoped `app_secrets` path stays exactly as it is (LLM keys); no
+   provider credential may route through it.
+9. **The OAuth client's network leg rides the mechanism plane** (decision 10's
+   letter narrowed; I-02 ADR-0001). The fixed callback, the control-plane
+   client registration, and control-plane orchestration all hold; but every
+   server-side vendor OAuth call — code exchange and refresh — originates in
+   `helix-egress`, so the portal never makes a vendor call and provider
+   onboarding stays purely runtime.
+10. **The manifest binding widens by a strict-parsed `provider` sibling, not
+    by widening `connection` in place** (decision 1's binding-widening letter
+    narrowed; I-02 ADR-0005). The instruction and manifest origin schemas
+    became **strict** at the same time, so a future widening fails closed at
+    an older plane instead of being silently stripped. Roll order is
+    consumers-before-producers: egress, then portal, then edge — a
+    deployment discipline recorded in the runbook
+    ([connection-provider-rollout](../runbooks/connection-provider-rollout.md)).
+11. **"Readable only by `helix_egress`" takes ADR-0006's precise form**
+    (decision 7's letter narrowed; I-02 ADR-0006): egress alone opens and
+    destroys delegated material, while the portal reads and writes the rows
+    (list, revoke, callback CAS, invalidation) without plaintext access. The
+    edge has no grant on any of the three new tables.
+12. **Connect-race losers retire through the in-row ledger and the egress
+    sweep, not a portal-side release** (Q23's rider; I-02 ADR-0008). Within
+    criterion 47's 15-minute bound the losing attempt's sealed material is
+    destroyed — the portal cannot destroy delegated material, so the
+    observable contract ("no orphans") is met by the sweep rather than a
+    synchronous release.
+13. **A resubmit re-stamps a stale binding** (T-0009/T-0028's recovery path,
+    made mechanical). A sensitive edit's revision bump stale-dates every
+    approved binding for that ref, and the classifier's value-diff cannot see
+    an unchanged origin to re-file it — so the write-gate itself re-elevates
+    any still-requested binding whose approved stamps are all stale, filing it
+    as a fresh stamped add for admin approval. The recovery for the
+    "Reapproval needed" badge is the save the badge already asks for; a
+    binding whose stamps are current still classifies as nothing (a resave
+    stays a no-op), and a removed binding is never re-elevated. The shared
+    classifier stays stamp-blind — staleness is approval domain, read from
+    `approval_requests` inside the gate's transaction.
+
+Decision 6's LISTEN/NOTIFY letter is unchanged; one consequence is fixed by
+implementation: egress is the **only** listener of the provider-change channel
+— the edge holds no provider configuration at all (I-02 ADR-0011). The
+deferred cache-sizing re-check (decision 16's residual) and the
+seal→write retirement residual are tracked in [`TODO.md`](../../TODO.md).
 
 ## Context
 

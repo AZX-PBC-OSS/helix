@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
 import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
+import type { ProxiedOriginCredential } from "../registry/projection.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import { until, withServer } from "../test/socket.js";
 import {
@@ -127,7 +128,7 @@ interface FetchEdge {
 
 function buildFetchEdge(
   opts: {
-    connections?: Map<string, string | null>;
+    connections?: Map<string, ProxiedOriginCredential>;
     requestsPerDay?: number | null;
     withEgress?: boolean;
     maxBodyBytes?: number;
@@ -137,9 +138,9 @@ function buildFetchEdge(
   const usage = new FakeUsageStore();
   const connections =
     opts.connections ??
-    new Map<string, string | null>([
-      ["https://api.github.com", null],
-      ["https://api.stripe.com", "stripe"],
+    new Map<string, ProxiedOriginCredential>([
+      ["https://api.github.com", { kind: "keyless" }],
+      ["https://api.stripe.com", { kind: "secret", connection: "stripe" }],
     ]);
   const app = buildApp({
     config: testEdgeConfig({
@@ -192,6 +193,10 @@ describe("/_api/fetch", () => {
     expect(claims.origin).toBe("https://api.github.com");
     expect(claims.connection).toBeUndefined();
     expect(claims.userOid).toBe("anon");
+    // Regression (T-0023): a keyless call is not delegated — no provider ref
+    // and no caller kind rides it, so the minted payload is unchanged.
+    expect(claims.provider).toBeUndefined();
+    expect(claims.userKind).toBeUndefined();
     // Instruction carries the aud + one-time jti (== requestId) egress asserts.
     expect(claims.aud).toBe(INSTRUCTION_AUDIENCE);
     expect(claims.jti).toBe(claims.requestId);
@@ -216,8 +221,144 @@ describe("/_api/fetch", () => {
       headers: { ...HOST, origin: ORIGIN },
     });
     expect(res.statusCode).toBe(200);
-    expect((await decode(egress.calls[0]!.instruction)).connection).toBe("stripe");
+    const claims = await decode(egress.calls[0]!.instruction);
+    expect(claims.connection).toBe("stripe");
+    // Regression (T-0023): a secret-backed call is not delegated — no provider
+    // ref and no caller kind rides it, so the minted payload is unchanged.
+    expect(claims.provider).toBeUndefined();
+    expect(claims.userKind).toBeUndefined();
     await app.close();
+  });
+
+  /**
+   * Delegated origins (I-02 T-0023): a provider-bound origin passes the same
+   * allowlist gate a secret-bound one does — the gate ORDER is unchanged — and
+   * the minted instruction carries the provider ref (never a connection name)
+   * plus the caller's principal kind, which T-0022 makes mandatory on a
+   * delegated instruction. The egress outcome vocabulary's delegated words
+   * ledger per design.md decision 13.
+   */
+  describe("delegated origins", () => {
+    /** One provider-bound origin, as an approved binding projects it. */
+    function delegatedConnections(): Map<string, ProxiedOriginCredential> {
+      return new Map([
+        ["https://api.github.com", { kind: "provider", provider: "github-app", required: false }],
+        ["https://api.stripe.com", { kind: "secret", connection: "stripe" }],
+      ]);
+    }
+
+    it("mints a delegated instruction carrying the provider ref and no connection name", async () => {
+      const { app, egress, usage } = buildFetchEdge({ connections: delegatedConnections() });
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/fetch/https://api.github.com/users/octocat",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(egress.calls).toHaveLength(1);
+      const claims = await decode(egress.calls[0]!.instruction);
+      expect(claims.provider).toBe("github-app");
+      // Exactly one credential source rides (ADR-0005's XOR) — and the edge
+      // holds no secret for this origin to name anyway.
+      expect(claims.connection).toBeUndefined();
+      // T-0022: the caller's kind is mandatory on a delegated instruction.
+      // This caller is the public app's anonymous visitor — egress refuses it
+      // BY KIND (Q9), so the edge must attest `anon`, never leave egress to
+      // infer it from userOid's shape.
+      expect(claims.userKind).toBe("anon");
+      expect(claims.userOid).toBe("anon");
+      // Delegated calls ride the existing metering and identity attribution
+      // unchanged (Q15) — no new user-dimension machinery.
+      expect(usage.records).toContainEqual(
+        expect.objectContaining({
+          capability: "fetch",
+          model: "https://api.github.com",
+          outcome: "ok",
+          userOid: "anon",
+          userKind: "anon",
+        }),
+      );
+      await app.close();
+    });
+
+    it("refuses an unapproved binding by the existing forbidden path", async () => {
+      // An unapproved binding never reaches the projection's grant map — the
+      // portal's approval chain gates the manifest before it becomes effective
+      // (ADR-0004: the edge never evaluates provider state; approval/binding
+      // presence is all it sees, never liveness). The origin is simply not a
+      // proxied origin here, so exactly the non-granted path answers.
+      const { app, egress, usage } = buildFetchEdge({ connections: delegatedConnections() });
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/fetch/https://api.notion.com/v1/users",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().code).toBe("forbidden");
+      expect(egress.calls).toHaveLength(0);
+      expect(usage.records).toContainEqual(
+        expect.objectContaining({
+          capability: "fetch",
+          model: "https://api.notion.com",
+          outcome: "forbidden",
+          statusCode: 403,
+        }),
+      );
+      await app.close();
+    });
+
+    it("ledgers an egress connection_required under its own label, consuming budget", async () => {
+      // Criterion 50: "user not connected" must stay distinguishable from
+      // policy refusal in the metered record. The row also consumes the daily
+      // fetch budget (fetchRequestsToday excludes only the pre-egress
+      // refusals) — asserted here so the choice cannot silently flip.
+      const { app, egress, usage } = buildFetchEdge({ connections: delegatedConnections() });
+      egress.outcome = "connection_required";
+      egress.status = 403;
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/fetch/https://api.github.com/users/octocat",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      expect(res.statusCode).toBe(403);
+      const record = usage.records.find((r) => r.capability === "fetch");
+      expect(record?.outcome).toBe("connection_required");
+      expect(record?.outcome).not.toBe("refusal");
+      expect(await usage.fetchRequestsToday()).toBe(1);
+      await app.close();
+    });
+
+    it("ledgers provider-shaped refusals as refusal and temporary failure as error", async () => {
+      // design.md decision 13's granularity: only `connection_required` gets a
+      // label of its own; `provider_unavailable` / `provider_misconfigured`
+      // meter as `refusal`; a temporary failure meters as `error`.
+      const { app, egress, usage } = buildFetchEdge({ connections: delegatedConnections() });
+      const call = () =>
+        app.inject({
+          method: "GET",
+          url: "/_api/fetch/https://api.github.com/users/octocat",
+          headers: { ...HOST, origin: ORIGIN },
+        });
+      const outcomeOf = () => usage.records.filter((r) => r.capability === "fetch").at(-1)?.outcome;
+
+      egress.outcome = "provider_unavailable";
+      egress.status = 503;
+      expect((await call()).statusCode).toBe(503);
+      expect(outcomeOf()).toBe("refusal");
+
+      egress.outcome = "provider_misconfigured";
+      egress.status = 502;
+      expect((await call()).statusCode).toBe(502);
+      expect(outcomeOf()).toBe("refusal");
+
+      // The delegated temporary-failure shape: egress fails the call as its
+      // existing upstream_error class (502, outcome `error`).
+      egress.outcome = "error";
+      egress.status = 502;
+      expect((await call()).statusCode).toBe(502);
+      expect(outcomeOf()).toBe("error");
+      await app.close();
+    });
   });
 
   it("preserves path and query in the forwarded target", async () => {
