@@ -762,7 +762,33 @@ export class LaneWorld {
     });
 
     const sessionCookie = await this.seedSession(appId);
-    await this.waitForRegistry(slug);
+
+    // The specs consume two NOTIFY-driven projections, and both can lag the
+    // fixture on a loaded runner (the 2-core CI box): the edge's registry
+    // entry must carry the shim.connect grant (the served page injects the
+    // connect helper from it — a page served before the grant NEVER gains it,
+    // so the spec burns its whole timeout) and the bound fetch origin (the
+    // delegated call's allowlist); egress's provider cache must hold the
+    // seeded row (the exchange resolves against it). Wait for all three.
+    // 15s, not the 10s poll default: the caches' reconcile intervals (60s
+    // edge / 5s egress) must not be what a slow runner waits out.
+    await this.pollUntil(
+      async () => {
+        const entry = this.#registry?.getApp(slug);
+        return entry !== undefined &&
+          entry.shim?.connect === true &&
+          entry.fetch.connections.has(opts.vendor.issuer)
+          ? true
+          : null;
+      },
+      "the edge's registry projection carrying the shim grant + bound origin",
+      15_000,
+    );
+    await this.pollUntil(
+      async () => (this.#providers?.get(providerId)?.revision ?? null) !== null,
+      "egress's provider cache catching up to the seeded provider",
+      15_000,
+    );
     return {
       slug,
       appId,
