@@ -15,12 +15,6 @@ Legend for gating conditions:
 
 ---
 
-## Blocking `feat/oauth-connections`
-
-- [ ] **A manifest resubmit cannot re-stamp a stale provider binding — the documented recovery path doesn't exist.** When a sensitive provider edit bumps the row's revision (ADR-0004), every approved app binding for that ref goes stale (`isProviderBindingEffective` → false): the consult answers `not_available` ("Connection not available"), and the SPA shows a reapproval-needed badge telling the owner to "resubmit by saving the manifest again" (T-0028). But `classifyChange` diffs fetch origins by `fetchOriginKey` (`packages/shared/src/approval.ts`), so an unchanged binding produces **no delta**, files **no approval request**, and the stale `providerStamps` (frozen at the original approval) are never refreshed — the binding is stuck ineffective with no API path out. Reproduced 2026-09-25 (asana-report × the `asana` provider): sensitive provider edit → PUT the manifest unchanged → `{pending: null}`, binding still `effective: false`. The workaround that works — remove the origin, save, re-add it, approve the fresh request — is a two-PUT dance the SPA must not have to encode. Fix shape: the write-gate re-elevates a provider-bound origin whose stamps are all stale (treats it as an add), or effectiveness reads the latest approval rather than a frozen revision. — ADR-0004, ADR-0031, T-0009/T-0028
-
----
-
 ## Dependency-minimal edge — filed defects
 
 - [ ] _(Consider)_ **Trim `openid-client` to a JWKS-only verifier.** Heaviest trusted-path dependency. — ADR-0003

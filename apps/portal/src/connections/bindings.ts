@@ -15,7 +15,10 @@ import type { PrismaClient } from "../db/client.js";
  * behind the SPA's Reapproval-needed badge. A stored manifest declaring a
  * provider binding that is no longer effective (the provider was deleted, or
  * a sensitive edit stale-dated the filing stamp) reports `effective: false`
- * here; the owner resubmits by saving the manifest again.
+ * here; the owner resubmits by saving the manifest again — which, since the
+ * T-0009 re-stamp amendment, mechanically files the recovery: the write-gate
+ * re-elevates a stale binding on any save that still requests it
+ * (`approvals/service.ts`).
  *
  * The comparison is T-0009's {@link isProviderBindingEffective} — the one
  * definition, consumed exactly as the consent consult consumes it
@@ -68,8 +71,18 @@ export async function manifestWithBindings(
   return { ...manifest, ...(bindings.length > 0 ? { providerBindings: bindings } : {}) };
 }
 
-async function providerBindingStatuses(
-  prisma: PrismaClient,
+/**
+ * Per-binding effectiveness for one capabilities blob — exported because the
+ * write-gate's re-stamp rule (the T-0009 amendment) asks the SAME question of
+ * the REQUESTED capabilities on every manifest PUT: a provider-bound origin
+ * whose approved stamps are all stale re-elevates on resubmit, which is the
+ * only recovery path the sensitive-edit invalidation leaves open. The client
+ * is narrowed to the two delegates the reads need so a transaction client
+ * (the write-gate calls this inside its own transaction, against the state
+ * that transaction just read) satisfies the same signature.
+ */
+export async function providerBindingStatuses(
+  prisma: Pick<PrismaClient, "connectionProvider" | "approvalRequest">,
   appId: string,
   capabilities: Capabilities,
 ): Promise<ProviderBindingStatus[]> {

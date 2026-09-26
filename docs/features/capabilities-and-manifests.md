@@ -124,6 +124,13 @@ SPA's pre-submit warning never drift:
 | offline | giving up the grant | taking it, or moving the scope | med |
 | visibility | internal / group / password | **→ public** | high |
 
+One rule the value-diff cannot express, added with provider bindings
+([connection-providers.md](./connection-providers.md)): a binding whose
+approved stamps were stale-dated by a sensitive provider edit **re-elevates on
+resubmit** even though the value is unchanged — the write-gate re-files it as a
+fresh stamped add, since "save the manifest to resubmit" is the only recovery
+the badge offers and a pure value-diff would classify that save as empty.
+
 **Advertised ≠ curated.** An operator can narrow what the deployment *offers* — the catalogue,
 rendered skill, and SPA model picker — with `PORTAL_LLM_MODEL_ALLOWLIST` / `PORTAL_LLM_MODEL_BLOCKLIST`
 (ADR-0047; on `deployFoundry` installs the Bicep derives the allowlist from `foundryModels`

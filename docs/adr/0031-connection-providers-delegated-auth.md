@@ -78,6 +78,17 @@ because this ADR is where a reader checks what the decision actually says now.
     destroyed — the portal cannot destroy delegated material, so the
     observable contract ("no orphans") is met by the sweep rather than a
     synchronous release.
+13. **A resubmit re-stamps a stale binding** (T-0009/T-0028's recovery path,
+    made mechanical). A sensitive edit's revision bump stale-dates every
+    approved binding for that ref, and the classifier's value-diff cannot see
+    an unchanged origin to re-file it — so the write-gate itself re-elevates
+    any still-requested binding whose approved stamps are all stale, filing it
+    as a fresh stamped add for admin approval. The recovery for the
+    "Reapproval needed" badge is the save the badge already asks for; a
+    binding whose stamps are current still classifies as nothing (a resave
+    stays a no-op), and a removed binding is never re-elevated. The shared
+    classifier stays stamp-blind — staleness is approval domain, read from
+    `approval_requests` inside the gate's transaction.
 
 Decision 6's LISTEN/NOTIFY letter is unchanged; one consequence is fixed by
 implementation: egress is the **only** listener of the provider-change channel

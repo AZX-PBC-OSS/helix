@@ -3,6 +3,8 @@ import {
   captureSnapshot,
   CapabilitiesSchema,
   classifyChange,
+  fetchOriginKey,
+  maxRisk,
   parseFetchOriginKey,
   touchedAreas,
   type Capabilities,
@@ -17,7 +19,7 @@ import {
   type PrismaClient,
 } from "../db/client.js";
 import { capabilitiesFromRow, toManifest } from "../db/mappers.js";
-import { manifestWithBindings } from "../connections/bindings.js";
+import { manifestWithBindings, providerBindingStatuses } from "../connections/bindings.js";
 import { AppError } from "../plugins/errors.js";
 import { casPolicyWrite } from "../policy/policyWrite.js";
 
@@ -241,6 +243,54 @@ async function stampElevatedDeltas(tx: Tx, deltas: Delta[], publicApp: boolean):
 }
 
 /**
+ * The re-stamp rule (T-0009's amendment): a provider-bound origin the request
+ * still declares but whose approved stamps are ALL stale re-elevates **even
+ * though the value is unchanged**. This is the recovery path the sensitive-edit
+ * invalidation (ADR-0004's revision bump) leaves open — without it, a stale
+ * binding ("Connection not available" at consult, the SPA's Reapproval-needed
+ * badge) could never be repaired: the classifier diffs by `fetchOriginKey`, so
+ * an unchanged binding produces no delta, files no request, and no fresh stamp
+ * is ever filed. The resubmit IS the re-blessing: the owner re-asserts the
+ * binding against the provider's new revision, and an administrator approves
+ * the re-add exactly like a first grant (same high-risk class — the provider's
+ * new configuration is what gets blessed).
+ *
+ * Bindings the classifier already delta'd (a changed origin key — the normal
+ * add path) are skipped: those deltas were stamped at classification. Removed
+ * bindings never appear in the requested state and are never re-elevated —
+ * dropping a grant stays baseline and immediate.
+ *
+ * Returns the synthesized deltas, empty when every requested binding is
+ * effective (the common resave — a no-op save must not queue requests).
+ */
+async function restampStaleBindings(
+  tx: Tx,
+  appId: string,
+  requested: Capabilities,
+  classified: Delta[],
+): Promise<Delta[]> {
+  const bound = (requested.fetch?.origins ?? []).filter((o) => o.provider !== undefined);
+  if (bound.length === 0) return [];
+
+  // Only synthesize what the classifier did not already emit as an add —
+  // those carry fresh stamps from `stampElevatedDeltas` down-stream.
+  const classifiedAdds = new Set(
+    classified.filter((d) => d.path.startsWith("fetch.origins[+")).map((d) => d.path),
+  );
+  const candidates = bound.filter((o) => {
+    const key = `fetch.origins[+${fetchOriginKey(o)}]`;
+    return !classifiedAdds.has(key);
+  });
+  if (candidates.length === 0) return [];
+
+  const statuses = await providerBindingStatuses(tx, appId, requested);
+  const stale = new Set(statuses.filter((s) => !s.effective).map((s) => s.origin));
+  return candidates
+    .filter((o) => stale.has(o.origin))
+    .map((o) => ({ path: `fetch.origins[+${fetchOriginKey(o)}]`, to: fetchOriginKey(o) }));
+}
+
+/**
  * The capability write-gate (docs/design/approvals.md §3): split a requested
  * capability change into baseline deltas (committed now) and elevated deltas
  * (bundled into one pending request), in a single transaction. Shared by the
@@ -251,6 +301,9 @@ async function stampElevatedDeltas(tx: Tx, deltas: Delta[], publicApp: boolean):
  * binding whose origin the provider does not serve refuses the whole save), and
  * the elevated bundle is stamped at filing ({@link stampElevatedDeltas} — the
  * provider stamps and the app's visibility, both read inside this transaction).
+ * The re-stamp amendment: a binding whose stamps went stale (a sensitive
+ * provider edit's revision bump) re-elevates on resubmit via
+ * {@link restampStaleBindings} — the one recovery path the invalidation leaves.
  *
  * `mutate` receives the effective capabilities **as read inside the transaction**,
  * which is what makes a relative change (the origin grant's array append) land on
@@ -277,7 +330,17 @@ export async function applyCapabilityChange(
     // Refuse an invalid binding before classifying or writing anything: no
     // baseline commit, no request.
     await validateProviderBindings(tx, requested);
-    const { baselineDeltas, elevatedDeltas, risk } = classifyChange(effective, requested);
+    const {
+      baselineDeltas,
+      elevatedDeltas,
+      risk: classifiedRisk,
+    } = classifyChange(effective, requested);
+    // The re-stamp amendment: a still-requested binding whose approved stamps
+    // went stale re-elevates on resubmit — the recovery path the sensitive-edit
+    // invalidation leaves open (see restampStaleBindings).
+    const restampedDeltas = await restampStaleBindings(tx, row.id, requested, elevatedDeltas);
+    const elevated = [...elevatedDeltas, ...restampedDeltas];
+    const risk = restampedDeltas.length > 0 ? maxRisk([classifiedRisk, "high"]) : classifiedRisk;
     // Apply only the baseline deltas now; elevated ones wait for approval.
     const applied = applyDeltas(effective, baselineDeltas);
 
@@ -300,20 +363,16 @@ export async function applyCapabilityChange(
       });
     }
     let pending: string | null = null;
-    if (elevatedDeltas.length > 0) {
+    if (elevated.length > 0) {
       // Stamp at filing, inside the txn that reads the visibility and the
       // provider rows — the stamps must describe the state the filer saw.
-      const stamped = await stampElevatedDeltas(
-        tx,
-        elevatedDeltas,
-        row.visibilityMode === "public",
-      );
+      const stamped = await stampElevatedDeltas(tx, elevated, row.visibilityMode === "public");
       // Snapshot the post-baseline state of the touched areas so a later approve
       // can detect a value that moved underneath the request.
       const baseSnapshot = captureSnapshot(
         applied,
         { mode: row.visibilityMode, groupIds: row.visibilityGroupIds },
-        touchedAreas(elevatedDeltas),
+        touchedAreas(elevated),
       );
       pending = await createApprovalRequest(tx, {
         appId: row.id,

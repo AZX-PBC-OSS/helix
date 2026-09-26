@@ -1272,6 +1272,51 @@ describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => 
     const restart = await prodStart(f.slug, f.ref, sessionCookie);
     expect(restart.status).toBe(200);
     expect(restart.body).toContain("Connection not available");
+
+    // The recovery (the re-stamp amendment): the owner resubmits the manifest —
+    // the SPA's "save to resubmit" is an unchanged PUT — and the write-gate
+    // re-elevates the stale binding, filing a fresh stamp against the edit's
+    // revision.
+    const manifest = await portalApi("GET", `/api/v1/apps/${f.slug}/manifest`, "owner");
+    expect(manifest.statusCode).toBe(200);
+    const resubmit = await portalApi("PUT", `/api/v1/apps/${f.slug}/manifest`, "owner", {
+      capabilities: manifest.body.capabilities,
+    });
+    expect(resubmit.statusCode).toBe(200);
+    const resubmitId = resubmit.body.pending as string | null;
+    expect(resubmitId).toBeTruthy();
+
+    // The re-blessing is an administrator's, like the first grant.
+    const approved = await portalApi(
+      "POST",
+      `/api/v1/approvals/${resubmitId}/approve`,
+      "admin",
+      {},
+    );
+    expect(approved.statusCode).toBe(200);
+
+    // Egress's provider cache is NOTIFY-driven with a reconcile cadence — the
+    // same eventual consistency the edge's registry projection has. The new
+    // attempt will stamp the edit's revision, so wait for the cache to hold it
+    // (an exchange against the stale cache answers provider_unavailable).
+    await pollUntil(
+      async () =>
+        providers.get(providerIdOf(f, "prod"))?.revision === f.providerRevision + 1 ? true : null,
+      "egress's provider cache catching up to the edited revision",
+    );
+
+    // And the binding serves again: the start consults effective stamps and
+    // hands the popup to the vendor, whose consent (already granted earlier in
+    // this flow) re-establishes the connection the edit killed.
+    const recovered = await prodStart(f.slug, f.ref, sessionCookie);
+    expect(recovered.status).toBe(302);
+    const recoveredRedirect = await vendorAuthorize(recovered.location as string);
+    const recoveredDone = await callbackThroughEdge(recoveredRedirect);
+    expect(recoveredDone.status, recoveredDone.body).toBe(200);
+    expect(recoveredDone.body).toContain('"outcome":"connected"');
+    expect(
+      await portal.prisma.userConnection.count({ where: { providerId: providerIdOf(f, "prod") } }),
+    ).toBe(1);
   }, 30_000);
 
   it("a sensitive edit kills the live connection, and deletion makes later calls report provider unavailability", async () => {

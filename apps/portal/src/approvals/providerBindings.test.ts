@@ -325,3 +325,118 @@ describe("the apply-time provider conflict (criterion 18)", () => {
     expect(await manifestOrigins(slug)).toEqual([]);
   });
 });
+
+describe("the re-stamp amendment (resubmitting a stale binding)", () => {
+  /** Approve a pending request as the admin. */
+  async function approve(requestId: string) {
+    return t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+  }
+
+  /** The manifest read's per-binding effectiveness (the SPA's badge data). */
+  async function bindingStatuses(
+    slug: string,
+  ): Promise<{ origin: string; ref: string; effective: boolean }[]> {
+    const manifest = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+    });
+    return manifest.json().providerBindings ?? [];
+  }
+
+  it("an unchanged resave of a stale binding re-elevates it: fresh stamp, high risk, approval repairs the binding", async () => {
+    const { slug } = await createApp();
+    const provider = await seedProvider(`pb-${randomUUID().slice(0, 8)}`);
+    const put = await putManifest(slug, [
+      { origin: "https://api.asana.com", provider: provider.ref },
+    ]);
+    const approved = await approve(put.json().pending as string);
+    expect(approved.statusCode).toBe(200);
+    expect(await bindingStatuses(slug)).toEqual([
+      { origin: "https://api.asana.com", ref: provider.ref, effective: true },
+    ]);
+
+    // The sensitive edit T-0010's route performs: the revision advances under
+    // the same identity, staling the landed binding (criterion 18's stamp).
+    await t.prisma.connectionProvider.update({
+      where: { id: provider.id },
+      data: { revision: 7 },
+    });
+    expect(await bindingStatuses(slug)).toEqual([
+      { origin: "https://api.asana.com", ref: provider.ref, effective: false },
+    ]);
+
+    // The SPA's "save the manifest to resubmit" — an UNCHANGED manifest PUT —
+    // must file the recovery: a pending request re-adding the binding against
+    // the new revision.
+    const resave = await putManifest(slug, [
+      { origin: "https://api.asana.com", provider: provider.ref },
+    ]);
+    expect(resave.statusCode).toBe(200);
+    const requestId = resave.json().pending;
+    expect(requestId).toBeTruthy();
+    const row = await requestRow(requestId);
+    expect(row.status).toBe("pending");
+    expect(row.risk).toBe("high");
+    const deltas = row.deltas as { path: string; providerStamps: unknown[] }[];
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]!.path).toBe(`fetch.origins[+https://api.asana.com→provider:${provider.ref}]`);
+    expect(deltas[0]!.providerStamps).toEqual([
+      { ref: provider.ref, env: "prod", providerId: provider.id, revision: 7 },
+    ]);
+
+    // The binding is not duplicated while the request pends: effective state
+    // still holds the origin exactly once.
+    expect(await manifestOrigins(slug)).toEqual([
+      { origin: "https://api.asana.com", provider: provider.ref },
+    ]);
+
+    // Approving the re-add applies idempotently — once, and effective again.
+    const repaired = await approve(requestId);
+    expect(repaired.statusCode).toBe(200);
+    expect(await manifestOrigins(slug)).toEqual([
+      { origin: "https://api.asana.com", provider: provider.ref },
+    ]);
+    expect(await bindingStatuses(slug)).toEqual([
+      { origin: "https://api.asana.com", ref: provider.ref, effective: true },
+    ]);
+  });
+
+  it("a resave whose bindings are all effective files nothing (a no-op save stays a no-op)", async () => {
+    const { slug } = await createApp();
+    const provider = await seedProvider(`pb-${randomUUID().slice(0, 8)}`);
+    const put = await putManifest(slug, [
+      { origin: "https://api.asana.com", provider: provider.ref },
+    ]);
+    expect((await approve(put.json().pending as string)).statusCode).toBe(200);
+
+    const resave = await putManifest(slug, [
+      { origin: "https://api.asana.com", provider: provider.ref },
+    ]);
+    expect(resave.statusCode).toBe(200);
+    expect(resave.json().pending).toBeNull();
+    expect(await t.prisma.approvalRequest.count({ where: { app: { slug } } })).toBe(1);
+  });
+
+  it("removing a stale binding stays baseline — the drop commits now and re-elevates nothing", async () => {
+    const { slug } = await createApp();
+    const provider = await seedProvider(`pb-${randomUUID().slice(0, 8)}`);
+    const put = await putManifest(slug, [
+      { origin: "https://api.asana.com", provider: provider.ref },
+    ]);
+    expect((await approve(put.json().pending as string)).statusCode).toBe(200);
+    await t.prisma.connectionProvider.update({
+      where: { id: provider.id },
+      data: { revision: 4 },
+    });
+
+    const dropped = await putManifest(slug, []);
+    expect(dropped.statusCode).toBe(200);
+    expect(dropped.json().pending).toBeNull();
+    expect(await manifestOrigins(slug)).toEqual([]);
+  });
+});

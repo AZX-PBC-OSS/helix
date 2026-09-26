@@ -151,11 +151,15 @@ un-deletes the row.
 ## Reapproval is owner-requested
 
 After a sensitive edit or a deletion, nothing re-approves automatically. The
-app owner resubmits by saving the manifest again, which opens a fresh approval
-request; an approval filed against a provider configuration that changed after
-filing is rejected with a conflict and must be resubmitted. There is no
-auto-reapproval queue — a privilege grant is re-granted by a person, on
-request (I-02 spec criterion 8).
+app owner resubmits by saving the manifest again: a save that still declares a
+binding whose stamps have all gone stale **re-elevates it** — the write-gate
+files it as a fresh, re-stamped (against the provider's current revision)
+high-risk add even though the value is unchanged, because the classifier's
+value-diff can no longer see it. An administrator approves the re-add like a
+first grant, and the binding is effective again. An approval filed against a
+provider configuration that changed after filing is rejected with a conflict
+and must be resubmitted. There is no auto-reapproval queue — a privilege grant
+is re-granted by a person, on request (I-02 spec criterion 8).
 
 ## Environments
 
