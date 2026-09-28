@@ -391,8 +391,12 @@ async function getReport(key: string): Promise<ReportRecord | null> {
   const res = await fetch(`/_api/data/shared/${key}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`reading ${key} failed (${res.status})`);
-  const parsed = (await res.json()) as Partial<ReportRecord>;
-  if (typeof parsed.markdown !== "string" || typeof parsed.projectName !== "string") return null;
+  // The gateway wraps the stored value: `{ key, value: <the record> }`.
+  const body = (await res.json()) as { value?: Partial<ReportRecord> } | null;
+  const parsed = body?.value;
+  if (!parsed || typeof parsed.markdown !== "string" || typeof parsed.projectName !== "string") {
+    return null;
+  }
   return parsed as ReportRecord;
 }
 
