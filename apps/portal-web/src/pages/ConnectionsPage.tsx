@@ -76,6 +76,7 @@ function ConnectionCard({
           leftSection={<Icon name="x" size={14} />}
           onClick={() => onDisconnect(connection)}
           disabled={busy}
+          style={{ flexShrink: 0 }}
         >
           Disconnect
         </Button>
