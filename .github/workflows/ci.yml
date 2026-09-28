@@ -42,13 +42,17 @@ name: CI
 # `bicep` is an independent lane — it shares no toolchain with the node stack,
 # gates nothing and is gated by nothing.
 #
-# `browser-lane` is the real-browser acceptance lane (I-02 T-0031): gated behind
-# `static` only (a type error in the lane would otherwise pay for the browser
-# install) and running CONCURRENTLY with `test` — it needs only Postgres as a
-# service, because the fixture vendor, the dev IdP and the portal/edge/egress
-# apps are booted in-process by the lane itself — and it is a GATE: `package`
-# and `images` wait on it, so a real-browser failure blocks the publish path.
-# It uploads its traces/screenshots on failure.
+# `browser-lane` is the real-browser acceptance lane (I-02 T-0031): it needs
+# only Postgres as a service (the fixture vendor, the dev IdP and the
+# portal/edge/egress apps are booted in-process by the lane itself) and starts
+# immediately, concurrent with `static` and `test`. No `needs`: nothing it
+# reads is produced by another job, and `static` is what catches lane type
+# errors (playwright transpiles, it does not typecheck) — gating the browser
+# install behind `static` would trade wall clock on every green run for a
+# fast-fail that only saves runner minutes, and runner minutes are free on a
+# public repo. It is still a GATE: `package` and `images` wait on it, so a
+# real-browser failure blocks the publish path. It uploads its
+# traces/screenshots on failure.
 
 on:
   push:
@@ -259,15 +263,15 @@ jobs:
     # in-process by the lane itself, so unlike `test` this job needs only
     # Postgres (no Azurite: the lane's edge reads its app page from an
     # in-memory blob double, and the fixture vendor/IdP are in-repo services
-    # the lane starts, not containers). It is a GATE, not a follow-up: it runs
-    # concurrently with `test` (behind `static` only — a type error in the
-    # lane would otherwise pay for the browser install), and `package`/`images`
-    # wait on it, so a lane failure blocks the publish path. The lane runs
+    # the lane starts, not containers). It is a GATE, not a follow-up: it
+    # starts with the other jobs (no `needs` — the browser install costs only
+    # free runner minutes, and `static` catches lane type errors in parallel),
+    # and `package`/`images` wait on it, so a lane failure blocks the publish
+    # path. The lane runs
     # headed under Xvfb (its config explains why — the popup blocker never
     # fires under CDP headless defaults), which is the standard headed-CI
     # shape; xvfb-run + xauth ship on the runner image, and playwright's
     # --with-deps covers the rest.
-    needs: [static]
     timeout-minutes: 15
 
     services:
