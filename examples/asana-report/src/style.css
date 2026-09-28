@@ -13,6 +13,12 @@
   box-sizing: border-box;
 }
 
+/* Author `display` (e.g. .connect-row's flex) otherwise defeats the UA's
+   [hidden] rule — the panel would stay visible after connecting. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -82,6 +88,18 @@ header h1 {
 .connect-row p {
   margin: 0;
   color: var(--ink);
+}
+
+/* The healthy state — a small confirmation banner, no CTA. */
+.connect-row.connected {
+  background: #eef6ee;
+  border-color: #c3e0c6;
+}
+
+/* The binding isn't effective — informational, no CTA, owner/admin fix. */
+.connect-row.blocked {
+  background: #f4f3f2;
+  border-color: var(--line);
 }
 
 button,

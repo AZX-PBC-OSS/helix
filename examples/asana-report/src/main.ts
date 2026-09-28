@@ -6,7 +6,9 @@ import "./style.css";
  * Three capabilities cooperate:
  *   - **Delegated connection** — `window.helix.connect("asana")` consents inside
  *     a user gesture; provider-bound calls through `/_api/fetch` get the user's
- *     access token injected server-side (the app never sees it).
+ *     access token injected server-side (the app never sees it). The boot-time
+ *     `GET /_api/connections/:ref/status` read decides which panel to show —
+ *     a connected banner or a Connect CTA — without firing a wasted API call.
  *   - **LLM gateway** — `POST /_api/llm/chat` streams a report from the
  *     activity digest; the model allowlist lives in the manifest.
  *   - **Shared app-data** — finished reports land at `report:<ts>-<rand>` keys,
@@ -533,6 +535,27 @@ function setStatus(text: string): void {
 }
 
 function showConnectRow(message: string): void {
+  connectRow.classList.remove("connected", "blocked");
+  connectBtn.hidden = false;
+  connectStatus.textContent = message;
+  connectRow.hidden = false;
+}
+
+/** The healthy state: one small banner, no CTA — the connection is live. */
+function showConnectedBanner(): void {
+  connectRow.classList.add("connected");
+  connectRow.classList.remove("blocked");
+  connectBtn.hidden = true;
+  connectStatus.textContent = "Asana connected — pick a workspace and a project to generate.";
+  connectRow.hidden = false;
+}
+
+/** The app's binding is not effective — a Connect CTA would only fail, so it
+ * stays hidden: an owner or administrator has to fix the app first. */
+function showBlockedRow(message: string): void {
+  connectRow.classList.add("blocked");
+  connectRow.classList.remove("connected");
+  connectBtn.hidden = true;
   connectStatus.textContent = message;
   connectRow.hidden = false;
 }
@@ -571,8 +594,47 @@ tabReports.addEventListener("click", () => selectTab("reports"));
 /**
  * A generation paused on `connection_required` resumes here after the consent
  * popup completes — the retry is the app's decision, never the platform's.
+ * The paused selection rides along: refreshing the pickers after consent
+ * resets the selects, so the resume re-selects what the user had picked.
  */
-let pendingResume = false;
+let pendingResume: { wspGid: string; projGid: string } | null = null;
+
+/**
+ * The boot-time connection check — the platform's read-only status route
+ * (ADR-0031 as amended). It answers Helix's own row state with no vendor
+ * call, so the app shows the right panel without a wasted 403 probe.
+ */
+async function connectionState(): Promise<
+  "connected" | "not_connected" | "not_available" | "signed_out" | "unknown"
+> {
+  try {
+    const res = await fetch(`/_api/connections/${PROVIDER_REF}/status`);
+    if (res.status === 401) return "signed_out";
+    if (!res.ok) return "unknown";
+    const body = (await res.json()) as { status?: string };
+    if (
+      body.status === "connected" ||
+      body.status === "not_connected" ||
+      body.status === "not_available"
+    ) {
+      return body.status;
+    }
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * The consent popup finished (or boot found the connection live): invalidate
+ * the picker caches and reload, so the app becomes usable in place — no page
+ * reload, no stale "unavailable" selects.
+ */
+async function refreshAfterConnect(): Promise<void> {
+  projects.clear();
+  workspaces.length = 0;
+  await loadWorkspaces();
+}
 
 async function doConnect(): Promise<void> {
   connectBtn.disabled = true;
@@ -587,10 +649,14 @@ async function doConnect(): Promise<void> {
     switch (result.outcome) {
       case "connected":
       case "already_connected": {
-        connectRow.hidden = true;
+        showConnectedBanner();
         connectBtn.disabled = false;
+        await refreshAfterConnect();
         if (pendingResume) {
-          pendingResume = false;
+          const { wspGid, projGid } = pendingResume;
+          pendingResume = null;
+          if (workspaces.some((w) => w.gid === wspGid)) wspSel.value = wspGid;
+          if (projects.get(wspSel.value)?.some((p) => p.gid === projGid)) projSel.value = projGid;
           void runGeneration();
         }
         return;
@@ -650,7 +716,7 @@ async function loadWorkspaces(): Promise<void> {
         : String(err instanceof Error ? err.message : err),
     );
     showConnectRow("Connect your Asana account to pick a project — reading saved reports needs no connection.");
-    if (err instanceof ConnectionRequired) pendingResume = false;
+    if (err instanceof ConnectionRequired) pendingResume = null;
   } finally {
     wspSel.disabled = false;
   }
@@ -759,7 +825,7 @@ async function runGeneration(): Promise<void> {
     setStatus("Report saved — find it under Reports (readable by anyone with app access).");
   } catch (err) {
     if (err instanceof ConnectionRequired) {
-      pendingResume = true;
+      pendingResume = { wspGid: wspSel.value, projGid: projSel.value };
       showConnectRow(
         "Your Asana connection is needed to read this project's activity — connect, and the report resumes automatically.",
       );
@@ -832,6 +898,56 @@ function initDates(): void {
   startInput.value = weekAgo.toISOString().slice(0, 10);
 }
 
+/** The pickers' resting state while no connection exists — honest about why. */
+function pickersResting(message: string): void {
+  wspSel.innerHTML = "";
+  const opt = document.createElement("option");
+  opt.value = "";
+  opt.textContent = message;
+  wspSel.append(opt);
+  projSel.innerHTML = `<option value="">—</option>`;
+  projSel.disabled = false;
+}
+
+/**
+ * The boot panel: one status read decides the connection state up front —
+ * connected (banner, pickers load), not_connected (CTA, pickers rest — no
+ * wasted probe), not_available (blocked banner — the binding needs an
+ * approval), signed_out (CTA with sign-in-first wording), or an unreadable
+ * status, which falls back to the lazy discovery path (a real call failing
+ * `connection_required`).
+ */
+async function initConnection(): Promise<void> {
+  const state = await connectionState();
+  switch (state) {
+    case "connected":
+      showConnectedBanner();
+      await loadWorkspaces();
+      return;
+    case "not_connected":
+      showConnectRow(
+        "Connect your Asana account to generate reports — a popup asks Asana for read access, and the platform stores the token server-side. Reading reports needs no connection.",
+      );
+      pickersResting("Connect Asana to list workspaces");
+      return;
+    case "not_available":
+      showBlockedRow(
+        "This app's Asana binding isn't active yet — the app's owner or an administrator has to fix that first. Reading saved reports still works.",
+      );
+      pickersResting("Unavailable until the binding is approved");
+      return;
+    case "signed_out":
+      showConnectRow(
+        "Sign in first — then connect Asana to generate reports. Reading saved reports needs no connection.",
+      );
+      pickersResting("Sign in to list workspaces");
+      return;
+    case "unknown":
+      await loadWorkspaces();
+      return;
+  }
+}
+
 initDates();
 void loadWhoami();
-void loadWorkspaces();
+void initConnection();

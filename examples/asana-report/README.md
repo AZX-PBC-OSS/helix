@@ -5,13 +5,18 @@ platform's three data capabilities at once:
 
 | Capability | Where |
 | ---------- | ----- |
-| **Delegated OAuth connections** (ADR-0031) | `window.helix.connect("asana")` consents inside a click; provider-bound `/_api/fetch` calls get the *user's* access token injected server-side |
+| **Delegated OAuth connections** (ADR-0031) | `window.helix.connect("asana")` consents inside a click; provider-bound `/_api/fetch` calls get the *user's* access token injected server-side; the boot-time status read (`GET /_api/connections/:ref/status`) picks the panel |
 | **LLM gateway** (`/_api/llm/chat`) | `gpt-5-nano` streams a markdown report from the activity digest — no key in the app |
 | **Shared app-data** (ADR-0042 prefix grants + the list verb) | reports land at `report:<ts>-<rand>` keys; `GET /_api/data/shared?prefix=report:` lists them |
 
 **Reading reports requires no Asana connection** — anyone who passes the app's gate can list
-and open them. Only *generating* needs the signed-in user's own connection, and when a
-generation hits `connection_required` the app offers Connect and resumes automatically.
+and open them. Only *generating* needs the signed-in user's own connection. At boot the app
+asks the platform's status read (no API call, no popup): a live connection shows a small
+"connected" banner, a missing one shows the Connect CTA, and an ineffective binding (never
+approved, or stale after a sensitive provider edit) shows a banner saying it's an owner/admin
+fix — a CTA would only fail. When a generation hits `connection_required` anyway (a token
+died mid-session), the app offers Connect and resumes the paused report; a completed connect
+collapses the CTA to the banner and reloads the workspace/project pickers in place.
 
 ## How it fetches activity
 
@@ -86,8 +91,9 @@ curl -fsS -X POST "http://localhost:3001/api/v1/approvals/$PENDING/approve" \
 Wait ~1 minute for the edge's registry projection to refresh, then open
 `https://asana-report.local.helix.azxlabs.io:8080`, sign in through the dev IdP, and:
 
-1. **Connect Asana** (only if you'll generate) — the popup goes to Asana's consent screen and
-   the callback completes on the auth host.
+1. **Connect Asana** (only if you'll generate) — the app shows the CTA when no connection
+   exists; the popup goes to Asana's consent screen, the callback completes on the auth host,
+   and the banner swaps to "connected" with the pickers loading in place.
 2. Pick a workspace, a project, and a date range → **Generate report** — the report streams
    in, then saves to shared storage.
 3. **Reports** tab — list and open every saved report; no connection required.
