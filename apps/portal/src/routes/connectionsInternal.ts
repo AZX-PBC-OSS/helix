@@ -3,16 +3,19 @@ import { z } from "zod";
 import {
   CancelRequestSchema,
   CancelResponseSchema,
+  ConnectionStatusRequestSchema,
+  ConnectionStatusResponseSchema,
   ConsultRequestSchema,
   ConsultResponseSchema,
   INTERNAL_AUTH_HEADER,
   type CancelRequest,
+  type ConnectionStatusRequest,
   type ConsultRequest,
 } from "@azx-pbc/shared";
 import type { SecretStore } from "@azx-pbc/secret-store";
 import { AppError } from "../plugins/errors.js";
 import { deriveInternalKey, resolveInternalSecret, verifyInternalToken } from "../internalJwt.js";
-import { cancelConsentAttempt, consultConsent } from "../connections/consent.js";
+import { cancelConsentAttempt, connectionStatus, consultConsent } from "../connections/consent.js";
 
 /**
  * The internal edge→portal consent seam (I-02 architecture ADR-0002 parts 1–2;
@@ -78,5 +81,12 @@ export async function connectionsInternalRoutes(app: FastifyInstance): Promise<v
   app.post("/internal/connections/cancel", { preHandler: auth }, async (req) => {
     const body = parseBody(CancelRequestSchema, req.body) as CancelRequest;
     return CancelResponseSchema.parse(await cancelConsentAttempt(app.prisma, body));
+  });
+
+  // The connection-status read (ADR-0031 as amended): read-only, no custody —
+  // deliberately the one status operation here that never touches the store.
+  app.post("/internal/connections/status", { preHandler: auth }, async (req) => {
+    const body = parseBody(ConnectionStatusRequestSchema, req.body) as ConnectionStatusRequest;
+    return ConnectionStatusResponseSchema.parse(await connectionStatus(app.prisma, body));
   });
 }

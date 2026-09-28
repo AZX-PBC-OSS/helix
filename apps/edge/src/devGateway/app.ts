@@ -20,6 +20,7 @@ import type { AppDataStore } from "../gateway/data.js";
 import { ROUTE_OPENAI } from "@azx-pbc/shared/telemetry";
 import { makeDevTokenResolver } from "./resolver.js";
 import { makeDevConsentStartHandler } from "./consentStart.js";
+import { makeDevConnectionStatusHandler } from "./connectionStatus.js";
 import type { DevTokenStore } from "./devTokenStore.js";
 import { deriveInternalKey } from "../internalJwt.js";
 import type { PortalProvider } from "../routing/portalProvider.js";
@@ -178,6 +179,17 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
   });
 
+  // ADR-0031 as amended: the dev tier's connection-status read — the same
+  // resolver seam, the same fail-closed runtime shape; no nonce (a status
+  // read writes nothing).
+  const handleDevConnectionStatus = makeDevConnectionStatusHandler({
+    config,
+    registry: deps.registry,
+    resolveCaller,
+    portal: deps.portal ?? null,
+    internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+  });
+
   // Reflect the resolver-validated origin on normal (non-hijacked) responses. The
   // LLM SSE path hijacks the socket and reflects it in its own writeHead instead.
   app.addHook("onSend", async (req, reply, payload) => {
@@ -278,6 +290,14 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     method: "POST",
     url: "/:slug/_api/connections/:ref/start",
     handler: (req, reply) => handleDevConsentStart(req, reply, slugOf(req)),
+  });
+
+  // ADR-0031 as amended: the dev tier's connection-status read — a GET JSON
+  // read under the same bearer + Origin-allowlist gate as the start POST.
+  app.route({
+    method: "GET",
+    url: "/:slug/_api/connections/:ref/status",
+    handler: (req, reply) => handleDevConnectionStatus(req, reply, slugOf(req)),
   });
 
   for (const [method, url, name] of DATA_ROUTES) {

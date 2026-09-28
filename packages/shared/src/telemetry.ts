@@ -95,10 +95,11 @@ export const ATTR_DEPLOY_FILE_COUNT = "helix.deploy.file_count";
 export const ATTR_DEPLOY_WARNING_COUNT = "helix.deploy.warning_count";
 /**
  * Which consent-flow operation a signal is about — `consult`, `cancel`,
- * `claim`, `sweep`, `redeem`, or `callback` (I-02 ADR-0002; `redeem` is the
- * dev journey's nonce redemption, T-0016; `callback` is the completion state
- * machine the vendor redirect lands in, T-0020). Bounded to those six; the
- * identity the operation is for is never a dimension.
+ * `claim`, `sweep`, `redeem`, `callback`, or `status` (I-02 ADR-0002; `redeem`
+ * is the dev journey's nonce redemption, T-0016; `callback` is the completion
+ * state machine the vendor redirect lands in, T-0020; `status` is the
+ * read-only connection-status read, ADR-0031 as amended). Bounded to those
+ * seven; the identity the operation is for is never a dimension.
  */
 export const ATTR_CONSENT_OPERATION = "helix.consent.operation";
 /** The provider `ref` a consent operation consults against — admin-chosen, ≤64 chars. */
@@ -141,6 +142,14 @@ export const SPAN_CONSENT_CALLBACK = "helix.consent.callback";
 export const SPAN_CONSENT_START = "helix.consent.start";
 export const SPAN_CONSENT_START_DEV = "helix.consent.start.dev";
 export const SPAN_CONSENT_REDEEM = "helix.consent.redeem";
+/** The app-facing connection-status read (ADR-0031 as amended) — the portal's
+ * read-only decision behind the edge's `.status.edge` / `.status.dev` routes. */
+export const SPAN_CONSENT_STATUS = "helix.consent.status";
+/** The prod edge route `GET /_api/connections/:ref/status`, which forwards to
+ * the portal's own `.status` span over the internal seam. */
+export const SPAN_CONSENT_STATUS_EDGE = "helix.consent.status.edge";
+/** The dev gateway's `GET /:slug/_api/connections/:ref/status`. */
+export const SPAN_CONSENT_STATUS_DEV = "helix.consent.status.dev";
 /** The edge's app-facing cancel-acknowledgement route (I-02 T-0017), which
  * forwards to the portal's own cancel span (above) over the internal seam. */
 export const SPAN_CONSENT_CANCEL_EDGE = "helix.consent.cancel.edge";
@@ -166,6 +175,8 @@ export const ROUTE_AUTH_COMPLETE = "/_auth/complete";
 export const ROUTE_CONNECTIONS = "/connections/*";
 export const ROUTE_CONSENT_START = "/_api/connections/:ref/start";
 export const ROUTE_CONSENT_START_DEV = "/:slug/_api/connections/:ref/start";
+export const ROUTE_CONSENT_STATUS = "/_api/connections/:ref/status";
+export const ROUTE_CONSENT_STATUS_DEV = "/:slug/_api/connections/:ref/status";
 export const ROUTE_CONSENT_CANCEL = "/_api/connections/attempt/cancel";
 export const ROUTE_CONNECTIONS_NONCE_ENTRY = "/connections/consent/start";
 export const ROUTE_CONNECTIONS_CALLBACK = "/connections/callback";
@@ -261,6 +272,7 @@ export const CONSENT_OPERATIONS = [
   "sweep",
   "redeem",
   "callback",
+  "status",
 ] as const;
 export type ConsentOperation = (typeof CONSENT_OPERATIONS)[number];
 export const CONSENT_CONSULT_OUTCOMES_TELEMETRY = [
@@ -359,6 +371,41 @@ export const CONSENT_START_DEV_OUTCOMES = [
   "error",
 ] as const;
 export type ConsentStartDevOutcome = (typeof CONSENT_START_DEV_OUTCOMES)[number];
+
+/**
+ * Why the app-facing connection-status read answered as it did (ADR-0031 as
+ * amended) — the `helix.outcome` values on the `helix.consent.status` /
+ * `.status.edge` spans. The three row-state words pass through from the
+ * portal's decision (`connected`, `not_connected`, `not_available` — the same
+ * collapse the delegated-call error table makes); the edge adds `unauthorized`
+ * (no usable session — a pseudonym or an anonymous visitor is refused the same
+ * way) and `error` (portal hop failure or an unconfigured seam).
+ */
+export const CONSENT_STATUS_OUTCOMES = [
+  "connected",
+  "not_connected",
+  "not_available",
+  "unavailable",
+  "unauthorized",
+  "error",
+] as const;
+export type ConsentStatusOutcome = (typeof CONSENT_STATUS_OUTCOMES)[number];
+
+/**
+ * The dev-tier status route's outcome vocabulary — the prod set with
+ * `forbidden` in place of `unauthorized`: a dev caller's identity is the
+ * bearer token, and the dev resolver's refusals (missing/invalid token, wrong
+ * app, unregistered Origin) are `forbidden` (the dev start route's posture).
+ */
+export const CONSENT_STATUS_DEV_OUTCOMES = [
+  "connected",
+  "not_connected",
+  "not_available",
+  "unavailable",
+  "forbidden",
+  "error",
+] as const;
+export type ConsentStatusDevOutcome = (typeof CONSENT_STATUS_DEV_OUTCOMES)[number];
 
 /**
  * Why the edge's cancel-acknowledgement route answered as it did (I-02 T-0017)

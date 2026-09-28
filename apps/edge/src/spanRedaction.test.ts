@@ -6,6 +6,7 @@ import { DataCapabilitySchema, INTERNAL_AUTH_HEADER } from "@azx-pbc/shared";
 import { hashDevToken } from "@azx-pbc/shared/devToken";
 import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import { FORBIDDEN_URL_ATTRS } from "@azx-pbc/shared/telemetry";
+import { SPAN_CONSENT_STATUS_DEV, SPAN_CONSENT_STATUS_EDGE } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
 import { buildDevGateway } from "./devGateway/app.js";
@@ -506,6 +507,134 @@ describe("span attributes never carry a credential", () => {
       }
       expect(dump).not.toContain("?");
       expect(dump).not.toContain("vendor.example");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
+    });
+  });
+
+  /**
+   * ADR-0031 as amended: the app-facing connection-status read. The route's
+   * own response is the status word only, and the internal read carries the
+   * session's verified identity — none of which may reach a span attribute.
+   */
+  describe("the connection-status route (prod + dev)", () => {
+    const APP_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const HOST = { host: "notes.local.helix.azxlabs.io" };
+
+    it("the prod read leaks no identity across every attribute", async () => {
+      const sessions = new FakeSessionStore();
+      const portal = new FakePortalProvider();
+      portal.status = 200;
+      portal.headers = { "content-type": "application/json" };
+      portal.body = JSON.stringify({ status: "connected" });
+
+      const token = newSessionToken();
+      const id = randomUUID();
+      await sessions.createPending({
+        id,
+        appId: APP_ID,
+        user: {
+          oid: "PLANTED-USER-OID",
+          displayName: "Alice",
+          name: null,
+          email: null,
+          kind: "user",
+          groups: [],
+        },
+        refreshDueAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+      await sessions.redeem(id, APP_ID, hashSessionToken(token));
+      const app = buildApp({
+        config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({ appId: APP_ID, slug: "notes", blobPrefix: "apps/f/1/" }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions,
+        oidc: new FakeOidcClient(),
+        portal,
+      });
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/connections/asana/status",
+        headers: { ...HOST, cookie: `${SESSION_COOKIE}=${token}` },
+      });
+      expect(res.statusCode).toBe(200);
+      await app.close();
+
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      expect(dump, "a span attribute leaked the caller's identity").not.toContain(
+        "PLANTED-USER-OID",
+      );
+      expect(dump).not.toContain("?");
+      const routeSpan = recording.spans().find((s) => s.name === SPAN_CONSENT_STATUS_EDGE);
+      expect(routeSpan?.attributes["url.path"]).toBe("/_api/connections/asana/status");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
+    });
+
+    it("the dev read leaks no dev bearer token across every attribute", async () => {
+      const DEV_BEARER = "PLANTED-DEV-BEARER-TOKEN-VALUE";
+      const DEV_APP_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+      const tokens: DevTokenStore = {
+        async resolve(tokenHash) {
+          return tokenHash === hashDevToken(DEV_BEARER)
+            ? {
+                appId: DEV_APP_ID,
+                developerOid: "oid-developer",
+                origins: ["https://myapp.lovable.app"],
+                expiresAt: new Date(Date.now() + 60_000),
+                revokedAt: null,
+              }
+            : null;
+        },
+        async originAllowed() {
+          return false;
+        },
+        async close() {},
+      };
+      const portal = new FakePortalProvider();
+      portal.status = 200;
+      portal.headers = { "content-type": "application/json" };
+      portal.body = JSON.stringify({ status: "connected" });
+      const app = buildDevGateway({
+        config: testDevGatewayConfig({ internalSecret: Buffer.alloc(32, 7) }),
+        registry: new FakeRegistry([
+          registryEntry({ appId: DEV_APP_ID, slug: "myapp", blobPrefix: "apps/d/1/" }),
+        ]),
+        devTokens: tokens,
+        appData: null,
+        usage: null,
+        llmProvider: null,
+        egress: null,
+        instructionKey: null,
+        portal,
+      });
+
+      const res = await app.inject({
+        method: "GET",
+        url: "/myapp/_api/connections/asana/status",
+        headers: {
+          host: "dev-api.local.helix.azxlabs.io",
+          authorization: `Bearer ${DEV_BEARER}`,
+          origin: "https://myapp.lovable.app",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      await app.close();
+
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      expect(dump, "a span attribute leaked the dev bearer token").not.toContain(DEV_BEARER);
+      expect(dump).not.toContain("?");
+      const routeSpan = recording.spans().find((s) => s.name === SPAN_CONSENT_STATUS_DEV);
+      expect(routeSpan?.attributes["url.path"]).toBe("/myapp/_api/connections/asana/status");
       for (const span of recording.spans()) {
         for (const key of Object.keys(span.attributes)) {
           expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);

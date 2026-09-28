@@ -1,6 +1,6 @@
 # 0031. Connection providers: MCP-first delegated auth, tenant-key as fallback
 
-**Status:** Accepted (2026-09-25 — proposed 2026-07-29). Phases 1–4 are implemented — see the 2026-09-25 amendment below for the deviations implementation carries, and the 2026-08-04 amendment note above for what this ADR does and does not own. Phases 5–7 remain future work.
+**Status:** Accepted (2026-09-25 — proposed 2026-07-29). Phases 1–4 are implemented — see the 2026-09-25 amendment below for the deviations implementation carries, and the 2026-08-04 amendment note above for what this ADR does and does not own. Phases 5–7 remain future work. The app-facing connection-status read (2026-09-28 amendment) is implemented.
 **Related:** ADR [0006](0006-secret-custody-seam.md) (`SecretStore` custody — the seam per-user tokens reuse), [0005](0005-ssrf-egress-controls.md) (SSRF + secret injection — the outbound mechanism), [0013](0013-egress-trust-model.md) (egress trust model — the attested instruction this extends), [0002](0002-postgres-role-split-rls.md) (role split — why `helix_edge` still cannot read a token), [0007](0007-portal-authz-v0.md) (portal authz v0 — **blocks** the group-policy half), [0016](0016-capability-manifest-approval-classifier.md) (approval classifier — catalog edits ride it), [0014](0014-same-origin-api-gateway.md) (same-origin gateway), [0017](0017-registry-listen-notify-projection.md) (LISTEN/NOTIFY projection — the no-redeploy mechanism), [0028](0028-deployment-model-customer-deployed.md) (customer-deployed — why registration is per-deployment), [0021](0021-metering-ledger.md) (metering — where "who used what" is already answered). **Design:** `docs/design/secrets-and-connections.md` §10 q2 and `docs/design/fetch-proxy.md` §10 q2 both defer "injection recipes beyond the three"; this ADR answers them and supersedes that deferral.
 
 > **Amendment (2026-08-04) — a stateless derived recipe landed ahead of this ADR, and is independent of it.**
@@ -95,6 +95,55 @@ implementation: egress is the **only** listener of the provider-change channel
 — the edge holds no provider configuration at all (I-02 ADR-0011). The
 deferred cache-sizing re-check (decision 16's residual) and the
 seal→write retirement residual are tracked in [`TODO.md`](../../TODO.md).
+
+## Amendment (2026-09-28) — the app-facing connection-status read
+
+Apps could only learn whether a user held a working connection by failing a
+real provider-bound call (`403 connection_required`) or by calling
+`window.helix.connect` and reading `already_connected` — both fine postures
+(the former remains the authoritative answer at call time), but neither shapes
+a UI: the first costs a real egress round-trip and a ledger row, the second
+needs a user gesture and a popup. This amendment adds a read-only check:
+`GET /_api/connections/:ref/status` on the app host (prod, session cookie) and
+`GET /:slug/_api/connections/:ref/status` (dev tier, bearer + Origin
+allowlist), forwarding over a new internal portal route
+(`POST /internal/connections/status`) on the same internal-JWT seam the
+consult and cancel ride.
+
+1. **The answer is the row state the next delegated call would act on, and
+   nothing more.** Three words: `connected` (a `live` row — a dead token still
+   reads connected, because renewal runs invisibly at call time),
+   `not_connected` (every unhealthy state collapsed, indistinguishably — never
+   connected, reconnect-needed, invalidated, dead token — because the remedy
+   is the same Connect control and the delegated-call error table already
+   refuses to distinguish them), and `not_available` (a consult gate would
+   refuse: unknown app, binding not effective, provider missing in the
+   caller's tier). It is Helix's own row state — never a verified vendor-side
+   grant, the same honesty My Connections holds; no vendor is contacted.
+2. **Anti-reconnaissance: the binding must be effective.** A status read
+   answers only for a provider the asking app's effective manifest binds
+   (approved stamps matching the row's revision — the consult's own gates).
+   An app cannot probe whether its users hold connections to providers it
+   does not use, and `not_available` deliberately does not distinguish which
+   gate refused.
+3. **The edge gains zero new database grants** (amendment 6's rule holds).
+   The status decision is the portal's `connectionStatus()` — the consult's
+   gates 1–4 with no attempt write, no custody open, no nonce, and no write of
+   any kind. Read-only means the read is safe on page load and can never
+   create consent-flow state.
+4. **A read, not a navigation.** Unlike the start route there is no
+   same-origin navigation guard and no CSRF check: the status route is a
+   `GET` JSON read for page script with the `/_api/me` posture — session-gated
+   (`usableSession`: pseudonyms and anonymous visitors are refused `401`,
+   criterion 21; a refresh-due session stays usable), `no-store`, and the
+   response body is the status word and nothing else. The dev tier is a GET
+   (no popup exists in this flow, so no token-in-URL concern) behind the same
+   resolver gate as the dev start POST.
+5. **Telemetry** rides the existing `helix.consent.operations` counter with a
+   seventh operation value (`status`) and three spans
+   (`helix.consent.status` / `.status.edge` / `.status.dev`), outcome
+   vocabularies bounded in `@azx-pbc/shared/telemetry`, with the identity
+   never a dimension or attribute.
 
 ## Context
 

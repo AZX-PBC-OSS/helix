@@ -39,6 +39,7 @@ import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
 import { makeConsentStartHandler } from "./routing/consentStart.js";
 import { AttemptCorrelations, makeConsentCancelHandler } from "./routing/consentCancel.js";
+import { makeConnectionStatusHandler } from "./routing/connectionStatus.js";
 import type { PortalProvider } from "./routing/portalProvider.js";
 import { deriveInternalKey } from "./internalJwt.js";
 import { makeCspReportHandler, type CspReportStore } from "./serving/cspReport.js";
@@ -336,6 +337,16 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
     correlations,
   });
+  // ADR-0031 as amended: the app-facing connection-status read — the same
+  // fail-closed runtime shape as the other consent routes (no correlations:
+  // the read writes nothing).
+  const handleConnectionStatus = makeConnectionStatusHandler({
+    config,
+    registry: deps.registry,
+    sessions: authRuntime?.sessions ?? null,
+    portal: deps.portal ?? null,
+    internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
+  });
 
   // The two-router discipline (architecture §3, decision 12): every request
   // is classified by hostname exactly once, and the two worlds never mix —
@@ -561,6 +572,21 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app") {
         await handleConsentCancel(req, reply, req.hostClass.slug);
+        return;
+      }
+      sendNotFound(reply);
+    },
+  });
+
+  // ADR-0031 as amended: the app-facing connection-status read — a GET JSON
+  // read on the app host, session-gated inward (the `/_api/me` posture: 401,
+  // never a redirect; no Origin check on a read).
+  app.route({
+    method: "GET",
+    url: "/_api/connections/:ref/status",
+    handler: async (req, reply) => {
+      if (req.hostClass.kind === "app") {
+        await handleConnectionStatus(req, reply, req.hostClass.slug);
         return;
       }
       sendNotFound(reply);

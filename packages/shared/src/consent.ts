@@ -178,6 +178,47 @@ export const CancelResponseSchema = z.strictObject({
 export type CancelResponse = z.infer<typeof CancelResponseSchema>;
 
 /**
+ * Who a connection-status read is for, as the edge attested it. The consult
+ * identity union minus the `nonce`: a status check writes nothing, so there is
+ * no attempt to hand off — the dev arm keys to the developer oid alone. The
+ * tier is still pinned by the kind, never a wire field (the consult union's
+ * rule, kept intact).
+ */
+export const ConnectionStatusIdentitySchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("user"), userOid: z.string().min(1).max(128) }),
+  z.strictObject({ kind: z.literal("dev"), developerOid: z.string().min(1).max(128) }),
+]);
+export type ConnectionStatusIdentity = z.infer<typeof ConnectionStatusIdentitySchema>;
+
+/**
+ * `POST` body of the internal connection-status read (ADR-0031 as amended —
+ * the app-facing `GET /_api/connections/:ref/status` forwards here). Strict,
+ * like every boundary in this file.
+ */
+export const ConnectionStatusRequestSchema = z.strictObject({
+  identity: ConnectionStatusIdentitySchema,
+  appSlug: z.string().regex(SLUG_PATTERN, "must be a lowercase DNS label (a-z, 0-9, hyphen)"),
+  providerRef: ProviderRefSchema,
+});
+export type ConnectionStatusRequest = z.infer<typeof ConnectionStatusRequestSchema>;
+
+/**
+ * The status read's answer — Helix's own row state, the same collapse the
+ * delegated-call error table makes: `connected` is the condition under which
+ * the next provider-bound call dispatches (modulo a transient renewal), and
+ * `not_connected` is the condition under which it answers 403
+ * `connection_required` — never connected, reconnect-needed, invalidated, or a
+ * dead token, indistinguishably, because the remedy (Connect) is identical.
+ * `not_available` means the consult's own gates would refuse: unknown app, a
+ * binding that is not effective, or a provider row missing in the caller's
+ * tier. It reflects Helix's rows only — never a verified vendor-side grant.
+ */
+export const ConnectionStatusResponseSchema = z.strictObject({
+  status: z.enum(["connected", "not_connected", "not_available"]),
+});
+export type ConnectionStatusResponse = z.infer<typeof ConnectionStatusResponseSchema>;
+
+/**
  * The app-facing body of `POST /_api/connections/attempt/cancel` (T-0017) —
  * the helper's cancellation acknowledgement after it observes the popup closed
  * without a completion message. The caller is the app's own page (the session

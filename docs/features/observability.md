@@ -46,6 +46,8 @@ terminates untrusted traffic (decision 4).
 | `helix.consent.start` | the app host's `/_api/connections/:ref/start` route (I-02 T-0014) — the consent popup's prod entry |
 | `helix.consent.start.dev` | the dev gateway's `/:slug/_api/connections/:ref/start` route (I-02 T-0016) — the dev tier's bearer POST → single-use popup URL |
 | `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route (I-02 T-0017) — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
+| `helix.consent.status.edge` | the app host's `GET /_api/connections/:ref/status` route (ADR-0031 as amended) — the app-facing connection-status read, forwarding to the portal's own `.status` span |
+| `helix.consent.status.dev` | the dev gateway's `GET /:slug/_api/connections/:ref/status` — the dev tier's bearer status read |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.egress.resolution` | egress delegated-call resolution (I-02 T-0022) — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation (I-02 T-0019) |
@@ -54,7 +56,7 @@ terminates untrusted traffic (decision 4).
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
-| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption (T-0016), and the vendor redirect's completion state machine (T-0020) |
+| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption (T-0016), the vendor redirect's completion state machine (T-0020), and the read-only status decision (ADR-0031 as amended) |
 | `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route (I-02 T-0024) — My Connections' metadata-only list |
 | `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route (I-02 T-0024) — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
 
@@ -165,8 +167,16 @@ looked up:
   the query is dropped wholesale. Unknown-state refusals also answer `denied`
   (there is no not-found word to emit; the page is the fixed refusal). Pinned
   by `routes/connectionsCallback.integration.test.ts`'s global attribute scan.
+- `helix.consent.status.edge` / `helix.consent.status.dev` (the app-facing
+  connection-status reads, ADR-0031 as amended) record `helix.outcome` ∈
+  {`connected`, `not_connected`, `not_available`, `unavailable`,
+  `unauthorized` (prod; the dev twin's refusals are `forbidden`), `error`}
+  (`CONSENT_STATUS_OUTCOMES` / `CONSENT_STATUS_DEV_OUTCOMES`), plus
+  `helix.provider_ref`, `helix.app.slug`, and `url.path` only. The response
+  body is the status word and nothing else, and no identity is ever an
+  attribute. Pinned by `spanRedaction`'s status cases.
 - The `helix.consent.*` spans carry `helix.consent.operation` (bounded to
-  consult/cancel/claim/sweep/redeem/callback), `helix.outcome` from the operation's bounded
+  consult/cancel/claim/sweep/redeem/callback/status), `helix.outcome` from the operation's bounded
   vocabulary, on the consult `helix.app.slug`, `helix.app_id` and
   `helix.provider_ref`, and on the sweep the removed count
   (`helix.consent.sweep_removed`) — never the `state`, the nonce, the PKCE
@@ -187,7 +197,7 @@ looked up:
 | `helix.providers.listen_status` | observable gauge | — |
 | `helix.session.gate_denied` | counter | `reason` |
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
-| `helix.consent.operations` | counter | `operation`, `outcome` (I-02 ADR-0002; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
+| `helix.consent.operations` | counter | `operation`, `outcome` (I-02 ADR-0002 + ADR-0031 as amended; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained

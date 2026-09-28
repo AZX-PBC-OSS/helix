@@ -1,9 +1,12 @@
 import { Readable } from "node:stream";
 import {
   CancelResponseSchema,
+  ConnectionStatusResponseSchema,
   ConsultResponseSchema,
   type CancelRequest,
   type CancelResponse,
+  type ConnectionStatusRequest,
+  type ConnectionStatusResponse,
   type ConsultRequest,
   type ConsultResponse,
 } from "@azx-pbc/shared";
@@ -25,6 +28,8 @@ import type { PortalProvider } from "./portalProvider.js";
 const CONSULT_TARGET = "/internal/connections/consult";
 /** The cancel's path on the portal (same module). */
 const CANCEL_TARGET = "/internal/connections/cancel";
+/** The connection-status read's path on the portal (same module). */
+const STATUS_TARGET = "/internal/connections/status";
 
 /** The consult/cancel JSON answer is tiny; anything bigger is not a response. */
 export const MAX_CONSULT_RESPONSE_BYTES = 1024 * 1024;
@@ -50,7 +55,7 @@ async function postInternal(
   portal: PortalProvider,
   internalKey: Buffer,
   target: string,
-  request: ConsultRequest | CancelRequest,
+  request: ConsultRequest | CancelRequest | ConnectionStatusRequest,
   correlationId: string,
   signal: AbortSignal,
 ): Promise<unknown> {
@@ -116,4 +121,30 @@ export async function callCancel(
     signal,
   );
   return CancelResponseSchema.parse(parsed);
+}
+
+/**
+ * One connection-status read over the portal seam (ADR-0031 as amended) — the
+ * same discipline as {@link callConsult} and {@link callCancel}: per-call
+ * JWT, the shared ConnectionStatusRequest contract, the response parsed
+ * through the shared schema. Read-only on the portal — no attempt is written
+ * and no custody is opened — and it throws on every failure mode, so the
+ * callers' fixed 503s are the only thing an operator sees.
+ */
+export async function callStatus(
+  portal: PortalProvider,
+  internalKey: Buffer,
+  statusRequest: ConnectionStatusRequest,
+  correlationId: string,
+  signal: AbortSignal,
+): Promise<ConnectionStatusResponse> {
+  const parsed = await postInternal(
+    portal,
+    internalKey,
+    STATUS_TARGET,
+    statusRequest,
+    correlationId,
+    signal,
+  );
+  return ConnectionStatusResponseSchema.parse(parsed);
 }

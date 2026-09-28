@@ -17,6 +17,7 @@ import {
   INSTR_CONSENT_OPERATIONS,
   SPAN_CONSENT_CANCEL,
   SPAN_CONSENT_CONSULT,
+  SPAN_CONSENT_STATUS,
 } from "@azx-pbc/shared/telemetry";
 import { deriveInternalKey, resolveInternalSecret } from "../internalJwt.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
@@ -43,6 +44,7 @@ const devOid = `oid-internal-developer-${OID_TAG}`;
 
 const CONSULT_URL = "/internal/connections/consult";
 const CANCEL_URL = "/internal/connections/cancel";
+const STATUS_URL = "/internal/connections/status";
 const CALLBACK_URL = "https://auth.example.test/connections/callback";
 const OPENER_ORIGIN = "https://app.example.test";
 
@@ -185,7 +187,7 @@ afterAll(async () => {
 
 describe("internal authorization fails closed (ADR-0003)", () => {
   it("refuses a missing token on every operation", async () => {
-    for (const url of [CONSULT_URL, CANCEL_URL]) {
+    for (const url of [CONSULT_URL, CANCEL_URL, STATUS_URL]) {
       const res = await t.app.inject({ method: "POST", url, payload: {} });
       expect(res.statusCode, url).toBe(401);
     }
@@ -193,7 +195,7 @@ describe("internal authorization fails closed (ADR-0003)", () => {
 
   it("refuses a wrong-audience token on every operation", async () => {
     const token = await mintToken({ audience: "azx-somewhere-else" });
-    for (const url of [CONSULT_URL, CANCEL_URL]) {
+    for (const url of [CONSULT_URL, CANCEL_URL, STATUS_URL]) {
       const res = await t.app.inject({
         method: "POST",
         url,
@@ -209,7 +211,7 @@ describe("internal authorization fails closed (ADR-0003)", () => {
       issuedAtSec: Math.floor(Date.now() / 1000) - 120,
       expires: "30s",
     });
-    for (const url of [CONSULT_URL, CANCEL_URL]) {
+    for (const url of [CONSULT_URL, CANCEL_URL, STATUS_URL]) {
       const res = await t.app.inject({
         method: "POST",
         url,
@@ -348,6 +350,72 @@ describe("the cancel route", () => {
   });
 });
 
+describe("the status route (ADR-0031 as amended)", () => {
+  it("round-trips the wire contract: the row-state word and nothing else", async () => {
+    const fixture = await seededReady("status-route");
+    const before = await t.app.inject({
+      method: "POST",
+      url: STATUS_URL,
+      headers: await authed(),
+      payload: { identity: prodIdentity, appSlug: fixture.slug, providerRef: fixture.ref },
+    });
+    expect(before.statusCode).toBe(200);
+    expect(before.json()).toEqual({ status: "not_connected" });
+    // Read-only: the status read wrote no attempt.
+    expect(
+      await t.prisma.connectionConsentAttempt.findMany({
+        where: { providerId: fixture.providerId },
+      }),
+    ).toEqual([]);
+
+    await t.prisma.userConnection.create({
+      data: {
+        userOid,
+        providerId: fixture.providerId,
+        providerRevision: 1,
+        env: "prod",
+        status: "live",
+        material: "sealed-status-material",
+        grantedScopes: ["read"],
+        grantedAt: new Date(),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+    const after = await t.app.inject({
+      method: "POST",
+      url: STATUS_URL,
+      headers: await authed(),
+      payload: { identity: prodIdentity, appSlug: fixture.slug, providerRef: fixture.ref },
+    });
+    expect(after.statusCode).toBe(200);
+    expect(after.json()).toEqual({ status: "connected" });
+    expect(Object.keys(after.json())).toEqual(["status"]);
+  });
+
+  it("rejects a malformed body with a 400 — including a nonce smuggled into the identity", async () => {
+    const fixture = await seededReady("status-400");
+    for (const payload of [
+      { identity: { kind: "user" }, appSlug: fixture.slug, providerRef: fixture.ref },
+      // The status identity union has no dev nonce — an attempt to reuse the
+      // consult's identity shape is producer skew and fails closed.
+      {
+        identity: { kind: "dev", developerOid: devOid, nonce: "nonce-0123456789abcdef" },
+        appSlug: fixture.slug,
+        providerRef: fixture.ref,
+      },
+    ]) {
+      const res = await t.app.inject({
+        method: "POST",
+        url: STATUS_URL,
+        headers: await authed(),
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe("validation_failed");
+    }
+  });
+});
+
 describe("the adversarial scan — no credential material on the wire", () => {
   it("serializes every consult/cancel response and finds no planted secret", async () => {
     const fixture = await seededReady("scan");
@@ -435,10 +503,17 @@ describe("telemetry (AGENTS.md §Telemetry ships with the change)", () => {
         headers: await authed(),
         payload: { identity: prodIdentity, state: attempt.state },
       });
+      await t.app.inject({
+        method: "POST",
+        url: STATUS_URL,
+        headers: await authed(),
+        payload: { identity: prodIdentity, appSlug: fixture.slug, providerRef: fixture.ref },
+      });
 
       const names = recording.spans().map((s) => s.name);
       expect(names).toContain(SPAN_CONSENT_CONSULT);
       expect(names).toContain(SPAN_CONSENT_CANCEL);
+      expect(names).toContain(SPAN_CONSENT_STATUS);
 
       const metrics = await recording.metrics();
       const consent = metrics.filter((m) => m.name === INSTR_CONSENT_OPERATIONS);

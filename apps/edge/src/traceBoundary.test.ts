@@ -15,6 +15,7 @@ import {
   SPAN_CONNECTIONS_PROXY,
   SPAN_CONSENT_START,
   SPAN_CONSENT_START_DEV,
+  SPAN_CONSENT_STATUS_EDGE,
 } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
@@ -276,6 +277,53 @@ describe("the dev-gateway consent start route is a fresh root too (T-0016)", () 
     await app.close();
 
     const span = recording.spans().find((sp) => sp.name === SPAN_CONSENT_START_DEV);
+    expect(span).toBeDefined();
+    expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
+    expect(span?.parentSpanContext).toBeUndefined();
+    const dump = JSON.stringify(
+      recording.spans().map((sp) => ({ ...sp.attributes, ...sp.spanContext() })),
+    );
+    expect(dump).not.toContain(APP_TRACE_ID);
+    expect(dump).not.toContain("vendor=app-chosen");
+  });
+});
+
+describe("the connection-status route is a fresh root too (ADR-0031 as amended)", () => {
+  /**
+   * A plain app-host JSON read — an untrusted caller can plant a
+   * `traceparent` on it as easily as on the consent start route.
+   */
+  it("an inbound traceparent never parents the route span", async () => {
+    propagation.setGlobalPropagator(propagatorFor("inject-only"));
+    const app: FastifyInstance = buildApp({
+      config: testEdgeConfig({ auth: testAuthConfig(), internalSecret: Buffer.alloc(32, 7) }),
+      registry: new FakeRegistry([
+        registryEntry({
+          appId: "22222222-2222-4222-8222-222222222222",
+          slug: "demo",
+          blobPrefix: "apps/a/1/",
+        }),
+      ]),
+      blob: new FakeBlobReader(),
+      sessions: new FakeSessionStore(),
+      oidc: new FakeOidcClient(),
+      portal: new FakePortalProvider(),
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/connections/asana/status",
+      headers: {
+        host: "demo.local.helix.azxlabs.io",
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+    });
+    // The session gate refuses this one (401) — the span fires anyway, and
+    // that is the span under test.
+    expect(res.statusCode).toBe(401);
+    await app.close();
+
+    const span = recording.spans().find((sp) => sp.name === SPAN_CONSENT_STATUS_EDGE);
     expect(span).toBeDefined();
     expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
     expect(span?.parentSpanContext).toBeUndefined();

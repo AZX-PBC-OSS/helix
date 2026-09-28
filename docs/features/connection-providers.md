@@ -226,7 +226,10 @@ badges, a status line — **Connected** or **Reconnect needed** — and
 **Disconnect**.
 
 The status is Helix's own row state. It never claims to have verified the
-vendor-side grant, and the page shows no vendor profile.
+vendor-side grant, and the page shows no vendor profile. Apps ask the same
+question about their own users through the app-facing status read
+(`GET /_api/connections/:ref/status` — [fetch-proxy.md](./fetch-proxy.md)),
+which shares this posture and this collapse of unhealthy states.
 
 Disconnect asks for confirmation (the sharing apps, the two limits above), then
 stops Helix access as described above. Repeating a disconnect of an
@@ -240,6 +243,8 @@ return).
 ## Key files
 
 - `apps/portal/src/routes/providers.ts` — provider CRUD, export/import, the impact route, and the invalidation transaction.
+- `apps/portal/src/routes/connectionsInternal.ts` — the internal consult, cancel, and connection-status routes (edge→portal, internal JWT).
+- `apps/edge/src/routing/connectionStatus.ts` — the app-facing status read (prod); the dev twin is `apps/edge/src/devGateway/connectionStatus.ts`.
 - `apps/portal/src/routes/connectionsMine.ts` — My Connections' list + disconnect (principal-scoped).
 - `apps/portal/src/connections/completion.ts` — the callback's CAS/upsert save and the `connection.connected` audit event.
 - `packages/shared/src/providers.ts` — the one provider schema set: editable fields, sensitive-field list, import/export document, impact + confirmation payloads.

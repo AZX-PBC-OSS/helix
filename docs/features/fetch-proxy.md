@@ -12,6 +12,7 @@ credential when configured. Credentials stay out of the app. See architecture
 | --- | --- | --- |
 | `ALL /_api/fetch/<url>` | app host (edge) | authorize → mint instruction → forward to egress → stream back |
 | `POST /proxy` | `helix-egress` (internal) | verify instruction → inject secret → SSRF controls → outbound call |
+| `GET /_api/connections/:ref/status` | app host (edge) | the calling user's connection status for one bound provider (read-only) |
 
 ## How it works
 
@@ -279,6 +280,50 @@ an authorization grant (it carries no token), and any window on the web can
 Discard everything else. The helper implements exactly these checks; an app on
 the raw entry must too.
 
+### The connection-status check
+
+An app that wants to shape its UI around connection state — show Connect up
+front, or distinguish "sign in first" from "connect Asana" — can ask without
+firing a real provider-bound call or opening a popup:
+
+```
+GET /_api/connections/:ref/status          (app host, the session's cookie)
+GET /:slug/_api/connections/:ref/status    (dev tier, the bearer dev token)
+```
+
+The answer is JSON, one key: `{"status": "connected"}`, `{"status":
+"not_connected"}`, or `{"status": "not_available"}`. The three words are
+exactly what the next provider-bound call would say:
+
+- `connected` — a live connection row; the next delegated call dispatches
+  (a dead token still reads `connected` — renewal runs invisibly at call
+  time, or fails there with the mapped error).
+- `not_connected` — the binding is effective and the provider configured, but
+  the caller holds no working connection: never connected, reconnect-needed,
+  invalidated, or a dead token, indistinguishably. The remedy for all of them
+  is the same Connect control.
+- `not_available` — one of the consult's own gates would refuse: the app is
+  unknown, the manifest does not effectively bind the ref (never approved, or
+  stale-dated by a sensitive provider edit), or the provider row is missing
+  in the caller's tier. Connect would fail too — this is the app's (or an
+  administrator's) problem to fix, not the user's.
+
+The read is session-gated: a signed-out caller — including a pseudonym or an
+anonymous visitor, who can never hold a connection — gets `401` and should be
+shown sign-in, not Connect. A malformed ref is `404` (a probe, not a state);
+an unconfigured portal seam or a failed internal hop is `503`, fail-closed.
+
+Two honesty rules, the same ones My Connections holds. The status is **Helix's
+own row state** — it never claims to have verified the vendor-side grant, and
+no vendor is contacted. And it answers **only for a provider the app's
+effective manifest binds**: an app cannot probe whether its users have
+connections to providers it does not use.
+
+The read writes nothing — no consent attempt, no state change — so it is safe
+to call on page load. It is a read, not a decision: the platform still never
+opens a popup, watches responses, or retries on its own, and after any
+outcome the app decides what to offer next.
+
 ### Delegated-call errors
 
 When a provider-bound call cannot be served, the proxy answers JSON instead of
@@ -365,6 +410,7 @@ build well:
 ## Key files
 
 - `apps/edge/src/gateway/fetch.ts` — `makeFetchHandler`, the policy plane.
+- `apps/edge/src/routing/connectionStatus.ts` — the app-facing connection-status read.
 - `apps/edge/src/serving/shim.ts` + `assets.ts` — the shim script + serve-time injection.
 - `apps/edge/src/serving/connectHelper.ts` — the `window.helix.connect` helper script.
 - `apps/edge/src/routing/consentStart.ts` — the raw consent entry route + its terminal pages.

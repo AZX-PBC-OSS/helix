@@ -7,6 +7,8 @@ import {
   CONSENT_ATTEMPT_TTL_SECONDS,
   type CancelRequest,
   type CancelResponse,
+  type ConnectionStatusRequest,
+  type ConnectionStatusResponse,
   type ConsultRequest,
   type ConsultResponse,
   DeltaSchema,
@@ -26,6 +28,7 @@ import {
   SPAN_CONSENT_CLAIM,
   SPAN_CONSENT_CONSULT,
   SPAN_CONSENT_REDEEM,
+  SPAN_CONSENT_STATUS,
   SPAN_CONSENT_SWEEP,
 } from "@azx-pbc/shared/telemetry";
 import type { SecretStore } from "@azx-pbc/secret-store";
@@ -39,7 +42,9 @@ import { withSpan, instruments } from "../telemetry.js";
  * consent-flow state): the start consult the edge's start route and the dev
  * gateway call, the own-attempts-only cancel the helper's acknowledgement
  * rides, the claim-shaped probe the callback redeems an attempt with, the dev
- * journey's nonce redemption (T-0016), and the expiry sweep. The routes
+ * journey's nonce redemption (T-0016), the expiry sweep, and the read-only
+ * connection-status read the app-facing status route forwards to (ADR-0031 as
+ * amended — consult gates 1–4, no attempt write, no custody open). The routes
  * (`routes/connectionsInternal.ts`, `routes/connectionsPages.ts`) authorize
  * their calls and parse the shared contracts; every state decision lives
  * here.
@@ -50,19 +55,23 @@ import { withSpan, instruments } from "../telemetry.js";
  * exists.
  */
 
-/** The consult/cancel identity union's tier — pinned here, never a wire field. */
-function identityEnv(identity: ConsultRequest["identity"]): Env {
+/** The consent/status identity union's tier — pinned here, never a wire field. */
+function identityEnv(
+  identity: ConsultRequest["identity"] | ConnectionStatusRequest["identity"],
+): Env {
   return identity.kind === "dev" ? "dev" : "prod";
 }
 
 /** The principal a connection and an attempt key to, per identity kind. */
-function identityOid(identity: ConsultRequest["identity"]): string {
+function identityOid(
+  identity: ConsultRequest["identity"] | ConnectionStatusRequest["identity"],
+): string {
   return identity.kind === "dev" ? identity.developerOid : identity.userOid;
 }
 
 /** One counter add for a consent operation — bounded dims, never identity. */
 function count(
-  operation: "consult" | "cancel" | "claim" | "sweep" | "redeem",
+  operation: "consult" | "cancel" | "claim" | "sweep" | "redeem" | "status",
   outcome: string,
 ): void {
   instruments().consentOperations.add(1, {
@@ -296,6 +305,106 @@ async function consult(
     callbackUrl: req.callbackUrl,
   });
   return { outcome: "started", authorizeUrl };
+}
+
+/**
+ * The connection-status read (ADR-0031 as amended): the consult's gates 1–4
+ * with no attempt write, no custody open, and no vendor contact — the
+ * read-only cousin the app-facing `GET /_api/connections/:ref/status` route
+ * forwards to over the internal seam.
+ *
+ * The answer is Helix's own row state, and it collapses exactly the way the
+ * delegated-call error table collapses: a `live` row is `connected`; every
+ * other row state (reconnect-needed, invalidated, absent) is `not_connected`
+ * — the same condition under which a provider-bound call answers 403
+ * `connection_required`, and the remedy (Connect) is identical for all of
+ * them. A `not_available` means one of the consult's own gates would refuse —
+ * unknown app, a binding that never landed or went stale, a provider row
+ * missing in the caller's tier — so the status route can never reveal
+ * connection state for a provider the app does not effectively bind.
+ */
+export async function connectionStatus(
+  prisma: PrismaClient,
+  req: ConnectionStatusRequest,
+): Promise<ConnectionStatusResponse> {
+  const env = identityEnv(req.identity);
+  const userOid = identityOid(req.identity);
+
+  return withSpan(
+    SPAN_CONSENT_STATUS,
+    {
+      [ATTR_CONSENT_OPERATION]: "status",
+      [ATTR_APP_SLUG]: req.appSlug,
+      [ATTR_PROVIDER_REF]: req.providerRef,
+    },
+    async (span) => {
+      try {
+        const response = await status(prisma, req, env, userOid, span);
+        span.setAttributes({ [ATTR_OUTCOME]: response.status });
+        count("status", response.status);
+        return response;
+      } catch (err) {
+        span.setAttributes({ [ATTR_OUTCOME]: "error" });
+        count("status", "error");
+        throw err;
+      }
+    },
+  );
+}
+
+async function status(
+  prisma: PrismaClient,
+  req: ConnectionStatusRequest,
+  env: Env,
+  userOid: string,
+  span: Span,
+): Promise<ConnectionStatusResponse> {
+  // 1 — the app, resolved by slug (the identity the edge's host routing
+  // attests). An unknown app is not_available, never a distinction an
+  // unbound caller could mine.
+  const appRow = await prisma.app.findUnique({ where: { slug: req.appSlug } });
+  if (!appRow) return { status: "not_available" };
+  span.setAttributes({ [ATTR_APP_ID]: appRow.id });
+
+  // 2 — the binding must have landed in the effective manifest.
+  const caps = CapabilitiesSchema.parse(appRow.capabilities ?? {});
+  if (!(caps.fetch?.origins ?? []).some((o) => o.provider === req.providerRef)) {
+    return { status: "not_available" };
+  }
+
+  // 3 — the provider row must exist in the caller's tier (env is pinned by
+  // the identity kind, never a request field).
+  const providerRow = await prisma.connectionProvider.findUnique({
+    where: { ref_env: { ref: req.providerRef, env } },
+  });
+  if (!providerRow) return { status: "not_available" };
+  const provider = parseProviderRow(providerRow);
+  span.setAttributes({ [ATTR_PROVIDER_REF]: provider.ref });
+
+  // 4 — binding effectiveness: an APPROVED request's filing stamp must still
+  // match the row's current identity (the consult's rule, consumed here and
+  // never re-derived). A sensitive edit or delete+recreate reads
+  // not_available, the same answer a connect attempt would get.
+  const approved = await prisma.approvalRequest.findMany({
+    where: { appId: appRow.id, status: "approved" },
+    select: { deltas: true },
+  });
+  const effective = approved.some((r) =>
+    stampsFor(r.deltas, req.providerRef).some(
+      (s) => s.env === env && isProviderBindingEffective(s.stamp, provider),
+    ),
+  );
+  if (!effective) return { status: "not_available" };
+
+  // 5 — the connection row. Only `live` counts — the same word the delegated
+  // resolver keys on, so `connected` here is exactly the condition under
+  // which the next provider-bound call dispatches (a dead token still says
+  // connected; renewal runs invisibly at call time).
+  const connection = await prisma.userConnection.findUnique({
+    where: { userOid_providerId_env: { userOid, providerId: provider.id, env } },
+  });
+  if (connection?.status === "live") return { status: "connected" };
+  return { status: "not_connected" };
 }
 
 /**

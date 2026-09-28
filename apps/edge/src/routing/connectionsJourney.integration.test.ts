@@ -586,6 +586,42 @@ async function connectJourney(
   return callbackThroughEdge(redirect);
 }
 
+/** The app-facing connection-status read (ADR-0031 as amended): the prod GET
+ * on the app host — session cookie, no Origin (a read), like the real app. */
+async function statusRead(
+  slug: string,
+  ref: string,
+  sessionCookie: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await edge.inject({
+    url: `/_api/connections/${ref}/status`,
+    headers: {
+      host: appHostOf(slug),
+      cookie: `${SESSION_COOKIE}=${sessionCookie}`,
+    },
+  });
+  return {
+    status: res.statusCode,
+    body: res.body === "" ? {} : (res.json() as Record<string, unknown>),
+  };
+}
+
+/** The dev-tier status read — the bearer GET through the dev gateway. */
+async function devStatusRead(
+  slug: string,
+  ref: string,
+  token: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await devGateway.inject({
+    url: `/${slug}/_api/connections/${ref}/status`,
+    headers: { authorization: `Bearer ${token}`, origin: DEV_ORIGIN },
+  });
+  return {
+    status: res.statusCode,
+    body: res.body === "" ? {} : (res.json() as Record<string, unknown>),
+  };
+}
+
 // ── Composition ───────────────────────────────────────────────────────────────
 
 beforeAll(async () => {
@@ -930,6 +966,74 @@ describe("the prod consent journey through the real entry points (criterion 52a)
     expect(ledger.path).toBe("/api/echo");
     expect(ledger.method).toBe("POST");
     expect(ledger.statusCode).toBe(200);
+  }, 30_000);
+});
+
+describe("the connection-status read tracks the journey (ADR-0031 as amended)", () => {
+  it("not_connected before consent → connected after the callback → not_connected after disconnect", async () => {
+    const f = await seedFixture("status-journey", { envs: ["prod"], vendorToUse: vendor });
+    const sessionCookie = await seedSession(f.appId);
+
+    // Before consent: the read answers not_connected — the condition under
+    // which a delegated call would answer connection_required.
+    const before = await statusRead(f.slug, f.ref, sessionCookie);
+    expect(before.status).toBe(200);
+    expect(before.body).toEqual({ status: "not_connected" });
+    // Nothing was written: no attempt exists for a status read.
+    expect(
+      await portal.prisma.connectionConsentAttempt.count({
+        where: { providerId: providerIdOf(f, "prod") },
+      }),
+    ).toBe(0);
+
+    // Connect through the FULL journey — the read never shortcuts consent.
+    const done = await connectJourney(f, { env: "prod", sessionCookie });
+    expect(done.body).toContain('"outcome":"connected"');
+
+    const after = await statusRead(f.slug, f.ref, sessionCookie);
+    expect(after.body).toEqual({ status: "connected" });
+    // The invariant, both directions: the delegated call dispatches while the
+    // read says connected…
+    const call = await delegatedCall(f.slug, sessionCookie, `${vendor.issuer}/api/echo`);
+    expect(call.status).toBe(200);
+
+    // …and after a My Connections disconnect the read is not_connected again,
+    // matching the call's connection_required.
+    const row = await portal.prisma.userConnection.findUniqueOrThrow({
+      where: {
+        userOid_providerId_env: { userOid, providerId: providerIdOf(f, "prod"), env: "prod" },
+      },
+    });
+    const gone = await portalApi("DELETE", `/api/v1/connections/mine/${row.id}`, "owner");
+    expect(gone.body).toEqual({ outcome: "disconnected" });
+    const disconnected = await statusRead(f.slug, f.ref, sessionCookie);
+    expect(disconnected.body).toEqual({ status: "not_connected" });
+
+    // An unbound ref never answers about connection state — not_available.
+    const unbound = await statusRead(f.slug, "not-a-bound-provider", sessionCookie);
+    expect(unbound.status).toBe(200);
+    expect(unbound.body).toEqual({ status: "not_available" });
+
+    // A signed-out caller gets 401, never a state.
+    const anon = await statusRead(f.slug, f.ref, "not-a-session-token");
+    expect(anon.status).toBe(401);
+  }, 30_000);
+
+  it("the dev tier's status read keys to the developer identity through the dev gateway", async () => {
+    const f = await seedFixture("status-dev-journey", {
+      envs: ["dev"],
+      vendorToUse: vendor,
+      devToken: true,
+    });
+
+    const before = await devStatusRead(f.slug, f.ref, f.devToken as string);
+    expect(before.status).toBe(200);
+    expect(before.body).toEqual({ status: "not_connected" });
+
+    const done = await connectJourney(f, { env: "dev", devToken: f.devToken });
+    expect(done.body).toContain('"outcome":"connected"');
+    const after = await devStatusRead(f.slug, f.ref, f.devToken as string);
+    expect(after.body).toEqual({ status: "connected" });
   }, 30_000);
 });
 

@@ -2,6 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DevEnvelopeSecretStore } from "@azx-pbc/secret-store";
 import {
+  ConnectionStatusRequestSchema,
+  type ConnectionStatusRequest,
   ConsultRequestSchema,
   CONSENT_ATTEMPT_TTL_SECONDS,
   type ConsultRequest,
@@ -11,6 +13,7 @@ import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../tes
 import {
   cancelConsentAttempt,
   claimConsentAttempt,
+  connectionStatus,
   consultConsent,
   pkceChallenge,
   sweepExpiredConsentAttempts,
@@ -184,6 +187,17 @@ async function consultState(
 
 async function attemptRows(providerId: string) {
   return prisma.connectionConsentAttempt.findMany({ where: { providerId } });
+}
+
+function statusRequest(
+  fixture: { slug: string; ref: string },
+  identity: ConnectionStatusRequest["identity"],
+): ConnectionStatusRequest {
+  return ConnectionStatusRequestSchema.parse({
+    identity,
+    appSlug: fixture.slug,
+    providerRef: fixture.ref,
+  });
 }
 
 async function seedLiveConnection(oid: string, providerId: string, env: string) {
@@ -423,6 +437,111 @@ describe("consult — the dev tier", () => {
       outcome: "started",
     });
     await expect(consultConsent(prisma, store, req)).rejects.toMatchObject({ code: "conflict" });
+  });
+});
+
+describe("connectionStatus — the read-only consult gates (ADR-0031 as amended)", () => {
+  it("not_connected before any connection, then connected once a live row exists", async () => {
+    const fixture = await seededReady("status-live");
+    const before = await connectionStatus(prisma, statusRequest(fixture, prodIdentity));
+    expect(before).toEqual({ status: "not_connected" });
+
+    await seedLiveConnection(userOid, fixture.providerId, "prod");
+    const after = await connectionStatus(prisma, statusRequest(fixture, prodIdentity));
+    expect(after).toEqual({ status: "connected" });
+  });
+
+  it("collapses every unhealthy row state into not_connected", async () => {
+    const fixture = await seededReady("status-collapse");
+    for (const status of ["reconnect-needed", "invalidated"]) {
+      await prisma.userConnection.create({
+        data: {
+          userOid,
+          providerId: fixture.providerId,
+          providerRevision: 1,
+          env: "prod",
+          status,
+          material: `sealed-${status}`,
+          grantedScopes: ["read"],
+          grantedAt: new Date(),
+          expiresAt: new Date(Date.now() + 3_600_000),
+        },
+      });
+      await expect(connectionStatus(prisma, statusRequest(fixture, prodIdentity))).resolves.toEqual(
+        { status: "not_connected" },
+      );
+      // The collapse consumed nothing — the row is untouched for a later
+      // reconnect-through-consent.
+      await prisma.userConnection.deleteMany({
+        where: { providerId: fixture.providerId, userOid },
+      });
+    }
+  });
+
+  it("not_available for an unknown app, an unbound ref, a missing tier row, and stale stamps", async () => {
+    const fixture = await seededReady("status-na");
+
+    // Unknown app.
+    await expect(
+      connectionStatus(
+        prisma,
+        statusRequest({ slug: "no-such-app", ref: fixture.ref }, prodIdentity),
+      ),
+    ).resolves.toEqual({ status: "not_available" });
+
+    // Provider exists but the app's manifest never binds it.
+    const unbound = await seededReady("status-unbound");
+    await expect(
+      connectionStatus(
+        prisma,
+        statusRequest({ slug: fixture.slug, ref: unbound.ref }, prodIdentity),
+      ),
+    ).resolves.toEqual({ status: "not_available" });
+
+    // Provider row missing in the caller's tier (the row is dev-only).
+    const devOnly = await seededReady("status-tier", "dev");
+    await expect(connectionStatus(prisma, statusRequest(devOnly, prodIdentity))).resolves.toEqual({
+      status: "not_available",
+    });
+
+    // Stale stamps — the sensitive edit's revision bump.
+    await prisma.connectionProvider.update({
+      where: { id: fixture.providerId },
+      data: { revision: 99 },
+    });
+    await expect(connectionStatus(prisma, statusRequest(fixture, prodIdentity))).resolves.toEqual({
+      status: "not_available",
+    });
+  });
+
+  it("keys the dev tier to the developer identity, never a prod row", async () => {
+    const fixture = await seededReady("status-dev", "dev");
+    // A dev identity against a dev provider with no connection.
+    await expect(
+      connectionStatus(prisma, statusRequest(fixture, { kind: "dev", developerOid: devOid })),
+    ).resolves.toEqual({ status: "not_connected" });
+
+    await seedLiveConnection(devOid, fixture.providerId, "dev");
+    await expect(
+      connectionStatus(prisma, statusRequest(fixture, { kind: "dev", developerOid: devOid })),
+    ).resolves.toEqual({ status: "connected" });
+
+    // A prod user cannot see the dev connection through the same ref.
+    await expect(connectionStatus(prisma, statusRequest(fixture, prodIdentity))).resolves.toEqual({
+      status: "not_available",
+    });
+  });
+
+  it("writes nothing: no attempt row survives any status answer", async () => {
+    const fixture = await seededReady("status-readonly");
+    for (const identity of [
+      prodIdentity,
+      otherIdentity,
+      { kind: "dev" as const, developerOid: devOid },
+    ]) {
+      await connectionStatus(prisma, statusRequest(fixture, identity));
+    }
+    expect(await attemptRows(fixture.providerId)).toEqual([]);
   });
 });
 
