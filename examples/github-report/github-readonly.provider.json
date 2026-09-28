@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "provider": {
+    "ref": "github-readonly",
+    "kind": "rest-delegated",
+    "displayName": "GitHub (read-only)",
+    "authorizeEndpoint": "https://github.com/login/oauth/authorize",
+    "tokenEndpoint": "https://github.com/login/oauth/access_token",
+    "requestedScopes": [],
+    "apiOrigins": ["https://api.github.com"],
+    "tokenPlacement": { "kind": "header-bearer" }
+  }
+}

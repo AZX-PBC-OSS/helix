@@ -1,0 +1,216 @@
+:root {
+  color-scheme: light;
+  --ink: #1e1f21;
+  --muted: #6d6e6f;
+  --line: #e3e4e6;
+  --accent: #0969da;
+  --accent-dark: #0550ae;
+  --surface: #ffffff;
+  --bg: #f6f8fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Author `display` (e.g. .connect-row's flex) otherwise defeats the UA's
+   [hidden] rule — the panel would stay visible after connecting. */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+}
+
+.whoami {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+}
+
+.view {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.connect-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: #fdf6f2;
+  border: 1px solid #f2d2c7;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.connect-row p {
+  margin: 0;
+  color: var(--ink);
+}
+
+/* The healthy state — a small confirmation banner, no CTA. */
+.connect-row.connected {
+  background: #eef6ee;
+  border-color: #c3e0c6;
+}
+
+/* The binding isn't effective — informational, no CTA, owner/admin fix. */
+.connect-row.blocked {
+  background: #f4f3f2;
+  border-color: var(--line);
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+#connect-btn,
+#gen-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#connect-btn:disabled,
+#gen-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#connect-btn:hover:not(:disabled),
+#gen-btn:hover:not(:disabled) {
+  background: var(--accent-dark);
+}
+
+.gen-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: end;
+}
+
+.gen-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.gen-form select,
+.gen-form input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  background: #fff;
+  min-width: 10rem;
+}
+
+.gen-form input {
+  min-width: 16rem;
+  font-weight: 400;
+}
+
+.gen-form button {
+  align-self: end;
+}
+
+.status {
+  min-height: 1.4em;
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.report-view {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.report-head h2 {
+  margin: 0 0 0.15rem;
+  font-size: 1.1rem;
+}
+
+.meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Markdown-lite output — every node is built via textContent, never HTML. */
+.markdown {
+  margin-top: 0.75rem;
+}
+
+.markdown .md-heading {
+  font-weight: 700;
+  font-size: 1.02rem;
+  margin: 1.1em 0 0.4em;
+}
+
+.markdown ul {
+  margin: 0.4em 0 0.8em;
+  padding-left: 1.3em;
+}
+
+.markdown li {
+  margin: 0.25em 0;
+}
+
+.markdown pre {
+  background: #f4f3f2;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  overflow-x: auto;
+}
+
+.markdown code {
+  font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #f4f3f2;
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown a {
+  color: var(--accent-dark);
+}
+
+.footnote {
+  margin-top: 1.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>GitHub Repo Report · AZX</title>
+    <script type="module" crossorigin src="./assets/index-DrzhH9M9.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BvHM9uBx.css">
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>GitHub Repo Report</h1>
+        <p id="whoami" class="whoami">…</p>
+      </header>
+
+      <section class="view">
+        <div id="connect-row" class="connect-row" hidden>
+          <p id="connect-status">
+            Connect your GitHub account to generate reports — a popup asks GitHub for
+            read access, and the platform stores the token server-side.
+          </p>
+          <button id="connect-btn" type="button">Connect GitHub</button>
+        </div>
+
+        <form id="gen-form" class="gen-form">
+          <label>
+            Repository
+            <input id="repo-input" list="repo-list" placeholder="owner/repo" autocomplete="off" required />
+            <datalist id="repo-list"></datalist>
+          </label>
+          <label>
+            Timescale
+            <select id="days-sel">
+              <option value="7">Last 7 days</option>
+              <option value="14">Last 14 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+          </label>
+          <button id="gen-btn" type="submit">Generate report</button>
+        </form>
+
+        <p id="gen-status" class="status" role="status"></p>
+
+        <article id="report-view" class="report-view" hidden>
+          <div class="report-head">
+            <h2 id="report-title"></h2>
+            <p id="report-meta" class="meta"></p>
+          </div>
+          <div id="report-body" class="markdown"></div>
+        </article>
+      </section>
+
+      <p class="footnote">
+        Activity is read through the platform's fetch proxy — the app bundle never sees your
+        GitHub token. Disconnect anytime from the portal's <strong>My Connections</strong> page.
+      </p>
+    </main>
+  </body>
+</html>
