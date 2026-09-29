@@ -78,7 +78,7 @@ catalog:
   "@azure/identity": ^4.5.0
   # Edge HTTP client: streams assets from Blob with hand-rolled SharedKey
   # signing — the edge stays off the Azure SDK (dep-minimal, project plan §1).
-  undici: ^7.29.0
+  undici: ^7.30.0
   # Zip handling: yauzl reads (portal, streaming + zip-bomb-safe), archiver
   # writes (helix CLI). fflate reads + writes in the browser (portal-web bundle
   # salvage — ADR-0038): tiny, dependency-free, and can list a zip's central
