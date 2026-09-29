@@ -22,7 +22,12 @@ import {
   type RunningDevOAuthVendor,
 } from "@azx-pbc/dev-oauth-vendor";
 import { createSecretStore, type SecretStore } from "@azx-pbc/secret-store";
-import { ConnectionRenewer, renewalLockKey, userConnectionFromPg } from "./renewal.js";
+import {
+  ConnectionRenewer,
+  renewalLockKey,
+  userConnectionFromPg,
+  type RenewalTarget,
+} from "./renewal.js";
 import { createEgressPool } from "./pool.js";
 import { makePinnedDispatcher } from "./ssrf.js";
 import { EGRESS_SPAN_ATTRS } from "./spanAttributes.js";
@@ -315,10 +320,21 @@ function refreshPresentations(): number {
   return vendor.tokenCalls().filter((c) => c.grantType === "refresh_token").length;
 }
 
-/** The advisory locks currently held in the test database. */
-async function advisoryLocks(): Promise<number> {
+/**
+ * The advisory locks held on ONE renewal target's key. `pg_locks` spans every
+ * session in the database, and the integration suites share one database while
+ * vitest runs files in parallel — a concurrent suite's renewal (retire drives
+ * real renewals) would fail an unscoped count. The invariant under test is the
+ * renewer's own release, which is exactly the per-target key.
+ */
+async function advisoryLocks(target: RenewalTarget): Promise<number> {
+  // The single-bigint lock key is split across pg_locks as classid (high 32
+  // bits) and objid (low 32), each displayed as an unsigned oid.
+  const key = BigInt(renewalLockKey(target));
   const rows = await ownerQuery<{ count: string }>(
-    `SELECT count(*) AS count FROM pg_locks WHERE locktype = 'advisory'`,
+    `SELECT count(*) AS count FROM pg_locks
+      WHERE locktype = 'advisory' AND classid::text = $1 AND objid::text = $2`,
+    [((key >> 32n) & 0xffffffffn).toString(), (key & 0xffffffffn).toString()],
   );
   return Number(rows[0]?.count ?? "0");
 }
@@ -839,23 +855,23 @@ describe("renewal — the advisory lock", () => {
 
       // Every outcome below releases: a warm cycle + one of each exit path.
       expect(await a.renewer.renew(target)).toMatchObject({ outcome: "refreshed" });
-      expect(await advisoryLocks()).toBe(0);
+      expect(await advisoryLocks(target)).toBe(0);
 
       // temporary_failure (the vendor hangs).
       await reexpire();
       vendor.setModes({ tokenMode: "hang" });
       expect(await a.renewer.renew(target)).toMatchObject({ outcome: "temporary_failure" });
-      expect(await advisoryLocks()).toBe(0);
+      expect(await advisoryLocks(target)).toBe(0);
 
       // uncertain_rotation (consumed-then-drop).
       await reexpire();
       vendor.setModes({ tokenMode: "consumed-then-drop" });
       expect(await a.renewer.renew(target)).toMatchObject({ outcome: "uncertain_rotation" });
-      expect(await advisoryLocks()).toBe(0);
+      expect(await advisoryLocks(target)).toBe(0);
 
       // reconnect_required (a dead row — no lock is even taken).
       expect(await a.renewer.renew(target)).toMatchObject({ outcome: "reconnect_required" });
-      expect(await advisoryLocks()).toBe(0);
+      expect(await advisoryLocks(target)).toBe(0);
 
       // Repeated cycles return the pool to its baseline — no leaked clients,
       // nothing stuck waiting on checkout, no advisory lock left behind.
@@ -870,7 +886,12 @@ describe("renewal — the advisory lock", () => {
           grantedScopes: ["email"],
         });
         await fresh.renewer.renew({ userOid: row.userOid, providerId: provider.id, env: "prod" });
-        expect(await advisoryLocks()).toBe(0);
+        const cycleTarget = {
+          userOid: row.userOid,
+          providerId: provider.id,
+          env: "prod" as Env,
+        };
+        expect(await advisoryLocks(cycleTarget)).toBe(0);
         expect(fresh.pool.totalCount).toBeLessThanOrEqual(2);
         expect(fresh.pool.waitingCount).toBe(0);
         await fresh.pool.end();
