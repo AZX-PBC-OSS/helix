@@ -14,9 +14,10 @@ public. Uploaded versions start as `preview`; promotion makes them live
 ### App CRUD (`apps/portal/src/routes/apps.ts`)
 
 ```
-POST   /api/v1/apps                  create (slug, displayName, visibility, optional capabilities)
+POST   /api/v1/apps                  create (slug, displayName, description?, visibility, optional capabilities)
 GET    /api/v1/apps                  list (authenticated)
 GET    /api/v1/apps/:slug            get (authenticated)
+PATCH  /api/v1/apps/:slug            edit the registry record (description today; owner/admin)
 POST   /api/v1/apps/:slug/archive    freeze → edge serves 410 + Clear-Site-Data (idempotent)
 POST   /api/v1/apps/:slug/unarchive  restore (idempotent)
 GET/PUT /api/v1/apps/:slug/manifest  capability grants (see capabilities-and-manifests.md)
@@ -32,7 +33,13 @@ models, any MCP/external origin, visibility→public) opens an `ApprovalRequest`
 needs a minted credential, so it has its own `/access/password` routes.
 
 Slugs are DNS labels (`[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`); visibility defaults to `internal`.
-Every mutation writes an `audit_events` row (`app.create`, `app.archive`, `version.promote`, …).
+Every app response carries an optional plain-text `description` (≤ 500 chars —
+`APP_DESCRIPTION_MAX` in `@azx-pbc/shared`): what the app is for, rendered as a subtitle under the
+name in the portal. It is optional on the wire in both directions — older CLIs strip the unknown
+key, and rows predating the field omit it — and is the one registry field edited via
+`PATCH /api/v1/apps/:slug` (absent key = no change, `null` = clear), audited as `app.update`.
+Every mutation writes an `audit_events` row (`app.create`, `app.update`, `app.archive`,
+`version.promote`, …).
 
 ### Version lifecycle (`apps/portal/src/routes/versions.ts`)
 
@@ -100,8 +107,8 @@ primitive, not an observability sink).
 
 ## Schema (Prisma — `apps/portal/prisma/schema.prisma`)
 
-- **`apps`** — slug, displayName, `visibilityMode` + `visibilityGroupIds`, `currentVersionId`
-  (1:1 → live version), `capabilities` JSON, `archivedAt`.
+- **`apps`** — slug, displayName, `description?` (plain text ≤ 500 chars), `visibilityMode` +
+  `visibilityGroupIds`, `currentVersionId` (1:1 → live version), `capabilities` JSON, `archivedAt`.
 - **`versions`** — `(appId, number)` unique, `blobPrefix`, `status`.
 - **`sessions`** — edge-owned session state (portal owns the migration); see
   [authentication.md](./authentication.md).

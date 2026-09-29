@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AppSchema } from "./app.js";
+import { APP_DESCRIPTION_MAX, AppSchema } from "./app.js";
 import { CapabilitiesSchema } from "./manifest.js";
 import { VersionSchema } from "./version.js";
 import { WritableVisibilitySchema } from "./visibility.js";
@@ -15,11 +15,24 @@ import { WritableVisibilitySchema } from "./visibility.js";
 export const CreateAppRequestSchema = z.object({
   slug: AppSchema.shape.slug,
   displayName: AppSchema.shape.displayName,
+  /** Optional one-line plain-text summary; rendered as a subtitle in the portal. */
+  description: AppSchema.shape.description,
   visibility: WritableVisibilitySchema.default({ mode: "internal" }),
   /** Optional per-app capability grant set at create time (architecture §6.3). */
   capabilities: CapabilitiesSchema.optional(),
 });
 export type CreateAppRequest = z.infer<typeof CreateAppRequestSchema>;
+
+/**
+ * `PATCH /api/v1/apps/:slug` body — partial registry-record edit. Only the keys
+ * present are applied: absent = no change, `null` = clear, a string = set.
+ * Starts with `description` alone; displayName or other registry fields can
+ * join without a second endpoint.
+ */
+export const UpdateAppRequestSchema = z.object({
+  description: z.string().max(APP_DESCRIPTION_MAX).nullable().optional(),
+});
+export type UpdateAppRequest = z.infer<typeof UpdateAppRequestSchema>;
 
 /** `PUT /api/v1/apps/:slug/manifest` body — replaces the app's capability grants. */
 export const SetManifestRequestSchema = z.object({

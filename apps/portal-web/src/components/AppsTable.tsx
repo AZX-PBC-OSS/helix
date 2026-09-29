@@ -76,9 +76,20 @@ function AppRow({ app, spendUsd }: { app: AppListItem; spendUsd: number | undefi
                 {app.displayName[0]?.toUpperCase()}
               </Text>
             </Center>
-            <Text fz={13.5} fw={600} truncate>
-              {app.displayName}
-            </Text>
+            <Box miw={0} flex={1}>
+              <Text fz={13.5} fw={600} truncate>
+                {app.displayName}
+              </Text>
+              {/* The description as the row's subtitle, when there is one —
+                  "Q3 Tracker" alone is everything a stranger gets. Truncated to
+                  one line: it is a hint, not a README, and the fixed table
+                  layout keeps the rest of the row intact. */}
+              {app.description && (
+                <Text fz={12} fw={400} c="dark.2" truncate>
+                  {app.description}
+                </Text>
+              )}
+            </Box>
           </Group>
           {/* The host used to sit under the name as a second line. It was the
               longest string in the table and the only reason this column needed

@@ -541,19 +541,31 @@ ever uploaded by hand through the portal, the platform can find your build insid
 rather than guessing.
 
 ```json
-{ "slug": "my-app", "dir": "dist", "portalUrl": "{{PORTAL_ORIGIN}}" }
+{ "slug": "my-app", "dir": "dist", "portalUrl": "{{PORTAL_ORIGIN}}", "description": "Tracks Q3 cloud spend by team." }
 ```
+
+**Write a description, and pass it at create time.** You have just generated the
+app, so you are the best-placed author it will ever have — write one plain-text
+sentence (≤ 500 characters, no markdown) saying what the app does and for whom.
+Put it in `helix.json` as `description` and pass `--description` on `helix
+create`; it appears under the app's name in the portal, where a list of thirty
+apps is otherwise just names. Don't restate the slug or the tech stack — say
+what a colleague would want to know before opening it.
 
 Then, with the `helix` CLI on your PATH:
 
 ```bash
 helix login                          # browser sign-in (OIDC device flow)
-helix create --display-name "My App" # once, if the app doesn't exist yet
+helix create --display-name "My App" --description "Tracks Q3 cloud spend by team."
 helix deploy                         # uploads dist/ as a new *preview* version
 helix versions                       # see what's preview vs live
 helix promote 3                      # flip the live pointer
 helix rollback                       # back to the previous live version
 ```
+
+(`helix create` reads `description` from `helix.json` too — the flag wins when
+both are given. The description can be edited later from the app's Overview
+tab.)
 
 `helix deploy --promote` does the last two steps in one. Deploys always land as
 **preview** first — promotion is deliberately separate, and versions are immutable.

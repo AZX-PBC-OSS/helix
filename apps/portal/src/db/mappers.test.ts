@@ -70,6 +70,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "cost-explorer",
       displayName: "Cost Explorer",
+      description: null,
       visibilityMode: "internal",
       visibilityGroupIds: [],
       currentVersionId: null,
@@ -98,6 +99,13 @@ describe("row mappers validate against the shared schema", () => {
       // Composed from the deployment's apps base so clients never template it.
       url: "https://cost-explorer.local.helix.azxlabs.io:8080",
     });
+    // A row with no description never serializes a `description` key — the
+    // value is `undefined`, which JSON.stringify drops, matching every row
+    // predating the field (`AppSchema.description` is optional).
+    expect(JSON.parse(JSON.stringify(toApp(row))).description).toBeUndefined();
+    expect(toApp({ ...row, description: "Tracks Q3 spend by team." }).description).toBe(
+      "Tracks Q3 spend by team.",
+    );
   });
 
   // The end-to-end version of the same property: `toApp` runs its output through
@@ -109,6 +117,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "orphan-group",
       displayName: "Orphan Group",
+      description: null,
       visibilityMode: "group",
       visibilityGroupIds: [],
       currentVersionId: null,
@@ -138,6 +147,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "cost-explorer",
       displayName: "Cost Explorer",
+      description: null,
       visibilityMode: "internal",
       visibilityGroupIds: [],
       currentVersionId: null,
@@ -162,6 +172,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "cost-explorer",
       displayName: "Cost Explorer",
+      description: null,
       visibilityMode: "group",
       visibilityGroupIds: ["eng-team"],
       currentVersionId: null,
@@ -195,6 +206,7 @@ describe("row mappers validate against the shared schema", () => {
       id: APP_ID,
       slug: "x",
       displayName: "X",
+      description: null,
       visibilityMode: "internal",
       visibilityGroupIds: [],
       currentVersionId: null,

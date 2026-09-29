@@ -72,11 +72,17 @@ describe("ownsApp — every app-scoped mutating route rejects a non-owner", () =
   // `ownsApp` with an existing (owner-owned) app.
   interface Route {
     name: string;
-    method: "POST" | "PUT" | "DELETE" | "GET";
+    method: "POST" | "PUT" | "PATCH" | "DELETE" | "GET";
     urlOf: (s: string) => string;
     payload?: object;
   }
   const ROUTES: Route[] = [
+    {
+      name: "registry record PATCH",
+      method: "PATCH",
+      urlOf: (s) => `/api/v1/apps/${s}`,
+      payload: { description: "attacker-controlled description" },
+    },
     { name: "archive", method: "POST", urlOf: (s) => `/api/v1/apps/${s}/archive` },
     { name: "unarchive", method: "POST", urlOf: (s) => `/api/v1/apps/${s}/unarchive` },
     {

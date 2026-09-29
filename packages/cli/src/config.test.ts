@@ -90,6 +90,24 @@ describe("resolveConfig", () => {
     });
     expect((await resolveConfig({}, {}, dir)).slug).toBe("from-helix");
   });
+
+  it("reads the description from helix.json, flag winning over file", async () => {
+    const dir = await appDir({
+      "helix.json": { slug: "s", description: "From the config file." },
+    });
+    expect((await resolveConfig({}, {}, dir)).description).toBe("From the config file.");
+    expect((await resolveConfig({ description: "From the flag." }, {}, dir)).description).toBe(
+      "From the flag.",
+    );
+  });
+
+  // A helix.json written by a newer CLI (or an agent following the skill) must
+  // not break an older install — unknown keys were always ignored.
+  it("ignores helix.json keys it does not know", async () => {
+    const dir = await appDir({ "helix.json": { slug: "s", somedayField: 1 } });
+    const c = await resolveConfig({}, {}, dir);
+    expect(c.slug).toBe("s");
+  });
 });
 
 describe("parseVisibility", () => {

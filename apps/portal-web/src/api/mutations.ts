@@ -31,6 +31,7 @@ import {
   type ProviderUpdateRequest,
   type SecretMetadata,
   type SessionRevokeResult,
+  type UpdateAppRequest,
   type UploadVersionResponse,
   type Visibility,
   type VisibilityUpdateResult,
@@ -61,6 +62,18 @@ export function useCreateApp() {
       fetchJson(AppSchema, "/api/v1/apps", { method: "POST", body }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["apps"] }),
   });
+}
+
+/**
+ * Edit the app's registry record (the description today). The body is partial —
+ * absent keys change nothing; `description: null` clears it. The server is the
+ * no-op judge (an unchanged value returns the row untouched), so the SPA need
+ * not pre-compare.
+ */
+export function useUpdateApp() {
+  return useAppMutation(({ slug, body }: { slug: string; body: UpdateAppRequest }) =>
+    fetchJson(AppSchema, `/api/v1/apps/${encodeURIComponent(slug)}`, { method: "PATCH", body }),
+  );
 }
 
 export function usePromoteVersion() {

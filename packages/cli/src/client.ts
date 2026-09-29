@@ -28,6 +28,8 @@ export class CliError extends Error {
 export interface CreateAppInput {
   slug: string;
   displayName: string;
+  /** Optional plain-text summary; omitted from the body entirely when unset. */
+  description?: string;
   visibility?: Visibility;
 }
 
@@ -45,7 +47,17 @@ export class PortalClient {
   }
 
   createApp(input: CreateAppInput): Promise<App> {
-    return this.#json(AppSchema, "POST", "/api/v1/apps", { auth: true, body: input });
+    return this.#json(AppSchema, "POST", "/api/v1/apps", {
+      auth: true,
+      body: {
+        slug: input.slug,
+        displayName: input.displayName,
+        // Sent only when set, so a description-free create posts exactly the
+        // body it always did — an older portal never sees a new key at all.
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
+      },
+    });
   }
 
   /** Public IdP discovery info — how `helix login` finds the issuer. */

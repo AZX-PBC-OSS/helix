@@ -10,6 +10,13 @@ import { VisibilitySchema } from "./visibility.js";
  */
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/**
+ * Cap for the app description — a subtitle for a list row, not a README.
+ * Exported so the SPA's counter and the CLI's prompt validate against the same
+ * number the schema enforces.
+ */
+export const APP_DESCRIPTION_MAX = 500;
+
 export const AppSchema = z.object({
   id: z.uuid(),
   slug: z
@@ -18,6 +25,14 @@ export const AppSchema = z.object({
     .max(63)
     .regex(SLUG_PATTERN, "must be a lowercase DNS label (a-z, 0-9, hyphen)"),
   displayName: z.string().min(1).max(200),
+  /**
+   * What the app is for, in one sentence. Plain text (≤ {@link APP_DESCRIPTION_MAX}
+   * chars) — it renders as a subtitle in list rows and the detail header, so
+   * markdown would invite a wall of text in a table cell. Optional on the wire
+   * like `url`/`ownerId`: the CLI parses this schema, and every row predating
+   * the field carries none. Never `null` — an unset description omits the key.
+   */
+  description: z.string().max(APP_DESCRIPTION_MAX).optional(),
   visibility: VisibilitySchema,
   /** The version currently served; null before the first deploy. */
   currentVersionId: z.uuid().nullable(),

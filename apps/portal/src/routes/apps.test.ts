@@ -58,6 +58,145 @@ describe("POST /api/v1/apps", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe("validation_failed");
   });
+
+  it("creates with an optional description and round-trips it on read", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({
+      slug,
+      displayName: "Described",
+      description: "Tracks Q3 spend by team.",
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().description).toBe("Tracks Q3 spend by team.");
+
+    const got = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+    });
+    expect(got.json().description).toBe("Tracks Q3 spend by team.");
+  });
+
+  it("omits the description key entirely when unset", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({ slug, displayName: "Undescribed" });
+    expect(created.statusCode).toBe(201);
+    expect("description" in created.json()).toBe(false);
+  });
+
+  it("rejects an over-length description (400 validation_failed)", async () => {
+    const res = await createApp({
+      slug: uniqueSlug(),
+      displayName: "X",
+      description: "a".repeat(501),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
+  });
+});
+
+describe("PATCH /api/v1/apps/:slug", () => {
+  it("sets, edits and clears the description, auditing each real change", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Editable" });
+
+    const set = await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+      payload: { description: "First summary." },
+    });
+    expect(set.statusCode).toBe(200);
+    expect(set.json().description).toBe("First summary.");
+
+    const edited = await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+      payload: { description: "Second summary." },
+    });
+    expect(edited.json().description).toBe("Second summary.");
+
+    const cleared = await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+      payload: { description: null },
+    });
+    expect(cleared.statusCode).toBe(200);
+    // Cleared means omitted on the wire, same as never set.
+    expect("description" in cleared.json()).toBe(false);
+  });
+
+  it("treats an absent key as no change and a no-op value as no write", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({
+      slug,
+      displayName: "Stable",
+      description: "Unchanged.",
+    });
+    const updatedAt = created.json().updatedAt;
+
+    const empty = await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+      payload: {},
+    });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json().description).toBe("Unchanged.");
+
+    const same = await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+      payload: { description: "Unchanged." },
+    });
+    expect(same.statusCode).toBe(200);
+    // A no-op must not bump `updatedAt` — the record did not change.
+    expect(same.json().updatedAt).toBe(updatedAt);
+  });
+
+  it("rejects an over-length description (400 validation_failed)", async () => {
+    const slug = uniqueSlug();
+    await createApp({ slug, displayName: "Capped" });
+    const res = await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+      payload: { description: "a".repeat(501) },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
+  });
+
+  it("404s an unknown slug", async () => {
+    const res = await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${uniqueSlug()}`,
+      headers: authHeader(),
+      payload: { description: "x" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("not_found");
+  });
+
+  it("records the changed description in the app.update audit trail", async () => {
+    const slug = uniqueSlug();
+    const created = await createApp({ slug, displayName: "Audited" });
+    const appId = created.json().id;
+    await t.app.inject({
+      method: "PATCH",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+      payload: { description: "Recorded." },
+    });
+    const events = await t.prisma.auditEvent.findMany({
+      where: { appId, action: "app.update" },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.metadata).toEqual({ description: "Recorded." });
+  });
 });
 
 describe("POST /api/v1/apps/:slug/archive and /unarchive", () => {

@@ -153,6 +153,12 @@ The remaining `PreviewBadge` marks planned owner/editor/viewer roles.
   `group` app created here would lock out its own creator on its first request — the Access tab
   offers it because there the app already exists and the change is one click to undo) and
   `SHOW_VISIBILITY_AT_CREATE`, the render switch, flipped back on when a second mode unlocks.
+  The description is prompted **in the form itself**, not behind an "advanced" section — a
+  description you have to go back and add is a description nobody adds (portal UX review,
+  Aug 2026) — and is sent only when written, so a blank field creates exactly the body the
+  form always posted. The description is edited on the Overview tab's Registry-record card
+  (the edit affordance mirrors the server's `ownsApp` — owner or admin); it renders under the
+  name in the detail header and as a list-row subtitle.
 
 - **Bundle salvage** (`src/deploy/`, [ADR-0038](../adr/0038-bundle-salvage-in-the-portal-spa.md)) —
   the deploy modal's upload section accepts a dropped **build folder** as well as a zip — each

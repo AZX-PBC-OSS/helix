@@ -21,6 +21,7 @@ handled in `packages/cli/src/config.ts` / `args.ts`:
 | portal URL | `--portal-url` | `HELIX_PORTAL_URL` | `portalUrl` | `http://localhost:3001` |
 | build dir | `--dir` | — | `dir` | `dist` |
 | token | `--token` | `HELIX_TOKEN` | — | _(`helix login` cache)_ |
+| description | `--description` | — | `description` | — |
 
 The default portal URL, `http://localhost:3001`, works only for local development.
 For a deployed portal, set `portalUrl` in `helix.json` so login, create, deploy,
@@ -32,10 +33,14 @@ a ready-to-copy file for this deployment, as does the
 
 ```
 helix login | logout | whoami
-helix create   [--display-name <name>] [--visibility <v>]   # v = internal | group:<id>[,<id>…] | password | public
+helix create   [--display-name <name>] [--description <text>] [--visibility <v>]   # v = internal | group:<id>[,<id>…] | password | public
 helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a preview; --promote flips it live
 helix versions | promote <number> | rollback [number]
 ```
+
+`create` resolves the description from the flag or `helix.json` (flag wins) and
+sends it only when set — an older portal never sees a key it doesn't know, so a
+new CLI against an old portal degrades to no description rather than failing.
 
 `deploy` zips the build dir (`packages/cli/src/zip.ts`) and POSTs it to the portal version
 endpoint; `--promote` flips the live pointer in the same step (architecture §5.1). The HTTP

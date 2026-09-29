@@ -89,6 +89,14 @@ export function AppDetailPage() {
               </Title>
               <StatusLine kind={status} />
             </Group>
+            {/* The description, if the owner wrote one — the subtitle the name
+                alone can't be. Plain text, wrapped rather than truncated: the
+                detail page has room for the whole sentence. */}
+            {a.description && (
+              <Text fz={13.5} c="dark.1" lh={1.5} maw={560} mt={7}>
+                {a.description}
+              </Text>
+            )}
             {/* Only a link once we know where the app actually is — otherwise
                 (not live, or the deployment config hasn't landed) plain text. */}
             {status === "live" && appLink ? (

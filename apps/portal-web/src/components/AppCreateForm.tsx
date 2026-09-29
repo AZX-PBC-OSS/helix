@@ -1,6 +1,12 @@
 import { useState } from "react";
-import { Alert, Box, Button, Group, Radio, Stack, Text, TextInput } from "@mantine/core";
-import { SLUG_PATTERN, type App, type Visibility, type VisibilityMode } from "@azx-pbc/shared";
+import { Alert, Box, Button, Group, Radio, Stack, Text, Textarea, TextInput } from "@mantine/core";
+import {
+  SLUG_PATTERN,
+  APP_DESCRIPTION_MAX,
+  type App,
+  type Visibility,
+  type VisibilityMode,
+} from "@azx-pbc/shared";
 import { useCreateApp } from "../api/mutations";
 import { GroupPicker } from "./GroupPicker";
 import { useAuth } from "../auth/AuthProvider";
@@ -108,6 +114,7 @@ export function AppCreateForm({
   const create = useCreateApp();
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [description, setDescription] = useState("");
   const [mode, setMode] = useState<VisibilityMode>("internal");
   const [groupIds, setGroupIds] = useState<string[]>([]);
 
@@ -117,7 +124,17 @@ export function AppCreateForm({
 
   function submit() {
     const visibility: Visibility = mode === "group" ? { mode, groupIds } : { mode };
-    create.mutate({ slug, displayName: displayName.trim(), visibility }, { onSuccess: onCreated });
+    create.mutate(
+      {
+        slug,
+        displayName: displayName.trim(),
+        // Optional — sent only when written, so the body of a description-free
+        // create is byte-identical to what it always was.
+        ...(description.trim() ? { description: description.trim() } : {}),
+        visibility,
+      },
+      { onSuccess: onCreated },
+    );
   }
 
   return (
@@ -163,6 +180,24 @@ export function AppCreateForm({
         placeholder="Cost Explorer"
         value={displayName}
         onChange={(e) => setDisplayName(e.currentTarget.value)}
+      />
+      {/* Prompted here rather than behind an "advanced" section: a description
+          you have to go back and add is a description nobody adds. Optional —
+          an empty field creates exactly what it always did. */}
+      <Textarea
+        label="Description"
+        description="What is this app for? One sentence — it appears under the app's name."
+        placeholder="Tracks Q3 cloud spend by team, with a monthly export."
+        value={description}
+        onChange={(e) => setDescription(e.currentTarget.value)}
+        minRows={2}
+        maxRows={4}
+        maxLength={APP_DESCRIPTION_MAX}
+        bottomSection={
+          <Text fz={11} c="dark.3" ta="right" lh={1}>
+            {description.length}/{APP_DESCRIPTION_MAX}
+          </Text>
+        }
       />
       {SHOW_VISIBILITY_AT_CREATE ? (
         <Radio.Group

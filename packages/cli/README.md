@@ -21,17 +21,23 @@ is wherever you're standing.
 Each setting is resolved **flags → environment → `helix.json` → built-in default**
 (first match wins):
 
-| Setting    | Flag           | Env                | `helix.json` key | Default                    |
-| ---------- | -------------- | ------------------ | ---------------- | -------------------------- |
-| App slug   | `--slug`       | —                  | `slug`           | _(required)_               |
-| Portal URL | `--portal-url` | `HELIX_PORTAL_URL` | `portalUrl`      | `http://localhost:3001`    |
-| Build dir  | `--dir`        | —                  | `dir`            | `dist`                     |
-| Auth token | `--token`      | `HELIX_TOKEN`      | —                | _(`helix login` if unset)_ |
+| Setting     | Flag            | Env                | `helix.json` key | Default                    |
+| ----------- | --------------- | ------------------ | ---------------- | -------------------------- |
+| App slug    | `--slug`        | —                  | `slug`           | _(required)_               |
+| Portal URL  | `--portal-url`  | `HELIX_PORTAL_URL` | `portalUrl`      | `http://localhost:3001`    |
+| Build dir   | `--dir`         | —                  | `dir`            | `dist`                     |
+| Auth token  | `--token`       | `HELIX_TOKEN`      | —                | _(`helix login` if unset)_ |
+| Description | `--description` | —                  | `description`    | —                          |
 
 A `helix.json` looks like:
 
 ```json
-{ "slug": "my-app", "dir": "dist", "portalUrl": "https://portal.example.com" }
+{
+  "slug": "my-app",
+  "dir": "dist",
+  "portalUrl": "https://portal.example.com",
+  "description": "Tracks Q3 cloud spend by team."
+}
 ```
 
 **`portalUrl` is the one you cannot leave to the default.** `http://localhost:3001`
@@ -55,7 +61,7 @@ would be wrong for every deployment but one — so to deploy an example, add
 helix login                                                   # browser sign-in (OIDC device flow)
 helix logout                                                  # forget the cached tokens
 helix whoami                                                  # who the portal thinks you are
-helix create   [--display-name <name>] [--visibility <v>]   # register the app
+helix create   [--display-name <name>] [--description <text>] [--visibility <v>]   # register the app
 helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a version
 helix versions                                               # list versions
 helix promote  <number>                                      # make a version live

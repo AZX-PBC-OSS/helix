@@ -91,6 +91,10 @@ export function toApp(row: AppRow): App {
     id: row.id,
     slug: row.slug,
     displayName: row.displayName,
+    // Nullable column, optional wire field: `?? undefined` so a row predating
+    // the field (or one with no description) omits the key rather than sending
+    // a null the schema refuses.
+    description: row.description ?? undefined,
     visibility: visibilityFromColumns(row.visibilityMode, row.visibilityGroupIds),
     currentVersionId: row.currentVersionId,
     archivedAt: row.archivedAt?.toISOString() ?? null,

@@ -43,6 +43,11 @@ model App {
   id                 String            @id @default(uuid()) @db.Uuid
   slug               String            @unique
   displayName        String
+  /// What the app is for, in one sentence. Plain text — the cap (500) lives in
+  /// zod (`AppSchema.description`), not here, so re-tuning it needs no
+  /// migration. Nullable: rows predating the field carry none, and it is
+  /// omitted from the wire rather than sent as null.
+  description        String?
   /// Creator's `actor.oid` — the Entra `oid` claim (ADR-0048), set at
   /// `app.create`. Nullable: rows predating the approvals work
   /// (docs/design/approvals.md §4) have no recorded owner; rows created before

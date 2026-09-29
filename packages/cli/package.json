@@ -1,6 +1,6 @@
 {
   "name": "@azx-pbc/helix-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Deploy CLI for Helix, the AZX App Platform",
   "license": "MIT",
   "repository": {

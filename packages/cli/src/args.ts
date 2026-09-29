@@ -9,6 +9,7 @@ const options = {
   token: { type: "string" },
   promote: { type: "boolean" },
   "display-name": { type: "string" },
+  description: { type: "string" },
   visibility: { type: "string" },
   path: { type: "string" },
   help: { type: "boolean" },

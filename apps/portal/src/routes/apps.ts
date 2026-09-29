@@ -8,6 +8,7 @@ import {
   SetManifestRequestSchema,
   SetPasswordRequestSchema,
   SetVisibilityRequestSchema,
+  UpdateAppRequestSchema,
   captureSnapshot,
   classifyVisibilityChange,
   visibilityGroupIds,
@@ -84,6 +85,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         data: {
           slug: body.slug,
           displayName: body.displayName,
+          description: body.description ?? null,
           // The identity half — the creator's Entra `oid` (ADR-0048): the one
           // id the edge session also holds for the same human, so `ownsApp`
           // and `scope=mine` compare a value that actually corresponds across
@@ -204,6 +206,46 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
       return toApp(row);
+    },
+  );
+
+  // Edit the registry record. Mutating — requires the owner. Partial body: only
+  // the keys present are applied (absent = no change, `null` = clear), so the
+  // schema can grow fields (displayName, …) without a second endpoint. Not a
+  // policy write — the description is display-only state, so there is nothing
+  // to CAS and nothing for the edge to project.
+  app.patch<{ Params: { slug: string } }>(
+    "/api/v1/apps/:slug",
+    { preHandler: [authenticate, ownsApp] },
+    async (req) => {
+      const { description } = UpdateAppRequestSchema.parse(req.body);
+      const actor = requireActor(req);
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      const next = description === undefined ? row.description : description;
+      if (next === row.description) {
+        return toApp(row); // nothing to change — no write, no audit, no updatedAt bump
+      }
+      const updated = await app.prisma.app.update({
+        where: { id: row.id },
+        data: { description: next },
+      });
+      await app.prisma.auditEvent.create({
+        data: {
+          appId: row.id,
+          actor: actor.sub,
+          action: "app.update",
+          // The new value rides along: the audit row is also the record of what
+          // the description was set to (null means cleared), which the registry
+          // row itself stops carrying the moment it is edited again.
+          metadata: {
+            description: next,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      return toApp(updated);
     },
   );
 

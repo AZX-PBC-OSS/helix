@@ -78,17 +78,21 @@ function printVersion(v: Version): void {
 
 function printApp(app: App): void {
   console.log(`  app ${app.slug} — live version: ${app.currentVersionId ?? "(none)"}`);
+  if (app.description) console.log(`  ${app.description}`);
 }
 
 export async function createCommand(
   client: PortalClient,
   config: ResolvedConfig,
-  opts: { displayName?: string; visibility?: string },
+  opts: { displayName?: string; description?: string; visibility?: string },
 ): Promise<void> {
   const slug = requireSlug(config);
   const app = await client.createApp({
     slug,
     displayName: opts.displayName ?? slug,
+    // Flag wins over helix.json, and an unset description is simply not sent —
+    // an older portal never sees a key it doesn't know.
+    description: opts.description ?? config.description,
     visibility: parseVisibility(opts.visibility),
   });
   console.log(`Created app "${app.slug}".`);

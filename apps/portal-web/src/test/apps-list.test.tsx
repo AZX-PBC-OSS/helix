@@ -371,6 +371,29 @@ describe("AppsListPage", () => {
   });
 
   /**
+   * The description is the row's subtitle — "Q3 Tracker" alone is everything a
+   * stranger gets (portal UX review, Aug 2026).
+   */
+  describe("description subtitle", () => {
+    it("renders the description under the name and stays silent when absent", async () => {
+      stubFetch([
+        makeApp("described", "Described", true, "https://described.apps.example.com", {
+          description: "Tracks Q3 spend by team.",
+        }),
+        makeApp("bare", "Bare", true, "https://bare.apps.example.com"),
+      ]);
+      render();
+
+      expect(await screen.findByText("Described")).toBeDefined();
+      expect(screen.getByText("Tracks Q3 spend by team.")).toBeDefined();
+      // No placeholder for an app without one — absence is silence, not a dash.
+      const bareRow = screen.getByText("Bare").closest("tr");
+      expect(bareRow).not.toBeNull();
+      expect(within(bareRow as HTMLElement).queryByText(/Tracks Q3/)).toBeNull();
+    });
+  });
+
+  /**
    * The column the card grid could not have had: its sparkline plotted deploy
    * cadence from version timestamps because there was no metering API yet.
    */

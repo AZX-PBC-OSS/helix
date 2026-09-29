@@ -7,6 +7,7 @@ export interface CliFlags {
   dir?: string;
   bundle?: string;
   token?: string;
+  description?: string;
 }
 
 export interface ResolvedConfig {
@@ -17,6 +18,8 @@ export interface ResolvedConfig {
   dir: string;
   /** Path to a prebuilt zip; takes precedence over `dir` for deploy. */
   bundle?: string;
+  /** App description for `helix create` — flag or helix.json. */
+  description?: string;
 }
 
 const DEFAULT_PORTAL_URL = "http://localhost:3001";
@@ -26,6 +29,7 @@ interface HelixConfigFile {
   slug?: string;
   portalUrl?: string;
   dir?: string;
+  description?: string;
 }
 
 /**
@@ -67,5 +71,6 @@ export async function resolveConfig(
     slug: flags.slug ?? file.slug,
     dir: flags.dir ?? file.dir ?? DEFAULT_DIR,
     bundle: flags.bundle,
+    description: flags.description ?? file.description,
   };
 }

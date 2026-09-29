@@ -113,13 +113,57 @@ describe("AppCreateForm", () => {
     );
   });
 
-  it("asks for nothing beyond the subdomain and display name", async () => {
+  it("sends the description when written and omits the key when blank", async () => {
+    setToken("t");
+    const created = stubFetch();
+    render();
+
+    await userEvent.type(await screen.findByRole("textbox", { name: /subdomain/i }), "tracker");
+    await userEvent.type(screen.getByRole("textbox", { name: /display name/i }), "Tracker");
+    // First create with the description filled in…
+    await userEvent.type(
+      screen.getByRole("textbox", { name: /description/i }),
+      "Tracks Q3 spend by team.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /create app/i }));
+    await vi.waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]).toEqual({
+      slug: "tracker",
+      displayName: "Tracker",
+      description: "Tracks Q3 spend by team.",
+      visibility: { mode: "internal" },
+    });
+  });
+
+  it("leaves the description out of the body entirely when left blank", async () => {
+    setToken("t");
+    const created = stubFetch();
+    render();
+
+    await userEvent.type(await screen.findByRole("textbox", { name: /subdomain/i }), "bare");
+    await userEvent.type(screen.getByRole("textbox", { name: /display name/i }), "Bare");
+    await userEvent.click(screen.getByRole("button", { name: /create app/i }));
+
+    await vi.waitFor(() => expect(created).toHaveLength(1));
+    // Byte-identical to the pre-description create — an old portal strips and
+    // ignores what it doesn't know, so not sending it is the cleaner contract.
+    expect(created[0]).toEqual({
+      slug: "bare",
+      displayName: "Bare",
+      visibility: { mode: "internal" },
+    });
+  });
+
+  it("prompts for the description in the form itself, not behind an advanced section", async () => {
     setToken("t");
     stubFetch();
     render();
 
     await screen.findByRole("textbox", { name: /subdomain/i });
-    expect(screen.getAllByRole("textbox")).toHaveLength(2);
+    // Three textboxes: subdomain, display name, description — the description
+    // is prompted up front (optional) rather than hidden behind an "advanced"
+    // section nobody opens.
+    expect(screen.getAllByRole("textbox")).toHaveLength(3);
     // Group is the mode most likely to creep back in ahead of its gate.
     expect(screen.queryByRole("textbox", { name: /group id/i })).toBeNull();
   });

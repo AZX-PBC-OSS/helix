@@ -25,7 +25,7 @@ Usage:
   helix logout
   helix whoami
   helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]
-  helix create   [--display-name <name>] [--visibility <v>]
+  helix create   [--display-name <name>] [--description <text>] [--visibility <v>]
   helix versions
   helix promote  <number>
   helix rollback [number]
@@ -33,7 +33,7 @@ Usage:
 
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
 Env:  HELIX_PORTAL_URL, HELIX_TOKEN (static token — skips login; CI/scripts).
-Config file: helix.json { slug, portalUrl, dir }
+Config file: helix.json { slug, portalUrl, dir, description }
 Visibility: internal | group:<id>[,<id>...] | password | public
 `;
 
@@ -79,6 +79,7 @@ async function main(): Promise<void> {
     case "create":
       await createCommand(client, config, {
         displayName: values["display-name"],
+        description: values.description ?? config.description,
         visibility: values.visibility,
       });
       break;
