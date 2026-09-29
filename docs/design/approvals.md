@@ -115,6 +115,8 @@ The threshold constants (`BASELINE_TOKENS`, write/byte ceilings, the default-mod
 
 > **Bundling tradeoff (v1 choice):** one request per submission, even if it carries several elevated deltas of different kinds; the request's `risk` is the max across them; the reviewer approves/denies the bundle (or `needs_changes`). Per-delta partial approval is a deliberate future refinement, not v1 — it complicates the state machine for a rare case.
 
+> **As built — per-delta risk + rendering:** each delta also carries its own `risk` (what the aggregate is the max of), so the queue card can show severity per change, not just the bundle. The card renders every delta expanded as labeled chips (plain-English capability name, the change in the field's own units, a per-delta risk badge) with a `?` tooltip — served from `deltaHelp` in `@azx-pbc/shared` — that explains what the capability grants and why it is gated; raw delta paths remain inside that tooltip for the record. Rows filed before the field existed carry no per-delta risk and render without the chip, falling back to the aggregate.
+
 ---
 
 ## 4. Authz: an admin role from a group claim

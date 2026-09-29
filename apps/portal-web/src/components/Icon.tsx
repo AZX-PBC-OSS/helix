@@ -177,6 +177,13 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" />
     </>
   ),
+  help: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.6 9.2a2.5 2.5 0 0 1 4.9.6c0 1.6-2.5 2-2.5 3.4" />
+      <circle cx="12" cy="16.8" r=".6" fill="currentColor" stroke="none" />
+    </>
+  ),
 };
 
 export type IconName = keyof typeof PATHS;

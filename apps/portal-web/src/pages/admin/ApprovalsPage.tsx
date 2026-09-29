@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react";
 import {
+  Box,
   Button,
   Card,
   Center,
-  Code,
   Grid,
   Group,
   Loader,
   Stack,
   Text,
   Textarea,
+  Tooltip,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -21,17 +22,12 @@ import {
 import { PortalApiError } from "../../api/client";
 import { approvalsQuery } from "../../api/queries";
 import { useApproveRequest, useDenyRequest, useRequestChanges } from "../../api/mutations";
-import { Icon, type IconName } from "../../components/Icon";
+import { DeltaList, riskBreakdown, RISK_META } from "../../components/deltas";
+import { Icon } from "../../components/Icon";
 import { Hint, PageHead, ToneBadge, type Tone } from "../../components/primitives";
 import { daysSince, timeAgo } from "../../lib/format";
 
 /** The approvals queue for above-baseline capability grants (real, M4+). */
-
-const RISK_META: Record<ApprovalRequest["risk"], [Tone, string]> = {
-  high: ["bad", "HIGH RISK"],
-  med: ["warn", "ELEVATED"],
-  low: ["info", "ROUTINE"],
-};
 
 /** Tone + short label for a decided (or sibling-pending) request in the history log. */
 const STATUS_META: Record<ApprovalStatus, [Tone, string]> = {
@@ -63,22 +59,6 @@ function providerBoundFetchOrigin(d: Delta): string | null {
   if (!m) return null;
   return parseFetchOriginKey(m[1]!).provider ?? null;
 }
-
-/** Derive a human label + icon for a request from the kinds of deltas it carries. */
-function kindMeta(deltas: Delta[]): [IconName, string] {
-  if (deltas.some((d) => d.path === "visibility")) return ["globe", "Go public"];
-  // Delegated providers outrank the generic origin grant: the binding is the
-  // decision an approver can't take back lightly (high risk, consent-gated).
-  if (deltas.some((d) => providerBoundFetchOrigin(d) !== null))
-    return ["bolt", "Delegated provider"];
-  if (deltas.some((d) => d.path.startsWith("mcp"))) return ["key", "MCP grant"];
-  if (deltas.some((d) => d.path.startsWith("externalOrigins"))) return ["globe", "Origin grant"];
-  if (deltas.some((d) => d.path.startsWith("llm"))) return ["cpu", "LLM budget"];
-  if (deltas.some((d) => d.path.startsWith("data"))) return ["layers", "Data grant"];
-  return ["shield", "Capability change"];
-}
-
-const fmt = (v: Delta["from"]) => (v === undefined ? "∅" : String(v));
 
 /**
  * How each landed status reads in "this request was already …"
@@ -120,14 +100,6 @@ function providerConflict(err: unknown): boolean {
   const details: unknown = err.details;
   if (typeof details !== "object" || details === null) return false;
   return typeof (details as { ref?: unknown }).ref === "string";
-}
-
-/** Membership deltas (`mcp[+x]`) are self-describing; scalar deltas show from → to. */
-function diffLine(d: Delta): string {
-  return d.path.includes("[") ? d.path : `${d.path}: ${fmt(d.from)} → ${fmt(d.to)}`;
-}
-function diffText(deltas: Delta[]): string {
-  return deltas.map(diffLine).join("\n");
 }
 
 /**
@@ -180,9 +152,7 @@ function PriorHistory({ appSlug, currentId }: { appSlug: string; currentId: stri
                 </Text>
               )}
             </Group>
-            <Code block mt={7} style={{ fontSize: 11.5 }}>
-              {diffText(r.deltas)}
-            </Code>
+            <DeltaList deltas={r.deltas} />
             {r.decisionNote && (
               <Text fz={12} c="dark.2" mt={5} fs="italic">
                 “{r.decisionNote}”
@@ -207,12 +177,6 @@ function DetailsPanel({ request: a }: { request: ApprovalRequest }) {
         </Text>{" "}
         · filed {timeAgo(a.createdAt)}
       </Text>
-      {/* The ask line shows only a count when a submission bundles several deltas. */}
-      {a.deltas.length > 1 && (
-        <Code block style={{ fontSize: 12 }}>
-          {diffText(a.deltas)}
-        </Code>
-      )}
       {hasHistory && a.appSlug && <PriorHistory appSlug={a.appSlug} currentId={a.id} />}
     </Stack>
   );
@@ -247,10 +211,8 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
     setNote("");
   };
 
-  const [kindIcon, kindLabel] = kindMeta(a.deltas);
   const [riskTone, riskLabel] = RISK_META[a.risk];
   const days = daysSince(a.createdAt);
-  const ask = a.deltas.length === 1 ? diffLine(a.deltas[0]!) : `${a.deltas.length} changes`;
   const signal = priorSignal(a.priorDecisions);
   // The filing-time warning is data stamped at filing, so the card
   // renders it with no extra fetch. Advisory only — it qualifies the ask for
@@ -289,22 +251,32 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
               <ToneBadge tone={ageTone(days)} icon="clock">
                 {ageLabel(days)}
               </ToneBadge>
-              <ToneBadge tone={riskTone} icon={a.risk === "high" ? "alert" : undefined}>
-                {riskLabel}
-              </ToneBadge>
+              {(() => {
+                // The aggregate is "highest of" — for bundles, say so and break
+                // it down; the per-delta chips carry the levels themselves.
+                const breakdown = a.deltas.length > 1 ? riskBreakdown(a.deltas) : null;
+                const badge = (
+                  <ToneBadge tone={riskTone} icon={a.risk === "high" ? "alert" : undefined}>
+                    {riskLabel}
+                  </ToneBadge>
+                );
+                if (!breakdown) return badge;
+                return (
+                  <Tooltip label={breakdown} position="top" withArrow>
+                    <span tabIndex={0} style={{ display: "inline-flex", borderRadius: 999 }}>
+                      {badge}
+                    </span>
+                  </Tooltip>
+                );
+              })()}
             </Group>
           </Group>
 
-          {/* The ask: kind + the delta being requested. */}
-          <Group gap={8} mb={a.reason || publicAppWarning ? 8 : 0} wrap="wrap">
-            <Icon name={kindIcon} size={14} style={{ color: "var(--mantine-color-dark-2)" }} />
-            <Text fz={13} c="dark.1">
-              {kindLabel}
-            </Text>
-            <Text className="az-mono" fz={12.5} c="accent.4">
-              {ask}
-            </Text>
-          </Group>
+          {/* The ask: every delta, expanded — one chip row per change, each with
+              its own risk level and a help tooltip. */}
+          <Box mb={a.reason || publicAppWarning ? 8 : 0}>
+            <DeltaList deltas={a.deltas} />
+          </Box>
 
           {publicAppWarning && (
             <div style={{ marginBottom: a.reason ? 8 : 0 }}>

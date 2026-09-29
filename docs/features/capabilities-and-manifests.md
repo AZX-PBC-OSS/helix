@@ -124,6 +124,12 @@ SPA's pre-submit warning never drift:
 | offline | giving up the grant | taking it, or moving the scope | med |
 | visibility | internal / group / password | **→ public** | high |
 
+The per-delta risk travels on the delta itself (`Delta.risk`), and the admin queue renders it: one
+expanded chip row per change — plain-English capability name, the change in the field's own units,
+the delta's own risk badge — plus a `?` tooltip (`deltaHelp` in `@azx-pbc/shared`) explaining in
+plain terms what the capability grants and why it is gated. The card's aggregate badge remains the
+max across the deltas ("highest of", broken down on hover for bundles).
+
 One rule the value-diff cannot express, added with provider bindings
 ([connection-providers.md](./connection-providers.md)): a binding whose
 approved stamps were stale-dated by a sensitive provider edit **re-elevates on

@@ -115,21 +115,23 @@ afterEach(() => {
 });
 
 describe("ApprovalsPage delegated-provider requests", () => {
-  it("renders the distinct kind, the provider delta line, and the high-risk badge", async () => {
+  it("renders the capability chip, the origin + binding, and the high-risk badge", async () => {
     stubFetch([makeDelegatedRequest(false)]);
     renderWithProviders(<ApprovalsPage />);
 
-    expect(await screen.findByText("Delegated provider")).toBeDefined();
-    expect(
-      screen.getByText(/fetch\.origins\[\+https:\/\/api\.asana\.com→provider:asana\]/),
-    ).toBeDefined();
+    // The chip names the capability in plain English and splits the origin
+    // from its credential source (the raw path lives only in the tooltip).
+    expect(await screen.findByText("Delegated provider connection")).toBeDefined();
+    expect(screen.getByText("https://api.asana.com")).toBeDefined();
+    expect(screen.getByText(/via/)).toBeDefined();
+    expect(screen.getByText("asana")).toBeDefined();
     expect(screen.getByText("HIGH RISK")).toBeDefined();
   });
 
   it("renders from the filing-stamped payload with no extra request", async () => {
     const fetchMock = stubFetch([makeDelegatedRequest(true)]);
     renderWithProviders(<ApprovalsPage />);
-    await screen.findByText("Delegated provider");
+    await screen.findByText("Delegated provider connection");
 
     // The only network call is the queue itself: visibility and the stamps are
     // data on the request, so the card never fetches the app.
@@ -156,7 +158,7 @@ describe("ApprovalsPage delegated-provider requests", () => {
     stubFetch([makeDelegatedRequest(false)]);
     renderWithProviders(<ApprovalsPage />);
 
-    expect(await screen.findByText("Delegated provider")).toBeDefined();
+    expect(await screen.findByText("Delegated provider connection")).toBeDefined();
     expect(screen.queryByText(/its anonymous visitors can never connect/)).toBeNull();
   });
 
@@ -213,7 +215,7 @@ describe("ApprovalsPage delegated-provider requests", () => {
       );
       expect(queueCalls.length).toBeGreaterThan(1);
     });
-    expect(screen.getByText("Delegated provider")).toBeDefined();
+    expect(screen.getByText("Delegated provider connection")).toBeDefined();
   });
 
   it("operates the approve action from the keyboard", async () => {
@@ -234,12 +236,12 @@ describe("ApprovalsPage delegated-provider requests", () => {
     });
   });
 
-  it("renders pre-existing kinds exactly as before — a secret-bound origin is no delegated request", async () => {
+  it("renders a secret-bound origin as a stored-secret origin, not a delegated one", async () => {
     stubFetch([SECRET_BOUND]);
     renderWithProviders(<ApprovalsPage />);
 
-    expect(await screen.findByText("Capability change")).toBeDefined();
-    expect(screen.queryByText("Delegated provider")).toBeNull();
+    expect(await screen.findByText("Proxied origin + stored secret")).toBeDefined();
+    expect(screen.queryByText("Delegated provider connection")).toBeNull();
     expect(screen.queryByText(/its anonymous visitors can never connect/)).toBeNull();
     expect(screen.getByText("HIGH RISK")).toBeDefined();
   });

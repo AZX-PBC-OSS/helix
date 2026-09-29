@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Capabilities } from "./manifest.js";
 import {
+  ApprovalRequestSchema,
   BASELINE_DOLLARS_PER_DAY,
   BASELINE_WRITES_PER_DAY,
   applyDeltas,
@@ -10,6 +11,7 @@ import {
   fetchOriginKey,
   isProviderBindingEffective,
   maxRisk,
+  parseArrayDeltaPath,
   parseFetchOriginKey,
   snapshotConflicts,
   summarizePriorDecisions,
@@ -17,6 +19,7 @@ import {
   visibilityLabel,
   type Delta,
   type PriorDecisionRow,
+  type Risk,
 } from "./approval.js";
 import type { VisibilityMode } from "./visibility.js";
 
@@ -95,6 +98,15 @@ describe("classifyChange — mcp / origins / data", () => {
     const r = classifyChange(EMPTY, { mcp: ["pagerduty"], externalOrigins: [] });
     expect(paths(r.elevatedDeltas)).toEqual(["mcp[+pagerduty]"]);
     expect(r.risk).toBe("high");
+  });
+
+  it("emits one delta per requested server — a multi-server ask is a list of rows, not one", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: ["pagerduty", "datadog", "github"],
+      externalOrigins: [],
+    });
+    expect(paths(r.elevatedDeltas)).toEqual(["mcp[+pagerduty]", "mcp[+datadog]", "mcp[+github]"]);
+    for (const d of r.elevatedDeltas) expect(d.risk).toBe("high");
   });
 
   it("gates any external origin added", () => {
@@ -538,6 +550,119 @@ describe("classifyChange — mixed submission splits and risk = max", () => {
   });
 });
 
+describe("parseArrayDeltaPath — the read side of the classifier's array paths", () => {
+  it("splits every field/op/item the classifier writes", () => {
+    expect(parseArrayDeltaPath("mcp[+pagerduty]")).toEqual({
+      field: "mcp",
+      op: "+",
+      item: "pagerduty",
+    });
+    expect(parseArrayDeltaPath("data.sharedWritePrefixes[-record:]")).toEqual({
+      field: "data.sharedWritePrefixes",
+      op: "-",
+      item: "record:",
+    });
+  });
+
+  it("keeps an item containing brackets whole — the anchored-field-names trap", () => {
+    // A greedy `(.*)\[([+-])(.*)\]` would split at the item's inner bracket.
+    expect(parseArrayDeltaPath("data.sharedReadPrefixes[-cfg[-v2]]")).toEqual({
+      field: "data.sharedReadPrefixes",
+      op: "-",
+      item: "cfg[-v2]",
+    });
+  });
+
+  it("returns null for scalar and visibility paths", () => {
+    expect(parseArrayDeltaPath("llm.dollarsPerDay")).toBeNull();
+    expect(parseArrayDeltaPath("visibility")).toBeNull();
+  });
+});
+
+describe("per-delta risk travels on the delta", () => {
+  /**
+   * The queue card renders each delta with its own severity chip, so every
+   * delta the classifier emits must carry `risk` — and the request-level
+   * aggregate must stay the max across the elevated ones (the UI's fallback
+   * for legacy rows depends on that invariant).
+   */
+  const cases: Array<[string, unknown, Risk]> = [
+    ["uncurated llm model", { mcp: [], externalOrigins: [], llm: { models: ["gpt-5"] } }, "med"],
+    [
+      "spend budget above baseline",
+      { mcp: [], externalOrigins: [], llm: { models: [], dollarsPerDay: 500 } },
+      "med",
+    ],
+    ["mcp grant", { mcp: ["pagerduty"], externalOrigins: [] }, "high"],
+    ["external origin", { mcp: [], externalOrigins: ["https://api.foo.com"] }, "med"],
+    [
+      "keyless fetch origin",
+      {
+        mcp: [],
+        externalOrigins: [],
+        fetch: { shim: false, origins: [{ origin: "https://api.github.com" }] },
+      },
+      "med",
+    ],
+    [
+      "secret-bound fetch origin",
+      {
+        mcp: [],
+        externalOrigins: [],
+        fetch: { shim: false, origins: [{ origin: "https://api.github.com", connection: "gh" }] },
+      },
+      "high",
+    ],
+    [
+      "shared read prefix",
+      {
+        mcp: [],
+        externalOrigins: [],
+        data: {
+          user: false,
+          collections: [],
+          sharedRead: [],
+          sharedWrite: [],
+          sharedReadPrefixes: ["cfg:"],
+        },
+      },
+      "low",
+    ],
+    ["offline scope grant", { mcp: [], externalOrigins: [], offline: { scope: "/app/" } }, "med"],
+  ];
+
+  it.each(cases)(
+    "%s → every elevated delta carries its classified risk",
+    (_name, requested, risk) => {
+      const r = classifyChange(EMPTY, requested as Capabilities);
+      expect(r.elevatedDeltas.length).toBeGreaterThan(0);
+      for (const d of r.elevatedDeltas) expect(d.risk).toBe(risk);
+      expect(r.risk).toBe(maxRisk(r.elevatedDeltas.map((d) => d.risk ?? "low")));
+    },
+  );
+
+  it("visibility delta carries its risk like any other", () => {
+    expect(classifyVisibilityChange(vis("internal"), vis("public"))?.delta.risk).toBe("high");
+    expect(classifyVisibilityChange(vis("public"), vis("internal"))?.delta.risk).toBe("low");
+  });
+
+  it("validates old payloads whose deltas predate the field", () => {
+    const legacy = {
+      ...ApprovalRequestSchema.parse({
+        id: "a1",
+        appId: "app1",
+        status: "pending",
+        risk: "med",
+        deltas: [{ path: "externalOrigins[+https://api.foo.com]", to: "https://api.foo.com" }],
+        baseSnapshot: {},
+        requestedBy: "bob@azx.dev",
+        createdAt: new Date().toISOString(),
+      }),
+    };
+    expect(legacy.deltas[0]!.risk).toBeUndefined();
+  });
+});
+
 /** A `VisibilityState` from the shorthand the tests actually care about. */
 const vis = (mode: VisibilityMode, ...groupIds: string[]) => ({ mode, groupIds });
 
@@ -561,7 +686,12 @@ describe("classifyVisibilityChange", () => {
     const change = classifyVisibilityChange(vis("group", "eng"), vis("group", "product"));
     expect(change).not.toBeNull();
     expect(change).toMatchObject({ elevated: false, risk: "low" });
-    expect(change?.delta).toEqual({ path: "visibility", from: "group:eng", to: "group:product" });
+    expect(change?.delta).toEqual({
+      path: "visibility",
+      from: "group:eng",
+      to: "group:product",
+      risk: "low",
+    });
   });
 
   it("treats adding and removing a group as baseline — the population moves inside the tenant", () => {

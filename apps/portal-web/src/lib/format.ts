@@ -9,6 +9,19 @@ export function fmtCount(n: number): string {
   return String(n);
 }
 
+/** Byte counts → "500 B", "48.8 KB", "47.7 MB", "4.66 GB" (the data budget's unit). */
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n;
+  let u = -1;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[u]}`;
+}
+
 /**
  * USD spend → "$0.00" / "$12.40" / "$1.3k". Small spends keep cents so a few
  * calls don't read as "$0"; large totals abbreviate. `<$0.01` for tiny non-zero.

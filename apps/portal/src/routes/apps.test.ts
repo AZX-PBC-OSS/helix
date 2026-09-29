@@ -388,7 +388,7 @@ describe("operator policy: PORTAL_ALLOW_PUBLIC_APPS=false", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().pending).toBeNull(); // baseline — applies immediately
     expect(res.json().applied).toEqual([
-      { path: "visibility", from: "group:eng", to: "group:eng,product" },
+      { path: "visibility", from: "group:eng", to: "group:eng,product", risk: "low" },
     ]);
     expect(res.json().app.visibility).toEqual({ mode: "group", groupIds: ["eng", "product"] });
 
@@ -480,7 +480,7 @@ describe("operator policy: PORTAL_ALLOW_PUBLIC_APPS=false", () => {
     expect(row.visibilityGroupIds).toEqual(["eng", "prod"]);
     // And the delta reads as the set, not as `group:eng,eng,prod`.
     expect(res.json().applied).toEqual([
-      { path: "visibility", from: "internal", to: "group:eng,prod" },
+      { path: "visibility", from: "internal", to: "group:eng,prod", risk: "low" },
     ]);
   });
 

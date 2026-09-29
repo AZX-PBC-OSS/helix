@@ -84,6 +84,13 @@ export const DeltaSchema = z.object({
    * The flag never auto-rejects.
    */
   publicApp: z.boolean().optional(),
+  /**
+   * This delta's own severity as classified at filing — what the request-level
+   * `risk` is the max of. Absent on requests filed before the field existed
+   * (deltas are stored as JSON, so nothing backfills them); renderers fall
+   * back to the aggregate rather than guessing.
+   */
+  risk: RiskSchema.optional(),
 });
 export type Delta = z.infer<typeof DeltaSchema>;
 
@@ -294,15 +301,12 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
 
   const baseline: Delta[] = [];
   const elevated: Delta[] = [];
-  const elevatedRisks: Risk[] = [];
 
-  const push = (delta: Delta, isElevated: boolean, risk: Risk) => {
-    if (isElevated) {
-      elevated.push(delta);
-      elevatedRisks.push(risk);
-    } else {
-      baseline.push(delta);
-    }
+  // Risk rides inside the delta (it renders per-change in the approval queue),
+  // and the request-level aggregate is the max across the elevated ones.
+  const push = (delta: Delta & { risk: Risk }, isElevated: boolean) => {
+    if (isElevated) elevated.push(delta);
+    else baseline.push(delta);
   };
 
   // ── LLM models ──
@@ -311,10 +315,10 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
   const models = diffArray(effModels, reqModels);
   for (const m of models.added) {
     const isElevated = !CURATED_LLM_MODELS.includes(m);
-    push({ path: `llm.models[+${m}]`, to: m }, isElevated, "med");
+    push({ path: `llm.models[+${m}]`, to: m, risk: "med" }, isElevated);
   }
   for (const m of models.removed) {
-    push({ path: `llm.models[-${m}]`, from: m }, false, "low");
+    push({ path: `llm.models[-${m}]`, from: m, risk: "low" }, false);
   }
 
   // ── LLM spend budget (USD/day) ──
@@ -324,9 +328,8 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     const reqPriv = budgetPrivilege(req.llm !== undefined, reqDollars);
     const increase = reqPriv > budgetPrivilege(eff.llm !== undefined, effDollars);
     push(
-      { path: "llm.dollarsPerDay", from: effDollars, to: reqDollars },
+      { path: "llm.dollarsPerDay", from: effDollars, to: reqDollars, risk: "med" },
       increase && reqPriv > BASELINE_DOLLARS_PER_DAY,
-      "med",
     );
   }
 
@@ -334,7 +337,7 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
   const effUser = eff.data?.user ?? false;
   const reqUser = req.data?.user ?? false;
   if (effUser !== reqUser) {
-    push({ path: "data.user", from: effUser, to: reqUser }, false, "low");
+    push({ path: "data.user", from: effUser, to: reqUser, risk: "low" }, false);
   }
 
   // ── data: scope arrays ── (collections / shared keys are baseline grants)
@@ -344,8 +347,9 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     ["data.sharedWrite", eff.data?.sharedWrite ?? [], req.data?.sharedWrite ?? []],
   ] as const) {
     const d = diffArray(before, after);
-    for (const item of d.added) push({ path: `${field}[+${item}]`, to: item }, false, "low");
-    for (const item of d.removed) push({ path: `${field}[-${item}]`, from: item }, false, "low");
+    for (const item of d.added) push({ path: `${field}[+${item}]`, to: item, risk: "low" }, false);
+    for (const item of d.removed)
+      push({ path: `${field}[-${item}]`, from: item, risk: "low" }, false);
   }
 
   // ── data: shared prefix grants (ADR-0042 decision 4) ──
@@ -372,8 +376,9 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     ],
   ] as const) {
     const d = diffArray(before, after);
-    for (const item of d.added) push({ path: `${field}[+${item}]`, to: item }, true, "low");
-    for (const item of d.removed) push({ path: `${field}[-${item}]`, from: item }, false, "low");
+    for (const item of d.added) push({ path: `${field}[+${item}]`, to: item, risk: "low" }, true);
+    for (const item of d.removed)
+      push({ path: `${field}[-${item}]`, from: item, risk: "low" }, false);
   }
 
   // ── data: budgets ──
@@ -384,7 +389,7 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     if (effVal !== reqVal) {
       const reqPriv = budgetPrivilege(req.data !== undefined, reqVal);
       const increase = reqPriv > budgetPrivilege(eff.data !== undefined, effVal);
-      push({ path: field, from: effVal, to: reqVal }, increase && reqPriv > threshold, "med");
+      push({ path: field, from: effVal, to: reqVal, risk: "med" }, increase && reqPriv > threshold);
     }
   }
 
@@ -392,16 +397,17 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
   const mcp = diffArray(eff.mcp, req.mcp);
   for (const s of mcp.added) {
     const isElevated = !CURATED_MCP_ALLOWLIST.includes(s);
-    push({ path: `mcp[+${s}]`, to: s }, isElevated, "high");
+    push({ path: `mcp[+${s}]`, to: s, risk: "high" }, isElevated);
   }
   for (const s of mcp.removed) {
-    push({ path: `mcp[-${s}]`, from: s }, false, "low");
+    push({ path: `mcp[-${s}]`, from: s, risk: "low" }, false);
   }
 
   // ── externalOrigins ── (any direct-CSP origin added is elevated)
   const origins = diffArray(eff.externalOrigins, req.externalOrigins);
-  for (const o of origins.added) push({ path: `externalOrigins[+${o}]`, to: o }, true, "med");
-  for (const o of origins.removed) push({ path: `externalOrigins[-${o}]`, from: o }, false, "low");
+  for (const o of origins.added) push({ path: `externalOrigins[+${o}]`, to: o, risk: "med" }, true);
+  for (const o of origins.removed)
+    push({ path: `externalOrigins[-${o}]`, from: o, risk: "low" }, false);
 
   // ── fetch.origins ── (proxied origins; keyless = med, secret/provider-bound = high)
   const effFetch = (eff.fetch?.origins ?? []).map(fetchOriginKey);
@@ -410,17 +416,17 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
   for (const key of fetchOrigins.added) {
     const bound = parseFetchOriginKey(key);
     const credentialed = bound.connection !== undefined || bound.provider !== undefined;
-    push({ path: `fetch.origins[+${key}]`, to: key }, true, credentialed ? "high" : "med");
+    push({ path: `fetch.origins[+${key}]`, to: key, risk: credentialed ? "high" : "med" }, true);
   }
   for (const key of fetchOrigins.removed) {
-    push({ path: `fetch.origins[-${key}]`, from: key }, false, "low");
+    push({ path: `fetch.origins[-${key}]`, from: key, risk: "low" }, false);
   }
 
   // ── fetch.shim ── (serve-time ergonomics; never a privilege grant)
   const effShim = eff.fetch?.shim ?? false;
   const reqShim = req.fetch?.shim ?? false;
   if (effShim !== reqShim) {
-    push({ path: "fetch.shim", from: effShim, to: reqShim }, false, "low");
+    push({ path: "fetch.shim", from: effShim, to: reqShim, risk: "low" }, false);
   }
 
   // ── shim.connect ── (the connect helper's opt-in, same ergonomics tier)
@@ -431,7 +437,7 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
   const effConnect = eff.shim?.connect ?? false;
   const reqConnect = req.shim?.connect ?? false;
   if (effConnect !== reqConnect) {
-    push({ path: "shim.connect", from: effConnect, to: reqConnect }, false, "low");
+    push({ path: "shim.connect", from: effConnect, to: reqConnect, risk: "low" }, false);
   }
 
   // ── fetch.requestsPerDay budget ──
@@ -441,9 +447,8 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     const reqPriv = budgetPrivilege(req.fetch !== undefined, reqFetchReq);
     const increase = reqPriv > budgetPrivilege(eff.fetch !== undefined, effFetchReq);
     push(
-      { path: "fetch.requestsPerDay", from: effFetchReq, to: reqFetchReq },
+      { path: "fetch.requestsPerDay", from: effFetchReq, to: reqFetchReq, risk: "med" },
       increase && reqPriv > BASELINE_FETCH_REQUESTS_PER_DAY,
-      "med",
     );
   }
 
@@ -457,10 +462,17 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
   const effScope = eff.offline?.scope;
   const reqScope = req.offline?.scope;
   if (effScope !== reqScope) {
-    push({ path: "offline.scope", from: effScope, to: reqScope }, reqScope !== undefined, "med");
+    push(
+      { path: "offline.scope", from: effScope, to: reqScope, risk: "med" },
+      reqScope !== undefined,
+    );
   }
 
-  return { baselineDeltas: baseline, elevatedDeltas: elevated, risk: maxRisk(elevatedRisks) };
+  return {
+    baselineDeltas: baseline,
+    elevatedDeltas: elevated,
+    risk: maxRisk(elevated.map((d) => d.risk ?? "low")),
+  };
 }
 
 export interface VisibilityChange {
@@ -560,7 +572,7 @@ export function classifyVisibilityChange(
   const toLabel = visibilityLabel(to);
   const elevated = to.mode === "public";
   return {
-    delta: { path: "visibility", from: fromLabel, to: toLabel },
+    delta: { path: "visibility", from: fromLabel, to: toLabel, risk: elevated ? "high" : "low" },
     elevated,
     risk: elevated ? "high" : "low",
   };
@@ -582,6 +594,21 @@ export function classifyVisibilityChange(
  */
 const ARRAY_PATH =
   /^(mcp|externalOrigins|llm\.models|fetch\.origins|data\.(?:collections|sharedRead|sharedWrite|sharedReadPrefixes|sharedWritePrefixes))\[([+-])(.*)\]$/;
+
+/**
+ * Parse a membership delta path back into its parts — the read-side of the same
+ * regex {@link applyDeltas} writes with. Exported so renderers (the approval
+ * queue's chips) split paths with the exact grammar the classifier writes,
+ * instead of forking a lookalike; items may contain `[`, which is the trap the
+ * anchored field names exist for.
+ */
+export function parseArrayDeltaPath(
+  path: string,
+): { field: string; op: "+" | "-"; item: string } | null {
+  const m = ARRAY_PATH.exec(path);
+  if (!m) return null;
+  return { field: m[1]!, op: m[2] as "+" | "-", item: m[3]! };
+}
 
 /**
  * Apply capability deltas to a capabilities object, returning a fresh parsed

@@ -174,6 +174,63 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A segmented chip row (the approval queue's delta rows): separate elements
+   styled to read as one pill when they fit on a line. The row's first/last
+   children carry the end caps, internal seams collapse to a single subtle
+   rule, and a tinted segment (the risk chip) separates by background color
+   alone. When the row wraps, the seam at the break stays square — accepted;
+   the fused look is the common case. */
+.az-chiprow {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  width: fit-content;
+}
+.az-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--az-line-2);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.az-chip + .az-chip {
+  border-left: 0;
+}
+.az-chip:not(:last-child) {
+  border-right-color: color-mix(in srgb, var(--az-line-2) 55%, transparent);
+}
+.az-chiprow > :first-child {
+  border-radius: 999px 0 0 999px;
+}
+.az-chiprow > :last-child {
+  border-radius: 0 999px 999px 0;
+}
+/* The risk segment: ToneBadge's typographic identity, but rendered as plain
+   colored text on the row's own background — the severity reads through hue
+   alone, and the segment keeps the pill's top/bottom outline and the same
+   subtle seam rules as every other middle segment. */
+.az-chip[data-risk] {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.az-chip[data-risk="high"] {
+  color: var(--az-bad);
+}
+.az-chip[data-risk="med"] {
+  color: var(--az-warn);
+}
+.az-chip[data-risk="low"] {
+  color: var(--az-info);
+}
+
 @keyframes az-pulse {
   0%,
   100% {
