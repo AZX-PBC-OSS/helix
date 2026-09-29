@@ -110,7 +110,7 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     const csp = buildAppCsp(entry.externalOrigins);
 
     // Serve-time HTML rewrites: the fetch-proxy shim (§3.2), the connect
-    // helper's opt-in grant (I-02 design decision 5 — only the manifest's
+    // helper's opt-in grant (only the manifest's
     // `shim.connect` injects it; a provider binding alone never does) and/or
     // the offline capability's service-worker registration (ADR-0035). Any one
     // means we rewrite the document, so force the full body for the doc we'll

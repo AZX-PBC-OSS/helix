@@ -7,10 +7,10 @@ import { ApprovalsPage } from "../pages/admin/ApprovalsPage";
 import { setToken, clearToken } from "../auth/tokenStore";
 
 /**
- * The approver's view of the delegated-provider request kind (I-02 T-0029): the
+ * The approver's view of the delegated-provider request kind: the
  * distinct kind + delta line + high-risk badge, the public-app warning stamped
- * at filing (criterion 16 — advisory, never blocking), and the stale-provider
- * 409 rendered as its own outcome (criteria 8, 18).
+ * at filing (advisory, never blocking), and the stale-provider
+ * 409 rendered as its own outcome.
  */
 
 const REQUEST_ID = "44444444-4444-4444-8444-444444444444";
@@ -22,7 +22,7 @@ const STAMP = {
   revision: 3,
 };
 
-/** As T-0009 files a provider-bound origin add: the key-form path plus the stamps. */
+/** A filed provider-bound origin add: the key-form path plus the stamps. */
 function makeDelegatedRequest(publicApp: boolean): ApprovalRequest {
   return {
     id: REQUEST_ID,
@@ -61,7 +61,7 @@ function makeDelegatedRequest(publicApp: boolean): ApprovalRequest {
   };
 }
 
-/** A pre-T-0009 secret-bound origin add, with no stamps at all. */
+/** A secret-bound origin add, with no stamps at all. */
 const SECRET_BOUND: ApprovalRequest = {
   id: REQUEST_ID,
   appId: "11111111-1111-4111-8111-111111111111",
@@ -132,7 +132,7 @@ describe("ApprovalsPage delegated-provider requests", () => {
     await screen.findByText("Delegated provider");
 
     // The only network call is the queue itself: visibility and the stamps are
-    // data on the request, so the card never fetches the app (design.md).
+    // data on the request, so the card never fetches the app.
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls).toEqual(["/api/v1/approvals?status=pending"]);
   });
@@ -144,7 +144,7 @@ describe("ApprovalsPage delegated-provider requests", () => {
     expect(
       await screen.findByText(/This app is public — its anonymous visitors can never connect/),
     ).toBeDefined();
-    // Advisory only (criterion 16): a real, enabled button, not a blocked one.
+    // Advisory only: a real, enabled button, not a blocked one.
     const approve = screen.getByRole("button", { name: /Approve grant/ });
     expect(approve.hasAttribute("disabled")).toBe(false);
     // The warning never alters classification — the HIGH RISK badge stands alone.
@@ -179,7 +179,7 @@ describe("ApprovalsPage delegated-provider requests", () => {
 
   it("renders the stale-provider conflict and leaves the request pending", async () => {
     setToken("test-token");
-    // The 409 assertProviderStampsCurrent throws (T-0009): code `conflict`, the
+    // The 409 assertProviderStampsCurrent throws: code `conflict`, the
     // stamped ref in details, nothing applied.
     const fetchMock = stubFetch([makeDelegatedRequest(false)], {
       ok: false,

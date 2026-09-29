@@ -9,7 +9,7 @@ import {
 
 /**
  * Mint the internal service JWT the edge hands to `helix-portal` on the
- * edge→portal seam (I-02 ADR-0003): the consult, the cancel, and the
+ * edge→portal seam: the consult, the cancel, and the
  * `/connections/*` reverse proxy each carry one, minted per call. The verify
  * side is the portal (`apps/portal/src/internalJwt.ts`) — the key derivation
  * here is identical to that side's, same HKDF info string off the shared

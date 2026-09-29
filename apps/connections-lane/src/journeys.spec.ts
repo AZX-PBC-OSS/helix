@@ -2,8 +2,8 @@ import { test, expect, openAppAndConnect, waitForResult } from "./lane.js";
 import type { ConnectResult } from "@azx-pbc/shared";
 
 /**
- * The assembled consent journeys, browser-proven (I-02 T-0031, criteria 25–26,
- * 31, 51–53): a real Chromium opens a hosted app the REAL edge serves, selects
+ * The assembled consent journeys, browser-proven: a real Chromium opens a
+ * hosted app the REAL edge serves, selects
  * Connect, and the popup travels start route → consult → fixture vendor →
  * callback through the reverse proxy → egress exchange + seal → connection row
  * → completion message → the app's own retry — the architecture.md §Assembly
@@ -22,7 +22,7 @@ function callOf(line: string): { status: string; body: string } {
   return { status: rest.slice(0, at), body: rest.slice(at + 1) };
 }
 
-test("explicit successful consent — the full journey, Bearer placement (criteria 52–53)", async ({
+test("explicit successful consent — the full journey, Bearer placement", async ({
   page,
   fx,
   world,
@@ -39,7 +39,7 @@ test("explicit successful consent — the full journey, Bearer placement (criter
   expect(result.provider).toBe(fx.ref);
   expect(result.attempt).toMatch(/^[0-9a-f]{32}$/);
 
-  // The completion page closed itself (criterion 30: notify, then close).
+  // The completion page closed itself (notify, then close).
   await expect.poll(async () => popup.isClosed(), { intervals: [50, 100] }).toBe(true);
 
   // The saved row is the journey's own output (never seeded): live, scoped,
@@ -54,7 +54,7 @@ test("explicit successful consent — the full journey, Bearer placement (criter
   expect(row?.grantedScopes).toEqual(["read", "write"]);
   const material = await world.openMaterial(row?.material as string);
 
-  // The app's OWN retry (criterion 31): one explicit click, one delegated call
+  // The app's OWN retry: one explicit click, one delegated call
   // through edge → egress → the fixture's API destination, token in the
   // configured placement. Nothing replayed it — the log has exactly one call.
   await page.getByTestId("call").click();
@@ -65,7 +65,7 @@ test("explicit successful consent — the full journey, Bearer placement (criter
   expect(echo.token).toBe(material.access);
   expect(net.requested("/_api/fetch/")).toHaveLength(1);
 
-  // Focus remains usable across completion (criterion 51's popup clause): the
+  // Focus remains usable across completion: the
   // retry that just succeeded was keyboard-driven after the popup closed.
   await page.getByTestId("call").focus();
   await page.keyboard.press("Enter");
@@ -119,7 +119,7 @@ test("explicit successful consent — named-header placement reaches the API des
   expect(call.token).toBe(await world.openMaterial(row?.material as string).then((m) => m.access));
 });
 
-test("blocked opening — the REAL popup blocker returns `blocked` for the gesture's second popup, with no navigation and no retry (criterion 26)", async ({
+test("blocked opening — the REAL popup blocker returns `blocked` for the gesture's second popup, with no navigation and no retry", async ({
   page,
   fx,
   world,
@@ -127,7 +127,7 @@ test("blocked opening — the REAL popup blocker returns `blocked` for the gestu
 }) => {
   // Deny mode: the FIRST call's popup (which gets the gesture's one popup
   // allowance) completes as denied — the SAME test then distinguishes blocked
-  // from denied (criterion 25) with nothing saved.
+  // from denied with nothing saved.
   fx.vendor.setModes({ authorizeMode: "deny" });
 
   await openAppAndConnect(page, fx, "connect-twice");
@@ -147,7 +147,7 @@ test("blocked opening — the REAL popup blocker returns `blocked` for the gestu
   );
 });
 
-test("denial — distinct outcome, keyboard-completable popup with managed focus (criteria 25, 51)", async ({
+test("denial — distinct outcome, keyboard-completable popup with managed focus", async ({
   page,
   fx,
   world,
@@ -161,7 +161,7 @@ test("denial — distinct outcome, keyboard-completable popup with managed focus
 
   // The popup landed on the Declined completion page — focused heading (the
   // page's own focus management), a real Close button, and keyboard completion:
-  // Tab to it, Enter closes the popup (criterion 51's popup clause).
+  // Tab to it, Enter closes the popup.
   await expect(popup.getByRole("heading", { name: "Declined" })).toBeVisible();
   const focused = await popup.evaluate(() => document.activeElement?.tagName ?? "");
   expect(focused).toBe("H1");
@@ -169,7 +169,7 @@ test("denial — distinct outcome, keyboard-completable popup with managed focus
   await expect(popup.getByRole("button", { name: "Close" })).toBeFocused();
   // Enter activates the Close button — and the activation closes the popup
   // mid-press, so the press itself may report the closed target: the close IS
-  // the expected keyboard exit (criterion 51).
+  // the expected keyboard exit.
   await popup.keyboard.press("Enter").catch(() => {});
   await expect.poll(async () => popup.isClosed()).toBe(true);
 
@@ -181,7 +181,7 @@ test("denial — distinct outcome, keyboard-completable popup with managed focus
   expect(net.requested("/_api/fetch/")).toHaveLength(0);
 });
 
-test("cancellation — closing the popup mid-journey acknowledges the cancel and resolves `cancelled` (criterion 29)", async ({
+test("cancellation — closing the popup mid-journey acknowledges the cancel and resolves `cancelled`", async ({
   page,
   fx,
   world,

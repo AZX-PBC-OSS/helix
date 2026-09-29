@@ -9,13 +9,13 @@ import { spanRoute } from "../telemetry.js";
 import type { PortalProvider } from "./portalProvider.js";
 
 /**
- * The auth host's `/connections/*` reverse proxy (I-02 ADR-0002 part 3;
- * clarifications.md Q4). The consent callback and the portal-rendered
+ * The auth host's `/connections/*` reverse proxy. The consent callback and the
+ * portal-rendered
  * completion pages are control-plane surfaces, but `auth.<base>` terminates at
  * the edge and — on ACA — one hostname binds one container app, so the portal
  * cannot answer there directly. This is the one narrow join: everything under
  * the prefix forwards to the portal over the internal `PortalProvider` seam,
- * carrying T-0006's per-call internal JWT, and nothing else on the auth host
+ * carrying the per-call internal JWT, and nothing else on the auth host
  * changes.
  *
  * Deliberately NOT a general-purpose portal forwarder: request headers ride a
@@ -136,7 +136,7 @@ export function makeConnectionsProxyHandler(rt: ConnectionsProxyRuntime) {
         });
 
     try {
-      // Per-call mint (T-0006, `aud: portal`): the token is the only thing
+      // Per-call mint (`aud: portal`): the token is the only thing
       // that authorizes the portal's internal routes, so it is minted fresh
       // for every forwarded call.
       const internalToken = await mintInternalToken(rt.internalKey);
@@ -154,7 +154,7 @@ export function makeConnectionsProxyHandler(rt: ConnectionsProxyRuntime) {
       for (const [k, v] of Object.entries(res.headers)) {
         if (!RESPONSE_BLOCKED.has(k) && v !== undefined) reply.header(k, v);
       }
-      // The auth-callback precedent (design.md §Consent journey), set AFTER
+      // The auth-callback precedent, set AFTER
       // the passthrough so the edge's posture holds even if the portal's
       // response ever omitted them — the callback URL carries `code`/`state`.
       reply.header("cache-control", "no-store").header("referrer-policy", "no-referrer");
@@ -171,7 +171,7 @@ export function makeConnectionsProxyHandler(rt: ConnectionsProxyRuntime) {
 
   return spanRoute(
     SPAN_CONNECTIONS_PROXY,
-    // Route-level span, `url.path` only (design.md §Operator-visible signals):
+    // Route-level span, `url.path` only:
     // the callback URL carries `code` and `state`, and `spanUrlAttributes`
     // drops the query wholesale — nothing URL-shaped beyond the bare path
     // reaches the span.

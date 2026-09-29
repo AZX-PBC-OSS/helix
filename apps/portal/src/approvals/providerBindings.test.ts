@@ -4,17 +4,16 @@ import type { TokenVerifier } from "../plugins/auth.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
- * The app-binding approval chain (I-02 T-0009): a provider-bound origin
+ * The app-binding approval chain: a provider-bound origin
  * classifies high-risk and files stamped (`providerStamps` + `publicApp` at
  * filing), an origin must be one of the provider's permitted API destinations
  * before any request opens, and approving after the provider moved on is a 409
- * that approves nothing (ADR-0004 — an old pending approval cannot approve
+ * that approves nothing (an old pending approval cannot approve
  * access to a newer configuration).
  *
- * Providers are seeded as raw rows (the CRUD routes are T-0008's and need the
- * vault); the sensitive-edit route that bumps a revision in production is
- * T-0010's, so a sensitive edit between filing and approval is simulated as the
- * raw revision bump that transaction ends with.
+ * Providers are seeded as raw rows (the CRUD routes need the
+ * vault); a sensitive edit between filing and approval is simulated as the
+ * raw revision bump that the production sensitive-edit transaction ends with.
  */
 
 const OWNER = "owner@azx.io";
@@ -188,7 +187,7 @@ describe("filing a provider-bound origin (the write-gate)", () => {
   });
 });
 
-describe("manifest-save validation of the binding (criterion 15)", () => {
+describe("manifest-save validation of the binding", () => {
   it("refuses an origin outside the provider's apiOrigins — no request opened", async () => {
     const { slug } = await createApp();
     const provider = await seedProvider(`pb-${randomUUID().slice(0, 8)}`);
@@ -212,7 +211,7 @@ describe("manifest-save validation of the binding (criterion 15)", () => {
   });
 });
 
-describe("the apply-time provider conflict (criterion 18)", () => {
+describe("the apply-time provider conflict", () => {
   it("409s an approval after the provider's revision advanced, and approves nothing", async () => {
     const { slug } = await createApp();
     const provider = await seedProvider(`pb-${randomUUID().slice(0, 8)}`, { revision: 2 });
@@ -221,7 +220,8 @@ describe("the apply-time provider conflict (criterion 18)", () => {
     ]);
     const requestId = put.json().pending as string;
 
-    // The sensitive edit T-0010's transaction would perform, between filing and
+    // The sensitive edit the production sensitive-edit transaction would
+    // perform, between filing and
     // approval: the revision advances under the same identity.
     await t.prisma.connectionProvider.update({
       where: { id: provider.id },
@@ -360,8 +360,8 @@ describe("the re-stamp amendment (resubmitting a stale binding)", () => {
       { origin: "https://api.asana.com", ref: provider.ref, effective: true },
     ]);
 
-    // The sensitive edit T-0010's route performs: the revision advances under
-    // the same identity, staling the landed binding (criterion 18's stamp).
+    // The sensitive edit the production route performs: the revision advances
+    // under the same identity, staling the landed binding's stamp.
     await t.prisma.connectionProvider.update({
       where: { id: provider.id },
       data: { revision: 7 },

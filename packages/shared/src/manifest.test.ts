@@ -238,10 +238,10 @@ function CapabilitiesParse(capabilities: unknown) {
   });
 }
 
-// T-0002 / ADR-0005: the origin's credential select is 3-way (none / stored
+// The origin's credential select is 3-way (none / stored
 // secret / OAuth provider), the shim is a first-class capability with the
 // boolean as a normalized legacy alias, and the origin schema is strict.
-describe("fetch origin credential exclusivity (spec decision 28)", () => {
+describe("fetch origin credential exclusivity", () => {
   it("rejects an origin declaring both a stored secret and a provider", () => {
     const result = FetchConnectionSchema.safeParse({
       origin: "https://api.vendor.example",
@@ -277,7 +277,7 @@ describe("fetch origin credential exclusivity (spec decision 28)", () => {
       const bound = result.data.capabilities.fetch?.origins[0];
       expect(bound?.provider).toBe("asana");
       // `required` is the app's dependency hint only — it never blocks app
-      // loading or triggers anything platform-side (criterion 17).
+      // loading or triggers anything platform-side.
       expect(bound?.required).toBe(true);
     }
   });
@@ -291,7 +291,7 @@ describe("fetch origin credential exclusivity (spec decision 28)", () => {
     ).toBe(false);
   });
 
-  it("is strict — an unknown origin key is rejected, not stripped (ADR-0005)", () => {
+  it("is strict — an unknown origin key is rejected, not stripped", () => {
     const result = FetchConnectionSchema.safeParse({
       origin: "https://api.github.com",
       connection: "gh",
@@ -310,7 +310,7 @@ describe("fetch origin credential exclusivity (spec decision 28)", () => {
   });
 });
 
-describe("first-class shim capability with legacy alias (design decision 6)", () => {
+describe("first-class shim capability with legacy alias", () => {
   it("a legacy boolean-shim manifest parses to the same capability set as the new form", () => {
     const legacy = CapabilitiesParse({ fetch: { shim: true } });
     const modern = CapabilitiesParse({ shim: { fetch: true } });
@@ -335,7 +335,7 @@ describe("first-class shim capability with legacy alias (design decision 6)", ()
     }
     // ...and the new form → the legacy boolean reads the same grant, which is
     // what the edge's per-block fetch parse consumes until the projection
-    // migrates (T-0013).
+    // migrates.
     const modern = CapabilitiesParse({ shim: { fetch: true } });
     if (modern.success) {
       expect(modern.data.capabilities.fetch?.shim).toBe(true);
@@ -363,7 +363,8 @@ describe("first-class shim capability with legacy alias (design decision 6)", ()
 
   it("an explicit new-form false beats nothing — the alias only adds a grant", () => {
     // Both spellings present: the merge is ON if either says on (failing here
-    // would silently strip a grant written by the pre-T-0002 editor).
+    // would silently strip a grant written by the pre-`capabilities.shim`
+    // editor).
     const parsed = CapabilitiesParse({ fetch: { shim: true }, shim: { fetch: false } });
     expect(parsed.success).toBe(true);
     if (parsed.success) {

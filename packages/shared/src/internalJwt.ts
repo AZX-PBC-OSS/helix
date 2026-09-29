@@ -1,5 +1,5 @@
 /**
- * Internal service JWTs (I-02 architecture ADR-0003): the two internal call
+ * Internal service JWTs: the two internal call
  * directions the platform gains beyond the attested instruction — edge→portal
  * (consult, cancel, reverse proxy) and portal→egress (code exchange).
  *
@@ -16,14 +16,14 @@
  * passthrough between seams, the ADR-0013 Step 1 rule applied to the new
  * directions), the `typ` header, and `maxTokenAge`; the verifier additionally
  * requires `exp`/`iat` to be present (jose only enforces them when present)
- * and rejects any other claim (the ADR-0005 strict-parse discipline — a future
+ * and rejects any other claim (the strict-parse discipline — a future
  * claim update rolls verifiers first, it is never silently ignored). The
  * implementation lives per plane, like the instruction's: the edge mints
  * (`apps/edge/src/internalJwt.ts`), the portal verifies and mints
  * (`apps/portal/src/internalJwt.ts`), egress verifies
  * (`apps/egress/src/internalJwt.ts`) — all importing these constants.
  *
- * The three bilateral keys after ADR-0003: `HELIX_INSTRUCTION_SECRET`
+ * The three bilateral keys: `HELIX_INSTRUCTION_SECRET`
  * (edge↔egress, the existing instruction key — untouched), `HELIX_INTERNAL_SECRET`
  * (edge↔portal), and `HELIX_EXCHANGE_SECRET` (portal↔egress).
  */

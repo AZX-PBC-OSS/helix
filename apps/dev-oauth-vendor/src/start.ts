@@ -34,7 +34,7 @@ export interface RunningDevOAuthVendor {
    */
   setModes(modes: { tokenMode?: TokenMode; authorizeMode?: AuthorizeMode }): void;
   /**
-   * The token endpoint's call log, oldest first (I-02 T-0021): grant types and
+   * The token endpoint's call log, oldest first: grant types and
    * whether a refresh token was presented — never token values. The
    * single-flight evidence lives here: a concurrent-renewal invariant is
    * exactly "the refresh token was presented once".

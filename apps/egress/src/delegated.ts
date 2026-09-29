@@ -29,41 +29,41 @@ import {
 } from "./renewal.js";
 
 /**
- * The delegated-call resolution (I-02 T-0022): one verified instruction
+ * The delegated-call resolution: one verified instruction
  * carrying the `provider` sibling meets the CALLER'S connection row, and every
- * failure class spec.md §Delegated calls and renewal names is distinguished
+ * failure class the spec names is distinguished
  * here — before any vendor traffic. This is the mechanism-plane half of the
- * edge/egress split (architecture ADR-0004): the edge evaluated binding
+ * edge/egress split: the edge evaluated binding
  * APPROVAL (an unapproved origin never minted an instruction); egress alone
  * sees provider liveness, the row, and the token.
  *
- * The three-way distinction (design.md's error table is authoritative):
+ * The three-way distinction:
  *
  * - **403 `connection_required`** — no connection row, a dead/invalidated or
  *   reconnect-needed row, a caller kind that can never hold a connection
- *   (`anon`, `password` — criterion 21), or a renewal that ended
+ *   (`anon`, `password`), or a renewal that ended
  *   `uncertain_rotation` / `reconnect_required`. Body carries the provider
  *   metadata `{ref, displayName}` so the app can offer Connect. Never falls
  *   back to another user's connection, a static secret, or an unauthenticated
- *   call (criterion 33).
+ *   call.
  * - **503 `provider_unavailable`** — the provider was deleted, or the row's
  *   recorded revision is behind the cached current one (a sensitive edit's
- *   defense in depth behind the row's invalidated status, ADR-0004), or the
+ *   defense in depth behind the row's invalidated status), or the
  *   target origin is not one of the provider's current API destinations.
  * - **502 `provider_misconfigured`** — the provider row is malformed, or
- *   renewal answered `admin_action`. Opaque: administrator action required,
- *   never vendor or credential content (criterion 34).
+ * renewal answered `admin_action`. Opaque: administrator action required,
+ * never vendor or credential content.
  *
  * A temporary renewal failure is NOT a consent problem: it fails the call as
- * the existing `upstream_error` class and preserves the connection (criterion
- * 37) — the caller (proxy.ts) maps that outcome.
+ * the existing `upstream_error` class and preserves the connection —
+ * the caller (proxy.ts) maps that outcome.
  *
  * The fixed-string discipline holds on every path: no token value, no vendor
  * error text, no URL ever enters an outcome, a log field, or a span here.
  */
 
 /** The caller identity the resolution discriminates on — exactly the fields
- * the edge stamps into the instruction (T-0023's mint half): `userOid` +
+ * the edge stamps into the instruction: `userOid` +
  * `userKind` (schema-mandatory on delegated instructions), the provider ref,
  * and the env tier the dev/prod split rides. */
 export interface DelegatedCallIdentity {
@@ -75,14 +75,13 @@ export interface DelegatedCallIdentity {
 
 /**
  * What resolution refused, with the exact status / code / ledger-outcome
- * triple design.md's error table fixes. `outcome` is the
+ * triple fixed below. `outcome` is the
  * `x-helix-egress-outcome` value — deliberately explicit, because `fail()`'s
- * status-derived default cannot express `connection_required` (T-0003's
- * note), and the two provider-shaped codes meter as `refusal` while the
+ * status-derived default cannot express `connection_required`, and the two provider-shaped codes meter as `refusal` while the
  * existing upstream_error class meters as `error`. `spanOutcome` is the
  * resolution span's word ({@link EGRESS_RESOLUTION_OUTCOMES}) — finer than
- * the ledger label exactly where design.md's inventory asks for it.
- * `provider` metadata rides the codes design.md's table gives it.
+ * the ledger label exactly where the span inventory asks for it.
+ * `provider` metadata rides the codes the three-way distinction gives it.
  */
 export interface DelegatedRefusal {
   ok: false;
@@ -100,7 +99,7 @@ export interface DelegatedCredentials {
    * spanned; injected once into the outbound request. */
   accessToken: string;
   provider: ConnectionProvider;
-  /** The connection row's id — the criterion-40 flag's target. */
+  /** The connection row's id — the pre-expiry-401 flag's target. */
   connectionId: string;
   /** Whether the dispatched token came fresh off a renewal — the span's
    * `refreshed` vs `resolved` word. */
@@ -110,7 +109,7 @@ export interface DelegatedCredentials {
 export type DelegatedResolution = DelegatedCredentials | DelegatedRefusal;
 
 /** Fixed-string messages — no vendor content, no credential material, no
- * internal detail (criterion 34; the proxy's fail() convention). */
+ * internal detail (the proxy's fail() convention). */
 const MESSAGES = {
   connection_required: "connect the provider account to continue",
   provider_unavailable: "provider is currently unavailable",
@@ -159,28 +158,28 @@ function upstreamError(): DelegatedRefusal {
   };
 }
 
-/** The caller kinds that can never hold a delegated connection (Q9): the
+/** The caller kinds that can never hold a delegated connection: the
  * anonymous sentinel on public apps, and shared-password pseudonyms. A
  * genuine signed-in principal of a password-visible app is kind `user` and
  * stays eligible — the refusal keys on the caller's kind, never on app
- * visibility, which is not in the instruction at all (criterion 21). */
+ * visibility, which is not in the instruction at all. */
 const INELIGIBLE_KINDS: readonly PrincipalKind[] = ["anon", "password"];
 
 export interface DelegatedResolverDeps {
-  /** The `helix_egress` pool — row reads and the criterion-40 flag UPDATE. */
+  /** The `helix_egress` pool — row reads and the pre-expiry-401 flag UPDATE. */
   pool: Pool;
   /** The revision-keyed provider cache (the exchange/renewal reader). */
   providers: ProviderCacheReader;
   /** Opens the row's sealed access token. In-memory for this call only. */
   delegatedStore: SecretStore;
-  /** T-0021's renewer — invoked when the access token is expired or flagged. */
+  /** The renewer — invoked when the access token is expired or flagged. */
   renewer: { renew(target: RenewalTarget): Promise<RenewalResult> };
 }
 
 /**
  * The boot-level wiring (`EgressDeps.delegated`): the custody + cache +
  * pool ingredients the resolver and its renewer share. `app.ts` builds the
- * {@link DelegatedResolver} and the T-0021 {@link ConnectionRenewer} from
+ * {@link DelegatedResolver} and the {@link ConnectionRenewer} from
  * these against the proxy's shared dispatcher.
  */
 export interface DelegatedWiring {
@@ -194,7 +193,7 @@ export interface DelegatedWiring {
   timeoutMs: number;
   /** Dev-only seam, as for the exchange: permits the http fixture vendor. */
   allowInsecureConnection: boolean;
-  /** The renewal lock's bounded per-acquire wait (ADR-0007), if tuned. */
+  /** The renewal lock's bounded per-acquire wait, if tuned. */
   lockAcquireTimeoutMs?: number;
 }
 
@@ -204,7 +203,7 @@ function isoValue(value: unknown): unknown {
 }
 
 /** The resolution's own SELECT for the caller's row — the same columns the
- * renewal reads (the one stored-row contract, ADR-0006 §Shared ground). */
+ * renewal reads (the one stored-row contract). */
 const ROW_COLUMNS = `id, "userOid", "providerId", "providerRevision", env, status, material,
   "grantedScopes", "grantedAt", "expiresAt", "renewBeforeNext", "pendingRetire",
   "lastRenewedAt", "createdAt", "updatedAt"`;
@@ -251,12 +250,12 @@ export class DelegatedResolver {
   }
 
   /**
-   * Criterion 40's flag: the vendor answered 401 before the recorded expiry,
+   * The pre-expiry-401 flag: the vendor answered 401 before the recorded expiry,
    * so the NEXT request must renew before dispatch. Fire-and-forget by the
    * caller (the response streams first); the UPDATE is column-scoped to
-   * `renewBeforeNext` (the ADR-0006 grant block) and status-CAS'd to `live` —
+   * `renewBeforeNext` and status-CAS'd to `live` —
    * a disconnected or invalidated row gains nothing, and no late write can
-   * resurrect one (criterion 41).
+   * resurrect one.
    */
   flagRenewBeforeNext(connectionId: string): void {
     void this.#pool
@@ -274,7 +273,7 @@ export class DelegatedResolver {
   ): Promise<DelegatedResolution> {
     // 1. The caller-kind gate, before anything else: an identity that can
     // never hold a connection gets the consent-shaped refusal regardless of
-    // provider state (Q9's call-time refusal; the answer does not depend on
+    // provider state (the call-time refusal; the answer does not depend on
     // provider liveness, so no provider state leaks through it either).
     if (INELIGIBLE_KINDS.includes(identity.userKind)) {
       const provider = this.#providers.getByRef(identity.providerRef, identity.env);
@@ -299,7 +298,7 @@ export class DelegatedResolver {
           probed.verdict === "provider_misconfigured"
             ? "provider_misconfigured"
             : "provider_unavailable",
-          // design.md's table: `provider_unavailable` carries `{ref}` (there
+          // The error-table rule: `provider_unavailable` carries `{ref}` (there
           // is no row to name it by); `provider_misconfigured` is opaque —
           // no metadata at all.
           probed.verdict === "provider_unavailable" ? { ref: identity.providerRef } : undefined,
@@ -309,8 +308,8 @@ export class DelegatedResolver {
     }
 
     // 3. The caller's own row — keyed (userOid, providerId, env). No row, an
-    // unparseable row, or a non-live row is `connection_required` (criterion
-    // 33: before the API operation is sent to the vendor).
+    // unparseable row, or a non-live row is `connection_required` (before
+    // the API operation is sent to the vendor).
     const row = await this.#readRow(identity, provider.id);
     if (row === null || row.status !== "live") {
       return refusal("connection_required", 403, "connection_required", {
@@ -319,7 +318,7 @@ export class DelegatedResolver {
       });
     }
 
-    // 4. Defense in depth (ADR-0004 §Consequences): the row was stamped at
+    // 4. Defense in depth: the row was stamped at
     // consent; a cached revision different from it means a sensitive edit or
     // a delete+recreate happened and the row should already be invalidated —
     // the revision check answers `provider_unavailable` even when the
@@ -337,7 +336,7 @@ export class DelegatedResolver {
       return refusal("provider_unavailable", 503, "provider_unavailable", { ref: provider.ref });
     }
 
-    // 6. Expiry-driven renewal (criterion 35) — T-0021's operation, with the
+    // 6. Expiry-driven renewal — the renewal operation, with the
     // advisory lock's single-flight and CAS discipline inside it. The
     // renew-before-next flag short-circuits the expiry comparison on the row
     // read inside the renewer.
@@ -350,7 +349,7 @@ export class DelegatedResolver {
       switch (renewed.outcome) {
         case "refreshed": {
           if (renewed.accessToken === undefined) break; // cannot happen; fail closed below
-          // Criterion 41: a renewal result cannot resurrect credentials. The
+          // A renewal result cannot resurrect credentials. The
           // row was live when the lock was taken; re-check it after the vendor
           // round-trip — a disconnect, invalidation, or sensitive edit that
           // landed mid-flight behaves as dead, and the fresh token is never
@@ -371,13 +370,13 @@ export class DelegatedResolver {
           };
         }
         case "temporary_failure":
-          // Criterion 37: fails the current call as temporarily unavailable;
+          // Fails the current call as temporarily unavailable;
           // the connection is preserved. The existing upstream_error class —
           // NOT a consent outcome.
           return upstreamError();
         case "uncertain_rotation":
         case "reconnect_required":
-          // Criteria 38/39: an uncertain rotation or an explicit permission
+          // An uncertain rotation or an explicit permission
           // loss requires reconnection — the caller must Connect (the
           // renewer has already flipped the row).
           return refusal("reconnect_required", 403, "connection_required", {
@@ -385,7 +384,7 @@ export class DelegatedResolver {
             displayName: provider.displayName,
           });
         case "admin_action":
-          // Criterion 38: provider incompatibility — administrator action,
+          // Provider incompatibility — administrator action,
           // opaque (the row is not the problem and is left untouched).
           return refusal("provider_misconfigured", 502, "provider_misconfigured");
       }

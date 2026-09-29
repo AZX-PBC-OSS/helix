@@ -258,7 +258,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
 
   // Get an app's manifest (slug + visibility + capability grants, §6.3). Read —
   // sign-in required. Provider-bound origins carry their per-binding
-  // effectiveness (T-0028) — computed here, on the read, so the SPA's
+  // effectiveness — computed here, on the read, so the SPA's
   // Reapproval-needed badge needs no second request.
   app.get<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/manifest",

@@ -127,7 +127,7 @@ export interface GatewayConfig {
   /**
    * Per-query `statement_timeout` (ms) applied to every Postgres pool so a
    * slow/stuck query can't pin a pooled connection and exhaust the pool — a DoS
-   * the exposed plane must resist (ADR-0002 ISSUE-05 / issue #12). `0` disables.
+   * the exposed plane must resist (ADR-0002). `0` disables.
    */
   statementTimeoutMs: number;
   /**
@@ -217,7 +217,7 @@ export interface GatewayConfig {
     maxBodyBytes: number;
   };
   /**
-   * The edge↔portal internal-JWT key (HELIX_INTERNAL_SECRET, I-02 ADR-0003):
+   * The edge↔portal internal-JWT key (HELIX_INTERNAL_SECRET):
    * the edge mints a per-call token (`apps/edge/src/internalJwt.ts`) that the
    * portal's internal routes verify. Mint side, so optional exactly like
    * `fetch.instructionSecret` — null leaves the edge→portal capability
@@ -227,12 +227,12 @@ export interface GatewayConfig {
    */
   internalSecret: Buffer | null;
   /**
-   * Internal base URL of helix-portal (EDGE_PORTAL_URL, I-02 ADR-0002 part 3) —
+   * Internal base URL of helix-portal (EDGE_PORTAL_URL) —
    * the origin the auth host's `/connections/*` reverse proxy forwards to over
    * plain HTTP behind the ingress (on ACA one hostname binds one container app,
    * so the portal cannot be reached at the auth host directly). Null ⇒ the
    * proxy surface 503s fail-closed, exactly like an unconfigured egress URL;
-   * it is never a boot failure. The consult/cancel seams (same initiative)
+   * it is never a boot failure. The consult/cancel seams
    * consume the same field, which is why it lives on the shared gateway config
    * beside {@link internalSecret} — the key those calls authorize with.
    */

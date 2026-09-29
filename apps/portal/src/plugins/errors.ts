@@ -13,7 +13,7 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   not_found: 404,
   slug_taken: 409,
   conflict: 409,
-  // The sensitive-edit/delete acknowledgement rejection (I-02 T-0010) — 409
+  // The sensitive-edit/delete acknowledgement rejection — 409
   // like conflict, but a distinct code so the SPA's review panel opens on it.
   confirmation_required: 409,
   // Gateway codes (emitted by the edge, but the map is exhaustive over the
@@ -69,7 +69,7 @@ export const errorsPlugin = fp(
       // Redacted for the same reason the access log is: without a built SPA,
       // `/auth/callback?code=…` falls through to here and the envelope would
       // echo the authorization code into a body that ends up in consoles,
-      // client-side error reporting, and support tickets (issue #20).
+      // client-side error reporting, and support tickets.
       reply
         .status(404)
         .send(envelope("not_found", `route ${req.method} ${redactUrl(req.url)} not found`));

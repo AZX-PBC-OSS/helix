@@ -21,7 +21,7 @@ export default defineConfig({
             PORTAL_OIDC_ALLOW_INSECURE: "true",
             PORTAL_ALLOW_PUBLIC_APPS: "true",
             PORTAL_ALLOW_PASSWORD_APPS: "true",
-            // The internal-JWT keys (I-02 ADR-0003). The portal's boot check
+            // The internal-JWT keys. The portal's boot check
             // requires the edge↔portal key and egress's config the
             // portal↔egress one; the same dev-only well-known values the
             // devcontainer and CI set.

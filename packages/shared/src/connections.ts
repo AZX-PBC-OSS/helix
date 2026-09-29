@@ -4,8 +4,8 @@ import { EnvSchema } from "./env.js";
 import { BoundAppSchema, ProviderRefSchema, ScopeTokenSchema } from "./providers.js";
 
 /**
- * User connections — the per-user consent substrate (I-02, ADR-0006 §Shared
- * ground). A **connection** is one user's consent to one provider in one
+ * User connections — the per-user consent substrate. A **connection** is one
+ * user's consent to one provider in one
  * environment: the stored `user_connections` row, keyed
  * `(userOid, providerId, env)`.
  *
@@ -49,8 +49,8 @@ export type ConnectionStatus = z.infer<typeof ConnectionStatusSchema>;
  * an exchange produces (the access and refresh materials are sealed separately,
  * `ExchangeResponseSchema`'s `exchanged` variant) fit the ONE column both
  * planes write. The portal's callback serializes this envelope into
- * `user_connections.material`; egress parses it on every renewal and swap
- * (T-0021). The values are `SecretStore.seal()` outputs — opaque references,
+ * `user_connections.material`; egress parses it on every renewal and swap.
+ * The values are `SecretStore.seal()` outputs — opaque references,
  * never plaintext — so the envelope is data-shape only and no custody rule
  * changes: opening happens in egress alone (ADR-0006).
  */
@@ -78,16 +78,16 @@ const GrantedScopesSchema = z.array(ScopeTokenSchema).max(MAX_GRANTED_SCOPES);
  *
  * - `material` — the sealed access + refresh material (`SecretStore.seal()`
  *   output, opaque; never plaintext). A swap writes the OLD reference into
- *   `pendingRetire` in the SAME UPDATE (ADR-0008's rule) so the egress sweep
- *   can destroy what was replaced.
- * - `providerRevision` — the provider row's revision at consent (ADR-0004):
+ *   `pendingRetire` in the SAME UPDATE (ADR-0031 amendment item 12) so the
+ *   egress sweep can destroy what was replaced.
+ * - `providerRevision` — the provider row's revision at consent:
  *   a sensitive provider edit invalidates the row, so a stale stamp fails
  *   closed at resolution.
  * - `expiresAt` — the access token's expiry; egress renews when a call lands
- *   past it. `renewBeforeNext` is criterion 40's flag: set after a pre-expiry
- *   vendor 401 so the next request renews first.
- * - `lastRenewedAt` / `pendingRetire` — the in-row renewal/retirement ledger
- *   (ADR-0008): when egress last renewed, and the sealed reference currently
+ *   past it. `renewBeforeNext` is the renew-before-next-call flag: set after a
+ *   pre-expiry vendor 401 so the next request renews first.
+ * - `lastRenewedAt` / `pendingRetire` — the in-row renewal/retirement ledger:
+ *   when egress last renewed, and the sealed reference currently
  *   awaiting the sweep's conditional destroy (NULL once claimed and destroyed).
  */
 export const UserConnectionSchema = z.strictObject({
@@ -110,7 +110,7 @@ export const UserConnectionSchema = z.strictObject({
 export type UserConnection = z.infer<typeof UserConnectionSchema>;
 
 /**
- * The LISTEN/NOTIFY channel for provider-config distribution (ADR-0011): a
+ * The LISTEN/NOTIFY channel for provider-config distribution: a
  * statement-level trigger on `connection_providers` (migration
  * 20260925065340_connection_substrate) pings this channel on every provider
  * mutation, and egress's dedicated LISTEN client — the channel's ONLY listener
@@ -125,9 +125,9 @@ export type UserConnection = z.infer<typeof UserConnectionSchema>;
 export const PROVIDERS_CHANNEL = "helix_providers_changed";
 
 /**
- * One card of the My Connections list (`GET /api/v1/connections/mine`, I-02
- * T-0024) — the caller's own connection as **metadata only** (spec criterion
- * 42): provider name, environment, connection date, granted permissions, and
+ * One card of the My Connections list (`GET /api/v1/connections/mine`) —
+ * the caller's own connection as **metadata only**: provider name,
+ * environment, connection date, granted permissions, and
  * whether Helix knows reconnection is needed. It never claims to have
  * verified the vendor grant, and no vendor profile travels — there is no
  * route that reads the sealed material back, and the sealed reference itself
@@ -139,9 +139,9 @@ export const PROVIDERS_CHANNEL = "helix_providers_changed";
  * tombstone — rather than restating a two-word list — keeps this schema and
  * the stored vocabulary from drifting.
  *
- * `sharedApps` names the apps bound to the provider's ref (ADR-0004: the
- * binding is by ref, the environment by the connection) — the blast radius the
- * disconnect confirmation must name (criteria 43, 45). The same shape the
+ * `sharedApps` names the apps bound to the provider's ref (the binding is by
+ * ref, the environment by the connection) — the blast radius the
+ * disconnect confirmation must name. The same shape the
  * provider impact payload carries.
  */
 export const MyConnectionSchema = z.strictObject({
@@ -163,8 +163,8 @@ export const MyConnectionsResponseSchema = z.strictObject({
 export type MyConnectionsResponse = z.infer<typeof MyConnectionsResponseSchema>;
 
 /**
- * `DELETE /api/v1/connections/mine/:id` (I-02 T-0024, criterion 43's
- * distinguishable outcomes): `disconnected` when this call removed the
+ * `DELETE /api/v1/connections/mine/:id` (distinguishable
+ * outcomes): `disconnected` when this call removed the
  * caller's access, `already_removed` when the named connection was already
  * invalidated — an answer scoped to that id's own row state, which a newer
  * connection re-established afterwards (a re-consent upsert over the same

@@ -42,13 +42,13 @@ import { createEgressPool } from "./pool.js";
 import { EGRESS_SPAN_ATTRS } from "./spanAttributes.js";
 
 /**
- * The delegated-call path end to end (I-02 T-0022) against the REAL test
- * database (the `helix_egress` grants of ADR-0006 part 2) and the REAL fixture
- * vendor (ADR-0010): a `provider`-bearing attested instruction — minted the
+ * The delegated-call path end to end against the REAL test
+ * database and the REAL fixture vendor: a `provider`-bearing attested
+ * instruction — minted the
  * way the edge mints them (the shared sign helpers, with the caller kind the
  * strict schema requires) — resolves the caller's connection, injects the
  * access token in the provider's placement, renews when due, and refuses
- * every failure class design.md's error table names BEFORE any vendor
+ * every failure class the error table names BEFORE any vendor
  * traffic.
  *
  * Two vendor surfaces cooperate: the fixture's OAuth endpoints (the code
@@ -190,7 +190,7 @@ function cacheFor(...rows: ConnectionProvider[]) {
 }
 
 /** A static-secret resolver that would inject a marker if it were EVER
- * consulted on the delegated path — criterion 33's no-static-fallback proof. */
+ * consulted on the delegated path — the no-static-fallback proof. */
 const markerResolver: SecretResolver = {
   resolve: async () => ({
     value: "planted-static-secret-marker",
@@ -471,7 +471,7 @@ async function proxyCall(
 
 // ── The suite ────────────────────────────────────────────────────────────────
 
-describe("delegated call — token placement (criterion 33)", () => {
+describe("delegated call — token placement", () => {
   it("Bearer default: the fresh row's token reaches the fixture's echo, nothing renews", async () => {
     if (!ok) return;
     const provider = await makeProvider();
@@ -585,7 +585,7 @@ describe("delegated call — token placement (criterion 33)", () => {
   });
 });
 
-describe("delegated call — refusals before dispatch (criteria 33, 21)", () => {
+describe("delegated call — refusals before dispatch", () => {
   it("no connection row: 403 connection_required with provider metadata and NO vendor traffic", async () => {
     if (!ok) return;
     const api = await scriptedApi((_req, res) => {
@@ -828,7 +828,7 @@ describe("delegated call — refusals before dispatch (criteria 33, 21)", () => 
   });
 });
 
-describe("delegated call — provider state (criterion 34)", () => {
+describe("delegated call — provider state", () => {
   it("a deleted provider: 503 provider_unavailable with {ref} only", async () => {
     if (!ok) return;
     // The cache serves nothing (deletion is a hard DELETE — the next reconcile
@@ -899,7 +899,7 @@ describe("delegated call — provider state (criterion 34)", () => {
       const res = await proxyCall(app, instruction, `${vendor.issuer}/api/echo`);
       expect(res.statusCode).toBe(502);
       // Opaque: the body is the fixed pair alone — no provider metadata, no
-      // row content, no vendor content (criterion 34).
+      // row content, no vendor content.
       expect(res.json()).toEqual({
         code: "provider_misconfigured",
         message: "provider is misconfigured — administrator action required",
@@ -948,7 +948,7 @@ describe("delegated call — provider state (criterion 34)", () => {
   });
 });
 
-describe("delegated call — expiry-driven renewal (criterion 35, T-0021)", () => {
+describe("delegated call — expiry-driven renewal", () => {
   it("expired token + healthy connection: renews before dispatch, invisible to the caller (rotating)", async () => {
     if (!ok) return;
     const provider = await makeProvider();
@@ -1029,9 +1029,9 @@ describe("delegated call — expiry-driven renewal (criterion 35, T-0021)", () =
     }
   });
 
-  it("dev tier: dev and prod connections of one ref never see each other (Q10)", async () => {
+  it("dev tier: dev and prod connections of one ref never see each other", async () => {
     if (!ok) return;
-    // Q10: dev-tier delegation is keyed by the dev token's developer identity
+    // Dev-tier delegation is keyed by the dev token's developer identity
     // in the dev environment — the env partition rides the instruction's env.
     // The same ref is configured in BOTH tiers (two provider rows, distinct
     // ids); the dev caller's dispatch must use the DEV connection's token.
@@ -1103,7 +1103,7 @@ describe("delegated call — expiry-driven renewal (criterion 35, T-0021)", () =
   });
 });
 
-describe("delegated call — the renewal failure taxonomy through the proxy (criteria 37–39)", () => {
+describe("delegated call — the renewal failure taxonomy through the proxy", () => {
   it("temporary failure (the vendor hangs): 502 upstream_error, connection preserved", async () => {
     if (!ok) return;
     const provider = await makeProvider();
@@ -1220,7 +1220,7 @@ describe("delegated call — the renewal failure taxonomy through the proxy (cri
   });
 });
 
-describe("delegated call — pre-expiry vendor 401 (criterion 40)", () => {
+describe("delegated call — pre-expiry vendor 401", () => {
   /** The scripted 401 the vendor "should not have sent" — the app's own
    * vendor-side credential problem, never platform consent status. */
   const NOT_AUTHORIZED_BODY = JSON.stringify({ error: "vendor says no", detail: "fixed-401" });
@@ -1298,14 +1298,14 @@ describe("delegated call — pre-expiry vendor 401 (criterion 40)", () => {
         res.end("ok-after-renewal");
       });
       try {
-        const provider = await makeProvider({ apiOrigins: [api.origin], ref: "criterion-40" });
+        const provider = await makeProvider({ apiOrigins: [api.origin], ref: "renew-before-next" });
         const tokens = await driveGrant(vendor, "email");
         const seeded = await seedConnection({
           providerId: provider.id,
           tokens,
           grantedScopes: ["email"],
           expiresInSec: 900, // NOT expired
-          renewBeforeNext: true, // criterion 40's flag — renewal short-circuits expiry
+          renewBeforeNext: true, // the pre-expiry-401 flag — renewal short-circuits expiry
         });
         const app = makeApp(cacheFor(provider));
         try {
@@ -1339,7 +1339,7 @@ describe("delegated call — pre-expiry vendor 401 (criterion 40)", () => {
   });
 });
 
-describe("delegated call — late results cannot resurrect (criterion 41)", () => {
+describe("delegated call — late results cannot resurrect", () => {
   it("a row invalidated DURING renewal behaves as dead: no dispatch, row not overwritten", async () => {
     if (!ok) return;
     // The scripted token endpoint invalidates the row WHILE the refresh call

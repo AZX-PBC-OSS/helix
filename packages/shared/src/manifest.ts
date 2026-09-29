@@ -152,21 +152,21 @@ export type DataCapability = z.infer<typeof DataCapabilitySchema>;
  * reached **through `/_api/fetch`** (the `helix-egress` mechanism plane) — audited,
  * metered, SSRF-controlled — as opposed to a `direct` browser call widened into
  * CSP via `externalOrigins`. The credential select is 3-way and mutually
- * exclusive (spec decision 28 — one origin expresses at most one credential
+ * exclusive (one origin expresses at most one credential
  * source, enforced below):
  *  - neither `connection` nor `provider` ⇒ a keyless proxied call;
  *  - `connection` names a stored secret (`docs/design/secrets-and-connections.md`)
  *    injected server-side;
- *  - `provider` names an OAuth provider (spec §App bindings) whose user
+ *  - `provider` names an OAuth provider whose user
  *    connection egress injects; `required` is the app's dependency hint for
  *    that binding and nothing more — it never blocks app loading or triggers
- *    anything platform-side (criterion 17).
+ *    anything platform-side.
  *
- * **Strict** (ADR-0005): unknown keys are rejected, not stripped. This schema
+ * **Strict**: unknown keys are rejected, not stripped. This schema
  * is re-parsed by every plane that reads a manifest; a future field an older
  * plane does not know must fail that parse closed rather than silently
- * disappear — the silent-strip version skew is the hazard ADR-0005 exists to
- * close.
+ * disappear — the silent-strip version skew is the hazard the strict parse
+ * exists to close.
  */
 export const FetchConnectionSchema = z
   .strictObject({
@@ -192,7 +192,7 @@ export const FetchCapabilitySchema = z.object({
   /**
    * Legacy view of the fetch-shim grant. The grant is declared first-class as
    * {@link ShimCapabilitySchema} (`capabilities.shim.fetch`); this boolean is
-   * the pre-T-0002 spelling, still accepted on input and kept synchronized
+   * the pre-`capabilities.shim` spelling, still accepted on input and kept synchronized
    * with the canonical block on every parse (see {@link CapabilitiesSchema}) —
    * new manifests should declare `capabilities.shim`, not this field.
    */
@@ -205,15 +205,15 @@ export const FetchCapabilitySchema = z.object({
 export type FetchCapability = z.infer<typeof FetchCapabilitySchema>;
 
 /**
- * The injected platform helpers an app opts into (design decision 5 — the
+ * The injected platform helpers an app opts into (the
  * platform does not inject JavaScript into app documents unbidden). Both
  * sub-options are serve-time ergonomics, never a privilege grant: they stay at
  * the fetch-shim block's low-risk baseline classification in the approval
  * classifier (`packages/shared/src/approval.ts`).
  *
  *  - `fetch`: the transparent `fetch`/XHR rewrite to the proxy (fetch-proxy §3.2).
- *  - `connect`: the `window.helix.connect()` consent-popup helper (spec §Consent,
- *    criterion 19) — the raw platform entry stays available without it.
+ *  - `connect`: the `window.helix.connect()` consent-popup helper —
+ *    the raw platform entry stays available without it.
  */
 export const ShimCapabilitySchema = z.object({
   fetch: z.boolean().default(false),
@@ -316,11 +316,11 @@ export const CapabilitiesSchema = z
     fetch: FetchCapabilitySchema.optional(),
     /** Platform-owned, scope-confined service worker for offline cold boot (ADR-0035). */
     offline: OfflineCapabilitySchema.optional(),
-    /** Injected platform helpers — the first-class shim grant (design decision 5). */
+    /** Injected platform helpers — the first-class shim grant. */
     shim: ShimCapabilitySchema.optional(),
   })
   /**
-   * Legacy shim-alias normalization (design decision 6): `capabilities.fetch.shim`
+   * Legacy shim-alias normalization: `capabilities.fetch.shim`
    * predates the first-class block, and both spellings must stay behaviorally
    * indistinguishable after parse — existing boolean-shim apps keep their grant,
    * and the edge's per-block fetch parse keeps reading the synchronized boolean
@@ -350,7 +350,7 @@ export const CapabilitiesSchema = z
 
 /**
  * Per-binding effectiveness for one provider-bound origin, computed by the
- * portal when it serves a manifest read (T-0028). The SPA renders the
+ * portal when it serves a manifest read. The SPA renders the
  * Reapproval-needed badge from this alone — no second request — and the owner
  * resubmits by saving the manifest again.
  */
@@ -361,7 +361,7 @@ export const ProviderBindingStatusSchema = z.strictObject({
   ref: ProviderRefSchema,
   /**
    * Whether an approval that granted this binding still matches the provider
-   * row's current identity — T-0009's {@link isProviderBindingEffective} rule
+   * row's current identity — the {@link isProviderBindingEffective} rule
    * (the one definition; the portal never re-derives the comparison). `false`
    * means the provider was deleted or a sensitive edit stale-dated the stamp.
    */

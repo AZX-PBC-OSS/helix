@@ -17,7 +17,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_STEPS=(typecheck lint format docs test)
+ALL_STEPS=(typecheck lint refs format docs test)
 
 FIX=0
 STEPS=()
@@ -109,6 +109,13 @@ fi
 
 wants typecheck && run_step "typecheck" pnpm typecheck
 wants lint && run_step "lint" pnpm lint
+# The shipwright workflow tree (gitignored via .git/info/exclude) carried
+# machine-local planning identifiers — an initiative id and task ids of the
+# shape I-xx / T-nnnn — that once leaked into comments and citation marks. No
+# clone can resolve them, so tracked files stay free of the pattern. Listing
+# tracked files only keeps untracked build output and the .shipwright tree
+# itself out of the scan.
+wants refs && run_step "refs" bash -c 'if git ls-files -z | xargs -0 grep -nIE "(^|[^A-Za-z0-9])(I-[0-9]{2,}|T-[0-9]{3,})([^A-Za-z0-9]|$)"; then echo "machine-local planning identifiers (I-xx / T-nnnn) found above — remove them"; exit 1; fi'
 wants format && run_step "format" pnpm format:check
 # The VitePress build fails on a dead internal link or an unrenderable page,
 # so a broken docs change goes red here instead of at the Pages deploy after

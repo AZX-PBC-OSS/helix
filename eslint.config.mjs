@@ -213,7 +213,7 @@ export default defineConfig([
     ignores: [
       "apps/egress/src/**/*.test.ts",
       // The one sanctioned `pool.connect()` lives here, inside `withPooledClient`
-      // (I-02 T-0021: the advisory-lock client token renewal holds across the
+      // (the advisory-lock client token renewal holds across the
       // vendor call) — the edge's db/pool.ts exemption, copied.
       "apps/egress/src/pool.ts",
     ],

@@ -218,7 +218,7 @@ describe("GET /api/v1/capabilities", () => {
     });
   });
 
-  describe("fetch providers (T-0009)", () => {
+  describe("fetch providers", () => {
     /** Unique per-run ref, so parallel suites' provider rows never collide. */
     const ref = `cat-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
@@ -249,7 +249,7 @@ describe("GET /api/v1/capabilities", () => {
     it("returns every configured provider to a signed-in principal, metadata only", async () => {
       await seedProvider("prod");
       await seedProvider("dev");
-      // Raw env-pinned rows: the same ref appears once per environment (Q16).
+      // Raw env-pinned rows: the same ref appears once per environment.
       const body = await catalogue();
       const entries = body.fetch.providers.filter((p) => p.ref === ref);
       expect(entries.map((p) => `${p.env}`).sort()).toEqual(["dev", "prod"]);

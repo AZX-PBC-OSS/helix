@@ -18,8 +18,8 @@ import { deriveInternalKey, resolveInternalSecret, verifyInternalToken } from ".
 import { cancelConsentAttempt, connectionStatus, consultConsent } from "../connections/consent.js";
 
 /**
- * The internal edge→portal consent seam (I-02 architecture ADR-0002 parts 1–2;
- * ADR-0003 §Shared ground): the START CONSULT and the CANCEL, called by the
+ * The internal edge→portal consent seam: the START CONSULT and the CANCEL,
+ * called by the
  * edge with a per-call minted internal JWT (`aud: azx-portal`, minted by
  * `apps/edge/src/internalJwt.ts`). These are service-to-service routes — no
  * browser reaches them (the auth-host consent pages ride the `/connections/*`
@@ -32,14 +32,14 @@ import { cancelConsentAttempt, connectionStatus, consultConsent } from "../conne
  * way out, so the wire contract is asserted at the boundary, not merely
  * constructed.
  *
- * The callback (T-0020) is a portal-served page under the `/connections/*`
+ * The callback is a portal-served page under the `/connections/*`
  * proxy prefix, not a route here; its claim-shaped probe lives in the consent
  * store and carries no route of its own.
  */
 
 /**
- * The internal-JWT gate (ADR-0003: no internal route accepts a call without a
- * verified token). The key is derived once at registration — the boot already
+ * The internal-JWT gate: no internal route accepts a call without a
+ * verified token. The key is derived once at registration — the boot already
  * failed on a missing/short secret (`assertInternalJwtSecrets`), so a portal
  * serving these routes always has the verify key.
  */

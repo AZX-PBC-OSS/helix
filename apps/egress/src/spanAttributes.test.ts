@@ -104,7 +104,7 @@ describe("egressSpanAttributes", () => {
     expect(Object.keys(attrs)).toHaveLength(6);
   });
 
-  it("carries the delegated dimensions (I-02 T-0022) and nothing credential-shaped", () => {
+  it("carries the delegated dimensions and nothing credential-shaped", () => {
     // The delegated call path widens the VALUE set of helix.credential_source
     // with `delegated` and rides helix.provider_ref — both allowlisted keys,
     // neither a header name nor credential material. The token itself has no
@@ -148,9 +148,9 @@ describe("a recorded egress span", () => {
     }
   });
 
-  it("carries the delegated resolution's span word vocabulary (I-02 T-0022)", async () => {
+  it("carries the delegated resolution's span word vocabulary", async () => {
     // The resolution span is a new span name on this plane; its outcome words
-    // are design.md's inventory, and every one must ride allowlisted KEYS
+    // are the span inventory, and every one must ride allowlisted KEYS
     // only. Asserted on a recorded span per outcome word, so a future word
     // that arrives carrying a non-allowlisted key fails here.
     for (const outcome of [

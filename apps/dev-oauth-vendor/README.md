@@ -1,7 +1,6 @@
 # @azx-pbc/dev-oauth-vendor
 
-The **fixture OAuth vendor** for the OAuth-connections acceptance work (I-02
-T-0005, [ADR-0010](../../.shipwright/initiatives/I-02/architecture.md)): a
+The **fixture OAuth vendor** for the OAuth-connections acceptance work: a
 hand-rolled minimal vendor with per-test fault control that no real vendor (or
 `dev-idp`'s oidc-provider) can produce deterministically — a hanging token
 endpoint, consumed-then-dropped refresh grants, and an API destination that

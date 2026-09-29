@@ -2,10 +2,10 @@ import type { FastifyReply } from "fastify";
 
 /**
  * The portal-served consent pages — the popup's browser-facing control-plane
- * surfaces, reached through the edge's `/connections/*` reverse proxy (I-02
- * ADR-0002 part 3). T-0016 ships the dev journey's nonce entry: on the happy
+ * surfaces, reached through the edge's `/connections/*` reverse proxy. The
+ * dev journey's nonce entry: on the happy
  * path there is no page at all — the entry 302s straight to the vendor
- * (design decision 3, no pre-consent click-through) — so the one page this
+ * (no pre-consent click-through) — so the one page this
  * module renders is the refusal, for every redemption refusal and every
  * service failure.
  *

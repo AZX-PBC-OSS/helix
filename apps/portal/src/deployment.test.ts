@@ -75,7 +75,7 @@ describe("appPublicUrl / appPublicHost", () => {
 });
 
 describe("connectionsCallbackUrl", () => {
-  // The convention pin (architecture ADR-0001 §Implementation Notes): the
+  // The convention pin: the
   // callback is `auth.<APP_PUBLIC_BASE host>` + `/connections/callback` — the
   // label apps/edge/src/routing/hosts.ts classifies as the auth host, under
   // the prefix apps/edge/src/routing/connectionsProxy.ts forwards to this
@@ -135,7 +135,7 @@ describe("resolvePlatformMonthlyUsdCap", () => {
 });
 
 describe("resolveEgressBaseUrl", () => {
-  // The exchange delegation (I-02 ADR-0001/0003) is opt-in exactly like the
+  // The exchange delegation is opt-in exactly like the
   // edge's EDGE_EGRESS_URL: null unwires it, and the consuming route refuses
   // rather than degrades.
   it("is null when unset — the exchange delegation is opt-in", () => {

@@ -82,9 +82,9 @@ const instructionKey = deriveInstructionKey(config.instructionSecret);
 let store: SecretStore | null = null;
 let tokenProvider: TokenProvider | null = null;
 let custody: "keyvault" | "dev" | "off" = "off";
-// The DELEGATED custody (I-02 ADR-0006 part 1): the dedicated, egress-only
+// The DELEGATED custody: the dedicated, egress-only
 // vault for user token material in prod; the dev envelope shares the app-
-// secrets KEK (dev envelope parity — no Azure needed, T-0019). Sealed at
+// secrets KEK (dev envelope parity — no Azure needed). Sealed at
 // exchange receipt, opened at renewal/resolution, destroyed at retirement.
 let delegatedStore: SecretStore | null = null;
 let delegatedCustody: "keyvault" | "dev" | "off" = "off";
@@ -185,7 +185,7 @@ const burnStore = new PgBurnStore(config.databaseUrl, {
   onIdleError: (err) => onClientError(err, "instruction-jti"),
 });
 
-// The provider-config cache and its LISTEN listener (I-02 ADR-0011): egress is
+// The provider-config cache and its LISTEN listener: egress is
 // the channel's only listener, and exchange, refresh, resolution and the
 // availability/revision checks all read this cache. Built BEFORE `buildApp` —
 // the exchange operation's constructor takes the cache reader — and started
@@ -208,7 +208,7 @@ const providers = new LiveProviders({
   },
 });
 
-// The delegated resolution + renewal pool (I-02 T-0022): built before
+// The delegated resolution + renewal pool: built before
 // `buildApp` so the wiring below can reference it, closed in the hook below.
 // The renewer instance itself is built inside `buildApp`'s delegated factory
 // (it needs the proxy's dispatcher); the pool is what this file owns.
@@ -220,7 +220,7 @@ const delegatedPool =
       })
     : null;
 
-// The credential-retirement sweep (I-02 T-0025, ADR-0008): consumes the
+// The credential-retirement sweep: consumes the
 // `pendingRetire` ledger every writer marks, destroying claimed material
 // through the delegated store. Wired exactly when delegated custody is —
 // with no store there is nothing to destroy, and unwired marks simply wait
@@ -247,7 +247,7 @@ const app = buildApp({
     exchangeKey: deriveExchangeKey(config.exchangeSecret),
     providers,
     // The provider row's client credentials open through the EXISTING
-    // app-secrets custody (kv-connections — ADR-0006 part 1); the delegated
+    // app-secrets custody (kv-connections — ADR-0006); the delegated
     // tokens seal into the dedicated store beside it. Deliberately two
     // instances: the delegated vault's grant matrix is single-purpose.
     credentialStore: store,
@@ -256,14 +256,14 @@ const app = buildApp({
     allowInsecureConnection: config.allowInsecureConnection,
     timeoutMs: config.limits.timeoutMs,
   },
-  // The delegated-call resolution (I-02 T-0022): wired exactly when custody
+  // The delegated-call resolution: wired exactly when custody
   // is — it needs both stores (the provider rows' client credentials, and the
   // delegated vault the row's token material opens from). Unwired, delegated
   // instructions are refused fail-closed and every other call is unchanged.
   delegated:
     store && delegatedStore
       ? {
-          // One pool for the resolution's row reads, the criterion-40 flag
+          // One pool for the resolution's row reads, the pre-expiry-401 flag
           // UPDATE, and the renewal advisory-lock clients (helix_egress).
           pool: delegatedPool!,
           providers,

@@ -67,7 +67,7 @@ export interface ProxyDeps {
   /** Dev/test seam — permit secret injection into a cleartext http target (false in prod). */
   allowInsecureConnection: boolean;
   /**
-   * Builds the delegated resolution (I-02 T-0022) against the proxy's shared
+   * Builds the delegated resolution against the proxy's shared
    * dispatcher — the renewer's vendor calls ride the same pinned transport.
    * null/omitted ⇒ delegated instructions are refused fail-closed (the
    * mechanism not wired is an egress misconfiguration, answered as such).
@@ -91,7 +91,7 @@ function fail(reply: FastifyReply, status: number, code: FetchErrorCode, message
  * mapping in both directions: `connection_required` is a 403 whose ledger
  * label is its own new word (not `refusal`), and `provider_unavailable` /
  * `provider_misconfigured` are 5xx whose ledger label is `refusal` (not
- * `error`) — design.md's error table is authoritative (T-0003's note).
+ * `error`).
  */
 function failDelegated(reply: FastifyReply, resolution: DelegatedResolution & { ok: false }): void {
   reply.header(OUTCOME_HEADER, resolution.outcome);
@@ -133,7 +133,7 @@ const NOTHING_INJECTED: Injected = { headerNames: [], queryParam: null };
 /**
  * Apply the DELEGATED access token to the outbound request per the provider's
  * configured placement — `Authorization: Bearer` (the default) or the one
- * named header, verbatim (I-02 criterion 33). A delegated token has no query
+ * named header, verbatim. A delegated token has no query
  * and no signing recipe by construction (`TokenPlacementSchema` refuses
  * them): it is the user's credential, and neither a logged URL nor a signing
  * recipe is an acceptable presentation for it. The recorded `headerNames`
@@ -274,7 +274,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     bodyTimeout: deps.limits.timeoutMs,
   });
 
-  // The delegated resolution (I-02 T-0022), built against the shared
+  // The delegated resolution, built against the shared
   // dispatcher so the renewer's vendor calls ride the same pinned transport.
   const delegated = deps.delegated?.(dispatcher) ?? null;
 
@@ -399,7 +399,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     // response can be checked for skew (see below).
     let clockDerived = false;
     // Set when the call dispatched on a DELEGATED token — the connection row
-    // the criterion-40 flag targets if the vendor answers 401 before expiry.
+    // the pre-expiry-401 flag targets if the vendor answers 401 before expiry.
     let delegatedDispatch: { connectionId: string } | null = null;
     if (instruction.connection) {
       // A connection secret must never cross the wire in cleartext. Egress is the
@@ -496,7 +496,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         return fail(reply, 502, "upstream_error", "connection secret unavailable");
       }
     } else if (instruction.provider) {
-      // ── The delegated branch (I-02 T-0022) ──────────────────────────────
+      // ── The delegated branch ───────────────────────────────────────────────────────────
       // The instruction carries a provider ref, not a secret name: resolve
       // the CALLER'S connection for (userOid, providerRef, env), renew if
       // due, and inject the access token per the provider's placement. The
@@ -530,7 +530,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
           {
             userOid: instruction.userOid,
             // The caller-kind discrimination never infers identity from
-            // userOid's shape — the edge records the kind (criterion 21).
+            // userOid's shape — the edge records the kind.
             userKind: instruction.userKind,
             providerRef: instruction.provider,
             env: instruction.env,
@@ -579,7 +579,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         resolution.provider.tokenPlacement,
         resolution.accessToken,
       );
-      // The criterion-40 arm: a vendor 401 on THIS dispatch sets the
+      // The pre-expiry-401 arm: a vendor 401 on THIS dispatch sets the
       // renew-before-next flag (below, at the response head).
       delegatedDispatch = { connectionId: resolution.connectionId };
     }
@@ -644,13 +644,13 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       reply.header(OUTCOME_HEADER, upstream.statusCode === 429 ? "upstream_throttled" : "ok");
       reply.code(upstream.statusCode);
 
-      // Criterion 40 (I-02): a vendor 401 on a delegated call — before or
+      // A vendor 401 on a delegated call — before or
       // after the recorded expiry — requires renewal before the NEXT app
       // request. The response itself passes through byte-unchanged below (no
       // replay: Helix never re-sends the call), and the flag is set
       // fire-and-forget so the vendor's answer streams immediately; the
-      // status-CAS'd, column-scoped UPDATE cannot resurrect a dead row
-      // (criterion 41) and a failed write costs only one extra renewal later.
+      // status-CAS'd, column-scoped UPDATE cannot resurrect a dead row, and a
+      // failed write costs only one extra renewal later.
       if (delegatedDispatch && upstream.statusCode === 401 && delegated) {
         delegated.flagRenewBeforeNext(delegatedDispatch.connectionId);
       }

@@ -22,15 +22,14 @@ describe("redactUrl — platform-minted credentials", () => {
       "/callback?code=REDACTED&state=REDACTED",
     );
     // ...and the portal SPA's own redirect URI. `state` is credential-class
-    // now: the consent attempt's single-use lookup key (I-02 T-0014).
+    // now: the consent attempt's single-use lookup key.
     expect(redactUrl("/auth/callback?code=SplxlOBeZQQYbYS6WxSbIA&state=xyz")).toBe(
       "/auth/callback?code=REDACTED&state=REDACTED",
     );
   });
 
   it("redacts the OAuth state and PKCE verifier wherever they ride a URL", () => {
-    // The consent callback's lookup key, and the PKCE secret (research.md
-    // §Existing Patterns found both missing; T-0014 owns the addition).
+    // The consent callback's lookup key, and the PKCE secret.
     expect(redactUrl("/connections/callback?code=x&state=STATE-VALUE")).toBe(
       "/connections/callback?code=REDACTED&state=REDACTED",
     );

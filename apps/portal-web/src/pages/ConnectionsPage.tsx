@@ -9,13 +9,13 @@ import { ConfirmDialog } from "../modals/ConfirmDialog";
 import { Hint, PageHead, ToneBadge } from "../components/primitives";
 
 /**
- * My Connections (`/connections`, I-02 T-0024) — the one user-scoped portal
+ * My Connections (`/connections`) — the one user-scoped portal
  * surface. Every signed-in principal sees their own provider connections here
- * (criterion 42) and can disconnect one with confirmation (criteria 43, 45).
+ * and can disconnect one with confirmation.
  *
  * The cards render Helix metadata only: the status line says what Helix knows
  * (Connected / Reconnect needed) and never claims the vendor grant was
- * verified. The refresh cadence is criterion 46's: page entry, after actions
+ * verified. The refresh cadence is: page entry, after actions
  * (the mutation invalidates the query), an explicit Refresh, 30 s while
  * visible, paused while hidden, and a refetch on return. A failed refresh
  * keeps the last data with a polite stale indication; without prior data the
@@ -126,7 +126,7 @@ export function ConnectionsPage() {
           );
         },
         // On a failure the dialog stays open with the error: the outcome is
-        // not confirmed, nothing is resubmitted automatically (criterion 44).
+        // not confirmed, nothing is resubmitted automatically.
       },
     );
   };

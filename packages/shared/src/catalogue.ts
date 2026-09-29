@@ -95,7 +95,7 @@ export const CapabilityCatalogueSchema = z.object({
    * one here would be a guess. An agent learns "this connection exists and is
    * referenceable" and supplies the origin itself. `providers` is the configured
    * OAuth connection providers an app may bind from
-   * `capabilities.fetch.origins[].provider` (T-0009; Q16) — metadata-only
+   * `capabilities.fetch.origins[].provider` — metadata-only
    * {@link CatalogueProviderSchema} entries (ref, kind, display name, API
    * destinations, env), never a credential field, served to every
    * authenticated principal exactly like `connections`. An origin bound to a

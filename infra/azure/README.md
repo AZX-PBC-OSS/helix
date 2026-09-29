@@ -44,7 +44,7 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 - All data services are private-endpoint only; `publicNetworkAccess` is off.
 - The **edge identity has no role on `kv-connections`** — an edge RCE cannot read
   an app connection secret. (Mirrors the `helix_edge` Postgres grant hole.)
-- **`kv-delegated` is egress-only** (initiative I-02, ADR-0006):
+- **`kv-delegated` is egress-only** (ADR-0031):
   it holds user-delegated OAuth token material, and the egress managed identity
   is the **only** principal with any role on it (Secrets Officer — the built-in
   roles have no "set without delete", and egress must seal/open/destroy). The
@@ -223,7 +223,7 @@ value.)
 The container apps receive their **platform/bootstrap** secrets (per-role Postgres
 DSNs, `EDGE_AUTH_SECRET`, the internal seam keys `HELIX_INSTRUCTION_SECRET` /
 `HELIX_INTERNAL_SECRET` / `HELIX_EXCHANGE_SECRET` — one bilateral key per trust
-direction (initiative I-02, ADR-0003) — and the
+direction) — and the
 edge OIDC cert) as **ACA Key Vault references** against `kv-platform`
 (`containerapp.bicep`'s
 `secretValues` entries of the form `{ keyVaultUrl, identity }`). ACA resolves
@@ -280,13 +280,13 @@ seam ([ADR-0006](../../docs/adr/0006-secret-custody-seam.md)). **Delegated** tok
 material (user OAuth tokens) is a third thing: it lives in `kv-delegated`, same
 runtime path and seam, but egress holds **Secrets Officer** there — seal at
 exchange/refresh, open at resolution, destroy at retirement — and is the vault's
-**only** RBAC principal (initiative I-02, ADR-0006):
+**only** RBAC principal (ADR-0031):
 the portal has no role on it at all, so nothing in the control plane can open a
 delegated token.
 
 Egress is pointed at that vault by the template, not by an operator: it sets
 `AZURE_DELEGATED_KEY_VAULT_URL` from the keyvault module's `delegatedVaultUri`
-output. The same holds for the I-02 inter-app URLs — `EDGE_PORTAL_URL` on the
+output. The same holds for the inter-app URLs — `EDGE_PORTAL_URL` on the
 edge and dev-gateway (the `/connections/*` proxy and consent surfaces consult
 the portal), and `PORTAL_EGRESS_URL` on the portal (the callback delegates the
 vendor code exchange to egress). All three are derived from the target app's

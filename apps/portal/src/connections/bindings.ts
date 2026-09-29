@@ -11,16 +11,16 @@ import {
 import type { PrismaClient } from "../db/client.js";
 
 /**
- * Per-binding effectiveness on the manifest read (I-02 T-0028) — the data
+ * Per-binding effectiveness on the manifest read — the data
  * behind the SPA's Reapproval-needed badge. A stored manifest declaring a
  * provider binding that is no longer effective (the provider was deleted, or
  * a sensitive edit stale-dated the filing stamp) reports `effective: false`
  * here; the owner resubmits by saving the manifest again — which, since the
- * T-0009 re-stamp amendment, mechanically files the recovery: the write-gate
+ * re-stamp amendment, mechanically files the recovery: the write-gate
  * re-elevates a stale binding on any save that still requests it
  * (`approvals/service.ts`).
  *
- * The comparison is T-0009's {@link isProviderBindingEffective} — the one
+ * The comparison is {@link isProviderBindingEffective} — the one
  * definition, consumed exactly as the consent consult consumes it
  * (`connections/consent.ts`): collect the provider stamps the app's APPROVED
  * requests filed for the bound ref, and call the binding effective when any
@@ -67,13 +67,13 @@ export async function manifestWithBindings(
 ): Promise<AppManifest> {
   const bindings = await providerBindingStatuses(prisma, appId, manifest.capabilities);
   // Omitted when the manifest declares no provider binding, so every
-  // binding-free manifest response keeps its exact pre-T-0028 shape.
+  // binding-free manifest response keeps its exact original shape.
   return { ...manifest, ...(bindings.length > 0 ? { providerBindings: bindings } : {}) };
 }
 
 /**
  * Per-binding effectiveness for one capabilities blob — exported because the
- * write-gate's re-stamp rule (the T-0009 amendment) asks the SAME question of
+ * write-gate's re-stamp rule asks the SAME question of
  * the REQUESTED capabilities on every manifest PUT: a provider-bound origin
  * whose approved stamps are all stale re-elevates on resubmit, which is the
  * only recovery path the sensitive-edit invalidation leaves open. The client

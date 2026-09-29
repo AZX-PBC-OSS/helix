@@ -36,21 +36,21 @@ export interface EgressConfig {
    * How often the provider cache reconciles from current state regardless of
    * NOTIFY (`EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS`; default 60s) — the
    * self-heal cadence that bounds how stale the cache can be after a missed
-   * notification (I-02 ADR-0011).
+   * notification.
    */
   providersReconcileIntervalMs: number;
   /**
    * How often the credential-retirement sweep consumes the `pendingRetire`
    * ledger (`EGRESS_RETIRE_SWEEP_INTERVAL_MS`; default 60s) — well inside
-   * criterion 47's 15-minute recovery bound even with a failed pass retried
-   * on top (I-02 T-0025, ADR-0008).
+   * the 15-minute recovery bound even with a failed pass retried
+   * on top (ADR-0031 amendment item 12).
    */
   retireSweepIntervalMs: number;
   /** Shared with the edge; HKDF-derived into the instruction-verify key. >= 32 bytes. */
   instructionSecret: Buffer;
   /**
    * Shared with the portal; HKDF-derived into the exchange-JWT verify key
-   * (HELIX_EXCHANGE_SECRET, I-02 ADR-0003 — `apps/egress/src/internalJwt.ts`).
+   * (HELIX_EXCHANGE_SECRET — `apps/egress/src/internalJwt.ts`).
    * Verify side, so required exactly like `instructionSecret`: the exchange
    * route has no degraded mode that still serves it. >= 32 bytes.
    */
@@ -59,12 +59,12 @@ export interface EgressConfig {
   keyVaultUrl?: string;
   /**
    * Prod custody for DELEGATED token material: the dedicated, egress-only vault
-   * (I-02 ADR-0006 part 1; T-0004's `delegatedVaultName` topology). Read from
+   * (the `delegatedVaultName` topology). Read from
    * `AZURE_DELEGATED_KEY_VAULT_URL` — the same injection posture as
    * `AZURE_KEY_VAULT_URL` for the connections vault. Unset in prod leaves the
    * exchange operation unwired (it refuses fail-closed); the deployment
    * coupling (the vault must exist and egress must be its Officer before prod
-   * use) is proven by T-0034, not by this config.
+   * use) is proven by the deployment, not by this config.
    */
   delegatedKeyVaultUrl?: string;
   /** Dev custody: path to the locally-generated KEK file (post-create.sh). */

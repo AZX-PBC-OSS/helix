@@ -12,7 +12,7 @@ import {
 } from "@azx-pbc/shared";
 
 /**
- * The portal's half of the two internal-JWT directions (I-02 ADR-0003): it
+ * The portal's half of the two internal-JWT directions: it
  * **verifies** the edge→portal tokens (the consult, cancel, and reverse-proxy
  * calls the edge mints — `apps/edge/src/internalJwt.ts`) and **mints** the
  * portal→egress tokens (the code-exchange operation egress verifies —
@@ -34,16 +34,14 @@ const ALG = "HS256";
 /**
  * The edge↔portal key (`HELIX_INTERNAL_SECRET`) — the VERIFY side here, so it
  * is required: a portal without it must not boot, because the internal routes
- * have no degraded mode that still serves them (ADR-0003: no internal route
- * accepts a call without a verified token). Missing or short is a boot error,
+ * have no degraded mode that still serves them — no internal route
+ * accepts a call without a verified token. Missing or short is a boot error,
  * not a per-request surprise.
  */
 export function resolveInternalSecret(env: NodeJS.ProcessEnv = process.env): Buffer {
   const raw = env.HELIX_INTERNAL_SECRET;
   if (!raw) {
-    throw new Error(
-      "HELIX_INTERNAL_SECRET is required (the edge↔portal internal-JWT key, ADR-0003)",
-    );
+    throw new Error("HELIX_INTERNAL_SECRET is required (the edge↔portal internal-JWT key)");
   }
   const buf = Buffer.from(raw);
   if (buf.byteLength < 32) {
@@ -119,7 +117,7 @@ export async function verifyInternalToken(
     // jose only enforces exp/iat when present — absence must fail closed.
     if (typeof payload.exp !== "number" || typeof payload.iat !== "number") return false;
     // No unregistered claim is accepted: a future mint-side widening must roll
-    // this verifier first (the ADR-0005 strict-parse discipline).
+    // this verifier first (the strict-parse discipline).
     for (const claim of Object.keys(payload)) {
       if (claim !== "aud" && claim !== "exp" && claim !== "iat") return false;
     }

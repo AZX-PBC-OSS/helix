@@ -1,12 +1,12 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * The connections browser lane (I-02 T-0031, ADR-0010 part 2) — real-Chromium
+ * The connections browser lane — real-Chromium
  * acceptance for the OAuth-connections popup journeys, separate from the jsdom
  * SPA project and from the vitest run entirely.
  *
  * Headed, under Xvfb (both locally and in CI): with Playwright's CDP defaults
- * the popup blocker never fires, and the blocked-open journey (criterion 26)
+ * the popup blocker never fires, and the blocked-open journey
  * must be ENGINE evidence. Two changes make it fire:
  *   - `--disable-popup-blocking` is removed from the default args, which
  *     restores Chromium's one-popup-per-user-gesture blocking; and
@@ -24,8 +24,8 @@ export default defineConfig({
   fullyParallel: false,
   // One CI retry, fresh fixture per attempt. The lane's specs drive real
   // popups through cross-origin navigations, and the runner has twice eaten
-  // one spec per run with a transient popup-close the helper (correctly,
-  // per criterion 29's design) read as a cancellation — not reproducible
+  // one spec per run with a transient popup-close the helper (correctly)
+  // read as a cancellation — not reproducible
   // locally in 20+ pressured runs. A genuine platform failure fails both
   // attempts and stays red; the retry only absorbs runner noise, and the
   // failed attempt's trace/screenshot is retained either way.

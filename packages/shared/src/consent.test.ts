@@ -15,9 +15,9 @@ import {
 } from "./consent.js";
 
 /**
- * The consent operation contracts (I-02 T-0012, ADR-0002 §Shared ground).
- * Every consumer — the edge's start route and dev gateway (T-0014/T-0016),
- * the helper's cancellation (T-0017), the callback (T-0020) — parses through
+ * The consent operation contracts.
+ * Every consumer — the edge's start route and dev gateway,
+ * the helper's cancellation, the callback — parses through
  * these schemas, so the tests pin the one definition: canonicalization,
  * strictness, and the identity union that pins the tier without an env field.
  */
@@ -134,7 +134,7 @@ describe("ConsultResponseSchema / CancelRequestSchema / CancelResponseSchema", (
   });
 });
 
-describe("DevConsentStartResponseSchema (T-0016 — design decision 4)", () => {
+describe("DevConsentStartResponseSchema", () => {
   it("accepts the started outcome with the popup URL and the two terminal outcomes", () => {
     expect(
       DevConsentStartResponseSchema.safeParse({
@@ -167,7 +167,7 @@ describe("DevConsentStartResponseSchema (T-0016 — design decision 4)", () => {
   });
 });
 
-describe("ConnectOutcomeMessageSchema (T-0014 — design.md §Completion message)", () => {
+describe("ConnectOutcomeMessageSchema", () => {
   const base = { provider: "asana", outcome: "connected", reason: null };
 
   it("accepts the design's exact shape: source, version, attempt, provider, outcome, reason", () => {

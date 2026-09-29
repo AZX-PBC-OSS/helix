@@ -32,17 +32,17 @@ import { makePinnedDispatcher, SsrfBlockedError } from "./ssrf.js";
 import { EGRESS_SPAN_ATTRS } from "./spanAttributes.js";
 
 /**
- * The code-exchange operation (I-02 T-0019, ADR-0001/0009) against the REAL
- * fixture vendor (ADR-0010) through the real route: authz, the criterion-27
+ * The code-exchange operation against the REAL
+ * fixture vendor through the real route: authz, the compatibility
  * gate at receipt, sealing, the fixed-string failure discipline, and the
- * pinned-transport proof — the evidence the ticket's done-when names.
+ * pinned-transport proof.
  */
 
 const exchangeKey = deriveExchangeKey(randomBytes(32));
 const instructionKey = deriveInstructionKey(randomBytes(32));
 const DEV_KEK = randomBytes(32);
 
-/** The edge-supplied fixed callback — the consult's redirect_uri (ADR-0001). */
+/** The edge-supplied fixed callback — the consult's redirect_uri. */
 const REDIRECT_URI = "https://auth.local.helix.azxlabs.io/connections/callback";
 
 /** Distinctive needles for the leak scans — never real credentials. */
@@ -276,7 +276,7 @@ describe("POST /exchange — the happy path", () => {
 
     // Sealed references open (dev envelope) to fixture-shaped tokens, and the
     // PLAINTEXTS appear nowhere in the response — the property that makes it
-    // safe for the portal to hold the body at all (ADR-0001).
+    // safe for the portal to hold the body at all.
     const openedAccess = await delegated.open(body.access);
     const openedRefresh = await delegated.open(body.refresh);
     expect(openedAccess).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -292,7 +292,7 @@ describe("POST /exchange — the happy path", () => {
     await app.close();
   });
 
-  it("accepts an omitted granted-permissions field as granted (criterion 27)", async () => {
+  it("accepts an omitted granted-permissions field as granted", async () => {
     await setProvider({ requestedScopes: ["email", "profile"] });
     const app = makeApp();
     const verifier = newCodeVerifier();
@@ -323,7 +323,7 @@ describe("POST /exchange — the happy path", () => {
   });
 });
 
-describe("POST /exchange — the criterion-27 gate at receipt", () => {
+describe("POST /exchange — the compatibility gate at receipt", () => {
   it("rejects an explicitly smaller permission set with nothing sealed", async () => {
     await setProvider({ requestedScopes: ["email", "profile"] });
     const app = makeApp();
@@ -413,7 +413,7 @@ describe("POST /exchange — the criterion-27 gate at receipt", () => {
   });
 });
 
-describe("POST /exchange — provider resolution (ADR-0004)", () => {
+describe("POST /exchange — provider resolution", () => {
   it("answers provider_unavailable for an unknown provider id", async () => {
     await setProvider();
     const app = makeApp();
@@ -556,7 +556,7 @@ describe("POST /exchange — authorization before anything else", () => {
   });
 });
 
-describe("POST /exchange — fixed-string failures (ADR-0009)", () => {
+describe("POST /exchange — fixed-string failures", () => {
   /**
    * Drive a vendor failure, then scan every retained backend the path touches:
    * the response body (the fixed union, nothing else), the span (no exception
@@ -658,7 +658,7 @@ describe("POST /exchange — fixed-string failures (ADR-0009)", () => {
   });
 });
 
-describe("POST /exchange — the pinned transport (ADR-0009)", () => {
+describe("POST /exchange — the pinned transport", () => {
   it("refuses a loopback token endpoint in the prod-flag posture before dialing", async () => {
     const tokenServer = await scriptedTokenServer(
       jsonResponse({

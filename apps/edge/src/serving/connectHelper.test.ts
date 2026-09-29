@@ -18,7 +18,7 @@ import type { ProxiedOriginCredential } from "../registry/projection.js";
 import { buildConnectScript } from "./connectHelper.js";
 
 /**
- * The connect helper (I-02 T-0017 — design.md §The connect helper). The script
+ * The connect helper. The script
  * is platform-authored inline JS, so its behavior is driven here in a scripted
  * browser-shaped sandbox: the REAL built script evaluates against fake
  * `window`/timers, and the tests drive gestures, messages, popup closes and
@@ -26,7 +26,7 @@ import { buildConnectScript } from "./connectHelper.js";
  * — the string the edge ships is the thing under test.
  *
  * The HTTP-level half (below) proves the injection gating: the helper ships
- * only under the manifest's `shim.connect` grant (design decision 5), the
+ * only under the manifest's `shim.connect` grant, the
  * fetch shim's own behavior is untouched, and the receiver-verification
  * origins are the app host + the auth host.
  */
@@ -232,7 +232,7 @@ describe("the connect helper script — surface", () => {
   });
 
   it("never patches fetch or XHR — interception is the fetch shim's grant alone", () => {
-    // The compatibility promise (design.md decision 6): an app can hold both
+    // The compatibility promise: an app can hold both
     // grants; the helper must not grow shim behavior of its own.
     const js = buildConnectScript({ platformOrigins: PLATFORM_ORIGINS });
     expect(js).not.toContain("XMLHttpRequest");
@@ -251,7 +251,7 @@ describe("the connect helper script — surface", () => {
     expect(url.searchParams.has("attempt")).toBe(true);
     const tag = url.searchParams.get("attempt") ?? "";
     expect(ConsentAttemptTagSchema.safeParse(tag).success).toBe(true);
-    // The popup shape the design fixes (~520×680, resizable).
+    // The popup shape the platform fixes (~520×680, resizable).
     expect(s.opens[0]!.features).toContain("popup=yes");
     expect(s.opens[0]!.features).toContain("resizable=yes");
     expect(s.clock.pendingCount).toBe(2); // poll interval + five-minute deadline
@@ -267,7 +267,7 @@ describe("the connect helper script — surface", () => {
   });
 });
 
-describe("the connect helper script — blocked (criterion 26)", () => {
+describe("the connect helper script — blocked", () => {
   it("resolves blocked immediately when window.open refuses, with no navigation and no retry", async () => {
     const s = createSandbox({ openReturns: null });
     const { settled, value } = await resolvedValue(s.connect("asana"));
@@ -281,7 +281,7 @@ describe("the connect helper script — blocked (criterion 26)", () => {
   });
 });
 
-describe("the connect helper script — receiver verification (criterion 28)", () => {
+describe("the connect helper script — receiver verification", () => {
   it("discards a forged message from a sibling window, the vendor's page, or any other origin/source", async () => {
     const s = createSandbox();
     const p = s.connect("asana");
@@ -399,7 +399,7 @@ describe("the connect helper script — receiver verification (criterion 28)", (
   });
 
   it("binds a tag-less completion message to the popup it opened (sender + origin verify)", async () => {
-    // T-0020's completion pages post from the auth host; when the message
+    // The completion pages post from the auth host; when the message
     // carries no attempt tag, the sender check is what binds it to this call.
     const s = createSandbox();
     const p = s.connect("asana");
@@ -421,7 +421,7 @@ describe("the connect helper script — outcome relay", () => {
     ["denied", { outcome: "denied" }],
     ["signin_required", { outcome: "signin_required" }],
     [
-      "error with a bounded reason (the losing saver's conflict, criterion 32)",
+      "error with a bounded reason (the losing saver's conflict)",
       { outcome: "error", reason: "conflict" },
     ],
   ] as const)("relays %s", async (_name, over) => {
@@ -453,7 +453,7 @@ describe("the connect helper script — outcome relay", () => {
   });
 });
 
-describe("the connect helper script — cancelled (criterion 29)", () => {
+describe("the connect helper script — cancelled", () => {
   it("a popup closed without a completion message acknowledges cancellation and resolves cancelled", async () => {
     const s = createSandbox();
     const p = s.connect("asana");
@@ -496,14 +496,14 @@ describe("the connect helper script — cancelled (criterion 29)", () => {
     s.clock.advance(250);
     await resolvedValue(p);
     // A forged "connected" after cancellation changes nothing: the outcome was
-    // delivered, the listeners are gone (criterion 29's flip side).
+    // delivered, the listeners are gone — the flip side.
     s.dispatchMessage({ source: s.popup, origin: AUTH_ORIGIN, data: message({ attempt: tag }) });
     expect(s.fetches).toHaveLength(1);
     expect(s.messageListenerCount()).toBe(0);
   });
 });
 
-describe("the connect helper script — timeout (criterion 25)", () => {
+describe("the connect helper script — timeout", () => {
   it("resolves timeout at the five-minute bound with the popup open, and never acknowledges a cancel", async () => {
     const s = createSandbox();
     const p = s.connect("asana");
@@ -567,7 +567,7 @@ describe("the connect helper script — listener lifetime (the four-exit rule)",
   });
 });
 
-describe("the connect helper script — no replay, no automatic behavior (criterion 31)", () => {
+describe("the connect helper script — no replay, no automatic behavior", () => {
   it("after connected, the helper makes no calls and opens no popups of its own", async () => {
     const s = createSandbox();
     const p = s.connect("asana");
@@ -607,7 +607,7 @@ describe("the connect helper script — no replay, no automatic behavior (criter
   });
 });
 
-describe("the connect helper script — concurrent calls (criterion 32)", () => {
+describe("the connect helper script — concurrent calls", () => {
   it("each call gets its own attempt tag, its own popup, and its own outcome", async () => {
     const s = createSandbox();
     const p1 = s.connect("asana");
@@ -637,7 +637,7 @@ describe("the connect helper script — concurrent calls (criterion 32)", () => 
 });
 
 /**
- * The injection gating (criterion 19; design decision 5) — at the HTTP surface,
+ * The injection gating — at the HTTP surface,
  * against the real serving path. A provider binding is NOT the grant; the
  * manifest's `shim.connect` is.
  */
@@ -733,7 +733,7 @@ describe("helper injection is gated by the manifest's shim.connect grant (advers
       }),
     );
     expect(res.status).toBe(200);
-    // The fetch shim is exactly as before T-0017: both patches, this app's
+    // The fetch shim is exactly as before the helper: both patches, this app's
     // origins, same transparency semantics.
     expect(res.body).toContain("window.fetch =");
     expect(res.body).toContain("XMLHttpRequest.prototype.open");

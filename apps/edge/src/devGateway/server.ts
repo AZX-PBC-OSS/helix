@@ -159,7 +159,7 @@ const llmProvider: LlmProvider | null =
       })
     : null;
 
-// The dev tier's consent consult (T-0016) rides the same portal seam as the
+// The dev tier's consent consult rides the same portal seam as the
 // edge's reverse proxy — EDGE_PORTAL_URL + the internal mint key, both already
 // on the shared gateway config. Unset ⇒ the consent route 503s fail-closed.
 const portal = config.portalUrl ? new HttpPortalProvider(config.portalUrl) : null;

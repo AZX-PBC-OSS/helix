@@ -106,7 +106,7 @@ describe("createEgressPool", () => {
  * The checkout window (`pool.connect()` → `release()`), which the Pool-level
  * listener above structurally cannot cover — the same fake-client shape the
  * edge's pool.test.ts uses (apps/edge/src/db/pool.test.ts). Renewal's
- * advisory-lock client is the one consumer (I-02 ADR-0007).
+ * advisory-lock client is the one consumer.
  */
 class FakeClient extends EventEmitter {
   released = 0;

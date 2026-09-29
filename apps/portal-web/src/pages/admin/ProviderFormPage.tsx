@@ -43,13 +43,13 @@ import {
 } from "../../lib/providerForm";
 
 /**
- * Provider create + edit (`/admin/providers/new` and `/admin/providers/:id`,
- * I-02 T-0026) — the dedicated edit route (design decision 14): the draft is
+ * Provider create + edit (`/admin/providers/new` and `/admin/providers/:id`)
+ * — the dedicated edit route: the draft is
  * page state, seeded on load and reseeded only by the page's own actions
  * (save success, explicit Reload), so a background list refresh can never
  * discard it.
  *
- * Save outcomes (design.md §Provider create/edit table): a non-sensitive edit
+ * Save outcomes: a non-sensitive edit
  * applies with a success banner and a reseed; a sensitive delta fetches the
  * impact counts and opens the review panel before anything is sent; a stale
  * save (409 revision) shows the reload-review-confirm message with the draft
@@ -61,12 +61,12 @@ type ReviewState =
   | { mode: "edit"; body: ProviderUpdateRequest; diff: ProviderDiffLine[]; impact: ProviderImpact }
   | { mode: "delete"; impact: ProviderImpact };
 
-/** The criterion-7 warning sentence, verbatim in meaning. Exported because the
- * import preview plays the review-panel role for an imported update (T-0027) —
+/** The sensitive-edit warning sentence, verbatim in meaning. Exported because the
+ * import preview plays the review-panel role for an imported update —
  * one sentence, so the two surfaces can never disagree. */
 export const SENSITIVE_WARNING =
   "Existing connections and pending consent attempts become invalid, and affected apps need approval again. Helix does not create reapproval requests for them.";
-/** The criterion-9 statement for deletion. */
+/** The deletion warning statement. */
 const DELETE_WARNING =
   "Deleting invalidates the provider's existing user connections and pending consent attempts, and affected apps need approval again. Recreating a provider with the same reference restores neither old consent nor old approvals.";
 
@@ -263,7 +263,7 @@ export function ProviderFormPage() {
       return;
     }
     // No well-formed answer came back — the outcome is unknown. Nothing is
-    // resubmitted automatically; retry waits for a refresh (criterion 10).
+    // resubmitted automatically; retry waits for a refresh.
     closeReview();
     setNotConfirmed(true);
   };
@@ -650,7 +650,7 @@ function FormShell(props: ShellProps) {
 }
 
 /**
- * The field contract (design.md §Provider create/edit): every input visibly
+ * The field contract: every input visibly
  * labeled, errors rendered on the input (associated and announced — polite
  * inline), the environment and reference immutable on edit, the client secret
  * blank-keeps on rotation, token placement of Bearer or named header only.

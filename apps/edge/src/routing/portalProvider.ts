@@ -5,12 +5,12 @@ import { context, propagation } from "@opentelemetry/api";
 import { REQUEST_ID_HEADER } from "@azx-pbc/shared/logging";
 
 /**
- * The edge → portal seam (I-02 architecture ADR-0002, parts 1 and 3), shaped
+ * The edge → portal seam, shaped
  * like the `EgressProvider`: the auth host's `/connections/*` reverse proxy
  * forwards the browser-facing consent surface to `helix-portal` — on ACA one
  * hostname binds one container app, so the portal cannot answer at the auth
- * host directly — and the consent start route's internal consult (T-0014)
- * calls the same client. Authorization is T-0006's per-call internal JWT
+ * host directly — and the consent start route's internal consult
+ * calls the same client. Authorization is the per-call internal JWT
  * (`aud: portal`), minted by the caller and written here; the upstream body
  * streams through untouched.
  */
@@ -19,7 +19,7 @@ export interface PortalProxyRequest {
   /**
    * Path + query on the portal. Two shapes ride this seam: the auth host's
    * browser-facing proxy forwards under the `/connections` prefix, and the
-   * consent start route's internal consult (T-0014) targets
+   * consent start route's internal consult targets
    * `/internal/connections/consult`.
    */
   target: string;
@@ -41,7 +41,7 @@ export interface PortalProxyRequest {
    * on the egress seam).
    */
   correlationId: string;
-  /** The edge-minted internal JWT (T-0006, `aud: portal`). */
+  /** The edge-minted internal JWT (`aud: portal`). */
   internalToken: string;
 }
 
@@ -80,7 +80,7 @@ export class HttpPortalProvider implements PortalProvider {
     // from the browser's request — so a client-supplied value can never shadow
     // ours. The internal header in particular: the caller has already stripped
     // any inbound version at the safelist, and this ordering is the guarantee
-    // that does not depend on that list (ADR-0003 §Implementation Notes).
+    // that does not depend on that list.
     const traceContext: Record<string, string> = {};
     propagation.inject(context.active(), traceContext);
 

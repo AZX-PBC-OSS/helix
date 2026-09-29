@@ -6,9 +6,9 @@ import { makePinnedFetch } from "./exchangeTransport.js";
 
 /**
  * The openid-client Configuration for ONE provider revision — shared by both
- * vendor-facing operations (the code exchange, T-0019, and token renewal,
- * T-0021). Static metadata from the cached row, no discovery (ADR-0009
- * §Implementation Notes). This is the ONE place the library's setup findings
+ * vendor-facing operations (the code exchange and token renewal). Static
+ * metadata from the cached row, no discovery. This is the ONE place the
+ * library's setup findings
  * live; every vendor-facing operation gets the same transport, timeout, and
  * dev-flag gating by construction.
  */
@@ -41,7 +41,7 @@ export async function buildDelegatedClientConfiguration(
   if (opts.allowInsecureConnection) allowInsecureRequests(config);
   // The ONE transport seam: every library HTTP call rides the same DNS-pinned
   // dispatcher the fetch-proxy uses, so the SSRF controls and the trace
-  // boundary survive the library boundary (ADR-0009 §Shared ground).
+  // boundary survive the library boundary.
   config[CUSTOM_FETCH] = makePinnedFetch(opts.dispatcher);
   return config;
 }

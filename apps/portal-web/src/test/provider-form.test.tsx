@@ -11,8 +11,8 @@ const TAGS_SELECTOR = { selector: '[data-type="visible"]' } as const;
 import { ProviderFormPage } from "../pages/admin/ProviderFormPage";
 
 /**
- * Provider create/edit (`/admin/providers/new`, `/admin/providers/:id`, I-02
- * T-0026): the field contract with its mirrored 422s inline, the
+ * Provider create/edit (`/admin/providers/new`, `/admin/providers/:id`):
+ * the field contract with its mirrored 422s inline, the
  * sensitive-change review panel (diff + impact fetched before it renders,
  * Confirm/Cancel with the draft preserved), the stale-save reload-review-confirm
  * flow, "outcome not confirmed" retry gating, deletion with impact, and
@@ -489,7 +489,7 @@ describe("ProviderFormPage deletion", () => {
     await screen.findByRole("button", { name: "Save changes" });
     await user.click(screen.getByRole("button", { name: "Delete provider" }));
 
-    // Deletion's panel: impact counts + criterion-9 statement, no diff.
+    // Deletion's panel: impact counts + the deletion warning, no diff.
     const dialog = await screen.findByRole("dialog", { name: "Delete provider" });
     expect(
       within(dialog).getByText(/restores neither old consent nor old approvals/),

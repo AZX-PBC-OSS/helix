@@ -46,8 +46,8 @@ export const ApiTokenReportSchema = z.object({
 export type ApiTokenReport = z.infer<typeof ApiTokenReportSchema>;
 
 /**
- * One token-endpoint request, as the fixture's call log records it (I-02
- * T-0021's single-flight evidence): the grant type asked and whether a
+ * One token-endpoint request, as the fixture's call log records it: the
+ * grant type asked and whether a
  * refresh token was PRESENTED — counts and shapes only, never values, so the
  * log itself is not a credential store.
  */
@@ -126,7 +126,7 @@ export function buildVendor(
   const opts = VendorOptionsSchema.parse(options ?? {});
   const grants = new Map<string, StoredGrant>();
   const refreshTokens = new Map<string, StoredRefresh>();
-  // The call log (T-0021): appended at the top of the token endpoint, fault
+  // The call log: appended at the top of the token endpoint, fault
   // modes included, so "the refresh token was presented exactly once" is
   // observable even when the presentation hung or was consumed-then-dropped.
   const tokenLog: TokenEndpointCall[] = [];
@@ -242,7 +242,7 @@ export function buildVendor(
 
     // Fault modes apply to valid client presentations; the error paths above
     // stay standard in every mode (the contract must survive wherever the
-    // client validates it — ADR-0010).
+    // client validates it).
     if (modes.tokenMode === "hang") {
       // Stall until the caller's side of the socket closes — a caller timeout
       // aborts the request, and shutdown destroys sockets, both of which end

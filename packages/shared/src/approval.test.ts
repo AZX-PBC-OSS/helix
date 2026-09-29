@@ -243,7 +243,7 @@ describe("classifyChange — fetch proxy", () => {
   });
 
   it("the connect helper is its own baseline delta — a connect-only change persists", () => {
-    // T-0028: the connect sub-option has no legacy alias to ride, so without
+    // The connect sub-option has no legacy alias to ride, so without
     // its own path the classifier produced no delta and the grant silently
     // failed to persist (the reported manifest never changed).
     const requested: Capabilities = {
@@ -319,10 +319,10 @@ describe("classifyChange — fetch proxy", () => {
   });
 });
 
-// T-0009: a provider-bound origin classifies like a secret-bound one (high),
-// on the extended canonical key form `origin→provider:ref` (design.md §Approvals
-// queue additions). Keyless/secret-bound classifications are unchanged above.
-describe("classifyChange — provider-bound origins (T-0009)", () => {
+// A provider-bound origin classifies like a secret-bound one (high), on the
+// extended canonical key form `origin→provider:ref`. Keyless/secret-bound
+// classifications are unchanged above.
+describe("classifyChange — provider-bound origins", () => {
   it("gates a provider-bound origin add as high, on the provider key form", () => {
     const r = classifyChange(EMPTY, {
       mcp: [],
@@ -418,7 +418,7 @@ describe("classifyChange — provider-bound origins (T-0009)", () => {
   });
 });
 
-describe("isProviderBindingEffective (T-0009 — the one binding-effectiveness rule)", () => {
+describe("isProviderBindingEffective — the one binding-effectiveness rule", () => {
   const stamp = {
     ref: "asana",
     env: "prod" as const,

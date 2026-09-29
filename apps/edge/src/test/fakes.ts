@@ -397,8 +397,8 @@ export class FakeAppDataStore implements AppDataStore {
 }
 
 /**
- * Scripted portal provider for the auth-host `/connections/*` proxy (I-02
- * ADR-0002 part 3) — the `FakeEgress` of the portal-ward seam. Captures what
+ * Scripted portal provider for the auth-host `/connections/*` proxy —
+ * the `FakeEgress` of the portal-ward seam. Captures what
  * the edge forwards (method, target, the safelisted headers, the minted
  * internal token) and answers a fixed page.
  */

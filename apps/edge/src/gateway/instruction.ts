@@ -41,12 +41,12 @@ export async function mintInstruction(claims: AttestedInstruction, key: Buffer):
       ...(claims.method ? { method: claims.method } : {}),
       ...(claims.path !== undefined ? { path: claims.path } : {}),
       ...(claims.connection ? { connection: claims.connection } : {}),
-      // The delegated mint (I-02): exactly one credential source rides — the
+      // The delegated mint: exactly one credential source rides — the
       // credential union the projection carries makes provider and connection
-      // mutually exclusive, so the payload schema's XOR (ADR-0005) holds by
+      // mutually exclusive, so the payload schema's XOR holds by
       // construction. `userKind` is mandatory on a delegated instruction
       // (egress refuses anon/password callers by kind, never by inferring it
-      // from userOid — spec criterion 21); stamped only there, so keyless and
+      // from userOid); stamped only there, so keyless and
       // secret-backed instructions keep minting exactly as before.
       ...(claims.provider ? { provider: claims.provider } : {}),
       ...(claims.userKind ? { userKind: claims.userKind } : {}),

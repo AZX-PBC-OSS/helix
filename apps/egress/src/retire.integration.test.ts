@@ -31,20 +31,20 @@ import { makePinnedDispatcher } from "./ssrf.js";
 import { EGRESS_SPAN_ATTRS } from "./spanAttributes.js";
 
 /**
- * The credential-retirement sweep (I-02 T-0025, ADR-0008) against a REAL
- * Postgres (the `helix_egress` grants of ADR-0006 part 2, including the
+ * The credential-retirement sweep (ADR-0031 amendment item 12) against a REAL
+ * Postgres (the `helix_egress` grants, including the
  * column-scoped UPDATE the claim and restore ride) and the REAL dev envelope
- * custody. The done-when list is the file's structure:
+ * custody. The checklist is the file's structure:
  *
  * - entries seeded through each real writer's marking shape are destroyed and
  *   the field clears — including one end-to-end through the REAL rotating
- *   renewal (T-0021) and the REAL fixture vendor;
- * - a reconnect racing the sweep keeps its new material (criterion 48) — a
+ *   renewal and the REAL fixture vendor;
+ * - a reconnect racing the sweep keeps its new material — a
  *   deterministic interleave, held open by a gated destroy while the writer's
  *   swap commits;
  * - valid connections survive repeated passes;
  * - a forced destroy failure warn-logs the fixed event, counts, restores, and
- *   the retry succeeds (criterion 47);
+ *   the retry succeeds;
  * - orphaned material from an interrupted write is retired;
  * - start/stop cycles release the timer and the in-flight pass.
  *
@@ -127,9 +127,9 @@ const inner = createSecretStore({ devMasterKey: kek });
  * The delegated store with observable custody: the dev envelope's `destroy`
  * is a no-op by design (the ciphertext lives in the row), so observability is
  * the destroy call itself. The wrapper also injects the two test faults the
- * done-when needs — a failing destroy (criterion 47's visibility + retry) and
+ * checklist needs — a failing destroy (visibility + retry) and
  * a gate that holds one destroy open while the test commits a writer's swap
- * (criterion 48's interleave). The gate is checked BEFORE the failure
+ * (the interleave). The gate is checked BEFORE the failure
  * injection, so a parked destroy can complete and the NEXT call can fail.
  */
 const destroyed: string[] = [];
@@ -324,12 +324,12 @@ describe("CredentialRetirementSweep (helix_egress)", () => {
   it("destroys and clears a ledger-marked entry seeded through each real writer's marking shape", async () => {
     if (!ok) return;
     // The four writers' shapes, verbatim from each writer's SQL:
-    // - lost callback race (T-0020, completion.ts): the row that beat the
+    // - lost callback race (completion.ts): the row that beat the
     //   loser stays live; the LOSER's own material is ledger-marked on it.
-    // - rotating renewal (T-0021, renewal.ts): the swap writes the OLD
+    // - rotating renewal (renewal.ts): the swap writes the OLD
     //   envelope beside the NEW material in the same UPDATE.
-    // - disconnect (T-0024, connectionsMine.ts) and sensitive-edit
-    //   invalidation (T-0010, providers.ts): both invalidate the row and mark
+    // - disconnect (connectionsMine.ts) and sensitive-edit
+    //   invalidation (providers.ts): both invalidate the row and mark
     //   its OWN material in the same UPDATE — identical shapes by design.
     const cases: Array<{
       writer: string;
@@ -338,25 +338,25 @@ describe("CredentialRetirementSweep (helix_egress)", () => {
       markedTokens: { access: string; refresh: string };
     }> = [
       {
-        writer: "lost callback race (T-0020)",
+        writer: "lost callback race",
         status: "live",
         materialTokens: { access: "retire-plain-access", refresh: "retire-plain-refresh" },
         markedTokens: { access: "loser-callback-access", refresh: "loser-callback-refresh" },
       },
       {
-        writer: "rotating renewal (T-0021)",
+        writer: "rotating renewal",
         status: "live",
         materialTokens: { access: "rotated-new-access", refresh: "rotated-new-refresh" },
         markedTokens: { access: "rotated-old-access", refresh: "rotated-old-refresh" },
       },
       {
-        writer: "disconnect (T-0024)",
+        writer: "disconnect",
         status: "invalidated",
         materialTokens: { access: "disconnected-access", refresh: "disconnected-refresh" },
         markedTokens: { access: "disconnected-access", refresh: "disconnected-refresh" },
       },
       {
-        writer: "sensitive-edit invalidation (T-0010)",
+        writer: "sensitive-edit invalidation",
         status: "invalidated",
         materialTokens: { access: "invalidated-access", refresh: "invalidated-refresh" },
         markedTokens: { access: "invalidated-access", refresh: "invalidated-refresh" },
@@ -457,7 +457,7 @@ describe("CredentialRetirementSweep (helix_egress)", () => {
         [row.id],
       );
 
-      // The REAL writer: a rotating renewal through the T-0021 renewer —
+      // The REAL writer: a rotating renewal through the renewer —
       // vendor round-trip, rotation, and the ledger mark in the swap's UPDATE.
       const renewer = new ConnectionRenewer({
         pool: pool!,
@@ -492,7 +492,7 @@ describe("CredentialRetirementSweep (helix_egress)", () => {
       expect(destroyed).toContain(oldMarked.refresh);
       const after = await readRow(row.id);
       expect(after?.pendingRetire).toBeNull();
-      // …and the CURRENT material is intact and still opens — criterion 48.
+      // …and the CURRENT material is intact and still opens.
       // (The renewed access token is the vendor's FRESH one, not the original.)
       expect(after?.material).toBe(marked?.material);
       expect(await inner.open(newMaterial.access)).toBe(renewed.accessToken);
@@ -509,8 +509,7 @@ describe("CredentialRetirementSweep (helix_egress)", () => {
     // pendingRetire = the row's pre-swap material, exactly the completion.ts
     // DO UPDATE — replacing B's mark. B's claim must then LOSE: the mark it
     // read is gone, no destroy fires for anything B now names, and the
-    // writer's own OLD-reference mark is consumed by the next pass
-    // (criterion 48).
+    // writer's own OLD-reference mark is consumed by the next pass.
     // The pass reads rows ordered by id, so the test casts the two rows by
     // id order: the smaller id parks the pass, the larger is raced.
     const parkedEnv = ConnectionMaterialSchema.parse(
@@ -587,7 +586,7 @@ describe("CredentialRetirementSweep (helix_egress)", () => {
     expect(await inner.open(reconnectNew.access)).toBe("reconnect-new-access");
 
     // The next pass consumes the writer's own mark — and STILL never the
-    // current connection's material (criterion 48, twice over).
+    // current connection's material.
     await sweep!.sweepOnce();
     expect(destroyed).toContain(racedOld.access);
     expect(destroyed).toContain(racedOld.refresh);
@@ -735,7 +734,7 @@ describe("CredentialRetirementSweep (helix_egress)", () => {
     if (!ok) return;
     // A writer re-purposed the slot between the claim and the restore: the
     // restore's `IS NULL` predicate matches nothing, the writer's mark
-    // governs, and the failure is still visible (criterion 47) without
+    // governs, and the failure is still visible without
     // clobbering the newer reference.
     const marked = ConnectionMaterialSchema.parse(
       JSON.parse(

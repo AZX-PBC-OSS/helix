@@ -36,7 +36,7 @@ param platformVaultName string
 @description('Globally-unique connections Key Vault name (3-24 chars).')
 param connectionsVaultName string
 
-@description('Globally-unique delegated-custody Key Vault name (3-24 chars). Holds user-delegated OAuth token material; the egress managed identity is its only RBAC principal (I-02 ADR-0006).')
+@description('Globally-unique delegated-custody Key Vault name (3-24 chars). Holds user-delegated OAuth token material; the egress managed identity is its only RBAC principal.')
 param delegatedVaultName string
 
 @description('Postgres flexible server name (globally unique, lowercase).')
@@ -712,10 +712,10 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
 
 var connectionsVaultUri = keyvault.outputs.connectionsVaultUri
 
-// Delegated custody vault (I-02 ADR-0006) — user OAuth token material.
+// Delegated custody vault — user OAuth token material.
 var delegatedVaultUri = keyvault.outputs.delegatedVaultUri
 
-// Internal base URLs for the I-02 cross-app hops, hoisted so the four call
+// Internal base URLs for the cross-app hops, hoisted so the four call
 // sites cannot drift (EDGE_EGRESS_URL was already duplicated between the edge
 // and the dev-gateway). Same `https://` + ingress-FQDN shape as the egress URL
 // always used: internal ingress terminates TLS and does not serve plaintext.
@@ -1078,7 +1078,7 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'EGRESS_PORT', value: '8081' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
-      // Delegated custody (I-02 ADR-0006): user OAuth token material,
+      // Delegated custody: user OAuth token material,
       // egress-only. Read at boot — without it the delegated store is not
       // built and every delegated-token operation fails closed.
       { name: 'AZURE_DELEGATED_KEY_VAULT_URL', value: delegatedVaultUri }
@@ -1225,7 +1225,7 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       // edgeTrustProxy / effectiveEdgeTrustProxy.
       { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
       { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
-      // I-02 ADR-0002: the /connections/* proxy and both consent surfaces
+      // The /connections/* proxy and both consent surfaces
       // consult the portal over this base; unset they answer fail-closed 503.
       { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
       { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
@@ -1332,7 +1332,7 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       { name: 'DEPLOY_MAX_FILE_MB', value: string(deployMaxFileMb) }
       { name: 'DEPLOY_MAX_BUNDLE_MB', value: string(deployMaxBundleMb) }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
-      // I-02 ADR-0001/0003: the OAuth callback delegates the vendor code
+      // The OAuth callback delegates the vendor code
       // exchange to egress over this base. Read at boot; unset would leave the
       // delegation unwired and the completion route refusing.
       { name: 'PORTAL_EGRESS_URL', value: egressBaseUrl }
@@ -1429,7 +1429,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
       { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
       { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
-      // I-02 ADR-0002: the dev-gateway's consent surface consults the portal
+      // The dev-gateway's consent surface consults the portal
       // over this base, same as the edge.
       { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
       // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the

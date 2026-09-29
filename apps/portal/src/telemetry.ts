@@ -19,7 +19,7 @@ import { SERVICE_NAME } from "./serviceName.js";
  * **One instrument object, and why the portal has one now.** ADR-0037
  * decision 8's table originally gave the portal none: its throughput was low
  * enough that a counter answered nothing a span search did. The consent-flow
- * state machine (I-02 ADR-0002) is the exception that makes the rule — its
+ * state machine is the exception that makes the rule — its
  * consult/cancel/claim/sweep outcomes are a *rate* an operator alerts on
  * (a consult that only ever answers `not_available` is a misconfigured
  * deployment, and only a counter sees the rate), so `helix.consent.operations`
@@ -56,7 +56,7 @@ export function instruments(): PortalInstruments {
   cached = {
     consentOperations: meter.createCounter(INSTR_CONSENT_OPERATIONS, {
       description:
-        "Consent-flow operations by operation and outcome (I-02 ADR-0002). " +
+        "Consent-flow operations by operation and outcome. " +
         "Operational only — never billing; identity is never a dimension.",
     }),
   };

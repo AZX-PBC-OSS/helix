@@ -209,8 +209,8 @@ export async function resolveAndValidate(
  * it verbatim to the `request()` rejection, where the handler maps it to a 403
  * `blocked` (preserving the old upfront-check semantics).
  *
- * This is the ONE definition of the pinned transport (I-02 ADR-0009 §Shared
- * ground): the fetch-proxy's dispatcher and the exchange operation's
+ * This is the ONE definition of the pinned transport: the fetch-proxy's
+ * dispatcher and the exchange operation's
  * `customFetch` adapter both build on it, so the SSRF controls survive every
  * outbound hop this plane makes — an OAuth library's own fetch would not
  * inherit them.

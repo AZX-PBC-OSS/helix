@@ -35,7 +35,7 @@ export const InstructionCapabilitySchema = z.enum(INSTRUCTION_CAPABILITIES);
 export type InstructionCapability = z.infer<typeof InstructionCapabilitySchema>;
 
 /**
- * The attested instruction payload — **strict** (ADR-0005): unknown keys are
+ * The attested instruction payload — **strict**: unknown keys are
  * rejected, not stripped. The verifier that parses this payload runs on the
  * mechanism plane, so a _future_ claim an older egress does not know must fail
  * its verify closed instead of silently disappearing — a non-strict parse would
@@ -54,8 +54,8 @@ export const AttestedInstructionSchema = z
     /**
      * Which kind of principal `userOid` is (the `PrincipalKind` vocabulary the
      * edge records at capture time — recorded, never inferred). The delegated
-     * resolution (I-02 T-0022) refuses `anon` and `password` callers — they can
-     * never hold a connection (spec criterion 21) — and serving that refusal
+     * resolution refuses `anon` and `password` callers — they can
+     * never hold a connection — and serving that refusal
      * requires knowing the KIND: `userOid`'s shape proves nothing (a shared-
      * password pseudonym and an Entra `sub` share the base64url alphabet, and
      * the sentinel is only exact for `anon`). Optional on the payload as a
@@ -72,9 +72,9 @@ export const AttestedInstructionSchema = z
     connection: z.string().min(1).optional(),
     /**
      * Provider reference for a delegated call — the user's connection to this
-     * provider is what egress injects (clarifications §Gateway path). Exactly
+     * provider is what egress injects. Exactly
      * one credential source travels: this and `connection` are XOR-enforced
-     * below (ADR-0005) — a delegated instruction carries a provider ref or a
+     * below — a delegated instruction carries a provider ref or a
      * secret name, never both.
      */
     provider: ProviderRefSchema.optional(),
@@ -111,7 +111,7 @@ export const AttestedInstructionSchema = z
         code: "custom",
         path: ["provider"],
         message:
-          "an instruction carries exactly one credential source — a connection secret or a provider reference, never both (ADR-0005)",
+          "an instruction carries exactly one credential source — a connection secret or a provider reference, never both.",
       });
     }
     if (i.provider !== undefined && i.userKind === undefined) {
@@ -119,7 +119,7 @@ export const AttestedInstructionSchema = z
         code: "custom",
         path: ["userKind"],
         message:
-          "a delegated instruction must carry the caller's principal kind — egress refuses anonymous and shared-password callers by kind, never by inferring it from userOid (I-02 criterion 21)",
+          "a delegated instruction must carry the caller's principal kind — egress refuses anonymous and shared-password callers by kind, never by inferring it from userOid.",
       });
     }
   });

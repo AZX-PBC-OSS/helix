@@ -107,7 +107,7 @@ interface OriginDraft {
   connection: string;
   /** Provider mode: the bound catalogue ref (null while unchosen). */
   provider: string | null;
-  /** Provider mode: the app's dependency hint — a manifest field, nothing more (criterion 17). */
+  /** Provider mode: the app's dependency hint — a manifest field, nothing more. */
   required: boolean;
 }
 
@@ -133,7 +133,7 @@ interface Draft {
   externalOrigins: string[];
   /** Fetch-proxy: proxied origins, each through the 3-way credential select. */
   fetchOrigins: OriginDraft[];
-  /** Injected helpers (design decisions 5/7) — two independent sub-options. */
+  /** Injected helpers — two independent sub-options. */
   shimFetch: boolean;
   shimConnect: boolean;
   fetchRequestsPerDay: number | undefined;
@@ -256,7 +256,7 @@ function fromDraft(d: Draft): Capabilities {
             fetch: {
               // The synchronized legacy view rides beside the first-class block
               // below — a consumer applying a shim change writes BOTH views
-              // (T-0002's convention; the parse OR-merges, so they agree).
+              // (the parse OR-merges, so they agree).
               shim: d.shimFetch,
               origins,
               ...(d.fetchRequestsPerDay !== undefined
@@ -266,7 +266,7 @@ function fromDraft(d: Draft): Capabilities {
           }
         : {};
     })(),
-    // Injected helpers are first-class (design decision 6): the editor writes
+    // Injected helpers are first-class: the editor writes
     // only the new form, and the server's parse re-synchronizes the legacy
     // boolean the edge's per-block fetch read consumes.
     ...(d.shimFetch || d.shimConnect
@@ -330,7 +330,7 @@ function renderYaml(app: App, d: Draft): string {
     lines.push(`  offline:`);
     lines.push(`    scope: ${d.offlineScope}`);
   }
-  // The first-class shim block (design decision 6): rendered from the merged
+  // The first-class shim block: rendered from the merged
   // grant, so a legacy boolean-shim app projects the same block as a new-form
   // one — the projection writes only the new form, for both.
   if (d.shimFetch || d.shimConnect) {

@@ -4,23 +4,23 @@ import type { ConsentCompletion } from "./completion.js";
 import { sendConsentRefusalPage } from "./pages.js";
 
 /**
- * The callback's completion pages (I-02 T-0020, design.md §Consent popup
- * pages — the page table is the content contract): the popup's terminal
+ * The callback's completion pages (the page table is the content contract):
+ * the popup's terminal
  * surfaces, portal-served through the edge's `/connections/*` reverse proxy.
  * Siblings of `pages.ts`'s nonce-entry pages, with one difference the design
  * fixes: these pages carry a script, because a completion page POSTS the
  * outcome message to the opener (the exact target origin recorded on the
- * pending attempt — ADR-0002 §Shared ground) and the connected page then
+ * pending attempt) and the connected page then
  * closes itself.
  *
  * Content discipline: every line is a platform constant — the only
  * interpolation is the provider's display name (admin-chosen, HTML-escaped),
  * read from the provider row. No vendor error text, no protocol material, no
- * credential ever reaches a page (criteria 22, 27, 34). The connected page's
+ * credential ever reaches a page. The connected page's
  * success line starts hidden and is revealed only when `window.close()`
- * failed to close the popup (criterion 30).
+ * failed to close the popup.
  *
- * Accessibility (design.md §Accessibility Notes): the heading takes focus on
+ * Accessibility: the heading takes focus on
  * load, the Close control is a real button, the layout is the single centered
  * column that reflows at 320 px and survives 200% zoom.
  */
@@ -116,7 +116,7 @@ interface CompletionPage {
   sub: string;
 }
 
-/** The design's page table (§Consent popup pages), keyed by outcome. The
+/** The design's page table, keyed by outcome. The
  * nameless variants fire only when the provider row was unreadable — the
  * kill-paths (deletion, sensitive edits) make that a narrow race. */
 function pageFor(outcome: string, displayName: string | null): CompletionPage {
@@ -211,7 +211,7 @@ export function renderCompletionPage(
     .replace("CLOSE_ID", CLOSE_BUTTON_ID)
     .replace("FALLBACK_ID", FALLBACK_ID)
     .replace("AUTO_CLOSE", autoClose ? "true" : "false");
-  // The connected page's success line IS the fallback (criterion 30): hidden
+  // The connected page's success line IS the fallback: hidden
   // until the window survives the close attempt. Every other page shows its
   // line immediately.
   const sub = autoClose
@@ -239,8 +239,8 @@ ${sub}
 }
 
 /**
- * Send one completion result: no-store and no-referrer (design.md §Consent
- * journey — the callback URL carries `code` and `state`), and the CSP with
+ * Send one completion result: no-store and no-referrer (the callback URL
+ * carries `code` and `state`), and the CSP with
  * the script slot the message posting needs. Service- and provider-side
  * failures answer 503 (the edge's couldn't-start posture); every flow outcome
  * is 200 — the page IS the answer. The `refusal` result renders the fixed

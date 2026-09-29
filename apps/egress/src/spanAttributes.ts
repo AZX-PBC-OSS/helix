@@ -27,9 +27,9 @@ import {
  *
  * Allowed values come from signed instruction claims, status codes, or bounded
  * resolution outcomes. helix.credential_source is secret, managed-identity, or
- * delegated (I-02 T-0022 — the caller's own OAuth connection); helix.connection
+ * delegated (the caller's own OAuth connection); helix.connection
  * is the configured connection name, never secret material; helix.provider_ref
- * is the admin-chosen provider ref. On the exchange route (I-02 T-0019),
+ * is the admin-chosen provider ref. On the exchange route,
  * helix.provider_ref is that same admin-chosen ref and helix.reason a bounded
  * gate-rejection word — never vendor response content, which the fixed-string
  * discipline keeps off this plane entirely.

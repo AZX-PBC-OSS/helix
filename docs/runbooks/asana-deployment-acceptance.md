@@ -1,8 +1,7 @@
-# Asana deployment acceptance — the I-02 exercise record
+# Asana deployment acceptance — the exercise record
 
-**Status: PENDING — this exercise has not been performed.** It is I-02
-T-0034, the execution and record of spec criterion 55: the deployment
-acceptance that fixtures cannot substitute for. This file is the checklist
+**Status: PENDING — this exercise has not been performed.** It is the
+deployment acceptance that fixtures cannot substitute for. This file is the checklist
 the operator fills in while performing it; until every observation below is
 filled with observed fact, the record makes no claim.
 
@@ -11,13 +10,13 @@ The prerequisite configuration steps live in
 feature behavior is
 [`docs/features/connection-providers.md`](../features/connection-providers.md).
 Record observed behavior and configuration prerequisites only — **no
-credentials, tokens, or secret-bearing tenant identifiers** (criterion 55;
-the security concern's secrets-hygiene rule).
+credentials, tokens, or secret-bearing tenant identifiers** (the
+security concern's secrets-hygiene rule).
 
 ## Prerequisites
 
-- [ ] The deployed platform carries the I-02 topology: the delegated-custody
-      vault provisioned (T-0004) with egress as its only Secrets Officer, and
+- [ ] The deployed platform carries the OAuth-connections topology: the delegated-custody
+      vault provisioned with egress as its only Secrets Officer, and
       the two internal secrets (`helix-internal-secret`,
       `helix-exchange-secret`) present in kv-platform.
 - [ ] A real Asana app registered out-of-band with the platform's fixed
@@ -30,12 +29,12 @@ the security concern's secrets-hygiene rule).
 - [ ] Organization allowlisting set as the operator docs describe (if Asana
       requires it for the registration kind used).
 
-## The exercise (criterion 55's list)
+## The exercise
 
 Perform in order; record observed vendor behavior under each step. Where
 Asana's documented behavior ([developers.asana.com/docs/oauth](https://developers.asana.com/docs/oauth))
 differs from what happens, record the difference as observed fact — the
-rotation-behavior question (research.md §Gaps, question 10) is exactly what
+rotation-behavior question the fixtures could not answer is exactly what
 this step answers.
 
 1. **Connect** — a real user connects through an approved hosted app's
@@ -55,7 +54,7 @@ this step answers.
 
 ## Findings
 
-- Defects observed (filed against the owning ticket, not fixed in passing):
+- Defects observed (filed as issues, not fixed in passing):
   _(fill in or "none")_
 - Deviations between documented and actual vendor behavior: _(fill in or
   "none")_

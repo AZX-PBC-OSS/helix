@@ -72,7 +72,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   // Likewise for the deploy size caps: a bad DEPLOY_MAX_*_MB should fail the
   // boot, not the first deploy that happens to hit the validator.
   assertBundleLimits();
-  // The internal-JWT verify key (ADR-0003) is the same class of boot check: the
+  // The internal-JWT verify key is the same class of boot check: the
   // portal's internal routes have no degraded mode that still serves them, so a
   // portal missing the edge↔portal key must not start at all.
   assertInternalJwtSecrets();
@@ -81,7 +81,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
     // The SPA's OIDC redirect URI is `/auth/callback?code=…` on this very
     // origin (routes/spa.ts serves it as a deep link), so the portal logs the
     // same shape of credential the edge does — same stdout, same Log Analytics
-    // retention. Redact it (issue #20 — `@azx-pbc/shared/logging`).
+    // retention. Redact it (`@azx-pbc/shared/logging`).
     logger: loggerOption(undefined, { prefix: "PORTAL", mixin: traceContextMixin }),
     ...requestIdOptions(),
   });
@@ -119,14 +119,13 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(configRoutes);
   app.register(catalogueRoutes);
   app.register(directoryRoutes);
-  // The internal edge→portal consent seam (I-02 ADR-0002): consult + cancel,
-  // authorized by T-0006's minted internal JWT — never bearer-token routes.
+  // The internal edge→portal consent seam: consult + cancel,
+  // authorized by the minted internal JWT — never bearer-token routes.
   app.register(connectionsInternalRoutes);
   // The popup's browser-facing consent pages under the `/connections/*` proxy
-  // prefix (same initiative): the dev journey's nonce entry (T-0016) — the
-  // callback's completion pages are T-0020's.
+  // prefix: the dev journey's nonce entry, and the callback's completion pages.
   app.register(connectionsPageRoutes);
-  // My Connections (I-02 T-0024): the principal-scoped list + disconnect —
+  // My Connections: the principal-scoped list + disconnect —
   // the one user-scoped portal surface, no owner/admin gate.
   app.register(myConnectionsRoutes);
 

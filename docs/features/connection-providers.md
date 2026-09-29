@@ -13,9 +13,9 @@ A **provider** is one vendor integration in one environment. A **connection**
 is one user's consent to it. Providers are control-plane data: created, edited,
 imported, and exported in the portal without redeploying, and distributed to
 `helix-egress` over LISTEN/NOTIFY so a cached configuration never outlives the
-row (ADR-0031 decision 6, I-02 ADR-0011). The provider `kind` ships
+row (ADR-0031 decision 6). The provider `kind` ships
 `rest-delegated` only — other kinds join the enum when they are implemented, so
-a kind that cannot serve a call cannot be configured (I-02 clarifications Q21).
+a kind that cannot serve a call cannot be configured.
 
 ## Routes
 
@@ -61,7 +61,7 @@ credential fields, so "not returned" cannot drift into "returned empty".
 
 **Revision and stale saves.** Every sensitive mutation advances the row's
 `revision` — one field serving three consumers: admin concurrency, the egress
-cache, and consent staleness (I-02 ADR-0004). An edit submits the revision it
+cache, and consent staleness. An edit submits the revision it
 loaded; if the row moved on, the save is rejected with a 409 and the form keeps
 the draft — reload, review the current settings, confirm again. Two concurrent
 credential rotations arbitrate the same way: the loser's sealed material is
@@ -77,8 +77,7 @@ provider (ADR-0031 decision 10).
 ## JSON import / export
 
 The text backstop is the JSON document, round-tripped through one shared
-schema — there is no second format and no in-portal free-text editor
-(I-02 clarifications Q13).
+schema — there is no second format and no in-portal free-text editor.
 
 **Export** re-reads the current configuration and produces
 `{version: 1, provider: {…}}`: ref, display name, kind, endpoints, requested
@@ -159,7 +158,7 @@ value-diff can no longer see it. An administrator approves the re-add like a
 first grant, and the binding is effective again. An approval filed against a
 provider configuration that changed after filing is rejected with a conflict
 and must be resubmitted. There is no auto-reapproval queue — a privilege grant
-is re-granted by a person, on request (I-02 spec criterion 8).
+is re-granted by a person, on request.
 
 ## Environments
 
@@ -196,7 +195,7 @@ tenant (ADR-0031 decision 11). The process, prerequisites only:
    gate refuses an incomplete grant.
 
 The vendor-specific observed behavior from the live deployment exercise (the
-criterion-55 acceptance record) lives in
+deployment-acceptance record) lives in
 [`docs/runbooks/asana-deployment-acceptance.md`](../runbooks/asana-deployment-acceptance.md) —
 pending until performed; this doc carries the process, not the observations.
 
@@ -213,7 +212,7 @@ the grant at the vendor if you want it gone. The confirmation dialog states
 both, and names the apps sharing the connection in that environment.
 
 Retired material is destroyed by the egress sweep within the recovery bound
-(15 minutes, I-02 spec criterion 47). A failed destroy is visible on the
+(15 minutes). A failed destroy is visible on the
 retirement metric and in a warn log, and is retried without manual
 intervention. Cleanup never touches a current connection's material.
 
@@ -257,6 +256,6 @@ return).
 - **A per-user vendor profile retrieval** — non-goal; My Connections shows
   Helix's own metadata only.
 - **Automatic reapproval queues, provider moves between environments, and
-  whole-catalog import** — all explicit non-goals (I-02 spec §Non-Goals).
+  whole-catalog import** — all explicit non-goals.
 - **An in-portal free-text editor** — deferred until the schema is big enough
   to want one; import/export is the text backstop.

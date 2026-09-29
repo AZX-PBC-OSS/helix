@@ -51,7 +51,7 @@ describe("helix_edge least-privilege grants", () => {
       await expect(pool.query("SELECT count(*) FROM versions")).resolves.toBeDefined();
 
       // The meter: SELECT + INSERT on gateway_calls. The grant is present, so
-      // this resolves; RLS (ADR-0002 ISSUE-12) makes it count 0 with no partition
+      // this resolves; RLS (ADR-0002) makes it count 0 with no partition
       // GUC set — the isolation itself is asserted in usage.rls.integration.test.ts.
       await expect(pool.query("SELECT count(*) FROM gateway_calls")).resolves.toBeDefined();
 
@@ -123,7 +123,7 @@ describe("helix_edge least-privilege grants", () => {
   });
 
   /**
-   * The connection substrate (T-0007, ADR-0006 part 2) — the strictest role
+   * The connection substrate — the strictest role
    * split the platform has: the edge consults the portal over HTTP (ADR-0002),
    * so it gains ZERO database grants on the provider catalog, the per-user
    * connections, or the consent-flow table. Grant-absence is the containment:
@@ -143,8 +143,8 @@ describe("helix_edge least-privilege grants", () => {
       await expect(pool.query("SELECT count(*) FROM connection_consent_attempts")).rejects.toThrow(
         /permission denied/i,
       );
-      // The write half of the absence, on the table an older letter of Q5
-      // would have let the edge INSERT into (amended by ADR-0002).
+      // The write half of the absence: the edge cannot INSERT into the
+      // consent-flow table either.
       await expect(
         pool.query(
           `INSERT INTO connection_consent_attempts (id, state, "codeVerifier", "userOid",
@@ -528,7 +528,7 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
 });
 
 /**
- * The connection substrate's grant matrix (T-0007, ADR-0006 part 2), asserted
+ * The connection substrate's grant matrix, asserted
  * against the real cluster with the runtime roles provisioned: egress gets its
  * exact narrow surface, the portal full DML, the edge nothing (asserted above),
  * and env-literal RLS partitions every table from first commit. A green run
@@ -536,7 +536,7 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
  * its availability check, and CI provisions the roles from the same db-init
  * SQL (github/workflows/ci.yml) before this suite runs.
  */
-describe("connection substrate: grants, RLS, and the ADR-0011 NOTIFY channel", () => {
+describe("connection substrate: grants, RLS, and the NOTIFY channel", () => {
   const PROVIDER_ID = randomUUID();
   const REF = `rs-provider-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
   const USER = `conn-user-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
@@ -586,8 +586,8 @@ describe("connection substrate: grants, RLS, and the ADR-0011 NOTIFY channel", (
     if (!(await portalRoleAvailable())) return;
     const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
     try {
-      // No FKs to cascade through (the substrate is deliberately FK-free —
-      // ADR-0004's dangle semantics), so delete each table explicitly.
+      // No FKs to cascade through (the substrate is deliberately FK-free),
+      // so delete each table explicitly.
       await owner.query(`DELETE FROM connection_consent_attempts WHERE "userOid" = $1`, [USER]);
       await owner.query(`DELETE FROM user_connections WHERE "providerId" = $1`, [PROVIDER_ID]);
       await owner.query(`DELETE FROM connection_providers WHERE id = $1`, [PROVIDER_ID]);
@@ -601,7 +601,7 @@ describe("connection substrate: grants, RLS, and the ADR-0011 NOTIFY channel", (
     const pool = new Pool({ connectionString: egressUrl(), max: 1 });
     try {
       // SELECT on the catalog — egress opens the sealed client credentials to
-      // build the vendor OAuth client (ADR-0006 part 1). The row must come
+      // build the vendor OAuth client. The row must come
       // back through FORCE RLS (its permissive pass — no literal can pin a
       // role that legitimately serves both tiers).
       const providers = await pool.query(`SELECT ref FROM connection_providers WHERE id = $1`, [
@@ -613,8 +613,8 @@ describe("connection substrate: grants, RLS, and the ADR-0011 NOTIFY channel", (
       // (userOid, providerId, env).
       await expect(pool.query("SELECT count(*) FROM user_connections")).resolves.toBeDefined();
 
-      // NOTHING on the flow table — consent state is control-plane-owned
-      // (ADR-0002); egress never sees a pending attempt.
+      // NOTHING on the flow table — consent state is control-plane-owned;
+      // egress never sees a pending attempt.
       for (const sql of [
         "SELECT count(*) FROM connection_consent_attempts",
         `INSERT INTO connection_consent_attempts (id, state, "codeVerifier", "userOid",
@@ -635,9 +635,9 @@ describe("connection substrate: grants, RLS, and the ADR-0011 NOTIFY channel", (
     if (!(await egressRoleAvailable())) return;
     const pool = new Pool({ connectionString: egressUrl(), max: 1 });
     try {
-      // The renewal writer's whole surface (ADR-0006 part 2 + ADR-0008): the
+      // The renewal writer's whole surface: the
       // material swap, expiry, granted scopes, the status the renewal outcome
-      // records, the ledger fields, and criterion 40's renew-before-next flag
+      // records, the ledger fields, and the renew-before-next flag
       // — in one UPDATE, the way the renewal actually writes them.
       const connId = (
         await pool.query(
@@ -796,7 +796,7 @@ describe("connection substrate: grants, RLS, and the ADR-0011 NOTIFY channel", (
     }
   });
 
-  it("a provider mutation fires the NOTIFY channel, delivered on commit (ADR-0011)", async () => {
+  it("a provider mutation fires the NOTIFY channel, delivered on commit", async () => {
     if (!(await portalRoleAvailable())) return;
     // A dedicated LISTEN client (never a pool client — the listener pattern
     // the edge's LiveRegistry and egress's future listener copy), receiving

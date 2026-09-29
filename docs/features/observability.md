@@ -43,22 +43,22 @@ terminates untrusted traffic (decision 4).
 | `helix.gateway.llm` / `.fetch` / `.data` | the `/_api/*` handlers |
 | `helix.auth.oidc.start` / `.callback`, `helix.auth.handoff.complete` | the auth routes |
 | `helix.auth.connections.proxy` | the auth host's `/connections/*` reverse proxy |
-| `helix.consent.start` | the app host's `/_api/connections/:ref/start` route (I-02 T-0014) — the consent popup's prod entry |
-| `helix.consent.start.dev` | the dev gateway's `/:slug/_api/connections/:ref/start` route (I-02 T-0016) — the dev tier's bearer POST → single-use popup URL |
-| `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route (I-02 T-0017) — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
+| `helix.consent.start` | the app host's `/_api/connections/:ref/start` route — the consent popup's prod entry |
+| `helix.consent.start.dev` | the dev gateway's `/:slug/_api/connections/:ref/start` route — the dev tier's bearer POST → single-use popup URL |
+| `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
 | `helix.consent.status.edge` | the app host's `GET /_api/connections/:ref/status` route (ADR-0031 as amended) — the app-facing connection-status read, forwarding to the portal's own `.status` span |
 | `helix.consent.status.dev` | the dev gateway's `GET /:slug/_api/connections/:ref/status` — the dev tier's bearer status read |
 | `helix.egress.proxy` | egress `POST /proxy` |
-| `helix.egress.resolution` | egress delegated-call resolution (I-02 T-0022) — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
-| `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation (I-02 T-0019) |
-| `helix.egress.renewal` | egress token renewal (I-02 T-0021) — the operation the delegated-call resolution runs when an access token is expired; nests inside the resolution span, and its own duration is where the advisory lock's bounded wait is visible (ADR-0007) |
-| `helix.egress.retire` | egress credential-retirement sweep pass (I-02 T-0025, ADR-0008) — one background pass over the `pendingRetire` ledger; per-entry results ride the `helix.egress.retirements` counter |
+| `helix.egress.resolution` | egress delegated-call resolution — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
+| `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation |
+| `helix.egress.renewal` | egress token renewal — the operation the delegated-call resolution runs when an access token is expired; nests inside the resolution span, and its own duration is where the advisory lock's bounded wait is visible (ADR-0031 decision 15) |
+| `helix.egress.retire` | egress credential-retirement sweep pass — one background pass over the `pendingRetire` ledger; per-entry results ride the `helix.egress.retirements` counter |
 | `helix.registry.load` | the projection reload |
-| `helix.providers.reconcile` | the egress provider-cache reconcile (I-02 ADR-0011) |
+| `helix.providers.reconcile` | the egress provider-cache reconcile |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
-| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine (I-02 ADR-0002): the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption (T-0016), the vendor redirect's completion state machine (T-0020), and the read-only status decision (ADR-0031 as amended) |
-| `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route (I-02 T-0024) — My Connections' metadata-only list |
-| `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route (I-02 T-0024) — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
+| `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine: the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption, the vendor redirect's completion state machine, and the read-only status decision (ADR-0031 as amended) |
+| `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route — My Connections' metadata-only list |
+| `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
 
 Per-span attributes beyond the semconv keys, so a new one has one place to be
 looked up:
@@ -73,20 +73,20 @@ looked up:
 - `helix.gateway.fetch` spans carry `helix.target.origin`, `helix.target.path`,
   and — per credential source, once the target matched the manifest allowlist —
   `helix.connection` for a secret-bound origin or `helix.provider_ref` for a
-  provider-bound one (I-02 T-0023; the ref is the admin-granted catalogue key,
+  provider-bound one (the ref is the admin-granted catalogue key,
   bounded by `PROVIDER_REF_MAX`). Nothing is recorded for a keyless origin, and
   an origin that failed the allowlist check is never recorded under either key.
 - `helix.egress.proxy` spans carry `helix.credential_source` ∈ {`secret`,
   `managed-identity`, `delegated`} when a credential was injected — which custody
   path served the call (ADR-0046; `delegated` is the caller's own OAuth
-  connection, I-02 T-0022), and the first thing to check when a Foundry-bound
+  connection), and the first thing to check when a Foundry-bound
   call misauthenticates. Bounded to those three values; on the egress allowlist,
   so never a header name, a credential, or a token claim. A delegated dispatch
   also carries `helix.provider_ref`.
 - `helix.egress.resolution` spans carry `helix.outcome` ∈
   `EGRESS_RESOLUTION_OUTCOMES` (`resolved`, `refreshed`, `connection_required`,
   `reconnect_required`, `provider_unavailable`, `provider_misconfigured`,
-  `error` — design.md's inventory plus the plane's generic `error` for the
+  `error` — the outcome vocabulary's inventory plus the plane's generic `error` for the
   temporary-renewal-failure/custody paths, whose specific word the renewal span
   inside carries), `helix.env`, and `helix.provider_ref`. No token value, no
   vendor content, and no identity (`userOid` is never a dimension) appears on
@@ -104,22 +104,22 @@ looked up:
   `EGRESS_EXCHANGE_OUTCOMES` (`exchanged`, `rejected`, `provider_unavailable`,
   `exchange_failed`, `unauthorized`, `malformed`, `unconfigured` — the seven
   early-return classes of the handler), `helix.provider_ref`, and
-  `helix.reason` on a criterion-27 rejection (the bounded gate vocabulary —
+  `helix.reason` on a bounded gate-vocabulary rejection (
   `unusable_lifetime`, `missing_refresh_token`, `missing_permissions`). The
   vendor token endpoint's failures are the ONE word `exchange_failed`: the
-  fixed-string discipline (I-02 ADR-0009) keeps vendor error bodies — which can
+  fixed-string discipline keeps vendor error bodies — which can
   echo client credentials — off the wire, out of logs, and off this span; the
   span records no exception, like every egress span.
 - `helix.egress.renewal` spans carry `helix.outcome` ∈ `EGRESS_RENEWAL_OUTCOMES`
   (`refreshed`, `temporary_failure`, `uncertain_rotation`, `reconnect_required`,
-  `admin_action` — design.md's renewal vocabulary, criteria 35/37–39),
+  `admin_action` — the renewal vocabulary's other refusals),
   `helix.env`, and `helix.provider_ref`. No token value and no vendor error
   content appears anywhere on it: the OAuth error code is read only to choose
   the bounded outcome word, never recorded. Span status is graded ERROR for
   `temporary_failure` and `admin_action` (operator-actionable); the
   reconnect-needing outcomes are the platform working as designed.
 - `helix.providers.reconcile` spans carry `helix.providers.rows` — how many
-  provider rows the cache holds after the reconcile (I-02 ADR-0011; bounded by
+  provider rows the cache holds after the reconcile (bounded by
   the tenant, the table is administrator-created) — and `helix.providers.rows.dropped`
   when rows failed their parse and were dropped from the cache (the fixed
   `providers.row_dropped` warn event rides alongside; a dropped row answers
@@ -129,7 +129,7 @@ looked up:
   `code` and `state` in the URL, so the query is dropped wholesale
   (`spanUrlAttributes`), and nothing about the internal JWT it mints — value,
   header name — is ever an attribute. Pinned by `spanRedaction.test.ts`'s
-  T-0015 case and `traceBoundary.test.ts`'s route case.
+  consent-proxy case and `traceBoundary.test.ts`'s route case.
 - `helix.consent.start` (the consent popup's entry route) records
   `helix.outcome` ∈ {`started`, `signin_required`, `already_connected`,
   `unavailable`, `forbidden`, `error`} (`CONSENT_START_OUTCOMES` — the six
@@ -139,16 +139,15 @@ looked up:
   correlation tag is app-chosen and the 302's target is the vendor authorize
   URL carrying `state` + the PKCE challenge, so the query is dropped wholesale
   and no redirect target is ever an attribute. Pinned by `spanRedaction`'s
-  T-0014 cases and `traceBoundary`'s route case.
-- `helix.consent.start.dev` (the dev tier's bearer POST, T-0016) records the
+  consent-start cases and `traceBoundary`'s route case.
+- `helix.consent.start.dev` (the dev tier's bearer POST) records the
   same shape with `CONSENT_START_DEV_OUTCOMES` — the prod vocabulary minus
   `signin_required` (a dev caller's identity is the token, not a session; the
   resolver's refusals are `forbidden`) — and `url.path` only: the returned
   popup URL carries the single-use nonce, so the query is dropped wholesale
   and the dev bearer token is never an attribute. Pinned by `spanRedaction`'s
-  T-0016 case and `traceBoundary`'s route case.
-- `helix.consent.cancel.edge` (the helper's cancellation acknowledgement,
-  T-0017) records `helix.outcome` ∈ {`cancelled`, `not_cancellable`,
+  consent-start.dev case and `traceBoundary`'s route case.
+- `helix.consent.cancel.edge` (the helper's cancellation acknowledgement) records `helix.outcome` ∈ {`cancelled`, `not_cancellable`,
   `unknown_attempt`, `unauthorized`, `error`} (`CONSENT_CANCEL_EDGE_OUTCOMES`)
   — the forwarded call's outcomes pass through, and the edge adds what only it
   decides: `unauthorized` (no usable session / cross-origin POST) and
@@ -157,9 +156,9 @@ looked up:
   bounded by the five-minute expiry). `helix.provider_ref` rides the decided
   paths, and `url.path` only (the body's attempt tag is a correlation tag, not
   secret material, but it is app-chosen — it is never an attribute).
-- `helix.consent.callback` (the vendor redirect lands here, T-0020) records
-  `helix.outcome` ∈ `CONSENT_CALLBACK_OUTCOMES` — design.md §Operator-visible
-  signals' ten-word terminal vocabulary (`connected`, `already_connected`,
+- `helix.consent.callback` (the vendor redirect lands here) records
+  `helix.outcome` ∈ `CONSENT_CALLBACK_OUTCOMES` — the ten-word terminal
+  vocabulary (`connected`, `already_connected`,
   `denied`, `expired`, `conflict`, `cancelled`, `disconnected`,
   `failed_permissions`, `failed_provider`, `failed_service`), plus
   `helix.provider_ref` and `helix.app_id` once the attempt claims, and
@@ -190,14 +189,14 @@ looked up:
 | `helix.gateway.calls` | counter | `capability`, `outcome`, `appId` |
 | `helix.gateway.duration` | histogram (ms) | `capability`, `outcome` |
 | `helix.egress.proxy.duration` | histogram (ms) | `outcome` |
-| `helix.egress.exchanges` | counter | `outcome`, `env` (I-02 T-0019) |
-| `helix.egress.renewals` | counter | `outcome`, `env` (I-02 T-0021 — the renewal taxonomy; alert on a run of `temporary_failure`/`admin_action`, and treat any `uncertain_rotation` as a user-visible reconnection) |
-| `helix.egress.retirements` | counter | `outcome`, `env` (I-02 T-0025 — the retirement ledger's consumption: `retired` / `failed` / `claimed_lost`. `failed` is the alertable word — it also fires the fixed `egress.connection_retire_failed` warn event, and the entry is restored and retried on a later pass within criterion 47's 15-minute bound. `claimed_lost` is the sweep losing a claim race to a writer (a reconnect's swap, a newer mark) — the conditional re-check working, never a fault; see ADR-0008 for why the claim must be CAS) |
+| `helix.egress.exchanges` | counter | `outcome`, `env` |
+| `helix.egress.renewals` | counter | `outcome`, `env` (the renewal taxonomy; alert on a run of `temporary_failure`/`admin_action`, and treat any `uncertain_rotation` as a user-visible reconnection) |
+| `helix.egress.retirements` | counter | `outcome`, `env` (the retirement ledger's consumption: `retired` / `failed` / `claimed_lost`. `failed` is the alertable word — it also fires the fixed `egress.connection_retire_failed` warn event, and the entry is restored and retried on a later pass within the 15-minute recovery bound. `claimed_lost` is the sweep losing a claim race to a writer (a reconnect's swap, a newer mark) — the conditional re-check working, never a fault; see ADR-0031 amendment item 12 for why the claim must be CAS) |
 | `helix.providers.reconciles` | counter | `outcome` |
 | `helix.providers.listen_status` | observable gauge | — |
 | `helix.session.gate_denied` | counter | `reason` |
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
-| `helix.consent.operations` | counter | `operation`, `outcome` (I-02 ADR-0002 + ADR-0031 as amended; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
+| `helix.consent.operations` | counter | `operation`, `outcome` (ADR-0031 as amended; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained
@@ -205,7 +204,7 @@ metrics backend.
 
 ### Audit events and ledger outcomes (the ledger, not OTel)
 
-Two I-02 signal families live in platform tables rather than the telemetry
+Two signal families from the OAuth-connections work live in platform tables rather than the telemetry
 pipelines — listed here because the operator-facing inventory is the point, and
 because they are what the audit and usage pages show.
 
@@ -227,8 +226,7 @@ endpoint URL):
 **Ledger outcome**: `gateway_calls` gains one outcome label,
 `connection_required` — the delegated call answered "the caller has no usable
 connection". It is kept distinct from `refusal` so the audit page and usage
-rollups separate "user not connected" from "policy refused" (I-02 spec
-criterion 50); the other provider-shaped codes (`provider_unavailable`,
+rollups separate "user not connected" from "policy refused" ); the other provider-shaped codes (`provider_unavailable`,
 `provider_misconfigured`) meter as the existing `refusal`.
 
 ### Things to know before writing an alert on these
@@ -267,7 +265,7 @@ criterion 50); the other provider-shaped codes (`provider_unavailable`,
   signal that matters is a streak of `failed` with no `ok`, not a single blip.
   `helix.providers.listen_status` is the second half: `1` while a dedicated
   LISTEN client is connected, `0` while down, absent before start and after
-  stop — a missed NOTIFY self-heals at the next reconcile (I-02 ADR-0011), so
+  stop — a missed NOTIFY self-heals at the next reconcile, so
   a `0` is a page about cadence, not correctness.
 
 ## The rules that are easy to break

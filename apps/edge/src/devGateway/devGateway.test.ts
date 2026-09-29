@@ -433,10 +433,10 @@ describe("dev-gateway CORS preflight", () => {
 });
 
 /**
- * The delegated mint on the dev tier (I-02 T-0023). The dev gateway reuses the
+ * The delegated mint on the dev tier. The dev gateway reuses the
  * edge's fetch handler unchanged, so a provider-bound origin mints a delegated
- * instruction there too — and the caller kind it must carry (T-0022) is the
- * dev token's `dev` (Q10: dev-tier delegation keys to the developer identity).
+ * instruction there too — and the caller kind it must carry is the
+ * dev token's `dev` (dev-tier delegation keys to the developer identity).
  * A capturing egress fake stands in for the mechanism plane, the same seam
  * `fetch.test.ts` uses on the prod path.
  */
@@ -517,7 +517,7 @@ describe("dev-gateway delegated fetch minting", () => {
     expect(claims.provider).toBe("github-app");
     expect(claims.connection).toBeUndefined();
     // The dev token's developer identity is kind `dev` — attested, never
-    // inferred — and the instruction is env-partitioned to `dev` (Q10).
+    // inferred — and the instruction is env-partitioned to `dev`.
     expect(claims.userKind).toBe("dev");
     expect(claims.userOid).toBe("oid-developer");
     expect(claims.env).toBe("dev");

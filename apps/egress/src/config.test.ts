@@ -73,7 +73,7 @@ describe("loadConfig", () => {
     ).toThrow(/EGRESS_DATABASE_URL or DATABASE_URL is required/);
   });
 
-  // I-02 ADR-0003 — the portal→egress exchange-JWT key. Verify side, so it is
+  // The portal→egress exchange-JWT key. Verify side, so it is
   // required exactly like the instruction secret, in dev too: the exchange
   // route has no degraded mode that still serves it.
   describe("HELIX_EXCHANGE_SECRET", () => {
@@ -100,7 +100,7 @@ describe("loadConfig", () => {
     );
   });
 
-  // I-02 ADR-0011 — the provider cache's reconcile cadence: the self-heal that
+  // The provider cache's reconcile cadence: the self-heal that
   // bounds staleness after a missed NOTIFY. A non-positive value would coerce
   // to a hot reconcile loop in `setTimeout`, so it boots noisily instead.
   it("defaults the provider reconcile interval to 60s and honors EGRESS_PROVIDERS_RECONCILE_INTERVAL_MS", () => {
@@ -116,10 +116,10 @@ describe("loadConfig", () => {
     }
   });
 
-  // I-02 T-0025 (ADR-0008) — the retirement sweep's cadence, validated by the
+  // The retirement sweep's cadence, validated by the
   // same requirePositiveMs rail: a hot zero loop or a NaN coerced to ~0ms
   // would hammer the ledger read. The default (60s) sits well inside
-  // criterion 47's 15-minute recovery bound.
+  // the 15-minute recovery bound (ADR-0031 amendment item 12).
   it("defaults the retirement sweep interval to 60s and honors EGRESS_RETIRE_SWEEP_INTERVAL_MS", () => {
     expect(loadConfig(ENV).retireSweepIntervalMs).toBe(60_000);
     expect(

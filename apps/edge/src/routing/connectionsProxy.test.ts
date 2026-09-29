@@ -25,7 +25,7 @@ import { HttpPortalProvider, type PortalProvider } from "./portalProvider.js";
 import type { EdgeConfig } from "../config.js";
 
 /**
- * The auth-host `/connections/*` reverse proxy (I-02 ADR-0002 part 3; T-0015).
+ * The auth-host `/connections/*` reverse proxy.
  * The portal-ward half runs against a REAL local listener (`withServer`), so
  * the assertions see the wire the way the portal will — one internal header,
  * the minted one, with nothing inbound surviving the hop. The in-process
@@ -205,7 +205,7 @@ describe("the /connections/* reverse proxy on the auth host", () => {
     const seen = fake.call()!;
     // Exactly ONE internal header on the wire, and it verifies under the
     // portal's rule with the edge's key — the planted forgery is gone
-    // (ADR-0003 §Implementation Notes, the strip rule).
+    // (the strip rule).
     expect(headerCount(seen.rawHeaders, INTERNAL_AUTH_HEADER)).toBe(1);
     const token = seen.headers[INTERNAL_AUTH_HEADER];
     expect(token).toBeTruthy();

@@ -14,7 +14,7 @@ import { mintInternalToken } from "../internalJwt.js";
 import type { PortalProvider } from "./portalProvider.js";
 
 /**
- * The edge→portal consult and cancel calls (I-02 ADR-0002 §Decision) — shared
+ * The edge→portal consult and cancel calls — shared
  * by the consumers of the consult seam, the prod start route
  * (`consentStart.ts`) and the dev-gateway's start route
  * (`devGateway/consentStart.ts`), and by the cancel-acknowledgement route
@@ -77,7 +77,7 @@ async function postInternal(
 
 /**
  * One consult call over the portal seam: a per-call minted internal JWT
- * (T-0006, `aud: portal`), the shared request contract on the wire, and the
+ * (`aud: portal`), the shared request contract on the wire, and the
  * response parsed through the shared schema. Throws on every failure mode —
  * the callers' fixed-message catches are the only thing an operator sees.
  */
@@ -100,7 +100,7 @@ export async function callConsult(
 }
 
 /**
- * One cancel call over the portal seam (T-0012's own-attempts-only cancel) —
+ * One cancel call over the portal seam (the own-attempts-only cancel) —
  * the same discipline as {@link callConsult}: per-call JWT, the shared
  * CancelRequest contract, the response parsed through the shared schema.
  * Throws on every failure mode; the caller's catch is the operator's signal.

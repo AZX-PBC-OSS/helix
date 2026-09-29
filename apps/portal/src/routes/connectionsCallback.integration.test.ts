@@ -28,14 +28,14 @@ import { connectionsCallbackUrl } from "../deployment.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
- * The consent callback end to end (I-02 T-0020, ADR-0001/0008) against the
- * REAL pieces: the fixture vendor (ADR-0010) issues the grant through a real
+ * The consent callback end to end against the
+ * REAL pieces: the fixture vendor issues the grant through a real
  * authorize round-trip, the portal's real callback route claims the attempt
- * (T-0012's probe), delegates the exchange over real HTTP to the REAL egress
- * app (T-0019's operation, in-process on an ephemeral port), and saves with
+ * (the claim probe), delegates the exchange over real HTTP to the REAL egress
+ * app (the exchange operation, in-process on an ephemeral port), and saves with
  * the CAS/upsert contract. This is the OIDC-handoff class, so the adversarial
- * matrix ships with it (criterion 28): forged, reused, expired, cancelled,
- * declined, foreign-provider, and the criterion-32 concurrent race — none of
+ * matrix ships with it: forged, reused, expired, cancelled,
+ * declined, foreign-provider, and the concurrent race — none of
  * which may establish a row its scenario didn't earn.
  *
  * The test plays the browser the `flow.integration.test.ts` way: app.inject()
@@ -180,7 +180,7 @@ async function seededReady(
   return { slug, ref, providerId: provider.id, appId, displayName: provider.displayName };
 }
 
-/** The edge's consult call (T-0012's contract) — the real pending-attempt write. */
+/** The edge's consult call — the real pending-attempt write. */
 async function consult(
   fixture: Fixture,
   identity: ConsultRequest["identity"],
@@ -214,7 +214,7 @@ async function consult(
 /**
  * Play the browser at the vendor's authorize screen and follow the redirect to
  * the fixed callback. `scope` rewrites the authorize request's scope — what a
- * user granting fewer permissions than asked looks like (criterion 27's short
+ * user granting fewer permissions than asked looks like (a short
  * grant).
  */
 async function authorizeAndRedirect(
@@ -286,7 +286,7 @@ beforeAll(async () => {
     clientSecret: CLIENT_SECRET,
   });
 
-  // The REAL egress app (T-0019's operation) on an ephemeral port, with the
+  // The REAL egress app (the exchange operation) on an ephemeral port, with the
   // same exchange secret the portal derives its mint key from, custody over
   // the same sealed credentials, and a dedicated delegated store. The suite
   // points `currentProvider` at each case's row — the exchange.test.ts shape,
@@ -377,7 +377,7 @@ describe("the happy path — real vendor, real attempt, real callback", () => {
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
 
     // The page: posts the connected message to the RECORDED opener origin and
-    // closes itself; the success line is the criterion-30 fallback.
+    // closes itself; the success line is the fallback.
     expect(res.body).toContain(`window.opener.postMessage(message, "${OPENER_ORIGIN}")`);
     expect(res.body).toContain('"outcome":"connected"');
     expect(res.body).toContain("window.close()");
@@ -391,7 +391,7 @@ describe("the happy path — real vendor, real attempt, real callback", () => {
     expect(res.body).not.toContain(state);
     expect(res.body).not.toContain(redirect.code as string);
 
-    // The row: one connection, every saved field the ticket names.
+    // The row: one connection, every saved field the contract names.
     const row = await t.prisma.userConnection.findUniqueOrThrow({
       where: {
         userOid_providerId_env: { userOid, providerId: fixture.providerId, env: "prod" },
@@ -448,7 +448,7 @@ describe("the happy path — real vendor, real attempt, real callback", () => {
   });
 });
 
-describe("the adversarial matrix (criterion 28) — nothing establishes", () => {
+describe("the adversarial matrix — nothing establishes", () => {
   it("a forged state renders the fixed refusal, consumes nothing, saves nothing", async () => {
     const fixture = await seededReady("forged");
     const res = await callback({
@@ -500,7 +500,7 @@ describe("the adversarial matrix (criterion 28) — nothing establishes", () => 
     expect(res.status).toBe(200);
     expect(res.body).toContain("This attempt expired (5 minutes)");
     // The refusal posts timeout to the recorded opener — the app's wait ends
-    // legibly (criterion 25: timeout is distinguishable to the app).
+    // legibly (timeout is distinguishable to the app).
     expect(res.body).toContain(`window.opener.postMessage(message, "${OPENER_ORIGIN}")`);
     expect(res.body).toContain('"outcome":"timeout"');
     expect(await t.prisma.userConnection.count({ where: { providerId: fixture.providerId } })).toBe(
@@ -584,7 +584,7 @@ describe("the adversarial matrix (criterion 28) — nothing establishes", () => 
   });
 });
 
-describe("criterion 32 — the concurrent race", () => {
+describe("the concurrent race", () => {
   it("two concurrent completions: exactly one saves; the loser conflicts and its sealed material is ledger-marked", async () => {
     const fixture = await seededReady("race");
     const a = await consult(fixture, prodIdentity);
@@ -602,7 +602,7 @@ describe("criterion 32 — the concurrent race", () => {
     );
     expect(saved).toHaveLength(1);
     expect(conflicted).toHaveLength(1);
-    // The conflict page posts error/conflict — the design's one explicit
+    // The conflict page posts error/conflict — the one explicit
     // pairing — to the recorded opener.
     expect(conflicted[0]!.body).toContain('"reason":"conflict"');
     expect(conflicted[0]!.body).toContain(`window.opener.postMessage(message, "${OPENER_ORIGIN}")`);
@@ -611,7 +611,7 @@ describe("criterion 32 — the concurrent race", () => {
     );
 
     // The loser's sealed material is ledger-marked in the same transaction as
-    // the conflict write (ADR-0008) — the sweep (T-0025) retires it.
+    // the conflict write — the sweep retires it.
     const row = await t.prisma.userConnection.findFirstOrThrow({
       where: { providerId: fixture.providerId },
     });
@@ -631,7 +631,7 @@ describe("criterion 32 — the concurrent race", () => {
   });
 });
 
-describe("the failure pages (criteria 27, 34) — fixed strings, nothing saved", () => {
+describe("the failure pages — fixed strings, nothing saved", () => {
   it("the vendor declining renders the declined page with the provider's name", async () => {
     const fixture = await seededReady("declined");
     vendor.setModes({ authorizeMode: "deny" });
@@ -652,7 +652,7 @@ describe("the failure pages (criteria 27, 34) — fixed strings, nothing saved",
   it("a permissions-short grant renders the failed-permissions page", async () => {
     const fixture = await seededReady("short", { requestedScopes: ["read", "write"] });
     const { authorizeUrl, state } = await consult(fixture, prodIdentity);
-    // The user granted fewer permissions than configured (criterion 27).
+    // The user granted fewer permissions than configured.
     const redirect = await authorizeAndRedirect(authorizeUrl, { scope: "read" });
     const res = await callback({ code: redirect.code as string, state });
     expect(res.status).toBe(200);
@@ -663,7 +663,7 @@ describe("the failure pages (criteria 27, 34) — fixed strings, nothing saved",
       0,
     );
     // The gate's refusal sealed nothing — the delegated store took no write
-    // (T-0019's binding invariant), so there is no material to retire either.
+    // (the exchange's binding invariant), so there is no material to retire either.
   });
 
   it("a hung vendor token endpoint renders the failed-service page", async () => {
@@ -697,12 +697,12 @@ describe("the failure pages (criteria 27, 34) — fixed strings, nothing saved",
   });
 });
 
-describe("criterion 44 — the disconnect landing mid-flight", () => {
+describe("the disconnect landing mid-flight", () => {
   it("a disconnect between consult and completion renders the disconnected page and saves nothing", async () => {
     const fixture = await seededReady("disconnected");
     // Arrange: a dead (reconnect-needed) connection exists, so a fresh consult
     // starts an attempt; then the disconnect lands — the row invalidated and
-    // the attempts killed, the one-UPDATE + kill pattern T-0010/T-0024 ship.
+    // the attempts killed, the one-UPDATE + kill pattern.
     await t.prisma.userConnection.create({
       data: {
         userOid,
@@ -747,7 +747,7 @@ describe("criterion 44 — the disconnect landing mid-flight", () => {
     ).toBe(0);
   });
 
-  it("a fresh consent over a dead row upserts — the CAS's replaceable half (criterion 24)", async () => {
+  it("a fresh consent over a dead row upserts — the CAS's replaceable half", async () => {
     const fixture = await seededReady("replace");
     await t.prisma.userConnection.create({
       data: {
@@ -769,7 +769,7 @@ describe("criterion 44 — the disconnect landing mid-flight", () => {
     expect(res.body).toContain('"outcome":"connected"');
 
     // The upsert replaced the dead row and ledger-marked ITS material for the
-    // sweep in the same UPDATE (ADR-0008's reconnect-upsert rule).
+    // sweep in the same UPDATE (the reconnect-upsert rule).
     const row = await t.prisma.userConnection.findUniqueOrThrow({
       where: {
         userOid_providerId_env: { userOid, providerId: fixture.providerId, env: "prod" },

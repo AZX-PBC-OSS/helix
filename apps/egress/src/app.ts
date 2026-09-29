@@ -34,7 +34,7 @@ export interface EgressDeps {
   /** One-time `jti` burn (issue #3). null ⇒ replay protection off (tests only). */
   burnStore: InstructionBurnStore | null;
   /**
-   * The code-exchange operation (I-02 T-0019). null (the default, so existing
+   * The code-exchange operation. null (the default, so existing
    * constructions and tests without it keep working) unwires the operation:
    * the route stays registered and refuses every caller fail-closed (the zero
    * verify key verifies nothing legitimate → 401, disclosing nothing). A
@@ -42,7 +42,7 @@ export interface EgressDeps {
    */
   exchange?: ExchangeDeps | null;
   /**
-   * The delegated-call resolution (I-02 T-0022): the caller's-connection
+   * The delegated-call resolution: the caller's-connection
    * resolver + renewer ingredients behind the proxy's `provider` branch.
    * null/omitted (existing constructions) unwires it: a delegated instruction
    * is refused fail-closed (502, the mechanism not wired), and every other
@@ -134,9 +134,9 @@ export function buildApp(
     limits: deps.config.limits,
     allowPrivate: deps.config.allowPrivate,
     allowInsecureConnection: deps.config.allowInsecureConnection,
-    // The delegated resolution (I-02 T-0022), built against the proxy's own
-    // dispatcher so the renewer's vendor round-trips ride the same pinned
-    // transport as the exchange's (the one transport seam, ADR-0009).
+    // The delegated resolution, built against the proxy's own dispatcher so
+    // the renewer's vendor round-trips ride the same pinned transport as the
+    // exchange's (the one transport seam).
     delegated: deps.delegated
       ? (dispatcher) =>
           new DelegatedResolver({
@@ -167,9 +167,9 @@ export function buildApp(
     handler: proxy.handler,
   });
 
-  // The code-exchange operation (I-02 T-0019): a NEW internal route, not a
+  // The code-exchange operation: a NEW internal route, not a
   // bend of /proxy — the instruction contract binds origin/method/path per app
-  // call and an exchange has no app-side counterpart (architecture ADR-0001).
+  // call and an exchange has no app-side counterpart.
   // It rides the proxy's SAME pinned dispatcher, so the SSRF controls and the
   // trace boundary are process-wide facts, not per-route choices. Unwired, the
   // route refuses every caller fail-closed (see UNWIRED_EXCHANGE).

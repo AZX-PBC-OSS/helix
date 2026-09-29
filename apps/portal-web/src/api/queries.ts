@@ -356,14 +356,14 @@ export const sessionsQuery = queryOptions({
 });
 
 /**
- * The signed-in user's own provider connections (My Connections, I-02
- * T-0024) — metadata only; the sealed material is structurally absent from
+ * The signed-in user's own provider connections (My Connections)
+ * — metadata only; the sealed material is structurally absent from
  * the server's shape. Bearer-gated server-side like the rest of `/api/v1`.
  *
  * No `staleTime` — the default (0) is the point: this page's Disconnect
  * explains what Helix still holds, and what it shows must be what the server
- * would act on now. The page adds the visibility-aware 30 s cadence (criterion
- * 46), which belongs to the screen, not the resource.
+ * would act on now. The page adds the visibility-aware 30 s cadence, which
+ * belongs to the screen, not the resource.
  */
 export const myConnectionsQuery = queryOptions({
   queryKey: ["connections", "mine"],
@@ -371,7 +371,7 @@ export const myConnectionsQuery = queryOptions({
 });
 
 /* ---------------------------------------------------------------------------
- * Connection providers (admin, I-02 T-0026). Metadata-only reads — the sealed
+ * Connection providers (admin). Metadata-only reads — the sealed
  * credentials are structurally absent from every shape. The three keys are
  * deliberately disjoint subtrees, not one `["providers"]` prefix: TanStack
  * invalidation is prefix-based, so a list invalidation matching `["providers",

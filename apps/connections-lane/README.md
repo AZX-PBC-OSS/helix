@@ -1,4 +1,4 @@
-# connections browser lane (I-02 T-0031)
+# connections browser lane
 
 The real-browser acceptance lane for the OAuth-connections journey —
 ADR-0010 part 2, spec criteria 51–53. A real Chromium drives the assembled
@@ -9,7 +9,7 @@ reverse proxy → egress exchange + seal → connection row → completion messa
 the app's own retry → the delegated call at the fixture's API destination.
 
 This lane is **not part of the vitest run**. It boots the real edge, portal,
-egress, dev IdP and fixture vendor in-process (the T-0030 integration-suite
+egress, dev IdP and fixture vendor in-process (the integration-suite
 composition, `apps/edge/src/routing/connectionsJourney.integration.test.ts`)
 on ephemeral ports against its own scratch database, fronts every
 browser-facing hop with a TLS terminator (the edge's dev hosts and the vendor's

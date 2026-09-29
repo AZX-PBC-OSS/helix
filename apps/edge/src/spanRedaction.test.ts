@@ -255,15 +255,15 @@ describe("span attributes never carry a credential", () => {
   });
 
   /**
-   * T-0015: the auth host's `/connections/*` reverse proxy. The vendor's
-   * redirect lands here with `code` and `state` in the URL (design.md
-   * §Operator-visible signals fixes this route's spans to `url.path` only),
+   * The auth host's `/connections/*` reverse proxy. The vendor's
+   * redirect lands here with `code` and `state` in the URL (this route's
+   * spans are fixed to `url.path` only),
    * and the request carries material an attacker can plant themselves — the
    * forged internal header the proxy must strip. Drives the REAL route
    * through `buildApp` with everything planted, then scans every attribute of
    * every span, so a later attribute addition fails here instead of leaking.
    */
-  describe("the /connections/* proxy route (T-0015)", () => {
+  describe("the /connections/* proxy route", () => {
     const CONSENT_CODE = "PLANTED-CONSENT-CODE";
     const CONSENT_STATE = "PLANTED-CONSENT-STATE";
     const FORGED_INTERNAL = "PLANTED-FORGED-INTERNAL-TOKEN";
@@ -315,7 +315,7 @@ describe("span attributes never carry a credential", () => {
   });
 
   /**
-   * T-0014: the consent start route. The URL carries an app-chosen `attempt`
+   * The consent start route. The URL carries an app-chosen `attempt`
    * correlation tag (unbounded, attacker-choosable on a public-URL route — the
    * ADR-0042 finding-1 class of value), and the consult's answer is a vendor
    * authorize URL carrying `state` + the PKCE challenge, which the route 302s
@@ -324,7 +324,7 @@ describe("span attributes never carry a credential", () => {
    * guarded-refusal and the started paths, then scans every attribute of
    * every span.
    */
-  describe("the consent start route (T-0014)", () => {
+  describe("the consent start route", () => {
     const APP_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
     const HOST = { host: "notes.local.helix.azxlabs.io" };
     const ORIGIN = `https://notes.local.helix.azxlabs.io:8080`;
@@ -425,14 +425,14 @@ describe("span attributes never carry a credential", () => {
   });
 
   /**
-   * T-0016: the dev-gateway's consent start route. The whole point of the
-   * journey is that the dev bearer token never leaves the authenticated POST
-   * (spec criterion 22) — and the popup URL the route returns carries only
+   * The dev-gateway's consent start route. The whole point of the
+   * journey is that the dev bearer token never leaves the authenticated POST —
+   * and the popup URL the route returns carries only
    * the single-use nonce, while the consult's vendor state + PKCE challenge
    * stay protocol-internal. Drives the REAL dev-gateway route on the started
    * path with everything planted, then scans every attribute of every span.
    */
-  describe("the dev-gateway consent start route (T-0016)", () => {
+  describe("the dev-gateway consent start route", () => {
     const DEV_BEARER = "PLANTED-DEV-BEARER-TOKEN-VALUE";
     const VENDOR_STATE = "PLANTED-VENDOR-OAUTH-STATE";
     const VENDOR_CHALLENGE = "PLANTED-PKCE-CHALLENGE";

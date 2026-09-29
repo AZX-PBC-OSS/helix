@@ -22,12 +22,12 @@ import { deriveInternalKey, resolveInternalSecret } from "../internalJwt.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
- * The dev journey's nonce entry (I-02 T-0016, ADR-0002 §Implementation Notes
- * — the auth-host page, portal-served, reached through the edge's
+ * The dev journey's nonce entry
+ * (the auth-host page, portal-served, reached through the edge's
  * `/connections/*` proxy): one indivisible redemption of the consult's
  * single-use nonce, then a 302 straight to the vendor — and the fixed refusal
  * page for everything else. The consult that writes the attempt runs for real
- * (the internal route, T-0012's contract with the `dev` identity), so the
+ * (the internal route's contract with the `dev` identity), so the
  * redemption is proven against the row the real state machine wrote.
  */
 
@@ -199,8 +199,8 @@ describe("the nonce entry redeems once and 302s to the vendor", () => {
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
 
     // The redirect target is the vendor authorize URL RE-DERIVED at
-    // redemption from the portal's stored attempt data (ADR-0002 §
-    // Implementation Notes): the provider row's configuration plus the
+    // redemption from the portal's stored attempt data: the provider row's
+    // configuration plus the
     // attempt's state and PKCE challenge.
     const target = new URL(res.headers["location"] as string);
     expect(target.origin).toBe("https://vendor.example");
@@ -210,7 +210,7 @@ describe("the nonce entry redeems once and 302s to the vendor", () => {
     expect(target.searchParams.get("redirect_uri")).toBe(connectionsCallbackUrl());
     expect(target.searchParams.get("code_challenge_method")).toBe("S256");
     // The challenge is derived FROM the stored verifier — which itself never
-    // appears in any URL (criterion 22).
+    // appears in any URL.
     expect(target.searchParams.get("code_challenge")).toBe(pkceChallenge(attempt.codeVerifier));
     expect(target.toString()).not.toContain(attempt.codeVerifier);
     expect(target.toString()).not.toContain(DEV_BEARER);
@@ -247,7 +247,7 @@ describe("the attempt keys to the developer identity in the dev environment", ()
       where: { nonce },
     });
     // The saved consent keys to the dev token's developer identity with
-    // env: dev (criterion 22; the resolution-tier isolation is T-0030's).
+    // env: dev (the resolution-tier isolation is by identity kind).
     expect(attempt.userOid).toBe(devOid);
     expect(attempt.env).toBe("dev");
     // The opener origin is the dev caller's VALIDATED Origin — the value the
@@ -281,7 +281,7 @@ describe("every other refusal answers the same fixed page", () => {
     expect(res.body).toContain("isn't valid anymore");
   });
 
-  it("an expired attempt refuses (criterion 25 — expiry bounds the journey)", async () => {
+  it("an expired attempt refuses — expiry bounds the journey", async () => {
     const fixture = await seededDevReady("expired");
     const nonce = freshNonce();
     await consultedAttempt(fixture, nonce);
@@ -321,7 +321,7 @@ describe("every other refusal answers the same fixed page", () => {
     const fixture = await seededDevReady("edited");
     const nonce = freshNonce();
     await consultedAttempt(fixture, nonce);
-    // The raw revision bump T-0010's sensitive-edit transaction ends with.
+    // The raw revision bump the sensitive-edit transaction ends with.
     await t.prisma.connectionProvider.update({
       where: { id: fixture.providerId },
       data: { revision: { increment: 1 } },

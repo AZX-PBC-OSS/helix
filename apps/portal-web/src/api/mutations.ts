@@ -553,7 +553,7 @@ export function useRevokeSessions() {
 }
 
 /* ---------------------------------------------------------------------------
- * My Connections (I-02 T-0024). Disconnect ends the caller's own Helix access
+ * My Connections. Disconnect ends the caller's own Helix access
  * to one provider connection; the server answers `already_removed` for a
  * repeat it did not act on.
  * ------------------------------------------------------------------------- */
@@ -575,7 +575,7 @@ export function useDisconnectConnection() {
 }
 
 /* ---------------------------------------------------------------------------
- * Connection providers (admin, I-02 T-0026). The three keys are disjoint
+ * Connection providers (admin). The three keys are disjoint
  * subtrees (see queries.ts) so no invalidation can refetch under an open edit
  * draft. `useUpdateProvider` invalidates onSuccess only — like useSetManifest,
  * an edit page holds a draft, and refetching after a failure (409 stale, 422)
@@ -628,7 +628,7 @@ export function useDeleteProvider() {
 }
 
 /**
- * Apply an import (I-02 T-0027) — the create/update mode is the caller's
+ * Apply an import — the create/update mode is the caller's
  * explicit choice (the preview never picks a target). The response's `outcome`
  * word reports created/updated distinctly; a rejection changes nothing, so the
  * list is invalidated onSuccess only — the rows an administrator is looking at

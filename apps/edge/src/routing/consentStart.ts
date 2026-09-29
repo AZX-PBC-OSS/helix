@@ -36,8 +36,8 @@ import type { PortalProvider } from "./portalProvider.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 
 /**
- * `GET /_api/connections/:ref/start` — the prod entry to the consent popup
- * (I-02 design.md §Consent journey, §Raw platform entry; ADR-0002). A GET
+ * `GET /_api/connections/:ref/start` — the prod entry to the consent popup.
+ * A GET
  * navigation endpoint on the app host, inside the existing `/_api` reservation:
  * the session cookie is host-only here, so this is where every pre-vendor gate
  * runs and where the four terminal pages render (the portal-served pages begin
@@ -45,25 +45,24 @@ import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
  *
  * Order of gates, and why:
  *
- * 1. **Same-origin navigation guard, fail closed** (ADR-0002 §Implementation
- *    Notes — the operator's ratified mechanism). This is a GET whose success
+ * 1. **Same-origin navigation guard, fail closed.** This is a GET whose success
  *    state-change is a vendor consent attempt; it must never be reachable as a
  *    cross-site navigation riding the victim's session. The guard runs before
  *    identity on purpose — a cross-site caller learns nothing, not even whether
  *    a session exists.
  * 2. **Session check, edge-side, before any consult.** No usable session
  *    renders the sign-in-required page and never calls the portal — consent
- *    does not resume through login (spec criterion 20), so there is no redirect
+ *    does not resume through login, so there is no redirect
  *    into the OIDC flow from here.
  * 3. **One consult call** over the internal PortalProvider seam carrying a
- *    per-call minted internal JWT (T-0006): the portal decides binding
+ *    per-call minted internal JWT: the portal decides binding
  *    effectiveness and connection status and writes the pending attempt — the
- *    edge gains no grant on any consent table (ADR-0002).
+ *    edge gains no grant on any consent table.
  *
  * On `started` the popup is 302'd straight to the vendor's authorize URL — no
- * pre-consent click-through (design.md decision 3). Every other outcome is a
+ * pre-consent click-through. Every other outcome is a
  * terminal page in the shared auth chrome that posts the app-facing outcome
- * message (design.md §Completion message) before offering Close.
+ * message before offering Close.
  */
 
 export interface ConsentStartRuntime {
@@ -76,7 +75,7 @@ export interface ConsentStartRuntime {
   /** null ⇒ HELIX_INTERNAL_SECRET unset; same couldn't-start answer. */
   internalKey: Buffer | null;
   /**
-   * The helper's attempt-tag → OAuth-state correlation (T-0017). Recorded when
+   * The helper's attempt-tag → OAuth-state correlation. Recorded when
    * a tagged consult starts; the cancel-acknowledgement route consumes it.
    * Optional so the existing standalone shape (tests wiring the start route
    * alone) keeps working — undefined simply records nothing.
@@ -86,9 +85,9 @@ export interface ConsentStartRuntime {
 
 /** The consult's JSON answer is tiny; anything bigger is not a consult response. */
 /**
- * The fail-closed same-origin navigation guard (ADR-0002 §Implementation Notes:
- * "require Sec-Fetch-Site: same-origin, fall back to Origin/Referer header
- * checks when absent, fail closed on neither").
+ * The fail-closed same-origin navigation guard: require
+ * `Sec-Fetch-Site: same-origin`, fall back to Origin/Referer header
+ * checks when absent, fail closed on neither.
  *
  * The three signals combine as NECESSARY, not alternative:
  *
@@ -97,7 +96,7 @@ export interface ConsentStartRuntime {
  *   `cross-site`/`none` are worse. Unlike the `/_api/fetch` gateway, a claimed
  *   `same-origin` is not authoritative on its own: this is a navigation
  *   endpoint, and a hand-rolled client (curl) can set any Fetch Metadata
- *   header — the ticket's adversarial matrix includes exactly that spoof
+ *   header — the adversarial matrix includes exactly that spoof
  *   against an absent Origin.
  * - Positive same-origin evidence must then come from `Origin` or `Referer`
  *   matching the app's own public origin. A real popup navigation always
@@ -137,13 +136,13 @@ export function isSameOriginNavigation(
 /**
  * The usable-session half of the session gate, with the consent routes' own
  * response posture (the sign-in-required page — never the gate's login
- * redirect, criterion 20). Same machinery: cookie parse → hash → store lookup,
+ * redirect). Same machinery: cookie parse → hash → store lookup,
  * then the per-request visibility check. Shared with the cancel-acknowledgement
  * route (`consentCancel.ts`), whose caller renders a JSON 401 on the null.
  *
  * Two deliberate narrowings:
  * - A shared-password pseudonym (`kind: "password"`) is not an identified user
- *   and can never establish a delegated connection (criterion 21) — it gets
+ *   and can never establish a delegated connection — it gets
  *   sign-in required, same as anonymous.
  * - A session merely due for its silent refresh stays usable. The popup cannot
  *   resume through login, so bouncing a warm session to the refresh flow would
@@ -166,7 +165,7 @@ export async function usableSession(
 }
 
 /**
- * The optional `?attempt=<correlation tag>` (design.md §Raw platform entry).
+ * The optional `?attempt=<correlation tag>`.
  * `undefined` = absent (the message simply carries no tag); `null` = present
  * but invalid or repeated — refused with a 400, never silently rewritten
  * (the `rd` precedent: silence would hide probing).
@@ -181,9 +180,9 @@ function attemptTagOf(req: FastifyRequest): string | null | undefined {
 }
 
 /**
- * One app-facing outcome message (design.md §Completion message): source,
+ * One app-facing outcome message: source,
  * version, attempt, provider, outcome, reason. Parsed through the shared
- * schema — the same definition T-0017's helper and T-0020's completion pages
+ * schema — the same definition the helper and the completion pages
  * consume — so the three producers cannot drift.
  */
 function outcomeMessage(
@@ -202,7 +201,7 @@ function outcomeMessage(
   });
 }
 
-/** The couldn't-start terminal page (design.md's page table: service failure
+/** The couldn't-start terminal page (service failure
  * at start) — 503, posting `error`/`service_unavailable` to the opener. */
 function sendCouldntStart(
   reply: FastifyReply,
@@ -242,7 +241,7 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
         trace.getActiveSpan()?.setAttributes({ [ATTR_OUTCOME]: outcome });
       };
       // The app's own public origin — the guard's expected value, the consult's
-      // openerOrigin, and (per design.md §Completion message) the exact
+      // openerOrigin, and the exact
       // postMessage target of every pre-attempt terminal page on this route.
       const appOrigin = publicOrigin(rt.config, slug);
 
@@ -285,7 +284,7 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
         return;
       }
 
-      // Gate 2 — session, edge-side, before the consult (criterion 20).
+      // Gate 2 — session, edge-side, before the consult.
       const session = await usableSession(rt.sessions, req, entry);
       if (!session) {
         setOutcome("signin_required");
@@ -317,7 +316,7 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
         providerRef,
         openerOrigin: appOrigin,
         // From the edge's own auth-host origin — the single source of the
-        // callback URL (ADR-0001's ratified residual; T-0012's contract).
+        // callback URL.
         callbackUrl: `${publicOrigin(rt.config, "auth")}/connections/callback`,
       });
 
@@ -350,7 +349,7 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
 
       switch (consult.outcome) {
         case "started": {
-          // Design decision 3: straight to the vendor, no pre-consent
+          // Straight to the vendor, no pre-consent
           // click-through. The URL is the portal's assembled authorize URL;
           // the scheme check is redirect hygiene, not OAuth client code.
           const target = new URL(consult.authorizeUrl);
@@ -359,7 +358,7 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
             sendCouldntStart(reply, { providerRef, attempt, appOrigin });
             return;
           }
-          // The helper's cancel (T-0017) names its attempt by the correlation
+          // The helper's cancel names its attempt by the correlation
           // tag, and the control plane's cancel arbitrates over the OAuth
           // state — the edge saw both in this one exchange, so this is where
           // the correlation is learned. State is read from the consult's own
@@ -390,7 +389,7 @@ export function makeConsentStartHandler(rt: ConsentStartRuntime) {
             renderConsentTerminalPage({
               title: "Already connected",
               heading: "Already connected",
-              // The design's page table names {DisplayName}; the edge holds no
+              // The designed page copy names {DisplayName}; the edge holds no
               // provider metadata and the consult's terminal outcomes carry
               // none, so the ref stands in — it is the identifier the app and
               // catalogue both use. The portal's completion pages render the

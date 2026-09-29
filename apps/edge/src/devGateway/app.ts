@@ -82,8 +82,8 @@ export interface DevGatewayDeps {
   egress: EgressProvider | null;
   instructionKey: Buffer | null;
   /**
-   * Portal client for the dev tier's consent consult (I-02 T-0016, ADR-0002
-   * §Implementation Notes); null — or an unset internal mint key — leaves the
+   * Portal client for the dev tier's consent consult; null — or an unset
+   * internal mint key — leaves the
    * consent start route answering a fail-closed 503, like every other seam.
    */
   portal: PortalProvider | null;
@@ -166,7 +166,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     instructionKey: deps.instructionKey,
   });
 
-  // I-02 T-0016: the dev tier's consent entry — the bearer POST that returns
+  // The dev tier's consent entry — the bearer POST that returns
   // the single-use popup URL. Same dev resolver seam as every other route
   // here (its Origin allowlist check is the route's navigation guard, run
   // before any consult); the consult rides the same callConsult seam as the
@@ -282,8 +282,8 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     handler: (req, reply) => handleOpenAiModels(req, reply, slugOf(req)),
   });
 
-  // I-02 T-0016: the dev tier's consent start — `POST /:slug/_api/connections/:ref/start`
-  // (design.md §Raw platform entry, dev paragraph). The POST is the
+  // The dev tier's consent start — `POST /:slug/_api/connections/:ref/start`.
+  // The POST is the
   // authenticated half; the returned popup URL is a GET navigation that
   // carries only the nonce.
   app.route({

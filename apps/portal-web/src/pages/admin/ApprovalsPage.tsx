@@ -108,7 +108,7 @@ function landedStatus(err: unknown): string | null {
 }
 
 /**
- * The apply-time provider conflict (T-0009): the approve answered 409 `conflict`
+ * The apply-time provider conflict: the approve answered 409 `conflict`
  * with the stamped ref in `details` — the shape `assertProviderStampsCurrent`
  * throws, and nothing else 409s approve with a `ref`. Nothing landed and nothing
  * was applied; the request stays pending for the owner to withdraw or resubmit,
@@ -131,7 +131,7 @@ function diffText(deltas: Delta[]): string {
 }
 
 /**
- * The one-line prior-decision signal (issue #26). The exact grant denied before
+ * The one-line prior-decision signal. The exact grant denied before
  * is loud (amber); a related grant in the same area is quiet (muted). First-time
  * requests carry no `priorDecisions`, so this renders nothing. All the detail —
  * the notes, the deciders, the full log — lives under the Details expander, so
@@ -252,7 +252,7 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
   const days = daysSince(a.createdAt);
   const ask = a.deltas.length === 1 ? diffLine(a.deltas[0]!) : `${a.deltas.length} changes`;
   const signal = priorSignal(a.priorDecisions);
-  // Criterion 16's warning is data stamped at filing (T-0009), so the card
+  // The filing-time warning is data stamped at filing, so the card
   // renders it with no extra fetch. Advisory only — it qualifies the ask for
   // delegated requests and never disables the approve action or re-grades risk.
   const publicAppWarning =

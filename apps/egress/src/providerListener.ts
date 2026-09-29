@@ -1,5 +1,5 @@
 /**
- * Keeps the provider-config cache fresh (I-02 ADR-0011): a **dedicated**
+ * Keeps the provider-config cache fresh: a **dedicated**
  * LISTEN connection reloads the cache on every NOTIFY from the portal-owned
  * trigger (`PROVIDERS_CHANNEL`), a jittered reconcile reload covers anything a
  * dropped connection missed, and reconnects back off exponentially — the edge's
@@ -281,7 +281,7 @@ export class LiveProviders implements ProviderCacheReader {
   async #connectListener(): Promise<void> {
     if (this.#stopped) return;
     // Dedicated client, never a pool client: pool recycling silently drops
-    // LISTEN registrations (ADR-0011 §Decision).
+    // LISTEN registrations.
     const client = new pg.Client({
       connectionString: this.#databaseUrl,
       statement_timeout: this.#statementTimeoutMs,
@@ -295,7 +295,7 @@ export class LiveProviders implements ProviderCacheReader {
       await client.query(`LISTEN ${PROVIDERS_CHANNEL}`);
       this.#listenClient = client;
       this.#backoffMs = this.#backoffInitialMs;
-      // The startup race (ADR-0011 §Context): notifications committed before
+      // The startup race: notifications committed before
       // this LISTEN are gone, so inspect current state before relying on
       // notifications. This is also the reconnect reconcile — the self-heal
       // for anything missed while the connection was down.

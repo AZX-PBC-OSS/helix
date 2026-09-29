@@ -28,12 +28,11 @@ import { PrincipalKindSchema } from "./principal.js";
  * own pre-egress refusal: no instruction is minted and nothing is dialled.
  *
  * `connection_required` is the delegated-call outcome "the caller has no usable
- * connection to the bound provider" (I-02). It stays distinct from `refusal` so
- * the ledger separates "user not connected" from "policy refused" (criterion 50;
- * clarifications Q15) — that separation is the label's whole point. The other
- * delegated error codes do not get labels of their own: `provider_unavailable`
- * and `provider_misconfigured` meter as `refusal`, temporary failure as `error`
- * (design.md decision 13).
+ * connection to the bound provider". It stays distinct from `refusal` so the
+ * ledger separates "user not connected" from "policy refused" — that separation
+ * is the label's whole point. The other delegated error codes do not get labels
+ * of their own: `provider_unavailable` and `provider_misconfigured` meter as
+ * `refusal`, temporary failure as `error`.
  */
 export const GATEWAY_OUTCOMES = [
   "ok",

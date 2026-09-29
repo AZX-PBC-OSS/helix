@@ -96,7 +96,7 @@ describe("LiveRegistry against the test database", () => {
     await eventually(() => registry.getApp(late.slug) === undefined);
   });
 
-  // I-02 T-0013: the fetch grant's binding map carries the manifest's provider
+  // The fetch grant's binding map carries the manifest's provider
   // bindings (manifest data only — no provider rows cross to the edge), and the
   // existing registry NOTIFY loop refreshes the widened shape without restart.
   it("projects provider-bound fetch origins and refreshes the widened grant on NOTIFY", async () => {

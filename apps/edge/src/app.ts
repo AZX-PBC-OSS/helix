@@ -89,8 +89,8 @@ export interface EdgeDeps {
   /** Egress client for the fetch-proxy (M4.5); null = the capability 503s. */
   egress?: EgressProvider | null;
   /**
-   * Portal client for the auth-host `/connections/*` reverse proxy (I-02
-   * ADR-0002 part 3); null = the surface 503s fail-closed.
+   * Portal client for the auth-host `/connections/*` reverse proxy; null = the
+   * surface 503s fail-closed.
    */
   portal?: PortalProvider | null;
   /** HKDF-derived instruction signing key; null = the fetch capability 503s. */
@@ -302,7 +302,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     store: deps.cspReports ?? null,
   });
 
-  // The auth-host `/connections/*` reverse proxy (I-02 ADR-0002 part 3). The
+  // The auth-host `/connections/*` reverse proxy. The
   // route always exists; with either the portal URL or the internal mint key
   // unconfigured it answers a distinguishable 503 (fail-closed, like every
   // other seam) rather than disappearing.
@@ -311,13 +311,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     internalKey: config.internalSecret ? deriveInternalKey(config.internalSecret) : null,
   });
 
-  // I-02 T-0014: the consent popup's prod entry — app hosts only, inside the
+  // The consent popup's prod entry — app hosts only, inside the
   // existing `/_api` reservation. The route always exists and fail-closes
   // inward (sign-in required without a session, couldn't-start without the
   // portal seam); the terminal pages are its designed answers, so unlike the
   // gateway handlers this needs no null-guard for an unwired runtime.
   //
-  // The correlation map is the helper-cancel half (T-0017): the start route
+  // The correlation map is the helper-cancel half: the start route
   // records each tagged consult's tag→state pair, and the cancellation route
   // below consumes it — one instance, shared by both handlers.
   const correlations = new AttemptCorrelations();
@@ -457,7 +457,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     });
   }
 
-  // I-02 ADR-0002 part 3: the `/connections/*` reverse proxy — auth host only
+  // The `/connections/*` reverse proxy — auth host only
   // (the two-router discipline: app hosts never proxy to the portal).
   // Encapsulated with a passthrough body parser so a POST body streams to the
   // portal unbuffered, exactly like the fetch-proxy scope below; on app hosts
@@ -548,8 +548,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     },
   });
 
-  // I-02 T-0014: the consent popup's entry — `GET /_api/connections/:ref/start`
-  // (design.md §Raw platform entry). A GET navigation endpoint, so no body
+  // The consent popup's entry — `GET /_api/connections/:ref/start`.
+  // A GET navigation endpoint, so no body
   // parser concerns; app hosts only (the two-router discipline).
   app.route({
     method: "GET",
@@ -563,7 +563,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     },
   });
 
-  // I-02 T-0017: the connect helper's cancellation acknowledgement — the
+  // The connect helper's cancellation acknowledgement — the
   // JSON POST `window.helix.connect` fires when its popup closed without a
   // completion message. App hosts only; session-gated inward.
   app.route({

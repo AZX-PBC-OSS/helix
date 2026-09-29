@@ -20,13 +20,13 @@ import type {
 } from "../routing/portalProvider.js";
 
 /**
- * The dev tier's consent start (I-02 T-0016, design decision 4) — the bearer
+ * The dev tier's consent start — the bearer
  * POST that hands back the single-use popup URL. The consult rides a scripted
  * fake portal provider (the `consentStart.test.ts` seam style), so every
  * assertion here is against the real route and the real dev-token resolver —
  * only the portal hop is fake. The redemption half of the journey is the
  * portal's (`apps/portal/src/routes/connectionsPages.test.ts`); the assembled
- * journey is T-0030's.
+ * journey is the integration suite's.
  */
 
 const APP_ID = "11111111-1111-4111-8111-111111111111";

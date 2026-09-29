@@ -40,11 +40,11 @@ import { FakeBlobReader, FakeOidcClient } from "../test/fakes.js";
 import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "../test/config.js";
 
 /**
- * The assembled OAuth-connections journey (I-02 T-0030, spec criterion 52):
+ * The assembled OAuth-connections journey:
  * the REAL edge, portal, egress and dev-gateway apps composed the way
  * production composes them — edge→portal over `HttpPortalProvider`, edge→egress
  * over `HttpEgressProvider`, portal→egress over `PORTAL_EGRESS_URL`, egress→
- * vendor over the pinned transport, the fixture vendor (ADR-0010) as the one
+ * vendor over the pinned transport, the fixture vendor as the one
  * vendor stand-in — every inter-service hop on real HTTP on ephemeral ports.
  * The suite plays the browser the `flow.integration.test.ts` way: `app.inject()`
  * for the edge/dev-gateway front door, real (undici) fetch for the vendor's
@@ -58,8 +58,8 @@ import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "../test/co
  * from the same migrations and dropped afterwards. The runtime roles
  * (`helix_edge` / `helix_egress` / `helix_dev`) are REQUIRED — every store is
  * constructed on its production role's URL, and an unprovisioned cluster
- * fails the suite loudly instead of skipping (research.md §Gaps, question 11:
- * an unprovisioned green run is not evidence).
+ * fails the suite loudly instead of skipping — an unprovisioned green run is
+ * not evidence.
  *
  * The fixture vendor's authorize URL must be `https://` for the entry points'
  * redirect hygiene to hand it to a browser, so the suite terminates TLS in
@@ -68,7 +68,7 @@ import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "../test/co
  * no platform seam is touched, and egress's own vendor calls ride the http
  * issuer the dev seams allow).
  *
- * Watched-fail (criterion 52's missing-connection bar): with the suite green,
+ * Watched-fail (the missing-connection bar): with the suite green,
  * the edge's `portalUrl` seam was once pointed at a dead port — unwiring the
  * start route's consult join. The prod-journey test failed at its first
  * assert (the start route answered its 503 couldn't-start page instead of a
@@ -109,7 +109,7 @@ const exchangeKey = deriveExchangeKey(EXCHANGE_SECRET);
 
 // Custody: the app-secrets KEK is shared portal↔egress (the portal seals the
 // provider's client credentials, egress opens them); the delegated KEK is
-// egress-only — the portal never sees it (ADR-0006 part 1).
+// egress-only — the portal never sees it.
 const appSecretsKek = randomBytes(32);
 const delegatedKek = randomBytes(32);
 const portalCustody = createSecretStore({ devMasterKey: appSecretsKek });
@@ -547,7 +547,7 @@ interface GatewayRow {
   [key: string]: unknown;
 }
 
-/** The journey's real metered rows (criterion 50) — the ledger write is
+/** The journey's real metered rows — the ledger write is
  * fire-and-forget beside the response, so poll for the outcome. */
 async function gatewayRow(appId: string, outcome: string): Promise<GatewayRow> {
   return pollUntil(async () => {
@@ -716,7 +716,7 @@ beforeAll(async () => {
   // The REAL egress: the delegated wiring on the helix_egress role, the real
   // provider cache (LISTEN/NOTIFY), the real exchange operation sharing the
   // portal's custody — and, below, the retirement sweep on a short cadence
-  // (the scheduling seam: criterion 47's bound is asserted through it, never
+  // (the scheduling seam: the cadence bound is asserted through it, never
   // by waiting wall-clock minutes).
   delegatedPool = new Pool({ connectionString: roleUrl("helix_egress"), max: 6 });
   providers = new LiveProviders({
@@ -900,7 +900,7 @@ afterEach(() => {
 
 // ── The journey ───────────────────────────────────────────────────────────────
 
-describe("the prod consent journey through the real entry points (criterion 52a)", () => {
+describe("the prod consent journey through the real entry points", () => {
   it("start → consult → vendor authorize → callback → saved connection → delegated call in the configured placement", async () => {
     const f = await seedFixture("prod-journey", { envs: ["prod"], vendorToUse: vendor });
     const sessionCookie = await seedSession(f.appId);
@@ -954,8 +954,7 @@ describe("the prod consent journey through the real entry points (criterion 52a)
     expect(echo.placement).toBe("header-bearer");
     expect(echo.token).toBe(material.access);
 
-    // 6 — usage accounting + identity attribution on the real metered row
-    // (criterion 50).
+    // 6 — usage accounting + identity attribution on the real metered row.
     const ledger = await gatewayRow(f.appId, "ok");
     expect(ledger.userOid).toBe(userOid);
     expect(ledger.userKind).toBe("user");
@@ -1037,7 +1036,7 @@ describe("the connection-status read tracks the journey (ADR-0031 as amended)", 
   }, 30_000);
 });
 
-describe("the dev-tier journey (criterion 22)", () => {
+describe("the dev-tier journey", () => {
   it("bearer POST → single-use popup URL → nonce entry → vendor → completion keyed to the developer identity", async () => {
     const f = await seedFixture("dev-journey", {
       envs: ["dev"],
@@ -1074,8 +1073,7 @@ describe("the dev-tier journey (criterion 22)", () => {
     expect(done.status).toBe(200);
     expect(done.body).toContain('"outcome":"connected"');
     // The completion message targets the DEV caller's validated origin —
-    // recorded at the consult, delivered here end to end (T-0016's hand-off
-    // to this suite).
+    // recorded at the consult, delivered here end to end.
     expect(done.body).toContain(`window.opener.postMessage(message, "${DEV_ORIGIN}")`);
 
     // 4 — the row keys to the developer identity in the dev environment: the
@@ -1110,7 +1108,7 @@ describe("the dev-tier journey (criterion 22)", () => {
   }, 30_000);
 });
 
-describe("development and production separation (criterion 22)", () => {
+describe("development and production separation", () => {
   it("a dev connection and a prod connection never serve each other's tier", async () => {
     const f = await seedFixture("env-split", {
       envs: ["prod", "dev"],
@@ -1166,7 +1164,7 @@ describe("development and production separation (criterion 22)", () => {
   }, 30_000);
 });
 
-describe("two approved apps share one connection (criterion 23)", () => {
+describe("two approved apps share one connection", () => {
   it("the second app's consult answers already-connected and its calls ride the same connection", async () => {
     const f = await seedFixture("shared", { envs: ["prod"], vendorToUse: vendor });
     const sessionCookie = await seedSession(f.appId);
@@ -1234,7 +1232,7 @@ describe("two approved apps share one connection (criterion 23)", () => {
   }, 30_000);
 });
 
-describe("both rotation modes through real expiry (criterion 52b)", () => {
+describe("both rotation modes through real expiry", () => {
   it("rotating: the renewal replaces the material, ledger-marks the old, and the call succeeds", async () => {
     const f = await seedFixture("rotating", { envs: ["prod"], vendorToUse: rotatingVendor });
     const sessionCookie = await seedSession(f.appId);
@@ -1319,7 +1317,7 @@ describe("both rotation modes through real expiry (criterion 52b)", () => {
   }, 30_000);
 });
 
-describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => {
+describe("disconnection, sensitive edits, deletion", () => {
   it("disconnect stops use immediately; the ledger labels connection_required apart from refusal", async () => {
     const f = await seedFixture("disconnect", { envs: ["prod"], vendorToUse: vendor });
     const sessionCookie = await seedSession(f.appId);
@@ -1353,17 +1351,16 @@ describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => 
     expect(err.code).toBe("connection_required");
     expect(err.provider).toEqual({ ref: f.ref, displayName: f.displayName });
 
-    // …and the LEDGER separates it from a policy refusal (criterion 50): this
+    // …and the LEDGER separates it from a policy refusal: this
     // row is connection_required; the deletion leg's row below is refusal.
     const required = await gatewayRow(f.appId, "connection_required");
     expect(required.statusCode).toBe(403);
     expect(required.userOid).toBe(userOid);
     expect(required.outcome).toBe("connection_required");
 
-    // Cleanup within the sweep's cadence bound (criterion 47 at journey
-    // level): the row's ledger mark is claimed and the material is handed to
-    // the delegated store's destroy — asserted by polling the observable,
-    // never by waiting wall-clock minutes.
+    // Cleanup within the sweep's cadence bound: the row's ledger mark is
+    // claimed and the material is handed to the delegated store's destroy —
+    // asserted by polling the observable, never by waiting wall-clock minutes.
     await pollUntil(
       async () =>
         destroyed.includes(liveMaterial.access) && destroyed.includes(liveMaterial.refresh)
@@ -1414,8 +1411,8 @@ describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => 
       await portal.prisma.userConnection.count({ where: { providerId: providerIdOf(f, "prod") } }),
     ).toBe(0);
 
-    // The blocked binding cannot be bypassed by starting again (criterion
-    // 18): the stale-dated stamp answers not_available.
+    // The blocked binding cannot be bypassed by starting again: the
+    // stale-dated stamp answers not_available.
     const restart = await prodStart(f.slug, f.ref, sessionCookie);
     expect(restart.status).toBe(200);
     expect(restart.body).toContain("Connection not available");
@@ -1501,7 +1498,7 @@ describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => 
 
     // …which can never serve a call again (the resolution refuses a non-live
     // row) — while the edge still mints the instruction, because the edge
-    // evaluates no provider state (ADR-0004's split, observable end to end).
+    // evaluates no provider state (observable end to end).
     const afterEdit = await delegatedCall(f.slug, sessionCookie, `${vendor.issuer}/api/echo`);
     expect(afterEdit.status).toBe(403);
     expect((JSON.parse(afterEdit.body) as { code: string }).code).toBe("connection_required");
@@ -1519,7 +1516,7 @@ describe("disconnection, sensitive edits, deletion (criteria 43, 9, 50)", () => 
       "the sweep destroying the edited-away material",
     );
 
-    // Deletion (criterion 9): confirmed, the row gone; delegated calls report
+    // Deletion: confirmed, the row gone; delegated calls report
     // provider unavailability — the LEDGER records it as refusal, distinct
     // from the disconnect leg's connection_required label.
     const del = await portalApi("DELETE", `/api/v1/providers/${providerIdOf(f, "prod")}`, "admin", {

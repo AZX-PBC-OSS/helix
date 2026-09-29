@@ -9,9 +9,9 @@ import { AuthProvider } from "../auth/AuthProvider";
 import { setToken, clearToken } from "../auth/tokenStore";
 
 /**
- * Provider administration list (`/admin/providers`, I-02 T-0026): the env
+ * Provider administration list (`/admin/providers`): the env
  * badges + filter, the persistent callback hint served at runtime with a
- * working copy action, the import card's mount point, and criterion 13's
+ * working copy action, the import card's mount point, and the
  * refresh cadence (30 s while visible, paused hidden, refreshed on return;
  * stale-kept-on-failure; error without data — never an empty success).
  */
@@ -155,7 +155,7 @@ describe("ProvidersPage list", () => {
     renderPage();
     expect(await screen.findByText("Import")).toBeDefined();
     // The file picker is a labeled control; apply is disabled until a file has
-    // been previewed and a mode chosen (T-0027).
+    // been previewed and a mode chosen.
     expect(screen.getByText(/Provider export \(JSON\)/)).toBeDefined();
     const apply = screen.getByRole("button", { name: "Apply import" }) as HTMLButtonElement;
     expect(apply.disabled).toBe(true);
@@ -191,7 +191,7 @@ describe("ProvidersPage refresh failure", () => {
   });
 });
 
-describe("ProvidersPage refresh cadence (criterion 13)", () => {
+describe("ProvidersPage refresh cadence", () => {
   it("ticks every 30 s while visible, pauses while hidden, refetches on return", async () => {
     vi.useFakeTimers();
     const impl = stubFetch([provider()]);

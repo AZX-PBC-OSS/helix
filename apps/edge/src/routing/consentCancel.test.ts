@@ -32,13 +32,13 @@ import {
 import type { PortalProvider, PortalProxyRequest, PortalProxyResponse } from "./portalProvider.js";
 
 /**
- * `POST /_api/connections/attempt/cancel` (I-02 T-0017) — the connect helper's
+ * `POST /_api/connections/attempt/cancel` — the connect helper's
  * cancellation acknowledgement: session-gated, own-attempts-only, wrapping
- * T-0012's cancel operation over the internal portal seam. The fake portal is
+ * the cancel operation over the internal portal seam. The fake portal is
  * the `consentStart.test.ts` seam shape: it captures what the edge forwards
  * (target, body, the minted internal token) and answers a scripted contract,
  * so every assertion here is against the real route, guards, correlation, and
- * telemetry — the portal hop is fake, and T-0012's state machine is asserted
+ * telemetry — the portal hop is fake, and the portal's state machine is asserted
  * in its own suite.
  */
 
@@ -259,7 +259,7 @@ describe("the happy path — a closed popup's cancellation is acknowledged", () 
     expect(status).toBe(200);
     expect(body).toEqual({ outcome: "cancelled" });
 
-    // Exactly one internal cancel, and it is T-0012's contract: the attempt
+    // Exactly one internal cancel, and it is the cancel contract: the attempt
     // named by the OAuth state the consult returned, the identity the session
     // attests — never the app-supplied tag (which the portal does not store).
     expect(h.portal.cancels()).toBe(1);
@@ -325,7 +325,7 @@ describe("own-attempts-only", () => {
     // A second one (a double close, a replayed ack) finds nothing.
     const second = await h.cancel({ tag: "tag-once-1" });
     expect(second.body).toEqual({ outcome: "not_cancellable" });
-    expect(h.portal.cancels()).toBe(1); // no replay, criterion 31
+    expect(h.portal.cancels()).toBe(1); // no replay
     await h.app.close();
   });
 

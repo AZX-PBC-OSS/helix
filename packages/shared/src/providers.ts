@@ -7,7 +7,7 @@ import { HeaderNameSchema } from "./secrets.js";
 /**
  * Connection providers — the administrator-configured vendor OAuth
  * registrations whose users' connections the platform delegates
- * (spec §Provider administration; ADR-0004 ref/id/revision keying).
+ * (ref/id/revision keying).
  *
  * A **provider** is one vendor integration in one environment. A
  * **connection** is one user's consent to it. Nothing here handles
@@ -19,7 +19,8 @@ import { HeaderNameSchema } from "./secrets.js";
  * stripped. An administrator edits these shapes through a form, and a
  * typo'd field name that zod silently dropped would apply a *different*
  * provider than the one the administrator reviewed — the same silent-strip
- * skew ADR-0005 closes on the instruction schema, closed here at write time.
+ * skew the strict-parse discipline closes on the instruction schema, closed
+ * here at write time.
  *
  * No request/stored parser split (unlike `secrets.ts`): the domain is
  * greenfield, every row is written through these schemas from the first
@@ -29,8 +30,8 @@ import { HeaderNameSchema } from "./secrets.js";
 /**
  * The provider kinds a deployment can actually serve. Ships
  * `rest-delegated` only: values are added when each kind is implemented, so
- * an unimplemented kind cannot be configured even by hand (clarifications
- * Q21). Widening later is non-breaking — this package is source-exported.
+ * an unimplemented kind cannot be configured even by hand. Widening later is
+ * non-breaking — this package is source-exported.
  */
 export const PROVIDER_KINDS = ["rest-delegated"] as const;
 export const ProviderKindSchema = z.enum(PROVIDER_KINDS);
@@ -39,7 +40,7 @@ export type ProviderKind = z.infer<typeof ProviderKindSchema>;
 /**
  * The ref's character rule, exported so consumers that must re-run the
  * identical rule outside zod cannot drift from the schema — the connect
- * helper's script (T-0017) bakes it to validate `window.helix.connect`'s
+ * helper's script bakes it to validate `window.helix.connect`'s
  * argument before it ever becomes a URL path segment.
  */
 export const PROVIDER_REF_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -66,8 +67,7 @@ export type ProviderRef = z.infer<typeof ProviderRefSchema>;
  * How the user's delegated access token is presented to the vendor's API
  * destination: `Authorization: Bearer` (the default) or one explicitly
  * named header. Query-string tokens and signing recipes are **not
- * representable** — the platform refuses token-bearing URLs outright
- * (spec §Provider administration, criterion 4).
+ * representable** — the platform refuses token-bearing URLs outright.
  *
  * Two of the four `InjectionRecipe` kinds, and only those: a static secret
  * may ride a query param or an HMAC recipe, but a *delegated user token*
@@ -217,7 +217,7 @@ const noDuplicates = (values: readonly string[]) => new Set(values).size === val
  * `RequestedScopesSchema`, `ApiOriginsSchema`) are exported because the SPA's
  * form fields validate through the same parsers the server's 422s come from —
  * a restated rule would drift, and the panel's inline errors would stop
- * mirroring the rejection (T-0026's field contract; T-0027's import preview
+ * mirroring the rejection (the SPA's field contract; the import preview
  * reuses them the same way).
  */
 export const ApiOriginsSchema = z
@@ -268,7 +268,7 @@ const ProviderEditableFieldsSchema = z.strictObject({
  * A provider's credential-free configuration: exactly what the export
  * document carries and what create/import accept. Everything here can cross
  * a deployment boundary; no credential, token, secret reference, or
- * environment does (criteria 5, 11).
+ * environment does.
  */
 export const ProviderConfigSchema = ProviderEditableFieldsSchema.extend({
   ref: ProviderRefSchema,
@@ -280,11 +280,11 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
  * Create-provider request body. `clientId`/`clientSecret` are the only
  * place the vendor registration crosses the API boundary in plaintext —
  * write-only, like every secret value in this platform; the portal seals
- * both onto the row (ADR-0006 part 1) and neither is ever read back.
+ * both onto the row and neither is ever read back.
  *
  * `env` is required with no default, unlike `SecretCreateRequestSchema`'s
  * `prod` default: it selects the partition the whole vendor registration
- * lives in, is immutable after create (criterion 5), and an accidental
+ * lives in, is immutable after create, and an accidental
  * default is a registration in the wrong tier — the administrator chooses
  * it, explicitly, every time.
  */
@@ -333,14 +333,14 @@ const OWN_PROTO_KEY_RULE =
  * form submits all of them) and therefore **all required** — an omitted
  * `requestedScopes` must be a malformed body, not "clear every scope", and
  * an omitted `tokenPlacement` not "reset to Bearer": both are sensitive
- * edits (criterion 6), and the route's parsed-request-vs-stored-row diff
+ * edits, and the route's parsed-request-vs-stored-row diff
  * cannot distinguish a manufactured default from an explicit choice.
- * `revision` is the loaded revision the optimistic lock compares against
- * (ADR-0004) — a stale save is rejected so the administrator reloads and
+ * `revision` is the loaded revision the optimistic lock compares against —
+ * a stale save is rejected so the administrator reloads and
  * reviews rather than over a peer's edit.
  *
  * The credential fields are optional and **absent means keep**: the stored
- * material is never read back (criterion 3), so "blank" is the only way an
+ * material is never read back, so "blank" is the only way an
  * edit form can express "unchanged". `clientSecret` present is a rotation —
  * non-sensitive; `clientId` present is a client-identity change — sensitive
  * (see {@link SENSITIVE_PROVIDER_FIELDS}). Presence therefore always means
@@ -383,9 +383,9 @@ export const ProviderUpdateRequestSchema = z.preprocess(
     clientId: z.string().min(1).optional(),
     clientSecret: z.string().min(1).optional(),
     /**
-     * The invalidation acknowledgement ({@link CONFIRM_INVALIDATION_FIELD} —
-     * design.md §Sensitive-change review panel): the client sets it to `true`
-     * when submitting a sensitive delta through the review panel. Absent or
+     * The invalidation acknowledgement ({@link CONFIRM_INVALIDATION_FIELD}):
+     * the client sets it to `true` when submitting a sensitive delta through
+     * the review panel. Absent or
      * `false` against a sensitive delta is the 409
      * `confirmation_required` rejection — nothing is applied; against a
      * non-sensitive edit it is irrelevant and ignored. Not stored: it is
@@ -405,12 +405,12 @@ export type ProviderUpdateRequest = z.infer<typeof ProviderUpdateRequestSchema>;
  * `SecretStore.seal()` produces (a dev AES-GCM envelope or a Key Vault
  * reference), never plaintext. The portal seals at create/rotate; egress
  * opens to build the vendor OAuth client; no read or export ever returns
- * either (criteria 3, 11). Sealing the identity half too costs one extra
+ * either. Sealing the identity half too costs one extra
  * vault open per provider revision and keeps "no plaintext credential on
  * the row" true without an exception for an identifier.
  *
  * `revision` starts at 1 and advances on every sensitive mutation and
- * deletion (ADR-0004) — one field serving admin concurrency, cache
+ * deletion — one field serving admin concurrency, cache
  * invalidation, and consent staleness.
  *
  * The defaulted editable fields are re-declared **required** here, as the
@@ -442,7 +442,7 @@ export type ConnectionProvider = z.infer<typeof ConnectionProviderSchema>;
 /**
  * What management reads return about a provider — the row with **every
  * credential field removed**, structurally, so "no client credentials in a
- * read" (criterion 3) cannot drift into "returned empty": the fields do not
+ * read" cannot drift into "returned empty": the fields do not
  * exist on this shape at all.
  */
 export const ProviderMetadataSchema = ConnectionProviderSchema.omit({
@@ -453,11 +453,11 @@ export type ProviderMetadata = z.infer<typeof ProviderMetadataSchema>;
 
 /**
  * The admin providers-list response. `callbackUrl` is the fixed OAuth callback
- * an administrator registers with the vendor (design.md §Fixed callback
- * visibility, criterion 2), served at runtime beside the rows — derived by the
+ * an administrator registers with the vendor, served at runtime beside the
+ * rows — derived by the
  * portal from the apps base by the reserved-subdomain convention, never a
- * build-time variable and never a second auth-base config field (architecture
- * ADR-0001 §Implementation Notes). One value per deployment, not per row.
+ * build-time variable and never a second auth-base config field. One value
+ * per deployment, not per row.
  */
 export const ProviderListResponseSchema = z.strictObject({
   callbackUrl: z.url(),
@@ -467,7 +467,7 @@ export type ProviderListResponse = z.infer<typeof ProviderListResponseSchema>;
 
 /**
  * The import/export document: one provider's credential-free configuration
- * as `{version, provider}` (criterion 11). The version is a literal — a
+ * as `{version, provider}`. The version is a literal — a
  * future format is a new literal and a new parser, so importing a document
  * this code cannot understand fails closed instead of silently dropping the
  * fields it does not recognize.
@@ -484,10 +484,10 @@ export type ProviderExportDocument = z.infer<typeof ProviderExportDocumentSchema
 
 /**
  * One entry of the catalogue's `fetch.providers` list — the discovery
- * surface app authors bind against (criterion 3; Q16). Metadata only: never
+ * surface app authors bind against. Metadata only: never
  * a client credential, a token, or an endpoint. Raw env-pinned rows (a
  * provider configured in both environments appears twice); consumers join by
- * `ref`, which is why the ref is here and an `id` is not (ADR-0004).
+ * `ref`, which is why the ref is here and an `id` is not.
  */
 export const CatalogueProviderSchema = z.strictObject({
   ref: ProviderRefSchema,
@@ -499,15 +499,15 @@ export const CatalogueProviderSchema = z.strictObject({
 export type CatalogueProvider = z.infer<typeof CatalogueProviderSchema>;
 
 /**
- * The fields whose change is a **sensitive** provider edit (criterion 6):
+ * The fields whose change is a **sensitive** provider edit:
  * every one of them invalidates existing connections and pending consent
- * attempts, blocks affected app bindings, and advances the revision
- * (ADR-0004). Display name and client-secret rotation are deliberately
+ * attempts, blocks affected app bindings, and advances the revision.
+ * Display name and client-secret rotation are deliberately
  * absent — they preserve connections and approvals.
  *
  * The single definition the edit route's delta detection, the import path's
  * preview diff, and the invalidation transaction must all consume; none
- * restates it (ADR-0004 §Shared ground).
+ * restates it.
  *
  * `clientId` is detected by **presence in the update request**, not by
  * comparing values: the stored identity is sealed material no read returns,
@@ -528,17 +528,16 @@ export type SensitiveProviderField = (typeof SENSITIVE_PROVIDER_FIELDS)[number];
 
 /**
  * The wire name of the invalidation acknowledgement, on both the edit and the
- * delete request (design.md §Sensitive-change review panel; the PUT/DELETE
- * rows in §Portal API endpoints): the field a client sets to `true` when
- * submitting through the review panel. One name — the import path (T-0011)
- * and the SPA's panel (T-0026) send the same field the form does.
+ * delete request: the field a client sets to `true` when
+ * submitting through the review panel. One name — the import path
+ * and the SPA's panel send the same field the form does.
  */
 export const CONFIRM_INVALIDATION_FIELD = "confirmInvalidation";
 
 export const SensitiveProviderFieldSchema = z.enum(SENSITIVE_PROVIDER_FIELDS);
 
 /**
- * The fields an import preview can diff (criterion 12) — the editable
+ * The fields an import preview can diff — the editable
  * configuration minus the credential replaces, i.e. exactly what an export
  * document carries. The SPA renders one line per entry; the sensitive subset
  * of these is what {@link SENSITIVE_PROVIDER_FIELDS} names, so a field the
@@ -556,8 +555,8 @@ export const ProviderDiffFieldSchema = z.enum(PROVIDER_DIFF_FIELDS);
 export type ProviderDiffField = z.infer<typeof ProviderDiffFieldSchema>;
 
 /**
- * `POST /api/v1/providers/import/preview` body (T-0011) — parse, validate,
- * propose; never apply (criterion 12). The `document` parses against the same
+ * `POST /api/v1/providers/import/preview` body — parse, validate,
+ * propose; never apply. The `document` parses against the same
  * {@link ProviderExportDocumentSchema} the export route emits, so a preview
  * validates exactly what an export can produce and the round-trip cannot gain
  * a field.
@@ -566,8 +565,8 @@ export type ProviderDiffField = z.infer<typeof ProviderDiffFieldSchema>;
  * call — parsed fields or blocking errors, before a mode is chosen. The
  * cross-field consistency (create needs `env` and refuses `targetId`; update
  * needs the explicit `targetId` — a name collision never silently selects an
- * update target (criterion 12) — and refuses `env`, for a provider never
- * moves between environments, criterion 5) is the route's 400, not a schema
+ * update target — and refuses `env`, for a provider never
+ * moves between environments) is the route's 400, not a schema
  * refinement, so the refusal carries one readable message instead of a union
  * of issues and the narrowed fields stay typed.
  */
@@ -579,7 +578,7 @@ export const ProviderImportPreviewRequestSchema = z.strictObject({
 });
 export type ProviderImportPreviewRequest = z.infer<typeof ProviderImportPreviewRequestSchema>;
 
-/** An existing ref+env row a create-mode import would collide with (criterion 10's duplicate class), for the preview panel to surface before apply. */
+/** An existing ref+env row a create-mode import would collide with, for the preview panel to surface before apply. */
 export const ProviderImportCollisionSchema = z.strictObject({
   providerId: z.uuid(),
   ref: ProviderRefSchema,
@@ -616,7 +615,7 @@ export const ProviderImportPreviewDiffEntrySchema = z.strictObject({
 export type ProviderImportPreviewDiffEntry = z.infer<typeof ProviderImportPreviewDiffEntrySchema>;
 
 /**
- * The import preview's response, by mode (criterion 12's preview panel):
+ * The import preview's response, by mode:
  * `null` mode — the document parsed, nothing proposed yet; `create` — the
  * proposed create with the document's field values verbatim (credentials are
  * never in it; they are entered at apply) plus any ref+env collision;
@@ -643,9 +642,9 @@ export const ProviderImportPreviewResponseSchema = z.discriminatedUnion("mode", 
 export type ProviderImportPreviewResponse = z.infer<typeof ProviderImportPreviewResponseSchema>;
 
 /**
- * `POST /api/v1/providers/import` body (T-0011) — the apply half, explicit
- * mode (criterion 12). Create requires credential entry — credentials are
- * never imported (criteria 5, 11), and this route is the one place credential
+ * `POST /api/v1/providers/import` body — the apply half, explicit
+ * mode. Create requires credential entry — credentials are
+ * never imported, and this route is the one place credential
  * input is accepted. Update names the administrator-selected target by id —
  * never resolved from the document's names — and carries the revision the
  * preview showed, the same optimistic-lock input a form edit's CAS consumes.
@@ -692,7 +691,7 @@ export type ProviderImportResponse = z.infer<typeof ProviderImportResponseSchema
 
 /**
  * What `GET /api/v1/providers/:id/impact` returns — the confirmation dialog's
- * blast radius (criterion 9): the apps bound to the provider, the number of
+ * blast radius: the apps bound to the provider, the number of
  * user connections, and the number of pending consent attempts, all of which
  * a confirmed sensitive edit or deletion invalidates.
  *
@@ -760,11 +759,10 @@ export const ProviderDeleteRequestSchema = z.strictObject({
 export type ProviderDeleteRequest = z.infer<typeof ProviderDeleteRequestSchema>;
 
 /**
- * `DELETE /api/v1/providers/:id` response (criterion 10's distinguishable
- * outcomes): `deleted` when this call removed the row, `already_removed` when
+ * `DELETE /api/v1/providers/:id` response — distinguishable
+ * outcomes: `deleted` when this call removed the row, `already_removed` when
  * the id was removed earlier — a repeat that must never touch a replacement
- * provider recreated under the same ref (the surrogate `id` comparison,
- * ADR-0004).
+ * provider recreated under the same ref (the surrogate `id` comparison).
  */
 export const ProviderDeleteResponseSchema = z.strictObject({
   outcome: z.enum(["deleted", "already_removed"]),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FETCH_ERROR_CODES, FetchErrorCodeSchema, FetchProxyErrorSchema } from "./fetch.js";
 
-/** The pre-I-02 vocabulary, in order — the widening may not disturb it. */
+/** The pre-delegation vocabulary, in order — the widening may not disturb it. */
 const LEGACY_CODES = [
   "forbidden",
   "rate_limited",

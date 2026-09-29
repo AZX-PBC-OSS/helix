@@ -193,7 +193,7 @@ describe("/_api/fetch", () => {
     expect(claims.origin).toBe("https://api.github.com");
     expect(claims.connection).toBeUndefined();
     expect(claims.userOid).toBe("anon");
-    // Regression (T-0023): a keyless call is not delegated — no provider ref
+    // Regression: a keyless call is not delegated — no provider ref
     // and no caller kind rides it, so the minted payload is unchanged.
     expect(claims.provider).toBeUndefined();
     expect(claims.userKind).toBeUndefined();
@@ -223,7 +223,7 @@ describe("/_api/fetch", () => {
     expect(res.statusCode).toBe(200);
     const claims = await decode(egress.calls[0]!.instruction);
     expect(claims.connection).toBe("stripe");
-    // Regression (T-0023): a secret-backed call is not delegated — no provider
+    // Regression: a secret-backed call is not delegated — no provider
     // ref and no caller kind rides it, so the minted payload is unchanged.
     expect(claims.provider).toBeUndefined();
     expect(claims.userKind).toBeUndefined();
@@ -231,12 +231,12 @@ describe("/_api/fetch", () => {
   });
 
   /**
-   * Delegated origins (I-02 T-0023): a provider-bound origin passes the same
+   * Delegated origins: a provider-bound origin passes the same
    * allowlist gate a secret-bound one does — the gate ORDER is unchanged — and
    * the minted instruction carries the provider ref (never a connection name)
-   * plus the caller's principal kind, which T-0022 makes mandatory on a
+   * plus the caller's principal kind, which is mandatory on a
    * delegated instruction. The egress outcome vocabulary's delegated words
-   * ledger per design.md decision 13.
+   * ledger per the outcome map's granularity.
    */
   describe("delegated origins", () => {
     /** One provider-bound origin, as an approved binding projects it. */
@@ -258,17 +258,17 @@ describe("/_api/fetch", () => {
       expect(egress.calls).toHaveLength(1);
       const claims = await decode(egress.calls[0]!.instruction);
       expect(claims.provider).toBe("github-app");
-      // Exactly one credential source rides (ADR-0005's XOR) — and the edge
+      // Exactly one credential source rides — and the edge
       // holds no secret for this origin to name anyway.
       expect(claims.connection).toBeUndefined();
-      // T-0022: the caller's kind is mandatory on a delegated instruction.
+      // The caller's kind is mandatory on a delegated instruction.
       // This caller is the public app's anonymous visitor — egress refuses it
-      // BY KIND (Q9), so the edge must attest `anon`, never leave egress to
+      // BY KIND, so the edge must attest `anon`, never leave egress to
       // infer it from userOid's shape.
       expect(claims.userKind).toBe("anon");
       expect(claims.userOid).toBe("anon");
       // Delegated calls ride the existing metering and identity attribution
-      // unchanged (Q15) — no new user-dimension machinery.
+      // unchanged — no new user-dimension machinery.
       expect(usage.records).toContainEqual(
         expect.objectContaining({
           capability: "fetch",
@@ -284,7 +284,7 @@ describe("/_api/fetch", () => {
     it("refuses an unapproved binding by the existing forbidden path", async () => {
       // An unapproved binding never reaches the projection's grant map — the
       // portal's approval chain gates the manifest before it becomes effective
-      // (ADR-0004: the edge never evaluates provider state; approval/binding
+      // (the edge never evaluates provider state; approval/binding
       // presence is all it sees, never liveness). The origin is simply not a
       // proxied origin here, so exactly the non-granted path answers.
       const { app, egress, usage } = buildFetchEdge({ connections: delegatedConnections() });
@@ -329,7 +329,7 @@ describe("/_api/fetch", () => {
     });
 
     it("ledgers provider-shaped refusals as refusal and temporary failure as error", async () => {
-      // design.md decision 13's granularity: only `connection_required` gets a
+      // The ledger's outcome granularity: only `connection_required` gets a
       // label of its own; `provider_unavailable` / `provider_misconfigured`
       // meter as `refusal`; a temporary failure meters as `error`.
       const { app, egress, usage } = buildFetchEdge({ connections: delegatedConnections() });

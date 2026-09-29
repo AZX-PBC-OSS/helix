@@ -28,11 +28,11 @@ import { makePinnedDispatcher } from "./ssrf.js";
 import { EGRESS_SPAN_ATTRS } from "./spanAttributes.js";
 
 /**
- * The renewal operation (I-02 T-0021, ADR-0007) against the REAL test database
- * (the `helix_egress` grants of ADR-0006 part 2 and the RLS policies of the
- * connection-substrate migration) and the REAL fixture vendor (ADR-0010).
+ * The renewal operation (ADR-0031 decision 15) against the REAL test database
+ * (the `helix_egress` grants and the RLS policies of the
+ * connection-substrate migration) and the REAL fixture vendor.
  *
- * The center of gravity is criterion 36's cross-instance invariant: concurrent
+ * The center of gravity is the cross-instance invariant: concurrent
  * renewals driven across independently constructed renewers — each with its own
  * pool, its own custody store, its own pinned transport: two instances of the
  * mechanism plane by every observable measure — against ONE database and ONE
@@ -444,7 +444,7 @@ describe("renewal — the happy path, both rotation modes", () => {
   });
 });
 
-describe("renewal — cross-instance single-flight (criterion 36)", () => {
+describe("renewal — cross-instance single-flight", () => {
   it("three independently constructed renewers, one vendor: exactly one refresh presentation", async () => {
     if (!ok) return; // role not provisioned — skip
     const provider = await makeProvider();
@@ -582,7 +582,7 @@ describe("renewal — distinct keys do not share results", () => {
   });
 });
 
-describe("renewal — the failure taxonomy (criteria 37–39, decision 29)", () => {
+describe("renewal — the failure taxonomy", () => {
   it("uncertain rotation: reconnect-needed, and the old token is never re-presented", async () => {
     if (!ok) return; // role not provisioned — skip
     const provider = await makeProvider();
@@ -785,7 +785,7 @@ describe("renewal — the failure taxonomy (criteria 37–39, decision 29)", () 
   });
 });
 
-describe("renewal — the advisory lock (ADR-0007)", () => {
+describe("renewal — the advisory lock", () => {
   it("a holder of the EXPORTED lock key bounded-blocks a renewal into temporary failure", async () => {
     if (!ok) return; // role not provisioned — skip
     const provider = await makeProvider();

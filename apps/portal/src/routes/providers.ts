@@ -77,8 +77,7 @@ const sortedCopy = (values: string[]): string[] => [...values].sort();
 
 /**
  * The sensitive fields the update request would change — the edit route's
- * half of `SENSITIVE_PROVIDER_FIELDS`' single definition (ADR-0004 §Shared
- * ground): `clientId` by **presence** in the request (the stored identity is
+ * half of `SENSITIVE_PROVIDER_FIELDS`' single definition: `clientId` by **presence** in the request (the stored identity is
  * sealed material no read returns), every other field by comparing the stored
  * row against the parsed request. Array fields compare as sets — scope and
  * destination order carries no meaning, and letting a reordering manufacture
@@ -136,7 +135,7 @@ function importUpdateRequest(
 }
 
 /**
- * The import preview's full diff (criterion 12): every editable field whose
+ * The import preview's full diff: every editable field whose
  * imported value differs from the target's, one line each. The comparisons
  * are the sensitive-delta's — set-compared arrays, identity placement
  * serialization — so a field absent here can never turn sensitive at apply,
@@ -195,14 +194,15 @@ function previewDiff(
 }
 
 /**
- * The connection invalidation, as ONE UPDATE (ADR-0008's rule): the status
+ * The connection invalidation, as ONE UPDATE (ADR-0031 amendment item 12):
+ * the status
  * flip to `invalidated` and the retirement-ledger mark — the row's own sealed
- * material, for the egress sweep (T-0025) to destroy — commit together, never
+ * material, for the egress sweep to destroy — commit together, never
  * as separate steps. Scoped to this provider id and its env partition; rows
  * already invalidated are tombstones, not impact. Bounded residual in the
  * ledger's single field: a row with a retirement already pending (an egress
  * rotation racing this write) loses the older reference from the ledger —
- * the same accepted residual class as ADR-0008's seal→write window.
+ * the same accepted residual class as the seal→write window.
  */
 function invalidateConnections(
   tx: Prisma.TransactionClient,
@@ -235,7 +235,7 @@ function killPendingAttempts(
 }
 
 /**
- * The confirmation dialog's blast radius (criterion 9): the apps bound to the
+ * The confirmation dialog's blast radius: the apps bound to the
  * provider's ref in their effective manifests, the not-yet-invalidated
  * connection count, and the still-claimable pending-attempt count. Served by
  * `GET …/impact` and carried in the `confirmation_required` rejection, so the
@@ -243,7 +243,7 @@ function killPendingAttempts(
  */
 async function providerImpact(prisma: PrismaClient, row: ProviderRow): Promise<ProviderImpact> {
   const [boundApps, connections, pendingAttempts] = await Promise.all([
-    // The manifest binding is a ref (ADR-0004 — manifests never carry ids), so
+    // The manifest binding is a ref (manifests never carry ids), so
     // the bound set is the apps whose capabilities JSON declares a
     // provider-bound origin with this ref. Containment against a one-element
     // candidate array matches any origin element carrying the provider key.
@@ -296,37 +296,37 @@ async function removedProviderEventExists(prisma: PrismaClient, id: string): Pro
 }
 
 /**
- * Connection-provider CRUD (I-02, spec §Provider administration criteria 1–10)
- * — the administrator's vendor OAuth registrations. Admin-direct and audited
- * like global secrets (clarifications Q14); every route gates on
- * `requireAdmin`, including the management reads (criterion 2).
+ * Connection-provider CRUD — the administrator's vendor OAuth registrations.
+ * Admin-direct and audited
+ * like global secrets; every route gates on
+ * `requireAdmin`, including the management reads.
  *
  * **Metadata-only reads**: a client's credentials cross the API boundary only
  * on create and edit, sealed by the {@link SecretStore} onto the row
- * (ADR-0006 part 1 — the portal is the kv-connections Officer, egress opens),
+ * (the portal is the kv-connections Officer, egress opens),
  * and `toMetadata` maps every response through `ProviderMetadataSchema`,
  * whose shape structurally omits both material fields. There is no route that
  * reads them back.
  *
- * **Concurrency**: the edit CASes on the loaded `revision` (ADR-0004) and —
+ * **Concurrency**: the edit CASes on the loaded `revision` and —
  * for an edit that supplies credentials — on the row's current sealed
  * material, the `rotateOrRelease` pattern: two concurrent rotations cannot
  * both land, and the loser's just-sealed material is released rather than
  * stranded live in the vault.
  *
- * **Sensitive edits and deletion (T-0010)**: a delta over
+ * **Sensitive edits and deletion**: a delta over
  * `SENSITIVE_PROVIDER_FIELDS` is refused with 409 `confirmation_required`
  * (carrying the impact payload) until the request carries the
  * `CONFIRM_INVALIDATION_FIELD` acknowledgement; with it — and for every
  * acknowledged deletion — the revision bump, the connection invalidations
- * (status + the ADR-0008 retirement-ledger mark in one UPDATE), the
- * pending-attempt kills, and the removal all commit as **one transaction**
- * (ADR-0004 §Implementation Notes). The vault is never inside that boundary:
+ * (status + the retirement-ledger mark in one UPDATE), the
+ * pending-attempt kills, and the removal all commit as **one transaction**.
+ * The vault is never inside that boundary:
  * credentials are sealed before it and released after it, so an interrupted
  * mutation leaves revision, connections, and attempts exactly as before
- * (criterion 10) and strands nothing.
+ * and strands nothing.
  *
- * **Import and export (T-0011)**: the export is a credential-free read of one
+ * **Import and export**: the export is a credential-free read of one
  * provider's editable configuration against the shared document schema — a
  * failed or drifted read is an export failure, never a partial file, and
  * repeating it changes nothing. Import applies one document with an explicit
@@ -342,9 +342,9 @@ async function removedProviderEventExists(prisma: PrismaClient, id: string): Pro
 export async function providerRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Provider bodies reject with **422**, not the portal's generic zod-path
-   * 400: design.md §Portal API endpoints fixes the status, and the SPA's
-   * edit form renders the issues inline on the inputs (criterion 1's
-   * field-level errors).
+   * 400: the SPA's
+   * edit form renders the issues inline on the inputs
+   * (field-level errors).
    */
   const parseBody = <S extends z.ZodType>(schema: S, body: unknown): z.output<S> => {
     const result = schema.safeParse(body);
@@ -360,9 +360,8 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
   };
 
   /**
-   * The import preview's parse (T-0011) rejects with **400**, not the module's
-   * 422: design.md §Portal API endpoints fixes "400 malformed" for the
-   * preview — its job is telling the SPA a picked file is not a provider
+   * The import preview's parse rejects with **400**, not the module's
+   * 422 — its job is telling the SPA a picked file is not a provider
    * export, a request-shape mistake, while the apply route below keeps the
    * create/PUT convention (422, field errors render on form inputs). The zod
    * issues ride `details` either way.
@@ -415,11 +414,11 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     });
 
   /**
-   * The export document (T-0011), from the stored row — field-by-field like
+   * The export document, from the stored row — field-by-field like
    * `toMetadata`, never a spread, so a future credential column cannot ride
    * into the one artifact administrators move between deployments. A row that
    * fails the shared document schema is a data-integrity failure: reported as
-   * an internal export failure (criterion 11 — a failed read is never a
+   * an internal export failure (a failed read is never a
    * successful partial export), issues logged, never echoed.
    */
   const toExportDocument = (row: ProviderRow): ProviderExportDocument => {
@@ -518,11 +517,11 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * The create path the form route and the import's create mode (T-0011)
+   * The create path the form route and the import's create mode
    * share: seal both credentials, land the row, and on any failure release
    * what was sealed — nothing strands an unreferenced vault entry. The 409
-   * maps the ref+env uniqueness violation, naming the conflict (criterion
-   * 10's duplicate class).
+   * maps the ref+env uniqueness violation, naming the conflict
+   * (the duplicate class).
    */
   const sealAndCreateProvider = async (
     actor: Actor,
@@ -596,7 +595,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: authenticate },
     async (req) => {
       const actor = requireAdmin(req);
-      // The read is the export's failure surface (criterion 11): an unknown id
+      // The read is the export's failure surface: an unknown id
       // is a 404, a failed or drifted read a 5xx — never a successful partial
       // document the SPA could save as if it were the provider's configuration.
       const row = await app.prisma.connectionProvider.findUnique({
@@ -618,7 +617,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
   );
 
   /**
-   * The edit path the form route and the import's update mode (T-0011) share:
+   * The edit path the form route and the import's update mode share:
    * the sensitive-delta detection, the `confirmation_required` gate, the
    * sealed-credential CAS, the one all-or-nothing transaction, and the
    * releases. The audit action is the caller's — `provider.updated` for the
@@ -677,8 +676,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
         : []),
     ];
 
-    // The mutation itself, all-or-nothing (ADR-0004 §Implementation Notes;
-    // criterion 10): the CAS'd settings write — with the revision bump when
+    // The mutation itself, all-or-nothing: the CAS'd settings write — with the revision bump when
     // the delta is sensitive — plus the connection and attempt
     // invalidations, in one transaction. An interrupted edit leaves
     // revision, connections, and attempts exactly as before, and nothing
@@ -711,8 +709,8 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
             tokenPlacement: body.tokenPlacement,
             ...(clientIdMaterial !== null ? { clientIdMaterial } : {}),
             ...(clientSecretMaterial !== null ? { clientSecretMaterial } : {}),
-            // Only a sensitive mutation advances the revision (ADR-0004) —
-            // the bump IS the binding block: T-0009's
+            // Only a sensitive mutation advances the revision —
+            // the bump IS the binding block:
             // isProviderBindingEffective turns false for every stamp filed
             // against the old revision, which is what the manifest read's
             // reapproval-needed badge and the consult's not_available
@@ -824,7 +822,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
       if (body.targetId !== undefined) {
         throw malformed("a create-mode proposal targets nothing — drop targetId");
       }
-      // The collision preview (design.md §Import/export): an existing ref+env
+      // The collision preview: an existing ref+env
       // row is surfaced here, before apply — a collision never becomes an
       // implicit update; the administrator switches modes or environments.
       const existing = await app.prisma.connectionProvider.findUnique({
@@ -878,7 +876,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     if (body.mode === "create") {
       // The document supplies the configuration, the request the partition and
       // the required credentials — the only place credential input is accepted
-      // on this surface (criteria 5, 12).
+      // on this surface.
       const row = await sealAndCreateProvider(actor, {
         ...body.document.provider,
         env: body.env,
@@ -937,7 +935,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
         where: { id: req.params.id },
       });
       if (!row) {
-        // Distinguishable repeat (criterion 10): the id this call names was
+        // Distinguishable repeat: the id this call names was
         // removed here — answered from the audit event, never from a ref
         // match, so a replacement provider recreated under the same ref (a new
         // surrogate id) is untouched by an old id's repeat deletion.
@@ -960,8 +958,8 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
 
       const boundApps = (await providerImpact(app.prisma, row)).boundApps.length;
       await app.prisma.$transaction(async (tx) => {
-        // The invalidations, the removal, and the audit row: one transaction
-        // (criterion 10's all-or-nothing). The audit row is what a repeat
+        // The invalidations, the removal, and the audit row: one transaction,
+        // all-or-nothing. The audit row is what a repeat
         // deletion is answered from, so it commits with the removal or not at
         // all.
         const invalidatedConnections = await invalidateConnections(tx, row);
@@ -977,7 +975,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
             appId: null,
             actor: actor.sub,
             action: "provider.deleted",
-            // Bounded metadata (design.md §Operator-visible signals): refs,
+            // Bounded metadata: refs,
             // env, ids, and counts — never a credential, sealed material, or
             // endpoint URL.
             metadata: {

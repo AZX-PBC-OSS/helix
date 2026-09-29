@@ -2,8 +2,8 @@ import { test, expect, openAppAndConnect, waitForResult } from "./lane.js";
 import type { ConnectResult } from "@azx-pbc/shared";
 
 /**
- * The My Connections user path, browser-proven (I-02 T-0031, criterion 43's
- * user-path proof): the connection the app journey created is disconnected
+ * The My Connections user path, browser-proven: the connection the app
+ * journey created is disconnected
  * through the REAL My Connections page — the built portal SPA, a real OIDC
  * login through the dev IdP, the real confirm dialog — and the next delegated
  * call from the app page answers `connection_required` in the browser.
@@ -13,7 +13,7 @@ function resultOf(line: string): ConnectResult {
   return JSON.parse(line.slice(line.indexOf(":") + 1)) as ConnectResult;
 }
 
-test("disconnect through the real My Connections page — the next delegated call answers connection_required (criterion 43)", async ({
+test("disconnect through the real My Connections page — the next delegated call answers connection_required", async ({
   page,
   fx,
   world,
@@ -50,7 +50,7 @@ test("disconnect through the real My Connections page — the next delegated cal
   await expect(thisCard).toBeVisible();
   await expect(thisCard.getByText("Prod")).toBeVisible();
 
-  // 3 — disconnect, with the real confirmation dialog (criterion 43: explains
+  // 3 — disconnect, with the real confirmation dialog (it explains
   // the blast radius, requires confirmation).
   await thisCard.getByRole("button", { name: "Disconnect" }).click();
   const dialog = portal.getByRole("dialog");

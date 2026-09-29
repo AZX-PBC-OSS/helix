@@ -3,19 +3,19 @@ import { ConnectOutcomeMessageSchema, type ConnectOutcomeMessage } from "@azx-pb
 import { AUTH_PAGE_CSP, renderAuthPage } from "./authChrome.js";
 
 /**
- * The consent popup's platform-rendered pages (I-02 design.md §Consent popup
- * pages). On the edge these are the four PRE-vendor terminal states the start
+ * The consent popup's platform-rendered pages. On the edge these are the four
+ * PRE-vendor terminal states the start
  * route answers — sign-in required, already connected, not available, couldn't
  * start — every one rendered in the shared auth chrome. Each page posts the
  * app-facing outcome message to its opener, then offers a real Close button;
- * only the callback's completion pages (portal-side, T-0020) auto-close.
+ * only the callback's completion pages (portal-side) auto-close.
  *
  * The message's target origin is a contract value, not a choice made here:
- * design.md §Completion message binds start-route pages to **the app's own
+ * start-route pages bind to **the app's own
  * host** — the same origin the start route's navigation guard just verified —
  * because these terminal pages precede any pending attempt whose recorded
  * opener origin a later page would use. Receivers still verify `event.origin`
- * against their baked-in platform origins (criterion 28).
+ * against their baked-in platform origins.
  *
  * Script posture: the chrome's CSP allows no scripts (`default-src 'none'`),
  * so these pages carry their own CSP that adds `script-src 'unsafe-inline'`.
@@ -68,7 +68,7 @@ const CLOSE_AND_POST_SCRIPT = `
 `;
 
 /**
- * Render one terminal consent page: the design's content in the shared chrome,
+ * Render one terminal consent page: the designed content in the shared chrome,
  * the outcome message embedded for the inline script, and the Close button.
  * The message is parsed through the shared schema before embedding — a
  * producer that cannot build a valid message fails loudly here rather than
@@ -80,7 +80,7 @@ export function renderConsentTerminalPage(opts: {
   sub: string;
   /** The outcome message this page posts to the opener before closing. */
   message: ConnectOutcomeMessage;
-  /** The exact `postMessage` target origin (design.md §Completion message). */
+  /** The exact `postMessage` target origin. */
   targetOrigin: string;
 }): string {
   // Parse (not cast): the schema is the boundary; the inline script embeds

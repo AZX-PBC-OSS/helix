@@ -13,20 +13,20 @@ import { egressSpanAttributes } from "./spanAttributes.js";
 import { instruments, tracer } from "./telemetry.js";
 
 /**
- * The credential-retirement sweep (I-02 T-0025, ADR-0008): the consumer of the
+ * The credential-retirement sweep (ADR-0031 amendment item 12): the consumer of the
  * in-row retirement ledger every writer marks. Whoever swaps or invalidates
  * delegated material writes the old sealed reference into the row's
- * `pendingRetire` field IN the same UPDATE as the swap (T-0010, T-0020, T-0021,
- * T-0024) — this sweep destroys what those marks name and clears the field,
- * well inside criterion 47's 15-minute recovery bound (the cadence is a config
+ * `pendingRetire` field IN the same UPDATE as the swap — this sweep destroys
+ * what those marks name and clears the field, well inside the 15-minute
+ * recovery bound (the cadence is a config
  * knob, `EGRESS_RETIRE_SWEEP_INTERVAL_MS`, default one minute).
  *
  * The vault cannot be enumerated through the SecretStore seam (seal/open/
- * destroy only — ADR-0008 §Alternatives considered rejected adding one), so the
+ * destroy only — a rejected alternative proposed adding one), so the
  * ledger in the row is the ONLY record of what needs destroying; nothing here
  * scans the vault, and no list method is added to the store.
  *
- * Per entry, in ADR-0008 §Decision's order:
+ * Per entry, in the decided order:
  *
  * 1. **Read** — rows with a `pendingRetire` mark (SELECT; `helix_egress` has
  *    SELECT on `user_connections`).
@@ -35,8 +35,8 @@ import { instruments, tracer } from "./telemetry.js";
  *    Only a successful claim (rowcount 1) proceeds. This is the conditional
  *    re-check that makes a reconnect racing the sweep safe: a writer that
  *    re-purposed the single-slot ledger between the read and the claim wins,
- *    the claim loses, and no destroy fires for anything the row now names
- *    (criterion 48) — the writer's own mark is consumed by a later pass.
+ *    the claim loses, and no destroy fires for anything the row now names —
+ *    the writer's own mark is consumed by a later pass.
  * 3. **Destroy** — both references of the claimed envelope, through the
  *    delegated store. The claim ordering is deliberate and load-bearing:
  *    claim-first means each ledger mark is destroyed AT MOST ONCE across
@@ -44,15 +44,15 @@ import { instruments, tracer } from "./telemetry.js";
  *    retriable by RESTORING the mark — conditionally (`WHERE "pendingRetire"
  *    IS NULL`), so a writer that took the slot in the meantime keeps its own
  *    reference and the restore never clobbers it. Retry is therefore
- *    unconditional on the next pass, never manual (criterion 47).
+ *    unconditional on the next pass, never manual.
  *
- * The accepted residual (ADR-0008): a crash inside the sub-second claim→destroy
+ * The accepted residual: a crash inside the sub-second claim→destroy
  * window strands the claimed reference unmarked — the same single-slot class
  * the writers already accept; the reference has no use path (the row is dead
  * or holds newer material) and cannot be found by any scan, which is exactly
  * why the sweep exists to consume marks promptly rather than hold them.
  *
- * The destroy is never held against a checked-out DB client (ADR-0007's
+ * The destroy is never held against a checked-out DB client (the
  * rejected lock-across-network-call shape): every statement here is a short
  * pooled query, so a slow vault call pins nothing. The sweep runs on an
  * unref'd interval (the burn-sweep precedent) that never stacks passes — a
@@ -77,7 +77,7 @@ export interface RetirementSweepLogger {
 export interface CredentialRetirementSweepDeps {
   /** The `helix_egress` pool (the delegated resolution/renewal pool). */
   pool: Pool;
-  /** The delegated-custody store — the ONLY destroy path (ADR-0006 part 1). */
+  /** The delegated-custody store — the ONLY destroy path. */
   delegatedStore: SecretStore;
   /** Sweep cadence, ms — config `EGRESS_RETIRE_SWEEP_INTERVAL_MS`. */
   intervalMs: number;
@@ -151,7 +151,7 @@ export class CredentialRetirementSweep {
    * One pass. Never rejects — every failure is bounded into the pass span's
    * outcome, the retirement counter, and the fixed warn event, because a
    * background loop that throws into the void (or into an unhandled
-   * rejection) is exactly the failure criterion 47 wants visible instead.
+   * rejection) is exactly the failure that must be made visible instead.
    */
   async sweepOnce(): Promise<void> {
     const span = tracer.startSpan(SPAN_EGRESS_RETIRE, { kind: SpanKind.INTERNAL });
@@ -181,13 +181,13 @@ export class CredentialRetirementSweep {
     }
   }
 
-  /** Claim → destroy one ledger entry. Never throws (ADR-0008's flow, in order). */
+  /** Claim → destroy one ledger entry. Never throws (the decided flow, in order). */
   async #retireOne(row: PendingRetireRow): Promise<void> {
     const env: Env = row.env === "dev" ? "dev" : "prod";
-    // THE CLAIM — the conditional re-check (ADR-0008): clear the mark only
+    // THE CLAIM — the conditional re-check: clear the mark only
     // while it still holds exactly the reference this pass read. A writer that
     // swapped material and re-marked the row in between makes this match zero
-    // rows, and the sweep destroys nothing for it (criterion 48).
+    // rows, and the sweep destroys nothing for it.
     const claim = await this.#pool.query(
       `UPDATE user_connections SET "pendingRetire" = NULL
         WHERE id = $1::uuid AND "pendingRetire" = $2`,
@@ -221,7 +221,7 @@ export class CredentialRetirementSweep {
    * reference there, and clobbering it would strand that writer's mark; if
    * the writer re-marked the SAME reference (a reconnect re-marks the row's
    * pre-swap material), the mark already reads what we would restore. Either
-   * way the next pass retries without manual intervention (criterion 47) —
+   * way the next pass retries without manual intervention —
    * unless the slot was taken, which is the ledger's accepted single-slot
    * residual and is said at the same fixed event, distinguished by `reason`.
    */
@@ -244,7 +244,7 @@ export class CredentialRetirementSweep {
   }
 
   /**
-   * The fixed failure event (design.md §Operator-visible signals). Bounded
+   * The fixed failure event. Bounded
    * metadata only — connection id, providerRef, env — and no reason to ever
    * name the material: the destroy error text can embed credential material,
    * so nothing about it is logged, spanned, or counted beyond the outcome word.

@@ -183,10 +183,10 @@ const instructionKey = config.fetch.instructionSecret
   ? deriveInstructionKey(config.fetch.instructionSecret)
   : null;
 
-// The auth-host `/connections/*` reverse proxy (I-02 ADR-0002 part 3): the
+// The auth-host `/connections/*` reverse proxy: the
 // consent surface is portal-rendered but auth-host-terminated, so the edge
 // forwards it over the internal PortalProvider seam, authorized per call by a
-// minted internal JWT (T-0006 — the key is config.internalSecret). Enabled
+// minted internal JWT (the key is config.internalSecret). Enabled
 // only when the portal URL is present; otherwise the surface 503s
 // (fail-closed, like egress).
 const portal: PortalProvider | null = config.portalUrl

@@ -56,8 +56,7 @@ export function appPublicUrl(slug: string, env: NodeJS.ProcessEnv = process.env)
 }
 
 /**
- * The fixed OAuth callback URL an administrator registers with the vendor
- * (spec criterion 2, design.md §Fixed callback visibility):
+ * The fixed OAuth callback URL an administrator registers with the vendor:
  * `auth.<APP_PUBLIC_BASE host>` + {@link CONNECTIONS_CALLBACK_PATH} — the
  * reserved-subdomain convention the edge's host classifier routes to the auth
  * host (apps/edge/src/routing/hosts.ts, `classifyHost`). The edge's
@@ -66,8 +65,8 @@ export function appPublicUrl(slug: string, env: NodeJS.ProcessEnv = process.env)
  * convention REGISTRY_CHANNEL sets, sourced in @azx-pbc/shared).
  *
  * Derived, never configured: the edge owns the auth base as a single source,
- * and a second auth-base config field here could drift from it (architecture
- * ADR-0001 §Implementation Notes). Served at runtime through the providers
+ * and a second auth-base config field here could drift from it. Served at
+ * runtime through the providers
  * payload, never a build-time variable.
  */
 export function connectionsCallbackUrl(env: NodeJS.ProcessEnv = process.env): string {
@@ -109,7 +108,7 @@ export function resolvePlatformMonthlyUsdCap(env: NodeJS.ProcessEnv = process.en
 /**
  * Internal base URL of helix-egress (`PORTAL_EGRESS_URL`), or null when it is
  * not configured — the same opt-in posture as the edge's `EDGE_EGRESS_URL`.
- * The code-exchange delegation (I-02 architecture ADR-0001/0003: the callback
+ * The code-exchange delegation (the callback
  * delegates the vendor token exchange to the mechanism plane) rides this base;
  * null leaves the delegation unwired and the consuming route refuses rather
  * than degrades — a plausible-but-wrong URL is worse than a clear absence.

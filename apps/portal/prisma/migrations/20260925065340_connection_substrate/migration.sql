@@ -1,5 +1,5 @@
--- T-0007 (I-02) — the connection data substrate, in ONE migration so no partial
--- state can exist (explore.md §Gaps): the provider catalog, the per-user
+-- The connection data substrate, in ONE migration so no partial
+-- state can exist: the provider catalog, the per-user
 -- connections, and the control-plane-owned consent-flow table, plus the
 -- ADR-0006 part-2 grant block, the env-literal RLS partition (first commit),
 -- and ADR-0011's NOTIFY trigger.

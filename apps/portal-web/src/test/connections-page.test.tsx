@@ -6,9 +6,9 @@ import { renderWithProviders } from "./render";
 import { ConnectionsPage } from "../pages/ConnectionsPage";
 
 /**
- * My Connections (`/connections`, I-02 T-0024): the metadata card, the
- * disconnect confirmation contract (criteria 43, 45), the role="status"
- * announcement, the stale-kept-on-error posture, and criterion 46's refresh
+ * My Connections (`/connections`): the metadata card, the
+ * disconnect confirmation contract, the role="status"
+ * announcement, the stale-kept-on-error posture, and the refresh
  * cadence (30 s while visible, paused hidden, refreshed on return).
  */
 
@@ -207,7 +207,7 @@ describe("ConnectionsPage refresh failure", () => {
   });
 });
 
-describe("ConnectionsPage refresh cadence (criterion 46)", () => {
+describe("ConnectionsPage refresh cadence", () => {
   it("ticks every 30 s while visible, pauses while hidden, refetches on return", async () => {
     vi.useFakeTimers();
     const impl = stubFetch([connection()]);

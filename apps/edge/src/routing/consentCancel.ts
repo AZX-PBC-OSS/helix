@@ -28,10 +28,10 @@ import { usableSession } from "./consentStart.js";
 
 /**
  * `POST /_api/connections/attempt/cancel` — the connect helper's cancellation
- * acknowledgement (I-02 design.md §Consent journey; spec criterion 29). When
+ * acknowledgement. When
  * the popup closes without a completion message, only the opener-side helper
  * can see it (the rejected pagehide-beacon alternative), so the helper POSTs
- * here — session-gated, own-attempts-only — and this route wraps T-0012's
+ * here — session-gated, own-attempts-only — and this route wraps the
  * cancel operation over the same internal portal seam the consult rides.
  *
  * What identifies the attempt, and why the correlation lives here: the helper
@@ -40,8 +40,8 @@ import { usableSession } from "./consentStart.js";
  * never crosses the completion-message contract, so the start route learns the
  * tag→state pair in the one exchange where it sees both (the consult's
  * authorize URL) and records it in {@link AttemptCorrelations} — an
- * in-memory, TTL-bounded map. The edge stays grant-free on the flow table
- * (ADR-0006 part 2); this is a cache of values it already saw, not state.
+ * in-memory, TTL-bounded map. The edge stays grant-free on the flow table;
+ * this is a cache of values it already saw, not state.
  *
  * The accepted residual: the map is per replica, so a cancel landing on a
  * different replica than the start — or after a restart — finds nothing and
@@ -74,7 +74,7 @@ export interface CorrelatedAttempt {
 /**
  * The per-instance tag→state correlation. Insertion-capped and lazily pruned:
  * entries live at most one attempt TTL, and `takeIfOwn` is destructive (a
- * single-use acknowledgement — no replay, criterion 31).
+ * single-use acknowledgement — no replay).
  */
 export class AttemptCorrelations {
   #map = new Map<string, CorrelatedAttempt>();

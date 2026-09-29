@@ -2,7 +2,7 @@ import { type CustomFetch } from "openid-client";
 import { fetch as undiciFetch, type Agent } from "undici";
 
 /**
- * The exchange operation's transport adapter (I-02 ADR-0009): the one place
+ * The exchange operation's transport adapter: the one place
  * openid-client's HTTP traffic meets egress's transport policy. The library's
  * default is global `fetch`, which does NOT inherit the DNS-pinned connector —
  * this adapter binds every library call to the fetch-proxy's dispatcher, so

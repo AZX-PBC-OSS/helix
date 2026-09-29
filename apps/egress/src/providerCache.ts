@@ -1,8 +1,8 @@
 /**
- * The egress provider-config cache (I-02 ADR-0011): an in-memory snapshot of
+ * The egress provider-config cache: an in-memory snapshot of
  * the `connection_providers` table, loaded from Postgres with hand-written SQL
  * under the `helix_egress` role — which holds SELECT on that table and nothing
- * else about providers (ADR-0006 part 2). The listener reads, never writes.
+ * else about providers. The listener reads, never writes.
  *
  * Entries are the stored row parsed through `ConnectionProviderSchema` — the
  * one stored-row contract (including the sealed `clientIdMaterial` /
@@ -33,8 +33,8 @@ import { ConnectionProviderSchema, type ConnectionProvider, type Env } from "@az
 import { instruments, tracer } from "./telemetry.js";
 
 /**
- * The cache's read surface — the seam exchange (T-0019), renewal (T-0021),
- * resolution/availability (T-0022) and the delegated call path (T-0025)
+ * The cache's read surface — the seam exchange, renewal,
+ * resolution/availability and the delegated call path
  * consume. Every lookup is a synchronous in-memory map read: nothing here can
  * block the proxy hot path on the listener's health.
  */

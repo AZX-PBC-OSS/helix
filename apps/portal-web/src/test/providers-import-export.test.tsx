@@ -12,7 +12,7 @@ import { setToken, clearToken } from "../auth/tokenStore";
 import { downloadText } from "../lib/download";
 
 /**
- * Provider export + import on the admin list page (I-02 T-0027): export is an
+ * Provider export + import on the admin list page: export is an
  * authorized read handed to the download seam with the pinned `<ref>.provider.json`
  * filename — a failed or drifted read is surfaced, never downloaded. Import is
  * preview-first: the shared schema validates the picked file (server-side, via
@@ -185,7 +185,7 @@ afterEach(() => {
   downloadMock.mockClear();
 });
 
-describe("provider export (criterion 11)", () => {
+describe("provider export", () => {
   it("downloads the credential-free document over an authorized read, as <ref>.provider.json", async () => {
     setToken("test-token");
     const impl = stubApi({ list: [metadata()] });
@@ -475,7 +475,7 @@ describe("import apply", () => {
     const status = await screen.findByRole("status");
     expect(status.textContent).toContain('Provider created — "jira"');
     expect(status.textContent).not.toContain("updated");
-    // The completed action refetches the list (criterion 13).
+    // The completed action refetches the list.
     await vi.waitFor(() =>
       expect(
         impl.calls.filter(

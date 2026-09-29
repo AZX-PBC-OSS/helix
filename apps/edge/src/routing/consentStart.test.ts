@@ -31,7 +31,7 @@ import type { PortalProvider, PortalProxyRequest, PortalProxyResponse } from "./
 import { randomBytes } from "node:crypto";
 
 /**
- * `GET /_api/connections/:ref/start` (I-02 T-0014) — the consent popup's prod
+ * `GET /_api/connections/:ref/start` — the consent popup's prod
  * entry. The consult rides a scripted fake portal provider (the
  * `fetch.test.ts` FakeEgress seam style: capture what the edge forwards,
  * answer a scripted contract), so every assertion here is against the real
@@ -270,9 +270,9 @@ describe("the consent start route — started outcome", () => {
     expect(body.providerRef).toBe("asana");
     // The guarded app origin — the value the completion message targets.
     expect(body.openerOrigin).toBe(ORIGIN);
-    // From the edge's own auth-host origin (ADR-0001's single source).
+    // From the edge's own auth-host origin.
     expect(body.callbackUrl).toBe(CALLBACK_URL);
-    // T-0006's per-call internal JWT verifies under the portal's rule — and it
+    // The per-call internal JWT verifies under the portal's rule — and it
     // rides beside the safelisted headers, never inside them.
     expect(seen.headers[INTERNAL_AUTH_HEADER]).toBeUndefined();
     expect(await verifiesUnderPortalRule(seen.internalToken, INTERNAL_KEY)).toBe(true);
@@ -394,7 +394,7 @@ describe("the same-origin navigation guard fails closed (adversarial matrix)", (
   });
 });
 
-describe("session is checked before the consult (criterion 20)", () => {
+describe("session is checked before the consult", () => {
   it("no session renders sign-in required — no consult call, no flow row", async () => {
     const h = buildConsentEdge();
     h.portal.response = { outcome: "started", authorizeUrl: authorizeUrl() };
@@ -406,7 +406,7 @@ describe("session is checked before the consult (criterion 20)", () => {
     expect(res.statusCode).toBe(401);
     // The fake provider's call log is the observable: no consult, no flow row.
     expect(h.portal.requests).toHaveLength(0);
-    // The design's page content (criterion 20 — consent never resumes through login).
+    // The designed page content — consent never resumes through login.
     expect(res.body).toContain("Sign-in required");
     expect(res.body).toContain("Close this window, sign in to the app, then select Connect again.");
     // NOT a redirect into the OIDC flow.
@@ -428,7 +428,7 @@ describe("session is checked before the consult (criterion 20)", () => {
     await h.app.close();
   });
 
-  it("a shared-password pseudonym is not an identified user (criterion 21)", async () => {
+  it("a shared-password pseudonym is not an identified user", async () => {
     const h = buildConsentEdge();
     const token = await h.signIn({ kind: "password" });
     const res = await h.app.inject({
@@ -621,7 +621,7 @@ describe("terminal outcomes render the design's pages", () => {
   });
 });
 
-describe("the popup pages' contract (design.md §Consent popup pages + §Accessibility Notes)", () => {
+describe("the popup pages' contract", () => {
   async function pageOf(outcome: ConsultResponse): Promise<{
     status: number;
     body: string;
@@ -660,8 +660,8 @@ describe("the popup pages' contract (design.md §Consent popup pages + §Accessi
   it("every terminal page posts the message to the app's own origin before closing", async () => {
     const page = await pageOf({ outcome: "already_connected" });
     expect(page.body).toContain("postMessage(message, targetOrigin)");
-    // The embedded target origin is the guarded app origin — design.md
-    // §Completion message: "the app's own host for start-route pages".
+    // The embedded target origin is the guarded app origin —
+    // "the app's own host for start-route pages".
     expect(page.body).toContain(ORIGIN);
   });
 

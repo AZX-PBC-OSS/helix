@@ -5,9 +5,9 @@ import type { TokenVerifier } from "../plugins/auth.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
- * Per-binding effectiveness on the manifest read (I-02 T-0028) — the portal
+ * Per-binding effectiveness on the manifest read — the portal
  * computes each provider-bound origin's effectiveness server-side, using
- * T-0009's `isProviderBindingEffective` rule over the approved requests' filed
+ * the `isProviderBindingEffective` rule over the approved requests' filed
  * stamps, and the manifest payload carries it as `providerBindings`. The SPA's
  * Reapproval-needed badge consumes this field alone — no second request.
  */
@@ -81,7 +81,7 @@ async function getManifest(slug: string, headers = owner) {
   return res.json();
 }
 
-describe("manifest read — per-binding effectiveness (T-0028)", () => {
+describe("manifest read — per-binding effectiveness", () => {
   it("omits providerBindings for a manifest with no provider binding", async () => {
     const slug = uniqueSlug();
     await t.app.inject({
@@ -90,7 +90,7 @@ describe("manifest read — per-binding effectiveness (T-0028)", () => {
       headers: owner,
       payload: { slug, displayName: "Plain" },
     });
-    // Exact body: a binding-free manifest keeps its exact pre-T-0028 shape.
+    // Exact body: a binding-free manifest keeps its exact pre-feature shape.
     expect(await getManifest(slug)).toEqual({
       app: slug,
       visibility: { mode: "internal" },
@@ -138,7 +138,7 @@ describe("manifest read — per-binding effectiveness (T-0028)", () => {
     expect(afterApprove.providerBindings).toEqual([{ origin: ORIGIN, ref: REF, effective: true }]);
 
     // A sensitive provider edit advances the revision — the filed stamp no
-    // longer matches, and the read reports the binding stale (criterion 8).
+    // longer matches, and the read reports the binding stale.
     const row = await t.prisma.connectionProvider.findUniqueOrThrow({ where: { id: providerId } });
     const edit = await t.app.inject({
       method: "PUT",

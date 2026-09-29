@@ -5,23 +5,22 @@ import { EnvSchema } from "./env.js";
 import { ScopeTokenSchema } from "./providers.js";
 
 /**
- * The portal→egress **code-exchange** operation (I-02 architecture ADR-0001
- * §Shared ground) — the one definition shared by the portal's callback caller
- * (T-0020), the egress handler (T-0019), and every test.
+ * The portal→egress **code-exchange** operation — the one definition shared by
+ * the portal's callback caller, the egress handler, and every test.
  *
  * The exchange happens in egress because that is where the vendor is reachable
  * and where custody of delegated material lives: egress runs the OAuth code
  * exchange against the provider's configured token endpoint, applies the
- * criterion-27 compatibility gate **at receipt, before sealing**, seals both
+ * compatibility gate **at receipt, before sealing**, seals both
  * token materials into the delegated store, and returns metadata plus sealed
  * references. The portal never handles plaintext delegated tokens (ADR-0006).
  *
  * Failures are **fixed strings by construction**: the schema carries no field
  * a vendor error body could flow into. Token-endpoint failures are the single
  * `exchange_failed` outcome word — no vendor status, body, or error text
- * survives the boundary (ADR-0009's fixed-string discipline). The criterion-27
- * rejections carry a bounded reason (below) because the design renders each
- * one differently; those words are platform vocabulary, never vendor content.
+ * survives the boundary (the fixed-string discipline). The compatibility-gate
+ * rejections carry a bounded reason (below) because each is rendered
+ * differently; those words are platform vocabulary, never vendor content.
  */
 
 /**
@@ -44,12 +43,13 @@ export const CodeVerifierSchema = z
   .regex(/^[A-Za-z0-9\-._~]+$/, "must be an RFC 7636 code_verifier (43-128 unreserved characters)");
 
 /**
- * `POST /exchange` body (the internal egress route, ADR-0001 §Implementation
- * Notes). Every field is exactly what the portal's pending-attempt row holds
- * (provider stamp from ADR-0004, the PKCE verifier, the consult's callback URL)
- * plus the grant code the vendor just redirected in — T-0020 supplies the row's
+ * `POST /exchange` body (the internal egress route). Every field is exactly
+ * what the portal's pending-attempt row holds
+ * (the provider stamp, the PKCE verifier, the consult's callback URL)
+ * plus the grant code the vendor just redirected in — the portal's callback
+ * caller supplies the row's
  * values verbatim and never derives an alternative. Strict: an unknown key is a
- * producer/consumer skew and fails closed (the ADR-0005 discipline).
+ * producer/consumer skew and fails closed (the strict-parse discipline).
  */
 export const ExchangeRequestSchema = z.strictObject({
   providerId: z.uuid(),
@@ -62,8 +62,8 @@ export const ExchangeRequestSchema = z.strictObject({
 export type ExchangeRequest = z.infer<typeof ExchangeRequestSchema>;
 
 /**
- * Why the criterion-27 gate rejected the token response at receipt — the
- * bounded, vendor-content-free reasons (spec criterion 27). An omitted
+ * Why the compatibility gate rejected the token response at receipt — the
+ * bounded, vendor-content-free reasons. An omitted
  * granted-permissions field means granted and never appears here; these are
  * the explicitly-wrong shapes only.
  */
@@ -94,19 +94,16 @@ const ExchangedScopesSchema = z.array(ScopeTokenSchema).max(MAX_EXCHANGED_SCOPES
  *   and `refresh` carry the sealed references (`SecretStore.seal()` output —
  *   a dev envelope or a Key Vault reference, never plaintext); `grantedScopes`
  *   is what the vendor granted (the response's scope, or the provider's
- *   configured set when the response omitted it — omitted means granted,
- *   criterion 27); `accessExpiresAt` is the access token's absolute expiry.
- * - `rejected` — the criterion-27 gate failed at receipt with a
+ *   configured set when the response omitted it — omitted means granted);
+ *   `accessExpiresAt` is the access token's absolute expiry.
+ * - `rejected` — the compatibility gate failed at receipt with a
  *   distinguishable {@link EXCHANGE_REJECTION_REASONS} reason. **Nothing was
  *   sealed** (the store receives no write — this is observable, and the
- *   binding invariant of the gate's placement, ADR-0001).
+ *   binding invariant of the gate's placement).
  * - `provider_unavailable` — the provider id is unknown, was deleted, or the
- *   attempt's revision stamp no longer matches the cached row (ADR-0004).
- *   The same fixed word the delegated-call path answers (design §Delegated
- *   call errors), for the same situation.
- * - `exchange_failed` — the vendor token endpoint failed (hang, 5xx, malformed
- *   response) or custody sealing failed. Opaque and fixed: no vendor status,
- *   body, or error text is carried, logged, or spanned anywhere on this path.
+ *   attempt's revision stamp no longer matches the cached row.
+ *   The same fixed word the delegated-call path answers — the delegated-call
+ *   error table's word for the same situation.
  */
 export const ExchangeResponseSchema = z.discriminatedUnion("outcome", [
   z.strictObject({

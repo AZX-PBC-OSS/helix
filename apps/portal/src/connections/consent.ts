@@ -38,11 +38,12 @@ import { isUniqueViolation } from "../db/errors.js";
 import { withSpan, instruments } from "../telemetry.js";
 
 /**
- * The consent-flow state machine (I-02 ADR-0002 — the control plane owns all
+ * The consent-flow state machine (ADR-0031 amendment item 6 — the control
+ * plane owns all
  * consent-flow state): the start consult the edge's start route and the dev
  * gateway call, the own-attempts-only cancel the helper's acknowledgement
  * rides, the claim-shaped probe the callback redeems an attempt with, the dev
- * journey's nonce redemption (T-0016), the expiry sweep, and the read-only
+ * journey's nonce redemption, the expiry sweep, and the read-only
  * connection-status read the app-facing status route forwards to (ADR-0031 as
  * amended — consult gates 1–4, no attempt write, no custody open). The routes
  * (`routes/connectionsInternal.ts`, `routes/connectionsPages.ts`) authorize
@@ -50,7 +51,7 @@ import { withSpan, instruments } from "../telemetry.js";
  * here.
  *
  * **The edge writes nothing.** `helix_edge` holds no grant on
- * `connection_consent_attempts` (ADR-0006 part 2) — every write in this file
+ * `connection_consent_attempts` — every write in this file
  * happens under the portal's own role, which is the whole reason the consult
  * exists.
  */
@@ -95,11 +96,11 @@ export function pkceChallenge(verifier: string): string {
 /**
  * Assemble the vendor authorize URL from a provider's configuration plus the
  * attempt's protocol state — the ONE assembly both the consult (below) and
- * the dev journey's nonce redemption (T-0016, ADR-0002 §Implementation Notes)
+ * the dev journey's nonce redemption
  * use, so the two cannot drift. Only OAuth protocol parameters ride it: the
  * client secret stays sealed, the PKCE verifier stays server-side (only its
  * S256 challenge enters the URL), and no token or bearer material is ever
- * appended (spec criterion 22).
+ * appended.
  */
 function assembleAuthorizeUrl(opts: {
   authorizeEndpoint: string;
@@ -207,7 +208,7 @@ async function consult(
   span: Span,
 ): Promise<ConsultResponse> {
   // 1 — consent is available only to an identified user of an authorized app
-  // binding (spec criterion 20): binding approval/effectiveness first, then
+  // binding: binding approval/effectiveness first, then
   // connection status. The app is resolved by slug — the identity the edge's
   // host routing attests.
   const appRow = await prisma.app.findUnique({ where: { slug: req.appSlug } });
@@ -229,7 +230,8 @@ async function consult(
   const provider = parseProviderRow(providerRow);
 
   // 3 — the binding is effective only when an APPROVED request's filing stamp
-  // still matches the row's current identity — T-0009's rule, consumed here
+  // still matches the row's current identity — the binding-effectiveness
+  // rule, consumed here
   // and never re-derived. A sensitive edit or a delete+recreate stale-dates
   // every stamp, and the consult reports not_available.
   const approved = await prisma.approvalRequest.findMany({
@@ -243,8 +245,8 @@ async function consult(
   );
   if (!effective) return { outcome: "not_available" };
 
-  // 4 — a working connection reports already-connected without being replaced
-  // (criterion 24): no attempt, no vendor round-trip. Only `live` counts — a
+  // 4 — a working connection reports already-connected without being replaced:
+  // no attempt, no vendor round-trip. Only `live` counts — a
   // reconnect-needed or invalidated row is replaceable through consent.
   const connection = await prisma.userConnection.findUnique({
     where: { userOid_providerId_env: { userOid, providerId: provider.id, env } },
@@ -261,7 +263,7 @@ async function consult(
   // connection predicate IN the INSERT: a completion that commits between the
   // read and this statement inserts zero rows and the caller gets
   // already-connected, so a working connection is never raced into a
-  // duplicate flow (criterion 24; the concurrency concern).
+  // duplicate flow (the concurrency concern).
   const state = randomBytes(FRESH_BYTES).toString("base64url");
   const codeVerifier = newVerifier();
   const nonce = req.identity.kind === "dev" ? req.identity.nonce : null;
@@ -295,7 +297,7 @@ async function consult(
   if (inserted.length === 0) return { outcome: "already_connected" };
 
   // 7 — assemble the vendor authorize URL (the one shared assembly): only
-  // OAuth protocol parameters, never credential material (criterion 22).
+  // OAuth protocol parameters, never credential material.
   const authorizeUrl = assembleAuthorizeUrl({
     authorizeEndpoint: provider.authorizeEndpoint,
     clientId,
@@ -408,13 +410,13 @@ async function status(
 }
 
 /**
- * Acknowledge a closed popup (own-attempts-only, ADR-0002): the attempt's
+ * Acknowledge a closed popup (own-attempts-only): the attempt's
  * owning identity marks it cancelled, so a late completion cannot claim it.
  * The CAS makes the status check the write (the `claimPendingRequest`
  * pattern) — a cancel racing the callback's claim, a second cancel, or a
  * non-owner's call all lose and answer `not_cancellable`, indistinguishably
  * from "no such attempt". Consent already saved is a connection row, out of
- * cancel's reach (criterion 29).
+ * cancel's reach.
  */
 export async function cancelConsentAttempt(
   prisma: PrismaClient,
@@ -481,7 +483,7 @@ export type ConsentAttemptClaim =
   | { claimed: false; reason: ConsentAttemptClaimRefusal };
 
 /**
- * The callback's claim-shaped probe (T-0020's route calls this): redeem an
+ * The callback's claim-shaped probe (the callback route calls this): redeem an
  * attempt by `state`, atomically and single-use — the DELETE is the claim, so
  * exactly one concurrent completion can ever win, and the winner takes the
  * row with it. A cancelled or expired attempt (at/after the five-minute TTL)
@@ -489,7 +491,7 @@ export type ConsentAttemptClaim =
  * callback renders — and an unknown or already-claimed state refuses as
  * "not_found". `openerOrigin` travels on the claimed attempt: the completion
  * message's target origin is the consult-recorded value and is derived by
- * nothing else (ADR-0002 §Shared ground).
+ * nothing else.
  */
 export async function claimConsentAttempt(
   prisma: PrismaClient,
@@ -544,15 +546,15 @@ export type ConsentNonceRedemption =
   | { redeemed: false; reason: ConsentNonceRedeemRefusal };
 
 /**
- * The dev journey's one-time handoff redemption (I-02 T-0016; ADR-0002 §
- * Implementation Notes — the nonce entry on the auth host, proxied, redeemed
+ * The dev journey's one-time handoff redemption (the nonce entry on the auth
+ * host, proxied, redeemed
  * portal-side). The popup URL carries only the nonce; this is where it buys
  * the vendor redirect.
  *
  * **The redeem is one conditional UPDATE** — the indivisible claim rule: the
  * statement marks `nonceRedeemedAt` and returns the attempt in the same
  * breath, so exactly one concurrent redemption can ever win and a replayed
- * popup URL is refused after first use (the ticket's security property).
+ * popup URL is refused after first use (the redemption's security property).
  * A cancelled or expired attempt refuses WITHOUT being redeemed, the same
  * posture the claim probe holds — a refusal consumes nothing that could
  * still complete.
@@ -562,7 +564,7 @@ export type ConsentNonceRedemption =
  * id+revision) plus the provider row's configuration — through the one
  * shared {@link assembleAuthorizeUrl}. The URL is deliberately not stored on
  * the attempt: the verifier stays server-side and only its S256 challenge
- * enters the re-derived URL (spec criterion 22). A provider deleted or
+ * enters the re-derived URL. A provider deleted or
  * edited since the attempt refuses (`provider_changed`) — an attempt
  * recorded against a revision must not send the user through configuration
  * that attempt never saw.
@@ -669,7 +671,7 @@ async function redeem(
 }
 
 /**
- * Remove expired attempt rows (ADR-0002 §Implementation Notes — swept
+ * Remove expired attempt rows (swept
  * portal-side; no material is involved: an attempt holds protocol state,
  * never credentials). Rows still inside their TTL — pending or cancelled —
  * are untouched. Returns the number removed. Interval-driven from

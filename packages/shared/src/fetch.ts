@@ -68,12 +68,12 @@ export const METHOD_HEADER = "x-helix-method";
  * upstream answered 429 (the proxy worked, the vendor said slow down);
  * `refusal` egress itself refused the call (4xx from `fail`, and the delegated
  * `provider_unavailable` / `provider_misconfigured` codes, which meter as
- * `refusal` per design.md's error table); `error` an egress-side failure (5xx
- * from `fail`, a throw, a temporary renewal failure); and — I-02 —
+ * `refusal`); `error` an egress-side failure (5xx
+ * from `fail`, a throw, a temporary renewal failure); and
  * `connection_required`, the delegated answer for "the caller has no usable
  * connection to the bound provider", which the edge ledgers under its OWN
  * label so usage accounting separates "user not connected" from "policy
- * refused" (criterion 50; clarifications Q15).
+ * refused".
  */
 export const OUTCOME_HEADER = "x-helix-egress-outcome";
 
@@ -135,9 +135,8 @@ export const RESPONSE_HEADER_BLOCKLIST: readonly string[] = [
  * flushed by the time the byte counter trips, so the body is truncated instead;
  * see issue #8 and `@azx-pbc/shared` `capBody`.)
  *
- * The delegated-call codes (I-02) name why a provider-bound call could not be
- * served, each distinguishable from a consent problem (spec criteria 33–34;
- * design.md §App-facing contracts, the error table): `connection_required`
+ * The delegated-call codes name why a provider-bound call could not be
+ * served, each distinguishable from a consent problem: `connection_required`
  * (403) — no or dead connection, a definitive grant rejection, an uncertain
  * rotation, or a caller that can never hold a connection (anonymous,
  * shared-password); the body carries {@link FetchErrorProvider} so the app can
@@ -167,7 +166,7 @@ export type FetchErrorCode = z.infer<typeof FetchErrorCodeSchema>;
 
 /**
  * Provider metadata on a delegated-call error — sufficient for the app to offer
- * Connect (spec criterion 33): which provider to reference and, when the
+ * Connect: which provider to reference and, when the
  * platform can name it, what to call it. Keys are bounded by a **strict** object
  * — an unknown key fails the parse, not a silent strip — so credential-shaped
  * fields (`accessToken`, `client_secret`, …) cannot ride the error body to the

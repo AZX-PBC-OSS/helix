@@ -8,11 +8,10 @@ import { completeConsentCallback } from "../connections/completion.js";
 import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
- * My Connections (I-02 T-0024, spec §My Connections and recovery criteria
- * 42–46): the principal-scoped list and disconnect. The load-bearing cases are
+ * My Connections: the principal-scoped list and disconnect. The load-bearing cases are
  * the BOLA refusal (another principal's id is a plain 404 that reveals
  * nothing), the one-transaction invalidation (row + ledger mark + pending
- * attempts + audit in one boundary), the T-0012 integration (a pending attempt
+ * attempts + audit in one boundary), the state-machine integration (a pending attempt
  * renders the disconnected outcome at claim; a post-disconnect consult starts
  * a FRESH attempt, never already_connected), and the id-scoped repeat
  * (`already_removed` that writes nothing a newer connection could inherit).
@@ -145,7 +144,7 @@ async function seedAppBoundTo(ref: string): Promise<string> {
   await prisma.app.create({
     data: {
       slug,
-      displayName: `T-0024 fixture ${slug}`,
+      displayName: `fixture ${slug}`,
       ownerId: OWNER_OID,
       visibilityMode: "internal",
       visibilityGroupIds: [],
@@ -257,7 +256,7 @@ describe("DELETE /api/v1/connections/mine/:id — the disconnect transaction", (
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ outcome: "disconnected" });
 
-    // ADR-0008's one-UPDATE rule: the status flip and the ledger mark are the
+    // The one-UPDATE rule: the status flip and the ledger mark are the
     // same write — the sweep, not the display, is what stops the use.
     const row = await prisma.userConnection.findUniqueOrThrow({ where: { id: connection.id } });
     expect(row.status).toBe("invalidated");
@@ -273,7 +272,7 @@ describe("DELETE /api/v1/connections/mine/:id — the disconnect transaction", (
     });
     expect(dead.cancelledAt).toEqual(alreadyDead.cancelledAt);
 
-    // The audit event, bounded metadata (design.md §Operator-visible signals).
+    // The audit event, bounded metadata.
     const event = await prisma.auditEvent.findFirstOrThrow({
       where: {
         action: "connection.disconnected",
@@ -287,7 +286,7 @@ describe("DELETE /api/v1/connections/mine/:id — the disconnect transaction", (
     expect(serialized).not.toContain("vendor.example");
   });
 
-  it("renders the disconnected outcome at claim — T-0012's state machine refuses the killed attempt", async () => {
+  it("renders the disconnected outcome at claim — the state machine refuses the killed attempt", async () => {
     const provider = await seedProvider();
     const slug = await seedAppBoundTo(provider.ref);
     const appRow = await prisma.app.findUniqueOrThrow({ where: { slug } });
@@ -303,7 +302,7 @@ describe("DELETE /api/v1/connections/mine/:id — the disconnect transaction", (
     const claim = await claimConsentAttempt(prisma, state);
     expect(claim).toEqual({ claimed: false, reason: "cancelled" });
     // …and the callback's completion renders the disconnected page — the
-    // killed attempt can never establish anything (criterion 44).
+    // killed attempt can never establish anything.
     const completion = await completeConsentCallback(prisma, {
       state,
       code: null,
@@ -331,8 +330,8 @@ describe("DELETE /api/v1/connections/mine/:id — the disconnect transaction", (
     expect((await disconnect(connection.id)).json()).toEqual({ outcome: "disconnected" });
 
     // The row state, not the display: the consult's no-live-connection
-    // predicate now fails and a fresh attempt starts (criterion 44 —
-    // reconnecting requires a new explicit action).
+    // predicate now fails and a fresh attempt starts (reconnecting requires
+    // a new explicit action).
     const after = await consultConsent(prisma, store, consultReq);
     expect(after.outcome).toBe("started");
     expect(after).toMatchObject({ authorizeUrl: expect.stringContaining("vendor.example") });
@@ -405,7 +404,7 @@ describe("DELETE /api/v1/connections/mine/:id — the disconnect transaction", (
     const attempt = await seedPendingAttempt(USER_OID, provider.id, appRow.id);
 
     // The attempt-kill write fails mid-transaction — the row invalidation and
-    // the ledger mark must roll back with it (criterion 44: never a
+    // the ledger mark must roll back with it (never a
     // successful removal Helix did not complete).
     const failing = createTestPrisma().$extends({
       query: {

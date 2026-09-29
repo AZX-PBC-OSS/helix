@@ -29,15 +29,15 @@ import { spanRoute } from "../telemetry.js";
 import type { RegistryReader } from "../registry/projection.js";
 
 /**
- * `POST /:slug/_api/connections/:ref/start` — the dev tier's consent entry
- * (I-02 design.md §Dev-tier consent journey, design decision 4). A dev app's
+ * `POST /:slug/_api/connections/:ref/start` — the dev tier's consent entry.
+ * A dev app's
  * page POSTs with its bearer dev token and receives a **single-use popup
  * URL**; the popup is the one-time handoff that gets consent started without
- * the token ever appearing in a URL (spec criterion 22 — a popup navigation
+ * the token ever appearing in a URL (a popup navigation
  * can neither carry the Authorization header nor ride this Origin contract).
  *
  * The prod start route's factories are reused, seams swapped, exactly like
- * every other dev-gateway capability (explore.md §Patterns and Conventions):
+ * every other dev-gateway capability:
  * the caller identity comes from the same `CallerResolver` seam (the dev
  * token resolver — its Origin allowlist check IS this route's navigation
  * guard), the consult rides the same `callConsult` seam as the prod route,
@@ -45,8 +45,8 @@ import type { RegistryReader } from "../registry/projection.js";
  * differs is the response shape, and only that: a JSON popup URL instead of a
  * 302 — the popup URL carries ONLY the attempt's single-use nonce, and the
  * vendor authorize URL the consult returned is deliberately dropped (the
- * nonce entry re-derives it portal-side at redemption, ADR-0002 §
- * Implementation Notes; the verifier never leaves the attempt row).
+ * nonce entry re-derives it portal-side at redemption; the verifier never
+ * leaves the attempt row).
  */
 
 export interface DevConsentStartRuntime {
@@ -119,7 +119,7 @@ export function makeDevConsentStartHandler(rt: DevConsentStartRuntime) {
       // Gate — the dev resolver, BEFORE any consult: bearer token validity,
       // app binding, lifetime, and the Origin allowlist (the dev resolver's
       // Origin contract — an invalid or unregistered Origin is refused here
-      // and reaches the consult for nothing, criterion 22's journey contract).
+      // and reaches the consult for nothing).
       const caller = await rt.resolveCaller(req, reply, entry);
       if (!caller) {
         setOutcome("forbidden");
@@ -134,7 +134,7 @@ export function makeDevConsentStartHandler(rt: DevConsentStartRuntime) {
       }
       // The validated Origin is exactly what the resolver admitted — it is
       // the value the attempt records as the opener origin (the completion
-      // message's target; ADR-0002 §Shared ground). A resolver that admitted
+      // message's target). A resolver that admitted
       // a caller without setting it would be a skew; fail closed.
       const openerOrigin = req.devCorsOrigin;
       if (!openerOrigin) {
@@ -166,7 +166,7 @@ export function makeDevConsentStartHandler(rt: DevConsentStartRuntime) {
         providerRef,
         openerOrigin,
         // From the edge's own auth-host origin — the single source of the
-        // callback URL (ADR-0001's ratified residual; T-0012's contract).
+        // callback URL.
         callbackUrl: `${publicOrigin(rt.config, "auth")}/connections/callback`,
       });
 
@@ -203,8 +203,8 @@ export function makeDevConsentStartHandler(rt: DevConsentStartRuntime) {
 
       switch (consult.outcome) {
         case "started": {
-          // The handoff: auth host + the entry path + the nonce, nothing else
-          // (criterion 22). The consult's authorizeUrl is dropped here by
+          // The handoff: auth host + the entry path + the nonce, nothing else.
+          // The consult's authorizeUrl is dropped here by
           // design — carrying it would bypass the single-use redemption that
           // makes the popup one-time; the portal re-derives it at redemption
           // from the attempt it stored (state + verifier stay server-side).

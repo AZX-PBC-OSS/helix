@@ -540,7 +540,7 @@ model AppSecretGrant {
 }
 
 /// An administrator-configured vendor OAuth registration — one vendor
-/// integration in one environment (I-02 ADR-0004). `ref` is the stable,
+/// integration in one environment. `ref` is the stable,
 /// human-readable key manifests/catalogue/imports use (env-unique, immutable);
 /// `id` is the surrogate everything inside the platform joins on; `revision`
 /// starts at 1 and advances on every sensitive mutation and delete — one field
@@ -656,7 +656,7 @@ model UserConnection {
 }
 
 /// One pending consent attempt — the control-plane-owned consent-flow state
-/// (I-02 ADR-0002): the portal's consult writes it, the callback claims it
+/// (ADR-0031 amendment item 6): the portal's consult writes it, the callback claims it
 /// (single-use redeem pattern), the helper's cancel marks it, the portal sweep
 /// drops expired rows. Field list is ADR-0002's fixed list: state, PKCE
 /// verifier, identity, provider id+revision, app, env, opener origin,
@@ -690,7 +690,7 @@ model ConnectionConsentAttempt {
   openerOrigin     String
   /// The dev journey's single-use handoff nonce (dev-tier consults only).
   nonce            String?   @unique
-  /// Set by the nonce entry's one-shot redemption (T-0016, portal-side): the
+  /// Set by the nonce entry's one-shot redemption (portal-side): the
   /// indivisible claim that makes a replayed popup URL refuse after first
   /// use. The row itself survives until claim or expiry — the callback still
   /// redeems it by `state`.

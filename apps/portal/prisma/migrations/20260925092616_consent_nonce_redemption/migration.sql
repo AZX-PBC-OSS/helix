@@ -1,4 +1,4 @@
--- T-0016 (I-02) — the dev journey's single-use nonce redemption marker.
+-- The dev journey's single-use nonce redemption marker.
 --
 -- The nonce entry page (auth host, portal-served through the `/connections/*`
 -- proxy) redeems the dev consult's handoff nonce with ONE conditional UPDATE:

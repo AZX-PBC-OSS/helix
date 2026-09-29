@@ -10,7 +10,7 @@
 //                       them, egress reads them, EDGE NEVER TOUCHES THIS VAULT —
 //                       no role assignment for the edge MI exists (rbac.bicep),
 //                       so an edge RCE can't read a single credential.
-//   - kv-delegated    : user-delegated OAuth token material (I-02 ADR-0006).
+//   - kv-delegated    : user-delegated OAuth token material (ADR-0031).
 //                       Egress seals/opens/destroys with Secrets Officer and
 //                       is the ONLY principal with any role on it — the portal
 //                       gets no role, so "the control plane never opens a

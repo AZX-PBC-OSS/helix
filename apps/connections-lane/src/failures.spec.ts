@@ -3,8 +3,8 @@ import { PopupGate } from "./popupGate.js";
 import type { ConnectResult } from "@azx-pbc/shared";
 
 /**
- * The failure-signaling journeys, browser-proven (I-02 T-0031, criteria 25,
- * 28, 29): timeout on an already-expired attempt (arranged through the DB row
+ * The failure-signaling journeys, browser-proven: timeout on an
+ * already-expired attempt (arranged through the DB row
  * — the arrange surface — never by waiting wall-clock), the lost completion
  * signaling with the saved connection still usable, and forged success
  * notifications rejected by the helper's receiver rules.
@@ -21,7 +21,7 @@ function resultOf(line: string): ConnectResult {
   return JSON.parse(line.slice(line.indexOf(":") + 1)) as ConnectResult;
 }
 
-test("timeout — completion at/after expiry cannot establish a connection, and the app's wait ends legibly (criterion 25)", async ({
+test("timeout — completion at/after expiry cannot establish a connection, and the app's wait ends legibly", async ({
   page,
   fx,
   world,
@@ -66,7 +66,7 @@ test("timeout — completion at/after expiry cannot establish a connection, and 
   expect(net.requested("/_api/fetch/")).toHaveLength(0);
 });
 
-test("lost completion signaling — the completion response lost in flight: no fabricated success, and the saved connection serves the next call (criterion 29)", async ({
+test("lost completion signaling — the completion response lost in flight: no fabricated success, and the saved connection serves the next call", async ({
   page,
   fx,
   world,
@@ -116,7 +116,7 @@ test("lost completion signaling — the completion response lost in flight: no f
   expect(resultOf(line).outcome).toBe("cancelled");
 
   // And the saved connection WORKS: the next explicit call rides it (the
-  // criterion-29 property the cancellation leg must not destroy).
+  // saved-connection property the cancellation leg must not destroy).
   await page.getByTestId("call").click();
   const call = await waitForResult(page, "CALL:");
   expect(call.startsWith("CALL:200:")).toBe(true);
@@ -124,7 +124,7 @@ test("lost completion signaling — the completion response lost in flight: no f
   await gate.close();
 });
 
-test("forged success from the app's own window is rejected — never reads as successful consent (criterion 28)", async ({
+test("forged success from the app's own window is rejected — never reads as successful consent", async ({
   page,
   fx,
   world,
@@ -159,7 +159,7 @@ test("forged success from the app's own window is rejected — never reads as su
   );
 });
 
-test("forged success from the vendor's page is rejected by the origin rule (criterion 28)", async ({
+test("forged success from the vendor's page is rejected by the origin rule", async ({
   page,
   fx,
   world,

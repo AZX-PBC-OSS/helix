@@ -93,7 +93,7 @@ export function createEgressPool(databaseUrl: string, opts: EgressPoolOpts = {})
 /**
  * Check a client out of `pool`, run `fn`, release exactly once — the edge's
  * `withPooledClient` (apps/edge/src/db/pool.ts) copied for egress's one
- * checked-out-client consumer, token renewal (I-02 ADR-0007): the advisory
+ * checked-out-client consumer, token renewal: the advisory
  * lock lives on the CLIENT SESSION, so renewal holds a checked-out client
  * across the vendor call and this bracket owns its lifetime.
  *

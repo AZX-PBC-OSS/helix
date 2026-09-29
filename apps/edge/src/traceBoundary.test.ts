@@ -121,7 +121,7 @@ describe("the edge → egress hop is one trace", () => {
   });
 });
 
-describe("the /connections/* proxy route is a fresh root too (T-0015)", () => {
+describe("the /connections/* proxy route is a fresh root too", () => {
   /**
    * Driven through the real route: the callback URL is where a vendor's
    * redirect lands, so an inbound `traceparent` on it is exactly as
@@ -163,7 +163,7 @@ describe("the /connections/* proxy route is a fresh root too (T-0015)", () => {
   });
 });
 
-describe("the consent start route is a fresh root too (T-0014)", () => {
+describe("the consent start route is a fresh root too", () => {
   /**
    * The start route is a plain app-host navigation — an untrusted opener can
    * plant a `traceparent` on it as easily as on a gateway call, and the route
@@ -212,7 +212,7 @@ describe("the consent start route is a fresh root too (T-0014)", () => {
   });
 });
 
-describe("the dev-gateway consent start route is a fresh root too (T-0016)", () => {
+describe("the dev-gateway consent start route is a fresh root too", () => {
   /**
    * The dev tier's POST comes from a foreign-origin dev app — the same
    * untrusted caller class, so an inbound `traceparent` is exactly as

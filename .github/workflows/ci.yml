@@ -42,7 +42,7 @@ name: CI
 # `bicep` is an independent lane — it shares no toolchain with the node stack,
 # gates nothing and is gated by nothing.
 #
-# `browser-lane` is the real-browser acceptance lane (I-02 T-0031): it needs
+# `browser-lane` is the real-browser acceptance lane: it needs
 # only Postgres as a service (the fixture vendor, the dev IdP and the
 # portal/edge/egress apps are booted in-process by the lane itself) and starts
 # immediately, concurrent with `static` and `test`. No `needs`: nothing it
@@ -98,7 +98,7 @@ jobs:
         # Step names, so this is the same script a developer runs locally; the
         # script still runs every named step even if an earlier one fails, then
         # exits non-zero — one run surfaces the full picture.
-        run: ./check-and-lint.sh typecheck lint format docs
+        run: ./check-and-lint.sh typecheck lint refs format docs
 
   test:
     name: test (${{ matrix.shard }})
@@ -176,7 +176,7 @@ jobs:
       EDGE_OIDC_ALLOW_INSECURE: "true"
       EDGE_AUTH_SECRET: aGVsaXgtZGV2LWVkZ2UtYXV0aC1zZWNyZXQtMzItYiE=
       HELIX_INSTRUCTION_SECRET: aGVsaXgtZGV2LWluc3RydWN0aW9uLXNlY3JldC0zMmItbWluIQ==
-      # The two new internal-JWT keys (I-02 ADR-0003) — the portal's boot check
+      # The two new internal-JWT keys — the portal's boot check
       # requires the edge↔portal key, and egress's config requires the
       # portal↔egress one, mirroring the devcontainer values.
       HELIX_INTERNAL_SECRET: aGVsaXgtZGV2LWludGVybmFsLXNlY3JldC0zMmItbWluIQ==
@@ -257,7 +257,7 @@ jobs:
   browser-lane:
     name: browser lane (playwright · connections)
     runs-on: ubuntu-latest
-    # The real-browser acceptance lane (I-02 T-0031, ADR-0010 part 2): a
+    # The real-browser acceptance lane: a
     # Chromium drives the assembled OAuth-connections journey against the real
     # edge/portal/egress + the fixture vendor + the dev IdP — all booted
     # in-process by the lane itself, so unlike `test` this job needs only

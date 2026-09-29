@@ -27,13 +27,13 @@ import { buildDelegatedClientConfiguration } from "./providerClient.js";
 import { instruments, tracer } from "./telemetry.js";
 
 /**
- * Token renewal (I-02 T-0021, architecture ADR-0007): when a connection's
+ * Token renewal (ADR-0031 decision 15): when a connection's
  * access token has expired, the delegated call renews it before dispatch —
  * single-flight **across running instances** via a session-level Postgres
  * advisory lock keyed `(userOid, providerId, env)`, because rotating refresh
- * tokens make a double exchange fatal to the grant (spec criterion 36).
+ * tokens make a double exchange fatal to the grant.
  *
- * The mechanism, in ADR-0007 §Decision's order:
+ * The mechanism, in the decided order:
  *
  * 1. **Fast path** — read the row; when it is live and nothing is due, there
  *    is nothing to renew: open its access token and answer `refreshed`.
@@ -49,14 +49,14 @@ import { instruments, tracer } from "./telemetry.js";
  *    the response omits one (RFC 6749 §6).
  * 5. **Store** the swapped material with a compare-and-swap (`WHERE material
  *    = <as-read>`), the rotation's retirement-ledger entry written in the
- *    SAME UPDATE (ADR-0008's rule). A CAS loss retires the freshly-sealed
- *    material and answers per the design's lost-race rule (criterion 32).
+ *    SAME UPDATE. A CAS loss retires the freshly-sealed
+ *    material and answers per the lost-race rule.
  * 6. **Release** the lock on every exit path — success, vendor failure, CAS
  *    loss, timeout — explicitly, on the same checked-out client: releasing
  *    the client alone would return a lock-holding SESSION to the pool, and a
  *    session-level lock outlives any one query.
  *
- * Failure taxonomy (criteria 35, 37–39; spec decision 29) —
+ * Failure taxonomy —
  * {@link EGRESS_RENEWAL_OUTCOMES}: `refreshed`; `temporary_failure`
  * (outage/rate-limit/timeout with no certain token consumption — the row is
  * untouched and no vendor retry fires within the call); `uncertain_rotation`
@@ -67,7 +67,7 @@ import { instruments, tracer } from "./telemetry.js";
  * missing usable lifetime — the provider_misconfigured class). Unknown vendor
  * rotation behavior is never treated as evidence the old token is reusable.
  *
- * The fixed-string discipline (ADR-0009) holds on every path: a vendor error
+ * The fixed-string discipline holds on every path: a vendor error
  * body can echo client credentials, so no token value and no vendor error
  * text is ever logged, spanned, or stringified here — the bounded outcome
  * word is the entire diagnostic.
@@ -82,7 +82,7 @@ export interface RenewalTarget {
 
 /**
  * The advisory-lock key for ONE `(userOid, providerId, env)` — the composition
- * defined ONCE, here (ADR-0007 §Shared ground): the SHA-256 of the three
+ * defined ONCE, here: the SHA-256 of the three
  * components, truncated into the signed 64-bit range `pg_advisory_lock`'s
  * single-bigint form takes (returned as its decimal string; pg binds it
  * through the `$1::bigint` cast). A hash collision merely serializes two
@@ -132,7 +132,7 @@ export interface RenewalDeps {
   /** Dev-only seam, as for the exchange: permits the http fixture vendor. */
   allowInsecureConnection: boolean;
   /**
-   * The losers' bounded-block per-acquire timeout (ADR-0007). Tuned BELOW the
+   * The losers' bounded-block per-acquire timeout. Tuned BELOW the
    * vendor timeout by default (half of `timeoutMs`): the holder is bounded by
    * the vendor call, so a loser that waits half that long either finds the
    * winner's fresh row or gives up temporarily — it never out-waits a healthy
@@ -168,8 +168,8 @@ function isoValue(value: unknown): unknown {
 
 /**
  * Parse one `user_connections` row through THE stored-row contract
- * (`UserConnectionSchema` — ADR-0006 §Shared ground). Exported because the
- * delegated resolution (T-0022) and the retirement sweep (T-0025) read the
+ * (`UserConnectionSchema`). Exported because the
+ * delegated resolution and the retirement sweep read the
  * same row the same way; none re-derives the shape.
  */
 export function userConnectionFromPg(row: UserConnectionRow): UserConnection {
@@ -184,7 +184,7 @@ export function userConnectionFromPg(row: UserConnectionRow): UserConnection {
 }
 
 /** Renewal is due when the access token is past its recorded expiry, or
- * criterion 40's pre-expiry-401 flag says renew before the next call. */
+ * the pre-expiry-401 flag says renew before the next call. */
 function isRenewalDue(row: UserConnection): boolean {
   return Date.parse(row.expiresAt) <= Date.now() || row.renewBeforeNext;
 }
@@ -200,13 +200,13 @@ const READ_COLUMNS = `id, "userOid", "providerId", "providerRevision", env, stat
  *
  * - `invalid_grant` → `uncertain_rotation`: the presented refresh token was
  *   rejected. Whether the cause is rotation consumption, reuse detection, or
- *   revocation, the same rule follows (criterion 39): the token may have been
+ *   revocation, the same rule follows: the token may have been
  *   consumed and nothing usable was received, so the connection requires
  *   reconnection and the old token is never re-presented.
  * - `insufficient_scope` → `reconnect_required`: an explicit loss of required
- *   permissions (criterion 35).
+ *   permissions.
  * - `invalid_client` → `admin_action`: the provider row's credentials are
- *   wrong — an administrator fixes the provider (criterion 38).
+ *   wrong — an administrator fixes the provider.
  * - `invalid_request`, `unsupported_grant_type`, `unauthorized_client` →
  *   `admin_action`: the configured provider cannot be refreshed as configured.
  * - A 401 challenge response → the same words in their other encoding
@@ -215,7 +215,7 @@ const READ_COLUMNS = `id, "userOid", "providerId", "providerRevision", env, stat
  * - Anything else — a server-side status, a rate limit, a timeout, an
  *   unparseable body, a dropped socket — → `temporary_failure`: no response
  *   said the grant is gone, so the connection stands and a later request may
- *   try again (criterion 37). An unrecognized OAuth error code is likewise
+ *   try again. An unrecognized OAuth error code is likewise
  *   temporary: unknown vendor behavior is not evidence the old token is
  *   unusable either.
  */
@@ -247,7 +247,7 @@ function classifyVendorFailure(err: unknown): RenewalOutcome {
  * The renewal operation. One instance per egress process (per pool + custody
  * wiring); safe to call concurrently — same-key callers in this process
  * coalesce onto one attempt, and the advisory lock arbitrates across
- * instances. Consumed by the delegated-call resolution (T-0022), which calls
+ * instances. Consumed by the delegated-call resolution, which calls
  * it inside its own resolution span when the access token is expired.
  */
 export class ConnectionRenewer {
@@ -260,8 +260,8 @@ export class ConnectionRenewer {
   readonly #allowInsecureConnection: boolean;
   readonly #lockAcquireTimeoutMs: number;
   readonly #log: RenewalLogger;
-  /** The cheap local coalescer BENEATH the lock (ADR-0007 §Implementation
-   * Notes): same-key callers in THIS process share one attempt's promise. */
+  /** The cheap local coalescer BENEATH the lock: same-key callers in THIS
+   * process share one attempt's promise. */
   readonly #inFlight = new Map<string, Promise<RenewalResult>>();
 
   constructor(deps: RenewalDeps) {
@@ -332,7 +332,7 @@ export class ConnectionRenewer {
 
   async #renew(target: RenewalTarget): Promise<RenewalResult> {
     // Fast path — no lock, no vendor call, when nothing is due. The row being
-    // expired (or flagged by criterion 40) is the only reason to take a lock.
+    // expired (or pre-expiry-401 flagged) is the only reason to take a lock.
     const initial = await this.#readRow(null, target).catch(() => null);
     if (initial === null || initial.status !== "live") {
       return { outcome: "reconnect_required" };
@@ -344,7 +344,7 @@ export class ConnectionRenewer {
   }
 
   /**
-   * The advisory-lock bracket (ADR-0007). The lock is SESSION-level on a
+   * The advisory-lock bracket. The lock is SESSION-level on a
    * dedicated checked-out client — the `withPooledClient` lifecycle precedent:
    * checked out once, released exactly once, on every exit path.
    */
@@ -360,7 +360,7 @@ export class ConnectionRenewer {
       try {
         await client.query(`SELECT pg_advisory_lock($1::bigint)`, [key]);
       } catch {
-        // The bounded block expired (a loser's exit — ADR-0007): re-read once,
+        // The bounded block expired (a loser's exit): re-read once,
         // proceed if a winner renewed already, otherwise fail temporarily.
         // Nothing was acquired, so there is nothing to unlock and the client
         // is returned cleanly.
@@ -384,7 +384,7 @@ export class ConnectionRenewer {
   }
 
   /**
-   * Holding the lock: re-read (a winner may have renewed already — ADR-0007's
+   * Holding the lock: re-read (a winner may have renewed already — the
    * re-read-after-acquire), then either proceed on the fresh row or take the
    * vendor round-trip and store the result under the CAS. Every branch
    * answers an outcome; nothing rethrows (the unlock in the caller's finally
@@ -436,7 +436,7 @@ export class ConnectionRenewer {
       return { outcome: "temporary_failure" };
     }
 
-    // The vendor round-trip. NO retry within this attempt (criterion 37): a
+    // The vendor round-trip. NO retry within this attempt: a
     // retry would re-present the refresh token this call may have consumed.
     try {
       const token = await refreshTokenGrant(config, oldRefreshToken);
@@ -458,7 +458,7 @@ export class ConnectionRenewer {
   /**
    * The gate + CAS store. The swap is ONE UPDATE: material, expiry, granted
    * scopes, `lastRenewedAt`, and — for a rotating response — the old material
-   * ledger-marked in the same statement (ADR-0008's rule). The CAS predicate
+   * ledger-marked in the same statement. The CAS predicate
    * (`material` as-read, status still live) makes a concurrent disconnect,
    * invalidation, or reconnect-upsert a LOSS rather than a clobber.
    */
@@ -469,8 +469,8 @@ export class ConnectionRenewer {
     envelope: ConnectionMaterial,
     token: Awaited<ReturnType<typeof refreshTokenGrant>>,
   ): Promise<RenewalResult> {
-    // A usable positive lifetime (criterion 35): `expires_in` may be absent
-    // per RFC 6749 §4.2.2's MAY — criterion 35 does not tolerate it.
+    // A usable positive lifetime: `expires_in` may be absent
+    // per RFC 6749 §4.2.2's MAY — the operation does not tolerate it.
     if (
       typeof token.expires_in !== "number" ||
       !Number.isFinite(token.expires_in) ||
@@ -487,7 +487,7 @@ export class ConnectionRenewer {
     // A response that names its granted scopes must still cover every
     // configured permission — an omitted field changes nothing (the same
     // omitted-means-granted rule the exchange's gate applies). A narrowed set
-    // is an explicit loss of required permissions (criterion 35).
+    // is an explicit loss of required permissions.
     const grantedScopes =
       typeof token.scope === "string"
         ? token.scope.split(" ").filter((s) => s.length > 0)
@@ -513,8 +513,8 @@ export class ConnectionRenewer {
     } catch {
       // A seal (custody) failure AFTER the vendor answered. With a replacement
       // received, the presented refresh token was consumed by the rotation and
-      // nothing usable was SAVED — criterion 39's uncertain rotation, whatever
-      // the vendor's rotation habit. Without one, the old refresh token stands
+      // nothing usable was SAVED — an uncertain rotation, whatever the
+      // vendor's rotation habit. Without one, the old refresh token stands
       // unharmed — the row is preserved and a later attempt may try again.
       if (rotating) {
         await this.#requireReconnection(client, row, "egress.renewal.seal_failed_after_rotation");
@@ -553,12 +553,12 @@ export class ConnectionRenewer {
     // reconnect upsert won the row while the vendor call ran. The material
     // just sealed is orphaned (no row references it). In the rotating case
     // both sealed references are live, unreferenced, and ours alone —
-    // ledger-mark them for the sweep's destroy (T-0025), the portal's
+    // ledger-mark them for the sweep's destroy, the portal's
     // lost-race compensation pattern (completion.ts). In the non-rotating
     // case the new envelope would carry the RETAINED old refresh material,
-    // which the row (or its replacement) may still reference — criterion 48
-    // forbids retiring a current connection's material — so only the new
-    // access reference is abandoned, expiring uselessly: ADR-0008's accepted
+    // which the row (or its replacement) may still reference — a current
+    // connection's material is never retired — so only the new
+    // access reference is abandoned, expiring uselessly: the accepted
     // residual class, not a new failure mode.
     if (rotating) {
       await client
@@ -576,7 +576,7 @@ export class ConnectionRenewer {
   }
 
   /**
-   * A lost race, per the design (criterion 32): an older renewal cannot
+   * A lost race: an older renewal cannot
    * replace a newer connection or reverse a disconnection. Re-read once: a
    * live, fresh row means fresh usable material exists — proceed on it;
    * anything else means the connection as-was is gone.
@@ -592,7 +592,7 @@ export class ConnectionRenewer {
   /**
    * The row flip both `uncertain_rotation` and an explicit permission loss
    * share: status → reconnect-needed and the abandoned material ledger-marked
-   * in the SAME UPDATE (the invalidation writer ADR-0008 names). CAS-guarded —
+   * in the SAME UPDATE. CAS-guarded —
    * a row that moved on under us has its own fate; the outcome stands either
    * way, because what was observed governs whether the OLD token may ever be
    * re-presented (it may not).

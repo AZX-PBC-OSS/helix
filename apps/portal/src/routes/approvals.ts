@@ -26,7 +26,7 @@ import { alreadyDecided, claimPendingRequest } from "../approvals/service.js";
 /**
  * Fetch the decided (non-pending) approval requests for a set of apps, newest
  * decision first, grouped by `appId`. Feeds {@link summarizePriorDecisions} so
- * the admin queue can flag a refiled grant that was already refused (issue #26).
+ * the admin queue can flag a refiled grant that was already refused.
  * One batched query over the `appId` index — no per-row N+1.
  */
 async function priorDecisionsByApp(
@@ -126,7 +126,7 @@ function assertSeparationOfDuty(
 }
 
 /**
- * The apply-time provider conflict (T-0009, ADR-0004): a provider-bound
+ * The apply-time provider conflict: a provider-bound
  * request's stamps were recorded at filing, and approving after the provider
  * moved on — a sensitive edit advanced the revision, or the row was deleted —
  * would approve access to a configuration nobody reviewed. The rule itself is
@@ -196,7 +196,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         include: { app: { select: { slug: true, displayName: true } } },
       });
 
-      // Enrich each row with prior-decision context on its app (issue #26): a
+      // Enrich each row with prior-decision context on its app: a
       // refiled request is otherwise indistinguishable from a first-time one.
       // One batched query over the queue's apps (uses the `appId` index), grouped
       // in memory — read-side only, nothing stored. See summarizePriorDecisions.
@@ -278,7 +278,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
         // Claim the transition BEFORE touching the `apps` row. A withdraw or deny
         // that landed while this transaction was reading takes the request out of
         // `pending`, and the elevated deltas must not be applied to an app whose
-        // request was closed by someone else (issue #24). The status transition is
+        // request was closed by someone else. The status transition is
         // what gates the effective-state write — not the read above it.
         const claim = await claimPendingRequest(tx, request.id, {
           status: "approved",
@@ -436,7 +436,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
           decidedBy: actor.sub,
           decidedAt: new Date(),
         });
-        // The case issue #24 is about: an approve that committed while this
+        // The case the claim guards against: an approve that committed while this
         // transaction was reading has already applied the deltas, so overwriting
         // the status here would advertise a withdrawal that did not happen.
         if (!claim.claimed) return alreadyDecided(claim.row, ["withdrawn"]);

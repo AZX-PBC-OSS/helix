@@ -39,27 +39,28 @@ import { testAuthConfig, testEdgeConfig } from "@azx-pbc/edge/test/config";
 import { appPageHtml } from "./appFixture.js";
 
 /**
- * The lane's world (I-02 T-0031, ADR-0010 part 2): the real edge, portal,
+ * The lane's world: the real edge, portal,
  * egress and dev IdP composed the way production composes them — the
- * connectionsJourney.integration.test.ts shape (T-0030) — with every
+ * connectionsJourney.integration.test.ts shape — with every
  * browser-facing hop on real TLS, because this composition is driven by a REAL
  * CHROMIUM, not by `app.inject()`.
  *
  * Browser boundary: the edge terminates no TLS of its own here (its server.ts
  * would bind the mkcert files); the lane puts a TLS terminator — a raw socket
- * pump, the same test infrastructure T-0030 fronts the fixture vendor with —
+ * pump, the same one the integration test fronts the fixture vendor with —
  * between the browser and the edge's plain-HTTP listener. Chromium maps the
  * dev base domain to 127.0.0.1 through `--host-resolver-rules` (no /etc/hosts
  * edit, so the lane is self-sufficient in CI), and runs headed under Xvfb with
  * Playwright's `--disable-popup-blocking` default REMOVED: the real popup
- * blocker must be in the engine for the blocked-open journey (criterion 26) to
+ * blocker must be in the engine for the blocked-open journey to
  * be engine evidence rather than a stub — under CDP automation defaults the
  * blocker never fires (measured; see the README).
  *
  * Arrange vs act: apps, providers, bindings, approvals and the app-user
  * session are arranged — through the portal's real API and the real session
- * store, the same arrange surface T-0030 uses; every step of the consent
- * journey itself is the browser's act. The lane never inserts a connection.
+ * store, the same arrange surface the integration test uses; every step of
+ * the consent journey itself is the browser's act. The lane never inserts a
+ * connection.
  *
  * Identity continuity: the app user IS a dev-IdP fixture user (alice). The
  * edge session is arranged with her `oid`, and the portal SPA's real OIDC
@@ -265,7 +266,7 @@ export class LaneWorld {
   readonly instructionKey = deriveInstructionKey(randomBytes(48));
 
   // Custody: shared (the portal seals, egress opens) + delegated (egress only,
-  // never the portal — ADR-0006 part 1), the T-0030 split.
+  // never the portal).
   readonly portalCustody: SecretStore = createSecretStore({ devMasterKey: randomBytes(32) });
   readonly delegatedCustody: SecretStore = createSecretStore({ devMasterKey: randomBytes(32) });
 
@@ -318,8 +319,8 @@ export class LaneWorld {
 
   /** One TLS terminator in front of a vendor's authorize screen: the popup
    * navigates it over https (the entry points' redirect-hygiene bar) while the
-   * vendor's own listener stays plain http — the T-0030 pump, per fixture,
-   * with the VendorFront's hold/forged knobs at the boundary. */
+   * vendor's own listener stays plain http — one pump per fixture, with
+   * the VendorFront's hold/forged knobs at the boundary. */
   async frontVendorWithTls(vendor: RunningDevOAuthVendor): Promise<VendorFront> {
     const sockets = new Set<Socket>();
     const front = new VendorFront("");
@@ -384,7 +385,7 @@ export class LaneWorld {
     const repoRoot = join(import.meta.dirname, "../..");
     execSync("pnpm --filter @azx-pbc/portal-web build", { stdio: "pipe", cwd: repoRoot });
 
-    // ── Scratch database, from the same migrations (the T-0030 pattern) ──
+    // ── Scratch database, from the same migrations ──
     const adminUrl = OWNER_URL.replace(/\/[^/]+$/, "/helix");
     execSync(`psql "${adminUrl}" -c "DROP DATABASE IF EXISTS ${LANE_DB} WITH (FORCE)"`, {
       stdio: "pipe",
@@ -625,7 +626,7 @@ export class LaneWorld {
 
   // ── Arrange (through real surfaces) ────────────────────────────────────────
 
-  /** Owner-DSN query for arrange-time state and assertion polls (T-0030's). */
+  /** Owner-DSN query for arrange-time state and assertion polls. */
   async ownerQuery<T extends Record<string, unknown>>(
     sql: string,
     values: unknown[] = [],
@@ -840,7 +841,7 @@ export class LaneWorld {
     };
   }
 
-  /** Poll observable state (no fixed sleeps) — the T-0030 helper. */
+  /** Poll observable state (no fixed sleeps). */
   async pollUntil<T>(attempt: () => Promise<T | null>, label: string, ms = 10_000): Promise<T> {
     const deadline = Date.now() + ms;
     for (;;) {

@@ -718,7 +718,7 @@ describe("LLM upstream config (ADR-0046)", () => {
   });
 });
 
-describe("the edge↔portal internal-JWT key (HELIX_INTERNAL_SECRET, I-02 ADR-0003)", () => {
+describe("the edge↔portal internal-JWT key (HELIX_INTERNAL_SECRET)", () => {
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",

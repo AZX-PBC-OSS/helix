@@ -24,16 +24,16 @@ import { describeTokenPlacement } from "../../lib/providerForm";
 import { ProviderImportCard } from "./ProviderImportCard";
 
 /**
- * Provider administration list (`/admin/providers`, I-02 T-0026) — the
- * administrator's vendor OAuth registrations (spec §Provider administration).
+ * Provider administration list (`/admin/providers`) — the
+ * administrator's vendor OAuth registrations.
  *
- * Refresh cadence (criterion 13): page entry, after every completed action
+ * Refresh cadence: page entry, after every completed action
  * (each mutation invalidates the list key), the explicit Refresh, and every
  * 30 s while visible — paused while hidden, refreshed on return. A failed
  * refresh keeps the loaded rows with a polite stale indication; without prior
  * data the page shows an error, never an empty successful list.
  *
- * Import/export (I-02 T-0027): each card carries an Export action, and the
+ * Import/export: each card carries an Export action, and the
  * import card below the list holds the preview-first import flow.
  */
 
@@ -56,7 +56,7 @@ function ProviderCard({ provider: p }: { provider: ProviderMetadata }) {
   const [exportError, setExportError] = useState<string | null>(null);
 
   /**
-   * Export (criterion 11): an authorized read — a browser navigation carries no
+   * Export: an authorized read — a browser navigation carries no
    * bearer header, so the document comes back through fetchText and is handed
    * to the download seam as a Blob. The 200 body is verified to BE a provider
    * export before anything is saved: a drifted or partial read is surfaced as a
@@ -272,7 +272,7 @@ export function ProvidersPage() {
         }
       />
 
-      {/* The fixed OAuth callback (criterion 2) — served at runtime beside the
+      {/* The fixed OAuth callback — served at runtime beside the
           rows, never a build-time variable; the administrator registers this
           exact value with the vendor. */}
       {callbackUrl && (
@@ -293,7 +293,7 @@ export function ProvidersPage() {
 
       {staleHint}
 
-      {/* The env filter wraps above the list (design.md §Responsive Behavior). */}
+      {/* The env filter wraps above the list. */}
       <Group justify="space-between" align="center" mb={16} wrap="wrap" gap="md">
         <SegmentedControl
           aria-label="Filter by environment"

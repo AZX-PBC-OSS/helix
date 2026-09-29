@@ -189,7 +189,7 @@ describe("the status route — the pass-through contract", () => {
     expect(body.providerRef).toBe("asana");
     expect(seen.body).not.toContain("callbackUrl");
     expect(seen.body).not.toContain("openerOrigin");
-    // T-0006's per-call internal JWT verifies under the portal's rule.
+    // The per-call internal JWT verifies under the portal's rule.
     expect(seen.headers[INTERNAL_AUTH_HEADER]).toBeUndefined();
     expect(await verifiesUnderPortalRule(seen.internalToken, INTERNAL_KEY)).toBe(true);
     await h.app.close();
@@ -236,7 +236,7 @@ describe("the status route — the pass-through contract", () => {
     });
     expect(res.statusCode).toBe(401);
     expect(res.json().error.code).toBe("unauthorized");
-    // The refusal is edge-side: the portal heard nothing (criterion 21 — a
+    // The refusal is edge-side: the portal heard nothing (a
     // pseudonym can never hold a connection, so there is nothing to ask).
     expect(h.portal.requests).toHaveLength(0);
     await h.app.close();
@@ -314,7 +314,7 @@ describe("the status route — adversarial", () => {
     const h = buildStatusEdge();
     // A skew producer answering extra fields: the shared schema is strict, so
     // the parse throws and the route answers the fixed 503 — the extra field
-    // can never reach the app (the ADR-0005 discipline).
+    // can never reach the app.
     h.portal.body = JSON.stringify({ status: "connected", accessToken: "SECRET-VALUE" });
     const token = await h.signIn();
     const res = await h.app.inject({

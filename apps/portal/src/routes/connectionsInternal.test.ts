@@ -23,8 +23,7 @@ import { deriveInternalKey, resolveInternalSecret } from "../internalJwt.js";
 import { buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
- * The internal consent routes (I-02 T-0012, ADR-0002 + ADR-0003 §Shared
- * ground): authorization fails closed on every unverified token shape, the
+ * The internal consent routes: authorization fails closed on every unverified token shape, the
  * consult and cancel wire contracts round-trip through the real routes, and —
  * the adversarial scan — no serialized response or assembled authorize URL
  * carries credential or bearer material beyond OAuth's own state/PKCE
@@ -185,7 +184,7 @@ afterAll(async () => {
   await t.close();
 });
 
-describe("internal authorization fails closed (ADR-0003)", () => {
+describe("internal authorization fails closed", () => {
   it("refuses a missing token on every operation", async () => {
     for (const url of [CONSULT_URL, CANCEL_URL, STATUS_URL]) {
       const res = await t.app.inject({ method: "POST", url, payload: {} });

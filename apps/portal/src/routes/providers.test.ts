@@ -6,7 +6,7 @@ import { connectionsCallbackUrl } from "../deployment.js";
 import { authHeader, buildTestApp, type TestApp } from "../test/harness.js";
 
 /**
- * Connection-provider CRUD (I-02 T-0008): admin-direct, audited, metadata-only
+ * Connection-provider CRUD: admin-direct, audited, metadata-only
  * reads, sealed credentials, the loaded-revision CAS on edit, and the fixed
  * callback hint derived from the apps base. The dev token carries the admin
  * group (PORTAL_DEV_ACTOR_GROUPS) for the main suite; the non-admin gate gets
@@ -29,7 +29,7 @@ afterAll(async () => {
 const CLIENT_ID = "vendor-client-id-xyz";
 const CLIENT_SECRET = "vendor-client-secret-abc";
 
-/** Every configured field, per design.md §Provider create/edit's form. */
+/** Every configured field on the create/edit form. */
 const createBody = (ref: string, overrides: Record<string, unknown> = {}) => ({
   ref,
   kind: "rest-delegated",
@@ -164,7 +164,7 @@ describe("duplicate creation conflicts per environment", () => {
     expect(dup.json().error.message).toContain(ref);
     expect(dup.json().error.message).toContain("prod");
 
-    // Env-unique ref: the same ref lands in the dev tier (criterion 5).
+    // Env-unique ref: the same ref lands in the dev tier.
     const dev = await post(createBody(ref, { env: "dev" }));
     expect(dev.statusCode).toBe(201);
     expect(dev.json().env).toBe("dev");
@@ -193,7 +193,7 @@ describe("editing with the revision CAS", () => {
       url: `/api/v1/providers/${meta.id}`,
       headers: authHeader(),
       // A revision that was never current is stale the same way one from
-      // before a peer's edit is (ADR-0004's compare-and-swap).
+      // before a peer's edit is (the compare-and-swap).
       payload: editBody(meta.revision + 7, { displayName: "Overwritten?" }),
     });
     expect(stale.statusCode).toBe(409);
@@ -212,7 +212,7 @@ describe("editing with the revision CAS", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  // Environment is immutable after create (criterion 5): there is no route to
+  // Environment is immutable after create: there is no route to
   // move it, and the update body has no env field — the strict schema refuses
   // one rather than ignoring it, so a client that sends env learns the body is
   // wrong instead of silently not moving the row.
@@ -286,8 +286,8 @@ describe("client-secret rotation (blank-vs-supplied)", () => {
 
 describe("the fixed callback hint", () => {
   // The pin: the served value is exactly the reserved-subdomain derivation —
-  // `auth.<APP_PUBLIC_BASE host>` + `/connections/callback` (architecture
-  // ADR-0001 §Implementation Notes). If the derivation drifts from the edge's
+  // `auth.<APP_PUBLIC_BASE host>` + `/connections/callback`. If the derivation
+  // drifts from the edge's
   // topology (hosts.ts classifies the `auth` label; connectionsProxy.ts
   // forwards the `/connections` prefix to this portal), administrators copy a
   // callback URL the vendor's redirects will never reach, so this fails loud.

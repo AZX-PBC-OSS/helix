@@ -3,12 +3,12 @@ import { z } from "zod";
 /**
  * The fixture's mode vocabulary — the shared test surface every consumer
  * suite (portal callback, egress renewal, edge flow, browser lane) imports
- * rather than restating (I-02 ADR-0010 §Shared ground).
+ * rather than restating.
  *
  * These are test knobs, not claims about any real vendor's behavior. Nothing
  * here may be read as "vendors rotate refresh tokens" or "vendors use this
  * scope convention" — real-vendor facts belong to the Asana acceptance
- * exercise, which no fixture substitutes for (spec criterion 55).
+ * exercise, which no fixture substitutes for.
  */
 
 /**
@@ -19,8 +19,7 @@ import { z } from "zod";
  * - `rotating` — a refresh grant retires the presented refresh token and
  *   issues a replacement, which the response carries as `refresh_token`.
  * - `non-rotating` — a refresh grant succeeds and omits `refresh_token`; the
- *   presented token stays valid (the retain-on-omission semantics criterion
- *   35 gives the caller).
+ *   presented token stays valid (the retain-on-omission semantics).
  * - `hang` — every token request stalls until the caller gives up (the
  *   response is never written while the client is listening), to exercise
  *   timeout handling.
@@ -45,10 +44,9 @@ export const VendorModesSchema = z.object({
 export type VendorModes = z.infer<typeof VendorModesSchema>;
 
 /**
- * The popup journeys the real-browser lane (I-02 ADR-0010 part 2) drives
- * against the fixture — spec criterion 53's list. Suites import this list so
- * a journey added to the fixture's contract is visibly missing from any lane
- * that has not covered it yet.
+ * The popup journeys the real-browser lane drives against the fixture.
+ * Suites import this list so a journey added to the fixture's contract is
+ * visibly missing from any lane that has not covered it yet.
  */
 export const JOURNEYS = [
   "popup-consent-success",

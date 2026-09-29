@@ -38,17 +38,17 @@ export interface EgressInstruments {
    * Attached/detached by whoever holds the listener's lifecycle.
    */
   providersListenStatus: ObservableGauge;
-  /** Code-exchange operations by `outcome` and `env` (I-02 T-0019). */
+  /** Code-exchange operations by `outcome` and `env`. */
   exchanges: Counter;
   /**
-   * Token-renewal operations by `outcome` and `env` (I-02 T-0021) — the
+   * Token-renewal operations by `outcome` and `env` — the
    * EGRESS_RENEWAL_OUTCOMES vocabulary. No identity dimension.
    */
   renewals: Counter;
   /**
    * Credential-retirement ledger entries by `outcome` (retired / failed /
-   * claimed_lost — EGRESS_RETIREMENT_OUTCOMES) and `env` (I-02 T-0025,
-   * ADR-0008). Failed retirement is the alertable word here and on the fixed
+   * claimed_lost — EGRESS_RETIREMENT_OUTCOMES) and `env`. Failed retirement is
+   * the alertable word here and on the fixed
    * `egress.connection_retire_failed` warn event; `claimed_lost` is the
    * sweep losing a claim race to a writer — the design working, not a fault.
    */

@@ -29,30 +29,31 @@ import { deriveExchangeKey, mintExchangeToken, resolveExchangeSecret } from "../
 import { withSpan, instruments } from "../telemetry.js";
 
 /**
- * The consent callback's completion state machine (I-02 T-0020; architecture
- * ADR-0001 §Decision) — the control-plane half of consent completion, and the
+ * The consent callback's completion state machine — the control-plane half of
+ * consent completion, and the
  * OIDC-handoff-class surface of this initiative: the vendor's redirect becomes
  * a saved connection or a legible failure, atomically and against forgery.
  *
  * The route (`routes/connectionsPages.ts`) parses the query and renders the
- * pages; every state decision lives here. The order is fixed by ADR-0001:
+ * pages; every state decision lives here. The order is fixed:
  *
- * 1. **Claim** the attempt by `state` — atomic single-use (T-0012's probe; a
+ * 1. **Claim** the attempt by `state` — atomic single-use (a
  *    DELETE is the claim, so exactly one completion can ever win an attempt).
  *    A forged, reused, or cross-context `state` claims nothing; a cancelled or
  *    expired one refuses without being consumed.
- * 2. **Delegate** the code exchange to egress (`POST /exchange`, T-0019) under
+ * 2. **Delegate** the code exchange to egress (`POST /exchange`) under
  *    a freshly minted portal→egress JWT. The portal never handles plaintext
- *    delegated tokens — egress validates the criterion-27 gate at receipt and
+ *    delegated tokens — egress validates the granted-permissions gate at
+ *    receipt and
  *    seals there; the response is metadata plus sealed references only.
- * 3. **Save** with the CAS/upsert contract (Q23 as amended): at most one
+ * 3. **Save** with the CAS/upsert contract: at most one
  *    current connection per (userOid, providerId, env). A live row cannot be
  *    replaced here — a racing loser renders conflict and its sealed material
- *    is ledger-marked for the egress sweep in the SAME transaction (ADR-0008);
+ *    is ledger-marked for the egress sweep in the SAME transaction;
  *    a dead row upserts. There is no portal-side destroy, ever.
  *
  * The completion message's target origin is the attempt's recorded
- * `openerOrigin` and nothing else (ADR-0002 §Shared ground); the messages
+ * `openerOrigin` and nothing else; the messages
  * carry outcomes only.
  */
 
@@ -74,8 +75,8 @@ function count(outcome: string): void {
 /**
  * What the route renders for one callback hit.
  *
- * - `page: "refusal"` — the fixed, scriptless refusal page `pages.ts` ships
- *   (T-0016's), for a `state` that claims nothing: malformed, forged, reused,
+ * - `page: "refusal"` — the fixed, scriptless refusal page `pages.ts` ships,
+ *   for a `state` that claims nothing: malformed, forged, reused,
  *   or cross-context. No message exists (no recorded origin), no provider is
  *   named, and every shape of nothing renders identically — a failed lookup
  *   must not become an oracle for which states exist. The span outcome is
@@ -83,8 +84,8 @@ function count(outcome: string): void {
  * - `page: "completion"` — a design page-table page. `message` +
  *   `targetOrigin` are set together (all-or-nothing): the outcome message and
  *   its exact postMessage target, the opener origin recorded on the pending
- *   attempt (ADR-0002 §Shared ground — derived by nothing else). Null posts
- *   nothing. Messages carry outcomes only, never credentials (criterion 22).
+ *   attempt (derived by nothing else). Null posts
+ *   nothing. Messages carry outcomes only, never credentials.
  */
 export type ConsentCompletion =
   | { page: "refusal"; outcome: "denied" }
@@ -98,13 +99,13 @@ export type ConsentCompletion =
     };
 
 /**
- * The bounded message each outcome posts (design.md §Completion message —
- * outcomes only, never credentials). `conflict` is the design's one explicit
- * error-reason pairing ("a losing saver reports error/conflict", criterion
- * 32); the other failures post the plain `error` word — the schema's legal
+ * The bounded message each outcome posts
+ * (outcomes only, never credentials). `conflict` is the one explicit
+ * error-reason pairing ("a losing saver reports error/conflict"); the other
+ * failures post the plain `error` word — the schema's legal
  * null-reason form, because the bounded reason list has no honest word for
- * them. `expired` posts the helper's `timeout` outcome: criterion 25 makes
- * timeout distinguishable from cancellation to the app, and this message is
+ * them. `expired` posts the helper's `timeout` outcome: timeout is
+ * distinguishable from cancellation to the app, and this message is
  * where the distinction travels.
  */
 function messageFor(
@@ -193,8 +194,8 @@ async function complete(
   span: Span,
 ): Promise<ConsentCompletion> {
   // 1 — the state is the attempt's only lookup key, and its entropy is the
-  // anti-forgery property (spec criterion 28). A malformed or missing one is
-  // a probe: the fixed refusal page, nothing claimed (the T-0016 posture for
+  // anti-forgery property. A malformed or missing one is
+  // a probe: the fixed refusal page, nothing claimed (the same posture as
   // the sibling redemption route — a failed lookup must not become an oracle).
   const parsedState = query.state == null ? null : ConsentStateSchema.safeParse(query.state);
   if (!parsedState?.success) {
@@ -228,8 +229,8 @@ async function complete(
   }
   span.setAttributes({ [ATTR_PROVIDER_REF]: providerRow.ref });
 
-  // 4 — the vendor declined: any OAuth error parameter is the declined case
-  // (design's page table). The attempt is consumed; nothing is saved.
+  // 4 — the vendor declined: any OAuth error parameter is the declined case.
+  // The attempt is consumed; nothing is saved.
   if (query.error != null) {
     return {
       page: "completion",
@@ -240,7 +241,7 @@ async function complete(
     };
   }
 
-  // 5 — the delegated exchange (ADR-0001: every vendor OAuth call originates
+  // 5 — the delegated exchange (every vendor OAuth call originates
   // in the mechanism plane). The portal supplies the attempt's captured values
   // verbatim and the convention-derived callback URL; egress gates and seals.
   const response = await delegateExchange(attempt, query.code);
@@ -257,7 +258,7 @@ async function complete(
             displayName: providerRow.displayName,
           }
         : {
-            // A competing completion saved first (criterion 32): the conflict
+            // A competing completion saved first: the conflict
             // page, and this attempt's sealed material is already ledger-
             // marked for the sweep by the save's transaction.
             page: "completion",
@@ -268,16 +269,16 @@ async function complete(
           };
     }
     case "rejected":
-      // The criterion-27 gate refused at receipt; nothing was sealed. The
-      // design renders the permission case differently from the incomplete-
-      // token case (its page table), both with fixed content.
+      // The granted-permissions gate refused at receipt; nothing was sealed. The
+      // permission case renders differently from the incomplete-token
+      // case, both with fixed content.
       return completion(
         response.reason === "missing_permissions" ? "failed_permissions" : "failed_provider",
         providerRow,
         attempt.openerOrigin,
       );
     case "provider_unavailable":
-      // Unknown/deleted provider or a stale revision stamp (ADR-0004) — the
+      // Unknown/deleted provider or a stale revision stamp — the
       // operator-actionable failed-provider page.
       return completion("failed_provider", providerRow, attempt.openerOrigin);
     case "exchange_failed":
@@ -302,16 +303,15 @@ function completion(
 }
 
 /**
- * The refused-claim pages. `expired` and `cancelled` have their own design
- * pages, and both post their outcome to the recorded opener — the app's wait
- * ends legibly (criterion 25 makes timeout/denial/cancellation distinguishable
+ * The refused-claim pages. `expired` and `cancelled` have their own pages,
+ * and both post their outcome to the recorded opener — the app's wait
+ * ends legibly (timeout/denial/cancellation are distinguishable
  * to the app, and the message is where that travels). A cancelled attempt
  * whose connection row was invalidated renders DISCONNECTED instead: the
- * disconnect that killed this attempt (T-0010/T-0024's kill-by-cancelledAt)
- * is the reason it can no longer establish anything (criterion 44). A refused
+ * disconnect that killed this attempt (the kill-by-cancelledAt mark)
+ * is the reason it can no longer establish anything. A refused
  * attempt the sweep already removed renders the page without a message — the
- * recorded origin is gone and nothing may re-derive it (ADR-0002 §Shared
- * ground).
+ * recorded origin is gone and nothing may re-derive it.
  */
 async function completeRefusal(
   prisma: PrismaClient,
@@ -372,8 +372,8 @@ async function completeRefusal(
 }
 
 /**
- * The delegated exchange: mint the portal→egress JWT (T-0006's mint side) and
- * call egress `POST /exchange` (T-0019) with the attempt's captured values
+ * The delegated exchange: mint the portal→egress JWT and
+ * call egress `POST /exchange` with the attempt's captured values
  * verbatim. Every failure — the delegation unwired, transport errors, a
  * non-200 refusal, an unparseable body — collapses to the one fixed outcome
  * word; nothing about an error travels (the request body carries
@@ -391,7 +391,7 @@ async function delegateExchange(
   const base = resolveEgressBaseUrl();
   if (!secret || !base) {
     // The delegation is unwired: the callback refuses rather than degrades —
-    // there is no portal-side exchange to fall back to (ADR-0001).
+    // there is no portal-side exchange to fall back to.
     return exchangeFailed;
   }
 
@@ -433,15 +433,16 @@ async function delegateExchange(
 }
 
 /**
- * The CAS/upsert save (Q23 as amended) plus the `connection.connected` audit
+ * The CAS/upsert save plus the `connection.connected` audit
  * event, one transaction: INSERT the connection, or — over a dead
  * (`reconnect-needed`/`invalidated`) row — UPDATE it live, ledger-marking the
- * OLD material for the egress sweep in the same UPDATE (ADR-0008's rule). A
+ * OLD material for the egress sweep in the same UPDATE (ADR-0031 amendment
+ * item 12). A
  * LIVE row can never be replaced here: the DO UPDATE's predicate excludes it,
  * the statement returns zero rows, and the same transaction ledger-marks THIS
  * completion's sealed material on the row that beat it — the lost race's
- * compensation, never a portal-side destroy (ADR-0008; the single-slot
- * residual is T-0010's precedent). Criterion 47's sweep retires the mark
+ * compensation, never a portal-side destroy (the single-slot
+ * residual is the sensitive-edit precedent). The sweep retires the mark
  * within its bound.
  *
  * Returns true when this completion saved, false when it lost the race.
@@ -501,7 +502,7 @@ async function saveExchangedConnection(
 
     // The conflict branch: the row that beat this completion is live. Mark
     // THIS attempt's sealed material for retirement in the SAME transaction —
-    // the compensation ADR-0008 mandates for a lost race. The predicate
+    // the compensation for a lost race. The predicate
     // re-asserts liveness: a row that went dead between the two statements
     // (not reachable under the conflict's row lock, but the mark must never
     // change a non-live row's fate) leaves the material unmarked — the

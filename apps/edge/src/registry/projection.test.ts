@@ -244,7 +244,7 @@ describe("RegistryProjection", () => {
     }
   });
 
-  // The fetch grant's parse (I-02 T-0013): the widened credential view —
+  // The fetch grant's parse: the widened credential view —
   // keyless | secret name | provider binding — is manifest data only, fails
   // closed, and leaves the keyless/secret/shim meanings exactly as before.
   describe("fetch grant", () => {

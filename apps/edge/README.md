@@ -42,7 +42,7 @@ a worker that clears its cache and unregisters itself.
 
 Reserved platform routes never fall through to Blob. Platform hosts expose
 `GET /health`; the auth host also handles `/start` and `/callback` — and
-proxies `/connections/*` to the portal (I-02 ADR-0002 part 3): the consent
+proxies `/connections/*` to the portal: the consent
 callback and the portal-rendered completion pages are control-plane surfaces
 reached at the auth host through one narrow reverse proxy. The proxy carries a
 per-call internal JWT (`aud: portal`), strips any inbound version of that

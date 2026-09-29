@@ -95,10 +95,10 @@ function safeRequestHeaders(headers: FastifyRequest["headers"]): Record<string, 
 }
 
 /**
- * Map the egress outcome label to a ledger outcome — design.md decision 13's
+ * Map the egress outcome label to a ledger outcome — the ledger's outcome
  * granularity, restated at the consumer. `connection_required` is its own
  * label: "the caller has no usable connection" is a consent state, not a
- * policy refusal, and criterion 50's whole point is that the ledger separates
+ * policy refusal, and the ledger separates
  * the two. The provider-shaped codes (`provider_unavailable`,
  * `provider_misconfigured`) ledger as `refusal`, like egress's other 4xx
  * refusals. Everything else — a vendor throttle, a temporary renewal failure,
@@ -134,7 +134,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     // trust boundary below, and the captured labels must not follow it there —
     // AttestedInstructionSchema is deliberately the opaque id and nothing more.
     // `userKind` joins it only on a delegated mint, where egress needs the
-    // recorded kind to refuse anon/password callers (spec criterion 21); the
+    // recorded kind to refuse anon/password callers; the
     // display half (`userName`/`userEmail`) still never crosses.
     const { userOid, userKind } = identity;
 
@@ -236,9 +236,9 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     // the three shapes mints a credential field: a secret-bound origin names
     // the stored secret, a provider-bound origin names the delegated provider
     // ref (the user's connection to that provider is what egress injects — the
-    // edge holds no provider state and evaluates none, ADR-0004), and a
+    // edge holds no provider state and evaluates none), and a
     // keyless one carries neither. The union makes secret and provider
-    // mutually exclusive, so the instruction's XOR (ADR-0005) holds by
+    // mutually exclusive, so the instruction's XOR holds by
     // construction.
     const credential = entry.fetch.connections.get(target.origin);
     const connection = credential?.kind === "secret" ? credential.connection : null;
@@ -308,8 +308,8 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         method: req.method,
         path: target.pathname,
         ...(connection ? { connection } : {}),
-        // The delegated mint (I-02 T-0023): the provider ref, never a
-        // connection name — and T-0022 makes the caller's principal kind
+        // The delegated mint: the provider ref, never a
+        // connection name — and the caller's principal kind is
         // mandatory on a delegated instruction, stamped from the session's
         // recorded kind (the dev gateway's dev identity yields `dev` the same
         // way, through `meterIdentity`). A kindless caller — a session

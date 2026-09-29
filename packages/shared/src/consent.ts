@@ -4,35 +4,34 @@ import { SLUG_PATTERN } from "./app.js";
 import { ProviderRefSchema } from "./providers.js";
 
 /**
- * The consent-flow operation contracts (I-02 architecture ADR-0002 §Shared
- * ground) — the one definition for the internal edge→portal **consult** and
- * **cancel** operations. The edge's start route (T-0014), the dev gateway
- * (T-0016), the helper's cancellation (T-0017), and the callback (T-0020, via
- * the portal's claim probe) all build against these schemas; none restates a
+ * The consent-flow operation contracts — the one definition for the internal
+ * edge→portal **consult** and **cancel** operations. The edge's start route,
+ * the dev gateway, the helper's cancellation, and the callback (via the
+ * portal's claim probe) all build against these schemas; none restates a
  * field.
  *
  * The control plane owns all consent-flow state: the edge attests *who* is
  * asking (identity verified on its side, carried here as data), and the portal
  * decides — binding effectiveness, connection status — and writes the pending
- * attempt. `helix_edge` holds no grant on the flow table (ADR-0006 part 2), so
+ * attempt. `helix_edge` holds no grant on the flow table, so
  * every write happens behind these operations.
  *
  * The wire deliberately carries **no `env` field**. The identity union's kind
  * pins the tier portal-side — a `user` consult is a `prod` consult, a `dev`
- * consult is a `dev` consult — so no caller can parameterize the environment
- * (spec criterion 22; T-0016's constraint). ADR-0002's "developerOid + env:
- * dev" is this union's dev kind: the tier marker is the kind itself.
+ * consult is a `dev` consult — so no caller can parameterize the environment.
+ * The "developerOid + env: dev" pairing is this union's dev kind: the tier
+ * marker is the kind itself.
  */
 
-/** The consent attempt's lifetime (spec criterion 25): five minutes from consult. */
+/** The consent attempt's lifetime: five minutes from consult. */
 export const CONSENT_ATTEMPT_TTL_SECONDS = 300;
 
 /**
  * The OAuth `state` parameter: 256 bits of entropy, base64url — 43 unreserved
  * characters. It is the attempt's lookup key on the callback and the cancel
  * (unique, single-use), and the one value binding a vendor redirect to a
- * pending attempt, so its entropy is the anti-forgery property (spec
- * criterion 28). The same bound shapes the PKCE verifier (RFC 7636 §4.1).
+ * pending attempt, so its entropy is the anti-forgery property. The same
+ * bound shapes the PKCE verifier (RFC 7636 §4.1).
  */
 export const ConsentStateSchema = z.string().min(43).max(128);
 /** The dev journey's single-use handoff nonce — same entropy discipline as state. */
@@ -40,9 +39,9 @@ export const ConsentNonceSchema = z.string().min(16).max(128);
 
 /**
  * The correlation tag an app may attach to a consent start (`?attempt=`, the
- * raw entry) or that the helper mints per call (T-0017). The platform pages
+ * raw entry) or that the helper mints per call. The platform pages
  * echo it into the completion message, and receivers verify it matches when
- * supplied (criterion 28) — so its shape is bounded and URL-safe.
+ * supplied — so its shape is bounded and URL-safe.
  */
 export const ConsentAttemptTagSchema = z
   .string()
@@ -55,15 +54,16 @@ export const ConsentAttemptTagSchema = z
  *
  * - `user` — a signed-in Helix user on the app host; the prod tier. `userOid`
  *   is the session's verified principal oid (ADR-0048).
- * - `dev` — a dev-token caller through the dev gateway (T-0016); the dev
+ * - `dev` — a dev-token caller through the dev gateway; the dev
  *   tier. The attempt keys to the token's `developerOid` in the dev
  *   environment and carries the journey's single-use `nonce`, which the
  *   dev-gateway start route has already generated for the popup URL it will
- *   return. The nonce's entry/redemption route is T-0016's; the consult only
- *   writes it (unique — a replayed handoff URL cannot mint a second attempt).
+ *   return. The nonce's entry/redemption route is the dev gateway's; the
+ *   consult only writes it (unique — a replayed handoff URL cannot mint a
+ *   second attempt).
  *
  * Anonymous visitors and shared-password pseudonyms are absent on purpose:
- * they can never establish a delegated connection (spec criterion 21), so
+ * they can never establish a delegated connection, so
  * there is no identity shape that could carry one — the parse refuses them
  * upstream of any state decision.
  */
@@ -80,7 +80,7 @@ export type ConsentIdentity = z.infer<typeof ConsentIdentitySchema>;
 /**
  * http(s) URL without userinfo — the shape of both consult-carried URLs below
  * and of the exchange operation's `redirectUri` (the same edge-supplied
- * callback value, T-0019). The userinfo refusal is the provider-endpoint rule
+ * callback value). The userinfo refusal is the provider-endpoint rule
  * (client auth never rides a URL), applied to every URL the consent/exchange
  * seams carry for the same reason.
  */
@@ -98,23 +98,22 @@ export const HttpUrlNoUserinfoSchema = (() => {
 })();
 
 /**
- * `POST` body of the internal consult (ADR-0002 Decision — the edge sends the
+ * `POST` body of the internal consult (the edge sends the
  * verified caller identity, app, provider ref, opener origin, and callback
  * URL). Strict: an unknown key is a producer/consumer skew, and skew fails
- * closed (the ADR-0005 discipline).
+ * closed (the strict-parse discipline).
  *
  * - `openerOrigin` — the origin of the page that opened the consent popup,
  *   verified same-origin by the edge's start guard (or the dev token's
  *   validated Origin). The completion message's **exact target origin**
- *   (spec criterion 28) is recorded from this value and derived by nothing
- *   else (ADR-0002 §Shared ground). Parsed to its canonical origin so the
+ *   is recorded from this value and derived by nothing else. Parsed to its
+ *   canonical origin so the
  *   stored value compares equal to the postMessage target the completion page
  *   computes from it.
  * - `callbackUrl` — the edge-supplied OAuth callback URL, from the edge's own
- *   auth-host origin: the single source of that value (ADR-0001's ratified
- *   residual). The consult uses it verbatim as the authorize request's
- *   `redirect_uri` and never derives an alternative.
- */
+ *   auth-host origin: the single source of that value. The consult uses it
+ *   verbatim as the authorize request's
+ *   `redirect_uri` and never derives an alternative. */
 export const ConsultRequestSchema = z.strictObject({
   identity: ConsentIdentitySchema,
   appSlug: z.string().regex(SLUG_PATTERN, "must be a lowercase DNS label (a-z, 0-9, hyphen)"),
@@ -124,7 +123,7 @@ export const ConsultRequestSchema = z.strictObject({
 });
 export type ConsultRequest = z.infer<typeof ConsultRequestSchema>;
 
-/** The consult's terminal outcomes (ADR-0002 Decision) — the bounded set. */
+/** The consult's terminal outcomes — the bounded set. */
 export const CONSENT_CONSULT_OUTCOMES = ["started", "already_connected", "not_available"] as const;
 export type ConsultOutcome = (typeof CONSENT_CONSULT_OUTCOMES)[number];
 
@@ -137,7 +136,7 @@ export type ConsultOutcome = (typeof CONSENT_CONSULT_OUTCOMES)[number];
  * the edge-supplied callback URL, the fresh `state`, and the S256 PKCE
  * challenge. It carries only OAuth protocol parameters — the client secret
  * stays sealed on the provider row, and no token or bearer material ever
- * appears (spec criterion 22; the adversarial scan asserts this).
+ * appears (the adversarial scan asserts this).
  */
 export const ConsultResponseSchema = z.discriminatedUnion("outcome", [
   z.strictObject({ outcome: z.literal("already_connected") }),
@@ -147,8 +146,8 @@ export const ConsultResponseSchema = z.discriminatedUnion("outcome", [
 export type ConsultResponse = z.infer<typeof ConsultResponseSchema>;
 
 /**
- * `POST` body of the internal cancel (ADR-0002 Decision — own-attempts-only;
- * the helper's acknowledged cancellation, T-0017): which attempt, and the
+ * `POST` body of the internal cancel (own-attempts-only;
+ * the helper's acknowledged cancellation): which attempt, and the
  * identity claiming ownership of it. The attempt is named by its `state` —
  * the same single-use key the callback redeems, so cancel and completion
  * arbitrate over one lookup key.
@@ -219,7 +218,7 @@ export const ConnectionStatusResponseSchema = z.strictObject({
 export type ConnectionStatusResponse = z.infer<typeof ConnectionStatusResponseSchema>;
 
 /**
- * The app-facing body of `POST /_api/connections/attempt/cancel` (T-0017) —
+ * The app-facing body of `POST /_api/connections/attempt/cancel` —
  * the helper's cancellation acknowledgement after it observes the popup closed
  * without a completion message. The caller is the app's own page (the session
  * cookie authorizes it; the route re-checks origin), and it knows only what it
@@ -236,17 +235,17 @@ export type AttemptCancelRequest = z.infer<typeof AttemptCancelRequestSchema>;
 
 /**
  * The auth-host path the dev journey's popup opens — the one-time nonce entry
- * page (design.md §Dev-tier consent journey). The edge builds the returned
+ * page. The edge builds the returned
  * popup URL from this constant and the portal serves the route at it, through
- * the `/connections/*` reverse proxy (T-0015): one definition, so the two
+ * the `/connections/*` reverse proxy: one definition, so the two
  * planes cannot drift (the `CONNECTIONS_CALLBACK_PATH` keep-in-sync
  * convention, `apps/portal/src/deployment.ts`).
  */
 export const CONSENT_NONCE_ENTRY_PATH = "/connections/consent/start";
 
 /**
- * The fixed OAuth callback path the vendor redirects the popup to (I-02
- * ADR-0001 — one fixed callback per install): the auth host plus this path,
+ * The fixed OAuth callback path the vendor redirects the popup to — one fixed
+ * callback per install: the auth host plus this path,
  * reached through the edge's `/connections/*` reverse proxy, portal-served.
  * The edge's proxy prefix (`apps/edge/src/routing/connectionsProxy.ts`
  * `CONNECTIONS_PREFIX`) and the portal's route registration must keep matching
@@ -257,17 +256,17 @@ export const CONSENT_NONCE_ENTRY_PATH = "/connections/consent/start";
 export const CONNECTIONS_CALLBACK_PATH = "/connections/callback";
 
 /**
- * The dev-tier start route's response (I-02 design decision 4 — the one-time
+ * The dev-tier start route's response (the one-time
  * popup handoff): the dev app POSTs with its bearer token and receives either
  * a terminal outcome or a single-use popup URL.
  *
  * `popupUrl` is {@link CONSENT_NONCE_ENTRY_PATH} on the auth host with the
  * attempt's single-use `nonce` as the one query parameter — every component is
  * nonce/reference material, because the dev bearer token must never leave the
- * authenticated POST (spec criterion 22). The vendor authorize URL is
+ * authenticated POST. The vendor authorize URL is
  * deliberately **not** carried: the consult's assembled URL answers the prod
  * start route, and the dev journey re-derives it at nonce redemption from the
- * portal's stored attempt data (ADR-0002 §Implementation Notes), keeping the
+ * portal's stored attempt data, keeping the
  * PKCE verifier server-side.
  */
 export const DevConsentStartResponseSchema = z.discriminatedUnion("outcome", [
@@ -279,17 +278,17 @@ export type DevConsentStartResponse = z.infer<typeof DevConsentStartResponseSche
 
 /**
  * The app-facing outcome message every consent popup page posts to its opener
- * through `window.postMessage` before closing (I-02 design.md §Completion
- * message). Three parties build or consume this exact shape — the edge's
- * start-route terminal pages (T-0014), the documented helper's receiver
- * (T-0017), and the portal's completion pages (T-0020) — so it is defined once,
+ * through `window.postMessage` before closing. Three parties build or consume
+ * this exact shape — the edge's
+ * start-route terminal pages, the documented helper's receiver,
+ * and the portal's completion pages — so it is defined once,
  * here, and parsed at every producer; a receiver that type-checks its
  * `message` events against this schema can trust nothing else about the event.
  *
  * It is a notification, never an authorization grant: completion messages
- * carry outcomes only — never credentials, dev bearer tokens, or token values
- * (spec criterion 22) — and a message alone can never read as successful
- * consent to the platform (criterion 28's verification is about who sent it,
+ * carry outcomes only — never credentials, dev bearer tokens, or token
+ * values — and a message alone can never read as successful
+ * consent to the platform (the verification is about who sent it,
  * enforced on the receiving side).
  */
 export const HELIX_CONNECT_MESSAGE_SOURCE = "helix-connect";
@@ -297,8 +296,8 @@ export const HELIX_CONNECT_MESSAGE_SOURCE = "helix-connect";
 export const CONNECT_MESSAGE_VERSION = 1;
 
 /**
- * The message's outcome vocabulary — the helper's observable outcome set
- * (design.md §The connect helper). Platform pages post a subset of it; the
+ * The message's outcome vocabulary — the helper's observable outcome set.
+ * Platform pages post a subset of it; the
  * full set is the contract so a receiver's parsing never has to widen.
  */
 export const CONSENT_MESSAGE_OUTCOMES = [
@@ -313,7 +312,7 @@ export const CONSENT_MESSAGE_OUTCOMES = [
 ] as const;
 
 /**
- * Why an `error` outcome happened (design.md §The connect helper — `reason`
+ * Why an `error` outcome happened (`reason`
  * rides outcome `error` only). Bounded so an app can branch on it.
  */
 export const CONSENT_MESSAGE_REASONS = [
@@ -327,10 +326,10 @@ export const CONSENT_MESSAGE_REASONS = [
 /**
  * Strict: an unknown key is a producer skew and the message is a notification —
  * a receiver dropping an unexpected shape is the fail-closed posture (the
- * ADR-0005 discipline). `attempt` is the app-supplied correlation tag, present
+ * strict-parse discipline). `attempt` is the app-supplied correlation tag,
+ * present
  * only when the start URL carried one; receivers verify it matches when
- * supplied (criterion 28). `reason` is `null` unless the outcome is `error`
- * (design.md §The connect helper: "`reason` — outcome `error` only").
+ * supplied. `reason` is `null` unless the outcome is `error`.
  */
 export const ConnectOutcomeMessageSchema = z
   .strictObject({
@@ -347,7 +346,7 @@ export const ConnectOutcomeMessageSchema = z
 export type ConnectOutcomeMessage = z.infer<typeof ConnectOutcomeMessageSchema>;
 
 /**
- * What `window.helix.connect()` resolves with (design.md §The connect helper)
+ * What `window.helix.connect()` resolves with
  * — the app-facing result type the helper's script implements and the journey
  * suites assert against. One outcome per call, never a rejection: `blocked`
  * (no popup — nothing was started, so no `attempt`), `cancelled` and `timeout`

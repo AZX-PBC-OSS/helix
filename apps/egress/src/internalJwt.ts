@@ -8,8 +8,8 @@ import {
 } from "@azx-pbc/shared";
 
 /**
- * Verify the internal service JWT the portal mints for the portal→egress seam
- * (I-02 ADR-0003): the code-exchange operation. The key is HKDF-derived from
+ * Verify the internal service JWT the portal mints for the portal→egress seam:
+ * the code-exchange operation. The key is HKDF-derived from
  * `HELIX_EXCHANGE_SECRET` with the shared info string, so the portal mint side
  * (`apps/portal/src/internalJwt.ts`) and this verify side derive identically;
  * the `typ` header + domain separation keep it unredeemable as any other token
@@ -53,7 +53,7 @@ export async function verifyExchangeToken(
     // jose only enforces exp/iat when present — absence must fail closed.
     if (typeof payload.exp !== "number" || typeof payload.iat !== "number") return false;
     // No unregistered claim is accepted: a future mint-side widening must roll
-    // this verifier first (the ADR-0005 strict-parse discipline).
+    // this verifier first.
     for (const claim of Object.keys(payload)) {
       if (claim !== "aud" && claim !== "exp" && claim !== "iat") return false;
     }

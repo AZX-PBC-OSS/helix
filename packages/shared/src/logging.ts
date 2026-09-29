@@ -44,7 +44,7 @@ const SENSITIVE_PARAMS = new Set([
   "refresh_token",
   "session",
   "sid",
-  // OAuth consent-flow protocol values (I-02): `state` is the pending
+  // OAuth consent-flow protocol values: `state` is the pending
   // attempt's single-use lookup key — redeemable at the callback and the
   // cancel — so it is credential-class, not a harmless correlator.
   // `code_verifier` is the PKCE secret; it appears in URLs only in dev-tooling

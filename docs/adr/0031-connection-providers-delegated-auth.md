@@ -10,29 +10,27 @@
 
 ## Amendment (2026-09-25) — Accepted, with the accumulated implementation amendments
 
-Implemented through phases 1–4 of the Phasing section (I-02, tickets
-T-0001–T-0032): the catalog as Postgres data with admin CRUD + import/export,
-the per-user connection substrate, and one `rest-delegated` provider (Asana in
-the deployment, a fixture vendor in CI) end to end. The decision letters below
-amended as the operator ratified during that work; every rider is also
-enumerated in the initiative's `clarifications.md` §Architecture-session
-amendments, which is the cross-referenced record. They are restated here
-because this ADR is where a reader checks what the decision actually says now.
+Implemented through phases 1–4 of the Phasing section: the catalog as Postgres
+data with admin CRUD + import/export, the per-user connection substrate, and
+one `rest-delegated` provider (Asana in the deployment, a fixture vendor in CI)
+end to end. The decision letters below were amended as the operator ratified
+during that implementation work. They are restated here because this ADR is
+where a reader checks what the decision actually says now.
 
 1. **The connect UX is a platform popup, not an in-page shim interstitial**
-   (decision 8, Q7). The platform renders the consent flow in a popup window —
+   (decision 8). The platform renders the consent flow in a popup window —
    pre-vendor gates, terminal pages, and the completion page — and the
    documented `window.helix.connect` helper *opens* it. No UI is injected into
    app documents.
-2. **Egress gains seal-and-persist for refresh** (decision 7's custody split,
-   Q6). The portal seals at connect; egress seals rotated material at renewal.
+2. **Egress gains seal-and-persist for refresh** (decision 7's custody split).
+   The portal seals at connect; egress seals rotated material at renewal.
    Both ride the same `SecretStore` seam and the same egress-only read
    posture.
 3. **Catalog writes are admin-direct and audited; the privilege change rides
-   the approval queue** (decision 5, Q14). Adding an origin or a provider
+   the approval queue** (decision 5). Adding an origin or a provider
    binding to a manifest is still classified high-risk; editing the catalog
    row itself is an admin write, not an approval request.
-4. **Two editors means form + import/export** (decision 4, Q13). The JSON
+4. **Two editors means form + import/export** (decision 4). The JSON
    export/import document *is* the text backstop — no raw-YAML editor, no
    second editor surface to keep parse-compatible.
 5. **A fifth deviation from the design session:** the connect helper ships
@@ -41,44 +39,43 @@ because this ADR is where a reader checks what the decision actually says now.
    on parse) rather than being injected for every provider-bound app. The
    platform does not inject JavaScript unbidden; opting in is a manifest
    grant.
-6. **The pending-flow row is written by the control plane, not the edge**
-   (Q5's letter amended). A start consult over one internal edge→portal seam
+6. **The pending-flow row is written by the control plane, not the edge.**
+   A start consult over one internal edge→portal seam
    is what the edge calls; the edge gains **zero** new database grants.
 7. **Egress is the sole sealer, opener, and destroyer of user-delegated token
-   material** (Q6's letter amended). The portal never handles plaintext
+   material.** The portal never handles plaintext
    delegated tokens; it seals only provider client credentials.
 8. **Client credentials live as sealed material on the env-partitioned
    provider row**, not in env-agnostic platform-scoped `app_secrets` rows
-   (decision 9's storage letter narrowed; I-02 ADR-0006). Env binding is
+   (decision 9's storage letter narrowed). Env binding is
    structural — row env + env-literal RLS — not resolver discipline. The
    platform-scoped `app_secrets` path stays exactly as it is (LLM keys); no
    provider credential may route through it.
-9. **The OAuth client's network leg rides the mechanism plane** (decision 10's
-   letter narrowed; I-02 ADR-0001). The fixed callback, the control-plane
+9. **The OAuth client's network leg rides the mechanism plane** (decision
+   10's letter narrowed). The fixed callback, the control-plane
    client registration, and control-plane orchestration all hold; but every
    server-side vendor OAuth call — code exchange and refresh — originates in
    `helix-egress`, so the portal never makes a vendor call and provider
    onboarding stays purely runtime.
 10. **The manifest binding widens by a strict-parsed `provider` sibling, not
     by widening `connection` in place** (decision 1's binding-widening letter
-    narrowed; I-02 ADR-0005). The instruction and manifest origin schemas
+    narrowed). The instruction and manifest origin schemas
     became **strict** at the same time, so a future widening fails closed at
     an older plane instead of being silently stripped. Roll order is
     consumers-before-producers: egress, then portal, then edge — a
     deployment discipline recorded in the runbook
     ([connection-provider-rollout](../runbooks/connection-provider-rollout.md)).
 11. **"Readable only by `helix_egress`" takes ADR-0006's precise form**
-    (decision 7's letter narrowed; I-02 ADR-0006): egress alone opens and
+    (decision 7's letter narrowed): egress alone opens and
     destroys delegated material, while the portal reads and writes the rows
     (list, revoke, callback CAS, invalidation) without plaintext access. The
     edge has no grant on any of the three new tables.
 12. **Connect-race losers retire through the in-row ledger and the egress
-    sweep, not a portal-side release** (Q23's rider; I-02 ADR-0008). Within
-    criterion 47's 15-minute bound the losing attempt's sealed material is
+    sweep, not a portal-side release.** Within the 15-minute bound the losing attempt's sealed material is
     destroyed — the portal cannot destroy delegated material, so the
     observable contract ("no orphans") is met by the sweep rather than a
     synchronous release.
-13. **A resubmit re-stamps a stale binding** (T-0009/T-0028's recovery path,
+13. **A resubmit re-stamps a stale binding** (the recovery path,
     made mechanical). A sensitive edit's revision bump stale-dates every
     approved binding for that ref, and the classifier's value-diff cannot see
     an unchanged origin to re-file it — so the write-gate itself re-elevates
@@ -92,7 +89,7 @@ because this ADR is where a reader checks what the decision actually says now.
 
 Decision 6's LISTEN/NOTIFY letter is unchanged; one consequence is fixed by
 implementation: egress is the **only** listener of the provider-change channel
-— the edge holds no provider configuration at all (I-02 ADR-0011). The
+— the edge holds no provider configuration at all. The
 deferred cache-sizing re-check (decision 16's residual) and the
 seal→write retirement residual are tracked in [`TODO.md`](../../TODO.md).
 
@@ -134,8 +131,8 @@ consult and cancel ride.
 4. **A read, not a navigation.** Unlike the start route there is no
    same-origin navigation guard and no CSRF check: the status route is a
    `GET` JSON read for page script with the `/_api/me` posture — session-gated
-   (`usableSession`: pseudonyms and anonymous visitors are refused `401`,
-   criterion 21; a refresh-due session stays usable), `no-store`, and the
+    (`usableSession`: pseudonyms and anonymous visitors are refused `401`;
+    a refresh-due session stays usable), `no-store`, and the
    response body is the status word and nothing else. The dev tier is a GET
    (no popup exists in this flow, so no token-in-URL concern) behind the same
    resolver gate as the dev start POST.

@@ -20,7 +20,7 @@ import {
 } from "./consent.js";
 
 /**
- * The consent state machine at the store level (I-02 T-0012, ADR-0002): the
+ * The consent state machine at the store level: the
  * consult's three outcomes and its attempt write, the own-attempts-only
  * cancel, the callback's claim-shaped probe (single-use, expiry- and
  * cancel-aware), and the expiry sweep. The route-level contract — internal
@@ -28,8 +28,10 @@ import {
  * `routes/connectionsInternal.test.ts`'s.
  *
  * The approval chain is driven through the REAL routes (manifest PUT →
- * approve) so the stamps the consult consumes are the ones T-0009 files; a
- * sensitive edit is simulated as the raw revision bump T-0010's transaction
+ * approve) so the stamps the consult consumes are the ones the write-gate
+ * files; a
+ * sensitive edit is simulated as the raw revision bump the production
+ * transaction
  * ends with (the same simulation `approvals/providerBindings.test.ts` uses).
  */
 
@@ -138,7 +140,7 @@ async function seededReady(
   createdProviderIds.push(provider.id);
 
   // File the provider-bound origin through the real write-gate and approve it,
-  // so the consult consumes a stamp exactly as T-0009 files one.
+  // so the consult consumes a stamp exactly as a filing files one.
   const put = await seeder.app.inject({
     method: "PUT",
     url: `/api/v1/apps/${slug}/manifest`,
@@ -268,7 +270,7 @@ describe("consult — the three outcomes", () => {
 
   it("not_available after the binding became ineffective (revision advanced)", async () => {
     const fixture = await seededReady("stale");
-    // The sensitive edit T-0010's transaction ends with.
+    // The sensitive edit the production transaction ends with.
     await prisma.connectionProvider.update({
       where: { id: fixture.providerId },
       data: { revision: 99 },
@@ -287,7 +289,7 @@ describe("consult — the three outcomes", () => {
     const attempts = await attemptRows(fixture.providerId);
     expect(attempts).toHaveLength(1);
     const attempt = attempts[0]!;
-    // The fixed field list (ADR-0002): state, PKCE verifier, identity,
+    // The fixed field list: state, PKCE verifier, identity,
     // provider id+revision, app, env, opener origin, five-minute TTL.
     expect(attempt.state).toHaveLength(43);
     expect(attempt.codeVerifier).toHaveLength(43);

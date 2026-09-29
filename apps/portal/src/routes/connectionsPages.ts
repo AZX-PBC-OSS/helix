@@ -14,16 +14,16 @@ import { sendConsentRefusalPage, sendConsentServiceFailurePage } from "../connec
 
 /**
  * The portal-served consent page routes under the `/connections/*` proxy
- * prefix (I-02 ADR-0002 part 3). These are the popup's browser-facing
- * control-plane surfaces: the edge forwards them here (T-0015), stripped of
+ * prefix. These are the popup's browser-facing
+ * control-plane surfaces: the edge forwards them here, stripped of
  * cookies, credentials, and everything else the safelist drops — the nonce
  * entry keys identity off the single-use nonce server-side, and the callback
- * keys the completion off `state` (T-0012's claim probe), exactly as the
+ * keys the completion off `state` (the claim probe), exactly as the
  * design fixes: the state's entropy is the browser binding.
  *
- * T-0016 ships the dev journey's nonce entry (`CONSENT_NONCE_ENTRY_PATH`):
+ * The dev journey's nonce entry (`CONSENT_NONCE_ENTRY_PATH`):
  * GET navigation in, one indivisible redemption, a 302 to the vendor — or the
- * fixed refusal page. T-0020 ships the OAuth callback
+ * fixed refusal page. The OAuth callback
  * (`CONNECTIONS_CALLBACK_PATH`): the vendor's redirect becomes a saved
  * connection or a legible failure, through the completion state machine in
  * `connections/completion.ts`. A malformed URL is a plain-text 400 (the edge
@@ -57,7 +57,7 @@ export async function connectionsPageRoutes(app: FastifyInstance): Promise<void>
   };
 
   app.get(CONSENT_NONCE_ENTRY_PATH, async (req, reply) => {
-    // The nonce is the URL's only carriage (criterion 22). A repeated value
+    // The nonce is the URL's only carriage. A repeated value
     // is a probe, refused like a malformed one — nothing is redeemed.
     const params = new URL(req.raw.url ?? "/", "http://page.invalid").searchParams;
     const parsed = ConsentNonceSchema.safeParse(singleParam(params, "nonce"));
@@ -73,7 +73,7 @@ export async function connectionsPageRoutes(app: FastifyInstance): Promise<void>
         store(),
         parsed.data,
         // The callback URL the re-derived authorize request binds: the
-        // reserved-subdomain derivation (ADR-0001's ratified residual), not
+        // reserved-subdomain derivation, not
         // an edge call and not configuration.
         connectionsCallbackUrl(),
       );
@@ -107,7 +107,7 @@ export async function connectionsPageRoutes(app: FastifyInstance): Promise<void>
   app.get(CONNECTIONS_CALLBACK_PATH, async (req, reply) => {
     // The callback reads `code` + `state` and the vendor's error parameter —
     // nothing else, and no header or cookie: the completing browser proves
-    // nothing but possession of the state (the design's browser binding). The
+    // nothing but possession of the state (the browser binding). The
     // error value is vendor-chosen text; its PRESENCE is the declined case.
     const params = new URL(req.raw.url ?? "/", "http://page.invalid").searchParams;
     const completion = await completeConsentCallback(app.prisma, {

@@ -14,11 +14,11 @@ import {
 } from "@azx-pbc/shared";
 
 /**
- * The provider form's logic (I-02 T-0026): the field contract design.md
- * §Provider create/edit fixes, expressed against the SAME shared schemas the
+ * The provider form's logic: the field contract
+ * expressed against the SAME shared schemas the
  * server's 422s come from — a restated rule would drift and the inline errors
  * would stop mirroring the rejection. Pure functions, no React; the import UI
- * (T-0027) reuses the validation and the placement description.
+ * reuses the validation and the placement description.
  */
 
 /** The form's values as the fields hold them — raw input, trimmed only at the edges. */

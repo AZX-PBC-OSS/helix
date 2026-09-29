@@ -29,7 +29,7 @@ import { PROVIDER_FIELD_LABELS, describeTokenPlacement } from "../../lib/provide
 import { SENSITIVE_WARNING } from "./ProviderFormPage";
 
 /**
- * The providers page's import card (I-02 T-0027, design.md §Import/export):
+ * The providers page's import card:
  * file picker → parse + validate → preview panel → apply.
  *
  * Validation is the shared schema's own, never a client-side restatement: the
@@ -44,7 +44,7 @@ import { SENSITIVE_WARNING } from "./ProviderFormPage";
  * collision in create mode is surfaced before apply and blocks it rather than
  * silently becoming an update. A rejected apply leaves the list unchanged; a
  * lost apply response renders outcome not confirmed, with retry gated on a
- * refresh (criterion 10).
+ * refresh.
  */
 
 type CreatePreview = Extract<ProviderImportPreviewResponse, { mode: "create" }>;
@@ -289,7 +289,7 @@ export function ProviderImportCard({
       return;
     }
     // No well-formed answer came back — the outcome is unknown. Nothing is
-    // resubmitted automatically; retry waits for a refresh (criterion 10).
+    // resubmitted automatically; retry waits for a refresh.
     setNotConfirmed(true);
   };
 

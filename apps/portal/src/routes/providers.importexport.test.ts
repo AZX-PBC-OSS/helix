@@ -14,13 +14,13 @@ import type { PrismaClient } from "../db/client.js";
 import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../test/harness.js";
 
 /**
- * Provider import/export (I-02 T-0011): the credential-free export document
- * (criterion 11), the preview-before-apply import (criterion 12), and the
- * rule that imported edits obey the form's rules — create mode rides T-0008's
+ * Provider import/export: the credential-free export document,
+ * the preview-before-apply import, and the
+ * rule that imported edits obey the form's rules — create mode rides the
  * sealed create path, an update rides the form's PUT path with its revision
- * CAS, and a sensitive imported update rides T-0010's confirmation →
+ * CAS, and a sensitive imported update rides the confirmation →
  * acknowledge → invalidation transaction (reused code, so the assertions
- * reuse T-0010's expectations). Criterion 11's round-trip proof closes the
+ * reuse the form's expectations). The round-trip proof closes the
  * file: export → import → export yields the same meaning.
  */
 
@@ -138,7 +138,7 @@ async function seedAppBoundTo(ref: string): Promise<string> {
   await prisma.app.create({
     data: {
       slug,
-      displayName: `T-0011 fixture ${slug}`,
+      displayName: `fixture ${slug}`,
       ownerId: OWNER_OID,
       visibilityMode: "internal",
       visibilityGroupIds: [],
@@ -198,7 +198,7 @@ async function seedPendingAttempt(providerId: string, appId: string) {
   });
 }
 
-/** The binding stamps T-0009 filed for an app's approved provider-bound origin. */
+/** The binding stamps a filing files for an app's approved provider-bound origin. */
 async function filedStamps(slug: string, ref: string): Promise<ProviderStamp[]> {
   const rows = await prisma.approvalRequest.findMany({
     where: { app: { slug }, status: "approved" },
@@ -221,7 +221,7 @@ describe("GET /api/v1/providers/:id/export", () => {
     const res = await exportOf(meta.id);
     expect(res.statusCode).toBe(200);
 
-    // Parses against T-0001's document schema — the export is valid import
+    // Parses against the shared document schema — the export is valid import
     // input by construction.
     const document = ProviderExportDocumentSchema.parse(res.json());
     expect(document.version).toBe(1);
@@ -716,8 +716,8 @@ describe("POST /api/v1/providers/import — update mode", () => {
     expect(res.json().outcome).toBe("updated");
     expect(res.json().provider.revision).toBe(meta.revision + 1);
 
-    // One read after the mutation — the same effects T-0010 asserts for the
-    // form's PUT, because this IS the form's transaction.
+    // One read after the mutation — the same effects the sensitive-edit tests
+    // assert for the form's PUT, because this IS the form's transaction.
     const row = await prisma.connectionProvider.findUniqueOrThrow({ where: { id: meta.id } });
     expect(row.revision).toBe(meta.revision + 1);
     expect(row.tokenEndpoint).toBe("https://other.example/oauth/token");
@@ -729,7 +729,7 @@ describe("POST /api/v1/providers/import — update mode", () => {
     });
     expect(att.cancelledAt).not.toBeNull();
 
-    // The revision bump stale-dates the filed binding stamps (T-0009's rule).
+    // The revision bump stale-dates the filed binding stamps.
     const stamps = await filedStamps(slug, ref);
     expect(stamps.length).toBeGreaterThan(0);
     for (const stamp of stamps) {
@@ -789,7 +789,7 @@ describe("POST /api/v1/providers/import — update mode", () => {
   });
 });
 
-describe("round-trip (criterion 11)", () => {
+describe("round-trip", () => {
   it("export → import create into the other environment → export yields the same meaning", async () => {
     const source = await createProvider(undefined, {
       requestedScopes: ["default", "tasks:write"],

@@ -85,7 +85,7 @@ export async function createApprovalRequest(tx: Tx, args: OpenRequestArgs): Prom
  * re-checks only `id`, so the later one overwrites the earlier's status. On approve
  * that left the request `withdrawn` while the capability it granted stayed live on
  * the `apps` row — the request row said the grant was pulled and the edge served it
- * anyway (issue #24). Guarding on `status` here means the loser matches zero rows:
+ * anyway. Guarding on `status` here means the loser matches zero rows:
  * Postgres re-evaluates the WHERE after the row lock is released.
  *
  * `claimed === false` means another decision landed first, and the caller must apply
@@ -152,7 +152,7 @@ function providerRefOfDelta(d: Delta): string | null {
 
 /**
  * Validate every provider-bound origin a requested manifest declares against
- * the provider rows (criterion 15): the declared origin must be one of THAT
+ * the provider rows: the declared origin must be one of THAT
  * provider's permitted API destinations (`apiOrigins`) in the applicable
  * environment, and the provider must exist. A manifest binding is
  * env-agnostic — it resolves in the caller's tier at call time — so every
@@ -205,11 +205,11 @@ async function validateProviderBindings(tx: Tx, requested: unknown): Promise<voi
 }
 
 /**
- * Stamp a filing's elevated deltas (T-0009): every delta carries the app's
- * visibility **at filing** (`publicApp` — criterion 16's warning is data on
+ * Stamp a filing's elevated deltas: every delta carries the app's
+ * visibility **at filing** (`publicApp` — the warning is data on
  * the request, so the queue card never fetches the app), and provider-bound
  * origin adds carry one {@link ProviderStamp} per env-partitioned provider row
- * under the bound ref (ADR-0004) — the apply-time conflict's comparison half.
+ * under the bound ref — the apply-time conflict's comparison half.
  */
 async function stampElevatedDeltas(tx: Tx, deltas: Delta[], publicApp: boolean): Promise<Delta[]> {
   const refs = new Set<string>();
@@ -243,10 +243,10 @@ async function stampElevatedDeltas(tx: Tx, deltas: Delta[], publicApp: boolean):
 }
 
 /**
- * The re-stamp rule (T-0009's amendment): a provider-bound origin the request
+ * The re-stamp rule: a provider-bound origin the request
  * still declares but whose approved stamps are ALL stale re-elevates **even
  * though the value is unchanged**. This is the recovery path the sensitive-edit
- * invalidation (ADR-0004's revision bump) leaves open — without it, a stale
+ * invalidation's revision bump leaves open — without it, a stale
  * binding ("Connection not available" at consult, the SPA's Reapproval-needed
  * badge) could never be repaired: the classifier diffs by `fetchOriginKey`, so
  * an unchanged binding produces no delta, files no request, and no fresh stamp
@@ -296,7 +296,7 @@ async function restampStaleBindings(
  * (bundled into one pending request), in a single transaction. Shared by the
  * manifest PUT and the one-click origin-grant route.
  *
- * T-0009 extends the gate for provider bindings: the requested state is first
+ * Provider bindings extend the gate: the requested state is first
  * validated against the provider rows ({@link validateProviderBindings} — a
  * binding whose origin the provider does not serve refuses the whole save), and
  * the elevated bundle is stamped at filing ({@link stampElevatedDeltas} — the

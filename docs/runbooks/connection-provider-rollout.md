@@ -1,22 +1,23 @@
 # Roll out the provider instruction field, and operate connection providers
 
-Two procedures from the OAuth-connections work (I-02): the one-time **roll
+Two procedures from the OAuth-connections work: the one-time **roll
 order** the strict-parsed `provider` field requires, and the day-to-day
 **provider administration** operations (edit/deletion impact, credential
 rotation, environment separation). The feature behavior is documented in
 [`docs/features/connection-providers.md`](../features/connection-providers.md);
-the decision is I-02 ADR-0005, recorded in the
-[ADR-0031 amendment](../adr/0031-connection-providers-delegated-auth.md).
+the decision is the
+[ADR-0031 amendment](../adr/0031-connection-providers-delegated-auth.md),
+item 10.
 
 ## Part A — the roll order (consumers before producers)
 
 ### When you need this
 
-Any release that carries the I-02 schema change — the attested instruction
+Any release that carries the strict `provider` schema change — the attested instruction
 gains a strict-parsed `provider` sibling field (XOR'd with `connection`), and
 the instruction and manifest origin schemas become **strict**: unknown keys are
 rejected, not stripped. On Azure this is any image roll from the release that
-landed I-02 ADR-0005 forward; the same ordering applies to a local compose
+landed that change forward; the same ordering applies to a local compose
 bring-up, which restarts everything at once and is fine.
 
 ### The order: egress, then portal, then edge
@@ -63,7 +64,7 @@ keeps serving after the edge rolls. It is only *reachable* if a provider
 binding is approved mid-deploy (a human step on a fresh feature), and its
 failure mode is a degraded unauthenticated vendor call — visible as vendor
 401s — never credential exposure. The ratified residual is the minutes-long
-mid-rollout window while replicas converge, accepted in I-02 ADR-0005 rather
+mid-rollout window while replicas converge, accepted rather
 than closed with a wire-format migration.
 
 ### Verify after the roll

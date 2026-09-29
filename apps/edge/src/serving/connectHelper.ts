@@ -11,30 +11,29 @@ import { ROUTE_CONSENT_CANCEL, ROUTE_CONSENT_START } from "@azx-pbc/shared/telem
 import { jsonInline } from "./shim.js";
 
 /**
- * The `window.helix.connect()` consent-popup helper (I-02 design.md §The
- * connect helper; spec §Consent criterion 19) — inlined into an app's HTML at
- * serve time **only when the app's manifest grants `shim.connect`** (design
- * decision 5: the platform does not inject JavaScript into app documents
+ * The `window.helix.connect()` consent-popup helper — inlined into an app's HTML at
+ * serve time **only when the app's manifest grants `shim.connect`** (the
+ * platform does not inject JavaScript into app documents
  * unbidden). The raw platform entry (`GET /_api/connections/:ref/start` +
  * the documented message contract) stays available without the grant.
  *
  * The helper is a function, not UI, and has no automatic behavior: it does not
  * watch responses, does not open a popup on `connection_required`, and does not
- * retry anything (criteria 17, 19, 31). Every flow result is an outcome;
+ * retry anything. Every flow result is an outcome;
  * it never throws and the promise never rejects.
  *
  * It must be called inside a user gesture — that is the caller's documented
- * obligation (criterion 19), enforced by the browser itself: without a
+ * obligation, enforced by the browser itself: without a
  * gesture the popup blocker refuses `window.open` and the helper resolves
- * `blocked` (criterion 26). Helix never navigates the current tab and never
+ * `blocked`. Helix never navigates the current tab and never
  * retries the open.
  *
  * Per call (one popup per call; concurrent calls are fully independent):
  *
  * 1. Mint an attempt correlation tag (128-bit hex — `ConsentAttemptTagSchema`'s
  *    shape) and open exactly one popup at the start route with `?attempt=`.
- * 2. Listen for the completion message (design.md §Completion message) and
- *    verify it before trusting it (criterion 28): the sender is the popup this
+ * 2. Listen for the completion message and
+ *    verify it before trusting it: the sender is the popup this
  *    call opened (`event.source`), `event.origin` is one of the baked-in
  *    platform origins (this app's own host for start-route terminal pages, the
  *    auth host for completion pages), the producer is Helix's message contract,
@@ -44,11 +43,11 @@ import { jsonInline } from "./shim.js";
  *    cancellation to `POST /_api/connections/attempt/cancel` (session-gated,
  *    own-attempts-only — the platform marks the attempt cancelled so a late
  *    vendor completion cannot claim it; a connection saved before the close is
- *    a connection row, out of cancel's reach, criterion 29) and resolve
+ *    a connection row, out of cancel's reach) and resolve
  *    `cancelled`. The acknowledgement is fire-once, best-effort, never
  *    retried — the attempt's five-minute expiry bounds it regardless.
  * 4. Give up after five minutes with the popup open (`timeout` — the attempt
- *    is expired server-side regardless, criterion 25).
+ *    is expired server-side regardless).
  *
  * Listeners and timers are released on every exit (message, close, timeout,
  * blocked) — repeated open/close cycles accumulate nothing.
@@ -61,7 +60,7 @@ const POLL_CLOSE_MS = 250;
 export function buildConnectScript(opts: { platformOrigins: readonly string[] }): string {
   // Baked per app: the origins a message may arrive from are this app's own
   // host (start-route pages) plus the auth host (completion pages) — the
-  // receiver-verification set, criterion 28.
+  // receiver-verification set.
   return `(function () {
   "use strict";
   if (window.__helixConnect) return;
@@ -137,7 +136,7 @@ export function buildConnectScript(opts: { platformOrigins: readonly string[] })
         var popup = window.open(startUrl, "_blank", POPUP_FEATURES);
         if (!popup) {
           // Blocked: control returns immediately; the app may offer another
-          // explicit Connect action. No navigation, no retry (criterion 26).
+          // explicit Connect action. No navigation, no retry.
           resolve(resultOf("blocked", providerRef));
           return;
         }
@@ -168,7 +167,7 @@ export function buildConnectScript(opts: { platformOrigins: readonly string[] })
         function onMessage(event) {
           if (settled) return;
           try {
-            // Receiver verification (criterion 28). The sender must be the
+            // Receiver verification. The sender must be the
             // popup THIS call opened — a sibling window or the app's own
             // script cannot occupy event.source.
             if (!event || event.source !== popup) return;
@@ -212,8 +211,7 @@ export function buildConnectScript(opts: { platformOrigins: readonly string[] })
           try {
             if (popup.closed) {
               // Closed without a completion message: acknowledge the
-              // cancellation, then resolve it (design.md §Consent journey,
-              // criterion 29).
+              // cancellation, then resolve it.
               acknowledgeCancel(providerRef, attempt);
               finish(resultOf("cancelled", providerRef, attempt));
             }

@@ -35,8 +35,8 @@ import { instruments, tracer } from "./telemetry.js";
 import { buildDelegatedClientConfiguration } from "./providerClient.js";
 
 /**
- * `POST /exchange` — the code-exchange operation (I-02 T-0019, architecture
- * ADR-0001): the portal's callback claims its pending attempt, then delegates
+ * `POST /exchange` — the code-exchange operation: the portal's callback claims
+ * its pending attempt, then delegates
  * the vendor token exchange here, where the vendor is reachable and where
  * custody of delegated material lives. This is a NEW internal route,
  * deliberately not a bend of `POST /proxy` — that instruction contract binds
@@ -45,27 +45,27 @@ import { buildDelegatedClientConfiguration } from "./providerClient.js";
  *
  * Order of operations, each fail-closed before anything riskier runs:
  *
- * 1. **Verify** the portal-minted exchange JWT (ADR-0003) — refused before any
+ * 1. **Verify** the portal-minted exchange JWT — refused before any
  *    vendor call, before the body is even parsed.
  * 2. **Parse** the body through `ExchangeRequestSchema`.
- * 3. **Resolve** the provider from the revision-keyed cache (ADR-0004) — an
+ * 3. **Resolve** the provider from the revision-keyed cache — an
  *    unknown id, a stale revision stamp, or a wrong env answers
  *    `provider_unavailable` before any custody open.
- * 4. **Exchange** over the pinned transport (ADR-0009): the openid-client
+ * 4. **Exchange** over the pinned transport: the openid-client
  *    Configuration is assembled per provider revision from static metadata —
  *    no discovery — and every library HTTP call rides the same DNS-pinned
  *    dispatcher the fetch-proxy uses, so the SSRF controls and the trace
  *    boundary survive the library boundary.
- * 5. **Gate** the token response at receipt (criterion 27): a usable positive
+ * 5. **Gate** the token response at receipt: a usable positive
  *    access-token lifetime, a refresh token present, every configured
  *    permission granted (an omitted granted-permissions field means granted).
  *    A rejection answers with a distinguishable, vendor-content-free reason
  *    and NOTHING is sealed — the delegated store receives no write.
- * 6. **Seal** both materials into the delegated store (ADR-0006) and return
+ * 6. **Seal** both materials into the delegated store and return
  *    metadata plus sealed references — no plaintext token anywhere in the
  *    response.
  *
- * Token-endpoint failures follow the fixed-string discipline (ADR-0009): the
+ * Token-endpoint failures follow the fixed-string discipline: the
  * outcome word `exchange_failed` is the entire diagnostic on the wire, in
  * spans, and in logs — the library's error objects can embed vendor response
  * content, so they are never recorded, logged, or stringified here.
@@ -83,7 +83,7 @@ export interface ExchangeDeps {
   providers: ProviderCacheReader | null;
   /** Opens the provider row's sealed client credentials (the existing app-secrets custody). */
   credentialStore: SecretStore | null;
-  /** The delegated-custody store — seals the exchanged tokens (ADR-0006 part 1). */
+  /** The delegated-custody store — seals the exchanged tokens. */
   delegatedStore: SecretStore | null;
   allowPrivate: boolean;
   allowInsecureConnection: boolean;
@@ -132,7 +132,7 @@ async function parseRequest(req: FastifyRequest): Promise<ExchangeRequest | null
 
 /**
  * Assemble the library Configuration for ONE provider revision — moved to
- * `providerClient.ts` (T-0021) so the renewal operation assembles it with the
+ * `providerClient.ts` so the renewal operation assembles it with the
  * same version-verified setup instead of a drifting copy.
  */
 
@@ -141,8 +141,7 @@ type TokenResponse = Awaited<ReturnType<typeof authorizationCodeGrant>>;
 /**
  * The gate's verdict: the rejection reason, or the validated values the seal
  * step needs — narrowed once, so nothing past the gate re-derives or re-checks
- * them (the gate is the ONE place criterion 27 executes, ADR-0001 §Shared
- * ground).
+ * them (the gate is the ONE place the compatibility check executes).
  */
 type GateVerdict =
   | { ok: false; reason: ExchangeRejectionReason }
@@ -156,12 +155,11 @@ type GateVerdict =
     };
 
 /**
- * The criterion-27 compatibility gate, executed at receipt BEFORE sealing
- * (architecture ADR-0001 §Decision).
+ * The compatibility gate, executed at receipt BEFORE sealing.
  */
 function compatibilityGate(result: TokenResponse, provider: ConnectionProvider): GateVerdict {
   // A usable positive lifetime: `expires_in` may be absent (RFC 6749 makes it
-  // RECOMMENDED and the library tolerates absence) — criterion 27 does not.
+  // RECOMMENDED and the library tolerates absence) — the gate does not.
   if (
     typeof result.expires_in !== "number" ||
     !Number.isFinite(result.expires_in) ||
@@ -172,7 +170,7 @@ function compatibilityGate(result: TokenResponse, provider: ConnectionProvider):
   if (typeof result.refresh_token !== "string" || result.refresh_token.length === 0) {
     return { ok: false, reason: "missing_refresh_token" };
   }
-  // An omitted granted-permissions field means granted (criterion 27); a
+  // An omitted granted-permissions field means granted; a
   // present field must include every configured permission — a strict
   // superset is accepted, because vendors add scopes they always grant.
   if (result.scope === undefined) {
@@ -212,7 +210,7 @@ export function makeExchangeHandler(deps: ExchangeDeps & { dispatcher: Agent }) 
       return refuse(reply, 503, "exchange_unavailable");
     }
 
-    // Provider resolution from the revision-keyed cache (ADR-0004): unknown,
+    // Provider resolution from the revision-keyed cache: unknown,
     // deleted, or a stale revision stamp — all the one fixed word.
     const provider = providers.get(parsed.providerId);
     if (!provider || provider.revision !== parsed.providerRevision || provider.env !== parsed.env) {
@@ -229,7 +227,7 @@ export function makeExchangeHandler(deps: ExchangeDeps & { dispatcher: Agent }) 
         dispatcher: deps.dispatcher,
       });
       // The redirect_uri is the callback exactly as configured (the consult's
-      // edge-supplied value, ADR-0001 §Implementation Notes); the library
+      // edge-supplied value); the library
       // strips it back out of `currentUrl` for the token request's
       // `redirect_uri` parameter, and `code` is the only other parameter —
       // the attempt's `state` was already verified at the callback, and a
@@ -263,7 +261,7 @@ export function makeExchangeHandler(deps: ExchangeDeps & { dispatcher: Agent }) 
       record.reason = verdict.reason;
       req.log.warn(
         { event: "exchange.rejected", reason: verdict.reason, provider: provider.ref },
-        "token response failed the criterion-27 compatibility gate",
+        "token response failed the compatibility gate",
       );
       return reply
         .code(200)
@@ -272,7 +270,7 @@ export function makeExchangeHandler(deps: ExchangeDeps & { dispatcher: Agent }) 
 
     // Seal both materials. A seal failure is a custody failure, not a vendor
     // one — the same fixed outcome (an operator checks the vault), and the
-    // one-material orphan it can leave is ADR-0008's recorded residual class.
+    // one-material orphan it can leave is the recorded residual class.
     try {
       const access = await delegatedStore.seal(result.access_token);
       const refresh = await delegatedStore.seal(verdict.refreshToken);

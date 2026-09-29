@@ -259,15 +259,15 @@ export interface UsageStore {
    * this gate, so a denial loop never reaches it and writes rows either way;
    * counting them would only starve the app's legitimate traffic.
    *
-   * `connection_required` (I-02) is deliberately **counted** — it consumes
-   * budget. It is not a policy refusal (criterion 50's separation from
+   * `connection_required` is deliberately **counted** — it consumes
+   * budget. It is not a policy refusal (the separation from
    * `refusal` is the label's whole point), but the exclusion above is about
    * *where* the refusal happens, not why: this one happens at egress, after
    * the call was authorized, an instruction minted, and egress did real work
    * (verify, provider-cache read, connection resolution). Excluding it would
    * leave a not-connected retry loop — which the allowlist denial throttle
    * cannot bound, because the origin IS granted — an unmetered ride on the
-   * egress hop. The audit separation criterion 50 asks for lives in the
+   * egress hop. The audit separation lives in the
    * `outcome` label itself, not in the budget arithmetic.
    */
   fetchRequestsToday(appId: string, env: Env): Promise<number>;

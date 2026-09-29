@@ -13,12 +13,12 @@ function validInstruction(overrides: Record<string, unknown> = {}) {
   };
 }
 
-// T-0002 / ADR-0005: the attested instruction is the signed boundary between
+// The attested instruction is the signed boundary between
 // the policy plane and the mechanism plane, so its schema is strict — a claim
 // an older egress does not know must fail the verify closed instead of being
 // silently stripped (the version-skew strip would otherwise drop a credential
 // field and send the call out unauthenticated).
-describe("AttestedInstructionSchema (ADR-0005)", () => {
+describe("AttestedInstructionSchema", () => {
   it("parses the shape the edge mints, defaulting env to prod", () => {
     const parsed = AttestedInstructionSchema.parse(validInstruction());
     expect(parsed.env).toBe("prod");
@@ -26,7 +26,7 @@ describe("AttestedInstructionSchema (ADR-0005)", () => {
   });
 
   it("rejects an unknown key today's non-strict schema would strip", () => {
-    // This is the silent-strip hazard ADR-0005 exists to close: with the old
+    // This is the silent-strip hazard the strict parse exists to close: with the old
     // z.object this typo'd near-miss of a real claim parsed clean and vanished.
     const result = AttestedInstructionSchema.safeParse(validInstruction({ requestid: "req-1" }));
     expect(result.success).toBe(false);
@@ -57,10 +57,10 @@ describe("AttestedInstructionSchema (ADR-0005)", () => {
     ).toBe(false);
   });
 
-  it("requires the caller's principal kind on a delegated instruction (I-02 T-0022)", () => {
-    // Egress refuses anonymous and shared-password callers BY KIND (criterion
-    // 21) — and kind is recorded, never inferred from userOid's shape (a
-    // shared-password pseudonym and an Entra sub share the base64url
+  it("requires the caller's principal kind on a delegated instruction", () => {
+    // Egress refuses anonymous and shared-password callers BY KIND — and kind
+    // is recorded, never inferred from userOid's shape (a shared-password
+    // pseudonym and an Entra sub share the base64url
     // alphabet). So a provider-bearing instruction without the kind is
     // unrepresentable: the edge cannot mint one, and egress's verify fails
     // closed rather than guessing.

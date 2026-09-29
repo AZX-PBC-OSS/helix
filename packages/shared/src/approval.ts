@@ -38,7 +38,7 @@ export type ApprovalStatus = z.infer<typeof ApprovalStatusSchema>;
 
 /**
  * One env-partitioned provider row's identity, as it read when an approval
- * request was filed (ADR-0004). The unit of {@link Delta.providerStamps}.
+ * request was filed. The unit of {@link Delta.providerStamps}.
  */
 export const ProviderStampSchema = z.strictObject({
   /** The env-unique reference the manifest binds (the catalogue/manifest key). */
@@ -47,7 +47,7 @@ export const ProviderStampSchema = z.strictObject({
   env: EnvSchema,
   /** The surrogate row id — delete+recreate mints a new one, dangling old stamps. */
   providerId: z.uuid(),
-  /** The row's revision at filing; a sensitive edit advances it (ADR-0004). */
+  /** The row's revision at filing; a sensitive edit advances it. */
   revision: z.int().positive(),
 });
 export type ProviderStamp = z.infer<typeof ProviderStampSchema>;
@@ -64,8 +64,8 @@ export const DeltaSchema = z.object({
   to: z.union([z.string(), z.number(), z.boolean()]).optional(),
   /**
    * The provider stamps recorded **at filing** for a provider-bound origin
-   * delta (T-0009) — one per env-partitioned `connection_providers` row that
-   * existed under the bound ref when the request was filed (ADR-0004: an
+   * delta — one per env-partitioned `connection_providers` row that
+   * existed under the bound ref when the request was filed (an
    * approval records the provider's `ref` + `providerId` + `revision`, and
    * env partitioning makes a ref's full identity the set of its rows).
    *
@@ -78,7 +78,7 @@ export const DeltaSchema = z.object({
   providerStamps: z.array(ProviderStampSchema).optional(),
   /**
    * The requesting app's visibility **at filing**: `true` when the app was
-   * `public`, `false` (stamped as not-public) otherwise. Criterion 16's
+   * `public`, `false` (stamped as not-public) otherwise. The
    * warning — a public app's anonymous visitors can never connect a vendor
    * account — is data on the request, so the queue card needs no extra fetch.
    * The flag never auto-rejects.
@@ -88,8 +88,8 @@ export const DeltaSchema = z.object({
 export type Delta = z.infer<typeof DeltaSchema>;
 
 /**
- * The binding-effectiveness rule (T-0009 — the ONE definition; ADR-0004's
- * revision mechanism is its basis): an app's provider binding is effective
+ * The binding-effectiveness rule (the ONE definition): an app's provider
+ * binding is effective
  * exactly when the approval that granted it filed a stamp matching the
  * provider row's **current** identity — same surrogate `id` (delete+recreate
  * under the same ref mints a new one), same `ref`, same `revision` (every
@@ -101,9 +101,9 @@ export type Delta = z.infer<typeof DeltaSchema>;
  *  - the portal's approve route (the apply-time conflict — a stale stamp is a
  *    409 that approves nothing),
  *  - the manifest read (per-binding effectiveness → the SPA's Reapproval-needed
- *    badge, T-0028),
- *  - the consent consult (`not_available` for an ineffective binding, T-0012),
- *  - T-0010's invalidation transaction, whose revision bump is what makes
+ *    badge),
+ *  - the consent consult (`not_available` for an ineffective binding),
+ *  - the invalidation transaction, whose revision bump is what makes
  *    previously-stamped bindings ineffective.
  */
 export function isProviderBindingEffective(
@@ -252,8 +252,8 @@ function diffArray(before: string[], after: string[]): { added: string[]; remove
 /**
  * Canonical string key for a fetch proxy connection, used in delta paths and
  * diffing: `https://api.foo.com` (keyless), `https://api.foo.com→secret:name`
- * (secret-bound), or `https://api.foo.com→provider:ref` (provider-bound,
- * T-0009). A secret-bound or provider-bound origin is strictly more sensitive,
+ * (secret-bound), or `https://api.foo.com→provider:ref` (provider-bound).
+ * A secret-bound or provider-bound origin is strictly more sensitive,
  * so changing the bound credential is a remove+add of distinct keys.
  *
  * Exported because the delta paths this key form appears in are rendered and

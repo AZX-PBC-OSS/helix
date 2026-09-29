@@ -7,8 +7,8 @@ import { LiveProviders, type ProvidersLogger } from "./providerListener.js";
 /**
  * The LISTEN/NOTIFY loop end to end, against the real test database (migrated
  * by vitest.globalSetup.ts, so the connection_substrate trigger and the
- * `helix_egress` grants are present — ADR-0011's channel, ADR-0006 part 2's
- * role split). Seeding runs as the table owner (the portal's job); the
+ * `helix_egress` grants are present). Seeding runs as the table owner (the
+ * portal's job); the
  * listener runs under `helix_egress`, whose ONLY provider grant is SELECT.
  * Skips when the role isn't provisioned (CI without db-init) — same fail-soft
  * stance as the other integration suites.
@@ -132,7 +132,7 @@ describe("the provider LISTEN/NOTIFY loop (helix_egress)", () => {
       const row = listener.getByRef(ref, "prod");
       expect(row?.id).toBe(id);
       expect(row?.revision).toBe(1);
-      // The id lookup — exchange's (T-0019) and renewal's (T-0021) key — serves
+      // The id lookup — exchange's and renewal's key — serves
       // the same parsed row, sealed material included for the vault open.
       expect(listener.get(id)?.clientSecretMaterial).toBe("sealed-client-secret");
 
@@ -150,7 +150,7 @@ describe("the provider LISTEN/NOTIFY loop (helix_egress)", () => {
       expect(row?.revision).toBe(1);
       expect(row?.displayName).toBe("integration fixture");
 
-      // Deletion (hard DELETE — ADR-0004's dangle semantics) also arrives, and
+      // Deletion (a hard DELETE) also arrives, and
       // resolution fails closed immediately after the reconcile.
       await asOwner(`DELETE FROM connection_providers WHERE id = $1`, [id]);
       await eventually(() => listener.getByRef(ref, "prod") === undefined);
@@ -199,7 +199,7 @@ describe("the provider LISTEN/NOTIFY loop (helix_egress)", () => {
 
       // Mutate WHILE the listener is down: the NOTIFY is delivered to nobody
       // and is gone. The next reconcile must converge on current state anyway
-      // (ADR-0011 §Consequences) — this is the missed-notification self-heal
+      // — this is the missed-notification self-heal
       // and the reconnect half of reconcile-before-trusting-notifications.
       await asOwner(
         `UPDATE connection_providers SET revision = 2, "displayName" = 'edited while down'

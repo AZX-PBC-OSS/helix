@@ -68,8 +68,8 @@ describe("the telemetry vocabulary", () => {
   });
 
   it("keeps the consent-start outcome vocabulary bounded and duplicate-free", () => {
-    // The edge's start-route span (I-02 T-0014) — design.md §Operator-visible
-    // signals fixes the six values; a seventh would be a vocabulary nobody
+    // The edge's start-route span — the operator-visible vocabulary fixes the
+    // six values; a seventh would be a vocabulary nobody
     // dashboards.
     expect([...telemetry.CONSENT_START_OUTCOMES]).toEqual([
       "started",

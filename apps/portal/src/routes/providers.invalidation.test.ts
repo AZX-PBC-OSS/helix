@@ -14,15 +14,15 @@ import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../tes
 
 /**
  * Sensitive provider edits, deletion, impact counts, and the invalidation
- * transaction (I-02 T-0010): the 409 `confirmation_required` gate, the one
- * all-or-nothing transaction (ADR-0004 §Implementation Notes) whose revision
+ * transaction: the 409 `confirmation_required` gate, the one
+ * all-or-nothing transaction whose revision
  * bump invalidates connections, kills pending attempts, and blocks bindings,
- * the impact endpoint (criterion 9), and deletion's already_removed /
- * no-restore rules (criterion 10).
+ * the impact endpoint, and deletion's already_removed /
+ * no-restore rules.
  *
  * The binding chain is driven through the REAL routes (manifest PUT → approve)
- * so the stamps the assertions consume are the ones T-0009 files; the blocked
- * binding is asserted through T-0009's own rule
+ * so the stamps the assertions consume are the ones the write-gate files; the blocked
+ * binding is asserted through that rule's own definition
  * (`isProviderBindingEffective` — what the manifest read and the consult
  * consume) and through the consult's `not_available` outcome, never
  * re-derived locally.
@@ -120,7 +120,7 @@ async function seedAppBoundTo(ref: string): Promise<string> {
   await prisma.app.create({
     data: {
       slug,
-      displayName: `T-0010 fixture ${slug}`,
+      displayName: `fixture ${slug}`,
       ownerId: OWNER_OID,
       visibilityMode: "internal",
       visibilityGroupIds: [],
@@ -203,7 +203,7 @@ const putProvider = (id: string, payload: Record<string, unknown>) =>
 const getImpact = (id: string) =>
   t.app.inject({ method: "GET", url: `/api/v1/providers/${id}/impact`, headers: admin });
 
-/** The binding stamps T-0009 filed for an app's approved provider-bound origin. */
+/** The binding stamps a filing files for an app's approved provider-bound origin. */
 async function filedStamps(slug: string, ref: string): Promise<ProviderStamp[]> {
   const rows = await prisma.approvalRequest.findMany({
     where: { app: { slug }, status: "approved" },
@@ -245,7 +245,7 @@ describe("sensitive PUT without acknowledgement", () => {
     });
 
     // Nothing applied: the row, the connection, and the attempt are exactly
-    // as before — no confirmation, no mutation (criterion 7).
+    // as before — no confirmation, no mutation.
     const after = await prisma.connectionProvider.findUniqueOrThrow({ where: { id: meta.id } });
     expect(after).toEqual(before);
     const conn = await prisma.userConnection.findUniqueOrThrow({ where: { id: connection.id } });
@@ -301,15 +301,17 @@ describe("sensitive PUT with acknowledgement — the one transaction", () => {
     expect(row.tokenEndpoint).toBe("https://other.example/oauth/token");
     const conn = await prisma.userConnection.findUniqueOrThrow({ where: { id: connection.id } });
     expect(conn.status).toBe("invalidated");
-    // ADR-0008's one-UPDATE rule: the ledger mark rode the invalidation.
+    // The one-UPDATE rule (ADR-0031 amendment item 12): the ledger mark rode
+    // the invalidation.
     expect(conn.pendingRetire).toBe(connection.material);
     const att = await prisma.connectionConsentAttempt.findUniqueOrThrow({
       where: { id: attempt.id },
     });
     expect(att.cancelledAt).not.toBeNull();
 
-    // The revision bump IS the binding block (ADR-0004): every stamp filed at
-    // the old revision is ineffective by T-0009's rule — the rule the manifest
+    // The revision bump IS the binding block: every stamp filed at
+    // the old revision is ineffective by the effectiveness rule — the rule the
+    // manifest
     // read (the SPA's reapproval-needed badge) consumes.
     const stamps = await filedStamps(slug, ref);
     expect(stamps.length).toBeGreaterThan(0);
@@ -317,7 +319,7 @@ describe("sensitive PUT with acknowledgement — the one transaction", () => {
       expect(isProviderBindingEffective(stamp, row)).toBe(false);
     }
 
-    // …and the consult (T-0012) answers not_available off the same state.
+    // …and the consult answers not_available off the same state.
     const consult = await consultConsent(prisma, store, {
       identity: { kind: "user", userOid: USER_OID },
       appSlug: slug,
@@ -339,7 +341,7 @@ describe("sensitive PUT with acknowledgement — the one transaction", () => {
 
     // A wrapped client whose attempt-kill write fails mid-transaction — after
     // the provider row's UPDATE and the connection invalidation have run, so
-    // only the rollback puts them back (explore.md §Test Patterns).
+    // only the rollback puts them back.
     const failing = createTestPrisma().$extends({
       query: {
         connectionConsentAttempt: {
@@ -581,7 +583,7 @@ describe("DELETE with acknowledgement", () => {
     expect(replacement.id).not.toBe(meta.id);
 
     // The repeat deletion names the OLD id: already_removed, and the
-    // replacement — which shares only the ref — is untouched (criterion 10).
+    // replacement — which shares only the ref — is untouched.
     const repeat = await t.app.inject({
       method: "DELETE",
       url: `/api/v1/providers/${meta.id}`,
@@ -621,7 +623,7 @@ describe("DELETE with acknowledgement", () => {
     });
 
     // The old stamps match neither the missing row nor the new one — nothing
-    // was restored (ADR-0004 §Consequences; delete+recreate mints a new id).
+    // was restored (delete+recreate mints a new id).
     for (const stamp of stamps) {
       expect(isProviderBindingEffective(stamp, null)).toBe(false);
       expect(isProviderBindingEffective(stamp, replacementRow)).toBe(false);

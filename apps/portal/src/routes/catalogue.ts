@@ -110,7 +110,7 @@ async function buildCatalogue(app: FastifyInstance): Promise<CapabilityCatalogue
     orderBy: { name: "asc" },
   });
 
-  // ── Fetch providers (T-0009, Q16): every configured connection provider,
+  // ── Fetch providers: every configured connection provider,
   // metadata only — the discovery surface app authors bind against. Constructed
   // field-by-field (never spread), so a credential column cannot ride into the
   // payload even if the row grows one; the strict parse fails loudly on drift.

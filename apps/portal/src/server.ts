@@ -47,8 +47,8 @@ const host = process.env.HOST ?? "0.0.0.0";
 
 const app = buildApp();
 
-// GC expired consent attempts on an interval (I-02 ADR-0002 §Implementation
-// Notes): the egress burn-sweep precedent — unref'd so it never holds the
+// GC expired consent attempts on an interval: the egress burn-sweep precedent —
+// unref'd so it never holds the
 // process open, cleared in the onClose hook below, and its cadence well
 // inside the attempt TTL it retires. No material is involved: an attempt row
 // holds protocol state only, so the sweep is a plain portal-role delete.
