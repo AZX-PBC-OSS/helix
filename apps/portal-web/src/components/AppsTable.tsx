@@ -1,4 +1,5 @@
-import { Anchor, Box, Center, Group, Table, Text, Tooltip } from "@mantine/core";
+import { useState } from "react";
+import { Anchor, Box, Center, Group, Table, Text, Tooltip, UnstyledButton } from "@mantine/core";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import type { AppListItem } from "@azx-pbc/shared";
@@ -8,7 +9,7 @@ import { ScrollFade } from "./ScrollFade";
 import { Principal, StatusLine, VisibilityBadge } from "./primitives";
 import { fmtUsd, timeAgo } from "../lib/format";
 import { useDeployment } from "../lib/deployment";
-import { appStatus, awaitingPromoteNumber, deployFacts } from "../lib/appStatus";
+import { appStatus, awaitingPromoteNumber, deployFacts, type DeployFacts } from "../lib/appStatus";
 
 /**
  * The apps list, in table form — the one presentation of the registry.
@@ -37,6 +38,121 @@ import { appStatus, awaitingPromoteNumber, deployFacts } from "../lib/appStatus"
 
 /** Spend over the range the platform rollup reports; keyed by slug. */
 const SPEND_RANGE = "30d" as const;
+
+type SortKey = "name" | "owner" | "lastDeploy" | "spend";
+type SortDir = "asc" | "desc";
+
+interface SortableRow {
+  app: AppListItem;
+  facts: DeployFacts;
+  spendUsd: number | undefined;
+}
+
+function collate(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
+}
+
+/**
+ * One comparator per sort key, built for the keys' missing values: an app with
+ * no owner, no deploy yet or no spend has nothing to order against, so it sinks
+ * below every real value in **both** directions — the direction only flips the
+ * comparison of rows that actually have the value. Spending `flip` on the whole
+ * result would swing the dash rows between bottom and top on every second click.
+ */
+function compareSortableRows(a: SortableRow, b: SortableRow, key: SortKey, dir: SortDir): number {
+  const flip = dir === "asc" ? 1 : -1;
+  switch (key) {
+    case "name":
+      return collate(a.app.displayName, b.app.displayName) * flip;
+    case "owner": {
+      // Same resolution the `Principal` cell renders: name, then email, then
+      // the raw identity; all absent renders a dash, so all absent sorts last.
+      const an = a.app.ownerName ?? a.app.ownerEmail ?? a.app.ownerId;
+      const bn = b.app.ownerName ?? b.app.ownerEmail ?? b.app.ownerId;
+      if (!an && !bn) return 0;
+      if (!an) return 1;
+      if (!bn) return -1;
+      return collate(an, bn) * flip;
+    }
+    case "lastDeploy": {
+      const at = a.facts.lastDeployAt;
+      const bt = b.facts.lastDeployAt;
+      if (!at && !bt) return 0;
+      if (!at) return 1;
+      if (!bt) return -1;
+      return (Date.parse(at) - Date.parse(bt)) * flip;
+    }
+    case "spend": {
+      const as = a.spendUsd;
+      const bs = b.spendUsd;
+      if (as === undefined && bs === undefined) return 0;
+      if (as === undefined) return 1;
+      if (bs === undefined) return -1;
+      return (as - bs) * flip;
+    }
+  }
+}
+
+/**
+ * A clickable column header: a button inside the `th` (keyboard-reachable,
+ * Mantine's focus ring comes along) with the sort direction read from `aria-sort`
+ * on the cell. The arrow — the icon set's one up-arrow, rotated for descending,
+ * since a second glyph for the inverse direction buys nothing — is the visual
+ * affordance; the button itself must stay invisible:
+ *
+ * The UA stylesheet gives `button` its own `font` shorthand plus
+ * `text-transform: none` and `letter-spacing: normal`, and a UA declaration
+ * beats *inherited* values — so without the resets below, every sortable header
+ * sheds the theme's `th` treatment (mono, 10.5px, letterspaced caps) piece by
+ * piece and renders as a browser-default button label beside its untouched
+ * neighbours. Each reset inherits the property back from the cell.
+ */
+function SortableTh({
+  label,
+  sortName,
+  w,
+  active,
+  dir,
+  onSort,
+}: {
+  label: string;
+  /** The accessible name for the button — set when the visible label carries
+   * decoration the sort instruction shouldn't (the spend range suffix). */
+  sortName?: string;
+  w: string;
+  active: boolean;
+  dir: SortDir;
+  onSort: () => void;
+}) {
+  return (
+    <Table.Th w={w} aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}>
+      <UnstyledButton
+        onClick={onSort}
+        aria-label={`Sort by ${sortName ?? label}`}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          font: "inherit",
+          textTransform: "inherit",
+          letterSpacing: "inherit",
+          color: "inherit",
+        }}
+      >
+        {label}
+        <Icon
+          name="arrowU"
+          size={11}
+          style={{
+            flexShrink: 0,
+            opacity: active ? 1 : 0.4,
+            transform: active && dir === "desc" ? "rotate(180deg)" : undefined,
+          }}
+        />
+      </UnstyledButton>
+    </Table.Th>
+  );
+}
 
 function AppRow({ app, spendUsd }: { app: AppListItem; spendUsd: number | undefined }) {
   const { hostFor, urlFor } = useDeployment();
@@ -160,6 +276,21 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
     (usage.data?.byApp ?? []).flatMap((a) => (a.slug ? [[a.slug, a.costUsd] as const] : [])),
   );
 
+  // The sort lives here and not on the page, because two of its keys don't exist
+  // on `rows`: last-deploy comes from the list projection via `deployFacts`, and
+  // spend only exists after this join — there is nothing for the page to sort by.
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "name", dir: "asc" });
+  const toggleSort = (key: SortKey) =>
+    setSort((s) =>
+      s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" },
+    );
+
+  // Join first, sort second: the comparator reads the joined spend and the deploy
+  // facts together. Sorting a fresh array — `rows` belongs to the page's filter.
+  const sorted: SortableRow[] = rows
+    .map((app) => ({ app, facts: deployFacts(app), spendUsd: spendBySlug.get(app.slug) }))
+    .sort((a, b) => compareSortableRows(a, b, sort.key, sort.dir));
+
   return (
     <Box
       style={{
@@ -185,22 +316,48 @@ export function AppsTable({ rows }: { rows: AppListItem[] }) {
           <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
             {/* Explicit, because seven columns of auto-width content wrap their
                 headers and timestamps and shove the last column off-screen. The
-                App cell truncates rather than growing. */}
+                App cell truncates rather than growing. Widths here double as the
+                SortableTh widths, so the sort affordance cannot shift the layout. */}
             <Table.Tr>
-              <Table.Th w="27%">App</Table.Th>
-              <Table.Th w="18%">Owner</Table.Th>
+              <SortableTh
+                label="App"
+                w="27%"
+                active={sort.key === "name"}
+                dir={sort.dir}
+                onSort={() => toggleSort("name")}
+              />
+              <SortableTh
+                label="Owner"
+                w="18%"
+                active={sort.key === "owner"}
+                dir={sort.dir}
+                onSort={() => toggleSort("owner")}
+              />
               <Table.Th w="11%">Visibility</Table.Th>
               <Table.Th w="11%">Status</Table.Th>
               {/* Wide enough for "vN awaiting promote" on one line — it is nowrap,
                   so a narrower column would overflow rather than wrap. */}
               <Table.Th w="12%">Live</Table.Th>
-              <Table.Th w="10%">Last deploy</Table.Th>
-              <Table.Th w="11%">Spend · {SPEND_RANGE}</Table.Th>
+              <SortableTh
+                label="Last deploy"
+                w="10%"
+                active={sort.key === "lastDeploy"}
+                dir={sort.dir}
+                onSort={() => toggleSort("lastDeploy")}
+              />
+              <SortableTh
+                label={`Spend · ${SPEND_RANGE}`}
+                sortName="Spend"
+                w="11%"
+                active={sort.key === "spend"}
+                dir={sort.dir}
+                onSort={() => toggleSort("spend")}
+              />
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {rows.map((a) => (
-              <AppRow key={a.id} app={a} spendUsd={spendBySlug.get(a.slug)} />
+            {sorted.map(({ app, spendUsd }) => (
+              <AppRow key={app.id} app={app} spendUsd={spendUsd} />
             ))}
           </Table.Tbody>
         </Table>

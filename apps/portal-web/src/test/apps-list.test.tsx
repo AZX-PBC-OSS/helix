@@ -260,7 +260,9 @@ describe("AppsListPage", () => {
     render();
 
     await screen.findByText("Cost Explorer");
-    expect(screen.queryByRole("button", { name: /deploy/i })).toBeNull();
+    // Anchored: the sortable "Sort by Last deploy" header is a button whose
+    // name contains "deploy", and it is not a deploy affordance.
+    expect(screen.queryByRole("button", { name: /^deploy/i })).toBeNull();
   });
 
   /**
@@ -630,6 +632,157 @@ describe("AppsListPage", () => {
 
       await screen.findByText("Inert");
       expect(visibilityCell("Inert").textContent).toBe("No groups");
+    });
+  });
+
+  /**
+   * Four sortable headers — App, Owner, Last deploy, Spend — on local state that
+   * defaults to name ascending. Two of the keys are nullable per row (no deploy
+   * yet, no spend, no owner), and the invariant those tests pin is that the dash
+   * rows sink below every real value in either direction, never flipping to the
+   * top on the second click.
+   */
+  describe("sorting", () => {
+    function fixture(
+      slug: string,
+      displayName: string,
+      live = true,
+      extra: Partial<AppListItem> = {},
+    ): AppListItem {
+      return makeApp(slug, displayName, live, `https://${slug}.apps.example.com`, extra);
+    }
+
+    /** Display names in rendered row order; the header row is dropped. */
+    function rowOrder(names: string[]): string[] {
+      return screen
+        .getAllByRole("row")
+        .slice(1)
+        .map((r) => names.find((n) => r.textContent?.includes(n)) ?? "?");
+    }
+
+    async function clickSort(header: string) {
+      await userEvent.click(await screen.findByRole("button", { name: `Sort by ${header}` }));
+    }
+
+    it("sorts by name ascending by default, and reverses on a second click", async () => {
+      stubFetch([fixture("zulu", "Zulu"), fixture("alpha", "Alpine")]);
+      render();
+
+      await screen.findByText("Alpine");
+      // Deliberately case-mixed: "alpha" beats "Zulu" only if the collation is
+      // case-insensitive — a `toLowerCase`-less sort would put Zulu first.
+      expect(rowOrder(["Alpine", "Zulu"])).toEqual(["Alpine", "Zulu"]);
+
+      await clickSort("App");
+      expect(rowOrder(["Alpine", "Zulu"])).toEqual(["Zulu", "Alpine"]);
+    });
+
+    it("sorts by owner, sinking ownerless rows in either direction", async () => {
+      stubFetch([
+        fixture("owned-bob", "Bob App", true, {
+          ownerId: "bob@azx.dev",
+          ownerName: "Bob Builder",
+          ownerEmail: "bob@azx.dev",
+        }),
+        fixture("owned-alice", "Alice App", true, {
+          ownerId: "alice@azx.dev",
+          ownerName: "Alice Anders",
+          ownerEmail: "alice@azx.dev",
+        }),
+        fixture("ownerless", "Orphan App", true),
+      ]);
+      render();
+
+      await screen.findByText("Orphan App");
+      await clickSort("Owner");
+      expect(rowOrder(["Alice App", "Bob App", "Orphan App"])).toEqual([
+        "Alice App",
+        "Bob App",
+        "Orphan App",
+      ]);
+
+      await clickSort("Owner");
+      expect(rowOrder(["Alice App", "Bob App", "Orphan App"])).toEqual([
+        "Bob App",
+        "Alice App",
+        "Orphan App",
+      ]);
+    });
+
+    it("sorts by last deploy, keeping never-deployed rows last in either direction", async () => {
+      const OLDER = "2026-09-01T00:00:00.000Z";
+      const NEWER = "2026-09-28T00:00:00.000Z";
+      stubFetch([
+        fixture("deployed-old", "Old Deploy", true, { lastDeployAt: OLDER }),
+        fixture("deployed-new", "New Deploy", true, { lastDeployAt: NEWER }),
+        fixture("never", "Never Deploy", false),
+      ]);
+      render();
+
+      await screen.findByText("Never Deploy");
+      await clickSort("Last deploy");
+      expect(rowOrder(["Old Deploy", "New Deploy", "Never Deploy"])).toEqual([
+        "Old Deploy",
+        "New Deploy",
+        "Never Deploy",
+      ]);
+
+      await clickSort("Last deploy");
+      expect(rowOrder(["Old Deploy", "New Deploy", "Never Deploy"])).toEqual([
+        "New Deploy",
+        "Old Deploy",
+        "Never Deploy",
+      ]);
+    });
+
+    it("sorts by spend, keeping no-spend rows last in either direction", async () => {
+      stubFetch(
+        [
+          fixture("pricey", "Pricey App"),
+          fixture("cheap", "Cheap App"),
+          fixture("unused", "Unused App"),
+        ],
+        { appPublicBase: APPS_BASE },
+        {
+          byApp: [
+            { slug: "pricey", tokens: 10, requests: 1, costUsd: 5 },
+            { slug: "cheap", tokens: 2, requests: 1, costUsd: 1.25 },
+          ],
+        },
+      );
+      render();
+
+      await screen.findByText("Unused App");
+      await clickSort("Spend");
+      expect(rowOrder(["Cheap App", "Pricey App", "Unused App"])).toEqual([
+        "Cheap App",
+        "Pricey App",
+        "Unused App",
+      ]);
+
+      await clickSort("Spend");
+      expect(rowOrder(["Cheap App", "Pricey App", "Unused App"])).toEqual([
+        "Pricey App",
+        "Cheap App",
+        "Unused App",
+      ]);
+    });
+
+    it("reflects the sort in aria-sort on the header cells", async () => {
+      stubFetch([fixture("solo", "Solo App")]);
+      render();
+
+      const thOf = (header: string) =>
+        screen.getByRole("button", { name: `Sort by ${header}` }).closest("th");
+      await screen.findByText("Solo App");
+
+      // Name ascending is the default, so the App header starts active.
+      expect(thOf("App")?.getAttribute("aria-sort")).toBe("ascending");
+      await clickSort("Owner");
+      expect(thOf("Owner")?.getAttribute("aria-sort")).toBe("ascending");
+      expect(thOf("App")?.getAttribute("aria-sort")).toBe("none");
+      await clickSort("Owner");
+      expect(thOf("Owner")?.getAttribute("aria-sort")).toBe("descending");
     });
   });
 });
