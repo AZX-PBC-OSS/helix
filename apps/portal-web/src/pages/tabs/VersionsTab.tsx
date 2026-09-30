@@ -40,11 +40,6 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
 
   return (
     <div className="az-stagger">
-      <Hint icon="layers" tone="info">
-        Every deploy is an <b>immutable version</b> in Blob storage. Promote flips the registry
-        pointer; rollback flips it back — no rebuild, effective at the edge within seconds.
-      </Hint>
-
       {!authenticated && versions.length > 0 && (
         <Box mt={18}>
           <Hint
@@ -71,9 +66,8 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
           background: "var(--mantine-color-dark-7)",
         }}
       >
-        {/* Five columns, one of them an unbounded blob prefix: on the app
-            detail pane's width that overflows, so it scrolls in its frame like
-            every other table rather than stretching the page. */}
+        {/* Scrolls in its frame like every other table rather than stretching
+            the app detail pane's width. */}
         <ScrollFade>
           <Table verticalSpacing="sm" horizontalSpacing="lg">
             <Table.Thead style={{ background: "var(--mantine-color-dark-6)" }}>
@@ -81,14 +75,13 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
                 <Table.Th>Version</Table.Th>
                 <Table.Th>Status</Table.Th>
                 <Table.Th>Deployed</Table.Th>
-                <Table.Th>Blob prefix</Table.Th>
                 <Table.Th style={{ textAlign: "right" }}>Action</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               {versions.length === 0 && (
                 <Table.Tr>
-                  <Table.Td colSpan={5}>
+                  <Table.Td colSpan={4}>
                     <Text c="dark.2" size="sm" ta="center" py={24}>
                       No versions yet — <span className="az-mono">helix deploy</span> creates v1.
                     </Text>
@@ -121,11 +114,6 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
                     <Table.Td>
                       <Text className="az-mono" fz={12} c="dark.1">
                         {timeAgo(v.createdAt)}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text className="az-mono" fz={12} c="dark.2">
-                        {v.blobPrefix}
                       </Text>
                     </Table.Td>
                     <Table.Td style={{ textAlign: "right" }}>
