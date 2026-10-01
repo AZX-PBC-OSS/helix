@@ -164,8 +164,8 @@ export const theme = createTheme({
       },
     },
     // Stock Mantine dresses an accordion for light mode — a gray-3 border and
-    // a dark-6 active fill, both wrong against the frosted glass. Left chevron
-    // so the disclosure arrow lands where the eyebrow's own chevron used to.
+    // a dark-6 active fill, both wrong against the frosted glass. The chevron
+    // sits left, leading the control the way a disclosure should.
     Accordion: {
       defaultProps: {
         variant: "separated",

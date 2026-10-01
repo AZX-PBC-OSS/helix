@@ -84,6 +84,7 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   dot: <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />,
+  diamond: <path d="m12 5 7 7-7 7-7-7z" />,
   plus: <path d="M12 5v14M5 12h14" />,
   ext: (
     <>

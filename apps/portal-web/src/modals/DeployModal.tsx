@@ -70,8 +70,8 @@ export function DeployModal({
           >
             <Accordion.Item value="upload">
               <Accordion.Control>
-                {/* The eyebrow's own chevron is dropped in favour of the
-                    accordion's, which is the same glyph and now rotates. */}
+                {/* The eyebrow carries no marker of its own here, so the
+                    accordion's chevron is the row's one affordance. */}
                 <Box className="az-eyebrow">Upload a build</Box>
               </Accordion.Control>
               <Accordion.Panel>

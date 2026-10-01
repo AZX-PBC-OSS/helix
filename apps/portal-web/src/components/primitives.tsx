@@ -11,7 +11,7 @@ import { Icon, type IconName } from "./Icon";
 export function Eyebrow({ children, mb }: { children: ReactNode; mb?: number }) {
   return (
     <Box className="az-eyebrow" mb={mb} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <Icon name="chevR" size={11} style={{ color: "var(--az-acc)", flexShrink: 0 }} />
+      <Icon name="diamond" size={12} style={{ color: "var(--az-acc)", flexShrink: 0 }} />
       {children}
     </Box>
   );

@@ -3,7 +3,8 @@ import type { CSSProperties } from "react";
 /**
  * The AZX wordmark — the real brand asset (azx_logo_white_grey.svg), inlined so
  * it tints with CSS vars: the letterforms take the theme ink, the x's chevron
- * keeps the brand slate (the same `>` we promote as a wayfinding glyph).
+ * keeps the brand slate — the `>` the UI reserves for disclosure and
+ * navigation, never for static labels.
  */
 export function Logo({
   height = 22,
