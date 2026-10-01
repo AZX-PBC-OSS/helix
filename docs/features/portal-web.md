@@ -42,10 +42,21 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
   the table, having no version rows to consult, reported an app with a build awaiting promote as
   never deployed. The projection fixed both. `/admin/registry` now redirects to `/?scope=all`.
 - **App detail** (`/apps/:slug`, `AppDetailPage`) with tabs:
-  - **Overview** — the app's description (owner-editable in place), a record card (visibility,
-    created, updated), the deploy-cadence chart, and promote/approval hints. The version count
-    lives on the Versions tab label and the live version in the page header, so the tab repeats
-    neither; last deploy sits in the header beside those badges.
+  - **Overview** — the owner's triage surface, owner/operator-first (visitors get the page
+    header). Attention hints first: budget refusals, policy refusals, unconnected callers, a
+    failing-call rate above 5%, pending promote, pending approvals, a live app with no traffic in
+    7 days, and the not-deployed empty state — each naming the count and linking to the tab that
+    can act. Below them, a **gateway-activity strip** off `GET /api/v1/apps/:slug/usage?range=7d`
+    (requests, error rate, spend, one bar per day) at deliberate summary depth — the Usage tab
+    owns range controls and the model breakdown. The right column keeps the registry record
+    (description, owner-editable in place; visibility; created; updated) and a **granted
+    capabilities summary** — one line per capability off the manifest read (models + daily cap,
+    data scopes, origin counts, MCP servers, offline scope), with the Capabilities tab as the
+    editor. The version count lives on the Versions tab label and the live version in the page
+    header, so the tab repeats neither; last deploy sits in the header beside those badges. The
+    deploy-cadence chart came off in the 2026 redesign: the activity strip answers the same
+    slot's question ("is this app alive") with signal the cadence chart never had, and the deploy
+    rhythm is the Versions tab's own table.
   - **Versions** — history with promote/rollback (the live version lifecycle).
   - **Capabilities** — a manifest editor against `GET`/`PUT /api/v1/apps/:slug/manifest` (LLM
     models + budget, data flags/lists, external origins, fetch-proxy origins, MCP grants — see

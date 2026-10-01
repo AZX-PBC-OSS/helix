@@ -1,20 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { App, PortalMeResponse, Version } from "@azx-pbc/shared";
+import type {
+  App,
+  AppManifest,
+  PortalMeResponse,
+  UsageRange,
+  UsageSummary,
+  Version,
+} from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { AuthProvider } from "../auth/AuthProvider";
 import { setToken, clearToken } from "../auth/tokenStore";
 import { OverviewTab } from "../pages/tabs/OverviewTab";
 
 /**
- * The description edit affordance on the Overview tab's "Registry record" card.
- * The edit button mirrors the server's `ownsApp` (owner-id match or admin) —
- * these tests pin that mirror, while the server remains the real gate
- * (apps/portal/src/plugins/auth.ts `ownsApp`, exercised in ownership.test.ts).
+ * The Overview tab is the owner's triage surface. Two suites hold it up:
  *
- * A second suite pins the 2026 UX-review removals (stat cards, the serving
- * explainer, Slug/App id) so the chrome stays out.
+ * - the description edit affordance, mirroring the server's `ownsApp`
+ *   (owner-id match or admin) — the server remains the real gate
+ *   (apps/portal/src/plugins/auth.ts `ownsApp`, exercised in ownership.test.ts);
+ * - the runtime attention signals, read off the gateway ledger (refusals,
+ *   failures, silence) and the manifest summary.
+ *
+ * A third suite pins the 2026 UX-review removals (stat cards, the serving
+ * explainer, Slug/App id, the deploy-cadence chart) so the chrome stays out.
  */
 
 const APP: App = {
@@ -44,7 +54,48 @@ function me(overrides: Partial<PortalMeResponse>): PortalMeResponse {
   };
 }
 
-function stubFetch(meResponse: PortalMeResponse) {
+function usage(range: UsageRange, over: Partial<UsageSummary> = {}): UsageSummary {
+  return {
+    appId: APP.id,
+    range,
+    requests: 120,
+    inputTokens: 1000,
+    outputTokens: 500,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    costUsd: 1.23,
+    latencyP95Ms: 800,
+    errorRate: 0,
+    byOutcome: { ok: 120 },
+    byModel: [],
+    series: [],
+    today: { tokens: 10, costUsd: 0.5 },
+    ...over,
+  };
+}
+
+const MANIFEST: AppManifest = {
+  app: "cost-explorer",
+  visibility: { mode: "internal" },
+  capabilities: {
+    llm: { models: ["claude-haiku-4-5"], dollarsPerDay: 5 },
+    data: {
+      user: true,
+      collections: ["contacts"],
+      sharedRead: [],
+      sharedWrite: [],
+      sharedReadPrefixes: [],
+      sharedWritePrefixes: [],
+    },
+    mcp: [],
+    externalOrigins: [],
+  },
+};
+
+function stubFetch(
+  meResponse: PortalMeResponse,
+  opts: { usage?: Partial<UsageSummary>; manifest?: AppManifest } = {},
+) {
   const patches: { url: string; body: unknown }[] = [];
   vi.stubGlobal(
     "fetch",
@@ -63,6 +114,21 @@ function stubFetch(meResponse: PortalMeResponse) {
       if (url.includes("/approvals")) {
         return Promise.resolve({ ok: true, status: 200, json: async () => [] });
       }
+      if (url.includes("/usage")) {
+        const range = url.includes("range=7d") ? "7d" : "24h";
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => usage(range, opts.usage),
+        });
+      }
+      if (url.includes("/manifest")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => opts.manifest ?? MANIFEST,
+        });
+      }
       if (init?.method === "PATCH") {
         patches.push({ url, body: JSON.parse(String(init.body)) });
         return Promise.resolve({
@@ -77,10 +143,10 @@ function stubFetch(meResponse: PortalMeResponse) {
   return patches;
 }
 
-function renderTab() {
+function renderTab(app: App = APP) {
   renderWithProviders(
     <AuthProvider>
-      <OverviewTab app={APP} versions={VERSIONS} />
+      <OverviewTab app={app} versions={VERSIONS} />
     </AuthProvider>,
   );
 }
@@ -144,11 +210,127 @@ describe("OverviewTab description edit", () => {
   });
 });
 
+describe("OverviewTab runtime attention", () => {
+  it("reports budget refusals with the count and a path to usage", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      usage: { requests: 120, byOutcome: { ok: 110, quota_blocked: 10 }, errorRate: 0 },
+    });
+    renderTab();
+
+    expect(await screen.findByText(/refused today/)).toBeDefined();
+    expect(screen.getByText("10 calls")).toBeDefined();
+    const link = screen.getByRole("link", { name: /view usage/i });
+    expect(link.getAttribute("href")).toContain("tab=usage");
+  });
+
+  it("reports policy refusals with a path to the manifest", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      usage: { requests: 120, byOutcome: { ok: 118, forbidden: 2 }, errorRate: 0 },
+    });
+    renderTab();
+
+    expect(await screen.findByText(/refused by policy/)).toBeDefined();
+    const link = screen.getByRole("link", { name: /review capabilities/i });
+    expect(link.getAttribute("href")).toContain("tab=capabilities");
+  });
+
+  it("reports unconnected callers as a consent problem, violet", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      usage: { requests: 120, byOutcome: { ok: 119, connection_required: 1 }, errorRate: 0 },
+    });
+    renderTab();
+
+    expect(await screen.findByText(/isn't connected to/)).toBeDefined();
+  });
+
+  it("reports a failing call rate above threshold", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      usage: { requests: 100, byOutcome: { ok: 90, error: 10 }, errorRate: 0.1 },
+    });
+    renderTab();
+
+    expect(await screen.findByText(/calls failed/)).toBeDefined();
+  });
+
+  it("stays quiet below the failing-call threshold", async () => {
+    setToken("t");
+    // A single flaky call in a thousand is noise, not an attention item.
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      usage: { requests: 1000, byOutcome: { ok: 999, error: 1 }, errorRate: 0.001 },
+    });
+    renderTab();
+
+    // When the activity card renders, this window's usage has landed — so if
+    // the quiet fixture were over threshold, the hint would be up by now.
+    await screen.findByText("Gateway activity · last 7 days");
+    expect(screen.queryByText(/calls failed/)).toBeNull();
+  });
+
+  it("reports a live app with no traffic this week", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      usage: { requests: 0, byOutcome: {}, errorRate: 0, costUsd: 0 },
+    });
+    renderTab({ ...APP, currentVersionId: "22222222-2222-4222-8222-222222222222" });
+
+    expect(await screen.findByText(/No gateway calls in 7 days/)).toBeDefined();
+  });
+
+  it("keeps the activity strip to summary depth over the 7d window", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      usage: { requests: 120, costUsd: 1.23 },
+    });
+    renderTab();
+
+    expect(await screen.findByText("Gateway activity · last 7 days")).toBeDefined();
+    expect(screen.getByText("120")).toBeDefined();
+    expect(screen.getByText("$1.23")).toBeDefined();
+    // The Usage tab owns the deep views: no range controls, no model table here.
+    expect(screen.queryByText("Model breakdown")).toBeNull();
+  });
+});
+
+describe("OverviewTab capabilities summary", () => {
+  it("summarises the manifest's grants one line per capability", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }));
+    renderTab();
+
+    expect(await screen.findByText("Granted capabilities")).toBeDefined();
+    expect(screen.getByText("claude-haiku-4-5 · $5.00/day")).toBeDefined();
+    expect(screen.getByText("user store · 1 collection")).toBeDefined();
+    const edit = screen.getByRole("link", { name: "Edit" });
+    expect(edit.getAttribute("href")).toContain("tab=capabilities");
+  });
+
+  it("says so plainly when nothing is granted", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }), {
+      manifest: {
+        app: "cost-explorer",
+        visibility: { mode: "internal" },
+        capabilities: { mcp: [], externalOrigins: [] },
+      },
+    });
+    renderTab();
+
+    expect(await screen.findByText(/No gateway capabilities granted yet/)).toBeDefined();
+  });
+});
+
 describe("OverviewTab chrome", () => {
   // The Aug 2026 UX review: the tab opened on a wall of platform explanation.
   // The version count lives on the Versions tab label, the live version in the
   // page header, and the serving model in the docs the Help modal points at —
-  // none of it belongs on every visit.
+  // none of it belongs on every visit. The deploy-cadence chart went with the
+  // 2026 redesign: the runtime activity strip answers the same slot's question
+  // ("is this app alive") with signal the cadence chart never had, and the
+  // deploy rhythm is the Versions tab's own table.
   it("keeps the trimmed tab trimmed", async () => {
     setToken("t");
     stubFetch(me({ oid: "oid-someone-else" }));
@@ -162,13 +344,17 @@ describe("OverviewTab chrome", () => {
       "immutable, in Blob",
       "registry pointer",
       "How serving works",
+      "Deploy cadence",
       "Slug",
       "App id",
     ]) {
       expect(screen.queryByText(gone), `"${gone}" should be gone`).toBeNull();
     }
-    // What survived: the record card's facts and the deploy cadence chart.
+    // What survived: the record card's facts, and the two cards that answer
+    // "is it alive" and "what can it do". The cards arrive with their queries,
+    // so wait for them rather than racing the fetch.
     expect(screen.getByText("Visibility")).toBeDefined();
-    expect(screen.getByText("Deploy cadence · since first version")).toBeDefined();
+    expect(await screen.findByText("Gateway activity · last 7 days")).toBeDefined();
+    expect(await screen.findByText("Granted capabilities")).toBeDefined();
   });
 });
