@@ -172,6 +172,8 @@ export async function launchBrowser({ port = 9411 } = {}) {
       writeFileSync(path, Buffer.from(data, "base64"));
       return path;
     },
+    /** Raw CDP into this page's session — e.g. Input.dispatchMouseEvent to drive :hover. */
+    send: (method, params = {}) => send(method, params, sessionId),
     close() {
       try {
         ws.close();

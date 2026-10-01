@@ -109,6 +109,32 @@
   color: var(--mantine-color-dark-2);
 }
 
+/* Sidebar nav link. Hover needs a stylesheet (:hover), so the whole state
+   machine lives here rather than split against inline styles — the active
+   pill must survive a hover, hence the explicit --active:hover rule. */
+.az-navlink {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border-radius: 9px;
+  position: relative;
+  background: transparent;
+  color: var(--mantine-color-dark-2);
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: all 0.14s;
+}
+.az-navlink:hover {
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--mantine-color-dark-1);
+}
+.az-navlink--active,
+.az-navlink--active:hover {
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--mantine-color-dark-0);
+  font-weight: 600;
+}
+
 /* The disclosure chevron is the only right-pointing chevron: the eyebrow uses
    a non-directional diamond outline, so a static label never reads as
    something that expands. The chevron points right when closed, down when

@@ -85,24 +85,15 @@ function SidebarLink({ item }: { item: NavItem }) {
       to={item.to}
       px={11}
       py={9}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 11,
-        borderRadius: 9,
-        position: "relative",
-        background: active ? "rgba(255,255,255,.055)" : "transparent",
-        color: active ? "var(--mantine-color-dark-0)" : "var(--mantine-color-dark-2)",
-        fontSize: 13.5,
-        fontWeight: active ? 600 : 500,
-        transition: "all .14s",
-      }}
+      className={active ? "az-navlink az-navlink--active" : "az-navlink"}
     >
       {active && (
         <span
           style={{
             position: "absolute",
-            left: -9,
+            // The bar lives in the navbar's padding channel, fully left of the
+            // pill's edge (the pill starts at the column's 8px gutter).
+            left: -11,
             top: "50%",
             transform: "translateY(-50%)",
             width: 3,
@@ -123,6 +114,35 @@ function SidebarLink({ item }: { item: NavItem }) {
         </span>
       )}
     </UnstyledButton>
+  );
+}
+
+/**
+ * One labelled nav group: a header row and its links, everything starting at
+ * the column's one 8px gutter. Both sidebar sections render through this so
+ * the two headers stay on the same left edge.
+ */
+function NavSection({
+  label,
+  badge,
+  items,
+}: {
+  label: string;
+  badge?: ReactNode;
+  items: NavItem[];
+}) {
+  return (
+    <Box pt={18}>
+      <Group justify="space-between" px={8} pb={8}>
+        <Eyebrow>{label}</Eyebrow>
+        {badge}
+      </Group>
+      <Stack gap={2} pl={8}>
+        {items.map((item) => (
+          <SidebarLink key={item.to} item={item} />
+        ))}
+      </Stack>
+    </Box>
   );
 }
 
@@ -218,33 +238,24 @@ export function Shell({ children }: { children: ReactNode }) {
   return (
     <AppShell navbar={{ width: 248, breakpoint: "xs" }} padding={0}>
       <AppShell.Navbar className="az-glass" p="14px" style={{ borderColor: "var(--az-line-2)" }}>
-        <Box px={6} pb={18} pt={4}>
+        <Box px={8} pt={4}>
           <Brand />
         </Box>
         {/* Deploying is an app-scoped action and lives on the app's own page;
             creating one lives on the apps page. Neither belongs in the sidebar, where
             a global "Deploy app" button had no target to act on. */}
-        <Eyebrow mb={8}>Workspace</Eyebrow>
-        <Stack gap={2}>
-          {WORKSPACE_NAV.map((item) => (
-            <SidebarLink key={item.to} item={item} />
-          ))}
-        </Stack>
+        <NavSection label="Workspace" items={WORKSPACE_NAV} />
 
         {isAdmin && (
-          <>
-            <Group justify="space-between" px={8} pt={18} pb={8}>
-              <Eyebrow>Admin</Eyebrow>
+          <NavSection
+            label="Admin"
+            items={ADMIN_NAV}
+            badge={
               <ToneBadge tone="violet" style={{ padding: "2px 6px", fontSize: 9.5 }}>
                 ELEVATED
               </ToneBadge>
-            </Group>
-            <Stack gap={2}>
-              {ADMIN_NAV.map((item) => (
-                <SidebarLink key={item.to} item={item} />
-              ))}
-            </Stack>
-          </>
+            }
+          />
         )}
 
         <Box style={{ flex: 1 }} />
