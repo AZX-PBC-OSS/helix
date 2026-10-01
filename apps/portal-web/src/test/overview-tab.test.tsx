@@ -12,6 +12,9 @@ import { OverviewTab } from "../pages/tabs/OverviewTab";
  * The edit button mirrors the server's `ownsApp` (owner-id match or admin) —
  * these tests pin that mirror, while the server remains the real gate
  * (apps/portal/src/plugins/auth.ts `ownsApp`, exercised in ownership.test.ts).
+ *
+ * A second suite pins the 2026 UX-review removals (stat cards, the serving
+ * explainer, Slug/App id) so the chrome stays out.
  */
 
 const APP: App = {
@@ -138,5 +141,34 @@ describe("OverviewTab description edit", () => {
 
     expect(await screen.findByText("No description yet.")).toBeDefined();
     expect(await screen.findByRole("button", { name: /add description/i })).toBeDefined();
+  });
+});
+
+describe("OverviewTab chrome", () => {
+  // The Aug 2026 UX review: the tab opened on a wall of platform explanation.
+  // The version count lives on the Versions tab label, the live version in the
+  // page header, and the serving model in the docs the Help modal points at —
+  // none of it belongs on every visit.
+  it("keeps the trimmed tab trimmed", async () => {
+    setToken("t");
+    stubFetch(me({ oid: "oid-someone-else" }));
+    renderTab();
+
+    await screen.findByText("Tracks Q3 spend by team.");
+    for (const gone of [
+      "Versions",
+      "Serving",
+      "Last deploy",
+      "immutable, in Blob",
+      "registry pointer",
+      "How serving works",
+      "Slug",
+      "App id",
+    ]) {
+      expect(screen.queryByText(gone), `"${gone}" should be gone`).toBeNull();
+    }
+    // What survived: the record card's facts and the deploy cadence chart.
+    expect(screen.getByText("Visibility")).toBeDefined();
+    expect(screen.getByText("Deploy cadence · since first version")).toBeDefined();
   });
 });

@@ -7,6 +7,7 @@ import { Hint, Principal, StatusLine, ToneBadge, VisibilityBadge } from "../comp
 import { useDeployment } from "../lib/deployment";
 import { appStatus, awaitingPromoteNumber, deployFacts } from "../lib/appStatus";
 import { useDeploy } from "../modals/DeployContext";
+import { timeAgo } from "../lib/format";
 import { OverviewTab } from "./tabs/OverviewTab";
 import { VersionsTab } from "./tabs/VersionsTab";
 import { CapabilitiesTab } from "./tabs/CapabilitiesTab";
@@ -45,6 +46,9 @@ export function AppDetailPage() {
 
   const a = app.data;
   const vs = versions.data ?? [];
+  // Newest first (the versions route orders `number: "desc"`), so [0] is the
+  // most recent deploy — what the header's last-deploy line reads from.
+  const last = vs[0];
   // This page has the full version list, so facts come from it rather than from
   // the list endpoint's projection — same shape either way (`lib/appStatus`).
   const facts = deployFacts(a, vs);
@@ -123,6 +127,19 @@ export function AppDetailPage() {
                 live {facts.liveNumber === null ? "—" : `v${facts.liveNumber}`}
               </ToneBadge>
               {pending !== null && <ToneBadge tone="slate">preview v{pending}</ToneBadge>}
+              {/* Last deploy is metadata, not state — plain text beside the
+                  badges rather than another pill, so the state vocabulary stays
+                  readable as state. Hidden before the first deploy: the
+                  StatusLine already says "Not deployed", and "last deploy —"
+                  would say nothing the absence doesn't. */}
+              {last && (
+                <Group gap={6} wrap="nowrap" c="dark.2">
+                  <Icon name="clock" size={12} />
+                  <Text fz={12} style={{ whiteSpace: "nowrap" }}>
+                    last deploy {timeAgo(last.createdAt)} · v{last.number}
+                  </Text>
+                </Group>
+              )}
               {/* Whose app this is. Shown to every signed-in reader, not just the
                   owner — "who do I ask about this?" is the question the field
                   exists to answer, and a deployment serves one trusted org.

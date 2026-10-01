@@ -42,7 +42,10 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
   the table, having no version rows to consult, reported an app with a build awaiting promote as
   never deployed. The projection fixed both. `/admin/registry` now redirects to `/?scope=all`.
 - **App detail** (`/apps/:slug`, `AppDetailPage`) with tabs:
-  - **Overview** — metadata, live + preview versions, deploy/rollback actions.
+  - **Overview** — the app's description (owner-editable in place), a record card (visibility,
+    created, updated), the deploy-cadence chart, and promote/approval hints. The version count
+    lives on the Versions tab label and the live version in the page header, so the tab repeats
+    neither; last deploy sits in the header beside those badges.
   - **Versions** — history with promote/rollback (the live version lifecycle).
   - **Capabilities** — a manifest editor against `GET`/`PUT /api/v1/apps/:slug/manifest` (LLM
     models + budget, data flags/lists, external origins, fetch-proxy origins, MCP grants — see
