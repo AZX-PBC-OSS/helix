@@ -25,14 +25,23 @@
   background: transparent;
 }
 
-/* ---- The fixed "Sunset" scene (rendered by <SunsetScene/>) ---- */
+/* ---- The fixed "Sunset" scene (rendered by <SunsetScene/>) ----
+   The canvas draws the sun, reflection, horizon and grid. CSS keeps only the
+   sky/floor fill and the breathing glow, both keyed to --az-horizon (set by
+   the component) so they line up with the canvas on every viewport. */
 .az-scene {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  background: linear-gradient(#05060a 0%, #0a0810 34%, #120a14 45%, #08090b 46%, #08090b 100%);
+  background: linear-gradient(
+    #05060a 0%,
+    #0a0810 calc(var(--az-horizon) - 12%),
+    #1a0c1e var(--az-horizon),
+    #08090b var(--az-horizon),
+    #08090b 100%
+  );
 }
 .az-grid {
   position: absolute;
@@ -40,42 +49,17 @@
   width: 100%;
   height: 100%;
 }
-.az-sun {
-  position: absolute;
-  left: 50%;
-  top: calc(46vh - 150px);
-  transform: translateX(-50%);
-  width: 300px;
-  height: 300px;
-  border-radius: 50%;
-  background: linear-gradient(
-    #fff3c8 2%,
-    var(--az-gold) 22%,
-    var(--az-orange) 52%,
-    var(--az-mag) 90%
-  );
-  /* Banded sun: the lower half is sliced by horizontal cuts. These are mask
-     transparencies (the sky shows through), not black bars, and they're clipped
-     to the circle — so the silhouette stays round. Top layer keeps the upper
-     half solid; second layer cuts thin gaps; the two are unioned by default. */
-  -webkit-mask-image:
-    linear-gradient(to bottom, #000 52%, transparent 52%),
-    repeating-linear-gradient(to bottom, #000 0 9px, transparent 9px 13px);
-  mask-image:
-    linear-gradient(to bottom, #000 52%, transparent 52%),
-    repeating-linear-gradient(to bottom, #000 0 9px, transparent 9px 13px);
-}
 .az-sun-glow {
   position: absolute;
   left: 50%;
-  top: calc(46vh - 180px);
+  top: calc(var(--az-horizon) - 250px);
   transform: translateX(-50%);
-  width: 600px;
+  width: 640px;
   height: 420px;
   background: radial-gradient(
     ellipse at center,
-    rgba(255, 150, 70, 0.5),
-    rgba(255, 43, 214, 0.26) 44%,
+    rgba(255, 150, 70, 0.45),
+    rgba(255, 43, 214, 0.24) 44%,
     transparent 72%
   );
   filter: blur(16px);
@@ -89,35 +73,6 @@
   50% {
     opacity: 1;
   }
-}
-/* The sun's watery reflection below the horizon: rippled and fading downward
-   (the fade is masked in local space, then flipped to dissolve away from the
-   horizon). Ripples ∩ fade via mask-composite. */
-.az-reflection {
-  position: absolute;
-  left: 50%;
-  top: 46vh;
-  transform: translateX(-50%) scaleY(-1.3);
-  transform-origin: top center;
-  width: 300px;
-  height: 300px;
-  border-radius: 50%;
-  opacity: 0.3;
-  filter: blur(2px);
-  background: linear-gradient(
-    #fff3c8 2%,
-    var(--az-gold) 22%,
-    var(--az-orange) 52%,
-    var(--az-mag) 90%
-  );
-  -webkit-mask-image:
-    repeating-linear-gradient(to bottom, #000 0 2px, transparent 2px 7px),
-    linear-gradient(to bottom, #000, transparent 70%);
-  -webkit-mask-composite: source-in;
-  mask-image:
-    repeating-linear-gradient(to bottom, #000 0 2px, transparent 2px 7px),
-    linear-gradient(to bottom, #000, transparent 70%);
-  mask-composite: intersect;
 }
 
 /* ---- Frosted, scanlined glass — the surfaces the app rides on ---- */
