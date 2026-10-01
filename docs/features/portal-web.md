@@ -61,7 +61,18 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
   - **Capabilities** — a manifest editor against `GET`/`PUT /api/v1/apps/:slug/manifest` (LLM
     models + budget, data flags/lists, external origins, fetch-proxy origins, MCP grants — see
     [capabilities-and-manifests.md](./capabilities-and-manifests.md)).
-  - **Usage** — per-app metering off `GET /api/v1/apps/:slug/usage`.
+  - **Usage** — per-app metering off `GET /api/v1/apps/:slug/usage`, plus a
+    **Recent calls** card fed by the app-scoped audit feed
+    (`GET /api/v1/apps/:slug/audit`). The gate follows the data (ADR-0007,
+    amended): the rows carry the app's callers' captured claims, which the app
+    itself cannot read, so the feed is owner-or-admin (`ownsApp`) while the
+    aggregates above it stay sign-in-gated. The card reuses the admin audit
+    page's row/expand rendering, minus the App column; `errorDetail` — the
+    upstream failure text — is nulled server-side for non-admin callers (it can
+    quote request content and, on an auth failure, the key, and the connection
+    secret behind a failure is often administered by an operator other than the
+    app's owner), so owners get outcome, status and latency, and admins get a
+    link to the full record.
   - **Data** — the owner's drain for write-only collections (`DataTab`): a collection picker with
     row counts off `GET /api/v1/apps/:slug/collections`, the newest 200 rows, per-row raw-JSON
     detail, single-item erasure, and CSV/JSON download. Columns are **derived** from the rows —
@@ -112,8 +123,9 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
     call's full record as an unframed continuation of the row itself (the open row and its detail
     share one darker band; rows open independently, so two failures can sit side by side):
     `errorDetail` in full (the upstream/
-    vendor text the app-facing error deliberately never echoes — kept in the ledger for exactly
-    this admin-only audience), `stopReason`, `statusCode`, the fetch request line (`method`+`path`;
+    vendor text the app-facing error deliberately never echoes — the ledger keeps it for
+    this admin-only audience, and the app-scoped Usage-tab feed nulls it for non-admin
+    owners), `stopReason`, `statusCode`, the fetch request line (`method`+`path`;
     the query string is excluded at write time), in/out/cache token accounting, cost, latency, the
     exact timestamp, and the raw subject as copyable text. The filter box matches what the columns
     render **and** what only the expand shows (`errorDetail`/`stopReason`/path) — filter finds,

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { TokenVerifier } from "../plugins/auth.js";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 
 let t: TestApp;
@@ -360,5 +361,181 @@ describe("GET /api/v1/gateway/usage (platform)", () => {
     const myCost = 0.003;
     expect(mine.costUsd).toBeCloseTo(myCost, 9);
     expect(body.totals.costMTD).toBeGreaterThanOrEqual(myCost - 1e-9);
+  });
+});
+
+/**
+ * The app-scoped audit feed — the Usage tab's owner-facing recent-calls card.
+ * Its rows carry the app's callers' captured claims, so the gate follows the
+ * data (ADR-0007, amended): `ownsApp`, not bare authentication. The canonical
+ * three-principal setup is `ownership.test.ts`; repeated here because the
+ * feed's *field* policy is the point — `errorDetail` reaches a platform admin
+ * but is nulled for the owner.
+ */
+describe("GET /api/v1/apps/:slug/audit", () => {
+  const OWNER = "owner@azx.io";
+  const OTHER = "other@azx.io";
+  const ADMIN = "admin@azx.io";
+  const ADMIN_GROUP = "platform-admin";
+
+  const verifiers: TokenVerifier[] = [
+    {
+      verify: async (token) => {
+        if (token === "owner") return { oid: "oid-owner", sub: OWNER, via: "oidc", groups: [] };
+        if (token === "other") return { oid: "oid-other", sub: OTHER, via: "oidc", groups: [] };
+        if (token === "admin")
+          return { oid: "oid-admin", sub: ADMIN, via: "oidc", groups: [ADMIN_GROUP] };
+        return null;
+      },
+    },
+  ];
+
+  const owner = { authorization: "Bearer owner" };
+  const other = { authorization: "Bearer other" };
+  const admin = { authorization: "Bearer admin" };
+
+  let a: TestApp;
+  let prevAdminGroup: string | undefined;
+
+  beforeAll(async () => {
+    // `actorIsAdmin` reads the env at request time; pin it like
+    // ownership.test.ts does, and restore it after — the shared `t` app's
+    // other describes have already run by the time this block executes.
+    prevAdminGroup = process.env.PORTAL_ADMIN_GROUP_ID;
+    process.env.PORTAL_ADMIN_GROUP_ID = ADMIN_GROUP;
+    a = buildTestApp({ auth: { verifiers, publicConfig: null } });
+    await a.app.ready();
+  });
+
+  afterAll(async () => {
+    await a.close();
+    if (prevAdminGroup === undefined) delete process.env.PORTAL_ADMIN_GROUP_ID;
+    else process.env.PORTAL_ADMIN_GROUP_ID = prevAdminGroup;
+  });
+
+  /** An app owned by OWNER (created through the API so `ownerId` lands) with ledger rows. */
+  async function ownedApp(
+    calls: Array<{
+      createdAt?: Date;
+      outcome?: string;
+      errorDetail?: string | null;
+    }>,
+  ): Promise<{ id: string; slug: string }> {
+    const slug = uniqueSlug();
+    const created = await a.app.inject({
+      method: "POST",
+      url: "/api/v1/apps",
+      headers: owner,
+      payload: { slug, displayName: "Feed" },
+    });
+    expect(created.statusCode).toBe(201);
+    const id = created.json().id as string;
+    for (const c of calls) {
+      await a.prisma.gatewayCall.create({
+        data: {
+          appId: id,
+          userOid: "oid-caller",
+          userName: "Calla Ranked",
+          userEmail: "caller@azx.io",
+          userKind: "user",
+          capability: "llm",
+          model: "claude-opus-4-8",
+          inputTokens: 100,
+          outputTokens: 50,
+          costMicroUsd: 5_000n,
+          outcome: c.outcome ?? "ok",
+          errorDetail: c.errorDetail ?? null,
+          ...(c.createdAt ? { createdAt: c.createdAt } : {}),
+        },
+      });
+    }
+    return { id, slug };
+  }
+
+  it("requires a bearer token (401)", async () => {
+    const res = await a.app.inject({ method: "GET", url: "/api/v1/apps/x/audit" });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("404s an unknown app", async () => {
+    const res = await a.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${uniqueSlug()}/audit`,
+      headers: owner,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("refuses a non-owner non-admin", async () => {
+    const { slug } = await ownedApp([{}]);
+    const res = await a.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/audit`,
+      headers: other,
+    });
+    expect(res.statusCode).toBe(403);
+    // The message proves this is the ownership gate, not some other 403.
+    expect(res.json().error.message).toMatch(/own this app/);
+  });
+
+  it("serves the owner the app's calls newest-first, with errorDetail nulled", async () => {
+    const feed = await ownedApp([
+      { createdAt: new Date(Date.now() - 4_000), outcome: "ok" },
+      {
+        createdAt: new Date(Date.now() - 2_000),
+        outcome: "error",
+        errorDetail: "upstream 401: invalid api-key",
+      },
+    ]);
+    // A second owner-owned app with its own row — the feed must keep it out.
+    const sibling = await ownedApp([{ createdAt: new Date(Date.now() - 1_000) }]);
+
+    const res = await a.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${feed.slug}/audit`,
+      headers: owner,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.rows).toHaveLength(2);
+    expect(body.rows[0].outcome).toBe("error");
+    expect(body.rows[1].outcome).toBe("ok");
+    expect(body.rows.every((r: { appId: string }) => r.appId === feed.id)).toBe(true);
+    expect(body.rows.every((r: { slug: string | null }) => r.slug === feed.slug)).toBe(true);
+    // The captured claims ride along — the tracking half of the feature.
+    expect(body.rows[0].userName).toBe("Calla Ranked");
+    expect(body.rows[0].userEmail).toBe("caller@azx.io");
+    // But the admin-only failure text does not, on any row.
+    expect(body.rows.every((r: { errorDetail: string | null }) => r.errorDetail === null)).toBe(
+      true,
+    );
+    // Minimal list: no pagination cursor.
+    expect(body.nextBefore).toBeUndefined();
+    // The sibling app's row must not appear here.
+    expect(body.rows.every((r: { appId: string }) => r.appId !== sibling.id)).toBe(true);
+  });
+
+  it("keeps errorDetail for an admin who does not own the app", async () => {
+    const { slug } = await ownedApp([
+      { outcome: "error", errorDetail: "upstream 401: invalid api-key" },
+    ]);
+    const res = await a.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/audit`,
+      headers: admin,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().rows[0].errorDetail).toBe("upstream 401: invalid api-key");
+  });
+
+  it("clamps ?limit=", async () => {
+    const { slug } = await ownedApp([{}, {}, {}]);
+    const res = await a.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/audit?limit=2`,
+      headers: owner,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().rows).toHaveLength(2);
   });
 });

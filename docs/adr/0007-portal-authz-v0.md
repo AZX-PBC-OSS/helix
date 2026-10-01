@@ -78,6 +78,18 @@ separate ADR. Still not RBAC: owner-or-admin, with platform-admins passing. What
 makes an admin's cross-owner read reviewable is the new `collection.exported`
 audit row, not the gate.
 
+## Application (2026-10-01): the app-scoped audit feed
+
+`GET /api/v1/apps/:slug/audit` — the Usage tab's owner-facing "Recent calls"
+card — is another application of the amended criterion: the `gateway_calls` rows
+carry the app's callers' captured claims, data the app itself cannot read, so the
+route takes `ownsApp` while the aggregate usage summary beside it stays
+sign-in-gated. The one field trimmed below the admin audit log's fidelity is
+`errorDetail`, nulled for non-admin callers: it is upstream/vendor error text
+that can quote request content and, on an auth failure, the key, and the
+connection secret behind a failed call is often administered by an operator
+other than the app's owner.
+
 ## Access posture for customer-deployed installs (2026-07-24)
 
 Under ADR [0028](0028-deployment-model-customer-deployed.md) the customer **runs**

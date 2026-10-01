@@ -172,6 +172,10 @@ describe("ownsApp — every app-scoped mutating route rejects a non-owner", () =
       method: "GET",
       urlOf: (s) => `/api/v1/apps/${s}/collections/c/export`,
     },
+    // The app-scoped audit feed is a read gated like the collections: its rows
+    // carry the app's callers' captured claims, data the app itself cannot read
+    // (ADR-0007, amended 2026-08-10).
+    { name: "app audit feed", method: "GET", urlOf: (s) => `/api/v1/apps/${s}/audit` },
   ];
 
   it.each(ROUTES)("rejects non-owner: $name", async (r) => {

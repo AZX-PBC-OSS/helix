@@ -171,7 +171,12 @@ export const GatewayCallSchema = z.object({
   method: z.string().nullable(),
   /** LLM stop reason; null for non-LLM calls. */
   stopReason: z.string().nullable(),
-  /** Short upstream error string; null on success. */
+  /**
+   * Short upstream error string; null on success. Admin-only in practice — it
+   * can quote request content and, on an auth failure, the key, so it serves
+   * the admin audit log's audience while the app-scoped feed
+   * (`/api/v1/apps/:slug/audit`) nulls it for non-admin callers.
+   */
   errorDetail: z.string().nullable(),
   outcome: GatewayOutcomeSchema,
   createdAt: z.iso.datetime(),

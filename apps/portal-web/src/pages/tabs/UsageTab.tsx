@@ -1,5 +1,16 @@
 import { useState } from "react";
-import { Button, Card, Center, Group, Loader, SimpleGrid, Stack, Text } from "@mantine/core";
+import {
+  Anchor,
+  Button,
+  Card,
+  Center,
+  Group,
+  Loader,
+  SimpleGrid,
+  Stack,
+  Text,
+} from "@mantine/core";
+import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   priceForModel,
@@ -8,9 +19,11 @@ import {
   type GatewayOutcome,
   type UsageRange,
 } from "@azx-pbc/shared";
-import { manifestQuery, usageQuery } from "../../api/queries";
+import { appAuditQuery, manifestQuery, usageQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
 import { Meter } from "../../components/charts";
+import { GatewayCallTable } from "../../components/GatewayCallTable";
+import { ScrollFade } from "../../components/ScrollFade";
 import {
   MetricToggle,
   RangeControl,
@@ -41,13 +54,18 @@ const OUTCOME_TONE: Record<GatewayOutcome, Tone> = {
 
 /** Per-app gateway metering over a selectable range. Real `gateway_calls` data. */
 export function UsageTab({ app }: { app: App }) {
-  const { authenticated, login, loginAvailable } = useAuth();
+  const { authenticated, login, loginAvailable, isAdmin, me, meLoading } = useAuth();
   const [range, setRange] = useState<UsageRange>("24h");
   const [metric, setMetric] = useState<UsageMetric>("cost");
   // The usage endpoint is bearer-gated; only fetch once signed in.
   const usage = useQuery({ ...usageQuery(app.slug, range), enabled: authenticated });
   // Manifest read is open — used to show the daily cap the budget is measured against.
   const manifest = useQuery(manifestQuery(app.slug));
+  // The per-call feed is owner-or-admin (the server's `ownsApp`): rows carry the
+  // app's callers' captured claims, which the app itself cannot read. A missing
+  // `oid` on a stale /me fails closed to non-owner.
+  const canSeeCalls = isAdmin || (app.ownerId != null && me?.oid === app.ownerId);
+  const audit = useQuery({ ...appAuditQuery(app.slug), enabled: authenticated && canSeeCalls });
 
   if (!authenticated) {
     return (
@@ -205,6 +223,36 @@ export function UsageTab({ app }: { app: App }) {
               </Group>
             );
           })}
+        </Card>
+      )}
+
+      {/* Held until /me settles, so an owner never sees the hint flash before
+          their card renders — a wrong "who this is for" is the flash to avoid. */}
+      {authenticated && !canSeeCalls && !meLoading && (
+        <Hint icon="shield" tone="neutral">
+          Per-call history is visible to the app's owner.
+        </Hint>
+      )}
+
+      {canSeeCalls && audit.data != null && audit.data.rows.length > 0 && (
+        <Card>
+          <Group justify="space-between" mb={14}>
+            <Eyebrow>Recent calls</Eyebrow>
+            {isAdmin && (
+              <Anchor component={Link} to="/admin/audit" fz={12} c="accent.4">
+                Full failure detail in the audit log
+              </Anchor>
+            )}
+          </Group>
+          <ScrollFade minWidth={640}>
+            <GatewayCallTable rows={audit.data.rows} />
+          </ScrollFade>
+          {!isAdmin && (
+            <Text size="xs" c="dark.3" mt={10}>
+              Outcome, status and latency per call. The upstream failure text behind an error is
+              visible to platform admins.
+            </Text>
+          )}
         </Card>
       )}
 

@@ -146,6 +146,23 @@ export const usageQuery = (slug: string, range: UsageRange = "24h") =>
       ),
   });
 
+/**
+ * An app's recent gateway calls, newest-first — the Usage tab's owner-facing
+ * "Recent calls" card. Owner-or-admin gated server-side (`ownsApp`): the rows
+ * carry the app's callers' captured claims, which the app itself cannot read.
+ * `errorDetail` is nulled server-side for non-admin callers. Latest `limit`
+ * calls only — no pagination; the admin audit log carries the older history.
+ */
+export const appAuditQuery = (slug: string, limit = 50) =>
+  queryOptions({
+    queryKey: ["apps", slug, "audit", limit],
+    queryFn: () =>
+      fetchJson(
+        GatewayAuditPageSchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/audit?limit=${limit}`,
+      ),
+  });
+
 /** Cross-app gateway audit log, newest-first. Bearer-gated server-side. */
 export const gatewayAuditQuery = (
   params: { app?: string; outcome?: string; limit?: number } = {},

@@ -7,9 +7,15 @@ import {
   type PlatformRange,
   type UsageRange,
 } from "@azx-pbc/shared";
-import { authenticate, requireAdmin } from "../plugins/auth.js";
+import {
+  actorIsAdmin,
+  authenticate,
+  ownsApp,
+  requireActor,
+  requireAdmin,
+} from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
-import { Prisma } from "../db/client.js";
+import { Prisma, type GatewayCall as GatewayCallModel } from "../db/client.js";
 import {
   toGatewayCall,
   toPlatformUsage,
@@ -26,10 +32,14 @@ import {
 /**
  * Usage and audit reads over gateway_calls; the edge writes the ledger.
  *
- * Any authenticated portal principal may read aggregate usage. Per-app read
- * RBAC remains tracked in TODO.md. Audit reads require admin access because
- * rows include user names and email addresses across apps. Collection reads
- * use authenticate + ownsApp in data.ts.
+ * Three read tiers, each matched to what it returns (ADR-0007, amended
+ * 2026-08-10). Aggregate summaries answer "how much" and disclose no principal,
+ * so any authenticated portal principal may read them (per-app read RBAC
+ * remains tracked in TODO.md). The per-call rows carry captured claims, so the
+ * app-scoped feed — the Usage tab's recent-calls card — takes the owner-or-admin
+ * `ownsApp` gate, and the cross-app audit log is admin-only because its rows
+ * include user names and email addresses across apps. Collection reads use
+ * authenticate + ownsApp in data.ts.
  *
  * Trends use hourly buckets for 24h and daily buckets for longer ranges.
  * generate_series plus a left join supplies zero-filled buckets. Sum frozen
@@ -51,6 +61,43 @@ function clampLimit(raw: unknown, fallback: number, max: number): number {
   const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
   if (!Number.isFinite(n) || n < 1) return fallback;
   return Math.min(Math.trunc(n), max);
+}
+
+/**
+ * The wire row for one ledger row, as both audit reads map it. `slug` is the
+ * left-joined app slug (the ledger outlives app rows); `includeErrorDetail`
+ * gates the admin-only failure text — `false` nulls it, which is what the
+ * app-scoped feed does for non-admin callers (see that route for why).
+ */
+function toCallRow(
+  r: GatewayCallModel,
+  slug: string | null,
+  includeErrorDetail: boolean,
+): GatewayCallRow {
+  return {
+    id: r.id,
+    appId: r.appId,
+    slug,
+    userOid: r.userOid,
+    userName: r.userName,
+    userEmail: r.userEmail,
+    userKind: r.userKind,
+    capability: r.capability,
+    model: r.model,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    cacheReadInputTokens: r.cacheReadInputTokens,
+    cacheCreationInputTokens: r.cacheCreationInputTokens,
+    costMicroUsd: r.costMicroUsd,
+    outcome: r.outcome,
+    durationMs: r.durationMs,
+    statusCode: r.statusCode,
+    stopReason: r.stopReason,
+    errorDetail: includeErrorDetail ? r.errorDetail : null,
+    path: r.path,
+    method: r.method,
+    createdAt: r.createdAt,
+  };
 }
 
 interface RangePlan {
@@ -186,6 +233,40 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // App-scoped call history — the Usage tab's owner-facing "Recent calls" card.
+  // The gate follows the data (ADR-0007, amended 2026-08-10): these rows carry
+  // the captured claims of the app's own callers, which the app itself cannot
+  // read, so unlike the aggregate summary above it takes the owner-or-admin
+  // `ownsApp` gate rather than bare authentication.
+  //
+  // `errorDetail` stays with the admin-only audience: it is upstream/vendor
+  // error text that can quote request content and, on an auth failure, the key
+  // (see the CallDetail note in the SPA) — and the connection secret behind a
+  // failed call is often administered by an operator other than the app's
+  // owner. Non-admin owners still get outcome, status and latency for triage;
+  // the full record remains on /admin/audit, where this card's admins link to.
+  // Latest N only: no cursor, no filters — the aggregates above answer "how
+  // much" and the admin log carries the older history.
+  app.get<{ Params: { slug: string }; Querystring: { limit?: string } }>(
+    "/api/v1/apps/:slug/audit",
+    { preHandler: [authenticate, ownsApp] },
+    async (req) => {
+      const includeErrorDetail = actorIsAdmin(requireActor(req));
+      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
+      if (!row) {
+        throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      }
+      const rows = await app.prisma.gatewayCall.findMany({
+        where: { appId: row.id },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: clampLimit(req.query.limit, 50, 200),
+      });
+      return GatewayAuditPageSchema.parse({
+        rows: rows.map((r) => toGatewayCall(toCallRow(r, row.slug, includeErrorDetail))),
+      });
+    },
+  );
+
   // Gateway audit log: recent calls newest-first, cursor-paginated on createdAt.
   // Cross-app; optional ?app= (slug) and ?outcome= filters.
   app.get<{
@@ -250,32 +331,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
     });
     const slugById = new Map(apps.map((a) => [a.id, a.slug]));
 
-    const mapped = page.map(
-      (r): GatewayCallRow => ({
-        id: r.id,
-        appId: r.appId,
-        slug: slugById.get(r.appId) ?? null,
-        userOid: r.userOid,
-        userName: r.userName,
-        userEmail: r.userEmail,
-        userKind: r.userKind,
-        capability: r.capability,
-        model: r.model,
-        inputTokens: r.inputTokens,
-        outputTokens: r.outputTokens,
-        cacheReadInputTokens: r.cacheReadInputTokens,
-        cacheCreationInputTokens: r.cacheCreationInputTokens,
-        costMicroUsd: r.costMicroUsd,
-        outcome: r.outcome,
-        durationMs: r.durationMs,
-        statusCode: r.statusCode,
-        stopReason: r.stopReason,
-        errorDetail: r.errorDetail,
-        path: r.path,
-        method: r.method,
-        createdAt: r.createdAt,
-      }),
-    );
+    const mapped = page.map((r) => toCallRow(r, slugById.get(r.appId) ?? null, true));
 
     const last = page.at(-1);
     return GatewayAuditPageSchema.parse({
