@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { App, Visibility, VisibilityUpdateResult } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
@@ -9,21 +9,21 @@ import { setToken, clearToken } from "../auth/tokenStore";
 
 const APP_ID = "11111111-1111-4111-8111-111111111111";
 
-function makeApp(visibility: Visibility): App {
+function makeApp(visibility: Visibility, archived = false): App {
   return {
     id: APP_ID,
     slug: "demo",
     displayName: "Demo",
     visibility,
     currentVersionId: null,
-    archivedAt: null,
+    archivedAt: archived ? new Date().toISOString() : null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 }
 
 /**
- * Route the visibility POST to a canned result and the auth-config query to a
+ * Route the access endpoints to canned results and the auth-config query to a
  * deployment that permits both open surfaces (so the public option is offered —
  * these assertions are about the request flow, not the policy gate).
  *
@@ -49,10 +49,41 @@ function stubFetch(
     searchRestriction?: "admins" | "none";
     status?: number;
   } = {},
+  /** Deployment-policy overrides for `/auth/config`. */
+  config: { allowPublicApps?: boolean; allowPasswordApps?: boolean } = {},
 ): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn((url: string) => {
+  const fetchMock = vi.fn((url: string, init?: { method?: string }) => {
     if (typeof url === "string" && url.endsWith("/visibility")) {
       return Promise.resolve({ ok: true, status: 200, json: async () => result });
+    }
+    if (typeof url === "string" && (url.endsWith("/archive") || url.endsWith("/unarchive"))) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => result.app });
+    }
+    if (typeof url === "string" && url.endsWith("/access/password") && init?.method === "DELETE") {
+      return Promise.resolve({ ok: true, status: 204 });
+    }
+    if (typeof url === "string" && url.endsWith("/access/password") && init?.method === "POST") {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          url: "https://demo.local.helix.azxlabs.io/",
+          password: "minted-passphrase",
+          setAt: new Date().toISOString(),
+        }),
+      });
+    }
+    if (typeof url === "string" && url.endsWith("/access/password")) {
+      // GET — the password panel's credential read.
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          url: "https://demo.local.helix.azxlabs.io/",
+          password: "hunter2hunter2",
+          setAt: new Date().toISOString(),
+        }),
+      });
     }
     if (typeof url === "string" && url.includes("/visibility/groups")) {
       return Promise.resolve({
@@ -78,8 +109,8 @@ function stubFetch(
         json: async () => ({
           issuer: "https://idp.example",
           cliClientId: "azx-cli",
-          allowPublicApps: true,
-          allowPasswordApps: true,
+          allowPublicApps: config.allowPublicApps ?? true,
+          allowPasswordApps: config.allowPasswordApps ?? true,
         }),
       });
     }
@@ -117,6 +148,14 @@ function render(app: App) {
   );
 }
 
+/**
+ * Select a state's row. The row header is the selectable element; its
+ * accessible name starts with the state's label.
+ */
+async function selectState(user: ReturnType<typeof userEvent.setup>, label: RegExp) {
+  await user.click(await screen.findByRole("button", { name: label }));
+}
+
 /** The body the visibility POST was called with (or undefined if never called). */
 function visibilityBody(fetchMock: ReturnType<typeof vi.fn>): unknown {
   const call = fetchMock.mock.calls.find(
@@ -125,21 +164,119 @@ function visibilityBody(fetchMock: ReturnType<typeof vi.fn>): unknown {
   return call ? JSON.parse((call[1] as { body: string }).body) : undefined;
 }
 
+/** Whether the password-disable DELETE has been issued. */
+function disableCalled(fetchMock: ReturnType<typeof vi.fn>): boolean {
+  return fetchMock.mock.calls.some(
+    ([url, init]) =>
+      typeof url === "string" &&
+      url.endsWith("/access/password") &&
+      (init as { method?: string } | undefined)?.method === "DELETE",
+  );
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   clearToken();
 });
 
-describe("AccessTab visibility switcher", () => {
-  it("hides switch actions and prompts sign-in when logged out", () => {
+describe("AccessTab selector", () => {
+  it("hides selection and prompts sign-in when logged out", () => {
     stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
     render(makeApp({ mode: "internal" }));
-    expect(screen.getByText(/You need to be signed in to change visibility/)).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Request public access" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Make internal" })).toBeNull();
+    expect(screen.getByText(/You need to be signed in/)).toBeDefined();
+    // No row is selectable, and there is no Apply button.
+    expect(screen.queryByRole("button", { name: /Group-restricted/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Make internal…" })).toBeNull();
   });
 
-  it("opens a confirm dialog and requests public access through the approval gate", async () => {
+  /**
+   * The pending-change bar is the tab's dirty indicator: absent while clean,
+   * the first thing on the card while a change is drafted — naming the
+   * transition and whether an approval is needed — with Discard as the
+   * explicit way out.
+   */
+  it("shows a pending-change bar at the top while a draft is dirty, and Discard clears it", async () => {
+    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }));
+    const user = userEvent.setup();
+
+    // Clean: no bar.
+    expect(screen.queryByText("CHANGE PENDING")).toBeNull();
+
+    await selectState(user, /Public/);
+    // The bar names the drafted transition and its consequence class.
+    expect(await screen.findByText("CHANGE PENDING")).toBeDefined();
+    expect(screen.getByText("Request public access for Demo")).toBeDefined();
+    expect(
+      screen.getByText(
+        "Opens an admin-approval request — nothing changes until an admin approves.",
+      ),
+    ).toBeDefined();
+
+    // A baseline transition reads the other consequence class (and re-selecting
+    // the current state — not done here — would show no bar at all).
+    await selectState(user, /Group-restricted/);
+    expect(await screen.findByText("Restrict Demo to groups")).toBeDefined();
+    expect(screen.getByText(/Applies within about a minute/i)).toBeDefined();
+
+    // Discard is the explicit way back to clean.
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.queryByText("CHANGE PENDING")).toBeNull();
+  });
+
+  it("confirms before making an app internal, and cancel applies nothing", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [{ path: "visibility", from: "public", to: "internal" }],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "public" }));
+    const user = userEvent.setup();
+
+    await selectState(user, /Internal/);
+    await user.click(await screen.findByRole("button", { name: "Make internal…" }));
+    // The dialog states the live-session consequence before anything fires,
+    // and no POST has happened.
+    expect(await screen.findByText("Make Demo internal?")).toBeDefined();
+    expect(screen.getByText(/Anonymous visitors lose access/)).toBeDefined();
+    expect(visibilityBody(fetchMock)).toBeUndefined();
+
+    // Cancel applies nothing (the modal unmounts through its exit transition);
+    // the draft itself stays, so the row is still selected.
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(visibilityBody(fetchMock)).toBeUndefined();
+
+    // Confirming applies the change.
+    await user.click(screen.getByRole("button", { name: "Make internal…" }));
+    await screen.findByText("Make Demo internal?");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Make internal" }),
+    );
+    await waitFor(() =>
+      expect(visibilityBody(fetchMock)).toEqual({ visibility: { mode: "internal" } }),
+    );
+  });
+
+  it("states the widening when making a group app internal", async () => {
+    stubFetch({
+      app: makeApp({ mode: "group", groupIds: ["eng-team"] }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
+    const user = userEvent.setup();
+
+    await selectState(user, /Internal/);
+    await user.click(screen.getByRole("button", { name: "Make internal…" }));
+    // From group the change widens: everyone signed in gains access.
+    expect(await screen.findByText(/anyone not in the current groups gains access/i)).toBeDefined();
+  });
+
+  it("opens an approval request to go public, with a reason for review", async () => {
     const fetchMock = stubFetch({
       app: makeApp({ mode: "internal" }),
       applied: [],
@@ -149,44 +286,225 @@ describe("AccessTab visibility switcher", () => {
     render(makeApp({ mode: "internal" }));
     const user = userEvent.setup();
 
-    // The public option appears once the auth-config policy resolves.
-    await user.click(await screen.findByRole("button", { name: "Request public access" }));
-    // Confirm dialog explains it pauses for approval.
+    await selectState(user, /Public/);
+    await user.click(await screen.findByRole("button", { name: "Request approval…" }));
     expect(await screen.findByText("Request public access for Demo?")).toBeDefined();
-    await user.click(screen.getByRole("button", { name: "Request approval" }));
+    await user.type(screen.getByLabelText("Reason for review (optional)"), "launch");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Request approval" }),
+    );
 
     await waitFor(() =>
-      expect(visibilityBody(fetchMock)).toEqual({ visibility: { mode: "public" } }),
+      expect(visibilityBody(fetchMock)).toEqual({
+        visibility: { mode: "public" },
+        reason: "launch",
+      }),
     );
     // Success with a pending id surfaces the awaiting-approval hint.
     expect(await screen.findByText(/awaiting admin approval/)).toBeDefined();
   });
 
-  it("makes an app internal immediately, without a confirm dialog", async () => {
+  it("restricts an internal app to groups, stating the narrowing", async () => {
     const fetchMock = stubFetch({
-      app: makeApp({ mode: "internal" }),
-      applied: [{ path: "visibility", from: "public", to: "internal" }],
+      app: makeApp({ mode: "group", groupIds: ["eng-team"] }),
+      applied: [{ path: "visibility", from: "internal", to: "group:eng-team" }],
       pending: null,
     });
     setToken("test-token");
-    render(makeApp({ mode: "public" })); // currently public → "Make internal" is offered
+    render(makeApp({ mode: "internal" }));
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Make internal" }));
-    await waitFor(() =>
-      expect(visibilityBody(fetchMock)).toEqual({ visibility: { mode: "internal" } }),
+    await selectState(user, /Group-restricted/);
+    await user.type(await screen.findByLabelText("Add by id"), "eng-team");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Restrict to groups…" }));
+
+    expect(await screen.findByText("Restrict Demo to groups?")).toBeDefined();
+    expect(screen.getByText(/loses access within about a minute/i)).toBeDefined();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Restrict to groups" }),
     );
-    // No confirm modal for a baseline reduction.
-    expect(screen.queryByText(/Request public access for/)).toBeNull();
+
+    await waitFor(() =>
+      expect(visibilityBody(fetchMock)).toEqual({
+        visibility: { mode: "group", groupIds: ["eng-team"] },
+      }),
+    );
   });
 
-  it("steps aside for password-mode apps (managed by the password card)", () => {
-    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
+  it("archives through the selector", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }));
+    const user = userEvent.setup();
+
+    await selectState(user, /Archived/);
+    await user.click(await screen.findByRole("button", { name: "Archive…" }));
+    expect(await screen.findByText("Archive Demo?")).toBeDefined();
+    expect(screen.getByText(/stops serving immediately/)).toBeDefined();
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Archive" }));
+
+    // The archive verb is the URL, not a body.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => typeof url === "string" && url.endsWith("/archive")),
+      ).toBe(true),
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => typeof url === "string" && url.endsWith("/unarchive")),
+    ).toBe(false);
+    expect(visibilityBody(fetchMock)).toBeUndefined();
+  });
+
+  it("enables password access through the selector", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }));
+    const user = userEvent.setup();
+
+    await selectState(user, /Password/);
+    // The draft panel explains what confirming will do; it is not the
+    // credential manager, because there is no credential yet.
+    expect(await screen.findByText(/Confirming mints the passphrase/)).toBeDefined();
+    await user.click(await screen.findByRole("button", { name: "Enable password access…" }));
+    await screen.findByText("Enable password access for Demo?");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Enable password access" }),
+    );
+
+    await waitFor(() => {
+      const enable = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          typeof url === "string" &&
+          url.endsWith("/access/password") &&
+          (init as { method?: string } | undefined)?.method === "POST",
+      );
+      expect(enable).toBeDefined();
+    });
+    expect(visibilityBody(fetchMock)).toBeUndefined();
+  });
+
+  it("disables password access by selecting Internal", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [],
+      pending: null,
+    });
     setToken("test-token");
     render(makeApp({ mode: "password" }));
-    expect(screen.getByText(/Disable it on the right to switch/)).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Request public access" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Make internal" })).toBeNull();
+    const user = userEvent.setup();
+
+    // The password row is current, so its panel rests open: the credential
+    // manager is visible with no interaction.
+    expect(await screen.findByText("App URL")).toBeDefined();
+
+    await selectState(user, /Internal/);
+    await user.click(await screen.findByRole("button", { name: "Disable…" }));
+    expect(await screen.findByText("Disable password access for Demo?")).toBeDefined();
+    expect(screen.getByText(/returns to Internal/)).toBeDefined();
+    expect(disableCalled(fetchMock)).toBe(false);
+
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Disable" }));
+    await waitFor(() => expect(disableCalled(fetchMock)).toBe(true));
+  });
+
+  it("unarchives alone when the target restores the preserved visibility", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }, true));
+    const user = userEvent.setup();
+
+    // Archived is the current state; picking internal (the preserved mode)
+    // resumes serving without a visibility change.
+    await selectState(user, /Internal/);
+    await user.click(await screen.findByRole("button", { name: "Unarchive…" }));
+    expect(await screen.findByText("Unarchive Demo?")).toBeDefined();
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Unarchive" }));
+
+    // Restoring hits the unarchive endpoint, and touches nothing else.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => typeof url === "string" && url.endsWith("/unarchive")),
+      ).toBe(true),
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) => typeof url === "string" && url.endsWith("/archive")),
+    ).toBe(false);
+    expect(visibilityBody(fetchMock)).toBeUndefined();
+  });
+
+  it("applies the new visibility before unarchiving, in one confirm", async () => {
+    const fetchMock = stubFetch({
+      app: makeApp({ mode: "group", groupIds: ["eng-team"] }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }, true));
+    const user = userEvent.setup();
+
+    await selectState(user, /Group-restricted/);
+    await user.type(await screen.findByLabelText("Add by id"), "eng-team");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Restrict to groups…" }));
+    await screen.findByText("Restrict Demo to groups?");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Restrict to groups" }),
+    );
+
+    await waitFor(() => expect(visibilityBody(fetchMock)).toBeDefined());
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => typeof url === "string" && url.endsWith("/unarchive")),
+      ).toBe(true),
+    );
+    // Visibility first: a partial failure leaves the app archived, not serving
+    // at a state nobody approved.
+    const seen = fetchMock.mock.calls.map(([url]) => url);
+    expect(seen.findIndex((u) => typeof u === "string" && u.endsWith("/visibility"))).toBeLessThan(
+      seen.findIndex((u) => typeof u === "string" && u.endsWith("/unarchive")),
+    );
+  });
+
+  it("hides a mode the deployment forbids, unless the app is in it", () => {
+    stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      { mine: AVAILABLE_MINE, search: AVAILABLE_SEARCH },
+      {},
+      { allowPublicApps: false },
+    );
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }));
+    expect(screen.queryByRole("button", { name: /Public/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Group-restricted/ })).toBeDefined();
+  });
+
+  it("says a forbidden current mode is not being served, and offers the way out", () => {
+    stubFetch(
+      { app: makeApp({ mode: "internal" }), applied: [], pending: null },
+      { mine: AVAILABLE_MINE, search: AVAILABLE_SEARCH },
+      {},
+      { allowPasswordApps: false },
+    );
+    setToken("test-token");
+    render(makeApp({ mode: "password" }));
+    expect(screen.getByText(/being served at all/)).toBeDefined();
+    // The password row stays visible (the owner must see the state) but is not
+    // itself selectable; Internal remains the way out.
+    expect(screen.queryByRole("button", { name: /Password/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Internal/ })).toBeDefined();
   });
 });
 
@@ -207,14 +525,15 @@ const AVAILABLE_MINE = {
   groups: [{ id: "eng-team", displayName: "Engineering", securityEnabled: true }],
 };
 
-/** A search hit, as `/directory/groups` answers it. */
+/** A search hit, as `/directory/groups` answers them. */
 const AVAILABLE_SEARCH = {
   available: true,
   groups: [{ id: "product-team", displayName: "Product", securityEnabled: true }],
 };
 
 /**
- * The group picker (ADR-0040 §5, §8, §9).
+ * The group picker, as reached through the unified selector's group panel
+ * (ADR-0040 §5, §8, §9).
  *
  * Two of these are regression pins rather than feature tests: an owner has to be
  * able to edit the groups of an app that is *already* group-scoped (the row used
@@ -223,13 +542,20 @@ const AVAILABLE_SEARCH = {
  * the tab has to keep working when the tenant never granted the Graph
  * permission.
  */
-describe("AccessTab group picker", () => {
-  it("offers editing to an app that is already group-scoped", async () => {
-    stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
+describe("AccessTab group panel", () => {
+  it("rests open on an app that is already group-scoped", async () => {
+    stubFetch({
+      app: makeApp({ mode: "group", groupIds: ["eng-team"] }),
+      applied: [],
+      pending: null,
+    });
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
-    // Not "Restrict to groups": the app is already there, so the action is an edit.
-    expect(await screen.findByRole("button", { name: "Edit groups" })).toBeDefined();
+    // The selector rests on the current state: the picker — and the current
+    // groups it holds — is visible with no interaction, and there is no Apply
+    // until the set actually differs.
+    expect(await screen.findByLabelText("Add by id")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Save groups…" })).toBeNull();
   });
 
   it("shows the current group ids, and says so when there are none", () => {
@@ -255,12 +581,20 @@ describe("AccessTab group picker", () => {
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
-    // Add a second group through the by-id escape hatch — the same path a group
-    // that search can't reach has to take.
+    // The panel rests open on the current state; add a second group through the
+    // by-id escape hatch — the same path a group that search can't reach has to
+    // take.
     await user.type(await screen.findByLabelText("Add by id"), "product-team");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    await user.click(screen.getByRole("button", { name: "Save groups" }));
+    await user.click(screen.getByRole("button", { name: "Save groups…" }));
+
+    // Saving confirms first: the dialog reviews the delta (product-team gains
+    // access) before anything applies.
+    expect(await screen.findByText("Change the groups for Demo?")).toBeDefined();
+    expect(screen.getByText(/Gain access:/)).toBeDefined();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Save groups" }),
+    );
 
     await waitFor(() =>
       expect(visibilityBody(fetchMock)).toEqual({
@@ -269,21 +603,17 @@ describe("AccessTab group picker", () => {
     );
   });
 
-  it("will not save an empty group set", async () => {
-    const fetchMock = stubFetch({
-      app: makeApp({ mode: "internal" }),
-      applied: [],
-      pending: null,
-    });
+  it("will not apply an empty group set", async () => {
+    const fetchMock = stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
     setToken("test-token");
     render(makeApp({ mode: "internal" }));
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: "Restrict to groups" }));
+    await selectState(user, /Group-restricted/);
     // No jest-dom in this suite, so assert the attribute the DOM actually carries.
-    expect((await screen.findByRole("button", { name: "Apply" })).hasAttribute("disabled")).toBe(
-      true,
-    );
+    expect(
+      (await screen.findByRole("button", { name: "Restrict to groups…" })).hasAttribute("disabled"),
+    ).toBe(true);
     expect(visibilityBody(fetchMock)).toBeUndefined();
   });
 
@@ -314,8 +644,6 @@ describe("AccessTab group picker", () => {
     );
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["11111111-1111-4111-8111-111111111111"] }));
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
 
     expect(await screen.findByText(/Group search is unavailable/)).toBeDefined();
     expect(screen.getByText(/GroupMember\.Read\.All/)).toBeDefined();
@@ -348,7 +676,6 @@ describe("AccessTab group picker", () => {
     setToken("test-token");
     const { container } = render(makeApp({ mode: "group", groupIds: ["keep-me", "remove-me"] }));
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
     await screen.findByText(/Group search is unavailable/);
 
     // Both selections render, and nothing above them is display:none.
@@ -365,11 +692,16 @@ describe("AccessTab group picker", () => {
       }
     }
 
-    // And removal actually works, end to end through the save.
+    // And removal actually works, end to end through the save (which confirms
+    // first — the dialog states the removal before anything applies).
     const removes = container.querySelectorAll('[class*="Pill-remove"]');
     expect(removes).toHaveLength(2);
     await user.click(removes[1] as Element);
-    await user.click(screen.getByRole("button", { name: "Save groups" }));
+    await user.click(screen.getByRole("button", { name: "Save groups…" }));
+    expect(await screen.findByText(/Lose access:/)).toBeDefined();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Save groups" }),
+    );
 
     await waitFor(() =>
       expect(visibilityBody(fetchMock)).toEqual({
@@ -393,8 +725,6 @@ describe("AccessTab group picker", () => {
     );
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
 
     // …and the banner still appears, without the operator typing anything.
     expect(await screen.findByText(/Group search is unavailable/)).toBeDefined();
@@ -417,8 +747,6 @@ describe("AccessTab group picker", () => {
     );
     setToken("test-token");
     const { container } = render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
 
     // The scope-limit hint, NOT the unavailable banner.
     expect(await screen.findByText(/limited to platform admins/)).toBeDefined();
@@ -461,8 +789,6 @@ describe("AccessTab group picker", () => {
     );
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
 
     expect(await screen.findByText(/turned off on this deployment/)).toBeDefined();
     expect(screen.queryByText(/limited to platform admins/)).toBeNull();
@@ -485,8 +811,6 @@ describe("AccessTab group picker", () => {
     );
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
     await screen.findByLabelText("Add by id");
 
     // No restriction sentence of any wording, and no unavailable banner either.
@@ -511,8 +835,6 @@ describe("AccessTab group picker", () => {
     );
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
 
     expect(await screen.findByText(/Group search is unavailable/)).toBeDefined();
     expect(screen.queryByText(/limited to platform admins/)).toBeNull();
@@ -520,28 +842,26 @@ describe("AccessTab group picker", () => {
   });
 
   /**
-   * Cancel discarded the draft; the "Edit groups" toggle collapsed the same panel
-   * and did not — so an operator could back out of a selection and re-open later
-   * to find it still there, ready for a Save that looked unrelated. Both paths go
-   * through `closePicker` now.
+   * Collapsing the panel discards the draft — clicking the drafted row again is
+   * the only close path, and it re-seeds. An operator can back out of a
+   * selection and re-open later without finding the abandoned edit still live
+   * behind the Apply button.
    */
-  it("discards the draft when the panel is closed with the toggle, not just Cancel", async () => {
+  it("discards the draft when the panel is collapsed and re-opened", async () => {
     stubFetch({ app: makeApp({ mode: "internal" }), applied: [], pending: null });
     setToken("test-token");
     render(makeApp({ mode: "group", groupIds: ["eng-team"] }));
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+    // The panel rests open on the current state; type a group, then collapse
+    // and re-open the panel.
     await user.type(await screen.findByLabelText("Add by id"), "sneaky-group");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    // Close via the toggle — the path that used to keep the draft.
-    await user.click(screen.getByRole("button", { name: "Edit groups" }));
-    await user.click(screen.getByRole("button", { name: "Edit groups" }));
+    await selectState(user, /Group-restricted/);
+    await selectState(user, /Group-restricted/);
 
     expect(screen.queryByText(/sneaky-group/)).toBeNull();
-    // Nothing to save, because the abandoned edit is genuinely gone.
-    expect(
-      (await screen.findByRole("button", { name: "Save groups" })).hasAttribute("disabled"),
-    ).toBe(true);
+    // Nothing to apply, because the abandoned edit is genuinely gone.
+    expect(screen.queryByRole("button", { name: "Save groups…" })).toBeNull();
   });
 });

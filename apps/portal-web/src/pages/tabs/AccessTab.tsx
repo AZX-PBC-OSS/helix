@@ -1,28 +1,53 @@
-import { useState } from "react";
-import { Box, Button, Card, Center, Grid, Group, Stack, Text, Textarea } from "@mantine/core";
-import type { App, Visibility, VisibilityMode } from "@azx-pbc/shared";
-import { useArchiveApp, useSetVisibility } from "../../api/mutations";
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Box, Button, Card, Center, Group, Stack, Text, Textarea } from "@mantine/core";
+import { visibilityLabel, type App } from "@azx-pbc/shared";
+import {
+  useArchiveApp,
+  useDisablePassword,
+  useEnablePassword,
+  useSetVisibility,
+} from "../../api/mutations";
 import { GroupPicker } from "../../components/GroupPicker";
 import { useAuth } from "../../auth/AuthProvider";
 import { Icon, type IconName } from "../../components/Icon";
-import { Eyebrow, Hint, PreviewBadge, ToneBadge } from "../../components/primitives";
+import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
-import { PasswordAccessCard } from "./PasswordAccessCard";
+import { PasswordAccessConfig } from "./PasswordAccessConfig";
+import {
+  accessStateOf,
+  planTransition,
+  type AccessState,
+  type TransitionPlan,
+} from "./accessTransition";
+
+/**
+ * The Access tab: one unified selector over the app's five access states —
+ * internal, group, password, public, archived — instead of separate switcher,
+ * password and lifecycle cards. Archived is the lifecycle flag surfaced as a
+ * state (`accessStateOf`); the four visibility modes are the registry's own.
+ *
+ * Interaction follows the capabilities tab's draft-then-save shape (Aug 2026 UX
+ * review — "re-use selection/confirm flow from capabilities", "no one-click
+ * actions"): selecting a row drafts it and expands the state's own config
+ * panel, and a pending-change bar at the top of the card — present exactly
+ * while the draft is dirty, so its appearance is itself the dirty indicator —
+ * carries the confirm affordance. Confirming opens a dialog that states who
+ * gains, who loses, the live-session consequence, and whether an
+ * admin-approval request will be opened. Nothing applies on a single click.
+ *
+ * The dispatch itself lives in `accessTransition.ts` (pure, unit-tested): the
+ * server's endpoints are per-concern, so some transitions — password → group,
+ * archived → anything — run as a short sequence of calls.
+ */
 
 /**
  * Descriptions answer "who gets in", in the user's terms — not how the platform
  * achieves it. Keep them parallel with the create form's shorter versions in
- * `components/AppCreateForm.tsx`; this is the screen where the choice is
- * actually made, so it earns the extra clause about what each mode implies.
- * Avoid claims that depend on how the directory itself is configured (whether
- * guests exist and can sign in is a tenant decision, not this app's).
+ * `components/AppCreateForm.tsx`. Avoid claims that depend on how the directory
+ * itself is configured (whether guests exist and can sign in is a tenant
+ * decision, not this app's).
  */
-const VISIBILITY_ROWS: Array<{
-  mode: VisibilityMode;
-  icon: IconName;
-  label: string;
-  desc: string;
-}> = [
+const VISIBILITY_ROWS: Array<{ mode: AccessState; icon: IconName; label: string; desc: string }> = [
   {
     mode: "internal",
     icon: "lock",
@@ -47,61 +72,71 @@ const VISIBILITY_ROWS: Array<{
     label: "Public",
     desc: "No sign-in at all — anyone with the link. Usage is capped per app and per visitor IP address.",
   },
+  {
+    mode: "archived",
+    icon: "x",
+    label: "Archived",
+    desc: "Takes the app offline: the address stops serving and each visitor's stored data for it is cleared from their browser. The subdomain is never handed to another app. Unarchive puts it back exactly as it was.",
+  },
 ];
+
+/** The row icon for a state — the confirm dialog reuses the row's own icon. */
+function rowIcon(mode: AccessState): IconName {
+  return VISIBILITY_ROWS.find((row) => row.mode === mode)?.icon ?? "shield";
+}
 
 export function AccessTab({ app }: { app: App }) {
   const { authenticated, login, loginAvailable, allowPublicApps, allowPasswordApps } = useAuth();
-  const archive = useArchiveApp();
   const setVisibility = useSetVisibility();
-  const [confirming, setConfirming] = useState(false);
-  const [goingPublic, setGoingPublic] = useState(false);
-  const [reason, setReason] = useState("");
-  // Inline group picker, opened from the group row.
-  const [groupOpen, setGroupOpen] = useState(false);
+  const enablePassword = useEnablePassword();
+  const disablePassword = useDisablePassword();
+  const archive = useArchiveApp();
+
+  const current = accessStateOf(app);
   const currentGroupIds = app.visibility.mode === "group" ? app.visibility.groupIds : [];
+
+  // The draft: which row is selected (expanded), and that state's own draft
+  // fields. It rests on the CURRENT state — the group and password panels hold
+  // live information (which groups, which credential), so they are open without
+  // any interaction, and selecting re-seeds the fields, so an abandoned pick
+  // leaves nothing behind — the same discipline the old group panel's close
+  // paths had to enforce.
+  const [draft, setDraft] = useState<AccessState | null>(() => accessStateOf(app));
   const [groupIds, setGroupIds] = useState<string[]>(currentGroupIds);
+  const [reason, setReason] = useState("");
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  // The last public request opened an approval (result.pending is the id).
+  const [requested, setRequested] = useState(false);
 
   /**
-   * Close the picker and discard the draft.
-   *
-   * Both close paths go through here on purpose. Cancel used to reset while the
-   * "Edit groups" toggle — which collapses the same panel — did not, so one path
-   * bypassed the guard the other one documented: an operator could add a group,
-   * back out via the toggle, and re-open later to find it still in the draft with
-   * Save live, ready to be applied by a click that looked unrelated.
+   * Selecting a row. Clicking the drafted row again collapses it and discards
+   * the draft — both directions re-seed, so no path can leave a stale group set
+   * live behind an Apply button that looks unrelated to it.
    */
-  const closePicker = () => {
+  const discard = () => {
+    setDraft(null);
     setGroupIds(currentGroupIds);
-    setGroupOpen(false);
+    setReason("");
+    setRequested(false);
+  };
+  const select = (mode: AccessState) => {
+    if (running) return;
+    if (draft === mode) {
+      discard();
+      return;
+    }
+    setDraft(mode);
+    setGroupIds(currentGroupIds);
+    setReason("");
+    setRequested(false);
   };
 
-  // NOTE: the group draft above is per-app state, and what keeps it that way is
-  // the `key={a.id}` on this component in `AppDetailPage`. React Router renders
-  // one element for `/apps/:slug`, so browser back/forward between two cached
-  // detail pages can otherwise hand this component a different app without
-  // remounting it — carrying a draft across, aimed at the wrong app. Resetting by
-  // remount rather than in an effect is both React's own answer and what
-  // `react-hooks/set-state-in-effect` requires.
-
-  /**
-   * Whether the draft matches what's stored, compared as a **set** — order is
-   * meaningless in an any-of rule, so a reorder is not an edit. The server agrees
-   * (`classifyVisibilityChange` sorts before comparing and returns no delta), and
-   * disabling the button here means the UI says so before the round trip instead
-   * of reporting a successful save that changed nothing.
-   */
-  const unchanged =
-    app.visibility.mode === "group" &&
-    groupIds.length === currentGroupIds.length &&
-    [...groupIds].sort().join("\u0000") === [...currentGroupIds].sort().join("\u0000");
-  const archived = app.archivedAt !== null;
-  const current = app.visibility.mode;
-  // Leaving `password` mode goes through the password card's Disable (it wipes
-  // the minted credential); the switcher steps aside while it's active.
-  const passwordActive = current === "password";
   // Operator policy: hide an open-surface row when the deployment forbids that
   // mode — unless the app is already in it, in which case we keep the row (so
-  // the owner can see the state) and offer the reductions that migrate it away.
+  // the owner can see the state) and offer the migrations away from it.
   const rows = VISIBILITY_ROWS.filter((row) => {
     if (row.mode === "public" && !allowPublicApps && current !== "public") return false;
     if (row.mode === "password" && !allowPasswordApps && current !== "password") return false;
@@ -112,81 +147,374 @@ export function AccessTab({ app }: { app: App }) {
   const currentModeDisallowed =
     (current === "public" && !allowPublicApps) || (current === "password" && !allowPasswordApps);
 
-  // The last public request opened an approval (result.pending is the id).
-  const requested = setVisibility.data?.pending != null;
+  const plan = draft === null ? null : planTransition(app, draft, groupIds);
 
-  const apply = (visibility: Visibility, reason?: string) =>
-    setVisibility.mutate({ slug: app.slug, visibility, ...(reason ? { reason } : {}) });
+  /**
+   * Run the planned steps in order, stopping at the first failure. On success
+   * the selector rests on the new current state — enabling password, say,
+   * expands its credential manager ready to be copied.
+   */
+  const execute = async (transition: TransitionPlan, target: AccessState) => {
+    setRunning(true);
+    setRunError(null);
+    setRequested(false);
+    try {
+      let result: Awaited<ReturnType<typeof setVisibility.mutateAsync>> | undefined;
+      for (const step of transition.steps) {
+        if (step.kind === "setVisibility") {
+          result = await setVisibility.mutateAsync({
+            slug: app.slug,
+            visibility: step.visibility,
+            // The reason rides the approval request; a baseline switch has no
+            // reviewer to read it.
+            ...(transition.elevated && reason.trim() ? { reason: reason.trim() } : {}),
+          });
+        } else if (step.kind === "enablePassword") {
+          await enablePassword.mutateAsync({ slug: app.slug });
+        } else if (step.kind === "disablePassword") {
+          await disablePassword.mutateAsync({ slug: app.slug });
+        } else {
+          await archive.mutateAsync({ slug: app.slug, archive: step.archived });
+        }
+      }
+      if (result?.pending != null) setRequested(true);
+      setConfirmOpen(false);
+      setReason("");
+      // A pending approval changed nothing — rest on the state that still is.
+      setDraft(result?.pending != null ? current : target);
+    } catch (e) {
+      // The dialog stays open with the error; every step is idempotent, so
+      // confirming again after a partial application is safe.
+      setRunError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  /**
+   * The confirm body: who gains, who loses, how fast it lands. Branches on
+   * direction because the same target mode widens from one state and tightens
+   * from another — and every variant carries the live-session consequence,
+   * which is the whole reason the dialog exists. The gate re-checks visibility
+   * per request against the live registry entry (edge `gate.ts`), so a
+   * confirmed change reaches people using the app right now within the
+   * projection's refresh interval (~1 min), not at their next login.
+   */
+  const transitionBody = () => {
+    if (plan === null || draft === null) return null;
+    const slugMono = <span className="az-mono">{app.slug}</span>;
+
+    if (draft === "archived") {
+      return (
+        <Text size="sm" c="dark.2" lh={1.5}>
+          {slugMono} stops serving immediately, and each visitor&apos;s stored data for it is
+          cleared from their browser. This is reversible — unarchive puts the app back exactly as it
+          was.
+        </Text>
+      );
+    }
+
+    if (current === "archived") {
+      if (plan.steps.length === 1) {
+        return (
+          <Text size="sm" c="dark.2" lh={1.5}>
+            The app resumes serving exactly as it was — {visibilityLabel(app.visibility)} — within
+            about a minute.
+          </Text>
+        );
+      }
+      if (draft === "public") {
+        return (
+          <Stack gap={10}>
+            <Text size="sm" c="dark.2" lh={1.5}>
+              A public app opens to anyone with the link, with no sign-in — usage is capped per app
+              and per visitor IP address. Because that is hard to undo once the link is out, this
+              opens an approval request rather than applying now.
+            </Text>
+            <Text size="sm" c="dark.2" lh={1.5}>
+              The app stays archived until the approval lands — unarchive after it is approved.
+            </Text>
+          </Stack>
+        );
+      }
+      return (
+        <Stack gap={10}>
+          <Text size="sm" c="dark.2" lh={1.5}>
+            The app comes back from the archive and moves to{" "}
+            {draft === "internal"
+              ? "Internal"
+              : draft === "group"
+                ? "group-restricted"
+                : "shared-password"}{" "}
+            access. Serving resumes within about a minute of confirming.
+          </Text>
+          {draft === "group" && (
+            <>
+              <Text size="sm" c="dark.2" lh={1.5}>
+                Only members of the groups below will be able to open it. Everyone else — including
+                anyone who was using it before — loses access within about a minute.
+              </Text>
+              <Text size="sm" c="dark.2" lh={1.5}>
+                Groups: <span className="az-mono">{groupIds.join(", ")}</span>
+              </Text>
+            </>
+          )}
+        </Stack>
+      );
+    }
+
+    if (current === "password") {
+      if (draft === "internal") {
+        return (
+          <Text size="sm" c="dark.2" lh={1.5}>
+            The shared password stops working for new sign-ins, and the app returns to Internal —
+            anyone who can sign in gains access. People who came in with the password keep their
+            current session until it expires.
+          </Text>
+        );
+      }
+      return (
+        <Stack gap={10}>
+          <Text size="sm" c="dark.2" lh={1.5}>
+            The shared password stops working for new sign-ins; people who came in with it keep
+            their current session until it expires.
+          </Text>
+          {draft === "group" && (
+            <>
+              <Text size="sm" c="dark.2" lh={1.5}>
+                The app then requires membership of the groups below — everyone else loses access
+                within about a minute.
+              </Text>
+              <Text size="sm" c="dark.2" lh={1.5}>
+                Groups: <span className="az-mono">{groupIds.join(", ")}</span>
+              </Text>
+            </>
+          )}
+          {draft === "public" && (
+            <Text size="sm" c="dark.2" lh={1.5}>
+              The app then opens to anyone with the link, with no sign-in — usage is capped per app
+              and per visitor IP address. Because that is hard to undo once the link is out, this
+              opens an approval request rather than applying now.
+            </Text>
+          )}
+        </Stack>
+      );
+    }
+
+    if (draft === "password") {
+      return (
+        <Text size="sm" c="dark.2" lh={1.5}>
+          Access becomes a shared passphrase instead of sign-in — for people outside your
+          organization. Anyone with the passphrase gets in, and people who sign in today keep
+          access. Visitors aren&apos;t identified individually, and each gets their own isolated
+          session. Confirming mints the passphrase (or hands back the existing one on re-enable).
+        </Text>
+      );
+    }
+
+    if (draft === "public") {
+      return (
+        <Text size="sm" c="dark.2" lh={1.5}>
+          A public app opens to anyone with the link, with no sign-in — usage is capped per app and
+          per visitor IP address. Because that is hard to undo once the link is out, this opens an
+          approval request rather than applying now; the app stays as it is until an admin approves.
+        </Text>
+      );
+    }
+
+    if (current === "group" && draft === "group") {
+      const added = groupIds.filter((id) => !currentGroupIds.includes(id));
+      const removed = currentGroupIds.filter((id) => !groupIds.includes(id));
+      return (
+        <Stack gap={8}>
+          {added.length > 0 && (
+            <Text size="sm" c="dark.2" lh={1.5}>
+              Gain access: <span className="az-mono">{added.join(", ")}</span>
+            </Text>
+          )}
+          {removed.length > 0 && (
+            <Text size="sm" c="dark.2" lh={1.5}>
+              Lose access: <span className="az-mono">{removed.join(", ")}</span>
+            </Text>
+          )}
+          <Text size="sm" c="dark.2" lh={1.5}>
+            This changes who can open the app within about a minute — including for people using it
+            right now.
+          </Text>
+        </Stack>
+      );
+    }
+
+    if (draft === "internal") {
+      return current === "public" ? (
+        <Text size="sm" c="dark.2" lh={1.5}>
+          Anonymous visitors lose access: the app will require organizational sign-in. People
+          currently using it are sent to sign in on their next request — within about a minute, not
+          at their next login.
+        </Text>
+      ) : (
+        <Text size="sm" c="dark.2" lh={1.5}>
+          Everyone who can sign in to your organization will be able to open this app — anyone not
+          in the current groups gains access. This reaches people using the app right now within
+          about a minute.
+        </Text>
+      );
+    }
+
+    // draft === "group" from a non-group state.
+    return (
+      <Stack gap={10}>
+        <Text size="sm" c="dark.2" lh={1.5}>
+          Only members of the groups below will be able to open this app. Everyone else — including
+          anyone using it right now — loses access within about a minute.
+        </Text>
+        <Text size="sm" c="dark.2" lh={1.5}>
+          Groups: <span className="az-mono">{groupIds.join(", ")}</span>
+        </Text>
+      </Stack>
+    );
+  };
 
   return (
-    <Grid gap={18} align="flex-start" className="az-stagger">
-      <Grid.Col span={{ base: 12, md: 7 }}>
-        <Card>
-          <Group justify="space-between" mb={4}>
-            <Eyebrow>Visibility</Eyebrow>
-          </Group>
-          <Text size="sm" c="dark.2" mb={16}>
-            Who can open the app. Switching to Internal or a group applies immediately — including
-            from Public. Going public is the one change that waits for admin approval.
-            Shared-password access is managed on the right.
-          </Text>
+    <Stack gap={18}>
+      <Card>
+        <Group justify="space-between" mb={4}>
+          <Eyebrow>Access</Eyebrow>
+        </Group>
 
-          {!authenticated && (
-            <Hint
-              icon="user"
-              tone="neutral"
-              action={
-                <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
-                  Sign in
+        {/* The pending-change bar — the tab's dirty indicator, parked at the top
+            so the confirm affordance is the first thing on the card, not a
+            bottom-right footnote. Rendered only while a change is drafted; the
+            space it reserves appearing is itself the signal. */}
+        {plan !== null && draft !== null && (
+          <Box
+            mb={14}
+            p="10px 14px"
+            style={{
+              borderRadius: "var(--mantine-radius-md)",
+              background: "var(--az-acc-dim)",
+              border: "1px solid color-mix(in srgb, var(--az-acc) 34%, transparent)",
+            }}
+          >
+            <Group justify="space-between" gap={12} wrap="nowrap">
+              <Stack gap={2} style={{ flex: 1 }}>
+                <Group gap={8} wrap="nowrap">
+                  <ToneBadge tone="acc" style={{ fontSize: 8.5, padding: "1px 6px" }}>
+                    CHANGE PENDING
+                  </ToneBadge>
+                  {plan.elevated && (
+                    <ToneBadge tone="violet" style={{ fontSize: 8.5, padding: "1px 6px" }}>
+                      NEEDS APPROVAL
+                    </ToneBadge>
+                  )}
+                  <Text fw={600} fz={13.5} truncate>
+                    {plan.title.replace(/\?$/, "")}
+                  </Text>
+                </Group>
+                <Text size="xs" c="dark.2" lh={1.45}>
+                  {plan.elevated
+                    ? "Opens an admin-approval request — nothing changes until an admin approves."
+                    : "Applies within about a minute after you confirm — including for people using the app right now."}
+                </Text>
+              </Stack>
+              <Group gap={8} wrap="nowrap">
+                <Button
+                  variant="subtle"
+                  color="gray"
+                  size="xs"
+                  disabled={running}
+                  onClick={discard}
+                >
+                  Discard
                 </Button>
-              }
-            >
-              You need to be signed in to change visibility.
-            </Hint>
-          )}
-          {passwordActive && authenticated && (
-            <Hint icon="key" tone="neutral">
-              This app uses shared-password access. Disable it on the right to switch to another
-              mode.
-            </Hint>
-          )}
-          {currentModeDisallowed && (
-            <Box mb={12}>
-              <Hint icon="shield" tone="bad">
-                {current === "public" ? "Public" : "Password"} apps are turned off for this
-                installation, so this app isn&apos;t being served at all. Switch to Internal or a
-                group to bring it back.
-              </Hint>
-            </Box>
-          )}
+                <Button
+                  size="xs"
+                  // An empty group set is refused here rather than in the
+                  // schema: it IS storable (the edge fails closed on it), but
+                  // it is never what someone means to confirm, so the UI is
+                  // where that gets caught.
+                  disabled={running || (draft === "group" && groupIds.length === 0)}
+                  loading={running}
+                  // The ellipsis is the affordance: this opens the confirm
+                  // dialog, it does not apply anything itself.
+                  onClick={() => setConfirmOpen(true)}
+                >
+                  {plan.confirmLabel}…
+                </Button>
+              </Group>
+            </Group>
+          </Box>
+        )}
 
-          <Stack gap={10} mt={authenticated && !passwordActive ? 0 : 12}>
-            {rows.map((row) => {
-              const on = current === row.mode;
-              // An action is offered only to a signed-in actor, only while not in
-              // password mode (password is owned by the card on the right), and
-              // normally only on a row that isn't already current. The `password`
-              // row itself never gets a switcher button — enabling it mints a
-              // credential, so it lives in PasswordAccessCard.
-              //
-              // `group` is the exception to the `!on` rule, and it has to be: its
-              // action is "edit which groups", which is the one thing an owner
-              // wants precisely *because* the app is already group-scoped. While
-              // `!on` applied to it, changing an app's groups meant switching to
-              // Internal first — briefly widening the app to the whole directory
-              // to narrow it.
-              const editable = row.mode === "group";
-              const actionable =
-                authenticated && !passwordActive && row.mode !== "password" && (!on || editable);
-              return (
+        <Text size="sm" c="dark.2" mb={16}>
+          Who can open the app. Pick a state, set its details, and confirm — every change states who
+          gains access, who loses it, and how fast it reaches people using the app (about a minute).
+          Going public is the one change that opens an admin-approval request instead of applying.
+        </Text>
+
+        {!authenticated && (
+          <Hint
+            icon="user"
+            tone="neutral"
+            action={
+              <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
+                Sign in
+              </Button>
+            }
+          >
+            You need to be signed in to change who can open this app.
+          </Hint>
+        )}
+        {currentModeDisallowed && (
+          <Box mb={12}>
+            <Hint icon="shield" tone="bad">
+              {current === "public" ? "Public" : "Password"} apps are turned off for this
+              installation, so this app isn&apos;t being served at all. Pick Internal or a group to
+              bring it back.
+            </Hint>
+          </Box>
+        )}
+
+        <Stack gap={10} mt={12}>
+          {rows.map((row) => {
+            const on = current === row.mode;
+            const drafted = draft === row.mode;
+            // Rows are selectable only for a signed-in actor. A deployment-
+            // forbidden mode that is nonetheless current is not itself
+            // selectable — the way out is picking a permitted state.
+            const selectable = authenticated && !(currentModeDisallowed && on);
+            return (
+              <div
+                key={row.mode}
+                style={{
+                  borderRadius: "var(--mantine-radius-md)",
+                  background: drafted ? "var(--az-acc-dim)" : "var(--mantine-color-dark-6)",
+                  border: `1px solid ${
+                    drafted
+                      ? "color-mix(in srgb, var(--az-acc) 34%, transparent)"
+                      : "var(--az-line)"
+                  }`,
+                  opacity: on || drafted || !selectable ? 1 : 0.75,
+                }}
+              >
+                {/* Only the header selects — the config panel below is real
+                    form content, and a click in it must never toggle the
+                    draft. */}
                 <div
-                  key={row.mode}
-                  style={{
-                    borderRadius: "var(--mantine-radius-md)",
-                    background: on ? "var(--az-acc-dim)" : "var(--mantine-color-dark-6)",
-                    border: `1px solid ${on ? "color-mix(in srgb, var(--az-acc) 34%, transparent)" : "var(--az-line)"}`,
-                    opacity: on || actionable ? 1 : 0.6,
-                  }}
+                  {...(selectable
+                    ? {
+                        role: "button" as const,
+                        tabIndex: 0,
+                        onClick: () => select(row.mode),
+                        onKeyDown: (e: ReactKeyboardEvent) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            select(row.mode);
+                          }
+                        },
+                      }
+                    : {})}
+                  style={{ cursor: selectable ? "pointer" : "default" }}
                 >
                   <Group gap={13} p="13px 14px" align="flex-start" wrap="nowrap">
                     <Center
@@ -194,8 +522,8 @@ export function AccessTab({ app }: { app: App }) {
                       h={30}
                       style={{
                         borderRadius: 8,
-                        background: on ? "var(--az-acc)" : "var(--mantine-color-dark-5)",
-                        color: on ? "var(--az-acc-ink)" : "var(--mantine-color-dark-1)",
+                        background: on || drafted ? "var(--az-acc)" : "var(--mantine-color-dark-5)",
+                        color: on || drafted ? "var(--az-acc-ink)" : "var(--mantine-color-dark-1)",
                         flexShrink: 0,
                       }}
                     >
@@ -209,6 +537,11 @@ export function AccessTab({ app }: { app: App }) {
                         {on && (
                           <ToneBadge tone="acc" style={{ fontSize: 8.5, padding: "1px 6px" }}>
                             CURRENT
+                          </ToneBadge>
+                        )}
+                        {drafted && !on && (
+                          <ToneBadge tone="acc" style={{ fontSize: 8.5, padding: "1px 6px" }}>
+                            SELECTED
                           </ToneBadge>
                         )}
                         {row.mode === "public" && (
@@ -242,227 +575,80 @@ export function AccessTab({ app }: { app: App }) {
                         )}
                       </Text>
                     </div>
-                    {actionable && row.mode === "internal" && (
-                      <Button
-                        variant="default"
-                        size="xs"
-                        loading={setVisibility.isPending}
-                        onClick={() => apply({ mode: "internal" })}
-                      >
-                        Make internal
-                      </Button>
-                    )}
-                    {actionable && row.mode === "group" && (
-                      <Button
-                        variant="default"
-                        size="xs"
-                        onClick={() => (groupOpen ? closePicker() : setGroupOpen(true))}
-                      >
-                        {on ? "Edit groups" : "Restrict to groups"}
-                      </Button>
-                    )}
-                    {actionable && row.mode === "public" && (
-                      <Button
-                        variant="default"
-                        size="xs"
-                        leftSection={<Icon name="globe" size={13} />}
-                        onClick={() => {
-                          setReason("");
-                          setGoingPublic(true);
-                        }}
-                      >
-                        Request public access
-                      </Button>
-                    )}
                   </Group>
-                  {actionable && row.mode === "group" && groupOpen && (
-                    <Stack gap={10} px={14} pb={13}>
-                      <GroupPicker
-                        value={groupIds}
-                        onChange={setGroupIds}
-                        disabled={setVisibility.isPending}
-                        slug={app.slug}
-                      />
-                      <Group gap={8} justify="flex-end">
-                        <Button
-                          size="xs"
-                          variant="default"
-                          onClick={closePicker}
-                          disabled={setVisibility.isPending}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          size="xs"
-                          // An empty set is refused here rather than in the schema:
-                          // it IS storable (the edge fails closed on it), but it is
-                          // never what someone means to click, so the UI is where
-                          // that gets caught.
-                          disabled={groupIds.length === 0 || setVisibility.isPending || unchanged}
-                          loading={setVisibility.isPending}
-                          onClick={() => apply({ mode: "group", groupIds })}
-                        >
-                          {on ? "Save groups" : "Apply"}
-                        </Button>
-                      </Group>
-                    </Stack>
-                  )}
                 </div>
-              );
-            })}
-          </Stack>
 
-          {requested && (
-            <Box mt={12}>
-              <Hint icon="shield" tone="violet">
-                Request opened — going public is awaiting admin approval. The app stays at its
-                current visibility until a reviewer approves.
-              </Hint>
-            </Box>
-          )}
-          {setVisibility.isError && !goingPublic && (
-            <Text size="xs" c="red" mt={10}>
-              {setVisibility.error.message}
-            </Text>
-          )}
-        </Card>
-      </Grid.Col>
-
-      <Grid.Col span={{ base: 12, md: 5 }}>
-        <Stack gap={18}>
-          <PasswordAccessCard app={app} />
-
-          <Card style={{ borderColor: "var(--az-bad-dim)" }}>
-            <Eyebrow mb={4}>Lifecycle</Eyebrow>
-            <Text size="sm" c="dark.2" mb={14} lh={1.5}>
-              Archiving takes the app offline immediately: the address stops serving and each
-              visitor&apos;s stored data for it is cleared from their browser. The subdomain is
-              never handed to another app. Unarchive puts it back exactly as it was.
-            </Text>
-            {!authenticated ? (
-              <Hint
-                icon="user"
-                tone="neutral"
-                action={
-                  <Button variant="default" size="xs" onClick={login} disabled={!loginAvailable}>
-                    Sign in
-                  </Button>
-                }
-              >
-                You need to be signed in to archive or unarchive this app.
-              </Hint>
-            ) : archived ? (
-              <Button
-                variant="default"
-                leftSection={<Icon name="rotate" size={15} />}
-                loading={archive.isPending}
-                onClick={() => archive.mutate({ slug: app.slug, archive: false })}
-                fullWidth
-              >
-                Unarchive — resume serving
-              </Button>
-            ) : (
-              <Button
-                color="red"
-                variant="outline"
-                leftSection={<Icon name="x" size={15} />}
-                onClick={() => setConfirming(true)}
-                fullWidth
-              >
-                Archive app
-              </Button>
-            )}
-            {archive.isError && (
-              <Text size="xs" c="red" mt={8}>
-                {archive.error.message}
-              </Text>
-            )}
-          </Card>
-
-          <Card>
-            <Group justify="space-between" mb={12}>
-              <Eyebrow>Access (RBAC)</Eyebrow>
-              <PreviewBadge milestone="v1" />
-            </Group>
-            <Text size="sm" c="dark.2" lh={1.5}>
-              Per-app roles (owner / editor / viewer) aren&apos;t built yet. Today anyone signed in
-              to the portal can change this app — every change is recorded in the audit log against
-              the person who made it.
-            </Text>
-          </Card>
+                {drafted && authenticated && row.mode === "group" && (
+                  <Stack gap={10} px={14} pb={13}>
+                    <GroupPicker
+                      value={groupIds}
+                      onChange={setGroupIds}
+                      disabled={running}
+                      slug={app.slug}
+                    />
+                  </Stack>
+                )}
+                {drafted && authenticated && row.mode === "password" && (
+                  <Stack gap={10} px={14} pb={13}>
+                    {on ? (
+                      <PasswordAccessConfig app={app} disabled={running} />
+                    ) : (
+                      <Text size="xs" c="dark.2" lh={1.45}>
+                        Confirming mints the passphrase and hands it to you to share, with the
+                        app&apos;s address. Re-enabling later returns the existing credential.
+                      </Text>
+                    )}
+                  </Stack>
+                )}
+              </div>
+            );
+          })}
         </Stack>
-      </Grid.Col>
+
+        {requested && (
+          <Box mt={12}>
+            <Hint icon="shield" tone="violet">
+              Request opened — going public is awaiting admin approval. The app stays as it is until
+              a reviewer approves.
+            </Hint>
+          </Box>
+        )}
+        {runError && !confirmOpen && (
+          <Text size="xs" c="red" mt={10}>
+            {runError}
+          </Text>
+        )}
+      </Card>
 
       <ConfirmDialog
-        opened={goingPublic}
-        icon="globe"
-        tone="var(--az-violet)"
-        toneDim="var(--az-violet-dim)"
-        title={`Request public access for ${app.displayName}?`}
+        opened={confirmOpen}
+        icon={draft === null ? "shield" : rowIcon(draft)}
+        title={plan?.title ?? ""}
         body={
           <Stack gap={10}>
-            <Text size="sm" c="dark.2" lh={1.5}>
-              A public app opens to anyone with the link, with no sign-in — usage is capped per app
-              and per visitor IP address. Because that is hard to undo once the link is out, this
-              opens an approval request rather than applying now; the app stays as it is until an
-              admin approves.
-            </Text>
-            <Textarea
-              label="Reason for review (optional)"
-              placeholder="Why does this app need to be public?"
-              value={reason}
-              onChange={(e) => setReason(e.currentTarget.value)}
-              rows={3}
-            />
+            {transitionBody()}
+            {plan?.elevated && (
+              <Textarea
+                label="Reason for review (optional)"
+                placeholder="Why does this app need to be public?"
+                value={reason}
+                onChange={(e) => setReason(e.currentTarget.value)}
+                rows={3}
+              />
+            )}
           </Stack>
         }
-        confirmLabel="Request approval"
-        loading={setVisibility.isPending}
-        error={setVisibility.isError ? setVisibility.error.message : null}
-        onConfirm={() =>
-          setVisibility.mutate(
-            {
-              slug: app.slug,
-              visibility: { mode: "public" },
-              ...(reason.trim() ? { reason: reason.trim() } : {}),
-            },
-            { onSuccess: () => setGoingPublic(false) },
-          )
-        }
+        confirmLabel={plan?.confirmLabel ?? "Confirm"}
+        loading={running}
+        error={confirmOpen ? runError : null}
+        onConfirm={() => {
+          if (plan !== null && draft !== null) void execute(plan, draft);
+        }}
         onClose={() => {
-          setGoingPublic(false);
-          setVisibility.reset();
+          setConfirmOpen(false);
+          setRunError(null);
         }}
       />
-
-      <ConfirmDialog
-        opened={confirming}
-        icon="x"
-        tone="var(--az-bad)"
-        toneDim="var(--az-bad-dim)"
-        title={`Archive ${app.displayName}?`}
-        body={
-          <>
-            <span className="az-mono">{app.slug}</span> stops serving immediately, and each
-            visitor&apos;s stored data for it is cleared from their browser. This is reversible —
-            unarchive puts the app back exactly as it was.
-          </>
-        }
-        confirmLabel="Archive"
-        confirmColor="red"
-        loading={archive.isPending}
-        error={archive.isError ? archive.error.message : null}
-        onConfirm={() =>
-          archive.mutate(
-            { slug: app.slug, archive: true },
-            { onSuccess: () => setConfirming(false) },
-          )
-        }
-        onClose={() => {
-          setConfirming(false);
-          archive.reset();
-        }}
-      />
-    </Grid>
+    </Stack>
   );
 }

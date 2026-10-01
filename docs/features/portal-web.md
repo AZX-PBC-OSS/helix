@@ -5,7 +5,6 @@
 `apps/portal-web` is the owner-facing SPA, built with Vite, React 19, Mantine,
 TanStack Query, and React Router. Its pages use the `/api/v1/*` API for apps,
 versions, capabilities, usage, approvals, violations, secrets, and audit.
-The remaining `PreviewBadge` marks planned owner/editor/viewer roles.
 `src/theme` defines the shared styling. This package uses
 `moduleResolution: bundler`; the other packages use `nodenext`.
 
@@ -55,28 +54,34 @@ The remaining `PreviewBadge` marks planned owner/editor/viewer roles.
     collected items have no declared schema — via the shared `deriveCollectionColumns`. Defaults to
     the `prod` tier and states how many rows the filter is holding back. See
     [app-data-gateway.md](./app-data-gateway.md).
-  - **Access** — visibility switcher (`POST /apps/:slug/visibility`): the SSO-gated modes (→ internal /
-    group) apply immediately, going public opens a confirm-with-reason approval request, and
-    `password` mode defers to the shared-password card (`PasswordAccessCard`). The `group` row is
-    the one that stays actionable while it is already current, because its action is "edit which
-    groups" — `GroupPicker` (a Mantine `MultiSelect` over `GET /api/v1/directory/groups`, defaulting
-    to the caller's own claim-derived groups from `/directory/my-groups`, capped at
-    `MAX_VISIBILITY_GROUPS`) plus an add-by-id field for a group search can't reach. Where the
-    deployment has no Graph grant the search control is hidden and the id field carries a banner
-    naming the missing permission — the gate is unaffected either way (ADR-0040). A caller the
-    deployment doesn't let search (`PORTAL_DIRECTORY_SEARCH`, ADR-0040 decision 11) gets a third,
-    deliberately distinct state: no search box, but their own groups and the app's stored groups
-    still listed *by name*, behind a hint that says the scope is limited rather than that anything
-    is unavailable — worded from `searchRestriction` (`admins` vs `none`), because "ask a platform
-    admin" is wrong advice under a tier that refuses admins too. The SPA branches on
+  - **Access** — one unified selector over five states: internal, group, password, public, and
+    archived (the lifecycle flag surfaced as a state, `accessStateOf`). Picking a state drafts it
+    and expands that state's own config panel — the group picker (`GroupPicker`, a Mantine
+    `MultiSelect` over `GET /api/v1/directory/groups`, defaulting to the caller's own claim-derived
+    groups from `/directory/my-groups`, capped at `MAX_VISIBILITY_GROUPS`, plus an add-by-id field
+    for a group search can't reach), or the shared-password credential manager (`PasswordAccessConfig`,
+    whose re-roll/set actions touch the credential, not visibility). A pending-change bar at the
+    top of the card — present exactly while the draft is dirty, so its appearance is itself the
+    dirty indicator — carries the confirm affordance and opens a dialog that states who gains
+    access, who loses it, the live-session consequence (the
+    edge re-checks visibility per request against the live registry entry, so a confirmed
+    tightening reaches people using the app within the projection's ~1 min refresh, not at their
+    next login), and whether an admin-approval request will be opened — going public is the one
+    elevated change, and from the archive it applies nothing: the app stays archived until the
+    approval lands. Compound transitions (password → group, archived → anything else) run as a
+    short planned sequence — `accessTransition.ts` is the pure planner, unit-tested against the
+    full matrix; disabling a password always lands on Internal (the endpoint's contract). Where
+    the deployment has no Graph grant the search control is hidden and the id field carries a
+    banner naming the missing permission — the gate is unaffected either way (ADR-0040). A caller
+    the deployment doesn't let search (`PORTAL_DIRECTORY_SEARCH`, ADR-0040 decision 11) gets a
+    third, deliberately distinct state: no search box, but their own groups and the app's stored
+    groups still listed *by name*, behind a hint that says the scope is limited rather than that
+    anything is unavailable — worded from `searchRestriction` (`admins` vs `none`), because "ask a
+    platform admin" is wrong advice under a tier that refuses admins too. The SPA branches on
     `canSearchDirectory` from `/api/v1/me`, so it never issues a search it would only be refused;
     that field is **tri-state**, and an unanswered `/me` renders no search box *and no claim*
-    rather than asserting a policy it cannot know. Plus
-    archive/unarchive and the one preview surface — the **Access (RBAC)** card carrying
-    `<PreviewBadge milestone="v1" />` (per-app owner/editor/viewer roles are a v1 feature; today
-    `ownsApp` gates app-scoped mutations and any read returning per-subject data, and every action
-    is attributed in the audit trail). The app-scoped **Secrets** card (`SecretsCard`) lives under
-    _Capabilities_, next to the origins it is bound to.
+    rather than asserting a policy it cannot know. The app-scoped **Secrets** card
+    (`SecretsCard`) lives under _Capabilities_, next to the origins it is bound to.
   - **Dev mode** — registers the foreign origins a dev token may be used from and mints the scoped
     bearer for the `env=dev` partition (`DevModeTab`; the token is shown once). Says so plainly
     when the deployment has no dev gateway.
@@ -251,8 +256,9 @@ portal serve it at :3001.
 
 - **Never silently fake.** Surfaces that aren't fully built ship as one honest `PreviewBadge`
   rather than a screen that pretends to work — and as those surfaces became real, the badges came
-  off. The lone survivor is per-app RBAC — the **Access (RBAC)** card on the Access tab
-  (`AccessTab.tsx`; the tab was renamed from Settings).
+  off. The last one (the Access tab's placeholder for per-app RBAC) came off with the tab's 2026
+  selector redesign; nothing in the SPA carries one today, and what isn't built is described in
+  "Planned / not yet built" below instead of mocked on screen.
 - **Dashboards show tokens and cost.** `gateway_calls` stores token/request counts **and** a frozen,
   as-charged `costMicroUsd` priced at write time from a code-resident rate table (ADR-0021); the SPA
   recomputes `costUsd` from that same table for display — the dollar figure is derived from a real
@@ -263,7 +269,8 @@ portal serve it at :3001.
 
 ## Planned / not yet built
 
-- **Per-app RBAC** (owner / editor / viewer) — the only `PreviewBadge` left (`milestone="v1"`).
+- **Per-app RBAC** (owner / editor / viewer) — planned for v1; the placeholder card that used to
+  carry the `PreviewBadge` came off the Access tab in the 2026 selector redesign.
   v0 authz was deliberately flat (authenticated == authorized, ADR-0007). The server side is no
   longer flat for **writes**: an `ownsApp` owner-or-admin gate guards the app-scoped mutating and
   secret routes (issue #9). Two things remain — reads are still authenticated-only, and the SPA
