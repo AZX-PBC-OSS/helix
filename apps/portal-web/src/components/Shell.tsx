@@ -19,8 +19,14 @@ import { appsQuery } from "../api/queries";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon, type IconName } from "./Icon";
 import { Logo } from "./Logo";
+import { HORIZON } from "./SunsetScene";
 import { Eyebrow, ToneBadge } from "./primitives";
 import { useHelp } from "../modals/HelpContext";
+
+/** The main glass panel always reaches a little past the horizon, so a short page
+ *  never leaves its bottom edge floating above it with the grid exposed below. */
+const SCREEN_MARGIN = 24;
+const PAST_HORIZON = 96;
 
 /** App chrome: sidebar nav (Workspace / Admin), onboarding, live health. */
 
@@ -276,7 +282,14 @@ export function Shell({ children }: { children: ReactNode }) {
 
       <AppShell.Main style={{ position: "relative", zIndex: 1 }}>
         <ScrollArea h="100vh" type="auto">
-          <Box className="az-screen" p="30px 30px 52px" maw={1160} mx="auto" my={24}>
+          <Box
+            className="az-screen"
+            p="30px 30px 52px"
+            maw={1160}
+            mx="auto"
+            my={SCREEN_MARGIN}
+            mih={`calc(${HORIZON * 100}vh - ${SCREEN_MARGIN}px + ${PAST_HORIZON}px)`}
+          >
             {children}
           </Box>
         </ScrollArea>

@@ -1,9 +1,10 @@
 import { type CSSProperties, useEffect, useRef } from "react";
 import { SEMANTIC } from "../theme/theme";
 
-/** Horizon height as a fraction of the scene. CSS (sky step, glow) and the canvas
- *  both read this one value, so they share a horizon on every viewport. */
-const HORIZON = 0.46;
+/** Horizon height as a fraction of the scene. CSS (sky step, glow), the canvas
+ *  and the main glass panel's minimum height (Shell) all read this one value, so
+ *  they share a horizon on every viewport. */
+export const HORIZON = 0.46;
 
 /** One floor cell, in units of camera height. 0.25 puts the nearest cell at
  *  roughly 80px on a laptop screen. */
