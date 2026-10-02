@@ -17,6 +17,7 @@ export interface AuthKeys {
 
 const HANDOFF_INFO = "helix-handoff-v1";
 const FLOW_INFO = "helix-flow-v1";
+const VISITOR_INFO = "helix-visitor-hash-v1";
 
 export function deriveAuthKeys(secret: Buffer): AuthKeys {
   if (secret.length < 32) {
@@ -25,4 +26,13 @@ export function deriveAuthKeys(secret: Buffer): AuthKeys {
   const derive = (info: string): Buffer =>
     Buffer.from(hkdfSync("sha256", secret, Buffer.alloc(0), info, 32));
   return { handoffKey: derive(HANDOFF_INFO), flowKey: derive(FLOW_INFO) };
+}
+
+/**
+ * The HMAC key behind `app_visits.visitorHash` (ADR-0050). Derived from the
+ * same secret under its own label, so it is never a signing key, and rotating
+ * `EDGE_AUTH_SECRET` resets unique-visitor continuity.
+ */
+export function deriveVisitorKey(secret: Buffer): Buffer {
+  return Buffer.from(hkdfSync("sha256", secret, Buffer.alloc(0), VISITOR_INFO, 32));
 }

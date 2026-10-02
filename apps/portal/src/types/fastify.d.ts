@@ -3,6 +3,7 @@ import type { DirectoryProvider } from "@azx-pbc/directory";
 import type { PrismaClient } from "../db/client.js";
 import type { BlobStore } from "../blob/store.js";
 import type { Actor } from "../plugins/auth.js";
+import type { GeoResolver } from "../geo/resolver.js";
 
 /**
  * Decorators and per-request state added by the portal's plugins.
@@ -22,6 +23,8 @@ declare module "fastify" {
      * Access tab.
      */
     directory: DirectoryProvider;
+    /** Visitor geolocation (ADR-0050). Never null, for the same reason as `directory`. */
+    geo: GeoResolver;
   }
 
   interface FastifyRequest {

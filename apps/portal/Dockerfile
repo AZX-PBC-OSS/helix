@@ -28,9 +28,19 @@ COPY . .
 RUN pnpm install --frozen-lockfile --filter @azx-pbc/portal... --filter @azx-pbc/portal-web...
 # Build the SPA — the portal statically serves apps/portal-web/dist when present.
 RUN pnpm --filter @azx-pbc/portal-web build
+# Offline IP geolocation for the Visitors view (ADR-0050): DB-IP City Lite,
+# CC-BY 4.0, refreshed monthly by rebuilding the image. GEOIP_DB_MONTH pins a
+# release (YYYY-MM); empty takes this month, else last month. `skip` builds an
+# image without it, and visitor location then reports itself unavailable.
+ARG GEOIP_DB_MONTH=""
+RUN if [ "$GEOIP_DB_MONTH" != "skip" ]; then \
+      pnpm --filter @azx-pbc/portal geo:fetch -- $GEOIP_DB_MONTH; \
+    fi
 
 FROM base AS runtime
 ENV NODE_ENV=production
+# Absent file (GEOIP_DB_MONTH=skip) degrades to "location unavailable", not a boot failure.
+ENV PORTAL_GEOIP_DB_PATH=/app/apps/portal/geo/dbip-city-lite.mmdb
 COPY --from=build /app /app
 USER node
 EXPOSE 3001

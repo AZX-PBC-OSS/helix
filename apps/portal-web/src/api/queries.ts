@@ -26,9 +26,11 @@ import {
   SessionListResponseSchema,
   UsageSummarySchema,
   VersionSchema,
+  VisitorSummarySchema,
   type AppListScope,
   type PlatformRange,
   type UsageRange,
+  type VisitorRange,
 } from "@azx-pbc/shared";
 import { fetchJson, fetchText } from "./client";
 
@@ -143,6 +145,20 @@ export const usageQuery = (slug: string, range: UsageRange = "24h") =>
       fetchJson(
         UsageSummarySchema,
         `/api/v1/apps/${encodeURIComponent(slug)}/usage?range=${range}`,
+      ),
+  });
+
+/**
+ * Visits, unique visitors and approximate location for one app (ADR-0050).
+ * Owner-or-admin gated server-side (`ownsApp`), so gate `enabled` on the same.
+ */
+export const visitorsQuery = (slug: string, range: VisitorRange = "30d") =>
+  queryOptions({
+    queryKey: ["apps", slug, "visitors", range],
+    queryFn: () =>
+      fetchJson(
+        VisitorSummarySchema,
+        `/api/v1/apps/${encodeURIComponent(slug)}/visitors?range=${range}`,
       ),
   });
 

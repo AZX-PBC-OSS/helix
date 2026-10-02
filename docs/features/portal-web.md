@@ -61,7 +61,10 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
   - **Capabilities** — a manifest editor against `GET`/`PUT /api/v1/apps/:slug/manifest` (LLM
     models + budget, data flags/lists, external origins, fetch-proxy origins, MCP grants — see
     [capabilities-and-manifests.md](./capabilities-and-manifests.md)).
-  - **Usage** — per-app metering off `GET /api/v1/apps/:slug/usage`, plus a
+  - **Usage** — opens with a **Visitors** section for the owner or an admin (visits, unique
+    visitors, approximate location off `GET /api/v1/apps/:slug/visitors`; see
+    [visitor-analytics.md](./visitor-analytics.md)), then per-app metering off
+    `GET /api/v1/apps/:slug/usage`, plus a
     **Recent calls** card fed by the app-scoped audit feed
     (`GET /api/v1/apps/:slug/audit`). The gate follows the data (ADR-0007,
     amended): the rows carry the app's callers' captured claims, which the app

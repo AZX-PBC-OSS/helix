@@ -192,6 +192,9 @@ describe("UsageTab recent calls", () => {
     renderUsage(makeApp({ ownerId: "oid-owner" }));
     await screen.findByText("Per-call history is visible to the app's owner.");
     expect(fetchSpy.mock.calls.some(([u]) => String(u).includes("/audit?limit="))).toBe(false);
+    // The Visitors section is owner-or-admin too (ADR-0050).
+    expect(fetchSpy.mock.calls.some(([u]) => String(u).includes("/visitors?range="))).toBe(false);
+    expect(screen.queryByText("Visitors")).toBeNull();
   });
 
   it("shows the owner the app's calls, without the admin-only failure text", async () => {

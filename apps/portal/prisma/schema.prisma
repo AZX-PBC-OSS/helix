@@ -487,6 +487,28 @@ model CspReport {
   @@map("csp_reports")
 }
 
+/// Hosted-app page loads for the owner's Visitors view (ADR-0050). The edge
+/// appends one row per top-level HTML document it serves past the session gate
+/// (INSERT-only grant, `app.app_id` RLS); the portal aggregates them and deletes
+/// rows past the retention window. A row never holds a raw IP, a user identity,
+/// a path, or a user agent. No FK to `apps` (mirrors GatewayCall).
+model AppVisit {
+  id          String   @id @default(uuid()) @db.Uuid
+  appId       String   @db.Uuid
+  /// Partition tier; only the prod edge records visits today.
+  env         String   @default("prod")
+  /// Keyed HMAC of `appId|ip` (32 hex). Stable per app, so it counts unique
+  /// visitors across the window; null when the edge has no auth secret to key it.
+  visitorHash String?
+  /// The client IP truncated to /24 (IPv4) or /48 (IPv6) — enough for a coarse
+  /// geo lookup, not enough to name a host. Null when the edge saw no IP.
+  ipPrefix    String?
+  createdAt   DateTime @default(now())
+
+  @@index([appId, env, createdAt])
+  @@map("app_visits")
+}
+
 /// Connection secrets (docs/design/secrets-and-connections.md). Third-party
 /// credentials the platform holds so an app never does. **Control-plane data**:
 /// the portal writes them (CRUD + rotation), the separate `azx-egress` service

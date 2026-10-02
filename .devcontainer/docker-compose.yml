@@ -76,6 +76,11 @@ services:
       EDGE_ALLOW_PASSWORD_APPS: "true"
       PORTAL_ALLOW_PUBLIC_APPS: "true"
       PORTAL_ALLOW_PASSWORD_APPS: "true"
+      # Offline IP geolocation for the Visitors view (ADR-0050). post-create.sh
+      # downloads DB-IP City Lite here (gitignored); if that download failed, the
+      # portal still boots and reports location as unavailable. Re-fetch with
+      # `pnpm --filter @azx-pbc/portal geo:fetch`.
+      PORTAL_GEOIP_DB_PATH: /workspace/apps/portal/geo/dbip-city-lite.mmdb
       # Apps serve on `<slug>.<EDGE_BASE_DOMAIN>`, auth on `auth.<EDGE_BASE_DOMAIN>`.
       # `*.local.helix.azxlabs.io` is a platform-owned wildcard that resolves to
       # 127.0.0.1 (see the DNS note in the repo docs) — a controlled replacement

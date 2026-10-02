@@ -9,9 +9,10 @@ import { registryFreshnessCheck } from "./registry/health.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { trustProxyCheck, wireTrustProxyHealth } from "./routing/trustProxyHealth.js";
 import { makeAssetHandler } from "./serving/assets.js";
+import { makeVisitRecorder, type VisitStore } from "./serving/visits.js";
 import { edgeErrorHandler, sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
 import { normalizeRequestPath } from "./serving/paths.js";
-import { deriveAuthKeys } from "./auth/secrets.js";
+import { deriveAuthKeys, deriveVisitorKey } from "./auth/secrets.js";
 import type { OidcClient } from "./auth/oidc.js";
 import type { SessionStore } from "./auth/sessions.js";
 import { makeCallbackHandler, makeStartHandler } from "./auth/routes/authHost.js";
@@ -97,6 +98,8 @@ export interface EdgeDeps {
   instructionKey?: Buffer | null;
   /** CSP-violation report sink (§6.2); null = accept-and-drop. */
   cspReports?: CspReportStore | null;
+  /** Visit sink for the owner's Visitors view (ADR-0050); null = not recorded. */
+  visits?: VisitStore | null;
   /** Shared-password login throttle; tests inject a low-threshold one. */
   loginThrottle?: LoginThrottle | null;
   /** Anonymous-tier per-IP gateway limiter; tests inject a low-threshold one. */
@@ -214,7 +217,13 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // ledger write amplification, it is not a security budget, so a per-replica
   // count is fine and a DB round-trip on the abusive path would be self-defeating.
   const denialThrottle = new DenialThrottle(fallbackCounters);
-  const serveAsset = makeAssetHandler({ ...deps, gate });
+  const recordVisit = deps.visits
+    ? makeVisitRecorder({
+        store: deps.visits,
+        key: config.auth ? deriveVisitorKey(config.auth.secret) : null,
+      })
+    : null;
+  const serveAsset = makeAssetHandler({ ...deps, gate, recordVisit });
 
   const handleStart = authRuntime ? makeStartHandler(authRuntime) : null;
   const handleCallback = authRuntime ? makeCallbackHandler(authRuntime) : null;

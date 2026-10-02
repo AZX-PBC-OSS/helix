@@ -199,6 +199,19 @@ each is the target app's ingress FQDN, so there is nothing to configure:
 | `PORTAL_EGRESS_URL` | portal | egress's ingress FQDN | the OAuth callback's code-exchange delegation is unwired; completion refuses |
 | `AZURE_DELEGATED_KEY_VAULT_URL` | egress | the `kv-delegated` vault URI | no delegated store is built; delegated-token operations fail closed |
 
+The portal image also carries one setting for the app owner's Visitors view:
+
+| Variable | Set from | If absent |
+| --- | --- | --- |
+| `PORTAL_GEOIP_DB_PATH` | the portal image (a DB-IP City Lite file downloaded at build) | Visit counts still work; approximate location reports itself unavailable |
+
+The geolocation file is baked in when the portal image is built, so a new
+monthly release arrives with the next image. Pin a release with the
+`GEOIP_DB_MONTH=YYYY-MM` build argument, or pass `GEOIP_DB_MONTH=skip` to build
+without one. DB-IP Lite is licensed CC-BY 4.0. The portal shows the required
+attribution beside the location table; keep it if you change the UI. No visitor
+address is sent anywhere, because the lookup reads the local file.
+
 Per-service variables (OIDC endpoints, feature flags, database URLs) are read
 in each service's `config.ts`: [`apps/edge/src/config.ts`](https://github.com/AZX-PBC-OSS/helix/blob/main/apps/edge/src/config.ts),
 [`apps/portal/src/config.ts`](https://github.com/AZX-PBC-OSS/helix/blob/main/apps/portal/src/config.ts),

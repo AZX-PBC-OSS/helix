@@ -13,6 +13,7 @@ import {
 } from "@opentelemetry/api";
 import {
   DURATION_BUCKETS_MS,
+  INSTR_APP_VISITS,
   INSTR_GATEWAY_CALLS,
   INSTR_GATEWAY_DURATION,
   INSTR_REGISTRY_LOAD_FAILURES,
@@ -66,6 +67,8 @@ export interface EdgeInstruments {
    * seen. Attached by `wireTrustProxyHealth` (`routing/trustProxyHealth.ts`).
    */
   trustProxyUnresolved: ObservableGauge;
+  /** `appId`, `outcome` ∈ `VISIT_RECORD_OUTCOMES` (ADR-0050). */
+  appVisits: Counter;
 }
 
 /**
@@ -119,6 +122,11 @@ export function instruments(): EdgeInstruments {
       description:
         "1 when the last N proxied requests never resolved a forwarded client IP " +
         "(trust-proxy /health check degraded); 0 when verified healthy; absent below N.",
+    }),
+    appVisits: meter.createCounter(INSTR_APP_VISITS, {
+      description:
+        "Hosted-app document loads the edge tried to record, by outcome. Operational only — " +
+        "the owner-facing counts come from app_visits.",
     }),
   };
   return cached;

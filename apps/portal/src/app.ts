@@ -13,6 +13,8 @@ import { secretStorePlugin } from "./plugins/secretStore.js";
 import { errorsPlugin } from "./plugins/errors.js";
 import { authPlugin, type AuthPluginOptions } from "./plugins/auth.js";
 import { directoryPlugin } from "./plugins/directory.js";
+import { visitorsPlugin } from "./plugins/visitors.js";
+import type { GeoResolver } from "./geo/resolver.js";
 import { assertBundleLimits, resolveMaxTotalBytes } from "./deploy/limits.js";
 import { assertInternalJwtSecrets } from "./internalJwt.js";
 import { appRoutes } from "./routes/apps.js";
@@ -23,6 +25,7 @@ import { approvalRoutes } from "./routes/approvals.js";
 import { cspRoutes } from "./routes/csp.js";
 import { versionRoutes } from "./routes/versions.js";
 import { usageRoutes } from "./routes/usage.js";
+import { visitorRoutes } from "./routes/visitors.js";
 import { sessionRoutes } from "./routes/sessions.js";
 import { dataRoutes } from "./routes/data.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -58,6 +61,8 @@ export interface BuildAppOptions {
   secretStore?: SecretStore | null;
   /** Inject the directory provider (tests). Defaults build from the env. */
   directory?: DirectoryProvider;
+  /** Inject the visitor geo resolver (tests). Defaults build from the env. */
+  geo?: GeoResolver;
   /**
    * Built-SPA directory; null forces the stopgap dashboard (tests),
    * undefined auto-detects ($PORTAL_WEB_DIST or apps/portal-web/dist).
@@ -91,6 +96,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(blobPlugin, { store: opts.blobStore });
   app.register(secretStorePlugin, { store: opts.secretStore });
   app.register(directoryPlugin, { provider: opts.directory });
+  app.register(visitorsPlugin, { geo: opts.geo });
   app.register(authPlugin, opts.auth ?? {});
   // One bundle file per upload; cap the (compressed) upload size. Resolved once
   // at build time — this bounds what `spoolUpload` writes to the replica's temp
@@ -113,6 +119,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(cspRoutes);
   app.register(versionRoutes);
   app.register(usageRoutes);
+  app.register(visitorRoutes);
   app.register(sessionRoutes);
   app.register(dataRoutes);
   app.register(authRoutes);

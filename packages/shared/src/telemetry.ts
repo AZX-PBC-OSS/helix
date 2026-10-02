@@ -37,6 +37,7 @@ export const INSTR_CONSENT_OPERATIONS = "helix.consent.operations";
 export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
 export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
+export const INSTR_APP_VISITS = "helix.app.visits";
 
 /**
  * Attribute keys.
@@ -227,6 +228,14 @@ export type SessionDenialReason = (typeof SESSION_DENIAL_REASONS)[number];
  */
 export const REGISTRY_LOAD_OUTCOMES = ["failed", "never_loaded"] as const;
 export type RegistryLoadOutcome = (typeof REGISTRY_LOAD_OUTCOMES)[number];
+
+/**
+ * Whether the edge's visit row landed — the `helix.app.visits` dimension
+ * (ADR-0050). The row is written fire-and-forget after the document is sent,
+ * so `failed` is the only place a lost visit is visible.
+ */
+export const VISIT_RECORD_OUTCOMES = ["recorded", "failed"] as const;
+export type VisitRecordOutcome = (typeof VISIT_RECORD_OUTCOMES)[number];
 
 /**
  * Why a provider-cache reconcile was counted — the `helix.providers.reconciles`

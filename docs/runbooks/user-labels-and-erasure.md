@@ -25,6 +25,10 @@ Read this before answering, not while drafting the reply.
 | `app_collection_items` | **Yes** | Owner-scoped submitted data. The portal's Data tab already exports and deletes it, and `helix_portal` holds `DELETE`. |
 | `gateway_calls` | **No** | See below. |
 
+`app_visits` (ADR-0050) holds no label: only a keyed per-app IP hash and a /24
+(or /48) network prefix. The portal sweeps it at 180 days, and `helix_portal`
+holds `DELETE` if a request needs it sooner.
+
 ## The ledger cannot be erased, and that is deliberate
 
 `gateway_calls` is append-only **by grant**, not by convention (ADR-0021):

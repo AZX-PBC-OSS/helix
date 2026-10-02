@@ -20,6 +20,9 @@ examples/**/pnpm-lock.yaml
 # Generated Prisma client (rebuilt on install via the portal's postinstall)
 apps/portal/src/db/generated/
 
+# Offline geolocation database (`pnpm --filter @azx-pbc/portal geo:fetch`, ADR-0050)
+apps/portal/geo/
+
 # Env / secrets
 .env
 .env.*
