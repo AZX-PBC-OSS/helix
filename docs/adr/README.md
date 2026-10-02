@@ -63,4 +63,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0046](0046-azure-ai-foundry-keyless-llm-backend.md) | Azure AI Foundry as a keyless LLM backend (egress mints Entra tokens) | Accepted |
 | [0047](0047-operator-declared-servable-model-set.md) | Operator-declared servable model set (allowlist/blocklist), catalogue-side only | Accepted |
 | [0048](0048-canonical-principal-oid.md) | Canonical principal identifier: the Entra `oid` claim, captured at source in both planes | Accepted |
-| [0049](0049-warden-optional-inference-backend.md) | Warden as an optional inference backend (gateway token, egress-asserted project and subject) | Proposed |
+| [0049](0049-warden-optional-inference-backend.md) | Warden as an optional inference backend (phase 1 light upstream proposed; phase 2 deep integration deferred) | Proposed |
