@@ -22,7 +22,8 @@ import type { GeoResolver } from "../geo/resolver.js";
  * Windows are calendar days in the DB session timezone, the same convention as
  * the gateway usage routes. A visit is a run of loads by one `visitorHash` with
  * no gap longer than {@link VISIT_IDLE_MINUTES}; a load with no hash is its own
- * visit and counts toward no visitor.
+ * visit and counts toward no visitor. The attribution rule is documented on
+ * `VisitorSummarySchema`.
  */
 
 const RANGE_DAYS: Record<VisitorRange, number> = { "7d": 7, "30d": 30, "90d": 90 };
@@ -64,19 +65,27 @@ export async function visitorRoutes(app: FastifyInstance): Promise<void> {
       const currentStart = Prisma.sql`(date_trunc('day', now()) - make_interval(days => ${days - 1}))`;
       const priorStart = Prisma.sql`(${currentStart} - make_interval(days => ${days}))`;
 
-      // Every load in both windows, flagged with whether it starts a visit.
+      // Every load in both windows, flagged with whether it starts a visit. The
+      // inner scan reaches one idle gap further back, so `LAG` sees the load
+      // that a window's first load may be continuing; the outer filter then
+      // drops those lead-in rows. Without it, a visit already in progress at
+      // `priorStart` would be counted as starting there.
       const loads = Prisma.sql`
-        SELECT "createdAt", "visitorHash", "ipPrefix",
-               "createdAt" >= ${currentStart} AS current,
-               CASE WHEN "visitorHash" IS NULL THEN true
-                    ELSE COALESCE(
-                      "createdAt" - LAG("createdAt") OVER (
-                        PARTITION BY "visitorHash" ORDER BY "createdAt"
-                      ) > make_interval(mins => ${VISIT_IDLE_MINUTES}),
-                      true)
-               END AS starts
-        FROM app_visits
-        WHERE "appId" = ${id}::uuid AND env = 'prod' AND "createdAt" >= ${priorStart}`;
+        SELECT * FROM (
+          SELECT "createdAt", "visitorHash", "ipPrefix",
+                 "createdAt" >= ${currentStart} AS current,
+                 CASE WHEN "visitorHash" IS NULL THEN true
+                      ELSE COALESCE(
+                        "createdAt" - LAG("createdAt") OVER (
+                          PARTITION BY "visitorHash" ORDER BY "createdAt"
+                        ) > make_interval(mins => ${VISIT_IDLE_MINUTES}),
+                        true)
+                 END AS starts
+          FROM app_visits
+          WHERE "appId" = ${id}::uuid AND env = 'prod'
+            AND "createdAt" >= ${priorStart} - make_interval(mins => ${VISIT_IDLE_MINUTES})
+        ) scanned
+        WHERE "createdAt" >= ${priorStart}`;
 
       const totals = await app.prisma.$queryRaw<TotalsRow[]>(Prisma.sql`
         WITH loads AS (${loads})

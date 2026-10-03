@@ -152,6 +152,35 @@ describe("GET /api/v1/apps/:slug/visitors — counting", () => {
     expect(body.prior).toEqual({ visits: 3, uniqueVisitors: 2 });
   });
 
+  /** Start of the 7d window, as the route computes it in the UTC DB session. */
+  function sevenDayStart(): number {
+    const n = new Date();
+    return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()) - 6 * DAY;
+  }
+
+  it("attributes a visit straddling the window start to the window it began in", async () => {
+    const { id, slug } = await ownedApp();
+    const start = sevenDayStart();
+    await seedVisits(id, [
+      { at: new Date(start - 5 * MIN), hash: "b" },
+      { at: new Date(start + 5 * MIN), hash: "b" },
+    ]);
+    const body = VisitorSummarySchema.parse((await summary(slug, "7d")).json());
+    expect(body.current).toEqual({ visits: 0, uniqueVisitors: 1 });
+    expect(body.prior).toEqual({ visits: 1, uniqueVisitors: 1 });
+  });
+
+  it("does not count a visit already in progress when the prior window opens", async () => {
+    const { id, slug } = await ownedApp();
+    const priorStart = sevenDayStart() - 7 * DAY;
+    await seedVisits(id, [
+      { at: new Date(priorStart - 10 * MIN), hash: "c" },
+      { at: new Date(priorStart + 10 * MIN), hash: "c" },
+    ]);
+    const body = VisitorSummarySchema.parse((await summary(slug, "7d")).json());
+    expect(body.prior).toEqual({ visits: 0, uniqueVisitors: 1 });
+  });
+
   it("counts prod only, and never another app's visits", async () => {
     const { id, slug } = await ownedApp();
     const { id: otherId } = await ownedApp();

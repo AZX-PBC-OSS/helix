@@ -59,6 +59,13 @@ export const VisitorSeriesPointSchema = z.object({
 });
 export type VisitorSeriesPoint = z.infer<typeof VisitorSeriesPointSchema>;
 
+/**
+ * **Attribution.** A visit counts in the window (and on the day) where it
+ * starts. A visitor counts in every window and day they loaded the app in. So
+ * a visit that starts just before a window boundary and continues past it adds
+ * a visit to the earlier window and a visitor to both, and a window can show
+ * visitors with zero visits.
+ */
 export const VisitorSummarySchema = z.object({
   appId: z.uuid(),
   range: VisitorRangeSchema,

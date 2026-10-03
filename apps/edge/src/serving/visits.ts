@@ -36,6 +36,9 @@ export class PgVisitStore implements VisitStore {
       ...opts,
       max: opts.max ?? 4,
       label: opts.label ?? "visits",
+      // Nothing awaits these writes, so a waiter must give up rather than queue
+      // behind a slow database at request rate.
+      connectionTimeoutMs: opts.connectionTimeoutMs ?? 2_000,
     });
   }
 
@@ -56,13 +59,29 @@ export class PgVisitStore implements VisitStore {
 }
 
 /**
- * True for a top-level document load. Browsers send `Sec-Fetch-Dest` on every
- * request; scanners and most bots do not, so a request without it is not
- * counted. That makes the header a cheap bot filter as well as the
- * document-vs-subresource test. Iframe embeds (`iframe`) are not counted.
+ * True for a top-level document load a person asked for. Browsers send
+ * `Sec-Fetch-Dest` on every request; scanners and most bots do not, so a
+ * request without it is not counted. That makes the header a cheap bot filter
+ * as well as the document-vs-subresource test. Iframe embeds (`iframe`) are not
+ * counted, and neither are speculative loads: prefetch and prerender send
+ * `Sec-Purpose` (or the legacy `Purpose`) even when the page is never opened.
  */
 export function isDocumentLoad(req: FastifyRequest): boolean {
-  return req.method === "GET" && req.headers["sec-fetch-dest"] === "document";
+  return (
+    req.method === "GET" &&
+    req.headers["sec-fetch-dest"] === "document" &&
+    req.headers["sec-purpose"] === undefined &&
+    req.headers.purpose === undefined
+  );
+}
+
+/**
+ * The address as the IPv4 it carries when it is IPv4-mapped (`::ffff:a.b.c.d`).
+ * Both the hash and the prefix take this form, so one client seen both ways is
+ * one visitor.
+ */
+export function normalizeIp(ip: string): string {
+  return ip.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, "");
 }
 
 /**
@@ -71,8 +90,7 @@ export function isDocumentLoad(req: FastifyRequest): boolean {
  */
 export function truncateIp(ip: string | undefined): string | null {
   if (!ip) return null;
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
-  const v4 = mapped?.[1] ?? ip;
+  const v4 = normalizeIp(ip);
   if (isIPv4(v4)) {
     const [a, b, c] = v4.split(".");
     return `${a}.${b}.${c}.0/24`;
@@ -106,36 +124,83 @@ export function visitorHash(key: Buffer, appId: string, ip: string): string {
   return createHmac("sha256", key).update(`${appId}|${ip}`).digest("hex").slice(0, 32);
 }
 
+/** Writes in flight past which a visit is dropped rather than queued. */
+export const MAX_VISITS_IN_FLIGHT = 64;
+/** A repeat load by the same visitor within this window is not re-recorded. */
+export const VISIT_DEDUPE_MS = 60_000;
+/** Bound on the per-replica dedupe map; the oldest entry is evicted first. */
+export const VISIT_DEDUPE_ENTRIES = 10_000;
+
 export interface VisitRecorderDeps {
   store: VisitStore;
   /** Null when the edge has no auth secret: visits count, unique visitors don't. */
   key: Buffer | null;
+  /** Clock seam for the dedupe window (tests). */
+  now?: () => number;
 }
 
 /**
  * Build the call the asset handler makes once it has decided to send an HTML
- * document. It never awaits the write and never throws: a lost visit is
- * counted on `helix.app.visits{outcome="failed"}` and logged, and the
- * response is unaffected.
+ * document. It never awaits the write and never throws, and it bounds the work
+ * before it reaches the pool:
+ *
+ * - A repeat load by the same visitor within {@link VISIT_DEDUPE_MS} is skipped.
+ *   The 30-minute visit grouping makes that row redundant, and skipping it
+ *   absorbs refresh spam and a single-address flood. The map is per replica, so
+ *   a visitor alternating between replicas can still write one row per replica.
+ * - Past {@link MAX_VISITS_IN_FLIGHT} pending writes, a visit is dropped. That
+ *   bounds memory under a slow database or a many-address flood.
+ *
+ * Every outcome is counted on `helix.app.visits`; a failed write is also logged.
  */
 export function makeVisitRecorder(deps: VisitRecorderDeps) {
+  const now = deps.now ?? Date.now;
+  const lastRecorded = new Map<string, number>();
+  let inFlight = 0;
+
   return function recordVisit(req: FastifyRequest, appId: string): void {
-    const ip = req.ip;
-    const visit: VisitRecord = {
-      appId,
-      visitorHash: deps.key && ip ? visitorHash(deps.key, appId, ip) : null,
-      ipPrefix: truncateIp(ip),
-    };
     const count = (outcome: VisitRecordOutcome): void => {
       instruments().appVisits.add(1, { [ATTR_APP_ID]: appId, [ATTR_OUTCOME]: outcome });
     };
-    void deps.store.record(visit).then(
-      () => count("recorded"),
-      (err: unknown) => {
-        count("failed");
-        req.log.warn({ err, appId }, "app_visits insert failed");
-      },
-    );
+    const ip = req.ip ? normalizeIp(req.ip) : undefined;
+    const hash = deps.key && ip ? visitorHash(deps.key, appId, ip) : null;
+
+    const key = hash === null ? null : `${appId}|${hash}`;
+    const at = now();
+    if (key !== null) {
+      const seen = lastRecorded.get(key);
+      if (seen !== undefined && at - seen < VISIT_DEDUPE_MS) {
+        count("deduplicated");
+        return;
+      }
+    }
+    if (inFlight >= MAX_VISITS_IN_FLIGHT) {
+      // Not marked as seen: the visitor's next load should still get a row.
+      count("dropped");
+      return;
+    }
+    if (key !== null) {
+      // Delete then set, so the Map's insertion order stays oldest-first.
+      lastRecorded.delete(key);
+      lastRecorded.set(key, at);
+      if (lastRecorded.size > VISIT_DEDUPE_ENTRIES) {
+        const oldest = lastRecorded.keys().next().value;
+        if (oldest !== undefined) lastRecorded.delete(oldest);
+      }
+    }
+    inFlight++;
+    void deps.store
+      .record({ appId, visitorHash: hash, ipPrefix: truncateIp(ip) })
+      .then(
+        () => count("recorded"),
+        (err: unknown) => {
+          count("failed");
+          req.log.warn({ err, appId }, "app_visits insert failed");
+        },
+      )
+      .finally(() => {
+        inFlight--;
+      });
   };
 }
 

@@ -20,13 +20,15 @@ ADR-0037 decision 11 deferred "per-app telemetry for hosted apps" because it is 
    There is no user identity, path or user agent in the row, even for authenticated apps. Paths can carry app-chosen keys (ADR-0042).
 
 3. **What counts.** A load is recorded only when all of these hold:
-   - it is a `GET` with `Sec-Fetch-Dest: document`
+   - it is a `GET` with `Sec-Fetch-Dest: document` and no `Sec-Purpose` or `Purpose` header
    - it passed the session gate (or the app is `public`)
-   - the response is an HTML document (200, or a 304 on an HTML path)
+   - the response is an HTML document: a 200 with an HTML content type, or a 304 on an `.html` or extensionless path
 
-   Requests without `Sec-Fetch-Dest` are not counted. Every current browser sends it, and most scanners and scripted clients don't, so the header doubles as a cheap bot filter. Subresources, iframe embeds, HEAD requests, `/_api/*` calls and gate redirects to login are never counted.
+   Requests without `Sec-Fetch-Dest` are not counted. Every current browser sends it, and most scanners and scripted clients don't, so the header doubles as a cheap bot filter. Speculative loads (prefetch, prerender) carry `Sec-Purpose` and are not counted, because the user may never open the page. Subresources, iframe embeds, HEAD requests, `/_api/*` calls and gate redirects to login are never counted.
 
-4. **A visit is computed at query time.** It is a run of loads by one `visitorHash` with no gap longer than 30 minutes. A reload therefore doesn't inflate the count. A load with no hash (an edge without an auth secret) counts as its own visit and as no visitor. A **unique visitor** is a distinct hash, so people behind one NAT count once and one person on two networks counts twice.
+   The write is bounded before it reaches the database. A repeat load by the same visitor within 60 seconds on the same replica is skipped, because the 30-minute grouping makes it redundant. Past 64 writes in flight, a visit is dropped. The pool gives up on a connection after 2 seconds instead of queueing. Each case is counted on `helix.app.visits`.
+
+4. **A visit is computed at query time.** It is a run of loads by one `visitorHash` with no gap longer than 30 minutes. A reload therefore doesn't inflate the count. A load with no hash (an edge without an auth secret) counts as its own visit and as no visitor. A **unique visitor** is a distinct hash, so people behind one NAT count once and one person on two networks counts twice. A visit counts in the window and on the day where it starts. A visitor counts in every window and day they loaded the app in, so a visit that straddles a boundary can leave a window with visitors and no visit.
 
 5. **Geolocation runs in the portal, from an offline file.** The portal resolves the distinct prefixes at read time with an in-process reader over a DB-IP City Lite `.mmdb` (`mmdb-lib`, no runtime dependencies), behind a `GeoResolver` seam. There is no runtime API call, and no address leaves the portal.
    - The edge stays free of a 130 MB database and a new package; it remains dependency-minimal.
@@ -46,6 +48,7 @@ ADR-0037 decision 11 deferred "per-app telemetry for hosted apps" because it is 
 ## Consequences
 
 - **Undercounts are expected.** A document served by the offline capability's service worker (ADR-0035) never reaches the edge. Client-side route changes in a single-page app aren't page loads. Browsers that strip `Sec-Fetch-*` aren't counted. The view states what a visit is so the number isn't over-read.
+- **Counts can be inflated, and row volume is bounded only by rate.** `Sec-Fetch-Dest` is client-settable, and app-host serving has no per-IP throttle. Per-replica dedupe absorbs a flood from one address, and the in-flight cap bounds write pressure from many. A client rotating through many addresses can still add rows at the cap's rate. That volume is accepted: it is bounded by the cap and the 180-day sweep, and adding a throttle to document serving would be a separate decision about the serving path.
 - **Rotating `EDGE_AUTH_SECRET` resets unique-visitor continuity.** Visits before and after the rotation hash differently, so a returning visitor counts twice in a window that spans it. That is accepted rather than adding a second long-lived secret.
 - **`visitorHash` is pseudonymous personal data.** It is stable per app for as long as the key lives. The 180-day sweep bounds it, the portal can delete any row, and the edge cannot read any. It is not a direct identifier, and nothing joins it to a session or a principal.
 - **Location is approximate and labelled so.** Region-level accuracy from IP is materially worse than country-level. VPNs, mobile carriers and corporate egress place visitors wrongly. Private and CGNAT networks, which are all a dev edge sees, are reported as unresolved.

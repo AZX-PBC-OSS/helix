@@ -206,9 +206,11 @@ The portal image also carries one setting for the app owner's Visitors view:
 | `PORTAL_GEOIP_DB_PATH` | the portal image (a DB-IP City Lite file downloaded at build) | Visit counts still work; approximate location reports itself unavailable |
 
 The geolocation file is baked in when the portal image is built, so a new
-monthly release arrives with the next image. Pin a release with the
-`GEOIP_DB_MONTH=YYYY-MM` build argument, or pass `GEOIP_DB_MONTH=skip` to build
-without one. DB-IP Lite is licensed CC-BY 4.0. The portal shows the required
+monthly release arrives with the next image. If the download fails, the build
+warns and continues, and the image ships without location. Pin a release with
+the `GEOIP_DB_MONTH=YYYY-MM` build argument (a pinned release that can't be
+downloaded fails the build), or pass `GEOIP_DB_MONTH=skip` to build without
+one. DB-IP Lite is licensed CC-BY 4.0. The portal shows the required
 attribution beside the location table; keep it if you change the UI. No visitor
 address is sent anywhere, because the lookup reads the local file.
 

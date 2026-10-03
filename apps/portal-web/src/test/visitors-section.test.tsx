@@ -3,7 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { VisitorSummary } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
-import { pctDelta, VisitorsSection } from "../pages/tabs/VisitorsSection";
+import { bucketLabel, pctDelta, VisitorsSection } from "../pages/tabs/VisitorsSection";
 
 const APP_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -68,7 +68,7 @@ describe("VisitorsSection", () => {
   it("lists locations, the rolled-up rest, unresolved traffic, and the licence notice", async () => {
     stubVisitors(() => summary());
     renderWithProviders(<VisitorsSection slug="demo" />);
-    expect(await screen.findByText("Washington, US")).toBeDefined();
+    expect(await screen.findByText("Washington, United States")).toBeDefined();
     expect(screen.getByText("Canada")).toBeDefined();
     expect(screen.getByText("Other locations")).toBeDefined();
     expect(screen.getByText("Unresolved or private network")).toBeDefined();
@@ -94,6 +94,32 @@ describe("VisitorsSection", () => {
       await screen.findByText(/Approximate location is unavailable\. No geolocation database/),
     ).toBeDefined();
     expect(screen.queryByText("Unresolved or private network")).toBeNull();
+  });
+
+  it("shows the window when it has visitors but no visit started in it", async () => {
+    stubVisitors(() =>
+      summary({
+        current: { visits: 0, uniqueVisitors: 1 },
+        locations: [],
+        otherLocations: { visits: 0, uniqueVisitors: 0 },
+        unresolved: { visits: 0, uniqueVisitors: 1 },
+      }),
+    );
+    renderWithProviders(<VisitorsSection slug="demo" />);
+    expect(await screen.findByText("Daily visits")).toBeDefined();
+    expect(screen.queryByText(/No visits in this window yet/)).toBeNull();
+    expect(screen.getByText("Unresolved or private network")).toBeDefined();
+  });
+
+  it("labels each day by its UTC date, whatever the browser's zone", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    try {
+      // The browser's own formatting would say Oct 1 here.
+      expect(new Date("2026-10-02T00:00:00.000Z").toLocaleDateString("en-US")).toBe("10/1/2026");
+      expect(bucketLabel("2026-10-02T00:00:00.000Z")).toBe("Oct 2");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("explains an empty window", async () => {

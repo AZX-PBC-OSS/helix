@@ -497,11 +497,25 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
 
+      # Portal geolocation database (ADR-0050, apps/portal/Dockerfile): PR builds
+      # skip the ~127 MB download; pushed builds take this month's release, or
+      # last month's, with the month as the cache key so it refreshes monthly.
+      # Unused by the other Dockerfiles.
+      - name: Geolocation build args
+        id: geo
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "args=GEOIP_DB_MONTH=skip" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=GEOIP_CACHE_KEY=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: apps/${{ matrix.app }}/Dockerfile
+          build-args: ${{ matrix.app == 'portal' && steps.geo.outputs.args || '' }}
           platforms: linux/amd64 # Azure Container Apps is amd64
           # Build on every event to catch Dockerfile breaks; push only off PRs.
           push: ${{ github.event_name != 'pull_request' }}

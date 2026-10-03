@@ -1,3 +1,4 @@
+import { extname } from "node:path";
 import type { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { publicOrigin, type EdgeConfig } from "../config.js";
@@ -165,8 +166,13 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     const cacheControl = result.kind === "found" && !isHtml ? "private, max-age=300" : "no-cache";
 
     // A visit is a top-level document load that passed the gate, including a
-    // revalidated one (304), since that is still the app opening.
-    const documentServed = result.kind === "not-modified" ? likelyHtml : isHtml;
+    // revalidated one (304), since that is still the app opening. A 304 has no
+    // content type, so judge it by the path: an HTML file, or an extensionless
+    // client route that the SPA fallback answers with the shell.
+    const documentServed =
+      result.kind === "not-modified"
+        ? relPath.endsWith(".html") || extname(relPath) === ""
+        : isHtml;
     if (recordVisit && documentServed && isDocumentLoad(req)) recordVisit(req, entry.appId);
 
     if (result.kind === "not-modified") {

@@ -14,7 +14,7 @@
     "db:deploy:azure": "tsx scripts/migrate-deploy.ts",
     "db:reset": "prisma migrate reset --force",
     "seed:llm": "tsx scripts/seed-platform-secret.ts",
-    "geo:fetch": "tsx scripts/fetch-geoip.ts",
+    "geo:fetch": "node src/geo/fetchDb.ts",
     "db:backfill-owners": "tsx scripts/backfill-app-owners.ts",
     "db:backfill-user-labels": "tsx scripts/backfill-user-labels.ts"
   },

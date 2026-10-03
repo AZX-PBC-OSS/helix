@@ -84,7 +84,7 @@ function VisitorsBody({ v, range }: { v: VisitorSummary; range: VisitorRange }) 
         </Card>
       </SimpleGrid>
 
-      {v.current.visits === 0 ? (
+      {isEmpty(v.current) ? (
         <Hint icon="globe" tone="info">
           No visits in this window yet. A visit is counted when someone opens the app in a browser.
         </Hint>
@@ -96,10 +96,7 @@ function VisitorsBody({ v, range }: { v: VisitorSummary; range: VisitorRange }) 
               mt={14}
               h={220}
               data={v.series.map((p) => ({
-                label: new Date(p.bucket).toLocaleDateString([], {
-                  month: "short",
-                  day: "numeric",
-                }),
+                label: bucketLabel(p.bucket),
                 visits: p.visits,
                 visitors: p.uniqueVisitors,
               }))}
@@ -173,7 +170,7 @@ function LocationCard({ v }: { v: VisitorSummary }) {
           visits={l.visits}
         />
       ))}
-      {v.otherLocations.visits > 0 && (
+      {!isEmpty(v.otherLocations) && (
         <LocationRow
           label="Other locations"
           pct={(v.otherLocations.uniqueVisitors / total) * 100}
@@ -182,7 +179,7 @@ function LocationCard({ v }: { v: VisitorSummary }) {
           muted
         />
       )}
-      {v.unresolved.visits > 0 && (
+      {!isEmpty(v.unresolved) && (
         <LocationRow
           label="Unresolved or private network"
           pct={(v.unresolved.uniqueVisitors / total) * 100}
@@ -242,9 +239,31 @@ function LocationRow(props: {
   );
 }
 
+/**
+ * A daily bucket's date. Buckets are UTC midnights (the server's `date_trunc`
+ * in the UTC DB session), so format in UTC: the browser's own zone would label
+ * each day with the previous date anywhere west of UTC.
+ */
+export function bucketLabel(iso: string): string {
+  return new Date(iso).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 function placeLabel(l: VisitorLocation): string {
   const country = l.countryName ?? l.country;
-  return l.region ? `${l.region}, ${l.country}` : country;
+  return l.region ? `${l.region}, ${country}` : country;
+}
+
+/**
+ * Visits and visitors are attributed independently (see `VisitorSummarySchema`),
+ * so a window can hold visitors and no visit starts. It is empty only when both
+ * are zero.
+ */
+function isEmpty(t: VisitorTotals): boolean {
+  return t.visits === 0 && t.uniqueVisitors === 0;
 }
 
 function ratio(t: VisitorTotals): number | null {

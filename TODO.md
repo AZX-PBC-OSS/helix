@@ -128,6 +128,8 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 
 ## Visitor analytics (ADR-0050)
 
+- [ ] **The gateway Usage chart labels daily buckets in the browser's timezone.** `apps/portal-web/src/components/usageCharts.tsx` formats UTC-midnight buckets with `toLocaleDateString` in the local zone, so owners west of UTC see each day's usage under the previous date. The Visitors chart fixed the same bug with `timeZone: "UTC"` (`bucketLabel` in `VisitorsSection.tsx`); the hourly 24h range needs a decision about which zone its clock labels should use. — review of ADR-0050
+
 - [ ] **Refresh the geolocation database without a full image rebuild.** DB-IP City Lite changes monthly, and the portal only picks up a new release when its image is rebuilt (`GEOIP_DB_MONTH`). Either schedule a monthly rebuild in the release workflow, or mount the file from storage and reload it on change. A stale file degrades accuracy slowly; it never breaks counting. — ADR-0050
 
 ---

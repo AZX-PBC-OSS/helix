@@ -15,7 +15,16 @@ import {
   FakeSessionStore,
   registryEntry,
 } from "../test/fakes.js";
-import { truncateIp, visitorHash, type VisitRecord, type VisitStore } from "./visits.js";
+import type { FastifyRequest } from "fastify";
+import {
+  makeVisitRecorder,
+  MAX_VISITS_IN_FLIGHT,
+  truncateIp,
+  VISIT_DEDUPE_MS,
+  visitorHash,
+  type VisitRecord,
+  type VisitStore,
+} from "./visits.js";
 
 /**
  * ADR-0050: the edge appends one `app_visits` row per top-level document it
@@ -51,6 +60,7 @@ function buildEdge(visibilityMode: VisibilityMode, slug = "vis") {
     etag: '"html-1"',
   });
   blob.set(`${PREFIX}app.js`, { body: "js", contentType: "text/javascript" });
+  blob.set(`${PREFIX}report.csv`, { body: "a,b", contentType: "text/csv", etag: '"csv-1"' });
   const sessions = new FakeSessionStore();
   const visits = new FakeVisitStore();
   const app = buildApp({
@@ -197,6 +207,27 @@ describe("what never counts", () => {
     expect(edge.visits.rows).toHaveLength(0);
   });
 
+  it.each([
+    ["sec-purpose", "prefetch"],
+    ["sec-purpose", "prefetch;prerender"],
+    ["purpose", "prefetch"],
+  ])("does not record a speculative load (%s: %s)", async (header, value) => {
+    const edge = buildEdge("public");
+    const res = await load(edge.app, edge.host, { headers: { ...DOCUMENT, [header]: value } });
+    expect(res.statusCode).toBe(200);
+    expect(edge.visits.rows).toHaveLength(0);
+  });
+
+  it("does not record a revalidated non-HTML file opened directly", async () => {
+    const edge = buildEdge("public");
+    const res = await load(edge.app, edge.host, {
+      url: "/report.csv",
+      headers: { ...DOCUMENT, "if-none-match": '"csv-1"' },
+    });
+    expect(res.statusCode).toBe(304);
+    expect(edge.visits.rows).toHaveLength(0);
+  });
+
   it("does not record gateway calls", async () => {
     const edge = buildEdge("public");
     await load(edge.app, edge.host, { url: "/_api/me" });
@@ -243,6 +274,88 @@ describe("failure and telemetry", () => {
         expect(String(value), `${span.name} ${key}`).not.toContain("203.0.113");
       }
     }
+  });
+});
+
+describe("the recorder's bounds", () => {
+  const KEY = Buffer.alloc(32, 9);
+  const fakeReq = (ip: string): FastifyRequest =>
+    ({ ip, log: { warn: () => {} } }) as unknown as FastifyRequest;
+
+  async function outcomes(r: RecordingTelemetry): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    for (const p of await r.metrics()) {
+      if (p.name !== INSTR_APP_VISITS) continue;
+      const outcome = String(p.attributes["helix.outcome"]);
+      out[outcome] = (out[outcome] ?? 0) + p.value;
+    }
+    return out;
+  }
+
+  it("records a repeat visitor once per minute, then again after it", async () => {
+    recording = startRecordingTelemetry();
+    const store = new FakeVisitStore();
+    let clock = 1_000_000;
+    const record = makeVisitRecorder({ store, key: KEY, now: () => clock });
+    record(fakeReq(CLIENT_IP), APP_ID);
+    clock += VISIT_DEDUPE_MS - 1;
+    record(fakeReq(CLIENT_IP), APP_ID);
+    clock += 1;
+    record(fakeReq(CLIENT_IP), APP_ID);
+    // A different app is a different visitor.
+    record(fakeReq(CLIENT_IP), OTHER_APP_ID);
+    await settle();
+    expect(store.rows).toHaveLength(3);
+    expect(await outcomes(recording)).toEqual({ recorded: 3, deduplicated: 1 });
+  });
+
+  it("treats an IPv4-mapped address as the IPv4 it carries", async () => {
+    const store = new FakeVisitStore();
+    let clock = 0;
+    const record = makeVisitRecorder({ store, key: KEY, now: () => clock });
+    record(fakeReq("1.2.3.4"), APP_ID);
+    clock += VISIT_DEDUPE_MS;
+    record(fakeReq("::ffff:1.2.3.4"), APP_ID);
+    await settle();
+    const [a, b] = store.rows;
+    expect(a?.visitorHash).toBe(b?.visitorHash);
+    expect(a?.ipPrefix).toBe("1.2.3.0/24");
+    expect(b?.ipPrefix).toBe("1.2.3.0/24");
+  });
+
+  it("drops past the in-flight cap without marking the visitor as seen", async () => {
+    recording = startRecordingTelemetry();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const rows: VisitRecord[] = [];
+    const store: VisitStore = {
+      record: async (v) => {
+        await gate;
+        rows.push(v);
+      },
+      close: async () => {},
+    };
+    const record = makeVisitRecorder({ store, key: KEY, now: () => 0 });
+    for (let i = 0; i < MAX_VISITS_IN_FLIGHT + 1; i++) record(fakeReq(`198.51.100.${i}`), APP_ID);
+    expect(await outcomes(recording)).toEqual({ dropped: 1 });
+
+    release();
+    await settle();
+    // The dropped visitor gets a row on their next load: nothing marked it seen.
+    record(fakeReq(`198.51.100.${MAX_VISITS_IN_FLIGHT}`), APP_ID);
+    await settle();
+    expect(rows).toHaveLength(MAX_VISITS_IN_FLIGHT + 1);
+    expect(await outcomes(recording)).toEqual({ recorded: MAX_VISITS_IN_FLIGHT + 1, dropped: 1 });
+  });
+
+  it("does not dedupe visits it cannot attribute to a visitor", async () => {
+    const store = new FakeVisitStore();
+    const record = makeVisitRecorder({ store, key: null, now: () => 0 });
+    record(fakeReq(CLIENT_IP), APP_ID);
+    record(fakeReq(CLIENT_IP), APP_ID);
+    await settle();
+    expect(store.rows).toHaveLength(2);
+    expect(store.rows[0]?.visitorHash).toBeNull();
   });
 });
 

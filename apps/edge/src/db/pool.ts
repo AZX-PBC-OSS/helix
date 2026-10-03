@@ -26,6 +26,13 @@ export interface EdgePoolOpts {
   /** Which pool this is, for the log event — `"sessions"`, `"app-data"`, … */
   label?: string;
   /**
+   * How long a caller may wait for a free connection before `connect()`
+   * rejects. Omitted means wait indefinitely (node-postgres' default), which is
+   * right for request paths that must complete. A fire-and-forget writer sets
+   * it so waiters fail fast instead of queueing behind a slow database.
+   */
+  connectionTimeoutMs?: number;
+  /**
    * Called when a pooled client errors: `phase: "idle"` for one sitting in the
    * pool, `"checked-out"` for one held by {@link withPooledClient}.
    *
@@ -64,6 +71,9 @@ export function createEdgePool(databaseUrl: string, opts: EdgePoolOpts = {}): Po
     statement_timeout: statementTimeoutMs,
   };
   if (opts.max !== undefined) config.max = opts.max;
+  if (opts.connectionTimeoutMs !== undefined) {
+    config.connectionTimeoutMillis = opts.connectionTimeoutMs;
+  }
   const pool = new Pool(config);
   const label = opts.label ?? "unlabelled";
   const report = (err: unknown, phase: PoolClientErrorPhase): void => {
