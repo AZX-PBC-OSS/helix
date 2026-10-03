@@ -1,3 +1,4 @@
+import { extname } from "node:path";
 import type { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { publicOrigin, type EdgeConfig } from "../config.js";
@@ -11,6 +12,7 @@ import { buildAppCsp } from "./csp.js";
 import { buildShimScript, injectHeadScripts } from "./shim.js";
 import { buildConnectScript } from "./connectHelper.js";
 import { buildRegistrationSnippet } from "./serviceWorker.js";
+import { isDocumentLoad, type VisitRecorder } from "./visits.js";
 
 /**
  * The app-host request path (architecture §4.3): resolve slug → live version
@@ -25,10 +27,12 @@ export interface AssetHandlerDeps {
   blob: BlobReader;
   /** The session gate; absent only when the auth stack isn't wired. */
   gate?: SessionGate | null;
+  /** Records a visit for a served HTML document (ADR-0050); absent in most tests. */
+  recordVisit?: VisitRecorder | null;
 }
 
 export function makeAssetHandler(deps: AssetHandlerDeps) {
-  const { config, registry, blob, gate } = deps;
+  const { config, registry, blob, gate, recordVisit } = deps;
 
   return async function assetHandler(
     req: FastifyRequest,
@@ -160,6 +164,16 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // other assets may be 5 minutes stale (`private`: app content becomes
     // authenticated in M3 and must never land in shared caches).
     const cacheControl = result.kind === "found" && !isHtml ? "private, max-age=300" : "no-cache";
+
+    // A visit is a top-level document load that passed the gate, including a
+    // revalidated one (304), since that is still the app opening. A 304 has no
+    // content type, so judge it by the path: an HTML file, or an extensionless
+    // client route that the SPA fallback answers with the shell.
+    const documentServed =
+      result.kind === "not-modified"
+        ? relPath.endsWith(".html") || extname(relPath) === ""
+        : isHtml;
+    if (recordVisit && documentServed && isDocumentLoad(req)) recordVisit(req, entry.appId);
 
     if (result.kind === "not-modified") {
       reply.status(304).header("cache-control", "no-cache").header("content-security-policy", csp);

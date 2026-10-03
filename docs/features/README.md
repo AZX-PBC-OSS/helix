@@ -30,6 +30,7 @@ See [the tour](../../TOUR.md) for the security boundaries and repository map.
 | [portal-web.md](./portal-web.md) | The React/Mantine portal SPA | `apps/portal-web` |
 | [onboarding.md](./onboarding.md) | The in-app "How to develop" guide + the downloadable agent skill | `packages/deploy-skill`, `apps/portal-web` |
 | [dev-idp.md](./dev-idp.md) | The local OIDC issuer used in dev/test | `apps/dev-idp` |
+| [visitor-analytics.md](./visitor-analytics.md) | The owner's Visitors view: visits, unique visitors, approximate location | `apps/edge`, `apps/portal`, `apps/portal-web` |
 | [observability.md](./observability.md) | Logs, traces and metrics about the platform itself; the OTLP-only boundary | all three services, `packages/telemetry` |
 | [examples.md](./examples.md) | Reference apps you can `helix deploy` | `examples/` |
 

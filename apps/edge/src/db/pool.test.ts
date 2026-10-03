@@ -7,9 +7,13 @@ import { createEdgePool, DEFAULT_STATEMENT_TIMEOUT_MS, withPooledClient } from "
 // node-postgres exposes the resolved client config on `pool.options`; constructing
 // a Pool does not connect (that happens lazily on the first query), so these are
 // pure unit tests. `options` isn't in the public typings — read it through a cast.
-function options(pool: Pool): { statement_timeout?: number | false; max?: number } {
-  return (pool as unknown as { options: { statement_timeout?: number | false; max?: number } })
-    .options;
+interface ResolvedOptions {
+  statement_timeout?: number | false;
+  max?: number;
+  connectionTimeoutMillis?: number;
+}
+function options(pool: Pool): ResolvedOptions {
+  return (pool as unknown as { options: ResolvedOptions }).options;
 }
 
 describe("createEdgePool", () => {
@@ -32,6 +36,13 @@ describe("createEdgePool", () => {
     const pool = track(createEdgePool("postgresql://unused", { statementTimeoutMs: 2500, max: 3 }));
     expect(options(pool).statement_timeout).toBe(2500);
     expect(options(pool).max).toBe(3);
+  });
+
+  it("passes connectionTimeoutMs through, and leaves it unset by default", () => {
+    const bounded = track(createEdgePool("postgresql://unused", { connectionTimeoutMs: 2000 }));
+    expect(options(bounded).connectionTimeoutMillis).toBe(2000);
+    const unbounded = track(createEdgePool("postgresql://unused"));
+    expect(options(unbounded).connectionTimeoutMillis ?? 0).toBe(0);
   });
 
   it("allows disabling the timeout with 0 (explicit opt-out)", () => {

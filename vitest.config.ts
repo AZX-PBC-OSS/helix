@@ -33,6 +33,10 @@ export default defineConfig({
             // the guard the approvals tests are asserting. The one test that wants
             // the flag opts in with `vi.stubEnv`.
             PORTAL_ALLOW_SELF_APPROVE: "false",
+            // The devcontainer points this at the downloaded DB-IP file (ADR-0050).
+            // Empty keeps every test-built portal from loading 127 MB; suites that
+            // need geo inject a StaticGeoResolver.
+            PORTAL_GEOIP_DB_PATH: "",
           },
           // Ensure the test database exists + is migrated before any suite runs.
           globalSetup: ["./vitest.globalSetup.ts"],

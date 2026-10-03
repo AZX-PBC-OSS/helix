@@ -90,6 +90,9 @@ catalog:
   yauzl: ^3.4.0
   archiver: ^8.0.0
   fflate: ^0.8.2
+  # Offline IP geolocation for the Visitors view (ADR-0050) — portal only, so the
+  # 130 MB database and its reader stay out of the edge. Zero runtime deps.
+  mmdb-lib: ^3.0.3
   fastify-plugin: ^6.0.0
   # ── Auth (M3) ──
   # jose + openid-client are the edge's two allowed auth additions (project

@@ -19,6 +19,7 @@ import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { LoginThrottle } from "./auth/loginThrottle.js";
 import { PgCounterStore } from "./gateway/counterStore.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
+import { PgVisitStore } from "./serving/visits.js";
 import type { PoolClientErrorPhase } from "./db/pool.js";
 
 /**
@@ -160,6 +161,12 @@ const cspReports = new PgCspReportStore(config.databaseUrl, {
   statementTimeoutMs: config.statementTimeoutMs,
   onClientError,
 });
+// Visit sink (ADR-0050) — append-only and always on, like the CSP sink: public
+// apps are visited without the auth stack.
+const visits = new PgVisitStore(config.databaseUrl, {
+  statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
+});
 // Shared, PG-backed counter behind both abuse controls (issue #13): the anon
 // per-IP gateway limiter and the shared-password login throttle. One store +
 // namespaced keys means the limits hold across the horizontally-scaled fleet
@@ -236,6 +243,7 @@ const app = buildApp({
   instructionKey,
   portal,
   cspReports,
+  visits,
   anonRateLimiter,
   loginThrottle,
   https,
@@ -275,6 +283,7 @@ app.addHook("onClose", async () => {
   await egress?.close();
   await portal?.close();
   await cspReports.close();
+  await visits.close();
   await llmProvider?.close();
   await counterStore.close();
   await blob.close();

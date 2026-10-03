@@ -126,6 +126,12 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 - [ ] **Reconsider omitting `modelVersion` in `foundry.bicep`.** The module omits it deliberately so the RP picks the default version, documented as "the safe default for a deploy-the-catalog list — version strings differ per region". The failure above shows that is not safe: **the RP's own default version can itself be `Deprecating`**, and then the RP refuses the deployment it just defaulted. Either pin versions per entry (accurate, but region-specific strings to maintain) or keep omitting and document that the default list must be re-audited per region and per release. Mitigating factor, and the reason this is not urgent: the failure is loud and lands at **preflight**, before any container app reconciles — a bad default costs a re-run, not an outage. — ADR-0046
 - [ ] _(Consider)_ **Private-endpoint posture for the Foundry account.** Public endpoint + `disableLocalAuth` + RBAC is the shipped posture (same exposure class as calling first-party endpoints today). A customer who mandates PE needs a per-origin exception in the egress SSRF connector — a PE'd account resolves to a private IP, which `ssrf.ts` blocks wholesale — and that is its own ADR, not a parameter. — ADR-0046
 
+## Visitor analytics (ADR-0050)
+
+- [ ] **The gateway Usage chart labels daily buckets in the browser's timezone.** `apps/portal-web/src/components/usageCharts.tsx` formats UTC-midnight buckets with `toLocaleDateString` in the local zone, so owners west of UTC see each day's usage under the previous date. The Visitors chart fixed the same bug with `timeZone: "UTC"` (`bucketLabel` in `VisitorsSection.tsx`); the hourly 24h range needs a decision about which zone its clock labels should use. — review of ADR-0050
+
+- [ ] **Refresh the geolocation database without a full image rebuild.** DB-IP City Lite changes monthly, and the portal only picks up a new release when its image is rebuilt (`GEOIP_DB_MONTH`). Either schedule a monthly rebuild in the release workflow, or mount the file from storage and reload it on change. A stale file degrades accuracy slowly; it never breaks counting. — ADR-0050
+
 ---
 
 ## Deferred / v2

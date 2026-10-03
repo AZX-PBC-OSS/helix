@@ -37,6 +37,7 @@ export const INSTR_CONSENT_OPERATIONS = "helix.consent.operations";
 export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
 export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
+export const INSTR_APP_VISITS = "helix.app.visits";
 
 /**
  * Attribute keys.
@@ -227,6 +228,22 @@ export type SessionDenialReason = (typeof SESSION_DENIAL_REASONS)[number];
  */
 export const REGISTRY_LOAD_OUTCOMES = ["failed", "never_loaded"] as const;
 export type RegistryLoadOutcome = (typeof REGISTRY_LOAD_OUTCOMES)[number];
+
+/**
+ * What happened to a visit the edge decided to record — the `helix.app.visits`
+ * dimension (ADR-0050). The row is written fire-and-forget, so this counter is
+ * the only place a lost visit is visible.
+ *
+ * - `recorded`: the row landed.
+ * - `failed`: the write was attempted and errored (including a pool wait that
+ *   timed out).
+ * - `dropped`: too many writes were already in flight, so none was attempted.
+ *   A sustained rate means the database is slow or someone is flooding loads.
+ * - `deduplicated`: the same visitor was recorded on this replica within the
+ *   last minute, so the row would add nothing to the 30-minute visit grouping.
+ */
+export const VISIT_RECORD_OUTCOMES = ["recorded", "failed", "dropped", "deduplicated"] as const;
+export type VisitRecordOutcome = (typeof VISIT_RECORD_OUTCOMES)[number];
 
 /**
  * Why a provider-cache reconcile was counted — the `helix.providers.reconciles`

@@ -831,3 +831,77 @@ describe("connection substrate: grants, RLS, and the NOTIFY channel", () => {
     }
   });
 });
+
+describe("app_visits: write-only from the edge, pinned to its partition (ADR-0050)", () => {
+  const insert = `INSERT INTO app_visits (id, "appId", env, "visitorHash", "ipPrefix")
+                  VALUES (gen_random_uuid(), $1, $2, 'h', '203.0.113.0/24')`;
+
+  async function inPartition(pool: Pool, guc: string | null, sql: string, params: unknown[]) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (guc !== null) await client.query("SELECT set_config('app.app_id', $1, true)", [guc]);
+      await client.query(sql, params);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  it("helix_edge appends a visit for the request's app and can never read one back", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const pool = new Pool({ connectionString: edgeUrl(), max: 1 });
+    const appId = randomUUID();
+    try {
+      // Denials first: after a partition transaction the pooled connection keeps
+      // `app.app_id = ''`, and the planner trips on the policy's `''::uuid` cast
+      // before the executor's permission check can report the missing grant.
+      await expect(pool.query("SELECT count(*) FROM app_visits")).rejects.toThrow(
+        /permission denied/i,
+      );
+      for (const sql of [`UPDATE app_visits SET "ipPrefix" = NULL`, `DELETE FROM app_visits`]) {
+        await expect(pool.query(sql)).rejects.toThrow(/permission denied/i);
+      }
+      await expect(inPartition(pool, appId, insert, [appId, "prod"])).resolves.toBeUndefined();
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("helix_edge's write fails closed with no partition, another app's id, or the dev tier", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const pool = new Pool({ connectionString: edgeUrl(), max: 1 });
+    const appId = randomUUID();
+    try {
+      const rls = /row-level security/i;
+      await expect(inPartition(pool, null, insert, [appId, "prod"])).rejects.toThrow(rls);
+      await expect(inPartition(pool, appId, insert, [randomUUID(), "prod"])).rejects.toThrow(rls);
+      await expect(inPartition(pool, appId, insert, [appId, "dev"])).rejects.toThrow(rls);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("helix_dev and helix_egress have no grant at all", async () => {
+    for (const [available, url] of [
+      [devRoleAvailable, devUrl],
+      [egressRoleAvailable, egressUrl],
+    ] as const) {
+      if (!(await available())) continue;
+      const pool = new Pool({ connectionString: url(), max: 1 });
+      try {
+        await expect(pool.query("SELECT count(*) FROM app_visits")).rejects.toThrow(
+          /permission denied/i,
+        );
+        await expect(pool.query(insert, [randomUUID(), "prod"])).rejects.toThrow(
+          /permission denied/i,
+        );
+      } finally {
+        await pool.end();
+      }
+    }
+  });
+});

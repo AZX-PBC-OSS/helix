@@ -73,6 +73,16 @@ if [ -f /workspace/package.json ] || [ -f /workspace/pnpm-workspace.yaml ]; then
   echo "── Installing workspace dependencies ──"
   cd /workspace && CI=true pnpm install
 
+  # Geolocation database for the Visitors view (ADR-0050), at the path
+  # PORTAL_GEOIP_DB_PATH names in docker-compose.yml. Skipped if already present
+  # (it is gitignored, so it survives rebuilds of the same checkout). Non-fatal:
+  # without it the portal reports location as unavailable.
+  if [ ! -f /workspace/apps/portal/geo/dbip-city-lite.mmdb ]; then
+    echo "── Downloading geolocation database (DB-IP City Lite) ──"
+    pnpm --filter @azx-pbc/portal geo:fetch \
+      || echo "   geo:fetch failed — run 'pnpm --filter @azx-pbc/portal geo:fetch' later"
+  fi
+
   echo "── Pre-caching Playwright browser ──"
   npx -y playwright@latest install chromium
 else

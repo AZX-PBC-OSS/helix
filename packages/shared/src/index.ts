@@ -17,6 +17,7 @@ export * from "./llm.js";
 export * from "./llmOpenai.js";
 export * from "./pricing.js";
 export * from "./usage.js";
+export * from "./visitors.js";
 export * from "./data.js";
 export * from "./collectionTable.js";
 export * from "./secrets.js";

@@ -33,6 +33,7 @@ import {
 import { Eyebrow, Hint, Stat, ToneBadge, type Tone } from "../../components/primitives";
 import { Icon } from "../../components/Icon";
 import { fmtCount, fmtUsd } from "../../lib/format";
+import { VisitorsSection } from "./VisitorsSection";
 
 /**
  * Outcome → badge tone. Typed `Record<GatewayOutcome, Tone>` so a new outcome is
@@ -52,7 +53,10 @@ const OUTCOME_TONE: Record<GatewayOutcome, Tone> = {
   forbidden: "bad",
 };
 
-/** Per-app gateway metering over a selectable range. Real `gateway_calls` data. */
+/**
+ * Per-app usage: visitors (owner or admin only, ADR-0050), then gateway
+ * metering over a selectable range from `gateway_calls`.
+ */
 export function UsageTab({ app }: { app: App }) {
   const { authenticated, login, loginAvailable, isAdmin, me, meLoading } = useAuth();
   const [range, setRange] = useState<UsageRange>("24h");
@@ -109,6 +113,8 @@ export function UsageTab({ app }: { app: App }) {
 
   return (
     <Stack gap={18} className="az-stagger">
+      {canSeeCalls && <VisitorsSection slug={app.slug} />}
+
       <Group justify="space-between" align="center">
         <Eyebrow>Gateway usage</Eyebrow>
         <RangeControl value={range} onChange={setRange} options={USAGE_RANGES} />
