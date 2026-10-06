@@ -19,11 +19,11 @@ export function Eyebrow({ children, mb }: { children: ReactNode; mb?: number }) 
 
 export type StatusKind = "live" | "preview" | "archived" | "empty";
 
-const STATUS_META: Record<StatusKind, { color: string; label: string; pulse: boolean }> = {
-  live: { color: "var(--az-live)", label: "Live", pulse: true },
-  preview: { color: "var(--az-slate)", label: "Preview", pulse: false },
-  archived: { color: "var(--az-bad)", label: "Archived", pulse: false },
-  empty: { color: "var(--mantine-color-dark-3)", label: "Not deployed", pulse: false },
+const STATUS_META: Record<StatusKind, { color: string; label: string }> = {
+  live: { color: "var(--az-live)", label: "Live" },
+  preview: { color: "var(--az-slate)", label: "Preview" },
+  archived: { color: "var(--az-bad)", label: "Archived" },
+  empty: { color: "var(--mantine-color-dark-3)", label: "Not deployed" },
 };
 
 export function statusLabel(kind: StatusKind): string {
@@ -41,7 +41,6 @@ export function StatusDot({ kind, size = 8 }: { kind: StatusKind; size?: number 
         borderRadius: "50%",
         background: s.color,
         boxShadow: `0 0 0 3px color-mix(in srgb, ${s.color} 18%, transparent)`,
-        animation: s.pulse ? "az-pulse 2.4s ease-in-out infinite" : "none",
         flexShrink: 0,
       }}
     />

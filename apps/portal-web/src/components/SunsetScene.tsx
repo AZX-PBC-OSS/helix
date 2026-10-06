@@ -21,13 +21,13 @@ const CREAM = "#fff3c8";
 /**
  * The fixed vaporwave backdrop the whole app floats on: a banded sun setting
  * behind the horizon, its reflection on a perspective grid floor, and a
- * breathing glow. Every app surface is frosted glass over this scene (see
+ * static glow. Every app surface is frosted glass over this scene (see
  * theme.ts / global.css).
  *
  * The sun, reflection, horizon and grid are one canvas so they share a single
  * coordinate system; the canvas measures its own box rather than the window,
  * because `vh` and `innerHeight` disagree while a mobile URL bar is showing.
- * Only the glow stays CSS, because it animates. Redraws on resize only.
+ * The glow is a static CSS gradient. The canvas redraws on resize only.
  *
  * Pure decoration — `aria-hidden`, `pointer-events: none`, behind everything.
  */
