@@ -63,6 +63,10 @@ param deployMaxFileMb int = 50
 @description('Max total size in MB of a deployed bundle — uncompressed across all files, and also the cap on the compressed upload. The portal spools that upload to its replica temp disk, so raising this past a few hundred MB wants a matching cpu/memory bump on the portal container app (ephemeral storage scales with them).')
 param deployMaxBundleMb int = 250
 
+@description('Per-direction body cap in MB for the /_api/fetch proxy, enforced independently by the edge, the dev gateway and egress. Bodies are streamed, not buffered, so this bounds bytes per call rather than memory.')
+@minValue(1)
+param fetchMaxBodyMb int = 25
+
 @description('Blob container for app bundles.')
 param blobContainerName string = 'app-bundles'
 
@@ -728,6 +732,10 @@ var delegatedVaultUri = keyvault.outputs.delegatedVaultUri
 var egressBaseUrl = 'https://${egressApp.?outputs.fqdn ?? ''}'
 var portalBaseUrl = 'https://${portalApp.?outputs.fqdn ?? ''}'
 
+// One value for every hop that caps /_api/fetch bodies. A hop left at its code
+// default (10 MiB) keeps answering 413 above that, whatever the others allow.
+var fetchMaxBodyBytes = string(fetchMaxBodyMb * 1024 * 1024)
+
 // Base for the apps' ACA Key Vault references (vaultUri ends in '/').
 // Versionless on purpose: rotation becomes "write the vault" and ACA picks the
 // new value up within ~30 min, restarting revisions — no redeploy. The refs
@@ -1076,6 +1084,7 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
         value: deployTelemetry ? egressCollector!.outputs.otlpEndpoint : ''
       }
       { name: 'EGRESS_PORT', value: '8081' }
+      { name: 'EGRESS_MAX_BODY_BYTES', value: fetchMaxBodyBytes }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
       // Delegated custody: user OAuth token material,
@@ -1225,6 +1234,7 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
       // edgeTrustProxy / effectiveEdgeTrustProxy.
       { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
       { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+      { name: 'EDGE_FETCH_MAX_BODY_BYTES', value: fetchMaxBodyBytes }
       // The /connections/* proxy and both consent surfaces
       // consult the portal over this base; unset they answer fail-closed 503.
       { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
@@ -1429,6 +1439,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
       { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
       { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
       { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+      { name: 'EDGE_FETCH_MAX_BODY_BYTES', value: fetchMaxBodyBytes }
       // The dev-gateway's consent surface consults the portal
       // over this base, same as the edge.
       { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }

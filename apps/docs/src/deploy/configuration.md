@@ -121,6 +121,7 @@ first-party defaults, or pointed at an existing Foundry account per the
 | `platformMonthlyUsdCap` | `1000` | Display-only LLM spend line on the admin Activity page. `0` hides it. Nothing enforces it — per-app daily budgets are the real limit |
 | `deployMaxFileMb` | `50` | Max uncompressed size of any single file in a deployed bundle |
 | `deployMaxBundleMb` | `250` | Max uncompressed size of the whole bundle (and the compressed upload). Raising it a lot wants more CPU/memory on the portal container |
+| `fetchMaxBodyMb` | `25` | Max size of each direction of a `/_api/fetch` call (the request body and the response body). Sets `EDGE_FETCH_MAX_BODY_BYTES` on the edge and dev gateway and `EGRESS_MAX_BODY_BYTES` on egress; each hop enforces it, and a call over it gets a 413 |
 | `imageRegistry` / `imageTag` | `ghcr.io/azx-pbc-oss` / `latest` | Where the three service images come from |
 | `logLevel` | `info` | Log level for all four services. `debug` on the edge puts app-request detail in Log Analytics (30-day retention) — treat it as a data decision, not a volume one |
 
@@ -198,6 +199,14 @@ each is the target app's ingress FQDN, so there is nothing to configure:
 | `EDGE_PORTAL_URL` | edge, dev-gateway | the portal's ingress FQDN | `/connections/*` proxy and consent surfaces answer fail-closed 503 |
 | `PORTAL_EGRESS_URL` | portal | egress's ingress FQDN | the OAuth callback's code-exchange delegation is unwired; completion refuses |
 | `AZURE_DELEGATED_KEY_VAULT_URL` | egress | the `kv-delegated` vault URI | no delegated store is built; delegated-token operations fail closed |
+
+The fetch-proxy body cap is set on every hop that enforces it, from one
+parameter:
+
+| Variable | App(s) | Set from | If absent |
+| --- | --- | --- | --- |
+| `EDGE_FETCH_MAX_BODY_BYTES` | edge, dev-gateway | `fetchMaxBodyMb` × 1 MiB | 10 MiB |
+| `EGRESS_MAX_BODY_BYTES` | egress | `fetchMaxBodyMb` × 1 MiB | 10 MiB |
 
 The portal image also carries one setting for the app owner's Visitors view:
 

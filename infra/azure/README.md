@@ -474,6 +474,25 @@ Raising the per-file cap does **not** widen what _types_ are accepted —
 `apps/portal/src/deploy/mime.ts` is a static-asset allowlist with no video or
 audio types, so a large `.mp4` is rejected on type regardless of size.
 
+## Fetch-proxy body cap
+
+`fetchMaxBodyMb` (default **25**) caps each direction of a `/_api/fetch` call:
+the request body the app sends and the response body the target returns. One
+value feeds both hops. The template converts it to bytes and sets it as
+`EDGE_FETCH_MAX_BODY_BYTES` on the edge and the dev gateway, and as
+`EGRESS_MAX_BODY_BYTES` on egress. Each hop enforces it on its own, so a hop
+left at the 10 MiB code default still answers 413 above that.
+
+Bodies are streamed through a byte counter, not buffered, so raising the cap
+does not raise per-request memory. It does let each call move more bytes and
+hold its connection open longer, still within the 120 s fetch timeout.
+
+Neither service validates the value at boot: a malformed one becomes `NaN`.
+The param's `int` type and `@minValue(1)` are the guard, so set the cap through
+the param rather than by hand on a container app. The default of 25 matches the
+25 MB upload limit on OpenAI-style `/audio/transcriptions` endpoints; see
+[`docs/runbooks/raise-fetch-body-cap.md`](../../docs/runbooks/raise-fetch-body-cap.md).
+
 ## Layout
 
 ```
