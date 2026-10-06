@@ -3,9 +3,11 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
-    # Run tini as PID 1 so re-parented orphans get reaped. Without this, PID 1 is
-    # the `sleep infinity` below — which never wait()s, so every orphaned helper
-    # (git/esbuild/etc. spawned by tooling) piles up as a permanent zombie.
+      # The root .dockerignore excludes .devcontainer for the app images, so
+      # files baked into this image come from a separate named context.
+      additional_contexts:
+        devcontainer: .
+    # Reap orphaned helpers from terminal sessions and coding agents.
     init: true
     env_file:
       - path: .env.local
@@ -174,7 +176,14 @@ services:
       # ~/.pi/agent is pi's entire agent dir: settings.json, auth.json,
       # extensions, and sessions — one volume covers logins and history.
       - pi-config:/home/node/.pi/agent
-    command: sleep infinity
+      - ssh-authorized-keys:/home/node/.ssh
+      - ssh-host-keys:/var/lib/helix-ssh
+      - herdr-config:/home/node/.config/herdr
+      - moshi-config:/home/node/.config/moshi
+    ports:
+      - "51271:22"
+      - "60000-60010:60000-60010/udp"
+    command: ["sudo", "-E", "/usr/local/bin/helix-start-remote"]
     depends_on:
       db:
         condition: service_healthy
@@ -247,3 +256,7 @@ volumes:
   opencode-config:
   opencode-data:
   pi-config:
+  ssh-authorized-keys:
+  ssh-host-keys:
+  herdr-config:
+  moshi-config:

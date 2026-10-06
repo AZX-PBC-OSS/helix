@@ -8,7 +8,7 @@ FROM mcr.microsoft.com/devcontainers/typescript-node:24-bookworm
 # demand Secure, so the edge terminates TLS in dev; see post-create.sh).
 # shellcheck → the same lint CI runs over scripts/ (shellcheck job).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        postgresql-client jq fzf vim less mkcert ripgrep shellcheck \
+        postgresql-client jq fzf vim less mkcert ripgrep shellcheck openssh-server mosh \
     && rm -rf /var/lib/apt/lists/*
 
 # ── actionlint (pinned; apt doesn't carry it) ────────────────
@@ -37,6 +37,10 @@ RUN curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash \
 
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
+COPY --from=devcontainer sshd_config /etc/ssh/helix_sshd_config
+COPY --from=devcontainer start-remote.sh /usr/local/bin/helix-start-remote
+RUN chmod 755 /usr/local/bin/helix-start-remote
+
 # ── pnpm via corepack ────────────────────────────────────────
 # Enable as root so the shims land in /usr/local/bin (root-owned). Doing this
 # in post-create would fail with EACCES since that runs as `node`.
@@ -44,6 +48,11 @@ RUN corepack enable pnpm
 
 # ── Everything below runs as the unprivileged `node` user ────
 USER node
+
+# Remote terminal tools; their state is persisted separately in Compose.
+RUN curl -fsSL https://herdr.dev/install.sh | sh
+RUN curl -fsSL https://getmoshi.app/install.sh \
+    | MOSHI_HOOK_SKIP_SERVICE=1 MOSHI_HOOK_SKIP_FIRST_RUN=1 sh
 
 # ── Coding agents ────────────────────────────────────────────
 # Claude Code via the native installer (no Node dependency); codex + opencode
@@ -59,5 +68,12 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 # claude installs to ~/.local/bin
 RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/node/.zshrc \
     && echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/node/.bashrc
+
+# SSH drops the container environment. Load only the project variables exported
+# by the startup script, including for non-interactive agent discovery.
+RUN for rc in .bashrc .zshenv; do \
+        touch "/home/node/$rc"; \
+        sed -i '1i [ ! -r /run/helix-remote-env ] || . /run/helix-remote-env' "/home/node/$rc"; \
+    done
 
 WORKDIR /workspace

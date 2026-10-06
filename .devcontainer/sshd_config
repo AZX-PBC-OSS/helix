@@ -1,0 +1,20 @@
+Port 22
+HostKey /var/lib/helix-ssh/ssh_host_ed25519_key
+PidFile /run/helix-sshd.pid
+AllowUsers node
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+UsePAM yes
+AuthorizedKeysFile .ssh/authorized_keys
+StrictModes yes
+AllowAgentForwarding no
+X11Forwarding no
+# Moshi can use local tunnels for its optional gateway and previews.
+AllowTcpForwarding local
+GatewayPorts no
+AcceptEnv LANG LC_*
+Subsystem sftp internal-sftp
