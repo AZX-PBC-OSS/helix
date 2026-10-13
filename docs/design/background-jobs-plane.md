@@ -111,7 +111,7 @@ job-type grant, and an exact match on app, environment, principal kind and owner
 id. Possessing a job reference is insufficient. A wrong owner/app/environment returns
 the same 404 as an unknown id. There is no implicit app-owner or admin override.
 The jobs API repeats these comparisons against its record using signed claims.
-The edge validates returned server/type/reference against the requested server
+The edge validates returned fields against the response schema and requested server
 before forwarding a snapshot or acknowledgement; it never trusts a mismatched
 reference to redirect subsequent calls.
 Do not infer the principal kind from the id's shape.
@@ -376,8 +376,8 @@ than promising exactly-once execution or secretly reissuing the call.
 
 The 60-minute bound is an absolute schedule-to-close deadline from acceptance,
 including queue wait and all attempts. Fetch has a shorter five-minute deadline,
-a 30-second outbound GET timeout, and response-stream abort at
-64 KiB result bytes. Validate HTTP status and JSON before storing fetch results;
+a 30-second outbound GET timeout, and response-stream abort when the result
+exceeds 64 KiB (65,536 bytes is allowed). Validate HTTP status and JSON before storing fetch results;
 non-JSON, non-success status and over-cap responses are closed, sanitized errors.
 No caller-selected headers, methods, code, retry policy or connection names are
 accepted by this initial fetch type.
@@ -390,8 +390,9 @@ changes in the existing approval classifier; no daily budget or elevated capacit
 request is exposed. Granted types must come from the installed production
 catalogue, initially `jobs:fetch`, never arbitrary actor names. Fetch progress
 represents one unit, completed only when the valid complete JSON result is
-available; it has no invented intermediate percentage. Reject unknown fields,
-wrong types and out-of-range inputs before acceptance.
+available; it has no invented intermediate percentage. For new work, after the
+retained-key lookup in §4, reject unknown fields, wrong types and out-of-range
+inputs before acceptance. Retained-key comparison precedes payload validation.
 
 Synthetic actors are development/test fixtures. Use small deterministic fixtures
 for progress, retry exhaustion, cancellation races and deadline coverage. Their inputs and outputs are test-owned, not a second public job API.
@@ -430,9 +431,10 @@ completion-time SLA. These lifecycle signals do not imply accounting recovery.
 
 Retain four public operations: submit, status, result and cancel. The
 2026-10-07 ADR-0045 amendment removes the events endpoint. Successful enqueue, including an authorized
-keyed replay, returns 202 `{server, jobId, status}`. Before acceptance, generic and
-type-specific payload errors return 400 `payload_invalid`; they do not create a
-job. Submission throttles still count the request. Worker-time validation failures caused by version
+keyed replay, returns 202 `{server, jobId, status}`. For new work after the
+retained-key lookup in §4, generic and type-specific payload errors return 400
+`payload_invalid`; they do not create a job. Updated per consistency check —
+§4 owns the validation/replay ordering, including different-byte conflicts. Submission throttles still count the request. Worker-time validation failures caused by version
 skew are terminal failures, separately observable. Validate a known qualified type
 explicitly; only the selected server's registered handlers may execute.
 
@@ -456,6 +458,19 @@ Terminal DELETE returns 409 with status. Error messages are fixed, sanitized
 platform messages, never raw validation input/error dumps or upstream exception
 text. Add jobs-specific shared error schemas instead of changing unrelated
 portal error mappings simply to obtain HTTP 410.
+
+Existing serving, caller/session and development-token/origin gates retain their
+statuses, headers and bodies. Their responses may be the nested
+`{error: {code, message}}` API envelope (including `refresh_required`) or an
+existing non-JSON serving/access denial. The shared edge framework error handler
+also keeps its existing envelope. The flat `{code, message}` jobs schema covers
+jobs-operation errors after those gates and the signed internal protocol; it
+does not normalize gate errors. Updated per consistency check — see §2's existing
+caller boundary, `apps/edge/src/auth/gate.ts`, `apps/edge/src/devGateway/resolver.ts`
+and `apps/edge/src/errors.ts`. Author examples check status/content type before
+decoding, retain the original job reference during sign-in/refresh, and resume
+observation after authentication recovery. Follow the existing gateway
+`Cache-Control: no-store` convention for all jobs responses.
 
 Public error reasons distinguish invalid input, timeout, cancellation, retry
 exhaustion, outbound policy refusal, outbound
@@ -640,7 +655,13 @@ The implementation is complete only after these cases run against real services:
   returns 404 on an identical replay and does not enqueue. Physical cleanup
   releases the key; a later new job is safe from racing old cleanup. All
   status-specific retention and archive cleanup honor the contract.
-- Actual roles fail cross-database connections and prohibited table operations.
+- Public/dev routes preserve existing auth/refresh, origin and non-JSON gate
+  failures alongside the jobs error schema. Response fixtures cover explicit
+  nulls, opaque ids, state-dependent errors and the no-store privacy boundary.
+- Actual roles fail cross-database connections and prohibited table/DDL operations
+  after both clean provisioning and upgrade. Runtime credentials cannot migrate.
+  Partial initialization and shutdown release acquired resources while preserving
+  durable work; verify bounded storage recovery and telemetry-disabled operation.
   DB absent at boot, unmigrated schema, stale sweeper, worker exit and recovery
   report honest health. Production exposes no runner administration UI; no cron,
   batch or sub-job entry point is registered by the platform. Synthetic actors
