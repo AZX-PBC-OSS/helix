@@ -1,6 +1,10 @@
 # Background jobs — the jobs plane, and what job #1 needs
 
 **Status:** Research memo v1 · 2026-09-11
+**Superseded for the initial delivery:** [Background jobs plane](background-jobs-plane.md)
+defines the current scope, dependency pin and integration contract. This memo
+is historical research for the deferred LLM pipeline; its runner and platform
+claims are not a current implementation checklist.
 **Companion to:** [ADR-0045](../adr/0045-app-triggered-durable-jobs-plane.md) (the decision), `custom-backends.md` (the rung ladder this sits on), `fetch-proxy.md` and `secrets-and-connections.md` (the mechanism job #1 uses)
 **Purpose:** Evaluate a job runner and the first job type's model-vendor access.
 ADR-0045 defines the jobs plane but leaves these implementation choices open.

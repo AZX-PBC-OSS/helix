@@ -77,6 +77,15 @@ permissions and access to other apps rather than trying to verify its code.
 
 Three deployable services use managed Postgres, Blob storage, and Key Vault:
 
+The accepted [jobs-plane design](design/background-jobs-plane.md) adds a fourth,
+platform-owned TypeScript/pg-boss worker/API behind the edge. Production integration
+is not implemented yet. Named job services (`jobs` initially), qualified types
+(`jobs:fetch`) and `{server, jobId}` references keep the API boundary open to a
+later separately deployed runtime, without requiring one now.
+Its standing workers execute enumerated platform job types, never app-authored
+code; the control plane does not become a tenant job executor. Its database is
+private, and outbound jobs still pass through edge policy and egress.
+
 - **Edge (data/policy plane):** handles app routing, sessions, CSP, static assets,
   and gateway authorization, quotas, and audit. It keeps a registry cache and
   holds operational auth/signing credentials, but cannot read app connection

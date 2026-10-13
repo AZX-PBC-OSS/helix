@@ -134,6 +134,30 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 
 ---
 
+## Background jobs (ADR-0045)
+
+- [ ] Implement the named jobs API and one TypeScript/pg-boss server (`jobs`),
+      initially `jobs:fetch`, using the [current design](docs/design/background-jobs-plane.md).
+      Use qualified grants and `{server, jobId}` references, trusted static routing,
+      per-server credentials/private storage and lifecycle delivery. Keep polling,
+      shared edge throttles, atomic local capacity/retry identity and retention.
+      Execution limits are local with documented rolling overlap. Include telemetry,
+      deployment isolation and the production failure matrix; synthetic work stays
+      in development/test. This remains planned, not shipped code.
+- [ ] Lock the tested pg-boss 12.37.0 baseline through the pnpm catalog; review any
+      upgrade against adapter tests. Use the [PoC comparison](docs/reviews/jobs-runner-poc-2026-10-08.md)
+      as evidence, not a production-ready implementation. Test multi-server routing,
+      grants, signatures, retirement and independent lifecycle with contract fixtures.
+      Add a Python/TaskQ service only when a concrete workload justifies it; Python
+      tooling, mirrors and a second runtime are not part of this delivery.
+- [ ] Design the generic LLM pipeline after the plane is proven. Resource/cost
+      ceilings and provider continuation policy remain workload decisions; they
+      do not block the initial fetch delivery.
+
+- [ ] Consider shared portal-editor draft protection, uncertain-save reconciliation
+      and approval-note recovery separately from background jobs. These were removed from
+      jobs scope on 2026-10-07; no replacement UX or implementation is approved.
+
 ## Deferred / v2
 
 - [ ] **Stale-form concurrency on the policy write paths (`If-Match` / client-supplied `policyVersion`).** `apps.policyVersion` is CAS'd **server-internally** — the app row is read inside the transaction and the write CASes on the version read there, so two genuinely concurrent writers cannot lose each other and the loser gets a 409. What that deliberately does not cover is an owner whose Capabilities tab has been open for an hour: their PUT is a full replace computed from a pre-image the server never sees, so it still blind-overwrites whatever landed meanwhile. Closing it means the client sending the version it read (body field or `If-Match`) and threading it through the SPA forms and the `helix` CLI, plus deciding optional-for-compat vs required. Chosen against for now because it changes the request shape on four routes to harden a case with no data-integrity failure — the last writer's intent is at least fully expressed. — docs/design/approvals.md §5, issue #24 follow-up (2026-08-14)

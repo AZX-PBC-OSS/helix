@@ -481,3 +481,55 @@ one early failure. The never-loaded rule therefore reads the
 rule reads a metric. Amendment 5's "must report nothing before the first load"
 is what forces that split: there is no gauge value to threshold in exactly the
 state that matters most.
+
+### Amendment, 2026-10-06 — Python jobs-plane boundary (planned)
+
+ADR-0045 accepts a Python worker/API whose telemetry cannot import the TypeScript
+package. For that service only, one boot-only Python module owns SDK/provider/
+exporter imports. Ruff and import-discipline tests enforce the same boundary;
+the existing TypeScript restriction remains unchanged. Both implementations
+export OTLP only and stay inert without configuration or with the SDK disabled.
+
+Helix-authored names remain in the shared constants inventory and are mirrored
+into Python with drift tests. TaskQ's own instrumentation is third-party code:
+its literal names do not become an exception for Helix call sites. Export only
+an inventoried subset with bounded attributes, dropping personal/payload fields,
+raw exception events and worker/job identifiers as specified in the
+[jobs-plane design](../design/background-jobs-plane.md#9-telemetry-tests-and-delivery-gate).
+Verify logs and exported spans/metrics with planted sensitive values; upstream
+redaction alone is not the platform's proof.
+
+Jobs may continue authenticated internal HTTP traces. The jobs→edge callback
+still creates a new root in the edge; no propagation-extract exception is added
+there. TaskQ links execution to enqueue rather than parenting it, so operators
+must be able to navigate two traces. Admission reconciliation remains durable
+accounting outside telemetry. Portal lifecycle delivery uses spans, logs and
+health; this amendment does not introduce portal metrics. These changes are
+planned with the jobs service, not present instrumentation.
+
+### Amendment, 2026-10-07 — jobs capacity signals replace accounting recovery
+
+The jobs capacity revision in ADR-0045 removes admission/receipt accounting
+reconciliation. The preceding amendment's statement about that accounting loop
+is superseded. Instrument submission/replay outcomes, throttle/capacity refusal,
+unfinished/retained occupancy and cleanup degradation instead. These are bounded
+operational signals, not reconciled accepted-job charges. Lifecycle delivery and
+worker recovery retain their spans, logs and health. No portal metric exception,
+vendor exporter or additional SDK import boundary is introduced.
+
+### Amendment, 2026-10-13 — named TypeScript jobs service
+
+ADR-0045 now selects TypeScript/pg-boss for initial delivery. The planned Python
+SDK/import exception above is withdrawn for this delivery, along with mirrored
+constants, Python import checks and TaskQ-specific export filtering. Reuse
+`packages/telemetry` for boot-only SDK setup and shared Helix constants; the
+TypeScript SDK boundary is unchanged. A future Python service needs its own
+reviewed telemetry integration, not a dormant SDK implementation now.
+
+Keep authenticated internal trace continuation at jobs, a new edge root for
+callbacks, linked execution traces, redaction, bounded signals and disabled-mode
+behavior. Server names and qualified types may be dimensions only from bounded
+validated deployment configuration; do not record arbitrary submitted prefixes.
+Lifecycle delivery/cleanup health identifies the configured server so one
+healthy target cannot conceal another's backlog. No job/user/retry identifiers
+become metric dimensions and no portal metrics are added by this amendment.

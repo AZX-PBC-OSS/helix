@@ -17,6 +17,13 @@ in `docs/design/` and update status here as work ships.
 - **Testing:** Vitest throughout; Playwright for portal e2e when the UI warrants it.
 - **Tooling:** pnpm workspaces monorepo; VS Code dev container.
 
+**Planned jobs extension (ADR-0045):** one TypeScript/pg-boss worker/API with its
+own private database and migrations, behind the edge's HTTP boundary. Qualified
+`jobs:fetch` grants and `{server, jobId}` references allow later independently
+deployed job services; a Python runtime is not part of initial delivery. The
+[jobs-plane design](design/background-jobs-plane.md) owns the contract and delivery
+gate. This is planned work, not an addition to the shipped-service inventory.
+
 ## 2. Monorepo layout
 
 ```

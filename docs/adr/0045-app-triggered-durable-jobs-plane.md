@@ -1,6 +1,15 @@
 # 0045. App-triggered durable jobs: a platform-owned plane behind an HTTP contract
 
-**Status:** Proposed _(2026-09-11)_
+**Status:** Accepted _(proposed 2026-09-11; amended 2026-10-13; production implementation pending)_
+
+**Current reading:** the [2026-10-13 named-services amendment](#amendment-2026-10-13-named-job-services-and-pg-boss-first),
+the [2026-10-07 capacity amendment](#amendment-2026-10-07-capacity-controls-and-local-retry-identity),
+[scope amendment](#amendment-2026-10-07-polling-and-initial-production-scope)
+and the [2026-10-06 amendment](#amendment-2026-10-06-initial-delivery-and-trust-boundaries)
+supersede original decisions where noted; the later amendment takes precedence. The current
+[implementation design](../design/background-jobs-plane.md) owns the dependency
+pin and detailed contract. Original text below preserves the rationale; it is
+not an independent implementation checklist.
 **Related:** ADR [0001](0001-three-runtime-split.md) (the plane split this extends); ADR [0002](0002-postgres-role-split-rls.md) (the role convention a fourth plane inherits); ADR [0006](0006-secret-custody-seam.md) and ADR [0040](0040-entra-group-visibility-directory-seam.md) (the seam pattern this is the third instance of); ADR [0013](0013-egress-trust-model.md) (the attested-instruction shape reused here); ADR [0020](0020-static-only-apps-v1.md) (the constraint that creates the gap); ADR [0021](0021-metering-ledger.md) (attribution); ADR [0031](0031-connection-providers-delegated-auth.md) (the unattended-caller question this is the first workload to force); ADR [0041](0041-app-data-write-concurrency.md) ("do not build a job claim on this primitive"); `docs/design/custom-backends.md` §3 rung 0; `docs/design/background-jobs.md` (the research behind job #1); architecture §3
 
 ## Context
@@ -140,3 +149,209 @@ Each was raised, is real, and is not solved here. Recording them is what stops a
 - **Unattended access to delegated connection providers.** ADR-0031's question stays open and refuse-by-default.
 - **A batch / fan-out verb.** One job, one result. Fan-out is a real shape and a separate decision.
 - **Exposing the runner's own admin UI.** Whatever the implementation ships, operator visibility belongs in the portal behind portal auth, or nowhere.
+
+## Amendment, 2026-10-06 — initial delivery and trust boundaries
+
+The initiative's resolved scope accepts Python/TaskQ behind this HTTP boundary
+and a separate jobs database on the existing server. Those answers close original
+open questions 1 and 2. The plane is accepted; implementation and production
+rollout remain outstanding. The [current design](../design/background-jobs-plane.md)
+and [dependency refresh](../design/background-jobs-taskq-refresh.md) replace the
+older runner assumptions. The operator confirmed archive cancellation,
+record-lifetime idempotency and accepted-job accounting with free retries on
+2026-10-06; these are the adopted policies in the design.
+
+The first delivery contains a synthetic job and a single outbound GET job.
+Original decision 8's LLM pipeline, its cost ceiling, and open questions 3 and 4
+are deferred to that later workload. App-authored code, schedules, batches,
+sub-jobs, app-data writes and production runner UI stay excluded. Development
+may expose the runner UI read-only on localhost; production omits its required
+optional dependencies and refuses its enable flag.
+
+Decisions 2, 4 and 6 still require a jobs-private database and edge-owned policy.
+The edge has no jobs-database access, and jobs has no platform-database access.
+Decision 7 is strengthened to database isolation: revoke PUBLIC CONNECT and
+grant named roles explicitly on both databases, including upgrades. The runtime
+role is not an owner or migration identity. Merely omitting a role-specific
+CONNECT grant is insufficient.
+
+Decision 5's ownership is an exact app/environment/principal-kind/canonical-id
+match on every read, stream and cancel, in addition to current app access and
+the job-type grant. Idempotency has the same owner and environment boundaries.
+Attribution does not confer unattended delegated authority: OAuth providers now
+exist (ADR-0031), and the jobs outbound path explicitly rejects provider-bound
+origins on every call. Stored-secret and keyless calls retain ordinary edge
+fetch policy. Existing jobs do not bypass later fetch-grant revocation.
+
+The jobs HTTP directions receive independent signing secrets, never the
+edge→egress root key or an authentication root. Instructions bind the operation,
+resource, identity and body, and receivers burn single-use nonces. JWT audience
+separation alone does not constrain a service that holds another hop's root key.
+
+The accepted-job accounting design extends decision 6 with edge-owned durable
+admission reservations and receipt reconciliation. Jobs creates its receipt and
+runner job atomically; edge accounts for the receipt once. Uncertain HTTP outcomes
+retain reserved capacity until jobs returns acceptance or a durable rejection
+that fences late submission. This is admission metadata, not a queue in the edge
+or a runner-enforced daily budget. It supersedes the initiative's simple
+gateway-request-count proposal, which cannot provide free idempotent retries.
+
+Lifecycle cancellation uses portal-owned durable outbox delivery and monotone
+app generations; it cannot be inferred from a nonexistent hard-delete route.
+The design's archive cancellation is asynchronous and explicitly describes
+delivery lag and irreversible external effects. Unarchive opens a new generation.
+
+Results still expire after seven days. The record-lifetime key policy retains
+idempotency while active and for thirty days after terminal state; an expired
+result never implicitly starts another execution. Explicit per-status and
+archive settings replace reliance on TaskQ's global retention default. Polling
+is primary and SSE emits coalesced snapshots, not a lossless event log.
+
+Telemetry and operational tests ship with all these seams. The Python SDK
+boundary is the narrow language-specific extension of ADR-0037; the edge keeps
+its existing trace-root and dependency rules. New signals include admission
+reconciliation, lifecycle delivery, cancellation and the unattended-provider
+refusal. Documentation must distinguish linked enqueue/execution traces and
+third-party runner instrumentation from Helix-authored signals.
+
+## Amendment, 2026-10-07 — polling and initial production scope
+
+Observation is polling only. Remove decision 3's `GET /_api/jobs/<id>/events`;
+submit, status, result and cancellation remain. A status read returns the
+complete current snapshot. No SSE transport, public event cursor, stream leases,
+stream quotas or Redis fanout is required. The original stream scaling caveat
+and subsequent stream-specific decisions no longer apply. Each poll uses current
+caller authorization; failed observation never cancels or resubmits work.
+
+The initial production catalogue contains only `fetch`. Synthetic actors are
+development/test fixtures for durability, retries, progress and cancellation;
+they are not registered, advertised, granted or accepted in production. Their
+payloads/results are test-owned, not a stable public job contract. The production
+image/registration and submission tests must prove that exclusion. The LLM
+pipeline remains a separate workload.
+
+Portal work covers jobs grants, approval deltas, usage and lifecycle consequence
+copy in existing flows. General shared-editor draft protection, uncertain-save
+reconciliation and approval-note recovery are deferred outside the jobs initiative. New jobs
+controls still require ordinary validation, accessible content and honest outcomes.
+
+Python/TaskQ and the selected source pin are unchanged. Accounting ownership and
+retry-key expiry have been reopened for discussion, without adopting replacement
+contracts. The prior edge-owned accepted-job accounting and active-plus-thirty-
+days-after-terminal key policy remain the baseline until another amendment.
+Result/record retention, archive cancellation, credential isolation and outbound
+policy are unchanged. The current design marks these open decisions explicitly.
+
+## Amendment, 2026-10-07 — capacity controls and local retry identity
+
+The operator clarified that jobs limits protect fairness and resource capacity,
+not exact financial entitlements. This supersedes decision 6's jobs-budget
+placement and the October 6 admission-accounting amendment. Edge still owns
+caller/type authorization, signed dispatch and outbound policy. It throttles
+submission attempts using existing shared counters; retries, invalid input and
+uncertain outcomes can consume capacity and receive no refund.
+
+Jobs checks app/environment and deployment-wide unfinished/retained-job limits
+with durable enqueue in its own database. Existing runner execution limits,
+bounded inputs/results, bounded metadata and cleanup complete the protection.
+Defaults are platform-owned and operator-tunable; no per-app `jobsPerDay`,
+budget approval threshold or capacity editor ships. The current design §4 owns
+the initial values and acceptance tests. A storage ceiling continues to refuse
+new work when cleanup is delayed; capacity pressure never evicts retained work.
+
+Optional retry keys remain useful for lost responses. Jobs owns the scoped key,
+original-body digest and job mapping atomically with enqueue. A retained replay
+precedes new-work capacity/intake checks but remains subject to current auth and
+edge throttles. The key lasts until physical job-record removal. Public results
+still expire after seven days and records after thirty days from terminal state;
+an identical replay of a physically retained but no longer readable record
+returns 404 without enqueue. Physical cleanup may later permit key reuse; no
+exact release instant is promised. A deliberate new job uses a new key.
+
+Remove edge admission reservations, admission ids/day/deadlines, close/fence
+operations, nonacceptance tombstones, receipts, settlement acknowledgements,
+accounting reconciliation and the unacknowledged-receipt retention exception.
+No accounting-delivery outbox replaces them. Submit directly returns
+`{jobId, status}`; a lost response is uncertain and recovered with a keyed retry.
+Transport nonce burns and signed resource/body/identity claims remain required.
+
+Gateway reporting describes recorded submission requests, potentially including
+replays and omissions after failures. It is not an exact unique-job ledger.
+Remove new accepted-job ledger uniqueness/disposition fields, accepted/pending
+allowance DTOs, exact accepted-job totals and associated portal meters. Keep
+bounded request logging and operator capacity/cleanup signals. Existing fetch
+and vendor-spend accounting remain unchanged.
+
+Health, telemetry, tests and disable procedures follow the simpler ownership:
+no accounting backlog or receipt-retirement barrier. Close intake against local
+enqueue transactions, drain active/lifecycle work and preserve the jobs database
+and cleanup obligations for later re-enable. Archive delivery still uses its
+own durable outbox and generations; those solve lifecycle ordering, not accounting.
+
+The earlier scope cuts and Python/TaskQ selection are unchanged. Earlier
+amendments remain historical where they conflict; this amendment and the current
+implementation design define the adopted contract. These changes remain planned.
+
+## Amendment, 2026-10-13 — named job services and pg-boss first
+
+Keep the private HTTP API as the integration boundary and a private database
+per job service. Initially ship one Node 24/TypeScript/Fastify service using
+pg-boss, logical server name `jobs`, with type `jobs:fetch`. The tested baseline
+is pg-boss 12.37.0; the current design owns its locked dependency and adapter.
+The [October 8 PoC comparison](../reviews/jobs-runner-poc-2026-10-08.md) records
+both runner experiments and their gaps. This supersedes the initial Python/TaskQ
+choice, not the service boundary. A future concrete Python workload may justify
+a separate TaskQ server; this initiative does not build or deploy it now.
+
+Types use `<server>:<localType>` and grants match the complete value. Names are
+stable logical identities, preferably independent of the queue library. Job
+references require `{server, jobId}`; ids are opaque and local to a server.
+Public submit is `POST /_api/jobs/:server/types/:type` with local type segment;
+poll/cancel use `/_api/jobs/:server/:jobId` and result adds `/result`. Acceptance
+returns `{server, jobId, status}`. Snapshots/cancel acknowledgements also carry
+server. There is no implicit default, unqualified grant or cross-server lookup.
+The current design §1 defines syntax, failures and complete response contracts.
+
+A trusted static deployment map selects endpoints, installed types and credentials.
+Apps never supply an endpoint or credential. Each server has three independent
+directional signing roots, server-bound claims and server/direction audiences;
+a token for one cannot authorize another or its callback. Each service rechecks
+owner/environment and qualified-type access. Preserve server identity in retry
+scope, callbacks, lifecycle targets, bounded observability and stored references.
+A configured outage returns unavailability, never automatic cross-server failover.
+
+Execution limits are soft fairness defaults. Initial pg-boss local limits are
+two per app/environment and eight total per worker across types. One worker
+normally runs; two during rollout can double those numbers, as the PoC observed.
+Remove TaskQ's hard fleet-wide reservations and persisted slot synchronization.
+Unfinished/retained caps remain atomic within each server's database; edge
+submission throttles span all configured servers. Adding a server adds capacity
+and requires sizing total storage/connections, not a cross-database counter.
+
+Keep durable cancellation, terminal fencing, bounded I/O and abort-aware fetch.
+TaskQ forced-abandonment/watchdog internals and generic forced JavaScript task
+termination are not requirements. Preserve seven-day results, thirty-day public
+records, physical cleanup bounds and retry keys until primary-record removal.
+The pg-boss adapter owns early result deletion and atomic record/key pruning;
+do not carry over TaskQ prune/archive configuration. Python packaging, mirrored
+schemas, native-wheel resolution, a separate CI toolchain and the planned Python
+SDK exception are removed from initial delivery. Reuse existing shared schemas
+and telemetry. A runner administration UI is not required, even locally.
+
+Lifecycle outbox delivery is tracked per app/generation/server, including retiring
+servers; an acknowledgement from one never satisfies another. Healthy targets
+proceed independently. A new server synchronizes app generations before intake.
+Retirement closes new work/catalogue additions but keeps original routing,
+credentials, authorized retained-key recovery, reads/cancellation and cleanup
+until records are gone. Do not repoint/reuse a name against an empty store while
+references or retry identities remain. A future hard deletion must retain
+cancellation tombstones for every affected server. Runner replacement under a
+stable name must preserve its data/identity contract or drain first.
+
+No dynamic discovery, plugin system, cross-runner scheduling, automatic failover,
+global distributed execution budget or second production service is required.
+Use two lightweight contract fixtures to test routing/auth/lifecycle isolation.
+Any future language runtime must pass the common wire/signing fixtures and
+behavioral failure matrix. Polling, existing outbound spend/secret policy,
+owner isolation, archive cancellation and the earlier product scope cuts remain.
+These are planning decisions; the PoCs are not production implementation evidence.
