@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { TokenVerifier } from "../plugins/auth.js";
 import { Prisma, type PrismaClient } from "../db/client.js";
 import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../test/harness.js";
+import { SERVING_JOBS_CATALOGUE, withEnv } from "../test/env.js";
 
 // Two actors: an app owner (no admin group) and a platform admin.
 const OWNER = "owner@azx.io";
@@ -211,22 +212,26 @@ describe("approve", () => {
     // treating the untouched area's change as a moved snapshot (auto-bounce).
     const { slug, requestId } = await appWithPendingRequest();
 
-    const jobsPut = await t.app.inject({
-      method: "PUT",
-      url: `/api/v1/apps/${slug}/manifest`,
-      headers: owner,
-      payload: { capabilities: { jobs: { types: ["jobs:fetch"] } } },
+    // The save runs with the catalogue source configured — the fetch type is
+    // an available addition, so the baseline commit goes through.
+    await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+      const jobsPut = await t.app.inject({
+        method: "PUT",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: owner,
+        payload: { capabilities: { jobs: { types: ["jobs:fetch"] } } },
+      });
+      expect(jobsPut.statusCode).toBe(200);
+      // The unrelated save commits its own baseline delta and files nothing —
+      // the pending request stays open, untouched.
+      expect(jobsPut.json().applied.map((d: { path: string }) => d.path)).toEqual([
+        "jobs.types[+jobs:fetch]",
+      ]);
+      expect(jobsPut.json().pending).toBeNull();
+      // The pending mcp grant was never applied, so it is absent here.
+      expect(jobsPut.json().manifest.capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+      expect(jobsPut.json().manifest.capabilities.mcp).toEqual([]);
     });
-    expect(jobsPut.statusCode).toBe(200);
-    // The unrelated save commits its own baseline delta and files nothing —
-    // the pending request stays open, untouched.
-    expect(jobsPut.json().applied.map((d: { path: string }) => d.path)).toEqual([
-      "jobs.types[+jobs:fetch]",
-    ]);
-    expect(jobsPut.json().pending).toBeNull();
-    // The pending mcp grant was never applied, so it is absent here.
-    expect(jobsPut.json().manifest.capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
-    expect(jobsPut.json().manifest.capabilities.mcp).toEqual([]);
 
     const res = await t.app.inject({
       method: "POST",

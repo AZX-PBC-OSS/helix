@@ -13,7 +13,11 @@
  * dev URLs.
  */
 
-import { CONNECTIONS_CALLBACK_PATH } from "@azx-pbc/shared";
+import {
+  CONNECTIONS_CALLBACK_PATH,
+  JobsCatalogueServersSchema,
+  type JobsCatalogueServers,
+} from "@azx-pbc/shared";
 
 /** The dev edge, as reachable from the host browser: mkcert TLS on :8080. */
 const DEV_APP_PUBLIC_BASE = "https://local.helix.azxlabs.io:8080";
@@ -124,6 +128,46 @@ export function resolveEgressBaseUrl(env: NodeJS.ProcessEnv = process.env): URL 
 }
 
 /**
+ * The portal's jobs discovery source (`PORTAL_JOBS_CATALOGUE`): the deployment
+ * map's credential-free projection — which servers are configured, their
+ * serving/retiring state, and the types each has installed (`JobsCatalogueServers`
+ * in `@azx-pbc/shared`). The deployment delivers the portal this projection and
+ * never the credentialed map (ADR-0008's custody matrix: the portal holds no
+ * jobs endpoint, database URL or signing root), so every jobs fact the portal
+ * publishes or enforces — the capability catalogue's `jobs` block and the
+ * installed-type addition check — derives from this document alone. Unset or
+ * blank is a fully disabled installation (the empty map), the same convention
+ * as `DEV_API_PUBLIC_BASE`'s absence.
+ */
+export function resolveJobsCatalogueServers(
+  env: NodeJS.ProcessEnv = process.env,
+): JobsCatalogueServers {
+  const raw = env.PORTAL_JOBS_CATALOGUE?.trim();
+  if (!raw) return { servers: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `PORTAL_JOBS_CATALOGUE is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  // Re-thrown as a plain error on purpose: a misconfigured deployment is a
+  // platform failure (500), never a client validation (a raw ZodError would
+  // answer the catalogue route 400).
+  const verdict = JobsCatalogueServersSchema.safeParse(parsed);
+  if (!verdict.success) {
+    throw new Error(
+      `PORTAL_JOBS_CATALOGUE is not a valid jobs catalogue source: ${verdict.error.issues
+        .map((issue) => `${issue.path.join(".") || "(document)"}: ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  return verdict.data;
+}
+
+/**
  * Validate the deployment config at boot so a bad value is a startup error, not
  * a per-request surprise. Called from `buildApp`; the resolvers themselves stay
  * lazy so tests can override env per case.
@@ -132,4 +176,5 @@ export function assertDeploymentConfig(env: NodeJS.ProcessEnv = process.env): vo
   resolveAppPublicBase(env);
   resolveDevApiBase(env);
   resolveEgressBaseUrl(env);
+  resolveJobsCatalogueServers(env);
 }

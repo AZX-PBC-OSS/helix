@@ -66,7 +66,14 @@ there is no bare-type alias, no wildcard, and no default server; the block is st
 `jobsPerDay` or capacity field exists — platform defaults bound jobs resources) and a block with no
 types does not parse: removing the last type drops the grant. The parse validates qualified syntax
 only — a saved type the deployment no longer offers still parses, so unrelated saves preserve it
-and it stays removable. See the background-jobs design (`docs/design/background-jobs-plane.md`).
+and it stays removable. **Additions** are checked against the deployment at the write entry points
+(app create and the manifest PUT, via the shared write-gate): a type no serving server installs
+cannot be newly granted, while keeping or removing a saved type never consults the deployment.
+The catalogue advertises the installed types of serving servers
+(`GET /api/v1/capabilities`, `jobs.types`), derived from the deployment's server map
+(`PORTAL_JOBS_CATALOGUE` on the portal — a credential-free projection: state + installed types,
+never a destination or secret); a fully disabled deployment omits the block, and an all-retiring
+one advertises an empty list. See the background-jobs design (`docs/design/background-jobs-plane.md`).
 
 `Visibility` is a discriminated union — `internal` | `group` (+ `groupId`) | `password` |
 `public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupIds`, an any-of array) and reassembled
@@ -106,6 +113,14 @@ control-plane gate on *writes* to the effective state the edge already projects;
 holds only effective state, "requested state" is just the set of open `ApprovalRequest` rows, and
 the whole system ships without touching the edge's security-sensitive code (except the independent
 CSP `report-to` / `externalOrigins` loop).
+
+**Known gap, reported not resolved:** the write-gate covers *edits*. App **creation**
+(`POST /api/v1/apps`) accepts a full capabilities payload and stores it with no classification —
+so every elevated class (an `mcp` server, an `externalOrigins` entry, a `fetch.origins` origin, an
+over-baseline budget) can be born granted with no approval request. Whether births are gated, or
+creation's payload is restricted to baseline-shaped grants, is an open operator decision (see the
+initiative's decision log); the jobs slice of this hole is closed — an uninstalled type cannot be
+born granted at all, and an installed one is baseline by definition.
 
 **Baseline vs. elevated.** A pure classifier in `@azx-pbc/shared` (`classifyChange`,
 `classifyVisibilityChange`) diffs the requested capabilities against effective state and splits the
@@ -214,10 +229,11 @@ a "pending approval" banner on app detail. See [portal-web.md](./portal-web.md).
   manifest; enforcement lands with the MCP-as-REST gateway (`docs/design/custom-backends.md`).
 - **`bytesPerDay`** is declared and classified but not yet enforced at the edge (app-data design §7).
 - **`jobs`** — the grant is carried in the manifest and classified (type adds/removes are baseline),
-  but the jobs plane itself is not assembled yet: no deployment catalogue advertises installed
-  types, the edge does not yet enforce the grant on submissions, and catalogue-aware validation of
-  *additions* (a type no configured server installs cannot be newly granted) lands with the jobs
-  plane (`docs/design/background-jobs-plane.md`).
+  the catalogue advertises the installed production types from the deployment's server map, and
+  catalogue-aware validation refuses *new* grants of types no serving server installs. Still not
+  built: the jobs plane itself is not assembled yet, the edge does not yet enforce the grant on
+  submissions, and the SPA's capability editor has no jobs card yet
+  (`docs/design/background-jobs-plane.md`).
 - **Per-delta partial approval** — v1 approves/denies the whole submission bundle; splitting a
   request is a deliberate future refinement (`docs/design/approvals.md` §9).
 - **Approval notifications** — the queue is pull-based for v1; no push when a request is filed or

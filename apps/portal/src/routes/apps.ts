@@ -30,7 +30,11 @@ import {
   visibilityToColumns,
   type DeployAggregates,
 } from "../db/mappers.js";
-import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
+import {
+  applyCapabilityChange,
+  assertNoUnavailableJobTypeAdds,
+  createApprovalRequest,
+} from "../approvals/service.js";
 import { manifestWithBindings } from "../connections/bindings.js";
 import { Prisma } from "../db/client.js";
 import {
@@ -73,11 +77,22 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("forbidden", "password apps are disabled on this deployment");
     }
     const visibilityColumns = visibilityToColumns(body.visibility);
+    // Fill capability defaults so the stored shape always parses on read.
+    const capabilities = CapabilitiesSchema.parse(body.capabilities ?? {});
+    // Creation is a capability write like any other: a type this deployment
+    // does not offer cannot be born granted (the empty pre-image makes every
+    // jobs type in the payload an addition). Checked before the directory
+    // lookup below — the refusal owes no side work.
+    assertNoUnavailableJobTypeAdds({}, capabilities);
+    // Known gap, reported not fixed: unlike the manifest PUT, creation runs no
+    // classifier, so an elevated-shaped grant out of this payload (an mcp
+    // server, an externalOrigin, a fetch origin, an over-baseline budget)
+    // commits with no approval request. Closing it decides whether app births
+    // are approval-gated — a product decision recorded in the initiative's
+    // decision log, not a route-local fix.
     // Best-effort, like the visibility route's: a name the directory could not
     // supply costs the audit row its names and nothing else.
     const createGroupNames = await resolveGroupNamesForAudit(visibilityColumns.visibilityGroupIds);
-    // Fill capability defaults so the stored shape always parses on read.
-    const capabilities = CapabilitiesSchema.parse(body.capabilities ?? {});
 
     let row;
     try {

@@ -1127,6 +1127,71 @@ export const JOBS_PROTOCOL_FIXTURES: readonly JobsProtocolFixture[] = [
     valid: false,
     why: "once any server is configured, all three of its roots are required — no partially credentialed server",
   },
+
+  // ── The credential-free catalogue projection (ADR-0001's catalogue row) ─────
+  // The deployment map's public half, exactly as a consumer without jobs
+  // credentials parses it. A leaked credential field is itself the negative
+  // example: the strict parse is the custody line, not a filter.
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "the serving deployment's projection",
+    example: { servers: { jobs: { state: "serving", types: ["jobs:fetch"] } } },
+    valid: true,
+    why: "state and installed types are the whole public surface — no destination or secret rides with them",
+  },
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "a fully disabled installation — an empty map",
+    example: { servers: {} },
+    valid: true,
+    why: "an install without jobs advertises no block at all, and carries no credentials to omit",
+  },
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "a retiring entry keeps its installed list",
+    example: { servers: { jobs: { state: "retiring", types: ["jobs:fetch"] } } },
+    valid: true,
+    why: "retirement withdraws the type from new-grant discovery while retained-key recovery still resolves it — the map keeps the list",
+  },
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "a type no platform code implements",
+    example: { servers: { jobs: { state: "serving", types: ["jobs:synthetic-actor"] } } },
+    valid: false,
+    why: "the projection refuses what the full map refuses — synthetic actors stay test fixtures and are never advertised",
+  },
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "an installed type belonging to another server",
+    example: { servers: { jobs: { state: "serving", types: ["ml-jobs:generate-report"] } } },
+    valid: false,
+    why: "the type's qualified prefix must equal the map key it is installed under",
+  },
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "a duplicated installed type",
+    example: { servers: { jobs: { state: "serving", types: ["jobs:fetch", "jobs:fetch"] } } },
+    valid: false,
+    why: "the installed list is a set — a repeated type is a malformed map, not a second install",
+  },
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "an entry carrying a credential field",
+    example: {
+      servers: {
+        jobs: { state: "serving", types: ["jobs:fetch"], endpoint: "https://jobs.internal.helix" },
+      },
+    },
+    valid: false,
+    why: "the projection refuses fields it does not carry — a leaked routing field fails the parse instead of quietly disclosing private topology",
+  },
+  {
+    contract: "JobsCatalogueServersSchema",
+    name: "an own __proto__ key inside the projection",
+    example: JSON.parse('{"servers":{"__proto__":{"state":"serving","types":[]}}}'),
+    valid: false,
+    why: "the map refuses fields it does not carry — a shed key would silently parse as a fully disabled deployment",
+  },
 ];
 
 /**

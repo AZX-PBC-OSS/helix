@@ -11,7 +11,7 @@ import {
   type CapabilityCatalogue,
 } from "@azx-pbc/shared";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
-import { withEnv } from "../test/env.js";
+import { SERVING_JOBS_CATALOGUE, withEnv } from "../test/env.js";
 
 /**
  * GET /api/v1/capabilities + GET /api/v1/skill (ADR-0036) — the deployment
@@ -327,6 +327,85 @@ describe("GET /api/v1/capabilities", () => {
           "budgetAboveBaseline",
           "uncuratedLlmModel",
         ]),
+      );
+    });
+  });
+
+  describe("background jobs (the installed-type catalogue)", () => {
+    // The block is derived from `PORTAL_JOBS_CATALOGUE` — the deployment's
+    // credential-free server map — read per call, so each case sets the env
+    // around its inject. Unset is a fully disabled installation.
+    it("is absent on a fully disabled installation (unset)", async () => {
+      await withEnv({ PORTAL_JOBS_CATALOGUE: undefined }, async () => {
+        expect((await catalogue()).jobs).toBeUndefined();
+      });
+    });
+
+    it("is absent when the map is explicitly empty", async () => {
+      await withEnv({ PORTAL_JOBS_CATALOGUE: '{"servers":{}}' }, async () => {
+        expect((await catalogue()).jobs).toBeUndefined();
+      });
+    });
+
+    it("advertises the serving entries' installed types with their display names", async () => {
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        expect((await catalogue()).jobs).toEqual({
+          types: [{ id: "jobs:fetch", displayName: "Outbound fetch job" }],
+        });
+      });
+    });
+
+    it("withdraws a retiring type while the block survives (an empty list)", async () => {
+      await withEnv(
+        {
+          PORTAL_JOBS_CATALOGUE: '{"servers":{"jobs":{"state":"retiring","types":["jobs:fetch"]}}}',
+        },
+        async () => {
+          expect((await catalogue()).jobs).toEqual({ types: [] });
+        },
+      );
+    });
+
+    it("discloses no routing or credential field — the entry is the id and its name", async () => {
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const raw = await t.app.inject({ url: "/api/v1/capabilities", headers: authHeader() });
+        const jobs = (await catalogue()).jobs;
+        expect(jobs).toBeDefined();
+        for (const entry of jobs!.types) {
+          expect(Object.keys(entry).sort()).toEqual(["displayName", "id"]);
+        }
+        for (const private_ of [
+          "endpoint",
+          "databaseUrl",
+          "callbackUrl",
+          "roots",
+          "edgeToJobs",
+          "synthetic",
+        ]) {
+          expect(raw.body).not.toContain(private_);
+        }
+      });
+    });
+
+    it("a malformed source is a platform failure (500), never a client 400", async () => {
+      for (const bad of ["not json", '{"servers":{"jobs":{"state":"serving"}}}']) {
+        await withEnv({ PORTAL_JOBS_CATALOGUE: bad }, async () => {
+          const res = await t.app.inject({ url: "/api/v1/capabilities", headers: authHeader() });
+          expect(res.statusCode, bad).toBe(500);
+        });
+      }
+    });
+
+    it("a source leaking a credential field fails the parse — the strict form is the custody line", async () => {
+      await withEnv(
+        {
+          PORTAL_JOBS_CATALOGUE:
+            '{"servers":{"jobs":{"state":"serving","types":["jobs:fetch"],"roots":{"edgeToJobs":"x","jobsToEdge":"y","portalToJobs":"z"}}}}',
+        },
+        async () => {
+          const res = await t.app.inject({ url: "/api/v1/capabilities", headers: authHeader() });
+          expect(res.statusCode).toBe(500);
+        },
       );
     });
   });

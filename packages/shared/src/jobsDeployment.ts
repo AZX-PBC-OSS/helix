@@ -172,6 +172,55 @@ export function resolveJobsCapacityLimits(overrides?: JobsCapacityOverrides): Jo
   return JobsCapacityLimitsSchema.parse(merged);
 }
 
+// ── The installed-type rules, shared by every map parse ──────────────────────
+
+/**
+ * The installed-type-list rules every deployment map enforces — the full
+ * entry's superRefine and the credential-free projection's record walk run
+ * this one implementation, so the two parses cannot drift: each installed
+ * type is qualified for the server that installs it (the full entry's own
+ * `server` field, the projection's map key) and is a production catalogue
+ * type (configuration cannot install a type no platform code implements),
+ * and the list is a set. Issues land relative to `basePath`, so each caller's
+ * schema reports them where its own shape reads. Total over partial shapes:
+ * a type list that already failed its field parse is rejected by that field,
+ * and the refinement adds nothing for it.
+ */
+function refineInstalledTypes(
+  ctx: z.RefinementCtx,
+  server: string,
+  types: unknown,
+  basePath: (string | number)[],
+): void {
+  if (!Array.isArray(types)) return;
+  types.forEach((type, index) => {
+    if (typeof type !== "string") return;
+    if (!qualifiedTypeMatchesServer(type, server)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...basePath, index],
+        message: "the installed type's server prefix must equal the entry's server",
+      });
+      return;
+    }
+    if (!JOB_TYPE_CATALOGUE.some((known) => known.id === type)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...basePath, index],
+        message:
+          "the installed type must be a production catalogue type — configuration cannot install a type no platform code implements",
+      });
+    }
+  });
+  if (new Set(types).size !== types.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: [...basePath],
+      message: "the installed type list carries a duplicate",
+    });
+  }
+}
+
 // ── One server entry ─────────────────────────────────────────────────────────
 
 /**
@@ -249,31 +298,7 @@ export const JobsServerEntrySchema = strictWireObject({
   ) {
     return;
   }
-  entry.types.forEach((type, index) => {
-    if (!qualifiedTypeMatchesServer(type, entry.server)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["types", index],
-        message: "the installed type's server prefix must equal the entry's server",
-      });
-      return;
-    }
-    if (!JOB_TYPE_CATALOGUE.some((known) => known.id === type)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["types", index],
-        message:
-          "the installed type must be a production catalogue type — configuration cannot install a type no platform code implements",
-      });
-    }
-  });
-  if (new Set(entry.types).size !== entry.types.length) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["types"],
-      message: "the installed type list carries a duplicate",
-    });
-  }
+  refineInstalledTypes(ctx, entry.server, entry.types, ["types"]);
   // The roots' custody is an entry-local property: one root per direction,
   // never shared — including within the entry the consumer that validates
   // one server's entry standalone (a jobs service loading its own three
@@ -374,10 +399,75 @@ export type JobsDeploymentConfig = z.infer<typeof JobsDeploymentConfigSchema>;
  * Is this installation fully disabled — no configured (or retained) servers?
  * Fully disabled jobs refuses every jobs operation, omits the catalogue
  * entirely, and makes ordinary app hosting depend on no jobs configuration
- * or credential (spec criterion 8; design §8).
+ * or credential (spec criterion 8; design §8). Structural on purpose: the
+ * empty-map question means the same thing for the full deployment
+ * configuration and for its credential-free {@link JobsCatalogueServers}
+ * projection.
  */
-export function isJobsFullyDisabled(config: JobsDeploymentConfig): boolean {
+export function isJobsFullyDisabled(config: { servers: Record<string, unknown> }): boolean {
   return Object.keys(config.servers).length === 0;
+}
+
+// ── The credential-free projection consumers parse ───────────────────────────
+
+/**
+ * One configured server as a credential-free consumer sees it: the state and
+ * the installed types, and nothing else. Strict is the custody line here — a
+ * delivery that leaked a full map entry (its endpoint, database URL or
+ * signing roots) into a consumer that must not hold them fails this parse
+ * loudly instead of quietly carrying credentials it never reads.
+ */
+const JobsCatalogueServerSchema = strictWireObject({
+  state: JobsServerStateSchema,
+  /** The installed types, as qualified ids. Retiring entries keep their list. */
+  types: z.array(QualifiedJobTypeSchema),
+});
+
+/**
+ * The deployment map's public half — the whole static server map reduced to
+ * the facts public discovery is derived from: which servers are configured,
+ * their serving/retiring state, and the types each has installed. **No
+ * credentials**: no endpoint, database URL, callback destination or signing
+ * root is representable, so a consumer may parse and hold this document
+ * freely (the full map's custody matrix never binds it — ADR-0008). Fully
+ * disabled is the empty map, the same predicate the full configuration uses.
+ *
+ * This is what a consumer without jobs credentials parses: the portal's
+ * catalogue producer and capability write-gate read it from their own
+ * environment ({@link jobsCatalogueServers} derives it from a full
+ * configuration, so one deployment source produces both documents).
+ */
+export const JobsCatalogueServersSchema = RawInputKeyScreen.pipe(
+  z.strictObject({
+    /** The configured servers, keyed by server id. */
+    servers: strictWireRecord(JobServerIdSchema, JobsCatalogueServerSchema),
+  }),
+).superRefine((document, ctx) => {
+  // zod runs checks against the partial output of an already-failing parse;
+  // these comparisons only refine a structurally complete document.
+  const servers = document.servers;
+  if (typeof servers !== "object" || servers === null) return;
+  for (const [serverId, entry] of Object.entries(servers)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    refineInstalledTypes(ctx, serverId, entry.types, ["servers", serverId, "types"]);
+  }
+});
+export type JobsCatalogueServers = z.infer<typeof JobsCatalogueServersSchema>;
+
+/**
+ * Derive the credential-free projection from a full deployment configuration:
+ * every configured server's state and installed types, with nothing else.
+ * This is the one derivation both documents share — a deployment that mints
+ * the full map for its credentialed consumers mints the projection for its
+ * public ones, and the two cannot disagree about which servers exist or what
+ * they installed.
+ */
+export function jobsCatalogueServers(config: JobsDeploymentConfig): JobsCatalogueServers {
+  const servers: JobsCatalogueServers["servers"] = {};
+  for (const [serverId, entry] of Object.entries(config.servers)) {
+    servers[serverId] = { state: entry.state, types: [...entry.types] };
+  }
+  return { servers };
 }
 
 /**
@@ -388,14 +478,14 @@ export function isJobsFullyDisabled(config: JobsDeploymentConfig): boolean {
  * at all. The output is the entire public surface — qualified ids and display
  * names, never an endpoint, database URL or root.
  */
-export function jobsCatalogueTypes(config: JobsDeploymentConfig): JobTypeCatalogueEntry[] {
+export function advertisedJobTypes(servers: JobsCatalogueServers): JobTypeCatalogueEntry[] {
   const advertised: JobTypeCatalogueEntry[] = [];
-  for (const entry of Object.values(config.servers)) {
+  for (const entry of Object.values(servers.servers)) {
     if (entry.state !== "serving") continue;
     for (const typeId of entry.types) {
       const known = JOB_TYPE_CATALOGUE.find((catalogueEntry) => catalogueEntry.id === typeId);
-      // Unreachable behind a schema-validated config: the parse refuses an
-      // installed type outside the production catalogue. A hand-built config
+      // Unreachable behind a schema-validated map: the parse refuses an
+      // installed type outside the production catalogue. A hand-built map
       // that bypassed it fails loudly here instead of advertising a name with
       // no implementation.
       if (!known) {
@@ -405,4 +495,34 @@ export function jobsCatalogueTypes(config: JobsDeploymentConfig): JobTypeCatalog
     }
   }
   return advertised;
+}
+
+/**
+ * The same advertisement, derived from a full deployment configuration.
+ * The portal (and any other credential-free consumer) reads the projection
+ * ({@link JobsCatalogueServersSchema}) from its own environment instead —
+ * never the credentialed map.
+ */
+export function jobsCatalogueTypes(config: JobsDeploymentConfig): JobTypeCatalogueEntry[] {
+  return advertisedJobTypes(jobsCatalogueServers(config));
+}
+
+/**
+ * Which requested job types could not be granted because this deployment does
+ * not offer them: the types that are new relative to `effectiveTypes` (a type
+ * the grant already holds is being kept, not added — a saved withdrawn type
+ * survives unrelated saves) and absent from `advertisedTypes` (the serving
+ * servers' installed types, {@link advertisedJobTypes}). Removals are never
+ * violations — taking a grant away is always available. Returns the offending
+ * qualified ids in requested order, deduplicated; an empty list means the
+ * change may proceed.
+ */
+export function unavailableJobTypeAdds(args: {
+  effectiveTypes: readonly string[];
+  requestedTypes: readonly string[];
+  advertisedTypes: readonly string[];
+}): string[] {
+  const effective = new Set(args.effectiveTypes);
+  const advertised = new Set(args.advertisedTypes);
+  return [...new Set(args.requestedTypes.filter((t) => !effective.has(t) && !advertised.has(t)))];
 }

@@ -11,10 +11,15 @@ import {
   JOBS_CAPACITY_LIMIT_MAX,
   JobsCapacityLimitsSchema,
   JobsDeploymentConfigSchema,
+  JobsCatalogueServersSchema,
   type JobsCapacityOverrides,
   type JobsDeploymentConfig,
+  type JobsCatalogueServers,
   isJobsFullyDisabled,
   jobsCatalogueTypes,
+  jobsCatalogueServers,
+  advertisedJobTypes,
+  unavailableJobTypeAdds,
   resolveJobsCapacityLimits,
 } from "./jobsDeployment.js";
 
@@ -584,6 +589,208 @@ describe("public catalogue derivation", () => {
       },
     } as unknown as JobsDeploymentConfig;
     expect(() => jobsCatalogueTypes(forged)).toThrow(/not in the production catalogue/);
+  });
+});
+
+describe("the credential-free catalogue projection", () => {
+  /** One projection entry, overridable for the negative cases. */
+  const projectionEntry = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    state: "serving",
+    types: [JOBS_FETCH_QUALIFIED_TYPE],
+    ...overrides,
+  });
+
+  it("parses the serving deployment's projection and the empty (fully disabled) one", () => {
+    const serving = { servers: { jobs: projectionEntry() } };
+    expect(JobsCatalogueServersSchema.parse(serving)).toEqual(serving);
+    expect(JobsCatalogueServersSchema.parse({ servers: {} })).toEqual({ servers: {} });
+  });
+
+  it("derives the projection from a full config — the public facts, credentials dropped", () => {
+    const projected = jobsCatalogueServers(INITIAL_CONFIG);
+    expect(projected).toEqual({
+      servers: { jobs: { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE] } },
+    });
+    // The derivation is the custody line: nothing credential-bearing survives it.
+    const raw = JSON.stringify(projected);
+    for (const credential of [
+      "endpoint",
+      "databaseUrl",
+      "edgeProdCallbackUrl",
+      "edgeDevCallbackUrl",
+      "roots",
+      "accepting",
+    ]) {
+      expect(raw).not.toContain(credential);
+    }
+  });
+
+  it("the projection and the full map agree through the shared advertised derivation", () => {
+    // The same type list whichever document the derivation runs from — the
+    // one-derivation property that keeps a deployment's two documents from
+    // drifting apart.
+    expect(jobsCatalogueTypes(INITIAL_CONFIG)).toEqual(
+      advertisedJobTypes(jobsCatalogueServers(INITIAL_CONFIG)),
+    );
+  });
+
+  it("fully disabled is the same empty-map question for the projection", () => {
+    expect(isJobsFullyDisabled({ servers: {} })).toBe(true);
+    expect(isJobsFullyDisabled(jobsCatalogueServers(INITIAL_CONFIG))).toBe(false);
+  });
+
+  it("the projection refuses what the full map refuses for installed types", () => {
+    for (const types of [
+      ["jobs:synthetic-actor"], // outside the production catalogue
+      ["ml-jobs:generate-report"], // another server's prefix
+      ["jobs:fetch", "jobs:fetch"], // a repeated type
+      ["fetch"], // bare — refused by the field schema
+    ]) {
+      expect(
+        JobsCatalogueServersSchema.safeParse({ servers: { jobs: projectionEntry({ types }) } })
+          .success,
+        JSON.stringify(types),
+      ).toBe(false);
+    }
+    // The refusal names the entry it landed on — the map key, then the type
+    // list (the cross-server prefix case, whose document is otherwise valid).
+    const verdict = JobsCatalogueServersSchema.safeParse({
+      servers: { jobs: projectionEntry({ types: ["ml-jobs:generate-report"] }) },
+    });
+    expect(verdict.success).toBe(false);
+    if (!verdict.success) {
+      expect(verdict.error.issues[0]?.path).toEqual(["servers", "jobs", "types", 0]);
+    }
+  });
+
+  it("the projection refuses credential fields — the strict parse is the custody line", () => {
+    for (const leak of [
+      { endpoint: "https://jobs.internal.helix" },
+      { databaseUrl: "postgresql://jobs@db.internal.helix/jobs" },
+      { roots: { ...ROOT } },
+      { accepting: true },
+      { server: "jobs" },
+    ]) {
+      expect(
+        JobsCatalogueServersSchema.safeParse({ servers: { jobs: projectionEntry(leak) } }).success,
+        Object.keys(leak).join(","),
+      ).toBe(false);
+    }
+  });
+
+  it("the projection refuses an own __proto__ key and unknown top-level fields", () => {
+    expect(
+      JobsCatalogueServersSchema.safeParse(JSON.parse('{"servers":{"__proto__":{}}}')).success,
+    ).toBe(false);
+    expect(
+      JobsCatalogueServersSchema.safeParse({ servers: {}, discoveryUrl: "https://x" }).success,
+    ).toBe(false);
+  });
+
+  it("an invalid map key is malformed, not a server name to repair", () => {
+    expect(
+      JobsCatalogueServersSchema.safeParse({ servers: { "My Jobs": projectionEntry() } }).success,
+    ).toBe(false);
+  });
+
+  it("an out-of-vocabulary state fails the projection parse too", () => {
+    expect(
+      JobsCatalogueServersSchema.safeParse({
+        servers: { jobs: projectionEntry({ state: "disabled" }) },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("a hand-built projection bypassing the schema fails loudly instead of advertising an unimplemented type", () => {
+    const forged = {
+      servers: { jobs: { state: "serving", types: ["jobs:synthetic-actor"] } },
+    } as unknown as JobsCatalogueServers;
+    expect(() => advertisedJobTypes(forged)).toThrow(/not in the production catalogue/);
+  });
+
+  it("a retiring projection entry keeps its list but advertises nothing", () => {
+    const retiring: JobsCatalogueServers = {
+      servers: { jobs: { state: "retiring", types: [JOBS_FETCH_QUALIFIED_TYPE] } },
+    };
+    expect(JobsCatalogueServersSchema.parse(retiring)).toEqual(retiring);
+    expect(advertisedJobTypes(retiring)).toEqual([]);
+  });
+
+  it("a projection parsed from a hostile raw shape still yields a typed map", () => {
+    // `strictWireRecord` makes the safe form the available form: the parse of
+    // a document whose keys arrive through the record boundary carries the
+    // entries under their validated keys, and the advertised derivation reads
+    // them from there.
+    const parsed = JobsCatalogueServersSchema.parse({
+      servers: { jobs: { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE] } },
+    });
+    expect(advertisedJobTypes(parsed)).toEqual([
+      { id: JOBS_FETCH_QUALIFIED_TYPE, displayName: JOB_TYPE_CATALOGUE[0]?.displayName },
+    ]);
+  });
+});
+
+describe("unavailableJobTypeAdds", () => {
+  const advertised = ["jobs:fetch"];
+
+  it("names a new type the deployment does not offer", () => {
+    expect(
+      unavailableJobTypeAdds({
+        effectiveTypes: [],
+        requestedTypes: ["jobs:fetch", "legacy:thing"],
+        advertisedTypes: advertised,
+      }),
+    ).toEqual(["legacy:thing"]);
+  });
+
+  it("a saved withdrawn type is kept, not added — no violation, and it stays removable", () => {
+    const effective = ["jobs:fetch", "legacy:thing"];
+    // Surviving an unrelated save (requested still carries it):
+    expect(
+      unavailableJobTypeAdds({
+        effectiveTypes: effective,
+        requestedTypes: effective,
+        advertisedTypes: advertised,
+      }),
+    ).toEqual([]);
+    // Being removed (requested no longer carries it) is never a violation:
+    expect(
+      unavailableJobTypeAdds({
+        effectiveTypes: effective,
+        requestedTypes: ["jobs:fetch"],
+        advertisedTypes: advertised,
+      }),
+    ).toEqual([]);
+  });
+
+  it("a withdrawn type may not be re-added after its removal", () => {
+    expect(
+      unavailableJobTypeAdds({
+        effectiveTypes: ["jobs:fetch"],
+        requestedTypes: ["jobs:fetch", "legacy:thing"],
+        advertisedTypes: advertised,
+      }),
+    ).toEqual(["legacy:thing"]);
+  });
+
+  it("a fully disabled deployment offers nothing — every add is a violation", () => {
+    expect(
+      unavailableJobTypeAdds({
+        effectiveTypes: [],
+        requestedTypes: ["jobs:fetch"],
+        advertisedTypes: [],
+      }),
+    ).toEqual(["jobs:fetch"]);
+  });
+
+  it("a repeated violation is reported once", () => {
+    expect(
+      unavailableJobTypeAdds({
+        effectiveTypes: [],
+        requestedTypes: ["legacy:thing", "legacy:thing"],
+        advertisedTypes: advertised,
+      }),
+    ).toEqual(["legacy:thing"]);
   });
 });
 

@@ -16,6 +16,7 @@ import { JOBS_FETCH_QUALIFIED_TYPE } from "./jobs.js";
 import {
   JOBS_CAPACITY_DEFAULTS,
   JobsCapacityOverridesSchema,
+  JobsCatalogueServersSchema,
   JobsDeploymentConfigSchema,
   JobsServerEntrySchema,
   resolveJobsCapacityLimits,
@@ -158,6 +159,75 @@ describe("a hostile document draws a verdict, never a thrown error", () => {
       let verdict: { success: boolean } | undefined;
       expect(() => {
         verdict = JobsServerEntrySchema.safeParse(partial);
+      }, name).not.toThrow();
+      expect(verdict?.success, name).toBe(false);
+    }
+  });
+});
+
+describe("the projection's hostile shapes draw a verdict, never a thrown error", () => {
+  it("safeParse refuses every partially-parsed shape the projection's record walk refines", () => {
+    // The credential-free projection is the document the PORTAL parses — at
+    // boot and per write — and its resolver reports a misconfiguration by
+    // name (`PORTAL_JOBS_CATALOGUE is not a valid jobs catalogue source`).
+    // A TypeError escaping safeParse from a partially-parsed shape would
+    // surface as an unnamed crash instead. The projection's record walk
+    // refines whatever a failed parse hands it, so every hostile shape here
+    // must draw a verdict with success === false — the same totality the
+    // full map's and the entry's own checks are pinned to above.
+    const validEntry = { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE] };
+
+    // Positive control: the harness refuses nothing valid.
+    expect(JobsCatalogueServersSchema.safeParse({ servers: { jobs: validEntry } }).success).toBe(
+      true,
+    );
+
+    const hostileDocuments: ReadonlyArray<readonly [string, unknown]> = [
+      ["an entry that is a string", { servers: { jobs: "serving" } }],
+      ["an entry that is null", { servers: { jobs: null } }],
+      ["an entry that is a number", { servers: { jobs: 7 } }],
+      ["an entry missing its types", { servers: { jobs: { state: "serving" } } }],
+      [
+        "an entry whose types are a string",
+        { servers: { jobs: { state: "serving", types: "jobs:fetch" } } },
+      ],
+      [
+        "a types list with a non-string element",
+        { servers: { jobs: { state: "serving", types: [42] } } },
+      ],
+      [
+        "a types list with valid and invalid elements",
+        { servers: { jobs: { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE, 42] } } },
+      ],
+      [
+        "one hostile entry beside a valid one",
+        { servers: { jobs: validEntry, "ml-jobs": { state: "serving", types: [42] } } },
+      ],
+      ["a document that is null", null],
+      ["a document that is a string", "not a projection"],
+      ["a document that is an array", [{ servers: {} }]],
+      ["a document that is undefined", undefined],
+      ["a map that is an array", { servers: [validEntry] }],
+      ["a map that is a string", { servers: "jobs" }],
+      ["a map that is a number", { servers: 42 }],
+      ["a map that is null", { servers: null }],
+      // JSON.parse materializes an own __proto__ key at whichever level the
+      // delivery leaks it; the screen composes at both depths here.
+      [
+        "an own __proto__ key on the map",
+        JSON.parse('{"servers":{"__proto__":{"state":"serving","types":[]}}}'),
+      ],
+      [
+        "an own __proto__ key inside an entry",
+        JSON.parse(
+          `{"servers":{"jobs":{"state":"serving","types":[],"__proto__":{"polluted":true}}}}`,
+        ),
+      ],
+    ];
+    for (const [name, document] of hostileDocuments) {
+      let verdict: { success: boolean } | undefined;
+      expect(() => {
+        verdict = JobsCatalogueServersSchema.safeParse(document);
       }, name).not.toThrow();
       expect(verdict?.success, name).toBe(false);
     }

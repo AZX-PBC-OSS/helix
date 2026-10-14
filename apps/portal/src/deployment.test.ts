@@ -7,8 +7,10 @@ import {
   resolveAppPublicBase,
   resolveDevApiBase,
   resolveEgressBaseUrl,
+  resolveJobsCatalogueServers,
   resolvePlatformMonthlyUsdCap,
 } from "./deployment.js";
+import { JOBS_FETCH_QUALIFIED_TYPE } from "@azx-pbc/shared";
 
 /**
  * The resolvers take an injectable env, so these assert against literals rather
@@ -158,6 +160,63 @@ describe("resolveEgressBaseUrl", () => {
     expect(() => assertDeploymentConfig({ PORTAL_EGRESS_URL: "nope" })).toThrow(
       /PORTAL_EGRESS_URL/,
     );
+  });
+});
+
+describe("resolveJobsCatalogueServers", () => {
+  // Unset and blank both read as the fully disabled empty map — the same
+  // "absent means not enabled" convention as DEV_API_PUBLIC_BASE.
+  it("is the empty map when unset or blank", () => {
+    expect(resolveJobsCatalogueServers({})).toEqual({ servers: {} });
+    expect(resolveJobsCatalogueServers({ PORTAL_JOBS_CATALOGUE: "   " })).toEqual({
+      servers: {},
+    });
+  });
+
+  it("parses the credential-free server map", () => {
+    const source = JSON.stringify({
+      servers: { jobs: { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE] } },
+    });
+    expect(resolveJobsCatalogueServers({ PORTAL_JOBS_CATALOGUE: source })).toEqual({
+      servers: { jobs: { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE] } },
+    });
+  });
+
+  it("refuses invalid JSON and a malformed map, naming the variable", () => {
+    expect(() => resolveJobsCatalogueServers({ PORTAL_JOBS_CATALOGUE: "not json" })).toThrow(
+      /PORTAL_JOBS_CATALOGUE/,
+    );
+    expect(() =>
+      resolveJobsCatalogueServers({ PORTAL_JOBS_CATALOGUE: '{"servers":{"jobs":{}}}' }),
+    ).toThrow(/PORTAL_JOBS_CATALOGUE/);
+    // A synthetic actor cannot ride the projection into discovery.
+    expect(() =>
+      resolveJobsCatalogueServers({
+        PORTAL_JOBS_CATALOGUE: JSON.stringify({
+          servers: { jobs: { state: "serving", types: ["jobs:synthetic-actor"] } },
+        }),
+      }),
+    ).toThrow(/PORTAL_JOBS_CATALOGUE/);
+    // JSON.parse materializes an own __proto__ key; the parse's raw-input
+    // screen is the refusal, so the wire-shaped document never parses clean.
+    expect(() =>
+      resolveJobsCatalogueServers({
+        PORTAL_JOBS_CATALOGUE: '{"servers":{"__proto__":{"state":"serving","types":[]}}}',
+      }),
+    ).toThrow(/PORTAL_JOBS_CATALOGUE/);
+  });
+
+  it("is part of the boot assertion", () => {
+    expect(() => assertDeploymentConfig({ PORTAL_JOBS_CATALOGUE: "not json" })).toThrow(
+      /PORTAL_JOBS_CATALOGUE/,
+    );
+    expect(() =>
+      assertDeploymentConfig({
+        NODE_ENV: "production",
+        APP_PUBLIC_BASE: "https://azx.helix.azxlabs.io",
+        PORTAL_JOBS_CATALOGUE: '{"servers":{}}',
+      }),
+    ).not.toThrow();
   });
 });
 
