@@ -31,6 +31,7 @@ import {
   FetchJobInputSchema,
   FetchJobResultSchema,
   IDEMPOTENCY_KEY_HEADER,
+  JobsGenerationSchema,
   JOBS_SERVER_NAME,
   isQualifiedJobType,
   isValidJobsJobId,
@@ -697,6 +698,27 @@ describe("the production catalogue", () => {
       JobTypeCatalogueEntrySchema.safeParse({ id: "jobs:fetch", displayName: "X", types: [] })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("lifecycle generations", () => {
+  it("parses the canonical decimal forms, including zero", () => {
+    expect(JobsGenerationSchema.parse("1")).toBe("1");
+    // The grammar admits "0" as its own branch — pinning it keeps a future
+    // tightening of that branch a conscious contract decision, not a silent one.
+    expect(JobsGenerationSchema.parse("0")).toBe("0");
+  });
+
+  it("refuses every non-canonical spelling of a valid value", () => {
+    // One value, one wire form: padded, signed, spaced and fractional copies
+    // of 7 are malformed, so receivers compare generations as plain strings
+    // without canonicalizing first. The fixture corpus pins the zero-padded
+    // form; these are the spellings it does not carry.
+    expect(JobsGenerationSchema.safeParse("00").success).toBe(false);
+    expect(JobsGenerationSchema.safeParse(" 7").success).toBe(false);
+    expect(JobsGenerationSchema.safeParse("7 ").success).toBe(false);
+    expect(JobsGenerationSchema.safeParse("+7").success).toBe(false);
+    expect(JobsGenerationSchema.safeParse("7.0").success).toBe(false);
   });
 });
 

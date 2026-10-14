@@ -53,14 +53,17 @@ export interface RunningDevOAuthVendor {
 export async function startDevOAuthVendor(
   opts: StartDevOAuthVendorOptions = {},
 ): Promise<RunningDevOAuthVendor> {
-  // The listen bind is deliberately NOT `localhost`: node binds one address
-  // per listen call, and which one `localhost` resolves first differs per
-  // machine — an IPv6-first runner handed clients `::1` against an IPv4-only
-  // listener (ECONNREFUSED, flaky by resolver order). No host ⇒ the dual-stack
-  // `::` bind, which accepts both families; the issuer stays the readable
-  // `localhost` name either way.
-  const host = opts.host;
-  const issuerHost = host ?? "localhost";
+  // The listen bind is deliberately explicit, never left to fastify's
+  // default: the default resolved `localhost` and bound ONE address (`::1`,
+  // IPv6 loopback only), so a fetch whose resolver handed it `127.0.0.1`
+  // first could reach a DIFFERENT process's listener that took the same
+  // ephemeral port number on IPv4 — a cross-family port collision that
+  // answered 404 for the vendor's own routes under parallel load. The `::`
+  // bind is dual-stack: one socket owns the port for both families, and
+  // every spelling of the loopback reaches this vendor. The issuer keeps the
+  // readable `localhost` name.
+  const bindHost = opts.host ?? "::";
+  const issuerHost = opts.host ?? "localhost";
   const parsed = VendorOptionsSchema.parse(opts ?? {});
   const modes: VendorModes = VendorModesSchema.parse({
     tokenMode: parsed.tokenMode,
@@ -68,7 +71,7 @@ export async function startDevOAuthVendor(
   });
 
   const app = buildVendor(modes, opts);
-  await app.listen({ port: opts.port ?? 0, ...(host === undefined ? {} : { host }) });
+  await app.listen({ port: opts.port ?? 0, host: bindHost });
   const port = (app.server.address() as AddressInfo).port;
   const issuer = `http://${issuerHost}:${port}`;
 

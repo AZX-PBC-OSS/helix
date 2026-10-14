@@ -99,8 +99,13 @@ const RawInputKeyScreen = z.unknown().superRefine((value, ctx) => {
   });
 });
 
-/** A strict object parse of this contract: unknown keys fail, an own `__proto__` key included. */
-function strictWireObject<Shape extends z.core.$ZodLooseShape>(shape: Shape) {
+/**
+ * A strict object parse of this contract: unknown keys fail, an own `__proto__`
+ * key included. Exported for the sibling signed-instruction contract
+ * (`./jobsSigning.ts`), whose claim payloads and this module's wire bodies are
+ * held to the same one strict-parse mechanism.
+ */
+export function strictWireObject<Shape extends z.core.$ZodLooseShape>(shape: Shape) {
   return RawInputKeyScreen.pipe(z.strictObject(shape));
 }
 
@@ -409,7 +414,7 @@ export type JobRequestError = z.infer<typeof JobRequestErrorSchema>;
  * a bare `{...base, ...state}` spread of such a state is the bare body the
  * stateful row forbids).
  */
-function assertParsesAgainstWireSchema<B>(
+export function assertParsesAgainstWireSchema<B>(
   schema: { safeParse(value: unknown): { success: boolean; error?: { message: string } } },
   body: B,
 ): B {
@@ -705,6 +710,41 @@ export type FetchJobResult =
 
 export const FetchJobResultSchema = z.custom<FetchJobResult>(isJsonValue);
 
+// ── Lifecycle generations and delivery (background-jobs-plane design §5) ──────
+
+/**
+ * A jobs lifecycle generation — a canonical decimal string ("1", never "01").
+ * The portal app model owns the value; every wire appearance (signed submit and
+ * callback claims, lifecycle delivery, acknowledgement) shares this one schema,
+ * so a generation has exactly one wire form and receivers compare/merge them
+ * numerically without first canonicalizing.
+ */
+export const JobsGenerationSchema = z
+  .string()
+  .regex(/^(?:0|[1-9][0-9]*)$/, "a generation is a decimal string without leading zeros");
+
+/**
+ * The lifecycle change the portal delivers to each server:
+ * `archived` closes the app's current generation (queued/running work is
+ * cancelled); `false` opens a new one. Delivered by the separately signed
+ * portal→jobs instruction (`./jobsSigning.ts`); the body binds by digest.
+ */
+export const JobsLifecycleUpdateSchema = strictWireObject({
+  generation: JobsGenerationSchema,
+  archived: z.boolean(),
+});
+export type JobsLifecycleUpdate = z.infer<typeof JobsLifecycleUpdateSchema>;
+
+/**
+ * The lifecycle acknowledgement: the generation the server has durably applied.
+ * Lower deliveries cannot decrease it — a replayed older update acknowledges
+ * the highest applied generation, never the delivered one.
+ */
+export const JobsLifecycleUpdateAckSchema = strictWireObject({
+  appliedGeneration: JobsGenerationSchema,
+});
+export type JobsLifecycleUpdateAck = z.infer<typeof JobsLifecycleUpdateAckSchema>;
+
 // ── The protocol aggregate ───────────────────────────────────────────────────
 
 /**
@@ -732,5 +772,8 @@ export const JobsProtocolV1 = {
   FetchJobInputSchema,
   FetchJobResultSchema,
   JobTypeCatalogueEntrySchema,
+  JobsGenerationSchema,
+  JobsLifecycleUpdateSchema,
+  JobsLifecycleUpdateAckSchema,
 } as const;
 export type JobsProtocolContractName = keyof typeof JobsProtocolV1;

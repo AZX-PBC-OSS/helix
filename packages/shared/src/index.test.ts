@@ -58,6 +58,9 @@ describe("the shared barrel", () => {
       "JOBS_MAX_RESULT_BYTES",
       "JOBS_RETRY_KEY_MAX_BYTES",
       "IDEMPOTENCY_KEY_HEADER",
+      "JobsGenerationSchema",
+      "JobsLifecycleUpdateSchema",
+      "JobsLifecycleUpdateAckSchema",
       "JOBS_PROTOCOL_FIXTURES",
       "runJobsProtocolFixtures",
     ]) {

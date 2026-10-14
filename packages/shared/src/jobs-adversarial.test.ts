@@ -6,11 +6,17 @@ import {
   JOB_STATEFUL_ERROR_CODES,
   JobErrorMessages,
   JobErrorSchema,
+  JobIdentitySchema,
+  JobAcceptedSchema,
+  JobCancellationAcceptedSchema,
   JobReferenceSchema,
   JobRequestErrorSchema,
   JobSnapshotSchema,
+  JobTypeCatalogueEntrySchema,
   jobError,
   jobRequestError,
+  JobsLifecycleUpdateAckSchema,
+  JobsLifecycleUpdateSchema,
   FetchJobInputSchema,
   FetchJobResultSchema,
   JOBS_MAX_RESULT_BYTES,
@@ -133,6 +139,66 @@ describe("strict object unknown-key completeness", () => {
       `{"code":"rate_limited","message":${JSON.stringify(JobErrorMessages.rate_limited)},"__proto__":{"polluted":true}}`,
     );
     expect(JobRequestErrorSchema.safeParse(requestError).success).toBe(false);
+  });
+
+  it("the lifecycle delivery and acknowledgement refuse an own __proto__ key too", () => {
+    // The two lifecycle wire schemas compose the same screen the schemas above
+    // pin — each strict schema builds its own pipe, so inlining either as a
+    // plain z.strictObject sheds the key there while every earlier pin stays
+    // green. Both bodies are otherwise valid, so the refusal is attributable
+    // to the screen.
+    const update: unknown = JSON.parse(
+      '{"generation":"8","archived":true,"__proto__":{"polluted":true}}',
+    );
+    expect(JobsLifecycleUpdateSchema.safeParse(update).success).toBe(false);
+    const ack: unknown = JSON.parse('{"appliedGeneration":"8","__proto__":{"polluted":true}}');
+    expect(JobsLifecycleUpdateAckSchema.safeParse(ack).success).toBe(false);
+  });
+
+  it("the identity, both acknowledgements and a catalogue entry refuse an own __proto__ key too", () => {
+    // The remaining wire objects each build their own strict pipe as well:
+    // identity (nested in every snapshot), the two 202 acknowledgements and
+    // the catalogue entry. Each base is asserted valid first, so the refusal
+    // is attributable to the screen and nothing else.
+    const cases: ReadonlyArray<
+      readonly [string, { safeParse: (data: unknown) => { success: boolean } }, unknown]
+    > = [
+      [
+        "identity",
+        JobIdentitySchema,
+        {
+          server: "jobs",
+          appId: "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f",
+          env: "prod",
+          ownerKind: "user",
+          ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+          type: "jobs:fetch",
+        },
+      ],
+      [
+        "accepted",
+        JobAcceptedSchema,
+        { server: "jobs", jobId: "w9QZzaBp4XkR3tYm017c3", status: "queued" },
+      ],
+      [
+        "cancellation accepted",
+        JobCancellationAcceptedSchema,
+        { server: "jobs", jobId: "w9QZzaBp4XkR3tYm017c3", cancellationRequested: true },
+      ],
+      [
+        "catalogue entry",
+        JobTypeCatalogueEntrySchema,
+        { id: "jobs:fetch", displayName: "Outbound fetch job" },
+      ],
+    ];
+    for (const [name, schema, base] of cases) {
+      expect(schema.safeParse(base).success, name).toBe(true);
+      const body = JSON.parse(
+        `{"__proto__":{"polluted":true},${JSON.stringify(base).slice(1)}`,
+      ) as unknown;
+      expect(Object.getOwnPropertyNames(body).includes("__proto__"), name).toBe(true);
+      expect(schema.safeParse(body).success, name).toBe(false);
+    }
   });
 });
 

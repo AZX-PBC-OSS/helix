@@ -76,4 +76,68 @@ describe("runJobsProtocolFixtures", () => {
     expect(message).toMatch(/the initial server id/);
     expect(message).toMatch(/the running status/);
   });
+
+  it("a parser fault or a verdict resolving to nothing is a named fixture failure, not a crash", () => {
+    // A mirror's parser crosses the seam untyped: one that throws, or
+    // resolves to null, is the consuming implementation's fault and must be
+    // reported named-for-its-fixture with the corpus still running — a bare
+    // exception names no fixture and strands every unexecuted judgment
+    // behind it. The thrown error names the FIRST affected fixture; the
+    // second shape is caught by the read, not the wrap.
+    const throwing = {
+      ...JobsProtocolV1,
+      JobStatusSchema: {
+        safeParse: () => {
+          throw new Error("mirror parser exploded");
+        },
+      },
+    };
+    expect(() => runJobsProtocolFixtures(throwing)).toThrow(/the running status/);
+    expect(() => runJobsProtocolFixtures(throwing)).toThrow(/mirror parser exploded/);
+
+    const resolvingToNothing = {
+      ...JobsProtocolV1,
+      // The cast is the untyped mirror boundary — a real parser's type cannot
+      // express "resolves to nothing"; the garbage shape is the finding's
+      // subject.
+      JobStatusSchema: {
+        safeParse: () => null,
+      } as unknown as (typeof JobsProtocolV1)["JobStatusSchema"],
+    };
+    expect(() => runJobsProtocolFixtures(resolvingToNothing)).toThrow(/the running status/);
+    expect(() => runJobsProtocolFixtures(resolvingToNothing)).toThrow(
+      /resolved to nothing, judging nothing/,
+    );
+  });
+
+  it("a parser fault does not strand later contracts' judgments", () => {
+    // Continuation is the property that separates a collected fault from a
+    // fail-fast abort: the naming test above would pass against a runner
+    // that threw at the first faulted fixture, because the fragments it
+    // asserts exist in an abort's report too. The fault here lands on the
+    // corpus's FIRST contract and a later contract's verdict is also wrong —
+    // the report must carry both, which an aborted run could never produce.
+    const broken = {
+      ...JobsProtocolV1,
+      JobReferenceSchema: {
+        safeParse: () => {
+          throw new Error("mirror reference parser exploded");
+        },
+      },
+      JobStatusSchema: z.never(),
+    };
+    let message = "";
+    try {
+      runJobsProtocolFixtures(broken);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain(
+      'fixture "opaque non-UUID job id" (JobReferenceSchema) — the parser could not judge the example',
+    );
+    expect(
+      message,
+      "the corpus must run past the fault — a later contract's verdict mismatch is in the same report",
+    ).toContain('"the running status" (JobStatusSchema) expected acceptance');
+  });
 });

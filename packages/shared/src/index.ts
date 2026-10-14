@@ -39,4 +39,8 @@ export * from "./sessions.js";
 // `process.env`, and this barrel is consumed by the browser SPA
 // (`apps/portal-web`, moduleResolution: bundler, no node types). Server code
 // imports them from the `@azx-pbc/shared/bodyCap`, `@azx-pbc/shared/devToken`
-// and `@azx-pbc/shared/logging` subpaths instead.
+// and `@azx-pbc/shared/logging` subpaths instead. The signed jobs-instruction
+// engine and its vectors (`./jobsSigning.js`, `./jobsSigningVectors.js`) stay
+// out of the barrel for the same reason — `node:crypto` + `jose` — via the
+// `@azx-pbc/shared/jobsSigning` and `@azx-pbc/shared/jobsSigningVectors`
+// subpaths.

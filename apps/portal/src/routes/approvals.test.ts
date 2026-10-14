@@ -911,8 +911,14 @@ describe("concurrent decisions on one approval request", () => {
       expect({ status: row.status, mcp }).not.toEqual({ status: "withdrawn", mcp: ["pagerduty"] });
       expect({ status: row.status, mcp }).toEqual({ status: "approved", mcp: ["pagerduty"] });
 
-      // Exactly one decision in the ledger — the bug recorded both.
-      const events = await t.prisma.auditEvent.findMany({ where: { appId: appRow.id } });
+      // Exactly one decision in the ledger — the bug recorded both. The
+      // assertion reads chronologically: without an orderBy the read returns
+      // whatever plan Postgres picked (a uuid-PK index scan once returned the
+      // approve first), so the order the assertion means is stated explicitly.
+      const events = await t.prisma.auditEvent.findMany({
+        where: { appId: appRow.id },
+        orderBy: { createdAt: "asc" },
+      });
       expect(events.map((e) => e.action).filter((a) => a.startsWith("approval."))).toEqual([
         "approval.request",
         "approval.approve",

@@ -159,7 +159,10 @@ allowlisted operation, method, exact resource, SHA-256 of the HTTP body bytes,
 and the operation's app/env/owner/type/generation claims. Caller-provided
 headers cannot override them. The portal lifecycle key authorizes lifecycle
 updates only, never job results or outbound fetch. HTTPS protects every deployed
-hop; a route being called "internal" is not a network restriction.
+hop; a route being called "internal" is not a network restriction. The signed
+contract, its reference mint/verify implementation, and the executable signing
+vectors live in `@azx-pbc/shared/jobsSigning` and `@azx-pbc/shared/jobsSigningVectors`
+(ADR-0045); any future non-TypeScript server is judged against those same vectors.
 
 Each receiver atomically burns the nonce before side effects, with retention
 covering the validity window and clock tolerance. Jobs keeps its burns in its

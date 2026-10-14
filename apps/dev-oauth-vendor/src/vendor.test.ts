@@ -361,6 +361,25 @@ describe("in-process starter", () => {
     await vendor.close();
     await expect(fetch(`${vendor.issuer}/authorize`)).rejects.toThrowError();
   });
+
+  it("owns its bound port on both loopback families", async () => {
+    // The vendor's bind is dual-stack (`::`), because the flake this pins was
+    // a cross-family port collision: bound to `::1` only, a fetch whose
+    // resolver handed it `127.0.0.1` first could reach a different process's
+    // listener holding the same ephemeral port number on IPv4, which answered
+    // 404 for the vendor's own routes under parallel load. One socket now
+    // owns the port for both families; the vendor's own error shape (400
+    // invalid_client) is the proof it answered, where a wrong listener would
+    // 404.
+    await withVendor({}, async (vendor) => {
+      for (const base of [`http://127.0.0.1:${vendor.port}`, `http://[::1]:${vendor.port}`]) {
+        const res = await fetch(`${base}/authorize?client_id=nope`, { redirect: "manual" });
+        const body = (await res.json()) as { error?: string };
+        expect(res.status, base).toBe(400);
+        expect(body.error, base).toBe("invalid_client");
+      }
+    });
+  });
 });
 
 describe("per-instance mode isolation", () => {

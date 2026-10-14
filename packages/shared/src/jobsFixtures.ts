@@ -765,6 +765,85 @@ export const JOBS_PROTOCOL_FIXTURES: readonly JobsProtocolFixture[] = [
     valid: false,
     why: "the portal shows this name for the type; an empty label is not a name",
   },
+
+  // ── Lifecycle generations and delivery (design §5) ──────────────────────────
+  {
+    contract: "JobsGenerationSchema",
+    name: "the initial generation",
+    example: "1",
+    valid: true,
+    why: "generations are decimal strings; the first is 1",
+  },
+  {
+    contract: "JobsGenerationSchema",
+    name: "a generation with a leading zero",
+    example: "007",
+    valid: false,
+    why: "one value, one wire form — a zero-padded copy would compare unequal as a string and equal numerically",
+  },
+  {
+    contract: "JobsGenerationSchema",
+    name: "a numeric generation",
+    example: 7,
+    valid: false,
+    why: "identifiers are never coerced — the generation is a decimal string on the wire",
+  },
+  {
+    contract: "JobsGenerationSchema",
+    name: "a negative generation",
+    example: "-1",
+    valid: false,
+    why: "generations count forward from 1; a minus sign is not decimal syntax",
+  },
+  {
+    contract: "JobsLifecycleUpdateSchema",
+    name: "archive delivery",
+    example: { generation: "8", archived: true },
+    valid: true,
+    why: "archiving closes the app's current generation on every lifecycle target",
+  },
+  {
+    contract: "JobsLifecycleUpdateSchema",
+    name: "unarchive delivery opening a new generation",
+    example: { generation: "9", archived: false },
+    valid: true,
+    why: "unarchive opens a new generation and never resumes a cancelled one",
+  },
+  {
+    contract: "JobsLifecycleUpdateSchema",
+    name: "update without the archived flag",
+    example: { generation: "8" },
+    valid: false,
+    why: "open/close is the payload's one decision — a missing flag is malformed, not a default",
+  },
+  {
+    contract: "JobsLifecycleUpdateSchema",
+    name: "update carrying an app id",
+    example: { generation: "8", archived: true, appId: "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f" },
+    valid: false,
+    why: "the target app is bound in the signed instruction's resource, not the body — an extra field fails the strict parse",
+  },
+  {
+    contract: "JobsLifecycleUpdateAckSchema",
+    name: "acknowledging an applied generation",
+    example: { appliedGeneration: "8" },
+    valid: true,
+    why: "the ack names the generation durably applied before acknowledgement",
+  },
+  {
+    contract: "JobsLifecycleUpdateAckSchema",
+    name: "acknowledgement with a numeric generation",
+    example: { appliedGeneration: 8 },
+    valid: false,
+    why: "generations are decimal strings — a number is malformed, not a string to repair",
+  },
+  {
+    contract: "JobsLifecycleUpdateAckSchema",
+    name: "acknowledgement replaying a lower delivery with invented state",
+    example: { appliedGeneration: "8", cancelled: true },
+    valid: false,
+    why: "the ack carries only the applied generation — cancellation state is never echoed back",
+  },
 ];
 
 /**
@@ -787,7 +866,29 @@ export function runJobsProtocolFixtures(
 ): void {
   const failures: string[] = [];
   for (const fixture of JOBS_PROTOCOL_FIXTURES) {
-    const result = schemas[fixture.contract].safeParse(fixture.example);
+    // The parse and its judgment share one guard: a parser that throws, or
+    // resolves to a shape the read cannot survive, is the consuming
+    // implementation's fault — named for its fixture, collected, and the
+    // corpus keeps running, the same report every other fault gets. A bare
+    // exception would name no fixture and strand the unexecuted judgments
+    // behind it.
+    let result: ReturnType<JobsProtocolContractParser["safeParse"]>;
+    try {
+      result = schemas[fixture.contract].safeParse(fixture.example);
+    } catch (error) {
+      failures.push(
+        `fixture "${fixture.name}" (${fixture.contract}) — the parser could not judge the example: ${
+          error instanceof Error ? error.message : String(error)
+        } — ${fixture.why}`,
+      );
+      continue;
+    }
+    if (result === null || result === undefined) {
+      failures.push(
+        `fixture "${fixture.name}" (${fixture.contract}) — the parser resolved to nothing, judging nothing — ${fixture.why}`,
+      );
+      continue;
+    }
     if (result.success !== fixture.valid) {
       const detail = result.success
         ? "the example parsed"
