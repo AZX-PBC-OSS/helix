@@ -39,4 +39,29 @@ describe("the shared barrel", () => {
       expect(Object.hasOwn(shared, name), name).toBe(true);
     }
   });
+
+  it("re-exports the background-jobs wire contract and its conformance fixtures", () => {
+    for (const name of [
+      "JobsProtocolV1",
+      "JobReferenceSchema",
+      "JobIdentitySchema",
+      "JobAcceptedSchema",
+      "JobCancellationAcceptedSchema",
+      "JobSnapshotSchema",
+      "JobErrorSchema",
+      "JobRequestErrorSchema",
+      "FetchJobInputSchema",
+      "FetchJobResultSchema",
+      "JobErrorMessages",
+      "JOB_TYPE_CATALOGUE",
+      "JOBS_MAX_INPUT_BYTES",
+      "JOBS_MAX_RESULT_BYTES",
+      "JOBS_RETRY_KEY_MAX_BYTES",
+      "IDEMPOTENCY_KEY_HEADER",
+      "JOBS_PROTOCOL_FIXTURES",
+      "runJobsProtocolFixtures",
+    ]) {
+      expect(Object.hasOwn(shared, name), name).toBe(true);
+    }
+  });
 });

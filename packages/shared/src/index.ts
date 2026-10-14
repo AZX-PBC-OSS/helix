@@ -31,6 +31,8 @@ export * from "./devTokens.js";
 export * from "./instruction.js";
 export * from "./internalJwt.js";
 export * from "./fetch.js";
+export * from "./jobs.js";
+export * from "./jobsFixtures.js";
 export * from "./sessions.js";
 // NB: `./bodyCap.js`, `./devToken.js` and `./logging.js` are deliberately NOT
 // re-exported here — they depend on `node:stream`/`Buffer` / `node:crypto` /
