@@ -63,6 +63,17 @@ describe("the shared barrel", () => {
       "JobsLifecycleUpdateAckSchema",
       "JOBS_PROTOCOL_FIXTURES",
       "runJobsProtocolFixtures",
+      "JobsDeploymentConfigSchema",
+      "JobsServerEntrySchema",
+      "JobsCapacityLimitsSchema",
+      "JobsCapacityOverridesSchema",
+      "JOBS_CAPACITY_DEFAULTS",
+      "resolveJobsCapacityLimits",
+      "isJobsFullyDisabled",
+      "jobsCatalogueTypes",
+      "JOBS_SERVER_STATES",
+      "JOBS_ROOT_DIRECTIONS",
+      "isValidJobsRootSecret",
     ]) {
       expect(Object.hasOwn(shared, name), name).toBe(true);
     }

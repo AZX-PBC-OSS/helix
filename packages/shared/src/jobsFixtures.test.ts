@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { JobsProtocolV1 } from "./jobs.js";
+import { JobsProtocolV1 } from "./jobsProtocol.js";
 import { JOBS_PROTOCOL_FIXTURES, runJobsProtocolFixtures } from "./jobsFixtures.js";
 
 describe("JOBS_PROTOCOL_FIXTURES", () => {

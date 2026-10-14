@@ -20,7 +20,6 @@ import {
   JobServerIdSchema,
   JobSnapshotSchema,
   JobStatusSchema,
-  JobsProtocolV1,
   JOBS_FETCH_QUALIFIED_TYPE,
   JOBS_MAX_INPUT_BYTES,
   JOBS_MAX_RESULT_BYTES,
@@ -42,6 +41,7 @@ import {
   jobRequestError,
   qualifiedTypeMatchesServer,
 } from "./jobs.js";
+import { JobsProtocolV1 } from "./jobsProtocol.js";
 
 const ALL_CODES = JOB_REQUEST_ERROR_CODES as readonly string[];
 

@@ -13,6 +13,7 @@ import {
   JobServerIdSchema,
   JobIdSchema,
   JobsGenerationSchema,
+  isValidJobsRootSecret,
   qualifiedTypeMatchesServer,
   QualifiedJobTypeSchema,
   strictWireObject,
@@ -375,14 +376,10 @@ export function deriveJobsInstructionKey(
   direction: JobsSigningDirection,
 ): Uint8Array {
   const domain = JobsSigningDomains[direction];
-  const root = Buffer.from(rootBase64, "base64");
-  // Buffer's base64 decoder skips characters it does not accept; the
-  // round-trip refuses everything but the canonical encoding, so a truncated,
-  // padded-differently or misencoded root fails here rather than deriving a
-  // key the other end cannot agree on.
-  if (root.length !== 32 || root.toString("base64") !== rootBase64) {
+  if (!isValidJobsRootSecret(rootBase64)) {
     throw new Error(`${domain.secretEnvVar} must be a base64-encoded 32-byte root secret`);
   }
+  const root = Buffer.from(rootBase64, "base64");
   return new Uint8Array(hkdfSync("sha256", root, Buffer.alloc(0), domain.hkdfInfo, 32));
 }
 

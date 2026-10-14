@@ -1,4 +1,4 @@
-import type { JobsProtocolContractName } from "./jobs.js";
+import type { JobsProtocolContractName } from "./jobsProtocol.js";
 import { JobErrorMessages, JOBS_MAX_RESULT_BYTES } from "./jobs.js";
 
 /**
@@ -45,6 +45,31 @@ const DEEP_RESULT: unknown = JSON.parse(
     "null" +
     "]".repeat((JOBS_MAX_RESULT_BYTES - 4) / 2),
 );
+
+// Fixed public test roots for the deployment-configuration fixtures: the
+// canonical base64 encodings of 32 bytes each, distinct per direction. Never
+// real credentials — the roots are syntax examples, like every fixture value.
+const JOBS_DEPLOYMENT_FIXTURE_ROOTS = {
+  edgeToJobs: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  jobsToEdge: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+  portalToJobs: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+} as const;
+
+/** One complete deployment-map entry, overridable field by field for the negative examples. */
+function deploymentServerEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    server: "jobs",
+    endpoint: "https://jobs.internal.helix",
+    state: "serving",
+    accepting: true,
+    types: ["jobs:fetch"],
+    databaseUrl: "postgresql://jobs@db.internal.helix/jobs",
+    edgeProdCallbackUrl: "https://edge.internal.helix",
+    edgeDevCallbackUrl: "https://edge.internal.helix/dev",
+    roots: { ...JOBS_DEPLOYMENT_FIXTURE_ROOTS },
+    ...overrides,
+  };
+}
 
 export const JOBS_PROTOCOL_FIXTURES: readonly JobsProtocolFixture[] = [
   // ── References: opaque ids, both halves always ──────────────────────────────
@@ -843,6 +868,264 @@ export const JOBS_PROTOCOL_FIXTURES: readonly JobsProtocolFixture[] = [
     example: { appliedGeneration: "8", cancelled: true },
     valid: false,
     why: "the ack carries only the applied generation — cancellation state is never echoed back",
+  },
+
+  // ── Deployment configuration (design §§1, 4, 8; ADR-0007/0008) ──────────────
+  // Each example is one operator document exactly as the map travels after its
+  // environment serialization is decoded. The roots are fixed public test
+  // literals — canonical base64 of 32 bytes — never real credentials.
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "the initial serving deployment",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry(),
+      },
+    },
+    valid: true,
+    why: "one serving entry with its private destination, installed production type and three distinct roots",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a fully disabled installation — an empty map",
+    example: { servers: {} },
+    valid: true,
+    why: "an install without jobs carries no servers, no credentials and no limits tuning at all",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a serving server with intake temporarily closed",
+    example: {
+      servers: { jobs: deploymentServerEntry({ accepting: false }) },
+    },
+    valid: true,
+    why: "disabling an active installation closes intake while recovery, reads and cancellation stay available",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an all-retiring deployment",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({ state: "retiring", accepting: false, types: [] }),
+      },
+    },
+    valid: true,
+    why: "retirement keeps routing, credentials and recovery for retained records — with an empty advertised type list",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an operator limits override",
+    example: {
+      servers: { jobs: deploymentServerEntry() },
+      limits: {
+        submissionAttemptsPerAppEnv: 10,
+        submissionAttemptsDeployment: 100,
+        submissionWindowSeconds: 60,
+        unfinishedPerAppEnv: 20,
+        unfinishedPerServer: 200,
+        retainedPerAppEnv: 1_000,
+        retainedPerServer: 10_000,
+        runningPerAppEnv: 2,
+        runningPerWorker: 8,
+      },
+    },
+    valid: true,
+    why: "operator configuration tunes finite positive limits after sizing",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a retiring server still admitting work",
+    example: {
+      servers: { jobs: deploymentServerEntry({ state: "retiring" }) },
+    },
+    valid: false,
+    why: "retirement closes new intake — a retiring entry never admits submissions",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an installed type belonging to another server",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({ types: ["ml-jobs:generate-report"] }),
+      },
+    },
+    valid: false,
+    why: "an installed type's qualified prefix must equal the entry's server — no cross-server registration",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a type no platform code implements",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({ types: ["jobs:synthetic-actor"] }),
+      },
+    },
+    valid: false,
+    why: "configuration cannot install a type outside the production catalogue — synthetic actors stay test fixtures",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a duplicated installed type",
+    example: {
+      servers: { jobs: deploymentServerEntry({ types: ["jobs:fetch", "jobs:fetch"] }) },
+    },
+    valid: false,
+    why: "the installed list is a set — a repeated type is a malformed map, not a second install",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "one root shared between two directions of a server",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({
+          roots: {
+            edgeToJobs: JOBS_DEPLOYMENT_FIXTURE_ROOTS.edgeToJobs,
+            jobsToEdge: JOBS_DEPLOYMENT_FIXTURE_ROOTS.edgeToJobs,
+            portalToJobs: JOBS_DEPLOYMENT_FIXTURE_ROOTS.portalToJobs,
+          },
+        }),
+      },
+    },
+    valid: false,
+    why: "each direction holds an independently generated root — one secret never serves two directions",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "one root shared across two servers",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry(),
+        "ml-jobs": deploymentServerEntry({
+          server: "ml-jobs",
+          types: [],
+          databaseUrl: "postgresql://jobs@db.internal.helix/ml_jobs",
+          roots: JOBS_DEPLOYMENT_FIXTURE_ROOTS,
+        }),
+      },
+    },
+    valid: false,
+    why: "roots are never shared between servers — a valid token for one must not verify at another",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "one private database shared across two servers",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry(),
+        "ml-jobs": deploymentServerEntry({
+          server: "ml-jobs",
+          types: [],
+          roots: {
+            edgeToJobs: "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+            jobsToEdge: "BQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+            portalToJobs: "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=",
+          },
+        }),
+      },
+    },
+    valid: false,
+    why: "each server keeps its own database — two names on one store is namespace aliasing, not sharing",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a root that is not the canonical base64 of 32 bytes",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({
+          roots: {
+            edgeToJobs: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+            jobsToEdge: "AQEBAQEBAQEBAQ==",
+            portalToJobs: JOBS_DEPLOYMENT_FIXTURE_ROOTS.portalToJobs,
+          },
+        }),
+      },
+    },
+    valid: false,
+    why: "a root decodes to exactly 32 bytes in its canonical encoding — anything else is a boot error, never a weaker key",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an entry that disagrees with its map key",
+    example: {
+      servers: { jobs: deploymentServerEntry({ server: "ml-jobs", types: [] }) },
+    },
+    valid: false,
+    why: "the map key is the routing truth — an entry naming another server is malformed, not a rename",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an own __proto__ key inside the server map",
+    example: JSON.parse('{"servers":{"__proto__":{}}}'),
+    valid: false,
+    why: "the map refuses fields it does not carry — a shed key would silently parse as a fully disabled deployment",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a limit of zero",
+    example: {
+      servers: { jobs: deploymentServerEntry() },
+      limits: { unfinishedPerAppEnv: 0 },
+    },
+    valid: false,
+    why: "a zero limit is not a capacity — zero/negative settings are refused",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an unbounded limit",
+    example: {
+      servers: { jobs: deploymentServerEntry() },
+      limits: { unfinishedPerAppEnv: Infinity },
+    },
+    valid: false,
+    why: "limits are finite — a non-finite setting bounds nothing and is refused",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an unknown limits key",
+    example: {
+      servers: { jobs: deploymentServerEntry() },
+      limits: { jobsPerDay: 500 },
+    },
+    valid: false,
+    why: "there is no per-day jobs budget — and an unknown key must fail, never silently leave the default in force",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a database url on the wrong protocol",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({ databaseUrl: "mysql://jobs@db.internal/jobs" }),
+      },
+    },
+    valid: false,
+    why: "each server's private store is Postgres — a typo'd protocol is a boot error, not a runtime surprise",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "an endpoint carrying a query string",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({ endpoint: "https://jobs.internal.helix/?tls=1" }),
+      },
+    },
+    valid: false,
+    why: "the destination is a base URL routes are appended to — a query would be silently dropped by URL composition",
+  },
+  {
+    contract: "JobsDeploymentConfigSchema",
+    name: "a configured server missing a credential",
+    example: {
+      servers: {
+        jobs: deploymentServerEntry({
+          roots: {
+            edgeToJobs: JOBS_DEPLOYMENT_FIXTURE_ROOTS.edgeToJobs,
+            portalToJobs: JOBS_DEPLOYMENT_FIXTURE_ROOTS.portalToJobs,
+          },
+        }),
+      },
+    },
+    valid: false,
+    why: "once any server is configured, all three of its roots are required — no partially credentialed server",
   },
 ];
 

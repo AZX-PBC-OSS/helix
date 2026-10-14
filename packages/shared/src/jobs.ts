@@ -4,9 +4,9 @@ import { AppSchema } from "./app.js";
 import { EnvSchema } from "./env.js";
 
 /**
- * The background-jobs wire contract (`JobsProtocolV1`) — the single definition
- * producers and consumers share for a job reference, identity, input, snapshot
- * and error. Maintained behavior lives in `docs/design/background-jobs-plane.md`
+ * The background-jobs wire contract — the single definition producers and
+ * consumers share for a job reference, identity, input, snapshot and error.
+ * Maintained behavior lives in `docs/design/background-jobs-plane.md`
  * (§1 identity and routing, §4 retry identity, §7 responses). Every schema here
  * is strict: a field a plane does not know fails its parse instead of silently
  * disappearing, so a version skew is visible at the boundary rather than
@@ -18,6 +18,10 @@ import { EnvSchema } from "./env.js";
  * and the shared edge framework error envelope are deliberately **outside**
  * this module — the jobs error schema covers jobs-operation errors after those
  * gates and the signed internal protocol, and never normalizes them.
+ *
+ * The `JobsProtocolV1` aggregate over this module and the deployment
+ * configuration (`./jobsDeployment.ts`) lives in `./jobsProtocol.ts` — the
+ * layering is one-way: wire contract ← deployment configuration ← aggregate.
  */
 
 // ── Identifier syntax (background-jobs-plane design §1) ──────────────────────
@@ -58,6 +62,25 @@ export function isValidJobsJobId(value: string): boolean {
 }
 
 /**
+ * Is this a signing root secret — the canonical standard-base64 encoding of
+ * exactly 32 bytes? One root is independently generated per server and per
+ * direction (background-jobs-plane design §3); this predicate is the syntax
+ * both the deployment configuration and the key derivation enforce, so a
+ * malformed root fails at parse/boot time rather than deriving a key the two
+ * ends cannot agree on. The round-trip refuses everything but the canonical
+ * encoding: a base64url spelling, padded differently, or carrying whitespace
+ * decodes to the same bytes but is not the one wire form.
+ */
+export function isValidJobsRootSecret(value: string): boolean {
+  try {
+    const decoded = atob(value);
+    return decoded.length === 32 && btoa(decoded) === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Qualified job type — exactly `<server>:<localType>`. Grants match the
  * complete string; there is no bare-type alias, wildcard, or default server,
  * so `jobs:fetch` never authorizes `fetch` on another server.
@@ -89,7 +112,7 @@ export function qualifiedTypeMatchesServer(qualifiedType: string, server: string
  * parse of this contract never sheds a field, not even that one. It runs on
  * the raw input because a parsed output no longer carries the key.
  */
-const RawInputKeyScreen = z.unknown().superRefine((value, ctx) => {
+export const RawInputKeyScreen = z.unknown().superRefine((value, ctx) => {
   if (typeof value !== "object" || value === null) return;
   if (!Object.getOwnPropertyNames(value).includes("__proto__")) return;
   ctx.addIssue({
@@ -101,12 +124,28 @@ const RawInputKeyScreen = z.unknown().superRefine((value, ctx) => {
 
 /**
  * A strict object parse of this contract: unknown keys fail, an own `__proto__`
- * key included. Exported for the sibling signed-instruction contract
- * (`./jobsSigning.ts`), whose claim payloads and this module's wire bodies are
+ * key included. Exported for the sibling contracts — the signed-instruction
+ * engine (`./jobsSigning.ts`) and the deployment configuration
+ * (`./jobsDeployment.ts`) — whose claim payloads and operator documents are
  * held to the same one strict-parse mechanism.
  */
 export function strictWireObject<Shape extends z.core.$ZodLooseShape>(shape: Shape) {
   return RawInputKeyScreen.pipe(z.strictObject(shape));
+}
+
+/**
+ * A strict record parse of this contract: every key is validated against the
+ * key schema — an own `__proto__` key included, which zod's record iteration
+ * otherwise sheds exactly where {@link strictWireObject}'s screen refuses it.
+ * A shed key in a map of named things is silent corruption of the operator's
+ * or caller's intent; the screen is the refusal. Exported for the sibling
+ * contracts on the same terms.
+ */
+export function strictWireRecord<Key extends z.core.$ZodRecordKey, Value extends z.core.$ZodType>(
+  key: Key,
+  value: Value,
+) {
+  return RawInputKeyScreen.pipe(z.record(key, value));
 }
 
 export const JobServerIdSchema = z
@@ -744,36 +783,3 @@ export const JobsLifecycleUpdateAckSchema = strictWireObject({
   appliedGeneration: JobsGenerationSchema,
 });
 export type JobsLifecycleUpdateAck = z.infer<typeof JobsLifecycleUpdateAckSchema>;
-
-// ── The protocol aggregate ───────────────────────────────────────────────────
-
-/**
- * Every schema the jobs wire contract defines, under one name. Conformance
- * fixtures address members by key, so a producer's or consumer's test suite
- * can run the identical fixture list against this aggregate (or, one day, a
- * language mirror's implementation of the same names).
- */
-export const JobsProtocolV1 = {
-  JobServerIdSchema,
-  JobLocalTypeSchema,
-  QualifiedJobTypeSchema,
-  JobIdSchema,
-  JobReferenceSchema,
-  JobOwnerKindSchema,
-  JobIdentitySchema,
-  JobStatusSchema,
-  JobProgressSchema,
-  JobErrorSchema,
-  JobRequestErrorSchema,
-  JobAcceptedSchema,
-  JobCancellationAcceptedSchema,
-  JobSnapshotSchema,
-  JobRetryKeySchema,
-  FetchJobInputSchema,
-  FetchJobResultSchema,
-  JobTypeCatalogueEntrySchema,
-  JobsGenerationSchema,
-  JobsLifecycleUpdateSchema,
-  JobsLifecycleUpdateAckSchema,
-} as const;
-export type JobsProtocolContractName = keyof typeof JobsProtocolV1;
