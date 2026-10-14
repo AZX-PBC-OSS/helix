@@ -204,6 +204,71 @@ describe("RegistryProjection", () => {
     expect(projection.getApp("bad-json")?.externalOrigins).toEqual([]);
   });
 
+  it("a jobs grant rides the whole-capabilities parse without degrading any other grant", async () => {
+    // `parseExternalOrigins` is the one parser that reads the WHOLE capabilities
+    // blob through the shared schema, so the jobs block's acceptability there is
+    // load-bearing: a schema drift that stopped accepting a stored grant would
+    // fail the whole parse and silently zero this app's CSP origins. A valid
+    // grant — including a withdrawn type no deployment offers, the state
+    // preservation exists to protect — must project with every other grant
+    // intact, and only a MALFORMED block may degrade (fail-closed), never the
+    // load itself.
+    const projection = new RegistryProjection(
+      querierFor([
+        [
+          {
+            ...ROW,
+            slug: "jobs-and-grants",
+            capabilities: {
+              llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 },
+              data: { user: true },
+              externalOrigins: ["https://api.foo.com"],
+              fetch: { shim: false, origins: [{ origin: "https://proxy.example.com" }] },
+              offline: { scope: "/app/" },
+              jobs: { types: ["jobs:fetch"] },
+            },
+          },
+          {
+            ...ROW,
+            slug: "withdrawn-type",
+            capabilities: {
+              externalOrigins: ["https://api.foo.com"],
+              jobs: { types: ["legacy:thing"] },
+            },
+          },
+          {
+            ...ROW,
+            slug: "malformed-jobs",
+            capabilities: {
+              externalOrigins: ["https://api.foo.com"],
+              jobs: { types: [] },
+            },
+          },
+        ],
+      ]),
+    );
+    await projection.load();
+    const granted = projection.getApp("jobs-and-grants");
+    expect(granted?.llm).toEqual({ models: ["claude-opus-4-8"], dollarsPerDay: 10 });
+    expect(granted?.data).toEqual({
+      user: true,
+      collections: [],
+      sharedRead: [],
+      sharedWrite: [],
+      sharedReadPrefixes: [],
+      sharedWritePrefixes: [],
+    });
+    expect(granted?.externalOrigins).toEqual(["https://api.foo.com"]);
+    expect(granted?.fetch.connections.get("https://proxy.example.com")).toEqual({
+      kind: "keyless",
+    });
+    expect(granted?.offline).toEqual({ scope: "/app/" });
+    expect(projection.getApp("withdrawn-type")?.externalOrigins).toEqual(["https://api.foo.com"]);
+    // The malformed block fails the whole-blob parse: the origins degrade to []
+    // (fail-closed, the documented posture for junk) and the load survives.
+    expect(projection.getApp("malformed-jobs")?.externalOrigins).toEqual([]);
+  });
+
   it("parses capabilities.offline, and fails closed to null on anything illegal", async () => {
     // The portal already refuses these on write. This asserts the edge refuses
     // them again on read (ADR-0035): a row written by an older build, a

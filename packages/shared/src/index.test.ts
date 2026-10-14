@@ -74,6 +74,7 @@ describe("the shared barrel", () => {
       "JOBS_SERVER_STATES",
       "JOBS_ROOT_DIRECTIONS",
       "isValidJobsRootSecret",
+      "JobsCapabilitySchema",
     ]) {
       expect(Object.hasOwn(shared, name), name).toBe(true);
     }

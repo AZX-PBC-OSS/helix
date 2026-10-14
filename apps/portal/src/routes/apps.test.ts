@@ -365,6 +365,92 @@ describe("manifest (capabilities) GET/PUT", () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  // The jobs grant rides the existing write-gate: type additions are baseline
+  // (nothing queues) and the delta path is the ordinary array-membership one.
+  describe("jobs grants (background jobs)", () => {
+    const putManifest = (slug: string, capabilities: unknown) =>
+      t.app.inject({
+        method: "PUT",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+        payload: { capabilities },
+      });
+
+    it("adds a qualified type as a baseline change through the real write path", async () => {
+      const slug = uniqueSlug();
+      const created = await createApp({ slug, displayName: "Jobs App" });
+      const put = await putManifest(slug, { jobs: { types: ["jobs:fetch"] } });
+      expect(put.statusCode).toBe(200);
+      const body = put.json();
+      expect(body.pending).toBeNull();
+      expect(body.applied.map((d: { path: string }) => d.path)).toEqual([
+        "jobs.types[+jobs:fetch]",
+      ]);
+      expect(body.manifest.capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+
+      const events = await t.prisma.auditEvent.findMany({ where: { appId: created.json().id } });
+      expect(events.map((e: { action: string }) => e.action)).toContain("app.manifest.set");
+    });
+
+    it("preserves a saved withdrawn type through an unrelated save, and stays removable", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      // A grant saved while a now-retired server still offered `legacy:thing`:
+      // written directly because the write path does not yet check additions
+      // against the deployment's installed types — it admits any syntactically
+      // valid qualified type today. Seeding (not PUTing) also keeps this test
+      // green once that catalogue-aware addition check lands, since the
+      // preservation path must never re-validate a saved type.
+      await t.prisma.app.update({
+        where: { slug },
+        data: { capabilities: { jobs: { types: ["jobs:fetch", "legacy:thing"] } } },
+      });
+
+      // An unrelated save — a data grant — round-trips the withdrawn type
+      // untouched, with no jobs delta manufactured for it.
+      const unrelated = await putManifest(slug, {
+        data: { user: true },
+        jobs: { types: ["jobs:fetch", "legacy:thing"] },
+      });
+      expect(unrelated.statusCode).toBe(200);
+      expect(unrelated.json().applied.map((d: { path: string }) => d.path)).toEqual(["data.user"]);
+      expect(unrelated.json().manifest.capabilities.jobs).toEqual({
+        types: ["jobs:fetch", "legacy:thing"],
+      });
+
+      // Removing the last type removes the grant — the block goes, not an
+      // empty one.
+      const removed = await putManifest(slug, { data: { user: true } });
+      expect(removed.statusCode).toBe(200);
+      expect(removed.json().applied.map((d: { path: string }) => d.path)).toEqual([
+        "jobs.types[-jobs:fetch]",
+        "jobs.types[-legacy:thing]",
+      ]);
+      expect(removed.json().manifest.capabilities.jobs).toBeUndefined();
+    });
+
+    it("refuses a bare alias, a wildcard and a jobs budget field with 400", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      for (const jobs of [
+        { types: ["fetch"] },
+        { types: ["jobs:*"] },
+        { types: ["jobs:fetch"], jobsPerDay: 5 },
+      ]) {
+        const res = await putManifest(slug, { jobs });
+        expect(res.statusCode, JSON.stringify(jobs)).toBe(400);
+        expect(res.json().error.code).toBe("validation_failed");
+      }
+      // Nothing was written by any of the refused attempts.
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.jobs).toBeUndefined();
+    });
+  });
 });
 
 describe("GET /api/v1/apps and /:slug", () => {

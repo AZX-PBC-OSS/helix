@@ -373,3 +373,64 @@ describe("first-class shim capability with legacy alias", () => {
     }
   });
 });
+
+describe("jobs capability (background jobs grant)", () => {
+  it("parses a qualified type grant", () => {
+    const parsed = CapabilitiesParse({ jobs: { types: ["jobs:fetch"] } });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+    }
+  });
+
+  it("rejects a bare local type — no alias and no default server", () => {
+    expect(CapabilitiesParse({ jobs: { types: ["fetch"] } }).success).toBe(false);
+  });
+
+  it("rejects a wildcard grant", () => {
+    expect(CapabilitiesParse({ jobs: { types: ["jobs:*"] } }).success).toBe(false);
+    expect(CapabilitiesParse({ jobs: { types: ["*"] } }).success).toBe(false);
+  });
+
+  it("rejects jobs budget/capacity fields — strict, not stripped", () => {
+    // `jobsPerDay` is the shape the spec refuses by name; the others are the
+    // neighbouring spellings. Stripping them instead would store a grant the
+    // platform never approved alongside a bound it does not enforce.
+    for (const field of ["jobsPerDay", "capacity", "perDay"]) {
+      expect(
+        CapabilitiesParse({ jobs: { types: ["jobs:fetch"], [field]: 5 } }).success,
+        field,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses an own __proto__ key instead of shedding it", () => {
+    // JSON.parse materializes `__proto__` as an own property and zod's strict
+    // catchall skips that one key — the jobs contract's raw-input screen is
+    // what keeps the field from vanishing with the parse.
+    const hostile = JSON.parse('{"types":["jobs:fetch"],"__proto__":{"jobsPerDay":1}}') as object;
+    expect(CapabilitiesParse({ jobs: hostile }).success).toBe(false);
+  });
+
+  it("refuses an empty grant — a jobs block names at least one type or is absent", () => {
+    expect(CapabilitiesParse({ jobs: {} }).success).toBe(false);
+    expect(CapabilitiesParse({ jobs: { types: [] } }).success).toBe(false);
+  });
+
+  it("is absent unless declared — no default grant", () => {
+    const parsed = AppManifestSchema.parse({ app: "x", visibility: { mode: "internal" } });
+    expect(parsed.capabilities.jobs).toBeUndefined();
+  });
+
+  it("syntax-validates only — a type no deployment offers still parses, so saved grants survive", () => {
+    // Catalogue-membership validation of ADDITIONS belongs to the portal write
+    // path (deployment-aware); a parse-level check here would refuse the
+    // withdrawn state that preservation exists to protect — an unrelated save
+    // could never round-trip an app holding a retired type.
+    const parsed = CapabilitiesParse({ jobs: { types: ["jobs:fetch", "legacy:thing"] } });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.capabilities.jobs?.types).toEqual(["jobs:fetch", "legacy:thing"]);
+    }
+  });
+});

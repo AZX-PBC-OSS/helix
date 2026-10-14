@@ -517,6 +517,170 @@ describe("classifyChange — offline (ADR-0035)", () => {
   });
 });
 
+describe("classifyChange — jobs types (background jobs)", () => {
+  it("adds a qualified type as a baseline change — nothing queues, and it applies immediately", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      jobs: { types: ["jobs:fetch"] },
+    });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["jobs.types[+jobs:fetch]"]);
+    expect(applyDeltas(EMPTY, r.baselineDeltas).jobs).toEqual({ types: ["jobs:fetch"] });
+  });
+
+  it("carries med on the add for the diff; the submission's aggregate stays low", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: [],
+      externalOrigins: [],
+      jobs: { types: ["jobs:fetch"] },
+    });
+    expect(r.baselineDeltas[0]?.risk).toBe("med");
+    expect(r.risk).toBe("low");
+  });
+
+  it("removes a type as baseline and keeps the remaining ones", () => {
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      jobs: { types: ["jobs:fetch", "jobs:report"] },
+    };
+    const r = classifyChange(eff, {
+      mcp: [],
+      externalOrigins: [],
+      jobs: { types: ["jobs:fetch"] },
+    });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["jobs.types[-jobs:report]"]);
+    expect(applyDeltas(eff, r.baselineDeltas).jobs).toEqual({ types: ["jobs:fetch"] });
+  });
+
+  it("removing the last type removes the grant — the block is dropped, not emptied", () => {
+    const eff: Capabilities = { mcp: [], externalOrigins: [], jobs: { types: ["jobs:fetch"] } };
+    const r = classifyChange(eff, { mcp: [], externalOrigins: [] });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual(["jobs.types[-jobs:fetch]"]);
+    expect(applyDeltas(eff, r.baselineDeltas).jobs).toBeUndefined();
+  });
+
+  it("preserves saved types — including types no longer offered — through an unrelated change", () => {
+    const eff: Capabilities = {
+      mcp: [],
+      externalOrigins: [],
+      jobs: { types: ["jobs:fetch", "legacy:thing"] },
+    };
+    // An unrelated baseline change (a data collection), as a save that never
+    // touches the jobs card produces.
+    const r = classifyChange(eff, { ...eff, data: { collections: ["contacts"] } });
+    expect(paths(r.baselineDeltas)).toEqual(["data.collections[+contacts]"]);
+    expect(applyDeltas(eff, r.baselineDeltas).jobs).toEqual({
+      types: ["jobs:fetch", "legacy:thing"],
+    });
+  });
+
+  it("refuses a bare alias, a wildcard and a budget field — the parse rejects the request", () => {
+    for (const jobs of [
+      { types: ["fetch"] }, // bare alias — no default server exists
+      { types: ["jobs:*"] }, // wildcard — grants name types, never patterns
+      { types: ["jobs:fetch"], jobsPerDay: 5 }, // no jobs-budget field exists
+    ]) {
+      expect(() => classifyChange(EMPTY, { mcp: [], externalOrigins: [], jobs })).toThrow();
+    }
+  });
+
+  it("does not change classification of other capabilities when jobs rides along", () => {
+    const r = classifyChange(EMPTY, {
+      mcp: ["pagerduty"],
+      externalOrigins: [],
+      jobs: { types: ["jobs:fetch"] },
+    });
+    expect(paths(r.elevatedDeltas)).toEqual(["mcp[+pagerduty]"]);
+    expect(paths(r.baselineDeltas)).toEqual(["jobs.types[+jobs:fetch]"]);
+    expect(r.risk).toBe("high");
+  });
+
+  it("is its own conflict area, distinct from every other capability", () => {
+    expect(touchedAreas([{ path: "jobs.types[+jobs:fetch]" }])).toEqual(["jobs"]);
+    const eff: Capabilities = { mcp: [], externalOrigins: [], jobs: { types: ["jobs:fetch"] } };
+    const snap = captureSnapshot(eff, vis("internal"), ["jobs"]);
+    expect(snap.jobs).toEqual({ types: ["jobs:fetch"] });
+    expect(snapshotConflicts(snap, eff, vis("internal"))).toBe(false);
+    expect(
+      snapshotConflicts(snap, { ...eff, jobs: { types: ["jobs:report"] } }, vis("internal")),
+    ).toBe(true);
+  });
+
+  it("delta paths round-trip through the shared parser", () => {
+    expect(parseArrayDeltaPath("jobs.types[+jobs:fetch]")).toEqual({
+      field: "jobs.types",
+      op: "+",
+      item: "jobs:fetch",
+    });
+    expect(parseArrayDeltaPath("jobs.types[-jobs:fetch]")).toEqual({
+      field: "jobs.types",
+      op: "-",
+      item: "jobs:fetch",
+    });
+  });
+
+  // The area map must be total over the grant's ABSENCE too, not just its
+  // presence: a snapshot filed over an app with no jobs block stores the area
+  // as null, and the comparison has to read "still absent" as unchanged and
+  // "a block appeared" as moved — the same contract the with-block case above
+  // pins, from the other side of the boundary.
+  it("a jobs snapshot filed while the grant is absent moves when a block appears", () => {
+    const snap = captureSnapshot(EMPTY, vis("internal"), ["jobs"]);
+    expect(snap.jobs).toBeNull();
+    expect(snapshotConflicts(snap, EMPTY, vis("internal"))).toBe(false);
+    expect(
+      snapshotConflicts(snap, { ...EMPTY, jobs: { types: ["jobs:fetch"] } }, vis("internal")),
+    ).toBe(true);
+  });
+
+  it("a jobs block removed under an open jobs snapshot conflicts", () => {
+    const eff: Capabilities = { mcp: [], externalOrigins: [], jobs: { types: ["jobs:fetch"] } };
+    const snap = captureSnapshot(eff, vis("internal"), ["jobs"]);
+    expect(snapshotConflicts(snap, EMPTY, vis("internal"))).toBe(true);
+  });
+
+  // Deltas as a stored request row would replay them (ADR-0039: requests never
+  // expire): the apply path can see a jobs delta whose effect already committed.
+  // A repeated add must not duplicate the type, and a removal past absence must
+  // stay absent — storing `{types: []}` would fail the schema's min(1) re-parse
+  // and 500 the approve, so the drop-the-block branch is what keeps replay safe.
+  it("applying a stored jobs delta twice is safe — no duplicate type, no empty block", () => {
+    const eff: Capabilities = { mcp: [], externalOrigins: [], jobs: { types: ["jobs:fetch"] } };
+    expect(applyDeltas(eff, [{ path: "jobs.types[+jobs:fetch]" }]).jobs).toEqual({
+      types: ["jobs:fetch"],
+    });
+    const removed = applyDeltas(eff, [{ path: "jobs.types[-jobs:fetch]" }]);
+    expect(removed.jobs).toBeUndefined();
+    expect(applyDeltas(removed, [{ path: "jobs.types[-jobs:fetch]" }]).jobs).toBeUndefined();
+  });
+
+  // A save that swaps the last type for another is the one combination of the
+  // two directions in a single change: it exercises the drop-the-block branch
+  // (the removal empties the grant as the classifier wrote it — adds before
+  // removes — so the applied list can never carry a state the min(1) re-parse
+  // refuses) and the recreation of the block from the add. The observable
+  // contract: the swap lands as exactly one add and one remove, and the stored
+  // grant is the requested type, not the empty block.
+  it("swapping the last type for another lands both directions in one save", () => {
+    const eff: Capabilities = { mcp: [], externalOrigins: [], jobs: { types: ["jobs:fetch"] } };
+    const r = classifyChange(eff, {
+      mcp: [],
+      externalOrigins: [],
+      jobs: { types: ["jobs:report"] },
+    });
+    expect(r.elevatedDeltas).toHaveLength(0);
+    expect(paths(r.baselineDeltas)).toEqual([
+      "jobs.types[+jobs:report]",
+      "jobs.types[-jobs:fetch]",
+    ]);
+    expect(applyDeltas(eff, r.baselineDeltas).jobs).toEqual({ types: ["jobs:report"] });
+  });
+});
+
 describe("classifyChange — reductions are always baseline", () => {
   it("removing grants never elevates", () => {
     const eff: Capabilities = {

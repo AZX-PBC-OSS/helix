@@ -30,6 +30,7 @@ Capabilities = {
             shim: boolean                                     // serve-time fetch/XHR shim
             requestsPerDay?: int }
   offline?: { scope: string }          // platform-owned service worker, confined to this prefix
+  jobs?:  { types: string[] }          // qualified background-job types (`jobs:fetch`), min 1
 }
 
 AppManifest = { app: slug; visibility: Visibility; capabilities: Capabilities }
@@ -58,6 +59,14 @@ slash, and its first segment may not begin with `_` (validated on write by
 response header). It buys cold boot and nothing more. See
 [ADR-0035](../adr/0035-offline-capability-platform-service-worker.md) and
 [edge-serving.md](./edge-serving.md).
+
+`jobs` grants **background jobs**: the qualified job types — exactly `<server>:<localType>`, e.g.
+`jobs:fetch` — whose submission the app may request. The grant matches the complete string, so
+there is no bare-type alias, no wildcard, and no default server; the block is strict (no
+`jobsPerDay` or capacity field exists — platform defaults bound jobs resources) and a block with no
+types does not parse: removing the last type drops the grant. The parse validates qualified syntax
+only — a saved type the deployment no longer offers still parses, so unrelated saves preserve it
+and it stays removable. See the background-jobs design (`docs/design/background-jobs-plane.md`).
 
 `Visibility` is a discriminated union — `internal` | `group` (+ `groupId`) | `password` |
 `public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupIds`, an any-of array) and reassembled
@@ -122,6 +131,7 @@ SPA's pre-submit warning never drift:
 | externalOrigins | — | any origin added | med |
 | fetch.origins | — | any proxied origin (secret-bound = high) | med / high |
 | offline | giving up the grant | taking it, or moving the scope | med |
+| jobs.types | adding **or** removing a qualified type (removing the last drops the grant) | — | med / low |
 | visibility | internal / group / password | **→ public** | high |
 
 The per-delta risk travels on the delta itself (`Delta.risk`), and the admin queue renders it: one
@@ -203,6 +213,11 @@ a "pending approval" banner on app detail. See [portal-web.md](./portal-web.md).
   high-risk-elevated, but there is **no gateway transport yet**: approving an MCP grant writes the
   manifest; enforcement lands with the MCP-as-REST gateway (`docs/design/custom-backends.md`).
 - **`bytesPerDay`** is declared and classified but not yet enforced at the edge (app-data design §7).
+- **`jobs`** — the grant is carried in the manifest and classified (type adds/removes are baseline),
+  but the jobs plane itself is not assembled yet: no deployment catalogue advertises installed
+  types, the edge does not yet enforce the grant on submissions, and catalogue-aware validation of
+  *additions* (a type no configured server installs cannot be newly granted) lands with the jobs
+  plane (`docs/design/background-jobs-plane.md`).
 - **Per-delta partial approval** — v1 approves/denies the whole submission bundle; splitting a
   request is a deliberate future refinement (`docs/design/approvals.md` §9).
 - **Approval notifications** — the queue is pull-based for v1; no push when a request is filed or

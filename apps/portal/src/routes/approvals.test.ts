@@ -201,6 +201,52 @@ describe("approve", () => {
     expect(manifest.json().capabilities.mcp).toEqual(["pagerduty"]);
   });
 
+  it("preserves a baseline jobs grant committed while the request was pending", async () => {
+    // The stale-snapshot check covers only the areas the request's own deltas
+    // touch (mcp here), and the apply re-bases on the effective row read inside
+    // the approve transaction. So an unrelated save that lands a baseline grant
+    // in another area meanwhile must neither bounce the approve nor be clobbered
+    // by it. The failure shapes this pins: applying the elevated deltas to the
+    // filing-time state instead of the current row (the jobs grant vanishes), or
+    // treating the untouched area's change as a moved snapshot (auto-bounce).
+    const { slug, requestId } = await appWithPendingRequest();
+
+    const jobsPut = await t.app.inject({
+      method: "PUT",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+      payload: { capabilities: { jobs: { types: ["jobs:fetch"] } } },
+    });
+    expect(jobsPut.statusCode).toBe(200);
+    // The unrelated save commits its own baseline delta and files nothing —
+    // the pending request stays open, untouched.
+    expect(jobsPut.json().applied.map((d: { path: string }) => d.path)).toEqual([
+      "jobs.types[+jobs:fetch]",
+    ]);
+    expect(jobsPut.json().pending).toBeNull();
+    // The pending mcp grant was never applied, so it is absent here.
+    expect(jobsPut.json().manifest.capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+    expect(jobsPut.json().manifest.capabilities.mcp).toEqual([]);
+
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("approved");
+
+    // Both grants live: the approved mcp delta applied on top of the row the
+    // jobs save wrote, which still carries the jobs block.
+    const manifest = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+    });
+    expect(manifest.json().capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+    expect(manifest.json().capabilities.mcp).toEqual(["pagerduty"]);
+  });
+
   it("writes both the effective mutation and the decision as separate audit rows", async () => {
     // docs/design/approvals.md §2 step 5: an approve writes TWO events — the
     // effective-mutation action AND an `approval.approve`. The audit page relies
