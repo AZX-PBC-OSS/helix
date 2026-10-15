@@ -32,9 +32,11 @@ Three properties make this hold:
   with `IF EXISTS (pg_roles …)` guards — which is why the roles must exist
   **before** the first migration runs, and why creating a role later means
   re-running the migration to pick up its grants.
-- **No privilege escalation.** All four runtime roles are `NOINHERIT
-  NOBYPASSRLS`: none can `SET ROLE` up to the owner, and none can walk past the
-  row-level-security policies that partition app data.
+- **No privilege escalation.** All six provisioned identities — the four
+  platform runtime roles plus the jobs plane's runtime role and migration
+  identity — are `NOINHERIT NOBYPASSRLS`: none can `SET ROLE` up to the owner,
+  and none can walk past the row-level-security policies that partition app
+  data.
 - **The admin DSN never reaches a container.** The portal actively refuses the
   schema-owner connection string in production, so the owner credential exists
   in exactly two places: your secrets store, and Key Vault.
@@ -111,8 +113,10 @@ need the roles to exist first. So:
 1. **Infra-only apply** (`deployApps=false`) — server and database exist.
 2. **Roles** — `infra/azure/scripts/create-roles.sh`, a throwaway job that
    carries the admin DSN and **deletes itself afterwards**. This is the one
-   time the admin password is placed on a resource. Run it once: `CREATE ROLE`
-   is not idempotent, and a second run fails with "role already exists".
+   time the admin password is placed on a resource. The role SQL is
+   idempotent — it creates only what is missing and never rotates an existing
+   password — so a re-run applies the current ACL posture to an older install
+   instead of failing.
 3. **Apps apply** (`deployApps=true`) — creates the apps and the migrate job.
    The apps boot before the schema exists and answer only `/health` until the
    next step lands; that is expected.
@@ -138,9 +142,11 @@ secret, deleted afterwards). Do not "fix" it by writing a different DSN to the
 vault: every app holding the reference follows the vault within ~30 minutes,
 so that just moves the mismatch.
 
-**`create-roles.sh` fails with "role already exists".** Expected on anything
-but a fresh install — the script is run-once by design. If what you actually
-need is a password change, see the `ALTER ROLE` note above.
+**`create-roles.sh` and "role already exists".** The role SQL is idempotent —
+it creates only what is missing and leaves every existing password untouched —
+so a re-run applies the current ACL posture to an older install. If what you
+actually need is a password change, see the `ALTER ROLE` note above; do not
+expect the re-run to do it.
 
 **The migrate job fails with a Key Vault error.** The job's identity is created
 by the template with exactly one role assignment; if the apply that created the

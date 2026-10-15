@@ -1,13 +1,18 @@
 import { execSync } from "node:child_process";
 
+// The test-cluster provisioning lives beside the suites that consume it:
+// apps/portal/src/test/provisionDatabases.ts (imported here — the root setup
+// has no package boundary to violate).
+import { provisionTestDatabases } from "./apps/portal/src/test/provisionDatabases.js";
+
+const TEST_DATABASE_URL =
+  process.env.TEST_DATABASE_URL ?? "postgresql://helix:helix@db:5432/helix_test";
+
 /**
  * One-time setup for the whole test run: ensure a dedicated test database
  * exists and is migrated, so DB-backed tests never touch the dev database.
  * Runs in the dev container where Postgres + the prisma CLI are available.
  */
-const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL ?? "postgresql://helix:helix@db:5432/helix_test";
-
 export default function setup(): void {
   const dbName = TEST_DATABASE_URL.split("/").pop();
   const adminUrl = TEST_DATABASE_URL.replace(/\/[^/]+$/, "/helix");
@@ -18,6 +23,11 @@ export default function setup(): void {
       `psql "${adminUrl}" -c "CREATE DATABASE ${dbName}"`,
     { stdio: "inherit" },
   );
+
+  // Provision the roles + database ACLs first: the migrations' per-table
+  // grants are guarded by an `IF EXISTS (pg_roles …)` check, so the roles must
+  // exist before `migrate deploy`.
+  provisionTestDatabases();
 
   // Apply migrations to the test database.
   execSync("pnpm --filter @azx-pbc/portal exec prisma migrate deploy", {

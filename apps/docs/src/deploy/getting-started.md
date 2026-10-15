@@ -195,6 +195,10 @@ export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '
 export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+# The jobs plane's two identities (created in step 4): the runtime role, and
+# the separate migration identity — which is never installed in a runtime image.
+export HELIX_JOBS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_JOBS_MIGRATE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 # Signing secrets are base64-DECODED by the apps — standard base64 here.
 # A base64url value makes the edge crash on boot.
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
@@ -217,9 +221,11 @@ recoverable from a *running* install —
 over the control plane (the API resolves the Key Vault references), and the
 Postgres admin password is also in the platform vault as
 `postgres-admin-password` — but recovery needs a healthy install, so capture
-stays the primary path. (The one value held in no container is
-`HELIX_DEV_DB_PASSWORD` on an install with the dev surface off: set a fresh
-one with `ALTER ROLE helix_dev` rather than hunting the original.)
+stays the primary path. (The values held in no container: `HELIX_DEV_DB_PASSWORD`
+on an install with the dev surface off, and the two `HELIX_JOBS_*` passwords
+until the jobs service ships — the migration identity's password never reaches
+a runtime image at all. Set a fresh one with `ALTER ROLE <role>` rather than
+hunting the original.)
 
 ::: tip Preview first
 `az deployment group what-if -g <rg> -f main.bicep -p main.bootstrap.bicepparam`
@@ -232,11 +238,16 @@ already bound, the what-if must **not** show a delete of
 ## Step 4: Create the database roles
 
 The deploy created the Postgres server and the `helix` database, but not the
-four least-privilege runtime roles the services connect as (`helix_portal`,
-`helix_edge`, `helix_egress`, `helix_dev`). Those come from the committed
-`infra/azure/sql/01-roles.sql`, run once as the admin — and they must exist
-before the first migration, because the migrations' table grants only apply to
-roles that already exist.
+least-privilege identities the services connect as: the four platform runtime
+roles (`helix_portal`, `helix_edge`, `helix_egress`, `helix_dev`) plus the jobs
+plane's two — the `helix_jobs` runtime role and the separate
+`helix_jobs_migrate` migration identity (never installed in a runtime image) —
+and the private `helix_jobs` database. Those come from the committed
+`infra/azure/sql/01-roles.sql`, run as the admin. The SQL is idempotent — it
+creates only what is missing and never rotates an existing password — so
+re-running it is how an install that predates a role or the jobs database comes
+current. Either way it must have run before the first migration, because the
+migrations' table grants only apply to roles that already exist.
 
 Postgres is private-endpoint-only, so this runs as a throwaway Container Apps
 job inside the VNet. A script in the repo wraps the whole operation — build the
@@ -246,10 +257,12 @@ job, run the SQL in it, poll the result, and delete the job afterwards:
 RG=<rg> PREFIX=<namePrefix> infra/azure/scripts/create-roles.sh
 ```
 
-It reads the same `HELIX_*` variables you exported in step 3 — set all five,
-including `HELIX_DEV_DB_PASSWORD`. The `helix_dev` role is created even when
-the dev gateway stays off: the extra role is harmless without its app, and
-adding it later means re-running migrations to pick up its grants.
+It reads the same `HELIX_*` variables you exported in step 3 — set all seven,
+including `HELIX_DEV_DB_PASSWORD` and the two `HELIX_JOBS_*` passwords. The
+`helix_dev` role is created even when the dev gateway stays off, and the jobs
+identities even before the jobs service ships: the extra roles are harmless
+without their apps, and adding them later means re-running migrations to pick
+up their grants.
 
 The job deletes itself when the script finishes — it carries the admin password
 as a job secret, so it must not be left lying around (if the cleanup itself

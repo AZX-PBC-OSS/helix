@@ -631,6 +631,8 @@ export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '
 export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')   # helix_portal runtime role (role created in step 4)
 export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')     # helix_dev role — create it now even if deployDevGateway stays false (see step 4)
+export HELIX_JOBS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')        # helix_jobs runtime role (role + jobs database created in step 4)
+export HELIX_JOBS_MIGRATE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=') # helix_jobs_migrate — the jobs migration identity, never installed in a runtime image
 # Signing secrets are base64-DECODED by the apps — standard base64 here.
 # A base64url value makes the edge crash on boot.
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
@@ -691,10 +693,13 @@ docker push $REG/helix-edge:$TAG && docker push $REG/helix-portal:$TAG && docker
 
 The server and `helix` DB exist; the least-privilege roles and grants do not
 yet. The committed role SQL (`sql/01-roles.sql` — the prod analog of
-`.devcontainer/db-init/01-roles.sql`, with `NOBYPASSRLS` explicit on all four
-roles) creates them, run once as the admin with the **same passwords** you set
-above. It must run before the first migration: the migrations' per-table GRANTs
-are guarded by an `IF EXISTS role` check, so the roles must exist first.
+`.devcontainer/db-init/01-roles.sql`, with `NOBYPASSRLS` explicit on every
+role) creates them — the four platform runtime roles, the jobs runtime role
+(`helix_jobs`) and the jobs migration identity (`helix_jobs_migrate`), plus the
+jobs database and the PUBLIC-CONNECT revocation on both databases — run as the
+admin with the **same passwords** you set above. It must run before the first
+migration: the migrations' per-table GRANTs are guarded by an `IF EXISTS role`
+check, so the roles must exist first.
 
 Postgres is private-endpoint-only, so this runs as a throwaway Container Apps
 Job inside the VNet — `scripts/create-roles.sh` wraps the whole operation
@@ -705,10 +710,12 @@ which it must not survive: it carries the admin DSN as a job secret):
 RG=<rg> PREFIX=<namePrefix> scripts/create-roles.sh
 ```
 
-It reads the same `HELIX_*` env vars as the bicepparam, and it is **run-once**:
-`CREATE ROLE` is not idempotent, and a second run fails with "role already
-exists". To change a role password later, `ALTER ROLE` through the same
-throwaway-job shape — don't re-run the script.
+It reads the same `HELIX_*` env vars as the bicepparam. The role SQL is
+**idempotent** — it creates only what is missing and never touches an existing
+password — so re-running it applies the current ACL posture to an install that
+predates a role or the jobs database. To change a role password, `ALTER ROLE`
+through the same throwaway-job shape (don't re-run this — the existing
+password is deliberately kept).
 
 > Create `helix_dev` here even if you are not deploying the dev-gateway
 > (`deployDevGateway=false`) — the role is harmless without its app, and adding

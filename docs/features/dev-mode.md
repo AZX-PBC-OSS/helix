@@ -94,7 +94,13 @@ pnpm dev:egress   # :8081 — only if you exercise /_api/fetch or connections
 
 `dev-api.local.helix.azxlabs.io` resolves to `127.0.0.1`, and the mkcert wildcard cert covers it. **Cross-origin from a browser** (e.g. a Vite app on `http://localhost:5173`) needs the mkcert CA trusted by that browser — accept the cert once, or import `.devcontainer/certs/caroot/rootCA.pem` (same as any app host). CORS for registered origins is handled by the gateway.
 
-> **Existing dev container?** `helix_dev` is created by `.devcontainer/db-init/01-roles.sql`, which only runs on a **fresh** DB volume. If your volume predates dev mode, recreate it (`docker compose down -v`, rebuild) and run `pnpm --filter @azx-pbc/portal db:deploy` — a plain rebuild won't create the role.
+> **Existing dev container?** `helix_dev` is created by `.devcontainer/db-init/01-roles.sql`. That file is idempotent — it creates only what is missing and never touches existing passwords — so a volume that predates dev mode is brought current in place, no reset:
+>
+> ```bash
+> psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+> ```
+>
+> (A fresh volume gets it automatically at first boot.) `pnpm --filter @azx-pbc/portal db:deploy` then picks up any migrations the volume is still missing.
 
 ---
 

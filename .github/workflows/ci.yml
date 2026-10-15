@@ -206,10 +206,16 @@ jobs:
           disown
 
       - name: Create least-privilege Postgres roles
-        # Same db-init the dev container runs on first boot (helix_portal /
-        # helix_edge / helix_egress / helix_dev). Roles are cluster-global, so
-        # they apply to the helix_test database vitest creates + migrates too.
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+        # Same db-init the dev container runs on first boot: the runtime roles
+        # (helix_portal / helix_edge / helix_egress / helix_dev / the jobs
+        # identities), the jobs database and the PUBLIC-CONNECT hardening in
+        # 01, the portal's dev-database bootstrap grants in 02. Roles are
+        # cluster-global, so they apply to the helix_test database vitest
+        # creates + migrates too.
+        run: |
+          for f in .devcontainer/db-init/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - name: Generate dev secret-store KEK
         run: openssl rand -hex 32 > "$DEV_SECRETS_KEK_FILE" && chmod 600 "$DEV_SECRETS_KEK_FILE"
@@ -307,9 +313,12 @@ jobs:
 
       - name: Create least-privilege Postgres roles
         # Same db-init the dev container runs (helix_edge / helix_egress /
-        # helix_dev) — the lane fails loudly without the runtime roles, by
-        # design: an unprovisioned green run is not evidence.
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+        # helix_dev / the jobs identities) — the lane fails loudly without the
+        # runtime roles, by design: an unprovisioned green run is not evidence.
+        run: |
+          for f in .devcontainer/db-init/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - uses: pnpm/action-setup@v4
         with:

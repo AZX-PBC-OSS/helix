@@ -1,63 +1,95 @@
--- App-data design §2.1 / Appendix A.1 — the database-role split.
+-- App-data design §2.1 / Appendix A.1 — the database-role split — plus
+-- background-jobs design §8 — the private jobs database and its identities.
 --
--- Dev only. In prod these are Terraform-managed with real/IAM credentials.
+-- Dev passwords are well-known; prod is infra/azure/sql/01-roles.sql (same
+-- statements, secret passwords passed as psql variables). This file is
+-- IDEMPOTENT: it creates what is missing and never touches what exists
+-- (re-running it does not rotate passwords — ALTER ROLE for that), so it is
+-- both the fresh-volume bootstrap and the upgrade path for an install that
+-- predates a given role or database. Apply it to an existing dev container
+-- without a volume reset:
+--
+--   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+--
+-- The test suite applies the same file with the test databases substituted
+-- (vitest.globalSetup.ts), so dev, CI and tests all run the one provisioning
+-- definition. docker-entrypoint-initdb.d runs it on an empty data dir with no
+-- variables; the \if defaults below are the initdb path.
+--
 -- `helix` (POSTGRES_USER) is the object owner == the §2.1 `helix_migrate` role
--- in dev; Prisma migrations already run as it. We add the two least-privilege
--- runtime roles beside it. NOINHERIT + no role membership => no runtime
--- role can SET ROLE up to the owner; the boundary lives entirely in the GRANTs.
+-- in dev; Prisma migrations already run as it. NOINHERIT + no role membership
+-- => no runtime role can SET ROLE up to the owner; the boundary lives entirely
+-- in the GRANTs.
 --
--- Postgres runs every *.sql in /docker-entrypoint-initdb.d exactly ONCE, on an
--- empty data dir. Applying this to an existing dev container needs a db volume
--- reset (`pnpm --filter @azx-pbc/portal db:reset` re-seeds schema, but role
--- creation needs the volume recreated: `docker compose down -v` / rebuild).
+-- The jobs plane gets its own database (background-jobs design §8: "one
+-- private database per job server on the existing Postgres server"): runtime
+-- role `helix_jobs` and a separate migration identity `helix_jobs_migrate`.
+-- Neither holds CONNECT on the platform database — an absent connection is the
+-- stronger property the role split buys there (no REVOKE list to maintain) —
+-- and CONNECT is revoked from PUBLIC on both databases so default privileges
+-- cannot admit a stranger.
+
+-- Database names are psql variables so the test databases (helix_test /
+-- helix_jobs_test) run the identical file. Defaults are the dev names.
+\if :{?platform_db}
+\else
+\set platform_db 'helix'
+\endif
+\if :{?jobs_db}
+\else
+\set jobs_db 'helix_jobs'
+\endif
 
 -- NOBYPASSRLS is the CREATE ROLE default, but we state it explicitly on every
--- runtime role: it is the property the app_data / gateway_calls / sessions /
+-- role: it is the property the app_data / gateway_calls / sessions /
 -- app_collection_items RLS backstop leans on (a BYPASSRLS role would sail past
 -- every partition policy), and the control plane's cross-app reads deliberately
 -- route through the permissive `*_portal_all` policies rather than a bypass — so
 -- helix_portal must not bypass either. Explicit here so a future edit can't
 -- silently flip the attribute (ADR-0002). None of these roles is a superuser.
-CREATE ROLE helix_portal LOGIN PASSWORD 'helix_portal' NOINHERIT NOBYPASSRLS;
-CREATE ROLE helix_edge   LOGIN PASSWORD 'helix_edge'   NOINHERIT NOBYPASSRLS;
--- The mechanism plane (azx-egress): resolves & injects connection secrets. It is
--- the only runtime role with SELECT on app_secrets.material; like helix_edge it
--- gets NO blanket grant (fail-closed) — every table is explicit in a migration.
-CREATE ROLE helix_egress LOGIN PASSWORD 'helix_egress' NOINHERIT NOBYPASSRLS;
--- The dev data plane (dev-mode design §5.3): the dev surfaces (dev-gateway,
--- `helix dev`) run as this role. Least-privilege like helix_edge — NO blanket
--- grant, NOINHERIT, NOBYPASSRLS — and, crucially, RLS-pinned to env='dev' by the
--- env-literal policy in migration 20260722192440_dev_env_partition, so it cannot
--- read a single production row. Its grants mirror helix_edge's data-plane verbs.
-CREATE ROLE helix_dev    LOGIN PASSWORD 'helix_dev'    NOINHERIT NOBYPASSRLS;
+-- `helix_jobs_migrate` is a migration identity, not a runtime role: it owns the
+-- jobs schema-creation step and is never installed in a runtime image.
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOINHERIT NOBYPASSRLS', name, pw)
+FROM (VALUES
+  ('helix_portal',       'helix_portal'),
+  ('helix_edge',         'helix_edge'),
+  ('helix_egress',       'helix_egress'),
+  ('helix_dev',          'helix_dev'),
+  ('helix_jobs',         'helix_jobs'),
+  ('helix_jobs_migrate', 'helix_jobs_migrate')
+) AS roles(name, pw)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = roles.name) \gexec
 
--- All runtime roles connect to the same database and need the schema on their
--- search_path. The test database is created later (vitest global setup) as the
--- owner; grant there happens in the migration GRANTs that track the schema.
-GRANT CONNECT ON DATABASE helix TO helix_portal, helix_edge, helix_egress, helix_dev;
+-- Platform database: the four existing runtime roles keep CONNECT explicitly —
+-- and only they (plus the owner): PUBLIC loses CONNECT, so a role with no
+-- explicit grant cannot reach the platform database at all. helix_jobs and
+-- helix_jobs_migrate are deliberately absent here; their absence is the
+-- jobs→platform boundary.
+GRANT CONNECT ON DATABASE :"platform_db" TO helix_portal, helix_edge, helix_egress, helix_dev;
+REVOKE CONNECT ON DATABASE :"platform_db" FROM PUBLIC;
 GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress, helix_dev;
 
--- helix_portal: full DML runtime (control plane — collection drain, usage
--- reads, registry writes). Table grants are reissued by migrations as tables
--- appear; this default keeps existing + future tables reachable.
---
--- Exception: `gateway_calls` is the append-only metering/audit ledger. This
--- blanket grant hands portal write access at init, but the REVOKE in migration
--- 20260721120000_gateway_calls_portal_readonly reduces it to SELECT-only
--- afterwards (migrations always run after db-init). Append-only there binds
--- every writer role by grant, not just the edge (ADR-0021 / issue #17). If a
--- future edge-written ledger is added, carve it out the same way. Done so far
--- for the edge/egress abuse-control tables `rate_counters` + `instruction_jti`
--- (migration 20260721215912_shared_rate_counters_and_jti_burn, issue #13/#3).
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO helix_portal;
-GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO helix_portal;
-ALTER DEFAULT PRIVILEGES FOR ROLE helix
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO helix_portal;
-ALTER DEFAULT PRIVILEGES FOR ROLE helix
-  GRANT USAGE, SELECT ON SEQUENCES TO helix_portal;
+-- The jobs database, created if this install predates the jobs plane (new
+-- databases inherit template1's PUBLIC CONNECT, revoked below). CREATE
+-- DATABASE cannot run inside a DO block, hence \gexec.
+SELECT 'CREATE DATABASE ' || quote_ident(:'jobs_db')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'jobs_db') \gexec
 
--- helix_edge: NO blanket grant, NO default privileges. Every table is
--- owner-only until a migration grants it explicitly (fail-closed, §2.1). Do
--- NOT add ALTER DEFAULT PRIVILEGES for helix_edge — that would silently grant
--- new tables and defeat the whole point. The §3.2 collection write-only
--- property IS the absence of a SELECT grant here.
+\connect :"jobs_db"
+
+-- Jobs database: only the jobs runtime and the jobs migration identity may
+-- connect — no platform runtime role, and no PUBLIC.
+REVOKE CONNECT ON DATABASE :"jobs_db" FROM PUBLIC;
+GRANT CONNECT ON DATABASE :"jobs_db" TO helix_jobs, helix_jobs_migrate;
+
+-- helix_jobs: reach the tables a jobs migration explicitly grants it, nothing
+-- more. NO default privileges are set here — fail-closed like helix_edge:
+-- every table grant arrives by migration, and a table the migrations have not
+-- granted is invisible to the runtime.
+GRANT USAGE ON SCHEMA public TO helix_jobs;
+
+-- helix_jobs_migrate: schema creation (CREATE on the database) and table
+-- creation (CREATE on public) — the whole of its migration authority, confined
+-- to this database. Runtime roles get neither.
+GRANT CREATE ON DATABASE :"jobs_db" TO helix_jobs_migrate;
+GRANT USAGE, CREATE ON SCHEMA public TO helix_jobs_migrate;
