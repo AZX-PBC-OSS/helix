@@ -88,3 +88,28 @@ export async function withSpan<T>(
     }
   });
 }
+
+/**
+ * A nested span around one sub-step of an operation — failed-and-ended like
+ * {@link withSpan}, but INTERNAL kind (it is not an entry point) and the fn
+ * does not need the span: everything it records is known before the step runs.
+ * `attributes` may be omitted, which is the whole difference from passing
+ * them through `withSpan`.
+ */
+export function inChildSpan<T>(
+  name: string,
+  fn: () => Promise<T>,
+  attributes?: Attributes,
+): Promise<T> {
+  return tracer.startActiveSpan(name, { attributes }, async (span) => {
+    try {
+      return await fn();
+    } catch (err) {
+      span.recordException(err instanceof Error ? err : new Error(String(err)));
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}

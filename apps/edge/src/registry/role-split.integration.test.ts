@@ -342,6 +342,72 @@ describe("helix_portal on sessions: the admin revoke grant set", () => {
 });
 
 /**
+ * The jobs lifecycle outbox (background-jobs-plane design §5): durable
+ * per-server delivery intent — the record that tells a server "this app's
+ * lifecycle generation changed". Portal-only by grant, like the consent-flow
+ * table: the portal writes the intents and its sender marks acknowledgement,
+ * while the policy edge and the dev-gateway hold nothing (they learn lifecycle
+ * through the registry projection's own `apps` grant). Asserted on both sides
+ * of the boundary — a bootstrap widening or a "helpful" migration grant fails
+ * here rather than silently shipping.
+ */
+describe("jobs_lifecycle_outbox: full DML for helix_portal, nothing for the data planes", () => {
+  it("lets helix_portal append, read, acknowledge and clear an intent", async () => {
+    if (!(await portalRoleAvailable())) return; // not provisioned on this cluster
+    const pool = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      const appId = randomUUID();
+      await expect(
+        pool.query(
+          `INSERT INTO jobs_lifecycle_outbox ("appId", generation, server, archived)
+             VALUES ($1, 1, 'rs-portal-outbox', false)`,
+          [appId],
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`SELECT count(*) FROM jobs_lifecycle_outbox WHERE "appId" = $1`, [appId]),
+      ).resolves.toBeDefined();
+      // Acknowledgement is the one UPDATE a delivered row ever gets…
+      await expect(
+        pool.query(`UPDATE jobs_lifecycle_outbox SET "deliveredAt" = now() WHERE "appId" = $1`, [
+          appId,
+        ]),
+      ).resolves.toBeDefined();
+      // …and the sender's retention the one DELETE.
+      await expect(
+        pool.query(`DELETE FROM jobs_lifecycle_outbox WHERE "appId" = $1`, [appId]),
+      ).resolves.toBeDefined();
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("holds no grant at all for helix_edge, helix_dev, or helix_egress", async () => {
+    for (const [url, available] of [
+      [edgeUrl(), edgeRoleAvailable],
+      [devUrl(), devRoleAvailable],
+      [egressUrl(), egressRoleAvailable],
+    ] as const) {
+      if (!(await available())) continue; // not provisioned on this cluster
+      const pool = new Pool({ connectionString: url, max: 1 });
+      try {
+        await expect(pool.query("SELECT count(*) FROM jobs_lifecycle_outbox")).rejects.toThrow(
+          /permission denied/i,
+        );
+        await expect(
+          pool.query(
+            `INSERT INTO jobs_lifecycle_outbox ("appId", generation, server, archived)
+               VALUES (gen_random_uuid(), 1, 'rs-denied', false)`,
+          ),
+        ).rejects.toThrow(/permission denied/i);
+      } finally {
+        await pool.end();
+      }
+    }
+  });
+});
+
+/**
  * Dev-mode design §5.3 — the load-bearing security thesis: the database itself
  * refuses to cross the env boundary. `helix_edge`'s RLS policy hardcodes
  * env='prod' and `helix_dev`'s hardcodes env='dev', so neither can read or write

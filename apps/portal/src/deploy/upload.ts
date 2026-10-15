@@ -13,7 +13,6 @@ import { blobPrefixFor } from "../db/mappers.js";
 import { AppError } from "../plugins/errors.js";
 import { contentTypeFor } from "./mime.js";
 import { normalizeEntryPath, validateBundle } from "./validate.js";
-import { SpanStatusCode, type Span } from "@opentelemetry/api";
 import {
   ATTR_APP_ID,
   ATTR_DEPLOY_FILE_COUNT,
@@ -24,7 +23,8 @@ import {
   SPAN_DEPLOY_UPLOAD,
   SPAN_DEPLOY_VALIDATE,
 } from "@azx-pbc/shared/telemetry";
-import { tracer } from "../telemetry.js";
+import { SpanStatusCode, type Span } from "@opentelemetry/api";
+import { inChildSpan, tracer } from "../telemetry.js";
 
 export interface SpooledUpload {
   zipPath: string;
@@ -134,21 +134,6 @@ export async function deployBundle(opts: {
 
     return { version, warnings };
   }
-}
-
-/** A child span around one deploy phase; ends when the phase settles. */
-function inChildSpan<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  return tracer.startActiveSpan(name, async (span) => {
-    try {
-      return await fn();
-    } catch (err) {
-      span.recordException(err instanceof Error ? err : new Error(String(err)));
-      span.setStatus({ code: SpanStatusCode.ERROR });
-      throw err;
-    } finally {
-      span.end();
-    }
-  });
 }
 
 /**

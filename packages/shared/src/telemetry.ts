@@ -93,6 +93,22 @@ export const ATTR_DATA_MATCH_COUNT = "helix.data.match_count";
  * from the ROUTE the receiver registered, never from the (unverified) token.
  */
 export const ATTR_JOBS_OPERATION = "helix.jobs.operation";
+/**
+ * The jobs lifecycle generation a signal is about — a small non-negative
+ * integer the portal app model owns (ADR-0007). Never a personal value; the
+ * app's identity rides {@link ATTR_APP_ID}.
+ */
+export const ATTR_JOBS_GENERATION = "helix.jobs.generation";
+/**
+ * Whether a lifecycle signal's generation closes the app (an archive —
+ * `true`) or opens one (creation/unarchive — `false`). Bounded boolean.
+ */
+export const ATTR_JOBS_ARCHIVED = "helix.jobs.archived";
+/**
+ * How many per-target intents a lifecycle transition recorded — one per
+ * configured serving/retiring server, so bounded by the deployment map.
+ */
+export const ATTR_JOBS_LIFECYCLE_TARGETS = "helix.jobs.lifecycle.targets";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
 /**
@@ -176,6 +192,10 @@ export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
 export const SPAN_JOBS_RESULT = "helix.jobs.result";
 export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
 export const SPAN_JOBS_LIFECYCLE = "helix.jobs.lifecycle";
+/** The portal's lifecycle outbox write — the transaction that commits app
+ * state, the next generation and the per-target intents together (ADR-0007).
+ * The receiver's `helix.jobs.lifecycle` route span is the delivery's other end. */
+export const SPAN_JOBS_LIFECYCLE_OUTBOX = "helix.jobs.lifecycle.outbox";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
