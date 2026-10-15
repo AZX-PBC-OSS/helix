@@ -230,10 +230,12 @@ a "pending approval" banner on app detail. See [portal-web.md](./portal-web.md).
 - **`bytesPerDay`** is declared and classified but not yet enforced at the edge (app-data design §7).
 - **`jobs`** — the grant is carried in the manifest and classified (type adds/removes are baseline),
   the catalogue advertises the installed production types from the deployment's server map, and
-  catalogue-aware validation refuses *new* grants of types no serving server installs. Still not
-  built: the jobs plane itself is not assembled yet, the edge does not yet enforce the grant on
-  submissions, and the SPA's capability editor has no jobs card yet
-  (`docs/design/background-jobs-plane.md`).
+  catalogue-aware validation refuses *new* grants of types no serving server installs. The edge
+  registry projection carries the effective grant and the app's jobs lifecycle generation on both
+  serving surfaces (production and dev), refreshed by the existing LISTEN/NOTIFY loop; a malformed
+  stored grant projects to "no grant" (deny). Still not built: the jobs plane itself is not
+  assembled yet, the edge does not yet enforce the grant on submissions, and the SPA's capability
+  editor has no jobs card yet (`docs/design/background-jobs-plane.md`).
 - **Per-delta partial approval** — v1 approves/denies the whole submission bundle; splitting a
   request is a deliberate future refinement (`docs/design/approvals.md` §9).
 - **Approval notifications** — the queue is pull-based for v1; no push when a request is filed or

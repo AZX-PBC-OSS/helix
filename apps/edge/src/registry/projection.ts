@@ -14,12 +14,14 @@ import {
   CapabilitiesSchema,
   DataCapabilitySchema,
   FetchCapabilitySchema,
+  JobsCapabilitySchema,
   LlmCapabilitySchema,
   OfflineCapabilitySchema,
   ShimCapabilitySchema,
   isValidServiceWorkerScope,
   type DataCapability,
   type FetchConnection,
+  type JobsCapability,
   type LlmCapability,
   type ShimCapability,
   type VisibilityMode,
@@ -122,6 +124,27 @@ export interface RegistryEntry {
    * (serve time only; never a privilege grant). Parsed fail-closed.
    */
   shim: ShimCapability | null;
+  /**
+   * The jobs grant (manifest `capabilities.jobs`): the qualified job types
+   * (`<server>:<localType>`) whose submission the app may request, or null
+   * when the app has no grant — the jobs gateway denies those. Parsed
+   * fail-closed exactly like `llm`/`data`: a stored block the schema refuses
+   * (malformed, empty, a budget field) projects to null, denying rather than
+   * opening access. Types ride as stored — a withdrawn type a retiring server
+   * no longer offers must keep parsing so revocation, not drift, is what
+   * removes it (manifest.ts, `JobsCapabilitySchema`).
+   */
+  jobs: JobsCapability | null;
+  /**
+   * The app's jobs lifecycle generation — the portal's `apps.jobsGeneration`
+   * authority, carried in its one shared wire form, a canonical decimal string
+   * (`JobsGenerationSchema`: "1", never "01" or a number). Lifecycle delivery
+   * and the jobs callback fence compare generations in this representation.
+   * A row whose value is unusable (negative, non-numeric — a direct UPDATE or
+   * a drifted schema; the column is NOT NULL DEFAULT 1) projects to "0": a
+   * real generation is always ≥ 1, so "0" matches nothing and fences closed.
+   */
+  jobsGeneration: string;
 }
 
 /**
@@ -246,6 +269,32 @@ function parseShimCapability(capabilities: unknown): ShimCapability | null {
   return parsed.success ? parsed.data : null;
 }
 
+/** Extract `capabilities.jobs` from the raw JSON column, fail-closed to null. */
+function parseJobsCapability(capabilities: unknown): JobsCapability | null {
+  if (typeof capabilities !== "object" || capabilities === null) return null;
+  const jobs = (capabilities as Record<string, unknown>).jobs;
+  if (jobs === undefined) return null;
+  const parsed = JobsCapabilitySchema.safeParse(jobs);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Project `apps.jobsGeneration` into the generation's one shared wire form.
+ * `node-postgres` hands an int4 back as a JS number, and `String(n)` of a
+ * safe non-negative integer is already the canonical decimal (no leading
+ * zeros, no sign) — so the happy path is a coercion-free shape assertion.
+ * Anything else projects to "0": the sentinel matches no real generation
+ * (initial generation is 1) yet is itself canonical under
+ * `JobsGenerationSchema`, so a consumer's fence fails closed on a drifted
+ * row instead of comparing against a repaired or invented value.
+ */
+function parseJobsGeneration(value: unknown): string {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return String(value);
+  }
+  return "0";
+}
+
 /**
  * Invoke a reporting observer without letting it affect the load. A load's
  * outcome must depend on the query alone — see the note at the end of
@@ -353,6 +402,8 @@ interface ProjectionRow {
   password_salt: string | null;
   /** The `capabilities` JSONB column (pg parses it to an object). */
   capabilities: unknown;
+  /** The `jobsGeneration` INTEGER column (pg parses it to a number). */
+  jobs_generation: unknown;
 }
 
 /** Narrow query seam: `pg.Pool#query` shaped, fake-able in unit tests. */
@@ -366,7 +417,7 @@ const PROJECTION_SQL = `
   SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
          a."visibilityMode"::text AS visibility_mode, a."visibilityGroupIds" AS visibility_group_ids,
          a."passwordHash" AS password_hash, a."passwordSalt" AS password_salt,
-         a.capabilities AS capabilities
+         a.capabilities AS capabilities, a."jobsGeneration" AS jobs_generation
   FROM apps a
   LEFT JOIN versions v ON v.id = a."currentVersionId"
 `;
@@ -377,12 +428,13 @@ const PROJECTION_SQL = `
 // so its projection selects NULL for them (and touches no password column — the
 // column grant would otherwise deny the query). The dev tier never serves the
 // `password` login challenge, so a null hash is correct: the dev-gateway only
-// needs the slug/visibility/capabilities to route `/_api/*`.
+// needs the slug/visibility/capabilities/jobsGeneration to route `/_api/*` and
+// its jobs surface.
 const PROJECTION_SQL_NO_PASSWORD = `
   SELECT a.id, a.slug, a."archivedAt" IS NOT NULL AS archived, v."blobPrefix" AS blob_prefix,
          a."visibilityMode"::text AS visibility_mode, a."visibilityGroupIds" AS visibility_group_ids,
          NULL::text AS password_hash, NULL::text AS password_salt,
-         a.capabilities AS capabilities
+         a.capabilities AS capabilities, a."jobsGeneration" AS jobs_generation
   FROM apps a
   LEFT JOIN versions v ON v.id = a."currentVersionId"
 `;
@@ -505,6 +557,8 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           fetch: parseFetchGrant(row.capabilities),
           offline: parseOfflineGrant(row.capabilities),
           shim: parseShimCapability(row.capabilities),
+          jobs: parseJobsCapability(row.capabilities),
+          jobsGeneration: parseJobsGeneration(row.jobs_generation),
         });
       }
       this.#map = next;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { JobsGenerationSchema } from "@azx-pbc/shared";
 import {
   RegistryProjection,
   type ProjectionClock,
@@ -54,6 +55,7 @@ const ROW = {
   visibility_mode: "internal",
   visibility_group_ids: [],
   capabilities: {},
+  jobs_generation: 1,
 };
 
 describe("RegistryProjection", () => {
@@ -89,6 +91,8 @@ describe("RegistryProjection", () => {
       fetch: { connections: new Map(), requestsPerDay: null, shim: false },
       offline: null,
       shim: null,
+      jobs: null,
+      jobsGeneration: "1",
     });
     expect(projection.getApp("old")?.archived).toBe(true);
     expect(projection.getApp("new")?.blobPrefix).toBeNull();
@@ -267,6 +271,175 @@ describe("RegistryProjection", () => {
     // The malformed block fails the whole-blob parse: the origins degrade to []
     // (fail-closed, the documented posture for junk) and the load survives.
     expect(projection.getApp("malformed-jobs")?.externalOrigins).toEqual([]);
+  });
+
+  // The jobs grant's own projection (the effective grant the jobs gateway and
+  // the callback fence read): present-as-stored, null when absent or refused,
+  // never load-failing.
+  describe("jobs grant", () => {
+    it("projects the stored grant, preserving withdrawn types, and fails closed to null on junk", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            // A granted block rides as stored — including a withdrawn type no
+            // deployment offers, the state grant preservation exists to protect.
+            {
+              ...ROW,
+              slug: "granted",
+              capabilities: { jobs: { types: ["jobs:fetch", "legacy:thing"] } },
+            },
+            { ...ROW, slug: "absent", capabilities: {} },
+            { ...ROW, slug: "bad-json", capabilities: "not-an-object" },
+            // Malformed variants — each must deny (null), never open:
+            { ...ROW, slug: "empty-types", capabilities: { jobs: { types: [] } } },
+            // No budget/capacity field exists; a stored one is a row the portal
+            // can no longer write, projected closed rather than shed.
+            {
+              ...ROW,
+              slug: "budget-field",
+              capabilities: { jobs: { types: ["jobs:fetch"], jobsPerDay: 5 } },
+            },
+            // Grants name types, never patterns.
+            { ...ROW, slug: "wildcard", capabilities: { jobs: { types: ["jobs:*"] } } },
+            { ...ROW, slug: "wrong-shape", capabilities: { jobs: { types: "nope" } } },
+            // A malformed jobs block must not degrade an unrelated grant's
+            // projection — each capability parses independently.
+            {
+              ...ROW,
+              slug: "others-intact",
+              capabilities: {
+                llm: { models: ["claude-opus-4-8"], dollarsPerDay: 10 },
+                jobs: { types: "nope" },
+              },
+            },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.getApp("granted")?.jobs).toEqual({
+        types: ["jobs:fetch", "legacy:thing"],
+      });
+      for (const slug of [
+        "absent",
+        "bad-json",
+        "empty-types",
+        "budget-field",
+        "wildcard",
+        "wrong-shape",
+      ]) {
+        expect(projection.getApp(slug)?.jobs, slug).toBeNull();
+      }
+      expect(projection.getApp("others-intact")?.jobs).toBeNull();
+      expect(projection.getApp("others-intact")?.llm).toEqual({
+        models: ["claude-opus-4-8"],
+        dollarsPerDay: 10,
+      });
+    });
+  });
+
+  // The lifecycle generation: the portal's authority carried in its one shared
+  // wire form — a canonical decimal string, exactly what `JobsGenerationSchema`
+  // signs and compares. A drifted row fences closed ("0") rather than being
+  // repaired into a plausible value.
+  describe("jobs generation", () => {
+    it("projects the integer column as the canonical decimal string", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            { ...ROW, slug: "initial", jobs_generation: 1 },
+            { ...ROW, slug: "bumped", jobs_generation: 7 },
+            { ...ROW, slug: "large", jobs_generation: 123456 },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.getApp("initial")?.jobsGeneration).toBe("1");
+      expect(projection.getApp("bumped")?.jobsGeneration).toBe("7");
+      expect(projection.getApp("large")?.jobsGeneration).toBe("123456");
+    });
+
+    it('fails closed to "0" — a generation matching nothing — on an unusable value', async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            // "007" is a second wire form of 7, so it is malformed, not a value
+            // to repair (the shared schema refuses it the same way).
+            { ...ROW, slug: "padded", jobs_generation: "007" },
+            { ...ROW, slug: "negative", jobs_generation: -3 },
+            { ...ROW, slug: "fractional", jobs_generation: 1.5 },
+            { ...ROW, slug: "null", jobs_generation: null },
+            { ...ROW, slug: "string", jobs_generation: "many" },
+          ],
+        ]),
+      );
+      await projection.load();
+      for (const slug of ["padded", "negative", "fractional", "null", "string"]) {
+        expect(projection.getApp(slug)?.jobsGeneration, slug).toBe("0");
+      }
+      // The fail-closed value is itself schema-canonical: a fence can put it
+      // through the shared generation schema without a special case.
+      expect(
+        JobsGenerationSchema.safeParse(projection.getApp("padded")?.jobsGeneration).success,
+      ).toBe(true);
+    });
+
+    it("carries the column's real boundaries: int4 max stays canonical, a drifted 0 or beyond-safe value fences closed", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [
+            // The largest value the real INTEGER column can deliver — a
+            // projection that wrapped bitwise or truncated would corrupt
+            // exactly here while every small value kept passing.
+            { ...ROW, slug: "int4-max", jobs_generation: 2147483647 },
+            // 0 is below every real generation (the initial one is 1): whether
+            // it arrives as drift or a direct UPDATE, it must project the
+            // sentinel — never be "repaired" into a plausible "1".
+            { ...ROW, slug: "zero", jobs_generation: 0 },
+            // Past MAX_SAFE_INTEGER the number itself is untrustworthy.
+            { ...ROW, slug: "beyond-safe", jobs_generation: 2 ** 53 },
+          ],
+        ]),
+      );
+      await projection.load();
+      expect(projection.getApp("int4-max")?.jobsGeneration).toBe("2147483647");
+      expect(
+        JobsGenerationSchema.safeParse(projection.getApp("int4-max")?.jobsGeneration).success,
+      ).toBe(true);
+      expect(projection.getApp("zero")?.jobsGeneration).toBe("0");
+      expect(projection.getApp("beyond-safe")?.jobsGeneration).toBe("0");
+    });
+  });
+
+  // One row the parsers cannot read must degrade that row's capabilities and
+  // nothing else — not fail the whole load. This is the shared mechanism behind
+  // every per-capability fail-closed matrix above: the capabilities column is
+  // NOT NULL in the portal's schema, so a NULL here is only reachable through
+  // drift (an older build, a migration), which is exactly when the projection
+  // must keep serving every other app.
+  it("a row whose capabilities column is NULL projects every capability closed, and still loads", async () => {
+    const projection = new RegistryProjection(
+      querierFor([[{ ...ROW, slug: "null-caps", capabilities: null }]]),
+    );
+    await projection.load();
+    expect(projection.isLoaded()).toBe(true);
+    expect(projection.getApp("null-caps")).toEqual({
+      appId: ROW.id,
+      slug: "null-caps",
+      archived: false,
+      blobPrefix: ROW.blob_prefix,
+      visibilityMode: "internal",
+      visibilityGroupIds: [],
+      llm: null,
+      data: null,
+      externalOrigins: [],
+      fetch: { connections: new Map(), requestsPerDay: null, shim: false },
+      offline: null,
+      shim: null,
+      jobs: null,
+      // The generation is a separate column: it must project normally even
+      // when the capabilities blob is unreadable.
+      jobsGeneration: "1",
+    });
   });
 
   it("parses capabilities.offline, and fails closed to null on anything illegal", async () => {

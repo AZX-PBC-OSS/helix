@@ -70,6 +70,8 @@ describe("LiveRegistry against the test database", () => {
       fetch: { connections: new Map(), requestsPerDay: null, shim: false },
       offline: null,
       shim: null,
+      jobs: null,
+      jobsGeneration: "1",
     });
     // Preview-only app: known, but nothing live to serve.
     expect(registry.getApp(preview.slug)?.blobPrefix).toBeNull();
@@ -147,6 +149,85 @@ describe("LiveRegistry against the test database", () => {
         kind: "secret",
         connection: "asana-prod",
       });
+    } finally {
+      await live.stop();
+    }
+  });
+
+  // The jobs seam (background-jobs-plane design §5): the effective jobs grant
+  // and the portal-owned lifecycle generation ride the SAME projection and the
+  // SAME trigger → NOTIFY → reload loop — a grant change or an archive
+  // transition must be visible to the jobs policy consumers on the next
+  // refresh, without restart. The generation is asserted in its shared wire
+  // form (the canonical decimal string the signed claims and lifecycle
+  // deliveries compare), and the seeder's raw UPDATE mirrors what the portal's
+  // transition writes.
+  it("projects the jobs grant and lifecycle generation, and refreshes both on NOTIFY", async () => {
+    const app = await seed({ live: true, capabilities: { jobs: { types: ["jobs:fetch"] } } });
+
+    const live = new LiveRegistry({
+      databaseUrl: TEST_DATABASE_URL,
+      reconcileIntervalMs: 60_000,
+      log: QUIET,
+    });
+    try {
+      await live.start();
+      expect(live.getApp(app.slug)?.jobs).toEqual({ types: ["jobs:fetch"] });
+      expect(live.getApp(app.slug)?.jobsGeneration).toBe("1");
+
+      // A grant revocation (the block removed) closes access on the next
+      // refresh — revocation must not wait for a restart.
+      await pool.query(`UPDATE apps SET capabilities = '{}'::jsonb WHERE id = $1`, [app.appId]);
+      await eventually(() => live.getApp(app.slug)?.jobs === null);
+
+      // An archive transition bumps the generation in the same transaction
+      // (the portal's lifecycle route); the projection carries it forward.
+      await pool.query(
+        `UPDATE apps SET "archivedAt" = now(), "jobsGeneration" = "jobsGeneration" + 1
+         WHERE id = $1`,
+        [app.appId],
+      );
+      await eventually(() => live.getApp(app.slug)?.jobsGeneration === "2");
+      expect(live.getApp(app.slug)?.archived).toBe(true);
+    } finally {
+      await live.stop();
+    }
+  });
+
+  // A hostile jobs block the portal can never write: the manifest parse refuses
+  // an own `__proto__` key (JobsCapabilitySchema is built on strictWireObject
+  // for exactly that), so a stored one is reachable only through a direct
+  // UPDATE or schema drift — the rows the fail-closed posture exists for. pg
+  // delivers jsonb through JSON.parse, which materializes `__proto__` as an
+  // own property, so the edge's re-parse really sees the key: the block must be
+  // REFUSED (jobs → null, deny) rather than stripped and served, and the
+  // whole-blob read (externalOrigins, through CapabilitiesSchema's strict jobs
+  // member) must degrade closed with it. The load itself and the row's other
+  // fields survive — one drifted row degrades its own grants, nothing else.
+  it("refuses a stored jobs block carrying an own __proto__ key, fail-closed", async () => {
+    const app = await seed({ live: true });
+    await pool.query(
+      `UPDATE apps SET capabilities =
+         '{"jobs": {"types": ["jobs:fetch"], "__proto__": {"polluted": true}}}'::jsonb
+       WHERE id = $1`,
+      [app.appId],
+    );
+
+    const live = new LiveRegistry({
+      databaseUrl: TEST_DATABASE_URL,
+      reconcileIntervalMs: 60_000,
+      log: QUIET,
+    });
+    try {
+      await live.start();
+      expect(live.freshness().consecutiveLoadFailures).toBe(0);
+      const entry = live.getApp(app.slug);
+      expect(entry?.jobs).toBeNull();
+      expect(entry?.externalOrigins).toEqual([]);
+      // The hostile capabilities blob degrades only this app's capability
+      // grants — the row's other fields still project.
+      expect(entry?.jobsGeneration).toBe("1");
+      expect(entry?.blobPrefix).toBe(app.blobPrefix);
     } finally {
       await live.stop();
     }

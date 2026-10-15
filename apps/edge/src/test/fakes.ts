@@ -60,6 +60,8 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     },
     offline: null,
     shim: null,
+    jobs: null,
+    jobsGeneration: "1",
     ...overrides,
   };
 }
