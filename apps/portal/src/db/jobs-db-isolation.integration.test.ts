@@ -306,7 +306,7 @@ describe("re-applying the provisioning (the upgrade path)", () => {
     // globalSetup already applied this file once this run; the fixture table
     // was created after that — so the re-apply runs over live jobs state,
     // exactly the existing-install upgrade shape.
-    provisionTestDatabases();
+    await provisionTestDatabases();
 
     const migrate = new Pool({ connectionString: roleUrl(MIGRATE_ROLE, JOBS_TEST_DB), max: 1 });
     try {

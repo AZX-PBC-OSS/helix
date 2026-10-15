@@ -13,7 +13,7 @@ const TEST_DATABASE_URL =
  * exists and is migrated, so DB-backed tests never touch the dev database.
  * Runs in the dev container where Postgres + the prisma CLI are available.
  */
-export default function setup(): void {
+export default async function setup(): Promise<void> {
   const dbName = TEST_DATABASE_URL.split("/").pop();
   const adminUrl = TEST_DATABASE_URL.replace(/\/[^/]+$/, "/helix");
 
@@ -27,7 +27,7 @@ export default function setup(): void {
   // Provision the roles + database ACLs first: the migrations' per-table
   // grants are guarded by an `IF EXISTS (pg_roles …)` check, so the roles must
   // exist before `migrate deploy`.
-  provisionTestDatabases();
+  await provisionTestDatabases();
 
   // Apply migrations to the test database.
   execSync("pnpm --filter @azx-pbc/portal exec prisma migrate deploy", {

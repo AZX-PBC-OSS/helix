@@ -44,6 +44,7 @@ Constraints from that work that outlive any status line:
 | `pnpm dev:web`                                    | Run the portal SPA dev server (`:5173`, Vite; proxies `/api` + `/health` to :3001). `pnpm --filter @azx-pbc/portal-web build` makes the portal serve it at :3001                    |
 | `pnpm dev:docs`                                   | Run the public docs site dev server (VitePress, `apps/docs` — operator + app-author guides, published to GitHub Pages by `.github/workflows/docs.yml`)                              |
 | `pnpm --filter @azx-pbc/portal db:migrate`        | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                                                                                                  |
+| `pnpm --filter @azx-pbc/jobs db:migrate`          | Apply the jobs runner's private migration/configuration (`apps/jobs`, needs `JOBS_MIGRATE_DATABASE_URL` — the `helix_jobs_migrate` DSN). See `apps/jobs/README.md`                  |
 | `pnpm --filter @azx-pbc/helix-cli helix -- <cmd>` | Run the `helix` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`). Runs in `packages/cli`; for real deploys run it from an app dir instead — see `packages/cli/README.md` |
 | `./check-and-lint.sh`                             | Poor-man's CI: typecheck + lint + format check + docs build + tests in one pass (add `--fix` to auto-fix first)                                                                     |
 

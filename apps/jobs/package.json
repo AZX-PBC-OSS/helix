@@ -1,0 +1,21 @@
+{
+  "name": "@azx-pbc/jobs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:migrate": "node --import tsx src/migrate.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@azx-pbc/shared": "workspace:*",
+    "@opentelemetry/api": "catalog:",
+    "pg": "catalog:",
+    "pg-boss": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

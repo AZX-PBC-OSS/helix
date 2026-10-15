@@ -1,0 +1,199 @@
+import { describe, expect, test } from "vitest";
+
+import {
+  JOBS_FETCH_QUALIFIED_TYPE,
+  JOB_TYPE_CATALOGUE,
+  resolveJobsCapacityLimits,
+} from "@azx-pbc/shared";
+
+import {
+  JOBS_DEADLINE_SECONDS,
+  JOBS_FETCH_DEADLINE_SECONDS,
+  JOBS_HEARTBEAT_SECONDS,
+  JOBS_PGBOSS_SCHEMA,
+  JOBS_QUEUE_NAME,
+  JOBS_QUEUE_POLICY,
+  JOBS_QUEUE_POLICY_EFFECTIVE,
+  JOBS_TYPE_POLICIES,
+  JOBS_RUNTIME_ROLE,
+  type JobsTypePolicy,
+  jobTypePolicy,
+  jobsMigrationBossOptions,
+  jobsRuntimeBossOptions,
+  jobsWorkOptions,
+  screenTypePolicies,
+} from "./policy.js";
+
+describe("the installed-handler policy registry", () => {
+  test("every production catalogue type carries an execution policy, and no other type does", () => {
+    const catalogueIds = JOB_TYPE_CATALOGUE.map((entry) => entry.id).sort();
+    const policyIds = Object.keys(JOBS_TYPE_POLICIES).sort();
+    expect(policyIds).toEqual(catalogueIds);
+  });
+
+  test("the fetch type has one execution attempt and the five-minute deadline", () => {
+    const policy = jobTypePolicy(JOBS_FETCH_QUALIFIED_TYPE);
+    expect(policy.retryLimit).toBe(0);
+    expect(policy.expireInSeconds).toBe(JOBS_FETCH_DEADLINE_SECONDS);
+  });
+
+  test("an unknown type has no execution policy", () => {
+    expect(() => jobTypePolicy("jobs:nosuchtype")).toThrow(
+      'no execution policy is installed for job type "jobs:nosuchtype"',
+    );
+  });
+
+  test("the import-time screen refuses a policy for a type the catalogue does not install", () => {
+    expect(() =>
+      screenTypePolicies({
+        [JOBS_FETCH_QUALIFIED_TYPE]: { retryLimit: 0, expireInSeconds: 60 },
+        "jobs:ghost": { retryLimit: 0, expireInSeconds: 60 },
+      }),
+    ).toThrow('an execution policy is installed for non-catalogue type "jobs:ghost"');
+  });
+
+  test("the import-time screen refuses a catalogue type left without a policy", () => {
+    expect(() => screenTypePolicies({})).toThrow(
+      /no execution policy is installed for catalogue type/,
+    );
+  });
+
+  test("the queue policy never lets the runner retry or prune a row on its own", () => {
+    expect(JOBS_QUEUE_POLICY.retryLimit).toBe(0);
+    // pg-boss deletes terminal rows after deleteAfterSeconds and nonterminal
+    // (created/retry) rows after retentionSeconds; both arms closed means the
+    // jobs cleanup loop is the only deleter of primary rows.
+    expect(JOBS_QUEUE_POLICY.deleteAfterSeconds).toBe(0);
+    expect(JOBS_QUEUE_POLICY.retentionSeconds).toBe(2_147_483_647);
+  });
+
+  test("the queue-level claim bound is the platform's absolute deadline", () => {
+    expect(JOBS_QUEUE_POLICY.expireInSeconds).toBe(JOBS_DEADLINE_SECONDS);
+    // Every type policy tightens the queue-level bound, never loosens it.
+    for (const policy of Object.values(JOBS_TYPE_POLICIES)) {
+      expect(policy.expireInSeconds).toBeLessThanOrEqual(JOBS_DEADLINE_SECONDS);
+      expect(policy.expireInSeconds).toBeGreaterThan(0);
+      expect(policy.retryLimit).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("the queue carries a heartbeat window workers must keep, at pg-boss's minimum", () => {
+    expect(JOBS_QUEUE_POLICY.heartbeatSeconds).toBe(JOBS_HEARTBEAT_SECONDS);
+    expect(JOBS_HEARTBEAT_SECONDS).toBeGreaterThanOrEqual(10);
+  });
+
+  test("the expected effective queue row is derived from the policy, not restated", () => {
+    expect(JOBS_QUEUE_POLICY_EFFECTIVE).toEqual({
+      policy: JOBS_QUEUE_POLICY.policy,
+      retry_limit: JOBS_QUEUE_POLICY.retryLimit,
+      retry_delay: JOBS_QUEUE_POLICY.retryDelay,
+      retry_backoff: JOBS_QUEUE_POLICY.retryBackoff,
+      retry_delay_max: null,
+      expire_seconds: JOBS_QUEUE_POLICY.expireInSeconds,
+      retention_seconds: JOBS_QUEUE_POLICY.retentionSeconds,
+      deletion_seconds: JOBS_QUEUE_POLICY.deleteAfterSeconds,
+      warning_queued: 0,
+      dead_letter: null,
+      partition: false,
+      table_name: "job_common",
+      heartbeat_seconds: JOBS_QUEUE_POLICY.heartbeatSeconds,
+      notify: false,
+    });
+  });
+
+  test("worker concurrency comes from the resolved capacity limits, not a second copy of the numbers", () => {
+    const resolved = resolveJobsCapacityLimits();
+    expect(jobsWorkOptions(resolved)).toEqual({
+      localConcurrency: resolved.runningPerWorker,
+      localGroupConcurrency: resolved.runningPerAppEnv,
+    });
+    expect(jobsWorkOptions(resolved)).toEqual({ localConcurrency: 8, localGroupConcurrency: 2 });
+
+    const tuned = jobsWorkOptions(resolveJobsCapacityLimits({ runningPerWorker: 4 }));
+    expect(tuned).toEqual({
+      localConcurrency: 4,
+      localGroupConcurrency: resolveJobsCapacityLimits().runningPerAppEnv,
+    });
+  });
+
+  test("the contradictory-limit refusal carries both numbers, so the boot failure names its cause", () => {
+    // The shared resolver validates each control independently, so this pair
+    // reaches the derivation cleanly and the refusal is the operator's only
+    // diagnosis. The numbers identify the occurrence; the wording is free.
+    const contradictory = resolveJobsCapacityLimits({ runningPerWorker: 1, runningPerAppEnv: 2 });
+    expect(() => jobsWorkOptions(contradictory)).toThrow(/\(2\).*\(1\)/);
+  });
+
+  test("writes through the exported registry and the derived worker options retune nothing", () => {
+    // The registry is the platform's override surface: every line in the
+    // runtime process can import these objects, so a replaced key, a mutated
+    // policy value, or a retuned concurrency option must refuse at the write.
+    expect(() => {
+      (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy>)["jobs:ghost"] = {
+        retryLimit: 0,
+        expireInSeconds: 60,
+      };
+    }).toThrow();
+    expect(() => {
+      (JOBS_TYPE_POLICIES[JOBS_FETCH_QUALIFIED_TYPE] as { retryLimit: number }).retryLimit = 99;
+    }).toThrow();
+    const options = jobsWorkOptions(resolveJobsCapacityLimits());
+    expect(() => {
+      (options as { localConcurrency: number }).localConcurrency = 99;
+    }).toThrow();
+    // The attempted writes left the platform policy exactly as installed.
+    expect(Object.keys(JOBS_TYPE_POLICIES)).toEqual([JOBS_FETCH_QUALIFIED_TYPE]);
+    expect(jobTypePolicy(JOBS_FETCH_QUALIFIED_TYPE)).toEqual({
+      retryLimit: 0,
+      expireInSeconds: JOBS_FETCH_DEADLINE_SECONDS,
+    });
+  });
+});
+
+describe("the runner's pg-boss constructor policy", () => {
+  test("the runtime never migrates, never schedules, and never auto-instruments", () => {
+    const options = jobsRuntimeBossOptions();
+    expect(options.migrate).toBe(false);
+    expect(options.schedule).toBe(false);
+    expect(options.openTelemetry).toEqual({ enabled: false });
+    expect(options.schema).toBe(JOBS_PGBOSS_SCHEMA);
+    // No `supervise` key on purpose: pg-boss defaults supervision on, and the
+    // supervision pass is what runs the expiration and worker-loss machinery
+    // the heartbeat window exists for — a pinned `supervise: false` here
+    // would stand that machinery down silently.
+    expect(options.supervise).toBeUndefined();
+  });
+
+  test("the migration command is the one configuration that migrates", () => {
+    const options = jobsMigrationBossOptions();
+    expect(options.migrate).toBe(true);
+    expect(options.supervise).toBe(false);
+    expect(options.schedule).toBe(false);
+    expect(options.openTelemetry).toEqual({ enabled: false });
+  });
+
+  test("a write through the constructor options' nested reference retunes nothing", () => {
+    // The same mutation class the registry's own exports were hardened
+    // against: the outer freeze stops key replacement, not writes through the
+    // nested openTelemetry object's reference.
+    const options = jobsRuntimeBossOptions();
+    expect(() => {
+      (options.openTelemetry as { enabled: boolean }).enabled = true;
+    }).toThrow();
+    expect(jobsRuntimeBossOptions().openTelemetry).toEqual({ enabled: false });
+    // The migration set carries the same disabled posture: its own nested
+    // reference refuses the write too. The outcome is the contract for both
+    // sets — how the frozen objects come to exist is not.
+    const migrationOptions = jobsMigrationBossOptions();
+    expect(() => {
+      (migrationOptions.openTelemetry as { enabled: boolean }).enabled = true;
+    }).toThrow();
+    expect(jobsMigrationBossOptions().openTelemetry).toEqual({ enabled: false });
+  });
+
+  test("the pg-boss schema and queue names are the platform constants", () => {
+    expect(JOBS_PGBOSS_SCHEMA).toBe("pgboss");
+    expect(JOBS_QUEUE_NAME).toBe("jobs");
+    expect(JOBS_RUNTIME_ROLE).toBe("helix_jobs");
+  });
+});
