@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SHUTDOWN_GRACE_MS,
   installGracefulShutdown,
+  resolveServicePort,
   resolveShutdownGraceMs,
   type ShutdownLogger,
 } from "./lifecycle.js";
@@ -206,5 +207,40 @@ describe("installGracefulShutdown", () => {
         env: { SHUTDOWN_GRACE_MS: "soon" },
       }),
     ).toThrow(/SHUTDOWN_GRACE_MS/);
+  });
+});
+
+describe("resolveServicePort", () => {
+  it("resolves the first set key in priority order", () => {
+    expect(resolveServicePort({ A: "8080", B: "9090" }, ["A", "B"], 3000)).toBe(8080);
+    expect(resolveServicePort({ B: "9090" }, ["A", "B"], 3000)).toBe(9090);
+  });
+
+  it("an unset key falls through to the next, then the fallback", () => {
+    expect(resolveServicePort({}, ["A", "B"], 3000)).toBe(3000);
+  });
+
+  it("a set-but-blank value is a boot error naming the key, not a silent fallback", () => {
+    // The defect class: `Number("")` is 0 and Fastify's listen({ port: 0 })
+    // binds an OS-assigned port — a service silently unreachable where the
+    // operator pointed. Blank is set-but-unusable, deliberately stricter than
+    // the blank-means-unset interval knobs.
+    expect(() => resolveServicePort({ A: "" }, ["A", "B"], 3000)).toThrow(/A must be a TCP port/);
+    expect(() => resolveServicePort({ A: "   " }, ["A", "B"], 3000)).toThrow(
+      /A must be a TCP port/,
+    );
+  });
+
+  it("a garbage or out-of-range value fails at boot naming the key", () => {
+    for (const raw of ["abc", "0", "-5", "65536", "8080.5"]) {
+      expect(() => resolveServicePort({ A: raw }, ["A"], 3000)).toThrow(/A must be a TCP port/);
+    }
+  });
+
+  it("accepts the values the inline Number() parse accepted", () => {
+    expect(resolveServicePort({ A: "8080" }, ["A"], 3000)).toBe(8080);
+    expect(resolveServicePort({ A: " 8080 " }, ["A"], 3000)).toBe(8080);
+    expect(resolveServicePort({ A: "0x1F90" }, ["A"], 3000)).toBe(8080);
+    expect(resolveServicePort({ A: "65535" }, ["A"], 3000)).toBe(65535);
   });
 });

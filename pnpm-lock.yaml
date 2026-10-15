@@ -484,15 +484,24 @@ importers:
       '@azx-pbc/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@azx-pbc/telemetry':
+        specifier: workspace:*
+        version: link:../../packages/telemetry
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1
+      fastify:
+        specifier: 'catalog:'
+        version: 5.12.5
       pg:
         specifier: 'catalog:'
         version: 8.21.0
       pg-boss:
         specifier: 'catalog:'
         version: 12.37.0(@opentelemetry/api@1.9.1)
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
     devDependencies:
       '@types/pg':
         specifier: 'catalog:'

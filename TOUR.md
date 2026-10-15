@@ -17,6 +17,7 @@ Three services separate public traffic, administration, and outbound requests:
 | `apps/edge`    | App routing, authentication, static assets, and `/_api/*` authorization, quotas, and audit                       | Cannot read app connection secrets or write the registry. Sends third-party API calls through egress. |
 | `apps/portal`  | Portal UI/API, deploys, registry updates, capability approvals, and secret writes                                | Not reachable through app subdomains.                                                                 |
 | `apps/egress`  | Verifies signed instructions from the edge, injects credentials, and makes outbound requests under SSRF controls | Internal only; does not accept app-user traffic.                                                      |
+| `apps/jobs`    | Durable background jobs for hosted apps: platform-owned job types, accepted work survives restarts               | Private jobs database; unreachable from app subdomains; runs platform-authored types only.            |
 | `apps/dev-idp` | Local OIDC issuer with fixture users                                                                             | Development and tests only; never deployed.                                                           |
 
 Separating egress keeps third-party credentials and unrestricted outbound access

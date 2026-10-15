@@ -1,7 +1,8 @@
 /**
- * Graceful shutdown for server entrypoints. Fastify does not install signal
- * handlers; server.ts uses this helper to close connections, pools, and
- * telemetry on SIGTERM/SIGINT.
+ * Server-entrypoint helpers: the boot-time environment resolutions and the
+ * graceful shutdown. Fastify does not install signal handlers; server.ts uses
+ * these to resolve its port and to close connections, pools, and telemetry on
+ * SIGTERM/SIGINT.
  *
  * Fastify closes idle connections but waits for active requests. Long-lived
  * SSE streams may outlast shutdown, so a hard deadline forces exit. The default
@@ -36,6 +37,41 @@ export interface ShutdownTarget {
 export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 
 const SIGNALS = ["SIGTERM", "SIGINT"] as const;
+
+/**
+ * Resolve a service's TCP port from the environment: the first listed key
+ * that is **set** wins, else the fallback.
+ *
+ * A set-but-unusable value — blank, non-numeric, out of range — is a boot
+ * error naming the key that carried it, never a silent fallback. The bare
+ * `Number(env.A ?? env.B ?? fallback)` each service used to inline failed
+ * both ways at once: `""` is not nullish, `Number("")` is `0`, and Fastify's
+ * `listen({ port: 0 })` binds an OS-assigned port — a service silently
+ * unreachable where the operator pointed; a garbage value reached `listen`
+ * as a raw `ERR_SOCKET_BAD_PORT`, naming nothing. A port is deliberately
+ * stricter than the blank-means-unset knobs (e.g. the statement-timeout
+ * intervals): the key was set, so the operator pointed it at something, and
+ * an empty pointing strands the service.
+ */
+export function resolveServicePort(
+  env: NodeJS.ProcessEnv,
+  keys: readonly [primary: string, ...fallbacks: string[]],
+  fallback: number,
+): number {
+  for (const key of keys) {
+    const raw = env[key];
+    if (raw === undefined) continue;
+    const value = raw.trim();
+    const port = value === "" ? Number.NaN : Number(value);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error(
+        `${key} must be a TCP port number between 1 and 65535 (got ${JSON.stringify(raw)})`,
+      );
+    }
+    return port;
+  }
+  return fallback;
+}
 
 /**
  * Resolve `SHUTDOWN_GRACE_MS`, or the {@link DEFAULT_SHUTDOWN_GRACE_MS}.

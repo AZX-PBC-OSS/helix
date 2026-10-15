@@ -198,6 +198,7 @@ looked up:
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
 | `helix.app.visits` | counter | `appId`, `outcome` (`recorded` / `failed` / `dropped` / `deduplicated`; the fire-and-forget `app_visits` write, ADR-0050. Alert on a sustained `failed` or `dropped` rate. The owner's numbers come from the table, never this counter) |
 | `helix.consent.operations` | counter | `operation`, `outcome` (ADR-0031 as amended; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
+| `helix.jobs.storage.probes` | counter | `outcome` ∈ {`ok`, `unavailable`} — the jobs service's storage-readiness probes (`JOBS_STORAGE_PROBE_OUTCOMES`). An attempt counter, like `helix.providers.reconciles`: a run of `unavailable` with no `ok` is a store outage, and the *reason* (unreachable / schema / queue-policy / privileges) is carried by the `jobs_database` check's body and the `jobs.storage.unavailable` log event, which the body-aware alerts read |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained

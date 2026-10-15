@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
+import { installGracefulShutdown, resolveServicePort } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { sweepExpiredConsentAttempts } from "./connections/consent.js";
@@ -42,7 +42,7 @@ loadDotEnvLocal();
 // after the dotenv load, before the app is built.
 const telemetry = startTelemetry(SERVICE_NAME);
 
-const port = Number(process.env.PORTAL_PORT ?? process.env.PORT ?? 3001);
+const port = resolveServicePort(process.env, ["PORTAL_PORT", "PORT"], 3001);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const app = buildApp();

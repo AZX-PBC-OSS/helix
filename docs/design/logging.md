@@ -120,7 +120,7 @@ failure mode.
 
 | Event | Where |
 | --- | --- |
-| `boot.serving` | all three services, after `listen` |
+| `boot.serving` | all four services, after `listen` |
 | `db.pool_client_error` | every pooled DB client, all services |
 | `registry.load_failed` / `registry.never_loaded` / `registry.load_recovered` | `apps/edge/src/registry/listener.ts` |
 | `auth.oidc_discovery_ready` / `auth.oidc_discovery_failed` / `auth.code_exchange_failed` | `apps/edge/src/auth/oidc.ts` |

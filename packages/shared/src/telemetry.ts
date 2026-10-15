@@ -38,6 +38,7 @@ export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
 export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
 export const INSTR_APP_VISITS = "helix.app.visits";
+export const INSTR_JOBS_STORAGE_PROBES = "helix.jobs.storage.probes";
 
 /**
  * Attribute keys.
@@ -253,6 +254,19 @@ export type VisitRecordOutcome = (typeof VISIT_RECORD_OUTCOMES)[number];
  */
 export const PROVIDERS_RECONCILE_OUTCOMES = ["ok", "failed"] as const;
 export type ProvidersReconcileOutcome = (typeof PROVIDERS_RECONCILE_OUTCOMES)[number];
+
+/**
+ * How the jobs storage-readiness probe answered — the `helix.outcome`
+ * dimension on `helix.jobs.storage.probes`. Deliberately coarse: the
+ * *distinguishable* reasons (unreachable store, missing schema, queue-policy
+ * drift, missing runtime privileges) ride the `jobs_database` health check's
+ * body and the structured log events, which ADR-0009's body-aware alerts read;
+ * this counter's job is the rate — retries absorbed while the store is down
+ * must be visible, not silent. An attempt counter, like
+ * {@link PROVIDERS_RECONCILE_OUTCOMES}, not a failures-only one.
+ */
+export const JOBS_STORAGE_PROBE_OUTCOMES = ["ok", "unavailable"] as const;
+export type JobsStorageProbeOutcome = (typeof JOBS_STORAGE_PROBE_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

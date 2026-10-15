@@ -248,7 +248,7 @@ const JobsInternalUrlSchema = z.url({ protocol: /^https?$/ }).refine(
 );
 
 /** The private database connection for exactly this server's store (its `JOBS_DATABASE_URL`). Postgres only. */
-const JobsDatabaseUrlSchema = z.url({ protocol: /^postgres(ql)?$/ });
+export const JobsDatabaseUrlSchema = z.url({ protocol: /^postgres(ql)?$/ });
 
 /** One independently generated 32-byte root secret per direction, in its canonical base64 encoding (ADR-0002). */
 const JobsRootSecretSchema = z.string().refine(isValidJobsRootSecret, {

@@ -9,6 +9,7 @@ import {
   type JobsQueuePolicyDiff,
   type QueuePolicyRow,
 } from "./compat.js";
+import { describeDsn } from "./dsn.js";
 import {
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
@@ -85,16 +86,6 @@ function assertRoleName(role: string): string {
     );
   }
   return role;
-}
-
-/** A DSN described for a log line: identity, host, port and database — never the password. */
-function describeDsn(connectionString: string): string {
-  try {
-    const url = new URL(connectionString);
-    return `${url.username}@${url.host}${url.pathname}`;
-  } catch {
-    return "<unparseable dsn>";
-  }
 }
 
 function describeDiffs(diffs: readonly JobsQueuePolicyDiff[]): string {

@@ -2,10 +2,11 @@
 
 The `helix-jobs` runner package (ADR-0045, background-jobs-plane design §1):
 Node 24, TypeScript, and the exact-pinned pg-boss 12.37.0 baseline. This
-package currently owns the storage seam — the installed-handler policy, the
-private migration/configuration command, and the startup compatibility check.
-Service boot, the HTTP API and worker registration land in their own tickets
-and compose from here.
+package owns the storage seam — the installed-handler policy, the private
+migration/configuration command, the startup compatibility check — and the
+service boot: the health-first listener, the storage-readiness supervisor and
+the shared health vocabulary. The signed job operations and worker
+registration land in their own tickets and compose from here.
 
 ## The installed-handler policy (`src/policy.ts`)
 
@@ -64,9 +65,45 @@ runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, and the runtime
 identity holding its DML. The verdict union (`compatible`, `unreachable`,
 `schema_missing`, `schema_version`, `queue_missing`, `queue_policy`,
-`runtime_privileges`) is what service boot and health reporting consume; the
-expected schema version is read from the installed pg-boss package, so a
-catalog bump moves the expectation with the dependency.
+`runtime_privileges`) is what the storage supervisor and health reporting
+consume; the expected schema version is read from the installed pg-boss
+package, so a catalog bump moves the expectation with the dependency.
+
+## Service boot (`src/server.ts`) and the storage lifecycle (`src/storage.ts`)
+
+The boot contract is health-first (design §8, ADR-0009): the listener and
+`/health` come up before the store is usable, and the storage supervisor —
+which owns the store connection — probes with bounded, capped-backoff
+retries while `/health` reports the store unavailable. A later probe that
+verifies compatible recovers the service without a restart; a store that
+verified and later dies degrades the same way.
+
+- **`/health` always answers 200.** The body carries the degradation:
+  the `jobs_database` check (names in `@azx-pbc/shared`, `JOBS_HEALTH_CHECK_NAMES`)
+  grades the supervisor's snapshot, and **unknown readiness never appears
+  healthy** — before any probe has answered, the state is `error`.
+- **Invalid configuration is an explicit startup error.** `loadJobsConfig`
+  (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID` or
+  `JOBS_DATABASE_URL` before anything listens.
+- **Shutdown releases what startup acquired.** The `onClose` hook stops the
+  supervisor (awaiting any in-flight probe, ending the pool) and flushes
+  telemetry; the graceful-shutdown install bounds the drain.
+- **Probes are counted.** Every probe emits `helix.jobs.storage.probes`
+  with `outcome` ∈ {`ok`, `unavailable`} — the retries an outage absorbs are
+  visible; the _reason_ rides the `jobs_database` check body and the
+  `jobs.storage.unavailable` log event. Telemetry stays inert unless an OTLP
+  endpoint is configured, and the service's behavior is identical without it.
+
+Development:
+
+```
+JOBS_SERVER_ID=jobs JOBS_DATABASE_URL=postgresql://helix_jobs:…@db:5432/helix_jobs \
+  pnpm dev:jobs
+```
+
+The listener serves `/health` (and nothing else until the job-operation
+tickets register their routes — an unmatched request answers 503
+`jobs_unavailable` while the store is unusable, 404 on a ready service).
 
 ## Development
 
@@ -75,6 +112,6 @@ pnpm --filter @azx-pbc/jobs typecheck
 pnpm vitest run apps/jobs --project=node
 ```
 
-The integration suite runs against the real test cluster through the real
-role split; it provisions its own scratch database from
+The integration suites run against the real test cluster through the real
+role split; each provisions its own scratch database from
 `.devcontainer/db-init/01-roles.sql` and drops it afterwards.

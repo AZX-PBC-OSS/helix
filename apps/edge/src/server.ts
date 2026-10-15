@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
+import { installGracefulShutdown, resolveServicePort } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig, publicOrigin } from "./config.js";
@@ -64,7 +64,7 @@ const telemetry = startTelemetry(SERVICE_NAME);
 
 // Bind 0.0.0.0 — inside the container the port is reached across the Docker
 // network / forwarded to the host.
-const port = Number(process.env.EDGE_PORT ?? process.env.PORT ?? 8080);
+const port = resolveServicePort(process.env, ["EDGE_PORT", "PORT"], 8080);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const config = loadConfig();

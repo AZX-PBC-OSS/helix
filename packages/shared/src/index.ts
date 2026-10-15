@@ -34,6 +34,7 @@ export * from "./fetch.js";
 export * from "./jobs.js";
 export * from "./jobsDeployment.js";
 export * from "./jobsFixtures.js";
+export * from "./jobsHealth.js";
 export * from "./jobsProtocol.js";
 export * from "./sessions.js";
 // NB: `./bodyCap.js`, `./devToken.js` and `./logging.js` are deliberately NOT

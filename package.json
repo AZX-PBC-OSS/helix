@@ -11,6 +11,7 @@
     "dev:edge": "pnpm --filter @azx-pbc/edge dev",
     "dev:devgw": "pnpm --filter @azx-pbc/edge dev:devgw",
     "dev:egress": "pnpm --filter @azx-pbc/egress dev",
+    "dev:jobs": "pnpm --filter @azx-pbc/jobs dev",
     "dev:portal": "pnpm --filter @azx-pbc/portal dev",
     "dev:idp": "pnpm --filter @azx-pbc/dev-idp dev",
     "dev:vendor": "pnpm --filter @azx-pbc/dev-oauth-vendor dev",
