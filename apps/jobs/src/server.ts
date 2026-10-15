@@ -6,6 +6,7 @@ import { JobsInstructionBurns } from "./burns.js";
 import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
+import { JobsLifecycleStore } from "./lifecycle.js";
 import type { JobsStorageLogger } from "./storage.js";
 import { JobsStorage } from "./storage.js";
 
@@ -83,6 +84,15 @@ const burns = new JobsInstructionBurns({
   log: lateLog,
 });
 
+// The durable app-lifecycle authority — the admission/start gate's state and
+// the lifecycle delivery's apply-before-acknowledge receiver. Same late-bound
+// logger; no loop of its own.
+const lifecycle = new JobsLifecycleStore({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  log: lateLog,
+});
+
 const app = buildApp({
   storage,
   instructions: createJobsInstructionAuth({
@@ -91,15 +101,17 @@ const app = buildApp({
     burns,
     log: lateLog,
   }),
+  lifecycle,
 });
 logRef.current = app.log;
 
 // The health-first boot contract: the listener comes up before the store is
 // usable, `/health` reports the store's state honestly while the bounded
 // retries continue, and shutdown releases what startup acquired — the sweep
-// timer and pool, the probes' timer and pool, then the telemetry flush
-// (ADR-0009).
+// timer and pool, the probes' timer and pool, the lifecycle pool, then the
+// telemetry flush (ADR-0009).
 app.addHook("onClose", async () => {
+  await lifecycle.stop();
   await burns.stop();
   await storage.stop();
   await telemetry.shutdown();
@@ -115,6 +127,7 @@ installGracefulShutdown(app, app.log);
 try {
   storage.start();
   burns.start();
+  lifecycle.start();
   await app.listen({ port, host });
   app.log.info(
     {
@@ -130,9 +143,10 @@ try {
 } catch (err) {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
-  // storage.start() and burns.start() have already acquired their pools;
-  // release them here, not only on the shutdown path, bounded by each
-  // pool's own connect timeout.
+  // storage.start(), burns.start() and lifecycle.start() have already
+  // acquired their pools; release them here, not only on the shutdown path,
+  // bounded by each pool's own connect timeout.
+  await lifecycle.stop();
   await burns.stop();
   await storage.stop();
   process.exit(1);

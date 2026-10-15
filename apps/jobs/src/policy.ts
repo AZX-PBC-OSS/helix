@@ -40,14 +40,27 @@ export const JOBS_SCHEMA = "jobs";
 /** The durable nonce-burn table — one row per consumed instruction `jti`, keyed by signing scope — as every SQL reference spells it. */
 export const JOBS_INSTRUCTION_BURNS_QUALIFIED = `${JOBS_SCHEMA}.instruction_burns`;
 
-// The burn table's qualified name is interpolated into SQL statements — assert
-// the bare-identifier invariant once, at the definition, so the interpolation
-// can never become a second input path (the same screen the probes in
-// `src/compat.ts` apply to the pg-boss objects).
-if (!/^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/.test(JOBS_INSTRUCTION_BURNS_QUALIFIED)) {
-  throw new Error(
-    `the instruction burn table's qualified name is not a bare identifier pair: ${JOBS_INSTRUCTION_BURNS_QUALIFIED}`,
-  );
+/**
+ * The app-lifecycle table — one row per known app, carrying the highest
+ * lifecycle generation this server has durably applied and whether that
+ * generation is archived (closed to new work). It is the admission/start
+ * gate's authority (ADR-0007) and the serialization point every admission and
+ * worker-start transaction locks against a concurrent lifecycle apply.
+ */
+export const JOBS_APP_LIFECYCLE_QUALIFIED = `${JOBS_SCHEMA}.app_lifecycle`;
+
+/**
+ * The jobs-owned qualified table names are interpolated into SQL statements —
+ * assert the bare-identifier invariant once, at the definition, so the
+ * interpolation can never become a second input path (the same screen the
+ * probes in `src/compat.ts` apply to the pg-boss objects).
+ */
+for (const table of [JOBS_INSTRUCTION_BURNS_QUALIFIED, JOBS_APP_LIFECYCLE_QUALIFIED]) {
+  if (!/^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/.test(table)) {
+    throw new Error(
+      `the jobs-owned table's qualified name is not a bare identifier pair: ${table}`,
+    );
+  }
 }
 
 /** The single queue all installed types run on — cross-type concurrency applies per process. */

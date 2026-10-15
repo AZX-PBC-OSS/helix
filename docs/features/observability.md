@@ -57,7 +57,7 @@ terminates untrusted traffic (decision 4).
 | `helix.providers.reconcile` | the egress provider-cache reconcile |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
 | `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine: the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption, the vendor redirect's completion state machine, and the read-only status decision (ADR-0031 as amended) |
-| `helix.jobs.submit` / `.snapshot` / `.result` / `.cancel` / `.lifecycle` | the jobs receiver's five signed internal operation routes — one root span each, named for the operation the ROUTE serves (never a name read from the token); verification outcomes and reject reasons ride `helix.outcome` / `helix.reason`, and `http.route` is the operation matrix's own path |
+| `helix.jobs.submit` / `.snapshot` / `.result` / `.cancel` / `.lifecycle` | the jobs receiver's five signed internal operation routes — one root span each, named for the operation the ROUTE serves (never a name read from the token); verification outcomes and reject reasons ride `helix.outcome` / `helix.reason`, and `http.route` is the operation matrix's own path. Once an operation's semantics have landed, its own outcome supersedes the verification verdict on that span: the lifecycle delivery answers `applied` / `stale` / `invalid_body` / `unavailable` (`JOBS_LIFECYCLE_OUTCOMES`), with the delivered app, generation and archived flag as span attributes |
 | `helix.jobs.lifecycle.outbox` | the portal's lifecycle outbox write — the span around appending one intent per configured serving/retiring target inside the app transition's transaction (ADR-0007); carries `helix.app_id`, `helix.jobs.generation`, `helix.jobs.archived` and `helix.jobs.lifecycle.targets`. Not emitted when the deployment map is empty (fully disabled jobs writes no backlog) |
 | `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route — My Connections' metadata-only list |
 | `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
@@ -193,7 +193,12 @@ looked up:
   every-attribute scan). The spans are always roots: the caller is not
   authenticated when the span opens, so an inbound `traceparent` never chooses
   their parentage — background-jobs-plane §9's post-authentication extraction
-  is the operation handlers' seam as they land, not this wrapper's.
+  is the operation handlers' seam as they land, not this wrapper's. When an
+  operation's semantics have landed, the span's final `helix.outcome` is the
+  operation's own bounded vocabulary — the lifecycle delivery's is
+  `JOBS_LIFECYCLE_OUTCOMES` (`applied`/`stale`/`invalid_body`/`unavailable`),
+  beside `helix.app_id`, `helix.jobs.generation` and `helix.jobs.archived`
+  (pinned by the same suite's lifecycle scan).
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |

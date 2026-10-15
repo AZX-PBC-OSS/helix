@@ -3,6 +3,7 @@ import {
   INSTRUCTION_HEADER,
   JOBS_SERVER_NAME,
   JOBS_FETCH_QUALIFIED_TYPE,
+  type JobsLifecycleUpdate,
 } from "@azx-pbc/shared";
 import {
   deriveJobsInstructionKey,
@@ -15,6 +16,11 @@ import type { JobsBurnOutcome, JobsBurnStore } from "../burns.js";
 import { createJobsInstructionAuth, type JobsInstructionAuth } from "../instructionAuth.js";
 import { buildApp } from "../app.js";
 import type { JobsStorageCompatibility } from "../compat.js";
+import {
+  mergeLifecycleUpdate,
+  type JobsLifecycleApplier,
+  type JobsLifecycleApplyResult,
+} from "../lifecycle.js";
 import { JobsStorage } from "../storage.js";
 
 /**
@@ -105,7 +111,7 @@ export function makeReceiver(serverId: string = JOBS_SERVER_NAME): TestReceiver 
  * A storage lifecycle in the wanted state without a cluster (app.test.ts's
  * shape), so route tests can drive a ready or unavailable service.
  */
-async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<JobsStorage> {
+export async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<JobsStorage> {
   const compatible: JobsStorageCompatibility = { kind: "compatible", schemaVersion: 45 };
   const storage = new JobsStorage({
     databaseUrl: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
@@ -120,13 +126,53 @@ async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<Jo
   return storage;
 }
 
-/** A built app with a ready store, the receiver seam, and nothing else wired. */
+/**
+ * The in-memory lifecycle applier — the `JobsLifecycleApplier` seam's second
+ * implementor, over the same pure merge the durable store commits (its
+ * durability contract is pinned against real Postgres in
+ * `lifecycle.integration.test.ts` and the boot suite). A leg can arm
+ * `failApplies` to answer every apply with a thrown error and pin the
+ * route's fail-closed mapping.
+ */
+export class MemoryLifecycle implements JobsLifecycleApplier {
+  readonly apps = new Map<string, { generation: string; archived: boolean }>();
+  failApplies = false;
+
+  async apply(appId: string, update: JobsLifecycleUpdate): Promise<JobsLifecycleApplyResult> {
+    if (this.failApplies) {
+      throw new Error("injected lifecycle-store failure");
+    }
+    const stored = this.apps.get(appId) ?? null;
+    const merged = mergeLifecycleUpdate(stored, update);
+    this.apps.set(appId, merged.state);
+    return { appliedGeneration: merged.state.generation, changed: merged.changed };
+  }
+}
+
+/**
+ * A built app with a ready store, the receiver seam, and nothing else wired.
+ * The lifecycle seam rides along as the in-memory applier — the lifecycle
+ * route's accepted path against the REAL store is covered in
+ * `lifecycle.integration.test.ts` and the boot suite.
+ */
 export async function appWithReceiver(receiver: TestReceiver): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
 }> {
+  const { app, storage } = await appWithLifecycle(receiver, new MemoryLifecycle());
+  return { app, storage };
+}
+
+/** A built app whose lifecycle seam is the given applier. */
+export async function appWithLifecycle(
+  receiver: TestReceiver,
+  lifecycle: JobsLifecycleApplier,
+): Promise<{
+  app: FastifyInstance;
+  storage: JobsStorage;
+}> {
   const storage = await storageIn("ready");
-  const app = buildApp({ storage, instructions: receiver.auth });
+  const app = buildApp({ storage, instructions: receiver.auth, lifecycle });
   return { app, storage };
 }
 

@@ -21,7 +21,7 @@ import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telem
 import { buildApp } from "./app.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
 import { JobsStorage } from "./storage.js";
-import { MemoryBurns } from "./test/instructions.js";
+import { MemoryBurns, MemoryLifecycle } from "./test/instructions.js";
 
 /** One ended span, as the recording hands them over. */
 type RecordedSpan = ReturnType<RecordingTelemetry["spans"]>[number];
@@ -69,6 +69,7 @@ interface Receiver {
   storage: JobsStorage;
   clock: { nowS: number };
   burns: MemoryBurns;
+  lifecycle: MemoryLifecycle;
 }
 
 const RECEIVERS = new Map<string, Receiver>();
@@ -109,8 +110,9 @@ function receiverFor(server: string, operation: JobsOperationName, keyId: string
     log: { info: () => {}, warn: () => {}, error: () => {} },
   });
   storage.start();
-  const app = buildApp({ storage, instructions: auth });
-  const receiver: Receiver = { app, storage, clock, burns };
+  const lifecycle = new MemoryLifecycle();
+  const app = buildApp({ storage, instructions: auth, lifecycle });
+  const receiver: Receiver = { app, storage, clock, burns, lifecycle };
   RECEIVERS.set(cacheKey, receiver);
   return receiver;
 }
@@ -129,10 +131,29 @@ function lastSpan(): RecordedSpan | undefined {
  * routing cannot serve is the same denial with fewer words). A served
  * operation never conforms to a rejection, and no outcome never conforms to
  * an acceptance.
+ *
+ * "Reaching its operation" is the verification verdict ("accepted") while the
+ * operation is still a placeholder, and the operation's own completion
+ * outcome once it has landed — the lifecycle delivery answers `applied` or
+ * `stale` (both mean the instruction verified, the nonce burned and the
+ * operation ran to completion).
  */
-function conformant(vector: JobsSigningVector, span: RecordedSpan | undefined): boolean {
+const OPERATION_COMPLETION_OUTCOMES: Record<string, readonly string[]> = {
+  "helix.jobs.lifecycle": ["applied", "stale"],
+};
+
+function conformant(
+  vector: { expect: JobsSigningVector["expect"] },
+  span: RecordedSpan | undefined,
+): boolean {
   const outcome = span?.attributes["helix.outcome"];
-  if (vector.expect === "accept") return outcome === "accepted";
+  if (vector.expect === "accept") {
+    if (outcome === "accepted") return true;
+    // An operation that has landed answers with its own completion outcome
+    // instead of the verification verdict — equally an acceptance.
+    const completions = OPERATION_COMPLETION_OUTCOMES[span?.name ?? ""];
+    return completions !== undefined && completions.includes(String(outcome));
+  }
   if (outcome === "accepted") return false;
   const reason = span?.attributes["helix.reason"];
   if (typeof reason === "string") return reason === vector.expect.reject;
@@ -156,6 +177,7 @@ async function judgeVector(vector: JobsSigningVector): Promise<string | null> {
   receiver.clock.nowS = vector.present.nowS;
   receiver.burns.seen.clear();
   receiver.burns.failBurns = false;
+  receiver.lifecycle.apps.clear();
 
   const headers: Record<string, unknown> = { [INSTRUCTION_HEADER]: token };
   if (typeof expected.idempotencyKeyHeader === "string") {
@@ -186,6 +208,7 @@ async function judgeGolden(vector: JobsGoldenTokenVector): Promise<string | null
   receiver.clock.nowS = vector.nowS;
   receiver.burns.seen.clear();
   receiver.burns.failBurns = false;
+  receiver.lifecycle.apps.clear();
 
   const headers: Record<string, unknown> = { [INSTRUCTION_HEADER]: vector.token };
   if (typeof vector.expected.idempotencyKeyHeader === "string") {
@@ -202,14 +225,9 @@ async function judgeGolden(vector: JobsGoldenTokenVector): Promise<string | null
     ...(hasBody ? { payload: Buffer.from(vector.expected.body) } : {}),
   });
   const span = lastSpan();
-  const matched =
-    vector.expect === "accept"
-      ? span?.attributes["helix.outcome"] === "accepted"
-      : span === undefined ||
-        (span.attributes["helix.outcome"] !== "accepted" &&
-          (typeof span.attributes["helix.reason"] !== "string" ||
-            span.attributes["helix.reason"] === vector.expect.reject));
-  return matched
+  // The same conformance the corpus's own vectors are judged by — the golden
+  // tokens add nothing to the verdict rule, only to the token material.
+  return conformant(vector, span)
     ? null
     : `golden token "${vector.name}" — expected ${
         vector.expect === "accept" ? "acceptance" : `rejection "${vector.expect.reject}"`

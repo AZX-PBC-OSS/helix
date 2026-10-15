@@ -11,6 +11,7 @@ import {
 } from "./compat.js";
 import { describeDsn } from "./dsn.js";
 import {
+  JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
@@ -58,6 +59,8 @@ export interface JobsMigrationSummary {
   queuePolicyRepairs: readonly string[];
   /** The instruction burn table already existed (nothing to create). */
   burnStoreExisted: boolean;
+  /** The app-lifecycle store already existed (nothing to create). */
+  lifecycleStoreExisted: boolean;
 }
 
 /**
@@ -196,6 +199,7 @@ export async function migrateJobsStorage(connectionString: string): Promise<Jobs
     }
 
     const burnStoreExisted = await ensureInstructionBurnStore(pool);
+    const lifecycleStoreExisted = await ensureAppLifecycleStore(pool);
 
     await grantRuntimeAccess(pool, role);
 
@@ -211,6 +215,7 @@ export async function migrateJobsStorage(connectionString: string): Promise<Jobs
       queueExisted,
       queuePolicyRepairs: repairable.map((diff) => diff.field),
       burnStoreExisted,
+      lifecycleStoreExisted,
     };
   } finally {
     if (boss) {
@@ -258,6 +263,34 @@ async function ensureInstructionBurnStore(pool: Pool): Promise<boolean> {
 }
 
 /**
+ * Create the app-lifecycle store — one row per known app carrying the highest
+ * lifecycle generation this server has durably applied and whether it is
+ * archived (ADR-0007's admission/start authority) — idempotently, like the
+ * burn store. The rows are tombstone-keeping state: a future hard app
+ * deletion must still deliver its cancellation intent, so the runtime gets no
+ * DELETE here and the rows are never removed by the service.
+ *
+ * Returns whether the table already existed, for the run's summary.
+ */
+async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
+  const before = await pool.query<{ found: string | null }>(
+    `SELECT to_regclass($1)::text AS found`,
+    [JOBS_APP_LIFECYCLE_QUALIFIED],
+  );
+  const existed = before.rows[0]?.found != null;
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS ${JOBS_SCHEMA}`);
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS ${JOBS_APP_LIFECYCLE_QUALIFIED} (
+       app_id     text        NOT NULL,
+       generation bigint      NOT NULL,
+       archived   boolean     NOT NULL,
+       PRIMARY KEY (app_id)
+     )`,
+  );
+  return existed;
+}
+
+/**
  * Grant the runtime role its DML on the runner's tables. The migration owns
  * the grants because provisioning sets no default privileges on either side
  * (fail-closed): a table that skipped its grant fails the runtime at first
@@ -282,6 +315,10 @@ async function grantRuntimeAccess(pool: Pool, role: string): Promise<void> {
   await pool.query(
     `GRANT SELECT, INSERT, DELETE ON ${JOBS_INSTRUCTION_BURNS_QUALIFIED} TO ${role}`,
   );
+  // The lifecycle store takes no DELETE from anyone: its rows are tombstone
+  // state (a future app deletion still delivers its cancellation intent), so
+  // the runtime reads, inserts and updates it — never removes from it.
+  await pool.query(`GRANT SELECT, INSERT, UPDATE ON ${JOBS_APP_LIFECYCLE_QUALIFIED} TO ${role}`);
 
   // Verify the grants landed by asking the privilege system, not by trusting
   // the statements' success: a future pg-boss object kind that `ALL TABLES`
@@ -303,12 +340,26 @@ async function grantRuntimeAccess(pool: Pool, role: string): Promise<void> {
       )
       .join(", ")}`,
   );
+  const lifecycleChecked = await pool.query<Record<string, boolean>>(
+    `SELECT ${["SELECT", "INSERT", "UPDATE"]
+      .map(
+        (privilege) =>
+          `has_table_privilege('${role}', '${JOBS_APP_LIFECYCLE_QUALIFIED}', '${privilege}') AS ${privilege.toLowerCase()}`,
+      )
+      .join(", ")}`,
+  );
   const row = checked.rows[0];
   const burnRow = burnChecked.rows[0];
+  const lifecycleRow = lifecycleChecked.rows[0];
   const missing: string[] = probes.filter((privilege) => row?.[privilege.toLowerCase()] !== true);
   for (const privilege of ["SELECT", "INSERT", "DELETE"] as const) {
     if (burnRow?.[privilege.toLowerCase()] !== true) {
       missing.push(`${privilege} on ${JOBS_INSTRUCTION_BURNS_QUALIFIED}`);
+    }
+  }
+  for (const privilege of ["SELECT", "INSERT", "UPDATE"] as const) {
+    if (lifecycleRow?.[privilege.toLowerCase()] !== true) {
+      missing.push(`${privilege} on ${JOBS_APP_LIFECYCLE_QUALIFIED}`);
     }
   }
   if (missing.length > 0) {

@@ -13,6 +13,7 @@ import {
 } from "./compat.js";
 import { migrateJobsStorage } from "./migrate.js";
 import {
+  JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
   JOBS_QUEUE_NAME,
   JOBS_PGBOSS_SCHEMA,
@@ -137,6 +138,7 @@ describe("jobs storage migration and startup compatibility", () => {
       queueExisted: false,
       queuePolicyRepairs: [],
       burnStoreExisted: false,
+      lifecycleStoreExisted: false,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -162,6 +164,7 @@ describe("jobs storage migration and startup compatibility", () => {
       queueExisted: true,
       queuePolicyRepairs: [],
       burnStoreExisted: true,
+      lifecycleStoreExisted: true,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -298,6 +301,48 @@ describe("jobs storage migration and startup compatibility", () => {
       });
       await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
         expect.objectContaining({ burnStoreExisted: true }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test(
+    "a dropped lifecycle store is its own verdict and the migration recreates it",
+    slow,
+    async () => {
+      // The lifecycle store is the admission/start gate's authority: without it
+      // every delivery is refused and no submission could ever open, so its
+      // absence is an operator-facing answer distinct from the runner schema's.
+      await asMigrateRole(`DROP TABLE ${JOBS_APP_LIFECYCLE_QUALIFIED}`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "lifecycle_missing",
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ lifecycleStoreExisted: false }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test(
+    "missing lifecycle-store privileges are detected and re-granted by the migration",
+    slow,
+    async () => {
+      await asMigrateRole(
+        `REVOKE UPDATE ON ${JOBS_APP_LIFECYCLE_QUALIFIED} FROM ${JOBS_RUNTIME_ROLE}`,
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "runtime_privileges",
+        missing: expect.arrayContaining([`UPDATE on ${JOBS_APP_LIFECYCLE_QUALIFIED}`]),
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ lifecycleStoreExisted: true }),
       );
       await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
         kind: "compatible",

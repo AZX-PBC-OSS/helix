@@ -92,6 +92,10 @@ describe("jobsDatabaseCheck", () => {
         detailMatches: /instruction burn store is absent.*run the migration command/s,
       },
       {
+        verdict: { kind: "lifecycle_missing" },
+        detailMatches: /app lifecycle store is absent.*run the migration command/s,
+      },
+      {
         verdict: {
           kind: "queue_policy",
           diffs: [

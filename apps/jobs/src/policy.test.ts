@@ -7,6 +7,7 @@ import {
 } from "@azx-pbc/shared";
 
 import {
+  JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_DEADLINE_SECONDS,
   JOBS_FETCH_DEADLINE_SECONDS,
   JOBS_HEARTBEAT_SECONDS,
@@ -206,5 +207,14 @@ describe("the runner's pg-boss constructor policy", () => {
     // bare-identifier pair the module's own load guard demands.
     expect(JOBS_SCHEMA).toBe("jobs");
     expect(JOBS_INSTRUCTION_BURNS_QUALIFIED).toBe("jobs.instruction_burns");
+  });
+
+  test("the app-lifecycle table's qualified name is the jobs schema's own — the identifier every gate and apply interpolates", () => {
+    // The lifecycle table's name rides into the store's apply, the gate's
+    // FOR UPDATE read, the compat probes and the migration's DDL by
+    // interpolation — one rename must move them together, under the same
+    // bare-identifier load guard as the burn table's.
+    expect(JOBS_SCHEMA).toBe("jobs");
+    expect(JOBS_APP_LIFECYCLE_QUALIFIED).toBe("jobs.app_lifecycle");
   });
 });

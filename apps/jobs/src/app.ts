@@ -9,11 +9,16 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   INSTRUCTION_HEADER,
   JOBS_MAX_INPUT_BYTES,
+  JobsLifecycleUpdateAckSchema,
+  JobsLifecycleUpdateSchema,
   jobRequestError,
   worstHealthState,
 } from "@azx-pbc/shared";
 import { JobsOperations, type JobsOperationName } from "@azx-pbc/shared/jobsSigning";
 import {
+  ATTR_APP_ID,
+  ATTR_JOBS_ARCHIVED,
+  ATTR_JOBS_GENERATION,
   ATTR_JOBS_OPERATION,
   ATTR_OUTCOME,
   ATTR_REASON,
@@ -25,12 +30,15 @@ import {
 } from "@azx-pbc/shared/telemetry";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
+import type { Span } from "@opentelemetry/api";
 
 import { jobsDatabaseCheck } from "./health.js";
 import { SERVICE_NAME } from "./serviceName.js";
 import type { JobsStorage } from "./storage.js";
 import { withRootSpan } from "./telemetry.js";
 import type { JobsInstructionAuth } from "./instructionAuth.js";
+import type { JobsLifecycleOutcome } from "@azx-pbc/shared/telemetry";
+import type { JobsLifecycleApplier } from "./lifecycle.js";
 
 export { SERVICE_NAME };
 
@@ -38,9 +46,11 @@ export { SERVICE_NAME };
  * helix-jobs — the background-jobs service (ADR-0045). This composition owns
  * the listener's health contract and the signed internal operation routes:
  * each verifies its instruction and burns its nonce through the receiver seam
- * before anything else happens; the operation semantics themselves are the
- * later tickets' seams, and until one lands its route answers the protocol's
- * retryable unavailable error rather than pretending to have served.
+ * before anything else happens. Operation semantics land with the ticket that
+ * owns each seam — lifecycle delivery (the portal's apply-before-acknowledge
+ * generation authority) is served here; the rest answer the protocol's
+ * retryable unavailable error until their tickets replace them, and the log
+ * line is where that gap is named.
  *
  * The health contract is the platform's always-200 three-state roll-up: a
  * service that can answer HTTP but cannot execute work reports the
@@ -53,6 +63,8 @@ export interface JobsDeps {
   storage: JobsStorage;
   /** The signed-instruction receiver; every internal route authenticates through it. */
   instructions: JobsInstructionAuth;
+  /** The durable app-lifecycle authority; the lifecycle route applies deliveries through it. */
+  lifecycle: JobsLifecycleApplier;
 }
 
 /** A request that arrived with a body the raw-capturing parser held onto. */
@@ -62,10 +74,10 @@ interface RawBodyRequest extends FastifyRequest {
 
 /**
  * A signed operation's post-authentication seam — what each route does once
- * its instruction has verified and its nonce has burned. Every operation's
- * semantics land with the ticket that owns them; until then the receiver
- * answers the protocol's retryable unavailable error rather than pretending,
- * and the log line is where the gap is named.
+ * its instruction has verified and its nonce has burned. Operations land with
+ * the ticket that owns them; until then the receiver answers the protocol's
+ * retryable unavailable error rather than pretending, and the log line is
+ * where the gap is named.
  */
 async function notYetServed(
   operation: JobsOperationName,
@@ -78,6 +90,73 @@ async function notYetServed(
   );
   reply.header("cache-control", "no-store");
   return reply.code(503).send(jobRequestError("jobs_unavailable"));
+}
+
+/**
+ * The lifecycle delivery's operation (ADR-0007): apply the portal's
+ * `{generation, archived}` change durably — highest generation wins, older
+ * deliveries reopen nothing — and only then acknowledge with the generation
+ * actually applied. The body parse is the first post-verification gate (the
+ * instruction's digest bound guarantees the bytes, not their meaning); a
+ * store that cannot answer leaves nothing applied and nothing acknowledged.
+ * The delivery's own evidence — the target app, the delivered generation and
+ * its archived flag, and the apply's outcome — rides the span, all bounded.
+ */
+async function serveLifecycle(
+  deps: JobsDeps,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  span: Span,
+): Promise<void> {
+  const appId = (req.params as { appId?: string }).appId;
+  if (appId === undefined) {
+    // Unreachable through the route (the path parameter is mandatory) — a
+    // defect in the wiring, not a request answer.
+    throw new Error("the lifecycle route served a request with no app id parameter");
+  }
+  const parsed = JobsLifecycleUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    req.log.warn(
+      { event: "jobs.lifecycle.rejected_body" },
+      "a verified lifecycle delivery carried a body that is not a lifecycle update",
+    );
+    span.setAttribute(ATTR_OUTCOME, "invalid_body" satisfies JobsLifecycleOutcome);
+    reply.header("cache-control", "no-store");
+    return reply.code(400).send(jobRequestError("payload_invalid"));
+  }
+  span.setAttributes({
+    [ATTR_APP_ID]: appId,
+    [ATTR_JOBS_GENERATION]: parsed.data.generation,
+    [ATTR_JOBS_ARCHIVED]: parsed.data.archived,
+  });
+  let applied;
+  try {
+    applied = await deps.lifecycle.apply(appId, parsed.data);
+  } catch (error) {
+    // Any failure of the apply means nothing was applied and nothing is
+    // acknowledged: the retryable refusal is the honest answer, and the
+    // portal's sender delivers again with a fresh instruction.
+    req.log.error(
+      { event: "jobs.lifecycle.unavailable", err: error },
+      "the lifecycle store could not apply a delivery",
+    );
+    span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsLifecycleOutcome);
+    reply.header("cache-control", "no-store");
+    return reply.code(503).send(jobRequestError("jobs_unavailable"));
+  }
+  span.setAttribute(
+    ATTR_OUTCOME,
+    (applied.changed ? "applied" : "stale") satisfies JobsLifecycleOutcome,
+  );
+  reply.header("cache-control", "no-store");
+  // The ack is validated against the wire schema before it is sent — a store
+  // answer that cannot parse is a defect answered 500 by the error boundary,
+  // never a malformed body on the wire.
+  return reply.code(200).send(
+    JobsLifecycleUpdateAckSchema.parse({
+      appliedGeneration: applied.appliedGeneration,
+    }),
+  );
 }
 
 const OPERATION_SPAN_NAMES = {
@@ -135,6 +214,7 @@ const internalErrorHandler = (
 function signedOperationHandler(
   operation: ReceivedOperation,
   auth: JobsInstructionAuth,
+  deps: JobsDeps,
 ): (req: FastifyRequest, reply: FastifyReply) => Promise<void> {
   return (req, reply) =>
     withRootSpan(
@@ -169,7 +249,15 @@ function signedOperationHandler(
           reply.header("cache-control", "no-store");
           return reply.code(verdict.status).send(verdict.body);
         }
-        return notYetServed(operation, req, reply);
+        // The operation's own semantics. Once one runs, its outcome is the
+        // span's — the verification verdict's "accepted" is superseded by
+        // what the operation actually did.
+        switch (operation) {
+          case "lifecycle":
+            return serveLifecycle(deps, req, reply, span);
+          default:
+            return notYetServed(operation, req, reply);
+        }
       },
       { reply },
     );
@@ -263,12 +351,14 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
   // The signed internal operations, registered verbatim from the shared
   // operation matrix so a route and its signed binding cannot drift. Until an
   // operation's semantics land, a verified instruction reaches its route and
-  // is answered with the protocol's retryable unavailable error.
+  // is answered with the protocol's retryable unavailable error; the
+  // lifecycle route serves its delivery (the generation authority's
+  // apply-before-acknowledge receiver).
   app.route({
     method: ["POST"],
     url: JobsOperations.submit.path,
     errorHandler: internalErrorHandler,
-    handler: signedOperationHandler("submit", deps.instructions),
+    handler: signedOperationHandler("submit", deps.instructions, deps),
   });
 
   app.route({
@@ -278,7 +368,7 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
     // instruction verify and burn on a HEAD presentation.
     exposeHeadRoute: false,
     errorHandler: internalErrorHandler,
-    handler: signedOperationHandler("snapshot", deps.instructions),
+    handler: signedOperationHandler("snapshot", deps.instructions, deps),
   });
 
   app.route({
@@ -286,21 +376,21 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
     url: JobsOperations.result.path,
     exposeHeadRoute: false,
     errorHandler: internalErrorHandler,
-    handler: signedOperationHandler("result", deps.instructions),
+    handler: signedOperationHandler("result", deps.instructions, deps),
   });
 
   app.route({
     method: ["DELETE"],
     url: JobsOperations.cancel.path,
     errorHandler: internalErrorHandler,
-    handler: signedOperationHandler("cancel", deps.instructions),
+    handler: signedOperationHandler("cancel", deps.instructions, deps),
   });
 
   app.route({
     method: ["POST"],
     url: JobsOperations.lifecycle.path,
     errorHandler: internalErrorHandler,
-    handler: signedOperationHandler("lifecycle", deps.instructions),
+    handler: signedOperationHandler("lifecycle", deps.instructions, deps),
   });
 
   // Genuinely unmatched requests are still the availability gate while the

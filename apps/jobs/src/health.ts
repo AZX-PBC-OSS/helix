@@ -76,6 +76,12 @@ export function jobsDatabaseCheck(snapshot: JobsStorageSnapshot): HealthCheck {
         status: "error",
         detail: `the instruction burn store is absent${since} — run the migration command`,
       };
+    case "lifecycle_missing":
+      return {
+        ...base,
+        status: "error",
+        detail: `the app lifecycle store is absent${since} — run the migration command`,
+      };
     case "queue_policy":
       return {
         ...base,

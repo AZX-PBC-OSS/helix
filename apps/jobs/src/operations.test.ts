@@ -2,11 +2,16 @@ import { describe, expect, test } from "vitest";
 
 import { INSTRUCTION_HEADER, JobErrorMessages, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
 
+import { buildApp } from "./app.js";
+import type { JobsLifecycleApplyResult } from "./lifecycle.js";
 import {
+  appWithLifecycle,
   appWithReceiver,
   instructionHeaders,
   makeReceiver,
   mint,
+  MemoryLifecycle,
+  storageIn,
   submitSpec,
   TEST_BODY,
   TEST_IAT,
@@ -67,7 +72,8 @@ describe("the signed operation routes", () => {
   test("each other operation accepts its own instruction and nothing else", async () => {
     const { app, storage } = await readyApp();
     try {
-      // Snapshot, result, cancel: the bodyless operations on their routes.
+      // Snapshot, result, cancel: the bodyless operations on their routes,
+      // still placeholder-served until their tickets land.
       for (const operation of ["snapshot", "result", "cancel"] as const) {
         const token = await mint({
           operation,
@@ -85,7 +91,11 @@ describe("the signed operation routes", () => {
         expect(res.json(), operation).toEqual(UNAVAILABLE_BODY);
       }
 
-      // Lifecycle: the portal's direction, its own root.
+      // Lifecycle: the portal's direction, its own root — served (the
+      // generation authority's apply-before-acknowledge receiver), answered
+      // with the applied generation. Its durability semantics are the
+      // lifecycle suites' seam; this leg pins that a valid delivery reaches
+      // the operation through the real composition.
       const lifecycleToken = await mint({
         operation: "lifecycle",
         server: "jobs",
@@ -99,8 +109,9 @@ describe("the signed operation routes", () => {
         headers: { ...JSON_HEADERS, [INSTRUCTION_HEADER]: lifecycleToken },
         payload: '{"generation":"8","archived":true}',
       });
-      expect(lifecycle.statusCode).toBe(503);
-      expect(lifecycle.json()).toEqual(UNAVAILABLE_BODY);
+      expect(lifecycle.statusCode).toBe(200);
+      expect(lifecycle.headers["cache-control"]).toBe("no-store");
+      expect(lifecycle.json()).toEqual({ appliedGeneration: "8" });
     } finally {
       await close(app, storage);
     }
@@ -530,6 +541,218 @@ describe("the signed operation routes", () => {
         code: "payload_invalid",
         message: JobErrorMessages.payload_invalid,
       });
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a lifecycle delivery is served while the job store is unavailable — the lifecycle authority is its own plane", async () => {
+    // The signed routes authenticate by instruction and apply through their
+    // own stores; only `/health` and the unmatched-route gate read the
+    // storage snapshot. A job-store outage must not refuse the portal's
+    // lifecycle delivery — the convergence path stays open exactly when the
+    // store is down — so pinning that distinction is what keeps a future
+    // "consistency" gate off the lifecycle route.
+    const receiver = makeReceiver();
+    const lifecycle = new MemoryLifecycle();
+    const storage = await storageIn("unavailable");
+    const app = buildApp({ storage, instructions: receiver.auth, lifecycle });
+    try {
+      const token = await mint({
+        operation: "lifecycle",
+        server: "jobs",
+        appId: TEST_IDENTITY.appId,
+        body: new TextEncoder().encode('{"generation":"3","archived":true}'),
+        iatS: TEST_IAT,
+      });
+      const res = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: { ...JSON_HEADERS, ...instructionHeaders(token) },
+        payload: '{"generation":"3","archived":true}',
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual({ appliedGeneration: "3" });
+      expect(lifecycle.apps.get(TEST_IDENTITY.appId)).toEqual({
+        generation: "3",
+        archived: true,
+      });
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("a lifecycle ack the store answer cannot satisfy is a 500, never a malformed body on the wire", async () => {
+    // The ack is validated against the wire schema before it is sent: a
+    // store answer that is not a valid generation (here one with a leading
+    // zero — a generation has exactly one wire form) is a defect answered by
+    // the route's error boundary, never delivered 200 off-wire.
+    class BadAckLifecycle extends MemoryLifecycle {
+      override async apply(): Promise<JobsLifecycleApplyResult> {
+        return { appliedGeneration: "007", changed: true };
+      }
+    }
+    const receiver = makeReceiver();
+    const { app, storage } = await appWithLifecycle(receiver, new BadAckLifecycle());
+    try {
+      const token = await mint({
+        operation: "lifecycle",
+        server: "jobs",
+        appId: TEST_IDENTITY.appId,
+        body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+        iatS: TEST_IAT,
+      });
+      const res = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: { ...JSON_HEADERS, ...instructionHeaders(token) },
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual({
+        code: "platform_error",
+        message: JobErrorMessages.platform_error,
+      });
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a lifecycle delivery whose body is not a lifecycle update is refused after verification — nothing applied", async () => {
+    // The digest binding guarantees the bytes, not their meaning: a body the
+    // lifecycle schema refuses is answered with the fixed envelope, and the
+    // store is never asked to apply it (the in-memory applier stays empty).
+    const lifecycle = new MemoryLifecycle();
+    const receiver = makeReceiver();
+    const { app, storage } = await appWithLifecycle(receiver, lifecycle);
+    try {
+      const body = '{"generation":"8"}'; // no `archived` half — not an update
+      const token = await mint({
+        operation: "lifecycle",
+        server: "jobs",
+        appId: TEST_IDENTITY.appId,
+        body: new TextEncoder().encode(body),
+        iatS: TEST_IAT,
+      });
+      const res = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: { ...JSON_HEADERS, ...instructionHeaders(token) },
+        payload: body,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual({
+        code: "payload_invalid",
+        message: JobErrorMessages.payload_invalid,
+      });
+      expect(lifecycle.apps.size).toBe(0);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a lifecycle delivery the store cannot apply is the retryable unavailability — nothing acknowledged", async () => {
+    // The apply is fail-closed: a store that cannot answer leaves nothing
+    // applied, and the answer is the protocol's retryable 503 — the portal's
+    // sender delivers again with a fresh instruction.
+    const lifecycle = new MemoryLifecycle();
+    lifecycle.failApplies = true;
+    const receiver = makeReceiver();
+    const { app, storage } = await appWithLifecycle(receiver, lifecycle);
+    try {
+      const token = await mint({
+        operation: "lifecycle",
+        server: "jobs",
+        appId: TEST_IDENTITY.appId,
+        body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+        iatS: TEST_IAT,
+      });
+      const res = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: { ...JSON_HEADERS, ...instructionHeaders(token) },
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(lifecycle.apps.size).toBe(0);
+
+      // The delivery retries with a fresh instruction once the store answers.
+      lifecycle.failApplies = false;
+      const retried = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: {
+          ...JSON_HEADERS,
+          ...instructionHeaders(
+            await mint({
+              operation: "lifecycle",
+              server: "jobs",
+              appId: TEST_IDENTITY.appId,
+              body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+              iatS: TEST_IAT,
+            }),
+          ),
+        },
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(retried.statusCode).toBe(200);
+      expect(retried.json()).toEqual({ appliedGeneration: "8" });
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a 503'd lifecycle delivery's nonce is already consumed — the same token retries into a replay refusal, never a second apply", async () => {
+    // Burn happens before the operation runs, so a delivery the store refused
+    // is consumed all the same. That ordering is what forces the sender's
+    // fresh-instruction retry: reusing the token must be answered as a replay
+    // (401) without touching the store again — an apply that ran on a
+    // replayed token would mean the burn moved after the operation, and the
+    // crash window between apply and burn would make a failed delivery
+    // unacknowledged and unrepeatable.
+    const lifecycle = new MemoryLifecycle();
+    lifecycle.failApplies = true;
+    const receiver = makeReceiver();
+    const { app, storage } = await appWithLifecycle(receiver, lifecycle);
+    try {
+      const headers = {
+        ...JSON_HEADERS,
+        ...instructionHeaders(
+          await mint({
+            operation: "lifecycle",
+            server: "jobs",
+            appId: TEST_IDENTITY.appId,
+            body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+            iatS: TEST_IAT,
+          }),
+        ),
+      };
+      const refused = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers,
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(refused.statusCode).toBe(503);
+
+      lifecycle.failApplies = false;
+      const replay = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers,
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(replay.statusCode).toBe(401);
+      expect(replay.json()).toEqual(UNAUTHORIZED_BODY);
+      // The store was never asked on the replay: the in-memory applier is
+      // still empty, the generation still undelivered.
+      expect(lifecycle.apps.size).toBe(0);
     } finally {
       await close(app, storage);
     }

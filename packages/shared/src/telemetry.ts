@@ -336,6 +336,27 @@ export const JOBS_BURN_SWEEP_OUTCOMES = ["ok", "failed"] as const;
 export type JobsBurnSweepOutcome = (typeof JOBS_BURN_SWEEP_OUTCOMES)[number];
 
 /**
+ * How the jobs receiver applied one lifecycle delivery — the final
+ * `helix.outcome` on the `helix.jobs.lifecycle` route span (overwriting the
+ * verification verdict once the operation runs). Bounded by construction:
+ * each value is one exit of the apply.
+ *
+ * - `applied` — the delivery moved the app's durable generation forward.
+ * - `stale` — the delivery was not newer than the generation already applied
+ *   (a redelivery or an out-of-order older change): acknowledged with the
+ *   highest applied generation and deliberately without state change. A run
+ *   of `stale` is normal after redelivery, never a fault.
+ * - `invalid_body` — the delivery's body failed the lifecycle schema after
+ *   its instruction verified; answered 400 and never applied. (Deliberately
+ *   not `rejected` — that word is the instruction counter's verification
+ *   verdict, and one word must not mean two things on one span.)
+ * - `unavailable` — the lifecycle store could not answer, so nothing was
+ *   applied and nothing acknowledged (503, retryable by the sender).
+ */
+export const JOBS_LIFECYCLE_OUTCOMES = ["applied", "stale", "invalid_body", "unavailable"] as const;
+export type JobsLifecycleOutcome = (typeof JOBS_LIFECYCLE_OUTCOMES)[number];
+
+/**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the
  * `helix.gateway.data` span, separating the deny path from an empty result
  * (ADR-0042 decision 7). Bounded by construction: these are the authorization

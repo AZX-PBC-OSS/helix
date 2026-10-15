@@ -691,4 +691,84 @@ describe("signed instructions through the running process", () => {
       expect(exit.exitCode).toBe(0);
     }
   });
+
+  test(
+    "a lifecycle delivery is applied before it is acknowledged, and a stale redelivery after a restart acknowledges the highest applied generation",
+    slow,
+    async () => {
+      const port = await reservePort();
+      const LIFECYCLE_APP = "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f";
+
+      /** Mint one lifecycle instruction against the child's own portal root, right now. */
+      const mintLifecycle = async (body: string): Promise<string> =>
+        mintJobsInstruction(
+          {
+            operation: "lifecycle",
+            server: "jobs",
+            appId: LIFECYCLE_APP,
+            body: new TextEncoder().encode(body),
+            iatS: Math.floor(Date.now() / 1000) - 1,
+          },
+          deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+        );
+
+      const deliver = async (port: number, body: string) => {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${LIFECYCLE_APP}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintLifecycle(body),
+            },
+            body,
+          },
+        );
+        return { status: res.status, body: (await res.json()) as unknown };
+      };
+
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      let child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        // The archive delivery (generation 3): applied durably, acknowledged
+        // with the generation actually applied.
+        const archived = await deliver(port, '{"generation":"3","archived":true}');
+        expect(archived.status).toBe(200);
+        expect(archived.body).toEqual({ appliedGeneration: "3" });
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+
+      // A restarted receiver against the same durable store: the older
+      // unarchive (generation 2) delivered late is a no-op that still
+      // acknowledges the highest applied generation — the closed generation
+      // it was delivered for cannot be reopened by its own out-of-order
+      // redelivery.
+      const restartedPort = await reservePort();
+      child = await bootServer(restartedPort, childEnv(RUNTIME_DSN, restartedPort));
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(restartedPort, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+        const stale = await deliver(restartedPort, '{"generation":"2","archived":false}');
+        expect(stale.status).toBe(200);
+        expect(stale.body).toEqual({ appliedGeneration: "3" });
+
+        // And a repeat of the newest delivery is acknowledged identically.
+        const repeat = await deliver(restartedPort, '{"generation":"3","archived":true}');
+        expect(repeat.status).toBe(200);
+        expect(repeat.body).toEqual({ appliedGeneration: "3" });
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
 });

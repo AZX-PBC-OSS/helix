@@ -6,7 +6,7 @@ import { buildApp } from "./app.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
 import { JobsStorage } from "./storage.js";
-import { makeReceiver } from "./test/instructions.js";
+import { makeReceiver, MemoryLifecycle } from "./test/instructions.js";
 
 /**
  * The listener's health contract and the unmatched-route behaviour, through
@@ -44,7 +44,11 @@ async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<Jo
 
 /** The full deps: the storage state under test plus the receiver seam. */
 async function depsWith(storage: JobsStorage) {
-  return { storage, instructions: makeReceiver().auth };
+  return {
+    storage,
+    instructions: makeReceiver().auth,
+    lifecycle: new MemoryLifecycle(),
+  };
 }
 
 describe("GET /health", () => {

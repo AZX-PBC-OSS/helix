@@ -7,9 +7,11 @@ import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telem
 import { JobsOperations } from "@azx-pbc/shared/jobsSigning";
 
 import {
+  appWithLifecycle,
   appWithReceiver,
   instructionHeaders,
   makeReceiver,
+  MemoryLifecycle,
   mint,
   submitSpec,
   TEST_BODY,
@@ -238,6 +240,94 @@ describe("instruction telemetry", () => {
       expect(span?.name).toBe("helix.jobs.lifecycle");
       expect(span?.attributes["helix.jobs.operation"]).toBe("lifecycle");
       expect(span?.attributes["http.route"]).toBe(JobsOperations.lifecycle.path);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("a lifecycle delivery's span carries its own bounded evidence", async () => {
+    const lifecycle = new MemoryLifecycle();
+    const { app, storage } = await appWithLifecycle(makeReceiver(), lifecycle);
+    try {
+      const deliver = async (body: string): Promise<unknown> => {
+        const token = await mint({
+          operation: "lifecycle",
+          server: "jobs",
+          appId: TEST_IDENTITY.appId,
+          body: new TextEncoder().encode(body),
+          iatS: TEST_IAT,
+        });
+        return app.inject({
+          method: "POST",
+          url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+          headers: { "content-type": "application/json", ...instructionHeaders(token) },
+          payload: body,
+        });
+      };
+
+      await deliver('{"generation":"8","archived":true}'); // applied
+      await deliver('{"generation":"8","archived":true}'); // stale (redelivery)
+      await deliver('{"generation":"8"}'); // invalid body, never applied
+
+      const spans = recording.spans();
+      expect(spans).toHaveLength(3);
+      expect(spans.map((s) => s.attributes[ATTR_OUTCOME])).toEqual([
+        "applied",
+        "stale",
+        "invalid_body",
+      ]);
+      // The 200s and the fixed 400 stay UNSET: a served delivery and a
+      // body-shape refusal are the route working as designed, never faults.
+      expect(spans.map((s) => s.status.code)).toEqual([0, 0, 0]);
+      // The delivery's own evidence: the target app, the delivered generation
+      // and its archived flag — all bounded, all non-personal.
+      const applied = spans[0];
+      expect(applied?.attributes["helix.app_id"]).toBe(TEST_IDENTITY.appId);
+      expect(applied?.attributes["helix.jobs.generation"]).toBe("8");
+      expect(applied?.attributes["helix.jobs.archived"]).toBe(true);
+
+      // The same every-attribute redaction scan the submit spans take: no
+      // token material, no retry key, no owner identity, no URL.
+      for (const span of spans) {
+        for (const [key, value] of Object.entries(span.attributes)) {
+          expect(String(value), `attr ${key} carries owner identity`).not.toContain(
+            TEST_IDENTITY.ownerOid,
+          );
+        }
+        expect(Object.keys(span.attributes).some((k) => k.startsWith("url."))).toBe(false);
+      }
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("a lifecycle delivery the store cannot answer carries the unavailable outcome and grades the span ERROR", async () => {
+    // The last of the four lifecycle outcomes on the span: the retryable
+    // refusal. A 5xx reply is a fault worth seeing — like the submit
+    // placeholder's 503, the reply grades the span ERROR even though the
+    // handler answered normally instead of throwing.
+    const lifecycle = new MemoryLifecycle();
+    lifecycle.failApplies = true;
+    const { app, storage } = await appWithLifecycle(makeReceiver(), lifecycle);
+    try {
+      const token = await mint({
+        operation: "lifecycle",
+        server: "jobs",
+        appId: TEST_IDENTITY.appId,
+        body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+        iatS: TEST_IAT,
+      });
+      await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: { "content-type": "application/json", ...instructionHeaders(token) },
+        payload: '{"generation":"8","archived":true}',
+      });
+      const span = recording.spans().at(-1);
+      expect(span?.attributes[ATTR_OUTCOME]).toBe("unavailable");
+      expect(span?.status.code).toBe(2); // ERROR
     } finally {
       await app.close();
       await storage.stop();

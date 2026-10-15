@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 
 import {
+  JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
@@ -34,6 +35,7 @@ export type JobsStorageCompatibility =
   | { kind: "queue_missing" }
   | { kind: "queue_policy"; diffs: readonly JobsQueuePolicyDiff[] }
   | { kind: "burn_missing" }
+  | { kind: "lifecycle_missing" }
   | { kind: "runtime_privileges"; missing: readonly string[] };
 
 /** The queue-table columns this check compares — pg-boss's effective queue policy. */
@@ -134,7 +136,10 @@ export function compareQueuePolicy(row: QueuePolicyRow): JobsQueuePolicyDiff[] {
  * The runtime DML the runner needs on the store, probed through the privilege
  * system rather than by writing. Read-only: `has_*_privilege` never mutates.
  * The burn table needs INSERT (the burn claim), DELETE (the sweep) and SELECT
- * (the `ON CONFLICT` arbiter's read, as on the egress burn table).
+ * (the `ON CONFLICT` arbiter's read, as on the egress burn table). The
+ * lifecycle store needs SELECT/INSERT/UPDATE (the apply's
+ * insert-lock-merge-write transaction) and deliberately no DELETE — its rows
+ * are tombstone state.
  */
 async function missingRuntimePrivileges(client: PoolClient): Promise<string[]> {
   const probes: Array<{ name: string; sql: string }> = [
@@ -153,6 +158,10 @@ async function missingRuntimePrivileges(client: PoolClient): Promise<string[]> {
     ...(["SELECT", "INSERT", "DELETE"] as const).map((privilege) => ({
       name: `${privilege} on ${JOBS_INSTRUCTION_BURNS_QUALIFIED}`,
       sql: `SELECT has_table_privilege(current_user, '${JOBS_INSTRUCTION_BURNS_QUALIFIED}', '${privilege}') AS ok`,
+    })),
+    ...(["SELECT", "INSERT", "UPDATE"] as const).map((privilege) => ({
+      name: `${privilege} on ${JOBS_APP_LIFECYCLE_QUALIFIED}`,
+      sql: `SELECT has_table_privilege(current_user, '${JOBS_APP_LIFECYCLE_QUALIFIED}', '${privilege}') AS ok`,
     })),
   ];
   const missing: string[] = [];
@@ -241,6 +250,26 @@ async function readVerdict(client: PoolClient): Promise<JobsStorageCompatibility
   }
   if (!burnsPresent) {
     return { kind: "burn_missing" };
+  }
+
+  // The lifecycle store is the admission/start gate's authority: without it
+  // every delivery is refused and every submission is answered with retryable
+  // unavailability forever, so its absence is its own verdict — the same
+  // remedy (the migration command) as the burn store's, a different reason.
+  let lifecyclePresent: boolean;
+  try {
+    const found = await client.query<{ found: string | null }>(
+      `SELECT to_regclass($1)::text AS found`,
+      [JOBS_APP_LIFECYCLE_QUALIFIED],
+    );
+    lifecyclePresent = found.rows[0]?.found != null;
+  } catch (error) {
+    return sqlState(error) === INSUFFICIENT_PRIVILEGE
+      ? { kind: "runtime_privileges", missing: ["SELECT on the lifecycle store's catalog entry"] }
+      : unreachable(error);
+  }
+  if (!lifecyclePresent) {
+    return { kind: "lifecycle_missing" };
   }
 
   const missing = await missingRuntimePrivileges(client);

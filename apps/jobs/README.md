@@ -7,8 +7,11 @@ migration/configuration command, the startup compatibility check — the service
 boot: the health-first listener, the storage-readiness supervisor and the
 shared health vocabulary, and the signed internal operation receiver: every
 edge→jobs and portal→jobs instruction is verified and its nonce durably burned
-before its operation runs. The operations' own semantics and worker
-registration land in their own tickets and compose from here.
+before its operation runs. The operations' own semantics land in their own
+tickets and compose from here — lifecycle delivery (the app-generation
+authority's apply-before-acknowledge receiver, `src/lifecycle.ts`) is served;
+the rest answer the protocol's retryable unavailable error until their tickets
+replace the placeholder, and the log line is where that gap is named.
 
 ## Signed internal operations (`src/instructionAuth.ts`, `src/app.ts`)
 
@@ -42,6 +45,39 @@ remember burns.
 A legitimate HTTP retry mints a fresh instruction (fresh `jti`) carrying the
 same optional retry identity — the signed `idempotencyKey` claim, compared at
 admission (a later ticket's seam), never overridden by an unsigned header.
+
+## The app-lifecycle authority (`src/lifecycle.ts`)
+
+The portal is the generation authority (ADR-0007); this service owns the
+jobs-side state its delivery lands in — one row per known app in the
+`jobs.app_lifecycle` table: the highest lifecycle generation durably applied
+and whether that generation is archived. The lifecycle route applies a
+delivered `{generation, archived}` in one transaction — ensure the row, lock
+it, merge, write, commit — and acknowledges **after** the commit with the
+highest applied generation, never the delivered one: a redelivery or an
+out-of-order older change acknowledges the highest and changes nothing, so
+older deliveries can never reopen a closed generation (each new generation's
+watermark already closes every generation below it — an immediate
+archive/unarchive delivered in either order keeps every pre-archive
+generation ineligible).
+
+The same row is the **admission/start gate**: `lifecycleEligibility` (pure,
+unit-pinned) judges a claimed generation as `admit` (applied and open),
+`closed` (older, or applied while archived — final), or `unseen` (newer than
+anything applied, or an app not yet known — temporary; the caller reports the
+retryable 503 and waits for the portal's delivery, never opening a generation
+itself). `lifecycleEligibilityInTx` runs the judged read under the caller's
+transaction with the row locked `FOR UPDATE` — the serialization boundary an
+acceptance transaction (and a worker start) holds to its commit, so a
+lifecycle apply cannot land between a gate decision and its effect. The
+cancelled-work recovery that consumes the gate's closed generations is its own
+supervised loop.
+
+The store's table and the runtime role's grants (SELECT/INSERT/UPDATE — never
+DELETE: the rows are tombstone state a future app deletion must still deliver
+against) are created by the migration command; the startup compatibility
+check reports the store's absence (`lifecycle_missing`) rather than serving
+a gate that cannot answer.
 
 ## The installed-handler policy (`src/policy.ts`)
 
@@ -87,24 +123,26 @@ It refuses a DSN whose role holds no CREATE on the database (the runtime
 DSN's shape), installs or migrates the pg-boss schema, creates the platform
 queue with the policy above, converges policy drift that pg-boss can update
 (failing on drift fixed at queue creation), creates the instruction burn
-store (schema `jobs`, table `instruction_burns`, its `burn_until` index),
-grants the runtime role DML on all of it — provisioning sets no default
-privileges, so grants arrive by migration — and verifies the effective state
-by re-reading it. Later jobs-owned migrations (the wrapper tables and their
-grants) extend this command the same way: a step under the migration
-identity, after the schema they depend on exists.
+store (schema `jobs`, table `instruction_burns`, its `burn_until` index) and
+the app-lifecycle store (table `app_lifecycle`), grants the runtime role DML
+on all of it — provisioning sets no default privileges, so grants arrive by
+migration — and verifies the effective state by re-reading it. Later
+jobs-owned migrations (the wrapper tables and their grants) extend this
+command the same way: a step under the migration identity, after the schema
+they depend on exists.
 
 ## Startup compatibility check (`src/compat.ts`)
 
 `checkJobsStorageCompatibility(pool)` answers, read-only, whether the
 runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, the instruction
-burn store present, and the runtime identity holding its DML. The verdict
-union (`compatible`, `unreachable`, `schema_missing`, `schema_version`,
-`queue_missing`, `queue_policy`, `burn_missing`, `runtime_privileges`) is
-what the storage supervisor and health reporting consume; the expected schema
-version is read from the installed pg-boss package, so a catalog bump moves
-the expectation with the dependency.
+burn store and the app-lifecycle store present, and the runtime identity
+holding its DML. The verdict union (`compatible`, `unreachable`,
+`schema_missing`, `schema_version`, `queue_missing`, `queue_policy`,
+`burn_missing`, `lifecycle_missing`, `runtime_privileges`) is what the
+storage supervisor and health reporting consume; the expected schema version
+is read from the installed pg-boss package, so a catalog bump moves the
+expectation with the dependency.
 
 ## Service boot (`src/server.ts`) and the storage lifecycle (`src/storage.ts`)
 
@@ -146,10 +184,11 @@ JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… \
 ```
 
 The listener serves `/health` and the five signed internal operation routes
-(verification + durable burn; the operations' semantics arrive with their own
-tickets and answer 503 `jobs_unavailable` until then — an unmatched request
-answers 503 `jobs_unavailable` while the store is unusable, 404 on a ready
-service).
+(verification + durable burn). The lifecycle route serves the portal's
+delivery (the app-lifecycle authority above); the other operations' semantics
+arrive with their own tickets and answer 503 `jobs_unavailable` until then —
+an unmatched request answers 503 `jobs_unavailable` while the store is
+unusable, 404 on a ready service.
 
 ## Development
 

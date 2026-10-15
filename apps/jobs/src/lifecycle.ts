@@ -1,0 +1,373 @@
+import { Pool, type PoolClient } from "pg";
+
+import { JobsGenerationSchema, type JobsLifecycleUpdate } from "@azx-pbc/shared";
+
+import { JOBS_APP_LIFECYCLE_QUALIFIED } from "./policy.js";
+
+/**
+ * The jobs-side app-lifecycle authority (ADR-0007, background-jobs-plane
+ * design §5) — the durable state the admission and worker-start gates are
+ * judged against, and the apply-before-acknowledge receiver for the portal's
+ * lifecycle delivery.
+ *
+ * The state is one row per known app: the highest lifecycle generation this
+ * server has durably applied, and whether that generation is archived (closed
+ * to new work). The portal — the generation authority — delivers
+ * `{generation, archived}` per transition under a separately signed
+ * instruction; every transition (creation, archive, unarchive) opens a new
+ * generation, so the delivery of generation G means exactly:
+ *
+ * - every generation below G is closed forever — a job may only ever be
+ *   admitted under a generation that was, at some moment, the newest open
+ *   one, and each new generation supersedes it;
+ * - generation G itself is open only when the delivery says `archived: false`.
+ *
+ * Those two facts make out-of-order delivery safe without extra bookkeeping:
+ * an older delivery arriving after a newer one can reopen nothing (its whole
+ * closure intent is already covered by the newer generation's watermark), and
+ * an immediate archive followed by unarchive closes every pre-archive
+ * generation whether the deliveries arrive in order or not. The cancelled-work
+ * recovery that consumes this state — cancelling still-active jobs under
+ * closed generations until none remain — is its own supervised loop, which
+ * reads the same row: active work under a generation below the applied one
+ * (or equal to it while archived) is cancellation-eligible work.
+ *
+ * Application acknowledges with the highest applied generation — never the
+ * delivered one — so a replayed older update cannot make the portal believe a
+ * generation was applied that this server has not reached.
+ */
+
+/** The durable lifecycle state of one app, as the gate and the merge see it. */
+export interface AppLifecycleState {
+  /** The highest applied generation — the wire's canonical decimal string. */
+  generation: string;
+  /** Whether that generation is archived (closed to new work). */
+  archived: boolean;
+}
+
+/**
+ * Whether a job under a claimed generation may be admitted or started, judged
+ * against the durable state. The three verdicts are the admission gate's whole
+ * vocabulary:
+ *
+ * - `admit` — the claimed generation is the applied one and it is open.
+ * - `closed` — the claimed generation is older than the applied one, or equal
+ *   to it while archived: no new work may start under it, and a job already
+ *   admitted under it may not start. The answer is final — waiting cannot
+ *   change it.
+ * - `unseen` — the claimed generation is newer than the applied one, or the
+ *   app is not known here at all: the portal has not (yet) delivered that
+ *   state. The answer is temporary — the caller reports retryable
+ *   unavailability and the portal's delivery opens the generation; no edge
+ *   assertion ever opens one here.
+ */
+export type JobsGenerationEligibility =
+  | { verdict: "admit" }
+  | { verdict: "closed"; appliedGeneration: string }
+  | { verdict: "unseen"; appliedGeneration: string | null };
+
+/**
+ * The canonical wire form of a generation — the decimal string of the value
+ * it denotes. The delivery side of the grammar discipline the eligibility
+ * gate enforces on claims: a string the wire schema would refuse (a hex or
+ * octal prefix, padding, an explicit sign) still denotes a number, and the
+ * bigint column coerces it silently on write, so the merge canonicalizes
+ * rather than copies — what is durably held and what is answered is always
+ * the wire form, never the delivered spelling. Canonicalizing repairs the
+ * spelling only, so the canonical form itself is checked against the wire
+ * schema before it is returned: a value whose canonical form the wire
+ * refuses (`"-1"` — BigInt is happy, the bigint column stores it, and no
+ * acknowledgement could ever name the poisoned row) is not a generation at
+ * all and throws here — the route's boundary refuses it first, and a direct
+ * caller sees the throw, never a stored guess. (`"-0"` repairs to `"0"` and
+ * is in-space: the check is on the canonical form, not the spelling.)
+ */
+function canonicalGeneration(value: string): string {
+  const canonical = BigInt(value).toString();
+  if (!JobsGenerationSchema.safeParse(canonical).success) {
+    throw new Error(
+      `the generation "${value}" denotes ${canonical}, which the wire form does not carry — generations are unsigned`,
+    );
+  }
+  return canonical;
+}
+
+/**
+ * Merge one delivered lifecycle update into the stored state — the pure heart
+ * of {@link JobsLifecycleStore.apply}. `changed` says whether the delivery
+ * moved the state forward (`applied`) or was not newer than it (`stale`):
+ * an older delivery is a no-op, a redelivery of the newest state is a no-op,
+ * and a delivery claiming an already-applied generation is archived closes it
+ * if it was somehow still open — an archive is never undone by a delivery at
+ * the same generation, whatever produced the conflict. The yielded state's
+ * generation is always the wire-canonical form of the delivered value
+ * ({@link canonicalGeneration}) — a delivery cannot launder a non-canonical
+ * spelling through the merge into state the column then coerces.
+ */
+export function mergeLifecycleUpdate(
+  stored: AppLifecycleState | null,
+  delivered: JobsLifecycleUpdate,
+): { state: AppLifecycleState; changed: boolean } {
+  const deliveredGeneration = canonicalGeneration(delivered.generation);
+  if (stored === null) {
+    return {
+      state: { generation: deliveredGeneration, archived: delivered.archived },
+      changed: true,
+    };
+  }
+  const applied = BigInt(stored.generation);
+  const value = BigInt(deliveredGeneration);
+  if (value > applied) {
+    return {
+      state: { generation: deliveredGeneration, archived: delivered.archived },
+      changed: true,
+    };
+  }
+  if (value < applied) {
+    return { state: stored, changed: false };
+  }
+  if (delivered.archived && !stored.archived) {
+    return { state: { generation: stored.generation, archived: true }, changed: true };
+  }
+  return { state: stored, changed: false };
+}
+
+/**
+ * Judge a claimed generation against stored state — the pure decision both
+ * consumers of the gate share. Inputs are schema-validated wire values
+ * (`JobsGenerationSchema`, `AppLifecycleState` as read from the store); a
+ * claimed generation that somehow cannot be compared is `closed` — the gate
+ * fails closed, never admits on an unreadable claim. The claim's own grammar
+ * is re-checked here against the wire schema rather than trusted: `BigInt`
+ * parses a strictly wider set than the wire form (hex/binary/octal prefixes,
+ * an explicit sign, surrounding whitespace) and would compare such a claim
+ * numerically — admitting `0x4` against an applied `4` — where the boundary
+ * refuses the value outright.
+ */
+export function lifecycleEligibility(
+  stored: AppLifecycleState | null,
+  claimedGeneration: string,
+): JobsGenerationEligibility {
+  if (stored === null) return { verdict: "unseen", appliedGeneration: null };
+  const applied = BigInt(stored.generation);
+  const parsedClaim = JobsGenerationSchema.safeParse(claimedGeneration);
+  if (!parsedClaim.success) {
+    return { verdict: "closed", appliedGeneration: stored.generation };
+  }
+  const claimed = BigInt(parsedClaim.data);
+  if (claimed < applied) return { verdict: "closed", appliedGeneration: stored.generation };
+  if (claimed > applied) return { verdict: "unseen", appliedGeneration: stored.generation };
+  return stored.archived
+    ? { verdict: "closed", appliedGeneration: stored.generation }
+    : { verdict: "admit" };
+}
+/** What one durable application produced, for the acknowledgement and the span. */
+export interface JobsLifecycleApplyResult {
+  /** The generation to acknowledge — the highest applied after the merge. */
+  appliedGeneration: string;
+  /** Whether the delivery moved the state forward (`applied`) or not (`stale`). */
+  changed: boolean;
+}
+
+/**
+ * The apply seam the lifecycle route consumes — the durable store implements
+ * it against Postgres; tests may substitute an in-memory variant over the
+ * same pure merge, the way the burn store's seam is shared. The route's
+ * contract is exact: apply durably before the acknowledgement exists, or
+ * throw and acknowledge nothing.
+ */
+export interface JobsLifecycleApplier {
+  apply(appId: string, update: JobsLifecycleUpdate): Promise<JobsLifecycleApplyResult>;
+}
+
+/** The structural logger the store reports through (the pino surface, without importing Fastify). */
+export interface JobsLifecycleLogger {
+  warn(obj: Record<string, unknown>, msg: string): void;
+}
+
+export interface JobsLifecycleStoreOptions {
+  databaseUrl: string;
+  /** Per-query ceiling, applied as both the pool's statement and connect timeout. */
+  statementTimeoutMs: number;
+  log: JobsLifecycleLogger;
+}
+
+/** The runtime pool stays small: one short transaction per lifecycle delivery. */
+const POOL_MAX = 2;
+
+/**
+ * The durable lifecycle store — the portal-delivered state's owner, with the
+ * same pool discipline as the service's other components: `start()` never
+ * throws, `stop()` releases the pool on every exit path, and an apply against
+ * a store that is not running throws for the route to refuse (503, retryable),
+ * never silently succeeds.
+ *
+ * The apply is one transaction: ensure the app's row exists, lock it, merge
+ * the delivery, write the merge, commit — and only the committed state is
+ * acknowledged, so a crash or a refusal between them acknowledges nothing the
+ * store does not already hold. The row lock held to the commit is also the
+ * serialization boundary the admission and worker-start gates use: a
+ * lifecycle apply waits for in-flight acceptance transactions to commit (and
+ * therefore sees, and refuses, any enqueue that raced it), and an acceptance
+ * transaction locking the same row cannot interleave with a generation change.
+ */
+export class JobsLifecycleStore implements JobsLifecycleApplier {
+  private readonly databaseUrl: string;
+  private readonly statementTimeoutMs: number;
+  private readonly log: JobsLifecycleLogger;
+
+  private pool: Pool | null = null;
+  private stopped = false;
+
+  constructor(options: JobsLifecycleStoreOptions) {
+    this.databaseUrl = options.databaseUrl;
+    this.statementTimeoutMs = options.statementTimeoutMs;
+    this.log = options.log;
+  }
+
+  /** Open the pool. No background work: the store has no loop of its own. */
+  start(): void {
+    if (this.pool || this.stopped) return;
+    this.pool = new Pool({
+      connectionString: this.databaseUrl,
+      max: POOL_MAX,
+      connectionTimeoutMillis: this.statementTimeoutMs,
+      statement_timeout: this.statementTimeoutMs,
+    });
+    // pg-pool strips a checked-out client's 'error' listener, so a connection
+    // death while no query is outstanding would be an unhandled event that
+    // kills the process; this listener keeps the service alive and lets the
+    // apply's own failure carry the cause.
+    this.pool.on("error", (error) => {
+      this.log.warn(
+        { event: "jobs.lifecycle.pool_error", err: error },
+        "pooled jobs lifecycle-store client dropped",
+      );
+    });
+  }
+
+  /** Release the pool. Safe to call twice; the store does not restart after stop. */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    const pool = this.pool;
+    this.pool = null;
+    await pool?.end();
+  }
+
+  /**
+   * Apply one delivered update durably and report what to acknowledge. Every
+   * failure throws — the transaction (if it began) is rolled back and nothing
+   * is applied; the route answers the retryable unavailability and the
+   * portal's sender delivers again with a fresh instruction.
+   */
+  async apply(appId: string, update: JobsLifecycleUpdate): Promise<JobsLifecycleApplyResult> {
+    const pool = this.pool;
+    if (this.stopped || !pool) {
+      throw new Error("the lifecycle store is not running");
+    }
+    // The delivery's canonical wire form, before anything is acquired: the
+    // column coerces a non-canonical spelling silently, so the value INSERTed
+    // is the same canonical string the acknowledgement reports — what is
+    // stored and what is answered can never diverge. A delivery that is not a
+    // generation at all throws here, with no client checked out and nothing
+    // acquired — never between the pool's acquire and its release.
+    const deliveredGeneration = canonicalGeneration(update.generation);
+    const client = await pool.connect();
+    let result: JobsLifecycleApplyResult;
+    try {
+      await client.query("BEGIN");
+      // Make the row exist, then judge against what was there: the insert's
+      // row count says whether the app was unknown (the delivery IS the new
+      // state) or the row predate the delivery (merge against it). The
+      // FOR UPDATE on the existing row is the serialization point against
+      // admissions and any other delivery for this app.
+      const inserted = await client.query(
+        `INSERT INTO ${JOBS_APP_LIFECYCLE_QUALIFIED} (app_id, generation, archived)
+           VALUES ($1, $2, $3)
+         ON CONFLICT (app_id) DO NOTHING`,
+        [appId, deliveredGeneration, update.archived],
+      );
+      if ((inserted.rowCount ?? 0) === 1) {
+        result = { appliedGeneration: deliveredGeneration, changed: true };
+      } else {
+        const current = await client.query<{
+          generation: string;
+          archived: boolean;
+        }>(
+          `SELECT generation, archived
+               FROM ${JOBS_APP_LIFECYCLE_QUALIFIED}
+              WHERE app_id = $1
+            FOR UPDATE`,
+          [appId],
+        );
+        const row = current.rows[0];
+        if (!row) {
+          throw new Error(
+            `the app lifecycle row for "${appId}" vanished inside its own transaction`,
+          );
+        }
+        const merged = mergeLifecycleUpdate(
+          { generation: row.generation, archived: row.archived },
+          update,
+        );
+        if (merged.changed) {
+          await client.query(
+            `UPDATE ${JOBS_APP_LIFECYCLE_QUALIFIED}
+                SET generation = $2, archived = $3
+              WHERE app_id = $1`,
+            [appId, merged.state.generation, merged.state.archived],
+          );
+        }
+        result = { appliedGeneration: merged.state.generation, changed: merged.changed };
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      // A failed unit is rolled back so no aborted transaction is returned to
+      // the pool; a rollback that itself failed leaves the connection's state
+      // unknown, so it is destroyed instead of reused (the original failure is
+      // the one the caller sees either way).
+      let rollbackFailed = false;
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        rollbackFailed = true;
+      }
+      client.release(
+        rollbackFailed ? (error instanceof Error ? error : new Error(String(error))) : undefined,
+      );
+      throw error;
+    }
+    client.release();
+    return result;
+  }
+}
+
+/**
+ * The admission/start gate's read: the eligibility of a claimed generation,
+ * judged under the caller's own transaction with the app's lifecycle row
+ * locked `FOR UPDATE`. The lock held to the caller's commit is the whole
+ * point — an admission transaction calls this before it enqueues, so a
+ * lifecycle apply for the same app cannot land between its decision and its
+ * effect, and a lifecycle apply waits for the admission's transaction to
+ * commit before it can close the generation (ADR-0007: intake closure
+ * synchronizes with in-flight enqueue transactions). A caller not inside a
+ * transaction gets no serialization at all — the lock releases at the read.
+ */
+export async function lifecycleEligibilityInTx(
+  client: PoolClient,
+  appId: string,
+  claimedGeneration: string,
+): Promise<JobsGenerationEligibility> {
+  const current = await client.query<{ generation: string; archived: boolean }>(
+    `SELECT generation, archived
+       FROM ${JOBS_APP_LIFECYCLE_QUALIFIED}
+      WHERE app_id = $1
+    FOR UPDATE`,
+    [appId],
+  );
+  const row = current.rows[0];
+  return lifecycleEligibility(
+    row ? { generation: row.generation, archived: row.archived } : null,
+    claimedGeneration,
+  );
+}
