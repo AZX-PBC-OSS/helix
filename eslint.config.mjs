@@ -229,6 +229,19 @@ export default defineConfig([
     },
   },
   {
+    // ADR-0037 decisions 6 and 7 on the jobs plane: the same span-attribute
+    // and log-URL bans the other planes carry, applied from the receiver's
+    // first spans (the signed internal operations) onward. There is no
+    // PROPAGATION_EXTRACT ban here by design: background-jobs-plane §9 permits
+    // jobs to extract trace context only AFTER an internal caller
+    // authenticates — the same shape as egress, enforced by review, not lint.
+    files: ["apps/jobs/src/**/*.ts"],
+    ignores: ["apps/jobs/src/**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": ["error", URL_ATTR_LITERAL, LOG_URL_DIRECT, LOG_URL_PROPERTY],
+    },
+  },
+  {
     // The SDK boundary (ADR-0037 decision 3), which the ADR's own Consequences
     // section admits has no automated gate and ADR-0003's challenge outcome
     // asks for. `server.ts` is where the impure boot work already lives, so it

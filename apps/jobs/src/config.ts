@@ -1,4 +1,5 @@
 import { JobServerIdSchema, JobsDatabaseUrlSchema } from "@azx-pbc/shared";
+import { deriveJobsInstructionKey, JobsSigningDomains } from "@azx-pbc/shared/jobsSigning";
 import { z } from "zod";
 
 /**
@@ -6,13 +7,16 @@ import { z } from "zod";
  * re-read from `process.env` afterwards (the sibling services' discipline:
  * handlers never read the environment).
  *
- * This owns the configuration the service itself reads: its server identity
- * and its private store. The deployment map's remaining entry fields — the
- * signing roots, callback destinations, installed types and intake/state
- * flags — arrive with the tickets that consume them (signed instruction
- * verification, the admission gate, worker registration); a value with no
- * reader is not parsed here, so a config field cannot look wired while
- * nothing consults it.
+ * This owns the configuration the service itself reads: its server identity,
+ * its private store, and the two signing roots this receiver verifies
+ * instructions with — the edge→jobs root for the four job operations and the
+ * portal→jobs root for lifecycle delivery, named by
+ * {@link JobsSigningDomains}' own `secretEnvVar` keys so the deployment wiring
+ * and this loader cannot drift. The keys are derived here, at boot, so a
+ * malformed root is an explicit startup error rather than a first-request
+ * failure. The jobs→edge root (this service's minting half, for its fetch
+ * callbacks) has no reader until the worker tickets consume it and is
+ * deliberately not parsed here.
  *
  * Every failure here is an explicit startup error (design §8: "Parse-invalid
  * config and missing keys are boot errors") — a service that cannot say which
@@ -31,6 +35,10 @@ export interface JobsServiceConfig {
    * The same pool-exhaustion guard the edge's and egress's pools carry.
    */
   statementTimeoutMs: number;
+  /** The derived edge→jobs verification key (HKDF over this server's edge root). */
+  edgeToJobsKey: Uint8Array;
+  /** The derived portal→jobs verification key (HKDF over this server's portal root). */
+  portalToJobsKey: Uint8Array;
 }
 
 /**
@@ -58,11 +66,31 @@ function requirePositiveMs(raw: string | undefined, fallback: number, name: stri
 }
 
 /**
+ * Require one receiver signing root and derive its key. A missing root or one
+ * that is not a canonical base64 32-byte secret is a boot error naming the
+ * key — `deriveJobsInstructionKey`'s message already does, and derivation
+ * here (not at first use) is what keeps a bad root from booting.
+ */
+function requireReceiverKey(
+  env: NodeJS.ProcessEnv,
+  direction: "edgeToJobs" | "portalToJobs",
+): Uint8Array {
+  const secretEnvVar = JobsSigningDomains[direction].secretEnvVar;
+  const raw = env[secretEnvVar];
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(
+      `${secretEnvVar} is required — this server's ${direction} signing root, which its instructions must verify against`,
+    );
+  }
+  return deriveJobsInstructionKey(raw, direction);
+}
+
+/**
  * Resolve the boot configuration from the environment. Throws — with the key
- * named — on a missing credential or a value that cannot describe a valid
- * server identity or store. The caller decides what a throw means (the
- * production boot lets it crash the process: fail at startup, never at the
- * first request).
+ * named — on a missing credential, a value that cannot describe a valid
+ * server identity or store, or a signing root that cannot derive a key. The
+ * caller decides what a throw means (the production boot lets it crash the
+ * process: fail at startup, never at the first request).
  */
 export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServiceConfig {
   const serverId = env.JOBS_SERVER_ID;
@@ -95,5 +123,7 @@ export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServic
       DEFAULT_JOBS_STATEMENT_TIMEOUT_MS,
       "JOBS_STATEMENT_TIMEOUT_MS",
     ),
+    edgeToJobsKey: requireReceiverKey(env, "edgeToJobs"),
+    portalToJobsKey: requireReceiverKey(env, "portalToJobs"),
   };
 }

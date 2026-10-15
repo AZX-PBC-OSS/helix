@@ -70,6 +70,12 @@ export function jobsDatabaseCheck(snapshot: JobsStorageSnapshot): HealthCheck {
         status: "error",
         detail: `the platform queue is absent${since} — run the migration command`,
       };
+    case "burn_missing":
+      return {
+        ...base,
+        status: "error",
+        detail: `the instruction burn store is absent${since} — run the migration command`,
+      };
     case "queue_policy":
       return {
         ...base,

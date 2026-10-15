@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { installGracefulShutdown, resolveServicePort } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
+import { JobsInstructionBurns } from "./burns.js";
 import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
+import { createJobsInstructionAuth } from "./instructionAuth.js";
 import type { JobsStorageLogger } from "./storage.js";
 import { JobsStorage } from "./storage.js";
 
@@ -62,24 +64,43 @@ const config = loadJobsConfig();
 const logRef: { current: JobsStorageLogger } = {
   current: { info: () => {}, warn: () => {}, error: () => {} },
 };
+const lateLog = {
+  info: (obj: Record<string, unknown>, msg: string) => logRef.current.info(obj, msg),
+  warn: (obj: Record<string, unknown>, msg: string) => logRef.current.warn(obj, msg),
+  error: (obj: Record<string, unknown>, msg: string) => logRef.current.error(obj, msg),
+};
 const storage = new JobsStorage({
   databaseUrl: config.databaseUrl,
   statementTimeoutMs: config.statementTimeoutMs,
-  log: {
-    info: (obj, msg) => logRef.current.info(obj, msg),
-    warn: (obj, msg) => logRef.current.warn(obj, msg),
-    error: (obj, msg) => logRef.current.error(obj, msg),
-  },
+  log: lateLog,
 });
 
-const app = buildApp({ storage });
+// The durable nonce store for instruction replay protection — this service's
+// own database, its own sweep loop. Same late-bound logger.
+const burns = new JobsInstructionBurns({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  log: lateLog,
+});
+
+const app = buildApp({
+  storage,
+  instructions: createJobsInstructionAuth({
+    serverId: config.serverId,
+    keys: { edgeToJobs: config.edgeToJobsKey, portalToJobs: config.portalToJobsKey },
+    burns,
+    log: lateLog,
+  }),
+});
 logRef.current = app.log;
 
 // The health-first boot contract: the listener comes up before the store is
 // usable, `/health` reports the store's state honestly while the bounded
-// retries continue, and shutdown releases what startup acquired — the probes'
-// timer, the pool, then the telemetry flush (ADR-0009).
+// retries continue, and shutdown releases what startup acquired — the sweep
+// timer and pool, the probes' timer and pool, then the telemetry flush
+// (ADR-0009).
 app.addHook("onClose", async () => {
+  await burns.stop();
   await storage.stop();
   await telemetry.shutdown();
 });
@@ -93,6 +114,7 @@ installGracefulShutdown(app, app.log);
 
 try {
   storage.start();
+  burns.start();
   await app.listen({ port, host });
   app.log.info(
     {
@@ -108,8 +130,10 @@ try {
 } catch (err) {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
-  // storage.start() has already acquired the pool; release it here, not
-  // only on the shutdown path, bounded by the pool's own connect timeout.
+  // storage.start() and burns.start() have already acquired their pools;
+  // release them here, not only on the shutdown path, bounded by each
+  // pool's own connect timeout.
+  await burns.stop();
   await storage.stop();
   process.exit(1);
 }

@@ -1,6 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 
-import { JOBS_PGBOSS_SCHEMA, JOBS_QUEUE_NAME, JOBS_QUEUE_POLICY_EFFECTIVE } from "./policy.js";
+import {
+  JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_PGBOSS_SCHEMA,
+  JOBS_QUEUE_NAME,
+  JOBS_QUEUE_POLICY_EFFECTIVE,
+  JOBS_SCHEMA,
+} from "./policy.js";
 
 // The expected pg-boss schema version, read from the installed package, so a
 // catalog bump moves the expectation with the dependency.
@@ -27,6 +33,7 @@ export type JobsStorageCompatibility =
   | { kind: "schema_version"; found: number | null; expected: number }
   | { kind: "queue_missing" }
   | { kind: "queue_policy"; diffs: readonly JobsQueuePolicyDiff[] }
+  | { kind: "burn_missing" }
   | { kind: "runtime_privileges"; missing: readonly string[] };
 
 /** The queue-table columns this check compares — pg-boss's effective queue policy. */
@@ -126,6 +133,8 @@ export function compareQueuePolicy(row: QueuePolicyRow): JobsQueuePolicyDiff[] {
 /**
  * The runtime DML the runner needs on the store, probed through the privilege
  * system rather than by writing. Read-only: `has_*_privilege` never mutates.
+ * The burn table needs INSERT (the burn claim), DELETE (the sweep) and SELECT
+ * (the `ON CONFLICT` arbiter's read, as on the egress burn table).
  */
 async function missingRuntimePrivileges(client: PoolClient): Promise<string[]> {
   const probes: Array<{ name: string; sql: string }> = [
@@ -136,6 +145,14 @@ async function missingRuntimePrivileges(client: PoolClient): Promise<string[]> {
     ...(["SELECT", "INSERT", "UPDATE", "DELETE"] as const).map((privilege) => ({
       name: `${privilege} on ${JOBS_PGBOSS_SCHEMA}.job`,
       sql: `SELECT has_table_privilege(current_user, '${JOBS_PGBOSS_SCHEMA}.job', '${privilege}') AS ok`,
+    })),
+    {
+      name: `USAGE on schema ${JOBS_SCHEMA}`,
+      sql: `SELECT has_schema_privilege(current_user, '${JOBS_SCHEMA}', 'USAGE') AS ok`,
+    },
+    ...(["SELECT", "INSERT", "DELETE"] as const).map((privilege) => ({
+      name: `${privilege} on ${JOBS_INSTRUCTION_BURNS_QUALIFIED}`,
+      sql: `SELECT has_table_privilege(current_user, '${JOBS_INSTRUCTION_BURNS_QUALIFIED}', '${privilege}') AS ok`,
     })),
   ];
   const missing: string[] = [];
@@ -204,6 +221,26 @@ async function readVerdict(client: PoolClient): Promise<JobsStorageCompatibility
   const diffs = compareQueuePolicy(row);
   if (diffs.length > 0) {
     return { kind: "queue_policy", diffs };
+  }
+
+  // The burn store is the receiver's replay memory: a store without it cannot
+  // serve a single signed instruction, so its absence is its own verdict —
+  // the same remedy (the migration command) as the schema answers, but a
+  // different operator-visible reason.
+  let burnsPresent: boolean;
+  try {
+    const found = await client.query<{ found: string | null }>(
+      `SELECT to_regclass($1)::text AS found`,
+      [JOBS_INSTRUCTION_BURNS_QUALIFIED],
+    );
+    burnsPresent = found.rows[0]?.found != null;
+  } catch (error) {
+    return sqlState(error) === INSUFFICIENT_PRIVILEGE
+      ? { kind: "runtime_privileges", missing: ["SELECT on the burn store's catalog entry"] }
+      : unreachable(error);
+  }
+  if (!burnsPresent) {
+    return { kind: "burn_missing" };
   }
 
   const missing = await missingRuntimePrivileges(client);

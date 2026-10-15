@@ -13,6 +13,7 @@ import {
 } from "./compat.js";
 import { migrateJobsStorage } from "./migrate.js";
 import {
+  JOBS_INSTRUCTION_BURNS_QUALIFIED,
   JOBS_QUEUE_NAME,
   JOBS_PGBOSS_SCHEMA,
   JOBS_RUNTIME_ROLE,
@@ -135,6 +136,7 @@ describe("jobs storage migration and startup compatibility", () => {
       schemaVersion: PGBOSS_SCHEMA_VERSION,
       queueExisted: false,
       queuePolicyRepairs: [],
+      burnStoreExisted: false,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -159,6 +161,7 @@ describe("jobs storage migration and startup compatibility", () => {
       schemaVersion: PGBOSS_SCHEMA_VERSION,
       queueExisted: true,
       queuePolicyRepairs: [],
+      burnStoreExisted: true,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -264,6 +267,77 @@ describe("jobs storage migration and startup compatibility", () => {
         kind: "compatible",
         schemaVersion: PGBOSS_SCHEMA_VERSION,
       });
+    },
+  );
+
+  test("a dropped burn table is its own verdict and the migration recreates it", slow, async () => {
+    // The burn store is the receiver's replay memory: without it no signed
+    // instruction can be served, so its absence is an operator-facing
+    // answer distinct from the runner schema's.
+    await asMigrateRole(`DROP TABLE ${JOBS_INSTRUCTION_BURNS_QUALIFIED}`);
+    await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({ kind: "burn_missing" });
+    await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+      expect.objectContaining({ burnStoreExisted: false }),
+    );
+    await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+      kind: "compatible",
+      schemaVersion: PGBOSS_SCHEMA_VERSION,
+    });
+  });
+
+  test(
+    "missing burn-store privileges are detected and re-granted by the migration",
+    slow,
+    async () => {
+      await asMigrateRole(
+        `REVOKE INSERT ON ${JOBS_INSTRUCTION_BURNS_QUALIFIED} FROM ${JOBS_RUNTIME_ROLE}`,
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "runtime_privileges",
+        missing: expect.arrayContaining([`INSERT on ${JOBS_INSTRUCTION_BURNS_QUALIFIED}`]),
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ burnStoreExisted: true }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test(
+    "the runtime role can burn a nonce for real, and the burn table survives its own sweep",
+    slow,
+    async () => {
+      // The granted DML works for the exact statements the receiver and its
+      // sweep run: a first-use insert wins, the conflict replay loses, and a
+      // bounded delete removes expired rows.
+      const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        const fresh = await pool.query(
+          `INSERT INTO ${JOBS_INSTRUCTION_BURNS_QUALIFIED} (scope, jti, burn_until)
+             VALUES ('edgeToJobs', 'integration-nonce', now() + interval '60 seconds')
+           ON CONFLICT (scope, jti) DO NOTHING`,
+        );
+        expect(fresh.rowCount).toBe(1);
+        const replay = await pool.query(
+          `INSERT INTO ${JOBS_INSTRUCTION_BURNS_QUALIFIED} (scope, jti, burn_until)
+             VALUES ('edgeToJobs', 'integration-nonce', now() + interval '60 seconds')
+           ON CONFLICT (scope, jti) DO NOTHING`,
+        );
+        expect(replay.rowCount).toBe(0);
+        const swept = await pool.query(
+          `DELETE FROM ${JOBS_INSTRUCTION_BURNS_QUALIFIED}
+             WHERE burn_until < now()
+               AND ctid IN (
+                 SELECT ctid FROM ${JOBS_INSTRUCTION_BURNS_QUALIFIED} WHERE burn_until < now() LIMIT 100
+               )`,
+        );
+        expect(swept.rowCount).toBe(0); // the nonce is retained, not yet expired
+      } finally {
+        await pool.end();
+      }
     },
   );
 

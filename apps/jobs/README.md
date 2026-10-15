@@ -3,10 +3,45 @@
 The `helix-jobs` runner package (ADR-0045, background-jobs-plane design §1):
 Node 24, TypeScript, and the exact-pinned pg-boss 12.37.0 baseline. This
 package owns the storage seam — the installed-handler policy, the private
-migration/configuration command, the startup compatibility check — and the
-service boot: the health-first listener, the storage-readiness supervisor and
-the shared health vocabulary. The signed job operations and worker
+migration/configuration command, the startup compatibility check — the service
+boot: the health-first listener, the storage-readiness supervisor and the
+shared health vocabulary, and the signed internal operation receiver: every
+edge→jobs and portal→jobs instruction is verified and its nonce durably burned
+before its operation runs. The operations' own semantics and worker
 registration land in their own tickets and compose from here.
+
+## Signed internal operations (`src/instructionAuth.ts`, `src/app.ts`)
+
+The five receiving routes of the shared operation matrix
+(`@azx-pbc/shared/jobsSigning`) are registered verbatim from it, so a route
+and its signed binding cannot drift: `POST /internal/jobs/v1/jobs` (submit),
+`GET …/jobs/:jobId` (snapshot), `GET …/jobs/:jobId/result`,
+`DELETE …/jobs/:jobId` (cancel), and `POST /internal/jobs/v1/lifecycle/:appId`
+(the portal's lifecycle delivery). Each verifies the `x-helix-instruction`
+token against what ITS route serves — operation, direction, method, resource
+built from the route's own params, exact body bytes — then durably burns the
+validated `jti` before anything else happens. Missing, forged, altered,
+wrong-server and replayed instructions all answer the fixed 401
+`unauthorized` envelope before any effect; the reject reason is bounded
+evidence for the logs and spans, never the response. A burn store that cannot
+answer denies with the retryable 503 `jobs_unavailable` — fail closed, no
+verdict.
+
+Replay protection is the burn store (`src/burns.ts`), the service's own
+durable nonce table in its own database: one row per consumed `jti`, scoped by
+signing direction, inserted with `ON CONFLICT DO NOTHING` so two replicas race
+a unique constraint and exactly one proceeds. Burns are retained for the
+shared floor `JOBS_INSTRUCTION_BURN_RETENTION_SECONDS` (60 s — the longest a
+burned token could still verify anywhere), with no weaker knob; a bounded
+sweep loop (batched, counted, never throwing) removes what has expired. The
+store's table and the runtime role's grants on it are created by the
+migration command below; the startup compatibility check reports its absence
+(`burn_missing`) rather than serving instructions against a store that cannot
+remember burns.
+
+A legitimate HTTP retry mints a fresh instruction (fresh `jti`) carrying the
+same optional retry identity — the signed `idempotencyKey` claim, compared at
+admission (a later ticket's seam), never overridden by an unsigned header.
 
 ## The installed-handler policy (`src/policy.ts`)
 
@@ -51,23 +86,25 @@ JOBS_MIGRATE_DATABASE_URL=postgresql://helix_jobs_migrate:…@db:5432/helix_jobs
 It refuses a DSN whose role holds no CREATE on the database (the runtime
 DSN's shape), installs or migrates the pg-boss schema, creates the platform
 queue with the policy above, converges policy drift that pg-boss can update
-(failing on drift fixed at queue creation), grants the runtime role DML on
-the runner's tables — provisioning sets no default privileges, so grants
-arrive by migration — and verifies the effective state by re-reading it.
-Later jobs-owned migrations (wrapper tables, their grants) extend this
-command the same way: a step under the migration identity, after the schema
-they depend on exists.
+(failing on drift fixed at queue creation), creates the instruction burn
+store (schema `jobs`, table `instruction_burns`, its `burn_until` index),
+grants the runtime role DML on all of it — provisioning sets no default
+privileges, so grants arrive by migration — and verifies the effective state
+by re-reading it. Later jobs-owned migrations (the wrapper tables and their
+grants) extend this command the same way: a step under the migration
+identity, after the schema they depend on exists.
 
 ## Startup compatibility check (`src/compat.ts`)
 
 `checkJobsStorageCompatibility(pool)` answers, read-only, whether the
 runtime may rely on its store: schema installed at the pinned dependency's
-version, the queue carrying the platform's effective policy, and the runtime
-identity holding its DML. The verdict union (`compatible`, `unreachable`,
-`schema_missing`, `schema_version`, `queue_missing`, `queue_policy`,
-`runtime_privileges`) is what the storage supervisor and health reporting
-consume; the expected schema version is read from the installed pg-boss
-package, so a catalog bump moves the expectation with the dependency.
+version, the queue carrying the platform's effective policy, the instruction
+burn store present, and the runtime identity holding its DML. The verdict
+union (`compatible`, `unreachable`, `schema_missing`, `schema_version`,
+`queue_missing`, `queue_policy`, `burn_missing`, `runtime_privileges`) is
+what the storage supervisor and health reporting consume; the expected schema
+version is read from the installed pg-boss package, so a catalog bump moves
+the expectation with the dependency.
 
 ## Service boot (`src/server.ts`) and the storage lifecycle (`src/storage.ts`)
 
@@ -83,8 +120,11 @@ verified and later dies degrades the same way.
   grades the supervisor's snapshot, and **unknown readiness never appears
   healthy** — before any probe has answered, the state is `error`.
 - **Invalid configuration is an explicit startup error.** `loadJobsConfig`
-  (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID` or
-  `JOBS_DATABASE_URL` before anything listens.
+  (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID`,
+  `JOBS_DATABASE_URL` or either receiver signing root
+  (`JOBS_EDGE_TO_JOBS_SECRET`, `JOBS_PORTAL_TO_JOBS_SECRET`) before anything
+  listens; the roots derive to their direction keys at boot, so a malformed
+  one stops the process, not the first instruction.
 - **Shutdown releases what startup acquired.** The `onClose` hook stops the
   supervisor (awaiting any in-flight probe, ending the pool) and flushes
   telemetry; the graceful-shutdown install bounds the drain.
@@ -94,16 +134,22 @@ verified and later dies degrades the same way.
   `jobs.storage.unavailable` log event. Telemetry stays inert unless an OTLP
   endpoint is configured, and the service's behavior is identical without it.
 
-Development:
+Development (the two roots are any independently generated base64 32-byte
+secrets — `openssl rand -base64 32` — and the local IdP/edge tooling may
+already provision them):
 
 ```
-JOBS_SERVER_ID=jobs JOBS_DATABASE_URL=postgresql://helix_jobs:…@db:5432/helix_jobs \
+JOBS_SERVER_ID=jobs \
+JOBS_DATABASE_URL=postgresql://helix_jobs:…@db:5432/helix_jobs \
+JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… \
   pnpm dev:jobs
 ```
 
-The listener serves `/health` (and nothing else until the job-operation
-tickets register their routes — an unmatched request answers 503
-`jobs_unavailable` while the store is unusable, 404 on a ready service).
+The listener serves `/health` and the five signed internal operation routes
+(verification + durable burn; the operations' semantics arrive with their own
+tickets and answer 503 `jobs_unavailable` until then — an unmatched request
+answers 503 `jobs_unavailable` while the store is unusable, 404 on a ready
+service).
 
 ## Development
 

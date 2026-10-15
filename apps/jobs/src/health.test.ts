@@ -88,6 +88,10 @@ describe("jobsDatabaseCheck", () => {
         detailMatches: /platform queue is absent.*run the migration command/s,
       },
       {
+        verdict: { kind: "burn_missing" },
+        detailMatches: /instruction burn store is absent.*run the migration command/s,
+      },
+      {
         verdict: {
           kind: "queue_policy",
           diffs: [

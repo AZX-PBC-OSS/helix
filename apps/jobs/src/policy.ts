@@ -27,6 +27,29 @@ import {
 /** The pg-boss schema the runner installs in the jobs database. */
 export const JOBS_PGBOSS_SCHEMA = "pgboss";
 
+/**
+ * The schema holding the jobs service's OWN durable state — the instruction
+ * burn store now, the job wrapper identity with its retry mappings as the
+ * acceptance tickets land — separate from the `pgboss` schema so the runner's
+ * native maintenance can never touch platform state (background-jobs-plane
+ * design §8: jobs owns its wrapper tables; only the migration command owns
+ * DDL here).
+ */
+export const JOBS_SCHEMA = "jobs";
+
+/** The durable nonce-burn table — one row per consumed instruction `jti`, keyed by signing scope — as every SQL reference spells it. */
+export const JOBS_INSTRUCTION_BURNS_QUALIFIED = `${JOBS_SCHEMA}.instruction_burns`;
+
+// The burn table's qualified name is interpolated into SQL statements — assert
+// the bare-identifier invariant once, at the definition, so the interpolation
+// can never become a second input path (the same screen the probes in
+// `src/compat.ts` apply to the pg-boss objects).
+if (!/^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/.test(JOBS_INSTRUCTION_BURNS_QUALIFIED)) {
+  throw new Error(
+    `the instruction burn table's qualified name is not a bare identifier pair: ${JOBS_INSTRUCTION_BURNS_QUALIFIED}`,
+  );
+}
+
 /** The single queue all installed types run on — cross-type concurrency applies per process. */
 export const JOBS_QUEUE_NAME = "jobs";
 

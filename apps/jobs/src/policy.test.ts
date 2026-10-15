@@ -10,12 +10,14 @@ import {
   JOBS_DEADLINE_SECONDS,
   JOBS_FETCH_DEADLINE_SECONDS,
   JOBS_HEARTBEAT_SECONDS,
+  JOBS_INSTRUCTION_BURNS_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
   JOBS_QUEUE_POLICY,
   JOBS_QUEUE_POLICY_EFFECTIVE,
   JOBS_TYPE_POLICIES,
   JOBS_RUNTIME_ROLE,
+  JOBS_SCHEMA,
   type JobsTypePolicy,
   jobTypePolicy,
   jobsMigrationBossOptions,
@@ -195,5 +197,14 @@ describe("the runner's pg-boss constructor policy", () => {
     expect(JOBS_PGBOSS_SCHEMA).toBe("pgboss");
     expect(JOBS_QUEUE_NAME).toBe("jobs");
     expect(JOBS_RUNTIME_ROLE).toBe("helix_jobs");
+  });
+
+  test("the instruction burn table's qualified name is the jobs schema's own — the identifier every SQL statement interpolates", () => {
+    // The burn table's name rides into `burns.ts`'s INSERT and the sweep's
+    // DELETE by interpolation, and the migration and compat probes spell the
+    // same pair — one rename must move them together, and the value is the
+    // bare-identifier pair the module's own load guard demands.
+    expect(JOBS_SCHEMA).toBe("jobs");
+    expect(JOBS_INSTRUCTION_BURNS_QUALIFIED).toBe("jobs.instruction_burns");
   });
 });

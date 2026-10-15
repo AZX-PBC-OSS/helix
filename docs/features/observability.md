@@ -57,6 +57,7 @@ terminates untrusted traffic (decision 4).
 | `helix.providers.reconcile` | the egress provider-cache reconcile |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
 | `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine: the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption, the vendor redirect's completion state machine, and the read-only status decision (ADR-0031 as amended) |
+| `helix.jobs.submit` / `.snapshot` / `.result` / `.cancel` / `.lifecycle` | the jobs receiver's five signed internal operation routes — one root span each, named for the operation the ROUTE serves (never a name read from the token); verification outcomes and reject reasons ride `helix.outcome` / `helix.reason`, and `http.route` is the operation matrix's own path |
 | `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route — My Connections' metadata-only list |
 | `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
 
@@ -181,6 +182,17 @@ looked up:
   (`helix.consent.sweep_removed`) — never the `state`, the nonce, the PKCE
   verifier, or any identity (pinned by `routes/connectionsInternal.test.ts`'s global attribute
   scan and `routes/connectionsPages.test.ts`'s redemption scan).
+- The `helix.jobs.*` operation spans (the receiver's signed internal routes)
+  carry `helix.jobs.operation` (the route's own operation, bounded by the
+  matrix), `http.route` (the operation's path template), `helix.outcome` ∈
+  `JOBS_INSTRUCTION_OUTCOMES`, and `helix.reason` on a rejection — the
+  verifier's bounded reject reason, plus `missing`/`malformed`/`resource` for
+  the request-level refusals. Never the token, a claim value, a retry key,
+  a job id or a URL (pinned by `instructionTelemetry.test.ts`'s
+  every-attribute scan). The spans are always roots: the caller is not
+  authenticated when the span opens, so an inbound `traceparent` never chooses
+  their parentage — background-jobs-plane §9's post-authentication extraction
+  is the operation handlers' seam as they land, not this wrapper's.
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |
@@ -198,12 +210,13 @@ looked up:
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
 | `helix.app.visits` | counter | `appId`, `outcome` (`recorded` / `failed` / `dropped` / `deduplicated`; the fire-and-forget `app_visits` write, ADR-0050. Alert on a sustained `failed` or `dropped` rate. The owner's numbers come from the table, never this counter) |
 | `helix.consent.operations` | counter | `operation`, `outcome` (ADR-0031 as amended; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
-| `helix.jobs.storage.probes` | counter | `outcome` ∈ {`ok`, `unavailable`} — the jobs service's storage-readiness probes (`JOBS_STORAGE_PROBE_OUTCOMES`). An attempt counter, like `helix.providers.reconciles`: a run of `unavailable` with no `ok` is a store outage, and the *reason* (unreachable / schema / queue-policy / privileges) is carried by the `jobs_database` check's body and the `jobs.storage.unavailable` log event, which the body-aware alerts read |
+| `helix.jobs.storage.probes` | counter | `outcome` ∈ {`ok`, `unavailable`} — the jobs service's storage-readiness probes (`JOBS_STORAGE_PROBE_OUTCOMES`). An attempt counter, like `helix.providers.reconciles`: a run of `unavailable` with no `ok` is a store outage, and the *reason* (unreachable / schema / queue-policy / burn store / privileges) is carried by the `jobs_database` check's body and the `jobs.storage.unavailable` log event, which the body-aware alerts read |
+| `helix.jobs.instructions` | counter | `helix.jobs.operation` ∈ {`submit`, `snapshot`, `result`, `cancel`, `lifecycle`} (the route's own name, never read from the token), `outcome` ∈ {`accepted`, `replayed`, `rejected`, `unavailable`} (`JOBS_INSTRUCTION_OUTCOMES`) — every presentation of a signed internal instruction, refused or not. A run of `replayed` is a capture-and-replay attempt (the burn caught it; no effect ran); a run of `rejected` is a forged or misconfigured minter, and the *reason* rides the span's `helix.reason` (`JOBS_INSTRUCTION_REJECT_REASONS`, plus `missing`/`malformed` for a header that never was a token, and `resource` for a path that cannot name one) — never a metric dimension; a run of `unavailable` is the burn store failing closed. Identity, token and retry-key material never appear in any dimension |
+| `helix.jobs.burn.sweeps` | counter | `outcome` ∈ {`ok`, `failed`} — the burn store's bounded cleanup passes. Passes that remove rows are routine silence; a run of `failed` with no `ok` is a store that stopped answering its cleanup, and burned nonces then grow with instruction volume until it answers |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained
 metrics backend.
-
 ### Audit events and ledger outcomes (the ledger, not OTel)
 
 Two signal families from the OAuth-connections work live in platform tables rather than the telemetry

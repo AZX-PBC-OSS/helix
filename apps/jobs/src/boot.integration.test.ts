@@ -7,7 +7,15 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 
-import { HealthStatusSchema, JOBS_DATABASE_CHECK } from "@azx-pbc/shared";
+import {
+  HealthStatusSchema,
+  IDEMPOTENCY_KEY_HEADER,
+  INSTRUCTION_HEADER,
+  JOBS_DATABASE_CHECK,
+  JobErrorMessages,
+} from "@azx-pbc/shared";
+import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/jobsSigning";
+import { JOBS_SIGNING_VECTOR_ROOTS } from "@azx-pbc/shared/jobsSigningVectors";
 
 import { migrateJobsStorage } from "./migrate.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
@@ -31,6 +39,10 @@ import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases
  *      pool) release on the normal shutdown path, which a stalled close
  *      cannot fake (it would eat the shutdown grace instead).
  *
+ * The instruction legs (the last describe block) present real signed
+ * instructions to the running process: acceptance, durable replay refusal
+ * across a receiver restart, and a fresh token with the same retry identity.
+ *
  * Telemetry is inert on every leg: `NODE_ENV=test` and no OTLP endpoint are
  * the platform's default state (ADR-0037), plus the explicit flag in leg 2.
  */
@@ -40,6 +52,13 @@ const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? "postgresql://helix:helix@db:5432/helix_test";
 
 const SCRATCH_DB = `helix_jobs_boot_srv_${randomUUID().replaceAll("-", "")}`;
+
+/** The corpus's public roots are compile-time known; this narrows the index for `noUncheckedIndexedAccess`. */
+function vectorRoot(keyId: string): string {
+  const entry = JOBS_SIGNING_VECTOR_ROOTS[keyId];
+  if (!entry) throw new Error(`no such vector root: ${keyId}`);
+  return entry.root;
+}
 
 function urlFor(database: string, role?: string): string {
   const url = new URL(TEST_DATABASE_URL);
@@ -89,6 +108,10 @@ function childEnv(
     NODE_ENV: "test",
     JOBS_SERVER_ID: "jobs",
     JOBS_DATABASE_URL: dsn,
+    // The receiver roots the instruction legs verify against — the corpus's
+    // own public roots for the `jobs` server (test data, never deployed).
+    JOBS_EDGE_TO_JOBS_SECRET: vectorRoot("edge-to-jobs.jobs"),
+    JOBS_PORTAL_TO_JOBS_SECRET: vectorRoot("portal-to-jobs.jobs"),
     JOBS_PORT: String(port),
     SHUTDOWN_GRACE_MS: "2500",
     ...extra,
@@ -289,6 +312,23 @@ describe("the production boot path", () => {
     });
     expect(badId.status).not.toBe(0);
     expect(`${badId.stderr}${badId.stdout}`).toContain("JOBS_SERVER_ID");
+
+    // The receiver roots are credentials too: a boot without one is explicit,
+    // not a service that fails its first instruction.
+    const missingRoot = spawnSync("node", ["--import", "tsx", "src/server.ts"], {
+      cwd: PACKAGE_DIR,
+      env: {
+        ...baseEnv(),
+        NODE_ENV: "test",
+        JOBS_SERVER_ID: "jobs",
+        JOBS_DATABASE_URL: RUNTIME_DSN,
+        JOBS_PORTAL_TO_JOBS_SECRET: vectorRoot("portal-to-jobs.jobs"),
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    expect(missingRoot.status).not.toBe(0);
+    expect(`${missingRoot.stderr}${missingRoot.stdout}`).toContain("JOBS_EDGE_TO_JOBS_SECRET");
   });
 
   test(
@@ -509,4 +549,146 @@ describe("the production boot path", () => {
       }
     },
   );
+});
+
+describe("signed instructions through the running process", () => {
+  const slow = { timeout: 180_000 };
+
+  /** Mint one submit instruction against the child's own roots, right now. */
+  async function mintSubmit(idempotencyKey: string | null): Promise<string> {
+    const key = deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs");
+    return mintJobsInstruction(
+      {
+        operation: "submit",
+        server: "jobs",
+        identity: {
+          appId: "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f",
+          env: "prod",
+          ownerKind: "user",
+          ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+          allowedTypes: ["jobs:fetch"],
+        },
+        type: "jobs:fetch",
+        generation: "1",
+        idempotencyKey,
+        body: new TextEncoder().encode('{"url":"https://example.com/data.json"}'),
+        iatS: Math.floor(Date.now() / 1000) - 1,
+      },
+      key,
+    );
+  }
+
+  async function submit(port: number, token: string): Promise<{ status: number; body: unknown }> {
+    const res = await fetch(`http://127.0.0.1:${port}/internal/jobs/v1/jobs`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [INSTRUCTION_HEADER]: token,
+        [IDEMPOTENCY_KEY_HEADER]: "retry-key-1",
+      },
+      body: '{"url":"https://example.com/data.json"}',
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  test(
+    "a valid instruction reaches its operation; its replay is refused across a receiver restart; a fresh token carries the same retry identity",
+    slow,
+    async () => {
+      const port = await reservePort();
+      // The scratch store migrates first: the leg needs a READY receiver —
+      // the boot/recovery legs above cover the unhealthy paths.
+      await migrateJobsStorage(MIGRATE_DSN);
+      const token = await mintSubmit("retry-key-1");
+      let child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        // Accepted: the operation's placeholder answers the protocol's
+        // retryable unavailable error — the instruction was verified and its
+        // nonce burned, and nothing pretended to have served a job.
+        const first = await submit(port, token);
+        expect(first.status).toBe(503);
+        expect(first.body).toEqual({
+          code: "jobs_unavailable",
+          message: JobErrorMessages.jobs_unavailable,
+        });
+
+        // The transport replay — the same token, re-presented — is refused.
+        const replay = await submit(port, token);
+        expect(replay.status).toBe(401);
+        expect(replay.body).toEqual({
+          code: "unauthorized",
+          message: JobErrorMessages.unauthorized,
+        });
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+
+      // A restarted receiver against the same durable store still refuses
+      // the replay: the burn outlives the process.
+      const restartedPort = await reservePort();
+      child = await bootServer(restartedPort, childEnv(RUNTIME_DSN, restartedPort));
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(restartedPort, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+        const replayAfterRestart = await submit(restartedPort, token);
+        expect(replayAfterRestart.status).toBe(401);
+
+        // A fresh token carrying the same legitimate retry identity is
+        // accepted — the retry key is a different mechanism from the nonce.
+        const fresh = await submit(restartedPort, await mintSubmit("retry-key-1"));
+        expect(fresh.status).toBe(503);
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
+  test("a forged instruction is refused by the running process", slow, async () => {
+    const port = await reservePort();
+    const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+    try {
+      await eventually(async () => {
+        const body = await pollHealth(port, 10_000);
+        return HealthStatusSchema.parse(body).status === "ok";
+      }, 30_000);
+      // Signed under neither receiver root: a valid shape over the wrong key.
+      const forged = await mintJobsInstruction(
+        {
+          operation: "submit",
+          server: "jobs",
+          identity: {
+            appId: "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f",
+            env: "prod",
+            ownerKind: "user",
+            ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+            allowedTypes: ["jobs:fetch"],
+          },
+          type: "jobs:fetch",
+          generation: "1",
+          idempotencyKey: "retry-key-1",
+          body: new TextEncoder().encode('{"url":"https://example.com/data.json"}'),
+          iatS: Math.floor(Date.now() / 1000) - 1,
+        },
+        deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "edgeToJobs"),
+      );
+      const res = await submit(port, forged);
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({
+        code: "unauthorized",
+        message: JobErrorMessages.unauthorized,
+      });
+    } finally {
+      const exit = await stopServer(child);
+      expect(exit.exitCode).toBe(0);
+    }
+  });
 });

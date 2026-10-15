@@ -39,6 +39,8 @@ export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
 export const INSTR_APP_VISITS = "helix.app.visits";
 export const INSTR_JOBS_STORAGE_PROBES = "helix.jobs.storage.probes";
+export const INSTR_JOBS_INSTRUCTIONS = "helix.jobs.instructions";
+export const INSTR_JOBS_BURN_SWEEPS = "helix.jobs.burn.sweeps";
 
 /**
  * Attribute keys.
@@ -85,6 +87,12 @@ export const ATTR_DATA_VERB = "helix.data.verb";
  * app data and never ride a span.
  */
 export const ATTR_DATA_MATCH_COUNT = "helix.data.match_count";
+/**
+ * Which signed internal jobs operation a signal is about — bounded by the six
+ * names in `JobsOperations` (`@azx-pbc/shared/jobsSigning`), and always taken
+ * from the ROUTE the receiver registered, never from the (unverified) token.
+ */
+export const ATTR_JOBS_OPERATION = "helix.jobs.operation";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
 /**
@@ -161,6 +169,13 @@ export const SPAN_CONNECTIONS_MINE = "helix.connections.mine";
 /** The portal's disconnect route — the one-transaction
  * invalidation that stops the caller's own Helix access. */
 export const SPAN_CONNECTIONS_DISCONNECT = "helix.connections.disconnect";
+/** The jobs receiver's signed-operation routes (one span each, named for the
+ * operation the ROUTE serves — never a name read from the token). */
+export const SPAN_JOBS_SUBMIT = "helix.jobs.submit";
+export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
+export const SPAN_JOBS_RESULT = "helix.jobs.result";
+export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
+export const SPAN_JOBS_LIFECYCLE = "helix.jobs.lifecycle";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -267,6 +282,38 @@ export type ProvidersReconcileOutcome = (typeof PROVIDERS_RECONCILE_OUTCOMES)[nu
  */
 export const JOBS_STORAGE_PROBE_OUTCOMES = ["ok", "unavailable"] as const;
 export type JobsStorageProbeOutcome = (typeof JOBS_STORAGE_PROBE_OUTCOMES)[number];
+
+/**
+ * How a signed internal instruction was received — the `helix.outcome` values
+ * on the `helix.jobs.instructions` counter. An attempt counter over every
+ * presentation, refused or not:
+ *
+ * - `accepted` — verified and its `jti` durably burned; the operation proceeds.
+ * - `replayed` — verified but the `jti` was already spent: a transport replay,
+ *   refused before any side effect (criterion 56's replay exposure).
+ * - `rejected` — verification failed; the bounded reject reason rides the
+ *   span's `helix.reason` (`JOBS_INSTRUCTION_REJECT_REASONS`, plus `missing`
+ *   for a request with no instruction header at all), never a metric
+ *   dimension.
+ * - `unavailable` — the receiver could not reach its burn store, so the
+ *   instruction was denied without a verdict (fail closed).
+ */
+export const JOBS_INSTRUCTION_OUTCOMES = [
+  "accepted",
+  "replayed",
+  "rejected",
+  "unavailable",
+] as const;
+export type JobsInstructionOutcome = (typeof JOBS_INSTRUCTION_OUTCOMES)[number];
+
+/**
+ * The burn-store sweep pass's outcome — the `helix.outcome` dimension on
+ * `helix.jobs.burn.sweeps`. Passes that remove rows are routine silence; a run
+ * of `failed` with no `ok` is a store that stopped answering its cleanup, and
+ * the burn rows then grow with instruction volume until the store answers.
+ */
+export const JOBS_BURN_SWEEP_OUTCOMES = ["ok", "failed"] as const;
+export type JobsBurnSweepOutcome = (typeof JOBS_BURN_SWEEP_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

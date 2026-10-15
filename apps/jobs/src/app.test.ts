@@ -6,17 +6,22 @@ import { buildApp } from "./app.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
 import { JobsStorage } from "./storage.js";
+import { makeReceiver } from "./test/instructions.js";
 
 /**
  * The listener's health contract and the unmatched-route behaviour, through
  * the real composition (`buildApp`) with the storage lifecycle driven by an
  * injected probe: the always-200 body, the honest roll-up, and the 503 the
- * service answers for its operations while the store is unusable.
+ * service answers for its operations while the store is unusable. The signed
+ * routes' own behavior is `operations.test.ts`; these legs only need the
+ * receiver seam present.
  */
 
 const CONFIG = loadJobsConfig({
   JOBS_SERVER_ID: "jobs",
   JOBS_DATABASE_URL: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
+  JOBS_EDGE_TO_JOBS_SECRET: "uFEfLTTVeHJK0+P/dQEWv8ccOyFrkZw7InR0I52V4/0=",
+  JOBS_PORTAL_TO_JOBS_SECRET: "jUwQKa33JNljh0jULeithrh3JOL8dUmxPJknzGCjQBA=",
 });
 
 const COMPATIBLE: JobsStorageCompatibility = { kind: "compatible", schemaVersion: 45 };
@@ -37,10 +42,15 @@ async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<Jo
   return storage;
 }
 
+/** The full deps: the storage state under test plus the receiver seam. */
+async function depsWith(storage: JobsStorage) {
+  return { storage, instructions: makeReceiver().auth };
+}
+
 describe("GET /health", () => {
   test("answers 200 with a schema-valid body while readiness is still unknown", async () => {
     const storage = await storageIn("pending");
-    const app = buildApp({ storage });
+    const app = buildApp(await depsWith(storage));
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -64,7 +74,7 @@ describe("GET /health", () => {
 
   test("a verified store reports ok, with the check named for the alert rules", async () => {
     const storage = await storageIn("ready");
-    const app = buildApp({ storage });
+    const app = buildApp(await depsWith(storage));
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
 
@@ -79,7 +89,7 @@ describe("GET /health", () => {
 
   test("an unusable store reports error in the body — and still answers 200", async () => {
     const storage = await storageIn("unavailable");
-    const app = buildApp({ storage });
+    const app = buildApp(await depsWith(storage));
     const res = await app.inject({ method: "GET", url: "/health" });
     // The status code does not carry the degradation; a non-200 would let a
     // liveness probe restart a replica that is serving correctly.
@@ -94,7 +104,7 @@ describe("GET /health", () => {
 
   test("HEAD /health answers like GET", async () => {
     const storage = await storageIn("ready");
-    const app = buildApp({ storage });
+    const app = buildApp(await depsWith(storage));
     const res = await app.inject({ method: "HEAD", url: "/health" });
     expect(res.statusCode).toBe(200);
     await app.close();
@@ -116,7 +126,7 @@ describe("GET /health", () => {
       log: { info: () => {}, warn: () => {}, error: () => {} },
     });
     storage.start();
-    const app = buildApp({ storage });
+    const app = buildApp(await depsWith(storage));
     try {
       const eventuallyState = async (state: "ready" | "unavailable"): Promise<void> => {
         const deadline = Date.now() + 5_000;
@@ -151,11 +161,14 @@ describe("GET /health", () => {
 });
 
 describe("unmatched routes", () => {
-  test("while the store is unusable, a job operation answers 503 with the protocol's unavailable error", async () => {
+  test("while the store is unusable, an unmatched request answers 503 with the protocol's unavailable error", async () => {
+    // The signed operation routes now exist (operations.test.ts); the gate
+    // covers what is left unmatched, which is the operation surface's
+    // fallback while any route has not landed.
     for (const state of ["pending", "unavailable"] as const) {
       const storage = await storageIn(state);
-      const app = buildApp({ storage });
-      const res = await app.inject({ method: "POST", url: "/internal/jobs/v1/jobs" });
+      const app = buildApp(await depsWith(storage));
+      const res = await app.inject({ method: "POST", url: "/internal/jobs/v1/not-a-route" });
       expect(res.statusCode, `storage ${state}`).toBe(503);
       expect(res.headers["cache-control"], `storage ${state}`).toBe("no-store");
       expect(res.json(), `storage ${state}`).toEqual({
@@ -169,7 +182,7 @@ describe("unmatched routes", () => {
 
   test("on a ready service an unknown route is a 404, not an availability statement", async () => {
     const storage = await storageIn("ready");
-    const app = buildApp({ storage });
+    const app = buildApp(await depsWith(storage));
     const res = await app.inject({ method: "GET", url: "/no/such/route" });
     expect(res.statusCode).toBe(404);
     await app.close();
@@ -184,7 +197,7 @@ describe("unmatched routes", () => {
     // correlations, so an exact match on the forged value is the red line.
     const forged = "11111111-2222-3333-4444-555555555555";
     const storage = await storageIn("ready");
-    const app = buildApp({ storage });
+    const app = buildApp(await depsWith(storage));
     const reqIds: string[] = [];
     app.addHook("onResponse", async (req) => {
       reqIds.push(req.id);
