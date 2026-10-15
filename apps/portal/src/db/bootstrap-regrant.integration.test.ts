@@ -19,7 +19,8 @@ import { Pool } from "pg";
  * a throwaway database, applies the real bootstrap file, and holds the
  * complete carve-out inventory (20260721120000_gateway_calls_portal_readonly,
  * 20260721215912_shared_rate_counters_and_jti_burn,
- * 20260921120000_portal_sessions_least_privilege).
+ * 20260921120000_portal_sessions_least_privilege,
+ * 20261015000000_jobs_callback_jti_burn).
  */
 
 const TEST_DATABASE_URL =
@@ -44,6 +45,7 @@ const PORTAL_CARVE_OUTS: ReadonlyArray<{ table: string; revoked: string[]; kept:
   { table: "gateway_calls", revoked: ["INSERT", "UPDATE", "DELETE"], kept: ["SELECT"] },
   { table: "rate_counters", revoked: ["INSERT", "UPDATE", "DELETE"], kept: ["SELECT"] },
   { table: "instruction_jti", revoked: ["INSERT", "UPDATE", "DELETE"], kept: ["SELECT"] },
+  { table: "jobs_callback_jti", revoked: ["INSERT", "UPDATE", "DELETE"], kept: ["SELECT"] },
   {
     table: "sessions",
     revoked: ["INSERT", "UPDATE"],

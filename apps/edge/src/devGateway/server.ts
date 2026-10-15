@@ -14,6 +14,7 @@ import { PgAppDataStore } from "../gateway/data.js";
 import type { LlmProvider } from "../gateway/provider.js";
 import { HttpPortalProvider } from "../routing/portalProvider.js";
 import { PgDevTokenStore } from "./devTokenStore.js";
+import { PgJobsCallbackBurnStore } from "../jobs/burns.js";
 import type { PoolClientErrorPhase } from "../db/pool.js";
 
 /**
@@ -134,6 +135,21 @@ const devTokens = new PgDevTokenStore(devDatabaseUrl, {
   onClientError,
 });
 
+// The dev tier's jobs-callback nonce burn store (background-jobs-plane design
+// §3): same store, `dev` tier — the env-literal row-level policy pins this
+// role's rows, so the dev gateway can never consume, read, or clear a prod
+// nonce. The dev callback receiver that consumes burns is the callback route's
+// own seam (registration and dispatch), not this file's.
+const jobsCallbackBurns = new PgJobsCallbackBurnStore({
+  databaseUrl: devDatabaseUrl,
+  env: "dev",
+  statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
+  log: {
+    warn: (obj, msg) => logRef.current.warn(obj, msg),
+  },
+});
+
 // Fetch-proxy + LLM ride the same EgressProvider seam as the edge; env=dev is
 // carried in the attested instruction (step 1). Fail-closed when unconfigured.
 const egress: EgressProvider | null = config.fetch.egressUrl
@@ -186,6 +202,7 @@ app.addHook("onClose", async () => {
   await usage.close();
   await appData.close();
   await devTokens.close();
+  await jobsCallbackBurns.stop();
   await egress?.close();
   await llmProvider?.close();
   await portal?.close();
@@ -201,6 +218,7 @@ installGracefulShutdown(app, app.log);
 
 try {
   await registry.start();
+  jobsCallbackBurns.start();
   await app.listen({ port: config.devGateway.port, host });
   app.log.info(
     {
@@ -215,5 +233,9 @@ try {
   );
 } catch (err) {
   app.log.error(err);
+  // The listener never came up — the failed-partial-initialization exit.
+  // Release what boot acquired (the burn store's pool and sweep timer) here,
+  // not only on the shutdown path; stop() is safe twice.
+  await jobsCallbackBurns.stop();
   process.exit(1);
 }

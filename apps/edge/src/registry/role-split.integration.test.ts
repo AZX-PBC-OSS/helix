@@ -106,6 +106,26 @@ describe("helix_edge least-privilege grants", () => {
       await expect(pool.query("SELECT count(*) FROM instruction_jti")).rejects.toThrow(
         /permission denied/i,
       );
+      // The jobs-callback burn set (background-jobs-plane design §3) is a
+      // DIFFERENT table the edge does own, one tier of: SELECT/INSERT/DELETE —
+      // the burn (INSERT … ON CONFLICT) and its sweep — and no UPDATE, because
+      // a burn is never rewritten. The dev tier's rows inside it are fenced by
+      // the env-literal RLS policies, asserted in
+      // jobs/burns.integration.test.ts against a dedicated database.
+      await expect(
+        pool.query(
+          `INSERT INTO jobs_callback_jti ("env", jti, "burnUntil")
+             VALUES ('prod', 'rs-edge-callback', now() + interval '1 minute')`,
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`DELETE FROM jobs_callback_jti WHERE jti = 'rs-edge-callback'`),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          `UPDATE jobs_callback_jti SET "burnUntil" = now() WHERE jti = 'rs-edge-callback'`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
       // And so is the control plane's own counter table (ADR-0040 §4). This is
       // the mirror image of the portal being kept out of `rate_counters`, and it
       // is the property that whole second table exists to buy: neither plane can

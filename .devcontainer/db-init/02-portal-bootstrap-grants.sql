@@ -28,7 +28,9 @@
 -- 20260721215912_shared_rate_counters_and_jti_burn (rate_counters,
 -- instruction_jti), 20260921120000_portal_sessions_least_privilege (sessions —
 -- INSERT/UPDATE revoked; SELECT and DELETE deliberately kept for the admin
--- session list and the user-level revoke).
+-- session list and the user-level revoke), 20261015000000_jobs_callback_jti_burn
+-- (jobs_callback_jti — the edge's jobs-callback nonce burn set, RLS-partitioned
+-- by env tier).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO helix_portal;
 GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO helix_portal;
 ALTER DEFAULT PRIVILEGES FOR ROLE helix
@@ -43,6 +45,9 @@ BEGIN
   END IF;
   IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename IN ('rate_counters', 'instruction_jti')) THEN
     REVOKE INSERT, UPDATE, DELETE ON rate_counters, instruction_jti FROM helix_portal;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'jobs_callback_jti') THEN
+    REVOKE INSERT, UPDATE, DELETE ON jobs_callback_jti FROM helix_portal;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'sessions') THEN
     REVOKE INSERT, UPDATE ON sessions FROM helix_portal;

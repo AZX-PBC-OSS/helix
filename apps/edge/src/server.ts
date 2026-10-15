@@ -20,6 +20,7 @@ import { LoginThrottle } from "./auth/loginThrottle.js";
 import { PgCounterStore } from "./gateway/counterStore.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
 import { PgVisitStore } from "./serving/visits.js";
+import { PgJobsCallbackBurnStore } from "./jobs/burns.js";
 import type { PoolClientErrorPhase } from "./db/pool.js";
 
 /**
@@ -179,6 +180,22 @@ const counterStore = new PgCounterStore(config.databaseUrl, {
 const anonRateLimiter = new IpRateLimiter(config.anonRateLimit, counterStore);
 const loginThrottle = new LoginThrottle(counterStore);
 
+// The jobs-callback nonce burn store (background-jobs-plane design §3): this
+// edge's replay memory for signed jobs→edge callback instructions, in its own
+// RLS-prod-scoped table (`jobs_callback_jti` — the egress burn set is a
+// different table this role has no grant on). The sweep is always on; the
+// callback receiver that consumes burns is the callback route's own seam
+// (registration and dispatch), not this file's.
+const jobsCallbackBurns = new PgJobsCallbackBurnStore({
+  databaseUrl: config.databaseUrl,
+  env: "prod",
+  statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
+  log: {
+    warn: (obj, msg) => logRef.current.warn(obj, msg),
+  },
+});
+
 // Fetch-proxy + LLM (M4.5): the edge is the policy plane and forwards authorized
 // calls to helix-egress over the EgressProvider seam. The capability is enabled
 // only when both the egress URL and the shared instruction secret are present
@@ -275,6 +292,7 @@ counterSweep.unref();
 app.addHook("onClose", async () => {
   sweeper?.stop();
   clearInterval(counterSweep);
+  await jobsCallbackBurns.stop();
   oidc?.stop();
   await registry.stop();
   await sessions?.close();
@@ -305,6 +323,7 @@ try {
   // neither does OIDC discovery — auth routes 503 until it lands).
   await registry.start();
   await oidc?.start();
+  jobsCallbackBurns.start();
   await app.listen({ port, host });
   app.log.info(
     {
@@ -328,5 +347,9 @@ try {
   }
 } catch (err) {
   app.log.error(err);
+  // The listener never came up — the failed-partial-initialization exit.
+  // Release what boot acquired (the burn store's pool and sweep timer) here,
+  // not only on the shutdown path; stop() is safe twice.
+  await jobsCallbackBurns.stop();
   process.exit(1);
 }

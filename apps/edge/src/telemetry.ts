@@ -16,6 +16,7 @@ import {
   INSTR_APP_VISITS,
   INSTR_GATEWAY_CALLS,
   INSTR_GATEWAY_DURATION,
+  INSTR_JOBS_BURN_SWEEPS,
   INSTR_REGISTRY_LOAD_FAILURES,
   INSTR_REGISTRY_STALE_FOR_MS,
   INSTR_SESSION_GATE_DENIED,
@@ -69,6 +70,15 @@ export interface EdgeInstruments {
   trustProxyUnresolved: ObservableGauge;
   /** `appId`, `outcome` ∈ `VISIT_RECORD_OUTCOMES` (ADR-0050). */
   appVisits: Counter;
+  /**
+   * `outcome` ∈ `JOBS_BURN_SWEEP_OUTCOMES` — the jobs-callback burn store's
+   * sweep passes (`jobs/burns.ts`). The same instrument name the jobs plane
+   * emits for its own burn store, so one alert covers both planes' cleanup.
+   * Which service emitted a point is resource-level `service.name` — each
+   * process boots telemetry under its own name; this module's meter scope is
+   * always `helix-edge`, including in the dev-gateway process that shares it.
+   */
+  jobsBurnSweeps: Counter;
 }
 
 /**
@@ -127,6 +137,11 @@ export function instruments(): EdgeInstruments {
       description:
         "Hosted-app document loads the edge tried to record, by outcome. Operational only — " +
         "the owner-facing counts come from app_visits.",
+    }),
+    jobsBurnSweeps: meter.createCounter(INSTR_JOBS_BURN_SWEEPS, {
+      description:
+        "Jobs-callback burn-store sweep passes by outcome. Operational only — a run of " +
+        "failed with no ok is a store that stopped answering its cleanup.",
     }),
   };
   return cached;

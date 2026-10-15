@@ -394,6 +394,31 @@ model InstructionJti {
   @@map("instruction_jti")
 }
 
+/// One-time-use burn set for the signed jobs→edge callback instruction
+/// (background-jobs-plane design §3) — the edge-side counterpart of
+/// `InstructionJti`, and a separate table on purpose: `instruction_jti` stays
+/// the egress burn set (the edge has no grant on it and must never gain one).
+/// **Edge-written data**: the receiving edge burns the verified `jti` before
+/// any side effect (INSERT … ON CONFLICT DO NOTHING — `rowCount === 0` is a
+/// replay), so the refusal survives a restart and holds across replicas. The
+/// `env` tier partitions the table: the prod edge (helix_edge) burns prod
+/// rows, the dev gateway (helix_dev) dev rows, and env-literal RLS policies
+/// (20261015000000_jobs_callback_jti_burn) make the database itself refuse a
+/// cross-tier burn, read, or delete. `helix_portal` is carved out to
+/// read-only (and RLS shows it no rows at all).
+model JobsCallbackJti {
+  /// The callback tier the nonce was consumed under — 'prod' | 'dev'.
+  env       String
+  /// The callback instruction's `jti`, as the verifier validated it.
+  jti       String
+  /// Retention floor ≥ maxTokenAge + clockTolerance + margin; swept after this.
+  burnUntil DateTime
+
+  @@id([env, jti])
+  @@index([burnUntil])
+  @@map("jobs_callback_jti")
+}
+
 /// Per-user / per-app key-value store (architecture §6.1, app-data design
 /// §3.1/§3.3). **Edge-written data**, like sessions/gateway_calls: the edge
 /// reads & writes ONLY rows whose partition key is the caller's own
