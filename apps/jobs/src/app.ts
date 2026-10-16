@@ -38,7 +38,8 @@ import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { Span } from "@opentelemetry/api";
 
 import type { JobsAdmission, JobsAdmissionResult } from "./acceptance.js";
-import { jobsDatabaseCheck, jobsWorkerCheck } from "./health.js";
+import { jobsDatabaseCheck, jobsSweeperCheck, jobsWorkerCheck } from "./health.js";
+import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import { SERVICE_NAME } from "./serviceName.js";
 import type { JobsStorage } from "./storage.js";
@@ -81,6 +82,12 @@ export interface JobsDeps {
    * registered), never a live probe.
    */
   worker: () => JobsRunnerSnapshot;
+  /**
+   * The recovery sweeper's supervision state, read per request —
+   * `/health`'s `jobs_sweeper` check grades it (the loop running, its last
+   * successful pass fresh), never a live probe.
+   */
+  recovery: () => JobsRecoverySnapshot;
 }
 
 /** A request that arrived with a body the raw-capturing parser held onto. */
@@ -440,7 +447,11 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
     handler: async (_req, reply) => {
       // The snapshot, never a live probe: a health request must not wait on a
       // store that is down, and the probes' cadence is the loop's business.
-      const checks = [jobsDatabaseCheck(deps.storage.snapshot()), jobsWorkerCheck(deps.worker())];
+      const checks = [
+        jobsDatabaseCheck(deps.storage.snapshot()),
+        jobsWorkerCheck(deps.worker()),
+        jobsSweeperCheck(deps.recovery()),
+      ];
       reply.header("cache-control", "no-store"); // a degraded body must not be cached
       return HealthStatusSchema.parse({
         status: worstHealthState(checks.map((c) => c.status)),

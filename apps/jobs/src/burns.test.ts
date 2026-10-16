@@ -322,3 +322,207 @@ describe("the durable burn store", () => {
     }
   });
 });
+
+/**
+ * A sweep can reject only through its own reporting — a log sink that threw
+ * (its store failure is a verdict, never a throw). The `sweep_rejected`
+ * contract: the rejection is reported sink-guarded and the release chain
+ * survives it — stop() must resolve over a rejected in-flight sweep, or the
+ * shutdown that stops this store never releases what it acquired.
+ */
+describe("a sweep whose own reporting threw", () => {
+  test("stop releases through a rejected in-flight sweep — the release chain survives", async () => {
+    const events: string[] = [];
+    const throws = (fields: Record<string, unknown>): void => {
+      events.push(String(fields.event));
+      throw new Error("the reporting sink is down");
+    };
+    // A store that does not exist: the sweep's own failure path runs (the
+    // catch reports `sweep_failed`), and the report's sink throw is what
+    // rejects the pass.
+    const burns = new JobsInstructionBurns({
+      databaseUrl: urlFor(`${SCRATCH_DB}_no_such`, JOBS_RUNTIME_ROLE),
+      statementTimeoutMs: 2_000,
+      sweepIntervalMs: 30_000,
+      log: { warn: (fields) => throws(fields) },
+    });
+    burns.start();
+    try {
+      const failedBy = Date.now() + 10_000;
+      while (Date.now() < failedBy && !events.includes("jobs.burn.sweep_failed")) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(events.some((e) => e === "jobs.burn.sweep_failed")).toBe(true);
+
+      await expect(burns.stop()).resolves.toBeUndefined();
+      // The release's own report of the rejected sweep rode the same broken
+      // sink — the event names the occurrence; the release continued.
+      expect(events.some((e) => e === "jobs.burn.sweep_rejected")).toBe(true);
+    } finally {
+      await burns.stop().catch(() => {});
+    }
+  });
+});
+
+describe("a timer-driven sweep whose reporting threw", () => {
+  test("is not an unhandled rejection, and the cadence continues", async () => {
+    // Every sweep's launch handles its own rejection: the timer callback
+    // reschedules on either settlement half, so a sweep whose failure
+    // report threw (this sink) never becomes an unhandled rejection in the
+    // process the burn store serves, and the next sweep still runs. A
+    // launch that dropped the guard turns this red.
+    const events: string[] = [];
+    const captured: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      captured.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const burns = new JobsInstructionBurns({
+      databaseUrl: urlFor(`${SCRATCH_DB}_no_such`, JOBS_RUNTIME_ROLE),
+      statementTimeoutMs: 2_000,
+      sweepIntervalMs: 50,
+      log: {
+        warn: (fields) => {
+          events.push(String(fields.event));
+          throw new Error("the reporting sink is down");
+        },
+      },
+    });
+    try {
+      burns.start();
+      const sweptBy = Date.now() + 3_000;
+      while (
+        Date.now() < sweptBy &&
+        events.filter((e) => e === "jobs.burn.sweep_failed").length < 3
+      ) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(events.filter((e) => e === "jobs.burn.sweep_failed").length).toBeGreaterThanOrEqual(3);
+      expect(captured).toEqual([]);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+      await burns.stop().catch(() => {});
+    }
+  });
+});
+
+describe("a failed sweep's accounting survives its own reporting", () => {
+  test("the counter counts the failed sweep when the sink that reports it is down", async () => {
+    // The sweep's failure accounting (`helix.jobs.burn.sweeps` by outcome)
+    // is the operator's rate signal for a store that stopped answering —
+    // the same standard the recovery sweeper's accounting legs pin: account
+    // BEFORE reporting, so a reporting sink that threw cannot skip the
+    // count. A sweep that fails (this store does not exist) with a sink
+    // that throws on every report must still be counted failed, and the
+    // cadence must continue. A reordering that reports before accounting
+    // turns this red: the counter skips every sweep whose report threw.
+    const recording = startRecordingTelemetry();
+    try {
+      const burns = new JobsInstructionBurns({
+        databaseUrl: urlFor(`${SCRATCH_DB}_no_such`, JOBS_RUNTIME_ROLE),
+        statementTimeoutMs: 2_000,
+        sweepIntervalMs: 50,
+        log: {
+          warn: () => {
+            throw new Error("the reporting sink is down");
+          },
+        },
+      });
+      burns.start();
+      const sweptBy = Date.now() + 3_000;
+      while (Date.now() < sweptBy) {
+        const sweeps = (await recording.metrics()).filter(
+          (m) => m.name === "helix.jobs.burn.sweeps" && m.attributes["helix.outcome"] === "failed",
+        );
+        if (sweeps.reduce((sum, m) => sum + m.value, 0) >= 3) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await burns.stop().catch(() => {});
+
+      const sweeps = (await recording.metrics()).filter(
+        (m) => m.name === "helix.jobs.burn.sweeps" && m.attributes["helix.outcome"] === "failed",
+      );
+      // The accounting survived every report's throw: three failed sweeps,
+      // counted.
+      expect(sweeps.reduce((sum, m) => sum + m.value, 0)).toBeGreaterThanOrEqual(3);
+      // Bounded, non-personal dimensions: the outcome, nothing else.
+      for (const point of sweeps) {
+        expect(Object.keys(point.attributes)).toEqual(["helix.outcome"]);
+      }
+    } finally {
+      await recording.restore();
+    }
+  });
+
+  test(
+    "a successful sweep's accounting is exactly once — a full batch whose backlog report throws is not also counted failed",
+    { timeout: 30_000 },
+    async () => {
+      // The sweep's success accounting (`helix.jobs.burn.sweeps`, outcome `ok`)
+      // is exactly once per sweep: the backlog report that follows the count is
+      // cosmetic evidence, so a reporting sink that throws on it must not fail
+      // the already-counted sweep into the catch arm's `failed` count — one
+      // sweep counted twice, ok and failed, would put a failure that never
+      // happened into the store-down rate signal during exactly the sink-broken
+      // period that signal exists for.
+      const sweepDb = `helix_jobs_burns_once_${randomUUID().replaceAll("-", "")}`;
+      await applyRolesProvisioning(sweepDb);
+      await migrateJobsStorage(urlFor(sweepDb, "helix_jobs_migrate"));
+      const dsn = urlFor(sweepDb, JOBS_RUNTIME_ROLE);
+
+      let now = 1_800_000_000_000;
+      const burns = new JobsInstructionBurns({
+        databaseUrl: dsn,
+        statementTimeoutMs: 10_000,
+        nowMs: () => now,
+        sweepIntervalMs: 50,
+        sweepBatch: 2,
+        log: {
+          warn: () => {
+            throw new Error("the reporting sink is down");
+          },
+        },
+      });
+      const recording = startRecordingTelemetry();
+      try {
+        burns.start();
+        // Two burns at the base instant — exactly one full batch once their
+        // retention ends, so the removal pass hits the cap and reports the
+        // backlog through the throwing sink.
+        for (let i = 0; i < 2; i++) {
+          await burns.burn("edgeToJobs", `exactly-once-${i}`);
+        }
+        now += JOBS_INSTRUCTION_BURN_RETENTION_SECONDS * 1_000 + 1_000;
+
+        // The removal pass ran: the expired rows are gone from the store.
+        const removedBy = Date.now() + 10_000;
+        while (Date.now() < removedBy && (await rowCount(dsn, "exactly-once-%")) > 0) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(await rowCount(dsn, "exactly-once-%")).toBe(0);
+        // The cadence continued past the throwing report: further clean passes.
+        await new Promise((r) => setTimeout(r, 200));
+        await burns.stop().catch(() => {});
+
+        const metrics = await recording.metrics();
+        const okSweeps = metrics.filter(
+          (m) => m.name === "helix.jobs.burn.sweeps" && m.attributes["helix.outcome"] === "ok",
+        );
+        // The removal pass was accounted, and the cadence kept accounting after
+        // its report threw: at least the removal pass and one later clean pass.
+        expect(okSweeps.reduce((sum, m) => sum + m.value, 0)).toBeGreaterThanOrEqual(2);
+        // No sweep failed — the store answered every query; the only failure was
+        // the reporting sink on a cosmetic line, which must not reach the counter.
+        const failedSweeps = metrics.filter(
+          (m) => m.name === "helix.jobs.burn.sweeps" && m.attributes["helix.outcome"] === "failed",
+        );
+        expect(failedSweeps.reduce((sum, m) => sum + m.value, 0)).toBe(0);
+      } finally {
+        await recording.restore();
+        const pool = new Pool({ connectionString: urlFor("postgres"), max: 1 });
+        await pool.query(`DROP DATABASE IF EXISTS "${sweepDb}" WITH (FORCE)`);
+        await pool.end();
+      }
+    },
+  );
+});

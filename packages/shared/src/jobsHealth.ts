@@ -14,7 +14,7 @@
 export const JOBS_DATABASE_CHECK = "jobs_database";
 /** The jobs service's worker execution: the runner started and a worker is registered on it. */
 export const JOBS_WORKER_CHECK = "jobs_worker";
-/** The jobs service's pg-boss maintenance/heartbeat supervision. */
+/** The jobs service's recovery sweeper: the loop that reconciles interrupted work (its pass freshness is what is graded). */
 export const JOBS_SWEEPER_CHECK = "jobs_sweeper";
 /** The edge's bounded jobs-reachability probe, independent of user requests. */
 export const JOBS_REACHABILITY_CHECK = "jobs_reachability";

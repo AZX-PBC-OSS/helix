@@ -208,9 +208,17 @@ export async function appWithLifecycle(
     instructions: receiver.auth,
     lifecycle,
     admission,
-    // The route suites exercise the receiver's routes, not the worker; the
-    // supervision state they report is the registered composition's.
+    // The route suites exercise the receiver's routes, not the worker or the
+    // sweeper; the supervision states they report are the registered
+    // composition's, with the sweeper's last pass fresh.
     worker: () => ({ started: true, workerRegistered: true }),
+    recovery: () => ({
+      started: true,
+      passes: 1,
+      lastPassAt: new Date().toISOString(),
+      lastOkPassAt: new Date().toISOString(),
+      reconciled: 0,
+    }),
   });
   return { app, storage };
 }

@@ -70,6 +70,7 @@ describe("the supervised runner's convergence", () => {
           if ((fields as { event?: string }).event === "jobs.runner.start_failed")
             failedStarts += 1;
         },
+        error: () => {},
       },
       registerWorker: async () => {},
     });
@@ -153,7 +154,7 @@ describe("the runner's worker registration", () => {
         seenInstances.add(boss);
         if (registrations < 3) throw new Error("the worker registration failed");
       },
-      log: { info: () => {}, warn: () => {} },
+      log: { info: () => {}, warn: () => {}, error: () => {} },
     });
     failing.start();
     try {
@@ -192,7 +193,7 @@ describe("the runner's worker registration", () => {
         if (registrations === 1) throw new Error("the worker registration failed");
         serving = boss;
       },
-      log: { info: () => {}, warn: () => {} },
+      log: { info: () => {}, warn: () => {}, error: () => {} },
     });
     retried.start();
     try {
@@ -230,6 +231,7 @@ describe("the runner's worker registration", () => {
       log: {
         info: () => {},
         warn: (fields, msg) => warns.push({ fields, msg }),
+        error: () => {},
       },
     });
     reporting.start();
@@ -276,7 +278,7 @@ describe("the runner's worker registration", () => {
         hookEnteredResolve();
         await registrationReleased;
       },
-      log: { info: () => {}, warn: () => {} },
+      log: { info: () => {}, warn: () => {}, error: () => {} },
     });
     stopping.start();
     await hookEntered;
@@ -317,6 +319,7 @@ describe("the runner's worker registration", () => {
       log: {
         info: () => {},
         warn: (fields, msg) => warns.push({ fields, msg }),
+        error: () => {},
       },
     });
     surviving.start();
@@ -337,6 +340,48 @@ describe("the runner's worker registration", () => {
       expect(discardWarn?.msg).toMatch(/discarded instance's stop failed/);
     } finally {
       await surviving.stop();
+    }
+  }, 60_000);
+});
+
+describe("a start whose own reporting threw", () => {
+  test("a start that succeeded is not failed by its own log line — the runner keeps serving", async () => {
+    await applyRolesProvisioning(SCRATCH_DB);
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    let startedLines = 0;
+    const serving = new JobsRunner({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: 10_000,
+      retryInitialMs: 25,
+      retryMaxMs: 100,
+      registerWorker: async () => {},
+      log: {
+        info: (fields) => {
+          if ((fields as { event?: string }).event === "jobs.runner.started") {
+            startedLines += 1;
+            throw new Error("the reporting sink is down");
+          }
+        },
+        warn: () => {},
+        error: () => {},
+      },
+    });
+    serving.start();
+    try {
+      // The start attempt reached its own success report (the started line)
+      // and that report threw. The store verified and the worker registered —
+      // a log line must not fail a start that succeeded, and the attempt's
+      // rejection contract ("the loop's scheduling and the release continue")
+      // must leave the runner serving, not bricked with `started` reading
+      // true over no instance and no retry.
+      await waitFor("the started line to report", 30_000, () => startedLines > 0);
+      const by = Date.now() + 3_000;
+      while (Date.now() < by && !(serving.snapshot.started && serving.snapshot.workerRegistered)) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(serving.snapshot).toEqual({ started: true, workerRegistered: true });
+    } finally {
+      await serving.stop();
     }
   }, 60_000);
 });

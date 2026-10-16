@@ -680,6 +680,13 @@ describe("the signed operation routes", () => {
       lifecycle,
       admission: new MemoryAdmission(),
       worker: () => ({ started: true, workerRegistered: true }),
+      recovery: () => ({
+        started: true,
+        passes: 1,
+        lastPassAt: new Date().toISOString(),
+        lastOkPassAt: new Date().toISOString(),
+        reconciled: 0,
+      }),
     });
     try {
       const token = await mint({

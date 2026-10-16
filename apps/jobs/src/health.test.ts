@@ -1,9 +1,15 @@
 import { describe, expect, test } from "vitest";
 
-import { HealthCheckSchema, JOBS_DATABASE_CHECK, JOBS_WORKER_CHECK } from "@azx-pbc/shared";
+import {
+  HealthCheckSchema,
+  JOBS_DATABASE_CHECK,
+  JOBS_SWEEPER_CHECK,
+  JOBS_WORKER_CHECK,
+} from "@azx-pbc/shared";
 
 import type { JobsStorageCompatibility } from "./compat.js";
-import { jobsDatabaseCheck, jobsWorkerCheck } from "./health.js";
+import { jobsDatabaseCheck, jobsSweeperCheck, jobsWorkerCheck } from "./health.js";
+import { JOBS_RECOVERY_STALE_AFTER_MS, type JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
 
@@ -201,5 +207,75 @@ describe("jobsWorkerCheck", () => {
     // field the runner later adds must not silently change this check.
     const snapshot: JobsRunnerSnapshot = { started: true, workerRegistered: true };
     expect(jobsWorkerCheck(snapshot)).toEqual({ name: JOBS_WORKER_CHECK, status: "ok" });
+  });
+});
+
+describe("jobsSweeperCheck", () => {
+  const NOW = Date.parse("2026-10-16T08:00:00.000Z");
+
+  function sweeper(overrides: Partial<JobsRecoverySnapshot>): JobsRecoverySnapshot {
+    return {
+      started: true,
+      passes: 4,
+      lastPassAt: new Date(NOW - 1_000).toISOString(),
+      lastOkPassAt: new Date(NOW - 1_000).toISOString(),
+      reconciled: 2,
+      ...overrides,
+    };
+  }
+
+  test("a sweeper that is not running, or has never completed a pass, is never healthy", () => {
+    const notRunning = jobsSweeperCheck(
+      sweeper({ started: false, passes: 0, lastPassAt: null, lastOkPassAt: null }),
+      {
+        nowMs: NOW,
+      },
+    );
+    expect(HealthCheckSchema.parse(notRunning)).toBeTruthy();
+    expect(notRunning.name).toBe(JOBS_SWEEPER_CHECK);
+    expect(notRunning.status).toBe("error");
+    expect(notRunning.detail).toMatch(/sweeper is not running/);
+
+    const neverPassed = jobsSweeperCheck(
+      sweeper({ lastOkPassAt: null, passes: 3, lastPassAt: new Date(NOW).toISOString() }),
+      { nowMs: NOW },
+    );
+    expect(neverPassed.status).toBe("error");
+    // The last pass's own instant distinguishes a loop that never ran from
+    // one that runs but cannot complete a pass.
+    expect(neverPassed.detail).toMatch(/no successful pass — its last pass was 0s ago/);
+  });
+
+  test("a fresh successful pass is ok and names when it last succeeded; the counts ride the metrics", () => {
+    const check = jobsSweeperCheck(sweeper({}), { nowMs: NOW });
+    expect(check.status).toBe("ok");
+    expect(check.lastSuccessAt).toBe(new Date(NOW - 1_000).toISOString());
+    expect(check.metrics).toEqual({ passes: 4, reconciled: 2 });
+  });
+
+  test("a last successful pass older than the staleness bound degrades, naming its age", () => {
+    const check = jobsSweeperCheck(
+      sweeper({ lastOkPassAt: new Date(NOW - 10 * 60_000).toISOString() }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("degraded");
+    expect(check.detail).toMatch(/last successful pass was 600s ago/);
+  });
+
+  test("a pass at exactly the staleness bound still reads ok — degradation begins after it", () => {
+    // The threshold is strictly-greater: a check exactly as old as the bound
+    // is the last instant the loop's own cadence can still answer for.
+    const atBound = sweeper({ lastOkPassAt: new Date(NOW - 45_000).toISOString() });
+    expect(jobsSweeperCheck(atBound, { nowMs: NOW }).status).toBe("ok");
+    const pastBound = sweeper({ lastOkPassAt: new Date(NOW - 45_001).toISOString() });
+    expect(jobsSweeperCheck(pastBound, { nowMs: NOW }).status).toBe("degraded");
+  });
+
+  test("the staleness bound is a fixed multiple of the sweep cadence, overridable for the leg", () => {
+    const at30s = sweeper({ lastOkPassAt: new Date(NOW - 30_000).toISOString() });
+    expect(jobsSweeperCheck(at30s, { nowMs: NOW }).status).toBe("ok");
+    expect(jobsSweeperCheck(at30s, { nowMs: NOW, staleAfterMs: 20_000 }).status).toBe("degraded");
+    // The default is derived from the sweeper's own cadence constant.
+    expect(JOBS_RECOVERY_STALE_AFTER_MS).toBe(45_000);
   });
 });

@@ -11,7 +11,6 @@ import {
   resolveJobsCapacityLimits,
   type JobsCapacityLimits,
 } from "@azx-pbc/shared";
-import { sha256BodyDigest } from "@azx-pbc/shared/jobsSigning";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 
 import {
@@ -28,10 +27,10 @@ import {
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
   JOBS_RUNTIME_ROLE,
-  jobsAppEnvGroupId,
   jobsRuntimeBossOptions,
 } from "./policy.js";
 import { createPgbossEnqueuer, JobsAcceptanceStore } from "./acceptance.js";
+import { seedRunnerJobWithRecord } from "./test/recordSeed.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 import { submitClaims, TEST_BODY, TEST_IDENTITY } from "./test/instructions.js";
 
@@ -164,41 +163,16 @@ async function admit(appId: string, body: Uint8Array, idempotencyKey: string | n
  * row with the leg's own retry/claim options, and its wrapper record — so a
  * leg can arrange exact runner-side conditions (a retriable job, a short
  * claim bound, a skewing input) that the platform's own admission never
- * produces.
+ * produces. The shared helper carries the shape; this suite pins the
+ * conditions its legs need.
  */
-async function seedJob(options: {
+function seedJob(options: {
   appId: string;
   data: object;
   retryLimit?: number;
   expireInSeconds?: number;
 }): Promise<string> {
-  const runnerJobId = await boss.send(JOBS_QUEUE_NAME, options.data, {
-    retryLimit: options.retryLimit ?? 0,
-    expireInSeconds: options.expireInSeconds ?? 300,
-    group: { id: jobsAppEnvGroupId(options.appId, "prod") },
-  });
-  if (runnerJobId === null) throw new Error("the seeded runner job was not enqueued");
-  const jobId = randomUUID();
-  await direct.query(
-    `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
-       (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
-        generation, status, retry_key, body_sha256, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', NULL, $10, $11)`,
-    [
-      "jobs",
-      jobId,
-      runnerJobId,
-      options.appId,
-      "prod",
-      "user",
-      TEST_IDENTITY.ownerOid,
-      "jobs:fetch",
-      "1",
-      sha256BodyDigest(new TextEncoder().encode(JSON.stringify(options.data))),
-      new Date().toISOString(),
-    ],
-  );
-  return jobId;
+  return seedRunnerJobWithRecord(boss, direct, options);
 }
 
 /** The stored result of a record row, as the wire value — the column carries the bound's canonical text. */
@@ -1280,5 +1254,52 @@ describe("the execution seam's telemetry", () => {
     expect(span?.attributes["helix.outcome"]).toBe("failed");
     expect(span?.attributes["helix.reason"]).toBe("platform_error");
     expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+  });
+});
+
+describe("the begin's attempt fence", () => {
+  /** The begin store of its own, so the leg drives begins directly, without a worker. */
+  let store: JobsExecutionStore;
+  beforeAll(() => {
+    store = new JobsExecutionStore({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: 10_000,
+      log: LOG,
+    });
+    store.start();
+  });
+  afterAll(async () => {
+    await store.stop();
+  });
+
+  test("a delayed stale begin is fenced — the newer attempt's begin is never rewritten or wiped", async () => {
+    // Two claims' begins landing out of order: the newer attempt's begin has
+    // taken the record (and reported its progress) when a claim delayed past
+    // its own expiry arrives at the older attempt number. The begin's write
+    // must refuse the older number — rewriting the record at attempt 1 would
+    // wipe attempt 2's attribution and fence off its success behind it.
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const jobId = await seedRunnerJobWithRecord(boss, direct, {
+      appId,
+      data: { url: "https://example.com/data.json" },
+      startAfterSeconds: 3_600,
+    });
+    const runnerJobId = String((await runnerRow(jobId)).id);
+
+    const newer = await store.beginAttempt(runnerJobId, 2);
+    if (newer.verdict !== "started") throw new Error(`the newer begin refused: ${newer.verdict}`);
+    expect(
+      await store.reportProgress(newer.record, 2, { step: 1, of: 1, label: "live attempt" }),
+    ).toBe("persisted");
+
+    const stale = await store.beginAttempt(runnerJobId, 1);
+    expect(stale.verdict).toBe("terminal_fenced");
+
+    const row = await recordRow(jobId);
+    expect(row.status).toBe("running");
+    expect(row.attempt).toBe(2);
+    expect(row.progress).toEqual({ step: 1, of: 1, label: "live attempt" });
+    expect(row.error_code).toBeNull();
   });
 });

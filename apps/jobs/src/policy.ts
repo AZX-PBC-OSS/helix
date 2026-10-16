@@ -162,6 +162,14 @@ export interface JobsTypePolicy {
   /** Per-attempt claim bound, in seconds. */
   expireInSeconds: number;
   /**
+   * The type's absolute deadline, in seconds, FROM ACCEPTANCE — the schedule-
+   * to-close bound every wait (queue time, execution, retry delays) consumes
+   * and recovery never authorizes execution after (spec criterion 24). It is
+   * at least the per-attempt claim bound, so one attempt can always run
+   * inside the deadline; retries fit only while their sum does.
+   */
+  deadlineSeconds: number;
+  /**
    * The input contract admission validates new work against, before
    * acceptance. Carried by the type's policy so the installed-type registry
    * stays exhaustive in both directions — a type cannot be installed for
@@ -183,11 +191,12 @@ export interface JobsTypePolicy {
 export const JOBS_TYPE_POLICIES: Record<string, JobsTypePolicy> = Object.freeze(
   screenTypePolicies({
     // One execution attempt, no automatic outbound retry; the five-minute
-    // type deadline bounds the claim (the absolute deadline machinery and the
-    // 30-second outbound timeout close work earlier).
+    // deadline is both the absolute bound from acceptance and the per-attempt
+    // claim ceiling (the 30-second outbound timeout closes work earlier).
     [JOBS_FETCH_QUALIFIED_TYPE]: {
       retryLimit: 0,
       expireInSeconds: JOBS_FETCH_DEADLINE_SECONDS,
+      deadlineSeconds: JOBS_FETCH_DEADLINE_SECONDS,
       inputSchema: FetchJobInputSchema,
     },
   }),
@@ -198,7 +207,9 @@ export const JOBS_TYPE_POLICIES: Record<string, JobsTypePolicy> = Object.freeze(
  * the registry at import, and exported because its refusals are the
  * enforcement the module-state tests pin. Each policy is frozen in place as
  * well: the outer freeze stops keys being added or replaced, not writes
- * through an inner object's reference.
+ * through an inner object's reference. A policy whose absolute deadline is
+ * below its own per-attempt claim bound is refused here too: the claim
+ * machinery could otherwise run one attempt past the type's own deadline.
  */
 export function screenTypePolicies(
   policies: Record<string, JobsTypePolicy>,
@@ -214,10 +225,31 @@ export function screenTypePolicies(
       throw new Error(`no execution policy is installed for catalogue type "${id}"`);
     }
   }
-  for (const policy of Object.values(policies)) {
+  for (const [id, policy] of Object.entries(policies)) {
+    if (policy.deadlineSeconds < policy.expireInSeconds) {
+      throw new Error(
+        `the execution policy for "${id}" carries an absolute deadline ` +
+          `(${policy.deadlineSeconds}s) below its own per-attempt claim bound (${policy.expireInSeconds}s)`,
+      );
+    }
     Object.freeze(policy);
   }
   return policies;
+}
+
+/**
+ * The absolute deadline a record of one installed type answers to, in seconds
+ * from acceptance — the type's own `deadlineSeconds`, or the platform's
+ * 60-minute default for a record whose type has lost its installed policy
+ * (registration drift is the dispatch's refusal, not the deadline's guess).
+ * Read by the worker-start gate and the recovery sweeper, which must apply
+ * the same bound.
+ */
+export function jobsAbsoluteDeadline(qualifiedType: string): number {
+  return (
+    (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy | undefined>)[qualifiedType]
+      ?.deadlineSeconds ?? JOBS_DEADLINE_SECONDS
+  );
 }
 
 /**
@@ -281,12 +313,23 @@ const OPEN_TELEMETRY_DISABLED: ConstructorOptions["openTelemetry"] = Object.free
  * off: the platform registers no cron or recurring entry point. pg-boss's
  * native OpenTelemetry stays off — the platform's signals are the hand-placed
  * ones behind the shared telemetry boundary.
+ *
+ * The supervision cadence is pinned to the heartbeat: both the supervise pass
+ * and its expiry/heartbeat-failure arms run every 10 seconds — the
+ * dependency's own 60-second supervise/monitor defaults alone could push
+ * worker-loss detection past the 60-second healthy-service bound, and the
+ * window the recovery sweeper's reconciliation and cancellation hang from is
+ * the heartbeat (design §6: configure maintenance so worker loss meets its
+ * bounds). The dependency's hour-scale default is its deletion arm's
+ * interval, which this platform disables outright (see the queue policy).
  */
 export function jobsRuntimeBossOptions(): ConstructorOptions {
   return Object.freeze({
     schema: JOBS_PGBOSS_SCHEMA,
     migrate: false,
     schedule: false,
+    superviseIntervalSeconds: JOBS_HEARTBEAT_SECONDS,
+    monitorIntervalSeconds: JOBS_HEARTBEAT_SECONDS,
     openTelemetry: OPEN_TELEMETRY_DISABLED,
   });
 }

@@ -42,6 +42,7 @@ export const INSTR_JOBS_STORAGE_PROBES = "helix.jobs.storage.probes";
 export const INSTR_JOBS_INSTRUCTIONS = "helix.jobs.instructions";
 export const INSTR_JOBS_BURN_SWEEPS = "helix.jobs.burn.sweeps";
 export const INSTR_JOBS_EXECUTIONS = "helix.jobs.executions";
+export const INSTR_JOBS_RECOVERIES = "helix.jobs.recoveries";
 
 /**
  * Attribute keys.
@@ -214,6 +215,10 @@ export const SPAN_JOBS_LIFECYCLE = "helix.jobs.lifecycle";
 /** The jobs worker's execution of one attempt of one job — a root consumer
  * span (background work has no inbound request context to continue). */
 export const SPAN_JOBS_EXECUTE = "helix.jobs.execute";
+/** The jobs recovery sweeper's disposition of one interrupted job — a root
+ * consumer span, one per job the pass dispositioned (never for the passing
+ * through of consistent work). */
+export const SPAN_JOBS_RECOVER = "helix.jobs.recover";
 /** The portal's lifecycle outbox write — the transaction that commits app
  * state, the next generation and the per-target intents together (ADR-0007).
  * The receiver's `helix.jobs.lifecycle` route span is the delivery's other end. */
@@ -439,6 +444,10 @@ export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
  * - `gate_refused` — the worker-start gate refused to run the job (its
  *   lifecycle generation is closed, or not yet delivered): the handler never
  *   executed and the wrapper record stays untouched.
+ * - `deadline_exceeded` — the worker-start gate refused to run the job because
+ *   its absolute deadline (from acceptance, queue wait and retries included)
+ *   had passed, and terminated it with the platform's timeout outcome in the
+ *   same transaction: recovery never authorizes execution after the deadline.
  * - `terminal_fenced` — the attempt was fenced and no outcome was projected:
  *   the record was already terminal when the worker reached it, or the
  *   runner claim had lapsed before the attempt could settle (a late
@@ -451,10 +460,50 @@ export const JOBS_EXECUTE_OUTCOMES = [
   "succeeded",
   "failed",
   "gate_refused",
+  "deadline_exceeded",
   "terminal_fenced",
   "unavailable",
 ] as const;
 export type JobsExecuteOutcome = (typeof JOBS_EXECUTE_OUTCOMES)[number];
+
+/**
+ * How the recovery sweeper disposed of one interrupted job — the final
+ * `helix.outcome` on the `helix.jobs.recover` span and the dimension on the
+ * `helix.jobs.recoveries` counter. One word, one meaning; every value is one
+ * disposition of the reconciliation decision:
+ *
+ * - `deadline_exceeded` — the job's absolute deadline (from acceptance) had
+ *   passed: the work was terminated with the timeout outcome and will not
+ *   execute. Queue wait and retry delays consumed the deadline (criterion 24).
+ * - `crashed` — the runner row said the execution was lost (its claim expired
+ *   or its row settled without a projected outcome) with no attempt left: the
+ *   wrapper record projects `crashed` with the platform-error reason.
+ * - `failed` — the runner row carried a worker-reported failure whose wrapper
+ *   projection had been lost (an execution-store outage during the attempt):
+ *   the reported reason is projected now.
+ * - `requeued` — the runner row was waiting to retry while the wrapper record
+ *   still read `running`: the record is put back to `queued` with the failed
+ *   attempt's attribution retained, and the next claim re-drives the work.
+ * - `cancelled` — the runner row was cancelled while the wrapper record was
+ *   not yet terminal: the cancellation is projected (recovery never reissues
+ *   cancelled work).
+ * - `row_missing` — no runner row answered for a non-terminal record: the
+ *   store is inconsistent (the acceptance transaction commits both), reported
+ *   loudly and left for the deadline arm's bounded termination.
+ * - `fenced` — the reconciliation's conditional write lost a race against a
+ *   concurrent terminal write (another replica's sweeper, a worker settling,
+ *   a cancellation): nothing was changed.
+ */
+export const JOBS_RECOVER_OUTCOMES = [
+  "deadline_exceeded",
+  "crashed",
+  "failed",
+  "requeued",
+  "cancelled",
+  "row_missing",
+  "fenced",
+] as const;
+export type JobsRecoverOutcome = (typeof JOBS_RECOVER_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

@@ -12,6 +12,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   INSTRUCTION_HEADER,
   JOBS_DATABASE_CHECK,
+  JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   JobErrorMessages,
   JobStatusSchema,
@@ -764,11 +765,17 @@ describe("signed instructions through the running process", () => {
           return HealthStatusSchema.parse(body).status === "ok";
         }, 30_000);
         // The health body's worker check is real here: a listener without
-        // its worker must not read healthy.
+        // its worker must not read healthy. The sweeper check is the same
+        // proof for the recovery loop — its reads ride the runner instance
+        // the production composition wires, and a pass has succeeded by the
+        // time the roll-up reads ok.
         const healthy = await pollHealth(port, 10_000);
         expect(healthy.checks?.some((c) => c.name === JOBS_WORKER_CHECK && c.status === "ok")).toBe(
           true,
         );
+        expect(
+          healthy.checks?.some((c) => c.name === JOBS_SWEEPER_CHECK && c.status === "ok"),
+        ).toBe(true);
 
         const executionApp = randomUUID();
         const mintFor = (idempotencyKey: string): Promise<string> =>

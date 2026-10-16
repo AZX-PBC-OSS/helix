@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   isJsonValue,
@@ -8,6 +8,7 @@ import {
 } from "@azx-pbc/shared";
 
 import {
+  deadlinePassed,
   JobsExecutionError,
   JobsHandlerRegistry,
   publicStatus,
@@ -19,10 +20,10 @@ import {
  * The execution seam's pure contracts: the handler registry's screening (only
  * an installed type can register, once), the result bound (a JSON value
  * within the platform's allowance, refused as a distinct reason otherwise),
- * and the stored-value judgments both record readers share (fail-closed on a
- * stored value the wire contract does not carry). The worker's own projections
- * and the claim fencing are the integration suite's, against the real store
- * and the real runner.
+ * the absolute deadline's boundary judgment, and the stored-value judgments
+ * both record readers share (fail-closed on a stored value the wire contract
+ * does not carry). The worker's own projections and the claim fencing are the
+ * integration suite's, against the real store and the real runner.
  */
 
 describe("JobsHandlerRegistry", () => {
@@ -181,6 +182,27 @@ describe("the stored-value judgments both record readers share", () => {
       expect.unreachable("a non-public stored error code must be refused");
     } catch (error) {
       expect((error as Error).message).toMatch(/not a public code: "upstream_erro"/);
+    }
+  });
+});
+
+describe("deadlinePassed", () => {
+  test("the deadline instant itself is past — a boundary attempt is refused, one millisecond inside still runs", () => {
+    // Both deadline enforcers read this judgment: at the bound exactly, the
+    // work is past (recovery never authorizes execution after the deadline);
+    // one millisecond inside, the attempt is still authorized.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-16T08:00:00.000Z"));
+      const accepted = Date.parse("2026-10-16T07:59:00.000Z");
+      expect(deadlinePassed(new Date(accepted), 60)).toBe(true);
+      expect(deadlinePassed(new Date(accepted + 1), 60)).toBe(false);
+      // A zero-second deadline is past at the acceptance instant itself.
+      expect(deadlinePassed(new Date(accepted), 0)).toBe(true);
+      // A future instant never reads past.
+      expect(deadlinePassed(new Date(accepted + 3_600_000), 60)).toBe(false);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

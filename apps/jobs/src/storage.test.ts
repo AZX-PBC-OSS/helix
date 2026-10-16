@@ -354,6 +354,189 @@ describe("the probe counter", () => {
 });
 
 /**
+ * A probe can reject only through its own reporting — a log sink that threw.
+ * The supervisor's answer is threefold (the `probe_rejected` contract): the
+ * first probe's rejection is absorbed at its launch, a rejection at stop time
+ * must not break the release chain, and a report's failure must end neither
+ * the evidence nor the scheduling. The timer-driven launch's own guard is the
+ * finding pinned in the last leg of this describe.
+ */
+describe("a probe whose own reporting threw", () => {
+  /** A sink that records every call, then throws — the rejection's origin. */
+  function throwingLog(): { events: string[]; log: JobsStorageLogger } {
+    const events: string[] = [];
+    return {
+      events,
+      log: {
+        info: (fields) => {
+          events.push(String(fields.event));
+          throw new Error("the reporting sink is down");
+        },
+        warn: (fields) => {
+          events.push(String(fields.event));
+          throw new Error("the reporting sink is down");
+        },
+        error: (fields) => {
+          events.push(String(fields.event));
+          throw new Error("the reporting sink is down");
+        },
+      },
+    };
+  }
+
+  test("the first probe's rejection is absorbed at its launch — the cadence and the record continue", async () => {
+    // Real timers at a trivial cadence: the subject is the guarded launch and
+    // the try/finally's scheduling, not the clock.
+    const { events, log } = throwingLog();
+    const storage = new JobsStorage({
+      databaseUrl: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
+      statementTimeoutMs: 250,
+      check: async () => ({ kind: "unreachable", message: "down" }),
+      retryInitialMs: 10,
+      retryMaxMs: 20,
+      readyIntervalMs: 10,
+      log,
+    });
+    try {
+      storage.start();
+      const probedBy = Date.now() + 5_000;
+      while (Date.now() < probedBy && storage.snapshot().probes < 3) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      // The rejected first probe still recorded its verdict (the evidence)
+      // and its failure scheduled the next probe (the cadence): the loop ran
+      // past its own reporting's death.
+      expect(storage.snapshot().probes).toBeGreaterThanOrEqual(3);
+      expect(storage.snapshot().state).toBe("unavailable");
+      // The rejection was reported exactly once — the launch guard's
+      // `probe_rejected` — after the verdict's own transition line.
+      expect(events.filter((e) => e === "jobs.storage.unavailable")).toHaveLength(1);
+      expect(events.filter((e) => e === "jobs.storage.probe_rejected")).toHaveLength(1);
+    } finally {
+      await storage.stop();
+    }
+  });
+
+  test("stop releases through an already-rejected probe — the release chain survives", async () => {
+    const { events, log } = throwingLog();
+    const storage = new JobsStorage({
+      databaseUrl: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
+      statementTimeoutMs: 250,
+      check: async () => ({ kind: "unreachable", message: "down" }),
+      retryInitialMs: 10,
+      retryMaxMs: 20,
+      log,
+    });
+    storage.start();
+    const rejectedBy = Date.now() + 5_000;
+    while (Date.now() < rejectedBy && !events.includes("jobs.storage.probe_rejected")) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // stop() awaits a rejected in-flight probe: it must resolve — a
+    // rejection here would break the shutdown's release chain.
+    await expect(storage.stop()).resolves.toBeUndefined();
+    expect(events.some((e) => e === "jobs.storage.probe_rejected")).toBe(true);
+  });
+
+  test("a timer-driven probe whose reporting threw is not an unhandled rejection", async () => {
+    // Every probe's launch carries the guard, through the one `launchProbe`
+    // helper: the first from start(), the rest from the cadence's timer —
+    // so a rejected probe is never an unhandled rejection in the process
+    // that serves the health body. The probe's evidence and the next
+    // scheduling both land (the previous leg's contract); what this pin
+    // adds is the launch's own guard on the steady-state path.
+    const { events, log } = throwingLog();
+    // The first probe answers compatible (no transition line, no throw); the
+    // second — timer-driven — records the first failure, whose report throws.
+    let probes = 0;
+    const captured: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      captured.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const storage = new JobsStorage({
+      databaseUrl: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
+      statementTimeoutMs: 250,
+      check: async () => {
+        probes += 1;
+        return probes === 1 ? COMPATIBLE : { kind: "unreachable", message: "down" };
+      },
+      readyIntervalMs: 10,
+      retryInitialMs: 10,
+      retryMaxMs: 20,
+      log,
+    });
+    try {
+      storage.start();
+      const probedBy = Date.now() + 5_000;
+      while (Date.now() < probedBy && storage.snapshot().probes < 3) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(storage.snapshot().probes).toBeGreaterThanOrEqual(3);
+      expect(events.some((e) => e === "jobs.storage.unavailable")).toBe(true);
+      expect(captured).toEqual([]);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+      await storage.stop().catch(() => {});
+    }
+  });
+});
+
+describe("a check that itself throws while reporting is down", () => {
+  test(
+    "the verdict is still recorded and the cadence survives — the snapshot never freezes on a stale ready",
+    { timeout: 15_000 },
+    async () => {
+      // The check's own throw is a designed path: probeOnce answers it "as a
+      // verdict, never a silent skip". Its catch arm reports through the sink —
+      // and that report sits OUTSIDE the scheduling finally, so a sink that
+      // throws here escapes before the verdict is recorded or the next probe
+      // scheduled. The module's contract for every rejected body is that the
+      // cadence and the evidence continue; a supervisor that froze on its last
+      // `ready` would leave /health reading ok with the store down and the
+      // supervisor dead.
+      let probes = 0;
+      const storage = new JobsStorage({
+        databaseUrl: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
+        statementTimeoutMs: 250,
+        check: async () => {
+          probes += 1;
+          if (probes === 1) return COMPATIBLE;
+          throw new Error("the compatibility check exploded");
+        },
+        readyIntervalMs: 10,
+        retryInitialMs: 10,
+        retryMaxMs: 20,
+        log: {
+          info: () => {},
+          warn: () => {},
+          error: () => {
+            throw new Error("the reporting sink is down");
+          },
+        },
+      });
+      storage.start();
+      try {
+        const probedBy = Date.now() + 5_000;
+        while (Date.now() < probedBy && storage.snapshot().probes < 3) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        // The cadence survived the check's own throw: probes kept counting.
+        expect(storage.snapshot().probes).toBeGreaterThanOrEqual(3);
+        // The verdict was recorded — the store's failure never reads as ready.
+        expect(storage.snapshot().state).toBe("unavailable");
+        // And the loop is still probing at its (capped) retry cadence.
+        const probesAtAssert = storage.snapshot().probes;
+        await new Promise((r) => setTimeout(r, 60));
+        expect(storage.snapshot().probes).toBeGreaterThan(probesAtAssert);
+      } finally {
+        await storage.stop();
+      }
+    },
+  );
+});
+
+/**
  * The real probe against the real cluster, through the real role split — the
  * supervisor's production configuration, not the injected seam. Owns its
  * scratch store; the boot suite composes the same legs through HTTP.

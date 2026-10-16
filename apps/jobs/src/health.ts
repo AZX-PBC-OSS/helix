@@ -1,5 +1,11 @@
-import { JOBS_DATABASE_CHECK, JOBS_WORKER_CHECK, type HealthCheck } from "@azx-pbc/shared";
+import {
+  JOBS_DATABASE_CHECK,
+  JOBS_SWEEPER_CHECK,
+  JOBS_WORKER_CHECK,
+  type HealthCheck,
+} from "@azx-pbc/shared";
 
+import { JOBS_RECOVERY_STALE_AFTER_MS, type JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
 
@@ -136,4 +142,62 @@ export function jobsWorkerCheck(snapshot: JobsRunnerSnapshot): HealthCheck {
     };
   }
   return { name: JOBS_WORKER_CHECK, status: "ok" };
+}
+
+/**
+ * Grade the recovery sweeper's supervision state into the `jobs_sweeper`
+ * health check (ADR-0009) — the same pure-lookup shape as the other checks:
+ * the sweeper is running, and its last successful reconciliation pass is
+ * fresh, or the body names which of the two is missing. Staleness is judged
+ * against a fixed multiple of the sweep cadence, never against the
+ * snapshot's own report of it; a pass that cannot complete (its store or the
+ * runner's instance unavailable) leaves `lastOkPassAt` behind and the check
+ * degrades or errors accordingly. Stopped or stale recovery is never
+ * healthy — interrupted work the sweeper is not reconciling is exactly the
+ * "forgotten active work" this seam exists to prevent (spec criterion 55).
+ */
+export function jobsSweeperCheck(
+  snapshot: JobsRecoverySnapshot,
+  options?: { staleAfterMs?: number; nowMs?: number },
+): HealthCheck {
+  const staleAfterMs = options?.staleAfterMs ?? JOBS_RECOVERY_STALE_AFTER_MS;
+  const nowMs = options?.nowMs ?? Date.now();
+  const base = {
+    name: JOBS_SWEEPER_CHECK,
+    metrics: { passes: snapshot.passes, reconciled: snapshot.reconciled },
+  };
+
+  if (!snapshot.started) {
+    return {
+      ...base,
+      status: "error",
+      detail: "the recovery sweeper is not running — interrupted work is not being reconciled",
+    };
+  }
+  if (snapshot.lastOkPassAt === null) {
+    // The distinction the last pass's own instant buys: a loop that never ran
+    // at all and one that runs but cannot complete a pass read differently.
+    const lastPass = snapshot.lastPassAt
+      ? ` — its last pass was ${Math.round((nowMs - Date.parse(snapshot.lastPassAt)) / 1000)}s ago`
+      : "";
+    return {
+      ...base,
+      status: "error",
+      detail: `the recovery sweeper has completed no successful pass${lastPass} — interrupted work is not being reconciled`,
+    };
+  }
+  const sinceMs = nowMs - Date.parse(snapshot.lastOkPassAt);
+  if (sinceMs > staleAfterMs) {
+    return {
+      ...base,
+      status: "degraded",
+      detail: `the recovery sweeper's last successful pass was ${Math.round(sinceMs / 1000)}s ago`,
+      lastSuccessAt: snapshot.lastOkPassAt,
+    };
+  }
+  return {
+    ...base,
+    status: "ok",
+    lastSuccessAt: snapshot.lastOkPassAt,
+  };
 }

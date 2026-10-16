@@ -129,7 +129,20 @@ export class JobsInstructionBurns implements JobsBurnStore {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    await this.inFlight;
+    // A rejected sweep must not break the release chain: its pool still
+    // ends. The report is sink-guarded because the sink throwing is exactly
+    // how a sweep comes to reject here (its own failure path reports).
+    await this.inFlight?.catch((error) => {
+      try {
+        this.log.warn(
+          { event: "jobs.burn.sweep_rejected", err: error },
+          "a burn sweep rejected out of its own failure reporting — the release continues",
+        );
+      } catch {
+        // The reporting sink is the rejection's origin; the release below is
+        // the part that must survive.
+      }
+    });
     const pool = this.pool;
     this.pool = null;
     await pool?.end();
@@ -163,8 +176,9 @@ export class JobsInstructionBurns implements JobsBurnStore {
       this.timer = null;
       const pass = this.sweepPass();
       this.inFlight = pass;
-      // The pass never rejects by design; the fault arm keeps the cadence
-      // anyway, so one unexpected rejection cannot silently end the loop.
+      // A pass may reject only through its own reporting (a sink that
+      // threw); the fault arm keeps the cadence on either settlement half,
+      // so even that rejection cannot silently end the loop.
       const reschedule = (): void => {
         if (!this.stopped) this.scheduleSweep(this.sweepIntervalMs);
       };
@@ -203,11 +217,23 @@ export class JobsInstructionBurns implements JobsBurnStore {
       if (removed === this.sweepBatch) {
         // The batch cap absorbed removals — either steady-state volume or a
         // backlog. One line either way: a sustained run of these means the
-        // sweep is falling behind instruction volume.
-        this.log.warn(
-          { event: "jobs.burn.sweep_backlog", removed },
-          "the burn sweep removed a full batch of expired nonces",
-        );
+        // sweep is falling behind instruction volume. The report is
+        // sink-guarded because the sweep is already counted above: a sink
+        // that threw here would fail the counted sweep into the catch's
+        // `failed` increment — one successful sweep counted twice, and a
+        // spurious failure in the store-down rate signal during exactly the
+        // backlog the line exists to report. (The failure arm's own report
+        // stays unguarded: its throw is the rejection the launch and stop
+        // guards answer.)
+        try {
+          this.log.warn(
+            { event: "jobs.burn.sweep_backlog", removed },
+            "the burn sweep removed a full batch of expired nonces",
+          );
+        } catch {
+          // The reporting sink is down; the removal landed and the ok count
+          // stands.
+        }
       }
     } catch (error) {
       instruments().burnSweeps.add(1, { [ATTR_OUTCOME]: "failed" satisfies JobsBurnSweepOutcome });

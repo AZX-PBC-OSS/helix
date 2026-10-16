@@ -1,7 +1,8 @@
 import { PgBoss } from "pg-boss";
 
 import { createPgbossEnqueuer, type JobsEnqueuer } from "./acceptance.js";
-import { jobsRuntimeBossOptions } from "./policy.js";
+import { JOBS_QUEUE_NAME, jobsRuntimeBossOptions } from "./policy.js";
+import type { RunnerJobLookup } from "./recovery.js";
 
 /**
  * The jobs service's runtime runner — the one pg-boss instance the service
@@ -22,6 +23,28 @@ import { jobsRuntimeBossOptions } from "./policy.js";
  * that as retryable unavailability, which is the honest answer: nothing can
  * be durably enqueued into a store that has not come up.
  */
+
+/**
+ * The runner row read behind {@link JobsRunner.jobState} — the pinned
+ * adapter's public job read, mapped down to the lookup's own vocabulary. One
+ * spelling for the runner's method and for any caller holding a started
+ * instance, so the lookup's shape cannot drift between them.
+ */
+export async function readRunnerJobState(
+  boss: PgBoss,
+  runnerJobId: string,
+): Promise<RunnerJobLookup> {
+  try {
+    const job = await boss.getJobById(JOBS_QUEUE_NAME, runnerJobId);
+    if (!job) return { verdict: "missing" };
+    return { verdict: "found", state: job.state, output: job.output };
+  } catch (error) {
+    return {
+      verdict: "unavailable",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 /** The runner's supervision state, as `/health` reports it. */
 export interface JobsRunnerSnapshot {
@@ -53,6 +76,8 @@ export interface JobsRunnerOptions {
 export interface JobsRunnerLogger {
   info(obj: Record<string, unknown>, msg: string): void;
   warn(obj: Record<string, unknown>, msg: string): void;
+  /** The rejection reports (a start attempt whose own reporting threw) are infrastructure faults. */
+  error(obj: Record<string, unknown>, msg: string): void;
 }
 
 const RETRY_INITIAL_MS = 1_000;
@@ -100,7 +125,30 @@ export class JobsRunner {
     if (this.begun || this.stopped) return;
     this.begun = true;
     this.boss = this.buildBoss();
-    void this.runAttempt();
+    // A rejected attempt (its own reporting threw) must not become an
+    // unhandled rejection — the report is sink-guarded because the sink
+    // throwing is exactly how an attempt comes to reject here.
+    this.launchAttempt();
+  }
+
+  /**
+   * The guarded launch every start attempt gets — the first from `start()`,
+   * the rest from the backoff timer's callback. A rejected attempt (its own
+   * reporting threw) must not become an unhandled rejection in the process
+   * the runner serves: the report is sink-guarded, and the attempt's own
+   * `finally` has already scheduled the next one.
+   */
+  private launchAttempt(): void {
+    void this.runAttempt().catch((error) => {
+      try {
+        this.log.error(
+          { event: "jobs.runner.attempt_rejected", err: error },
+          "a runner start attempt rejected out of its own failure reporting — the loop continues",
+        );
+      } catch {
+        // The reporting sink is the rejection's origin; survival is the point.
+      }
+    });
   }
 
   /**
@@ -146,7 +194,20 @@ export class JobsRunner {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    await this.inFlight;
+    // A rejected attempt must not break the release chain: its instance
+    // still stops. The report is sink-guarded because the sink throwing is
+    // exactly how an attempt comes to reject here.
+    await this.inFlight?.catch((error) => {
+      try {
+        this.log.error(
+          { event: "jobs.runner.attempt_rejected", err: error },
+          "a runner start attempt rejected out of its own failure reporting — the release continues",
+        );
+      } catch {
+        // The reporting sink is the rejection's origin; the release below is
+        // the part that must survive.
+      }
+    });
     const boss = this.boss;
     this.boss = null;
     this.started = false;
@@ -174,6 +235,23 @@ export class JobsRunner {
     return this.boss;
   }
 
+  /**
+   * One runner row's own durable state, read through the pinned adapter's
+   * public job read — the recovery sweeper's lookup seam, and nothing else's:
+   * the wrapper projections and the enqueue have their own paths. Answers
+   * `unavailable` while the runner has not started (there is no instance to
+   * read through — the sweeper's pass retries on its next cadence) and when
+   * the read itself fails; `missing` is the adapter's own answer for an id
+   * with no row, which for a committed wrapper record is corruption the
+   * sweeper reports.
+   */
+  async jobState(runnerJobId: string): Promise<RunnerJobLookup> {
+    if (!this.started || !this.boss) {
+      return { verdict: "unavailable", reason: "the runner has not started" };
+    }
+    return readRunnerJobState(this.boss, runnerJobId);
+  }
+
   private runAttempt(): Promise<void> {
     const attempt = this.attemptOnce();
     this.inFlight = attempt;
@@ -182,46 +260,71 @@ export class JobsRunner {
 
   /**
    * One bounded start attempt — the instance's start, then the worker
-   * registration — then the next wait until one succeeds. Never throws out
-   * of here: a failed attempt is logged, its half-started instance discarded,
-   * and the whole attempt retried, which is the loop's whole job.
+   * registration — then the next wait until one succeeds. Never rejects out
+   * of here except through its own reporting (a sink that threw): the
+   * scheduling in the outer `finally` is what keeps the loop alive across
+   * every failure, reported or not.
    */
   private async attemptOnce(): Promise<void> {
     if (this.stopped || this.started) return;
     const boss = this.boss ?? this.buildBoss();
     this.boss = boss;
     try {
-      await boss.start();
-      await this.registerWorker(boss);
-      this.started = true;
-      this.workerRegistered = true;
-      this.failedStarts = 0;
-      this.log.info(
-        { event: "jobs.runner.started" },
-        "the runner started against its store — the enqueue and the worker are up",
-      );
-    } catch (error) {
-      this.failedStarts += 1;
-      this.workerRegistered = false;
-      this.log.warn(
-        { event: "jobs.runner.start_failed", err: error },
-        "the runner could not start — the store is not usable yet or the worker registration failed; retrying",
-      );
-      // A half-started instance — the store verified but the registration
-      // failed — is discarded: the next attempt builds a fresh one rather
-      // than re-registering onto an instance whose own loops are mid-flight.
-      // A discard whose own stop fails abandons that instance's pool to the
-      // server's idle reaper — reported, never silent.
-      this.boss = null;
-      await boss.stop({ graceful: true, timeout: 5_000 }).catch((stopError) => {
-        this.log.warn(
-          { event: "jobs.runner.discard_stop_failed", err: stopError },
-          "a discarded instance's stop failed — its pool is left for the server to reap",
-        );
-      });
+      try {
+        await boss.start();
+        await this.registerWorker(boss);
+        this.started = true;
+        this.workerRegistered = true;
+        this.failedStarts = 0;
+        // The start's effect is committed above; the success report is its
+        // evidence, not the effect — a sink that throws here must not fail
+        // a serving start into the catch's discard-and-retry path (a
+        // healthy instance discarded, `started` true over no instance, and
+        // no retry ever scheduled: the bricked runner). The snapshot and
+        // /health carry the state while the sink is down.
+        try {
+          this.log.info(
+            { event: "jobs.runner.started" },
+            "the runner started against its store — the enqueue and the worker are up",
+          );
+        } catch {
+          // The reporting sink is down; nothing about the start failed.
+        }
+      } catch (error) {
+        this.failedStarts += 1;
+        this.workerRegistered = false;
+        // The discard and the next attempt's scheduling must survive a
+        // reporting failure: whether or not the failure could be logged, the
+        // half-started instance is released and the loop continues.
+        try {
+          this.log.warn(
+            { event: "jobs.runner.start_failed", err: error },
+            "the runner could not start — the store is not usable yet or the worker registration failed; retrying",
+          );
+        } finally {
+          // A half-started instance — the store verified but the registration
+          // failed — is discarded: the next attempt builds a fresh one rather
+          // than re-registering onto an instance whose own loops are
+          // mid-flight. A discard whose own stop fails abandons that
+          // instance's pool to the server's idle reaper — reported, never
+          // silent.
+          this.boss = null;
+          await boss.stop({ graceful: true, timeout: 5_000 }).catch((stopError) => {
+            try {
+              this.log.warn(
+                { event: "jobs.runner.discard_stop_failed", err: stopError },
+                "a discarded instance's stop failed — its pool is left for the server to reap",
+              );
+            } catch {
+              // The reporting sink is already failing; the discard report is
+              // best-effort.
+            }
+          });
+        }
+      }
+    } finally {
+      if (!this.stopped && !this.started) this.scheduleNext();
     }
-    if (this.stopped || this.started) return;
-    this.scheduleNext();
   }
 
   /** The capped backoff between failed start attempts. */
@@ -233,7 +336,7 @@ export class JobsRunner {
     );
     this.timer = setTimeout(() => {
       this.timer = null;
-      void this.runAttempt();
+      this.launchAttempt();
     }, delay);
     // Never hold the process open for a start attempt: the listener and the
     // graceful shutdown own this process's lifetime, and stop() clears the

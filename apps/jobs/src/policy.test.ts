@@ -23,6 +23,7 @@ import {
   JOBS_SCHEMA,
   type JobsTypePolicy,
   jobTypePolicy,
+  jobsAbsoluteDeadline,
   jobsAppEnvGroupId,
   jobsMigrationBossOptions,
   jobsRuntimeBossOptions,
@@ -41,6 +42,28 @@ describe("the installed-handler policy registry", () => {
     const policy = jobTypePolicy(JOBS_FETCH_QUALIFIED_TYPE);
     expect(policy.retryLimit).toBe(0);
     expect(policy.expireInSeconds).toBe(JOBS_FETCH_DEADLINE_SECONDS);
+    // The absolute deadline is the type's own: five minutes from acceptance,
+    // queue wait and retries included (spec criterion 24).
+    expect(policy.deadlineSeconds).toBe(JOBS_FETCH_DEADLINE_SECONDS);
+  });
+
+  test("the absolute deadline a record answers to is the type's own, or the platform's default under registration drift", () => {
+    expect(jobsAbsoluteDeadline(JOBS_FETCH_QUALIFIED_TYPE)).toBe(JOBS_FETCH_DEADLINE_SECONDS);
+    expect(jobsAbsoluteDeadline("jobs:nosuchtype")).toBe(JOBS_DEADLINE_SECONDS);
+  });
+
+  test("the import-time screen refuses an absolute deadline below the type's own claim bound", () => {
+    // A claim ceiling above the absolute deadline could run one attempt past
+    // the type's own close; the registry is where that contradiction fails.
+    expect(() =>
+      screenTypePolicies({
+        [JOBS_FETCH_QUALIFIED_TYPE]: {
+          ...fetchPolicyFixture(),
+          expireInSeconds: 300,
+          deadlineSeconds: 60,
+        },
+      }),
+    ).toThrow(/absolute deadline \(60s\) below its own per-attempt claim bound \(300s\)/);
   });
 
   test("an unknown type has no execution policy", () => {
@@ -154,6 +177,7 @@ describe("the installed-handler policy registry", () => {
     expect(jobTypePolicy(JOBS_FETCH_QUALIFIED_TYPE)).toEqual({
       retryLimit: 0,
       expireInSeconds: JOBS_FETCH_DEADLINE_SECONDS,
+      deadlineSeconds: JOBS_FETCH_DEADLINE_SECONDS,
       inputSchema: expect.anything(),
     });
   });
@@ -164,6 +188,7 @@ function fetchPolicyFixture(): JobsTypePolicy {
   return {
     retryLimit: 0,
     expireInSeconds: 60,
+    deadlineSeconds: 60,
     inputSchema: FetchJobInputSchema,
   };
 }
@@ -180,6 +205,19 @@ describe("the runner's pg-boss constructor policy", () => {
     // the heartbeat window exists for — a pinned `supervise: false` here
     // would stand that machinery down silently.
     expect(options.supervise).toBeUndefined();
+  });
+
+  test("the supervision cadence is pinned to the heartbeat, below the dependency's own 60-second defaults", () => {
+    // The supervise pass runs the expiry and heartbeat-failure arms, gated
+    // per queue by the monitor interval; at the dependency's own 60-second
+    // supervise/monitor defaults, detection alone could exceed the 60-second
+    // healthy-service bound before any reconciliation ran. The cadence is
+    // the recovery bound's first half — worker loss is detected within
+    // roughly one missed heartbeat. (The dependency's hour-scale default is
+    // its deletion arm's interval, which this platform disables outright.)
+    const options = jobsRuntimeBossOptions();
+    expect(options.superviseIntervalSeconds).toBe(JOBS_HEARTBEAT_SECONDS);
+    expect(options.monitorIntervalSeconds).toBe(JOBS_HEARTBEAT_SECONDS);
   });
 
   test("the migration command is the one configuration that migrates", () => {

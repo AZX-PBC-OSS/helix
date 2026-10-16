@@ -15,10 +15,13 @@ import {
   INSTR_JOBS_BURN_SWEEPS,
   INSTR_JOBS_EXECUTIONS,
   INSTR_JOBS_INSTRUCTIONS,
+  INSTR_JOBS_RECOVERIES,
   INSTR_JOBS_STORAGE_PROBES,
   SPAN_JOBS_EXECUTE,
+  SPAN_JOBS_RECOVER,
   type JobsExecuteOutcome,
   type JobsInstructionOutcome,
+  type JobsRecoverOutcome,
 } from "@azx-pbc/shared/telemetry";
 import type { FastifyReply } from "fastify";
 
@@ -53,6 +56,8 @@ export interface JobsInstruments {
   burnSweeps: Counter;
   /** `outcome` ∈ `JOBS_EXECUTE_OUTCOMES` — the worker's execution attempts. */
   executions: Counter;
+  /** `outcome` ∈ `JOBS_RECOVER_OUTCOMES` — the recovery sweeper's dispositions. */
+  recoveries: Counter;
 }
 
 /**
@@ -101,8 +106,19 @@ export function instruments(): JobsInstruments {
         "Job execution attempts by outcome. An attempt counter over every " +
         "disposition: a run of unavailable is an execution store that stopped " +
         "answering, a run of gate_refused is work whose lifecycle generation " +
-        "closed before it could start, and failed counts the attempts a job " +
-        "reported (the reason rides the span, never a dimension).",
+        "closed before it could start, a run of deadline_exceeded is work the " +
+        "absolute deadline terminated before an attempt, and failed counts " +
+        "the attempts a job reported (the reason rides the span, never a " +
+        "dimension).",
+    }),
+    recoveries: meter.createCounter(INSTR_JOBS_RECOVERIES, {
+      description:
+        "Interrupted jobs the recovery sweeper dispositioned, by outcome. " +
+        "A run of crashed is worker loss recovering to its truthful terminal " +
+        "outcome, a run of deadline_exceeded is deadline pressure (queue wait " +
+        "or retries consuming the acceptance-to-close bound), and a run of " +
+        "row_missing is an inconsistent store. The pass cadence itself is " +
+        "graded by the jobs_sweeper health check, never a dimension here.",
     }),
   };
   return cached;
@@ -127,6 +143,15 @@ export function countInstruction(operation: string, outcome: JobsInstructionOutc
  */
 export function countExecution(outcome: JobsExecuteOutcome): void {
   instruments().executions.add(1, { [ATTR_OUTCOME]: outcome });
+}
+
+/**
+ * Count one interrupted job the recovery sweeper dispositioned. The outcome
+ * is the bounded vocabulary (`JOBS_RECOVER_OUTCOMES`); the projected reason
+ * rides the span's `helix.reason`, never a dimension here.
+ */
+export function countRecovery(outcome: JobsRecoverOutcome): void {
+  instruments().recoveries.add(1, { [ATTR_OUTCOME]: outcome });
 }
 
 /**
@@ -204,15 +229,27 @@ export function withRootSpan<T>(
  * wrapper's own defect — the caller failSpans it explicitly.
  */
 export function withExecutionSpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
-  return tracer.startActiveSpan(
-    SPAN_JOBS_EXECUTE,
-    { root: true, kind: SpanKind.CONSUMER },
-    async (span) => {
-      try {
-        return await fn(span);
-      } finally {
-        span.end();
-      }
-    },
-  );
+  return withRootConsumerSpan(SPAN_JOBS_EXECUTE, fn);
+}
+
+/**
+ * Run one interrupted job's reconciliation inside a fresh **root** consumer
+ * span — one per job the recovery sweeper dispositioned, never for consistent
+ * work the pass passes through. Same trust rule as the execution span
+ * (background work, nothing extracted); the disposition's bounded outcome and
+ * reason are the span's own evidence.
+ */
+export function withRecoverySpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
+  return withRootConsumerSpan(SPAN_JOBS_RECOVER, fn);
+}
+
+/** The shared mechanism behind both background-work spans: a fresh root consumer span, ended when the work settles. */
+function withRootConsumerSpan<T>(name: string, fn: (span: Span) => Promise<T>): Promise<T> {
+  return tracer.startActiveSpan(name, { root: true, kind: SpanKind.CONSUMER }, async (span) => {
+    try {
+      return await fn(span);
+    } finally {
+      span.end();
+    }
+  });
 }

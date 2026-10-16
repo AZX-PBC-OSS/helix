@@ -1,6 +1,6 @@
 import { SpanStatusCode, type Span } from "@opentelemetry/api";
 import type { JobWithMetadata, PgBoss, WorkOptions } from "pg-boss";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import {
   JOBS_MAX_RESULT_BYTES,
@@ -31,6 +31,7 @@ import {
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_QUEUE_NAME,
   jobTypePolicy,
+  jobsAbsoluteDeadline,
   jobsWorkOptions,
 } from "./policy.js";
 import { countExecution, failSpan, withExecutionSpan } from "./telemetry.js";
@@ -221,11 +222,15 @@ export interface JobsAttemptRecord {
 /**
  * What one attempt's begin decided. `started` hands back the record and the
  * attempt number the projection wrote; the refusals leave the record
- * untouched and the claim to the runner's own retry policy.
+ * untouched and the claim to the runner's own retry policy — except the
+ * deadline refusal, which terminates the record itself (the timeout outcome
+ * committed in the same transaction that decided it, so recovery never
+ * authorizes execution after the deadline).
  */
 export type BeginAttemptVerdict =
   | { verdict: "started"; record: JobsAttemptRecord; attempt: number }
   | { verdict: "gate_refused"; reason: "closed" | "unseen" }
+  | { verdict: "deadline_exceeded"; record: JobsAttemptRecord }
   | { verdict: "terminal_fenced" };
 
 export interface JobsExecutionStoreOptions {
@@ -233,6 +238,39 @@ export interface JobsExecutionStoreOptions {
   /** Per-query ceiling, applied as both the pool's statement and connect timeout. */
   statementTimeoutMs: number;
   log: JobsExecutionLogger;
+}
+
+/**
+ * Has the absolute deadline of a record accepted at `acceptedAt` passed —
+ * measured on this process's clock, the same clock that wrote the
+ * acceptance instant. The platform's deadline arithmetic keeps one clock for
+ * its own policy; the runner's claim ceilings are the store's own business.
+ */
+export function deadlinePassed(acceptedAt: Date, deadlineSeconds: number): boolean {
+  return acceptedAt.getTime() + deadlineSeconds * 1_000 <= Date.now();
+}
+
+/**
+ * The timeout outcome's one write — the statement both enforcers of the
+ * absolute deadline run: the worker-start gate (inside its own transaction)
+ * and the recovery sweeper (against its own pool). Conditional on the record
+ * still being nonterminal; returns the affected count, so a caller that lost
+ * a race to a competing terminal write knows nothing was changed. The
+ * attempt and progress columns stay — they are the attribution of the work
+ * the deadline denied.
+ */
+export async function terminatePastDeadline(
+  executor: Pick<Pool, "query"> | Pick<PoolClient, "query">,
+  server: string,
+  jobId: string,
+): Promise<number> {
+  const updated = await executor.query(
+    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+        SET status = 'failed', error_code = 'timeout'
+      WHERE server = $1 AND job_id = $2 AND NOT (status = ANY($3::text[]))`,
+    [server, jobId, JOB_TERMINAL_STATUSES],
+  );
+  return updated.rowCount ?? 0;
 }
 
 /** The structural logger the execution seam reports through (the pino surface, without importing Fastify). */
@@ -254,6 +292,7 @@ interface RecordRow {
   env: string;
   status: string;
   generation: string;
+  created_at: Date;
 }
 
 /**
@@ -302,10 +341,11 @@ export class JobsExecutionStore {
 
   /**
    * Begin one attempt: under the app's lifecycle row lock, judge the record's
-   * admitted generation; an eligible, nonterminal record is projected to
-   * `running` at this attempt — progress reset, the previous attempt's error
-   * cleared — before the verdict returns. Every refusal rolls back and
-   * returns; every store failure throws for the caller's failure contract.
+   * admitted generation and its absolute deadline; an eligible, nonterminal,
+   * in-deadline record is projected to `running` at this attempt — progress
+   * reset, the previous attempt's error cleared — before the verdict
+   * returns. Every refusal rolls back and returns; every store failure
+   * throws for the caller's failure contract.
    */
   async beginAttempt(runnerJobId: string, attempt: number): Promise<BeginAttemptVerdict> {
     const pool = this.pool;
@@ -316,7 +356,7 @@ export class JobsExecutionStore {
       await client.query("BEGIN");
       try {
         const found = await client.query<RecordRow>(
-          `SELECT server, job_id, type, app_id, env, status, generation
+          `SELECT server, job_id, type, app_id, env, status, generation, created_at
              FROM ${JOBS_JOB_RECORD_QUALIFIED}
             WHERE runner_job_id = $1`,
           [runnerJobId],
@@ -347,13 +387,42 @@ export class JobsExecutionStore {
           return { verdict: "terminal_fenced" };
         }
 
+        // The absolute deadline: queue wait and every retry delay consumed
+        // the acceptance-to-close bound, so this attempt must not run. The
+        // gate terminates the record here — the timeout outcome committed in
+        // the same transaction that decided it — rather than leaving it to
+        // the sweeper's next pass, and the claim settles through the runner's
+        // own retry policy (spec criterion 24: recovery never authorizes
+        // execution after the deadline).
+        if (deadlinePassed(row.created_at, jobsAbsoluteDeadline(row.type))) {
+          const terminated = await terminatePastDeadline(client, row.server, row.job_id);
+          await client.query("COMMIT");
+          return terminated === 1
+            ? {
+                verdict: "deadline_exceeded",
+                record: {
+                  server: row.server,
+                  jobId: row.job_id,
+                  type: row.type,
+                  appId: row.app_id,
+                  env: row.env,
+                },
+              }
+            : { verdict: "terminal_fenced" };
+        }
+
         // The attempt's projection, conditional on the record still being
-        // nonterminal: a competing terminal write between the read and here
-        // loses this update, and the attempt is fenced.
+        // nonterminal AND this attempt's number being newer than the stored
+        // one: a competing terminal write between the read and here loses
+        // this update, and so does a claim whose begin was delayed past its
+        // own claim expiry and lands after a newer claim's begin — the stale
+        // attempt number is fenced instead of overwriting the newer one.
         const updated = await client.query(
           `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
               SET status = 'running', attempt = $1, progress = NULL, error_code = NULL
-            WHERE server = $2 AND job_id = $3 AND NOT (status = ANY($4::text[]))`,
+            WHERE server = $2 AND job_id = $3
+              AND NOT (status = ANY($4::text[]))
+              AND (attempt IS NULL OR attempt < $1)`,
           [attempt, row.server, row.job_id, JOB_TERMINAL_STATUSES],
         );
         if ((updated.rowCount ?? 0) !== 1) {
@@ -612,6 +681,21 @@ export class JobsExecution {
       span.setAttribute(ATTR_OUTCOME, "gate_refused" satisfies JobsExecuteOutcome);
       countExecution("gate_refused");
       throw new JobsStartRefused(`the job's lifecycle generation is ${begun.reason}`);
+    }
+    if (begun.verdict === "deadline_exceeded") {
+      const { record } = begun;
+      span.setAttributes({
+        [ATTR_APP_ID]: record.appId,
+        [ATTR_JOBS_TYPE]: record.type,
+        [ATTR_JOBS_JOB_ID]: record.jobId,
+      });
+      this.log.warn(
+        { event: "jobs.execution.deadline_exceeded", runnerJobId: job.id, appId: record.appId },
+        "the worker-start gate terminated the job — its absolute deadline passed before this attempt",
+      );
+      span.setAttribute(ATTR_OUTCOME, "deadline_exceeded" satisfies JobsExecuteOutcome);
+      countExecution("deadline_exceeded");
+      throw new JobsStartRefused("the job's absolute deadline has passed");
     }
     if (begun.verdict === "terminal_fenced") {
       this.log.warn(

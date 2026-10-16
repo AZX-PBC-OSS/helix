@@ -183,6 +183,49 @@ on — the attempt's retry decision reads the runner row's own policy.
   `helix.reason`. `helix.jobs.executions` counts the attempts by outcome. The
   redaction rules hold: no input, result, retry key, owner identity or URL
   anywhere on the span.
+- **The absolute deadline.** The start gate also judges the record's
+  acceptance-to-now against the type's `deadlineSeconds` (queue wait and every
+  retry delay included): a claim arriving after the deadline terminates the
+  record with the timeout outcome in the same transaction that decided it —
+  recovery never authorizes execution after the deadline. The write is
+  `terminatePastDeadline`, shared with the recovery sweeper.
+
+## The recovery sweeper (`src/recovery.ts`)
+
+The supervised loop that owns interruption recovery (ADR-0009): the runner's
+own maintenance settles a dead worker's claim, and the wrapper record it was
+projecting stays mid-flight — this loop reads the runner rows back (through
+the runner's own `jobState`, the pinned adapter's public job read — no second
+pg-boss instance, no second copy of its schema) and projects the truth into
+the wrapper. The reconciliation is a projection, never a re-driver: only the
+runner's retry policy re-runs work, so a single-attempt fetch job whose worker
+died is projected `crashed` — execution lost, never reissued.
+
+- **The cadence.** Every 15 seconds, oldest non-terminal records first, at
+  most 100 per pass; every write is conditional (non-terminal, or the exact
+  attempt read), so a worker settling, a cancellation or another replica's
+  sweeper fences a loser instead of racing one.
+- **The decision.** The deadline arm decides first (no runner I/O — deadline
+  enforcement never depends on the runner being up). Then the runner row:
+  waiting (`created`/`retry`) requeues a record still reading `running` with
+  the lost attempt's attribution retained; `active` is consistent work;
+  terminal `failed` projects the worker's own reported code when the settle
+  carried one, else `crashed` (execution lost); `completed` projects `crashed`
+  (the result was lost with the attempt's process — never a fabricated
+  success); `cancelled` projects the cancellation. A record with no runner
+  row is corruption: logged at error and left for the deadline arm's bounded
+  termination.
+- **Supervision.** `start()` never throws; a failed pass is logged, counted
+  and never ends the cadence (a pass whose own reporting threw rejects to its
+  caller, clears the in-flight guard, and the timer's next pass runs);
+  `stop()` releases the pool and the timer on every exit path and does not
+  restart.
+- **Health and telemetry.** The `jobs_sweeper` check grades the snapshot
+  (never ran → `error`; no successful pass → `error` naming the last pass's
+  age; stale beyond three cadences → `degraded`). One root consumer span per
+  dispositioned job (`helix.jobs.recover`, outcome `JOBS_RECOVER_OUTCOMES`)
+  and the `helix.jobs.recoveries` counter — `row_missing` grades ERROR (a
+  corrupt store); everything else is the sweeper working as designed.
 
 ## The app-lifecycle authority (`src/lifecycle.ts`)
 
@@ -298,11 +341,14 @@ verifies compatible recovers the service without a restart; a store that
 verified and later dies degrades the same way.
 
 - **`/health` always answers 200.** The body carries the degradation: the
-  `jobs_database` check grades the storage supervisor's snapshot and the
-  `jobs_worker` check grades the runner's (names in `@azx-pbc/shared`,
+  `jobs_database` check grades the storage supervisor's snapshot, the
+  `jobs_worker` check grades the runner's, and the `jobs_sweeper` check
+  grades the recovery sweeper's (names in `@azx-pbc/shared`,
   `JOBS_HEALTH_CHECK_NAMES`), and **unknown readiness never appears
   healthy** — before any probe has answered, the state is `error`; a listener
-  without its worker is `error`, not ok.
+  without its worker is `error`, not ok; a sweeper that never completed a
+  pass, or whose last successful pass is older than three sweep cadences, is
+  `error`/`degraded`, never ok.
 - **Invalid configuration is an explicit startup error.** `loadJobsConfig`
   (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID`,
   `JOBS_DATABASE_URL` or either receiver signing root
@@ -310,10 +356,12 @@ verified and later dies degrades the same way.
   listens; the roots derive to their direction keys at boot, so a malformed
   one stops the process, not the first instruction.
 - **Shutdown releases what startup acquired.** The `onClose` hook stops the
-  runner (its retry timer, its instance and the worker on it) first, then every
+  recovery sweeper first (its runner-row reads ride the runner's instance), then
+  the runner (its retry timer, its instance and the worker on it), then every
   store's pool — the execution store, the acceptance store, the lifecycle
   store, the burn store's sweep timer, the storage supervisor's probe timer —
-  and flushes telemetry; the graceful-shutdown install bounds the drain.
+  and flushes telemetry; the graceful-shutdown install bounds the drain. The
+  failed-partial-initialization exit releases the same set.
 - **Probes are counted.** Every probe emits `helix.jobs.storage.probes`
   with `outcome` ∈ {`ok`, `unavailable`} — the retries an outage absorbs are
   visible; the _reason_ rides the `jobs_database` check body and the

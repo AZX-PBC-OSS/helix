@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   HealthStatusSchema,
   JOBS_DATABASE_CHECK,
+  JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   JobErrorMessages,
 } from "@azx-pbc/shared";
@@ -10,6 +11,7 @@ import {
 import { buildApp } from "./app.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
+import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import { JobsStorage } from "./storage.js";
 import { makeReceiver, MemoryAdmission, MemoryLifecycle } from "./test/instructions.js";
@@ -49,20 +51,34 @@ async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<Jo
 }
 
 /** The full deps: the storage state under test plus the receiver seam. The
- * worker's supervision state is the leg's to set — the health body reads it
- * per request like the storage snapshot. */
-async function depsWith(storage: JobsStorage, worker: JobsRunnerSnapshot = RUNNING_WORKER) {
+ * worker's and the sweeper's supervision states are the leg's to set — the
+ * health body reads them per request like the storage snapshot. */
+async function depsWith(
+  storage: JobsStorage,
+  worker: JobsRunnerSnapshot = RUNNING_WORKER,
+  recovery: () => JobsRecoverySnapshot = () => RUNNING_RECOVERY(),
+) {
   return {
     storage,
     instructions: makeReceiver().auth,
     lifecycle: new MemoryLifecycle(),
     admission: new MemoryAdmission(),
     worker: () => worker,
+    recovery,
   };
 }
 
 /** The supervision state of a serving composition: the runner up, worker on it. */
 const RUNNING_WORKER: JobsRunnerSnapshot = { started: true, workerRegistered: true };
+
+/** The supervision state of a serving composition: the sweeper mid-cadence, its last pass fresh. */
+const RUNNING_RECOVERY = (): JobsRecoverySnapshot => ({
+  started: true,
+  passes: 1,
+  lastPassAt: new Date().toISOString(),
+  lastOkPassAt: new Date().toISOString(),
+  reconciled: 0,
+});
 
 describe("GET /health", () => {
   test("answers 200 with a schema-valid body while readiness is still unknown", async () => {
@@ -85,6 +101,12 @@ describe("GET /health", () => {
         metrics: { probes: 0 },
       },
       { name: JOBS_WORKER_CHECK, status: "ok" },
+      {
+        name: JOBS_SWEEPER_CHECK,
+        status: "ok",
+        metrics: { passes: 1, reconciled: 0 },
+        lastSuccessAt: expect.any(String),
+      },
     ]);
     await app.close();
     await storage.stop();
@@ -119,6 +141,65 @@ describe("GET /health", () => {
     expect(body.checks?.[1]?.detail).toMatch(/no worker is registered/);
     await app.close();
     await storage.stop();
+  });
+
+  test("a sweeper that never ran reports error, and a stale one degrades — recovery is never silently absent", async () => {
+    const storage = await storageIn("ready");
+    const notStarted = buildApp(
+      await depsWith(storage, RUNNING_WORKER, () => ({
+        started: false,
+        passes: 0,
+        lastPassAt: null,
+        lastOkPassAt: null,
+        reconciled: 0,
+      })),
+    );
+    const neverPassed = buildApp(
+      await depsWith(storage, RUNNING_WORKER, () => ({
+        started: true,
+        passes: 3,
+        lastPassAt: new Date().toISOString(),
+        lastOkPassAt: null,
+        reconciled: 0,
+      })),
+    );
+    const stale = buildApp(
+      await depsWith(storage, RUNNING_WORKER, () => ({
+        started: true,
+        passes: 3,
+        lastPassAt: new Date().toISOString(),
+        lastOkPassAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        reconciled: 2,
+      })),
+    );
+    try {
+      const notStartedBody = HealthStatusSchema.parse(
+        (await notStarted.inject({ method: "GET", url: "/health" })).json(),
+      );
+      expect(notStartedBody.status).toBe("error");
+      expect(notStartedBody.checks?.[2]?.name).toBe(JOBS_SWEEPER_CHECK);
+      expect(notStartedBody.checks?.[2]?.status).toBe("error");
+      expect(notStartedBody.checks?.[2]?.detail).toMatch(/sweeper is not running/);
+
+      const neverPassedBody = HealthStatusSchema.parse(
+        (await neverPassed.inject({ method: "GET", url: "/health" })).json(),
+      );
+      expect(neverPassedBody.checks?.[2]?.status).toBe("error");
+      expect(neverPassedBody.checks?.[2]?.detail).toMatch(/no successful pass/);
+
+      const staleBody = HealthStatusSchema.parse(
+        (await stale.inject({ method: "GET", url: "/health" })).json(),
+      );
+      expect(staleBody.status).toBe("degraded");
+      expect(staleBody.checks?.[2]?.status).toBe("degraded");
+      expect(staleBody.checks?.[2]?.detail).toMatch(/last successful pass was \d+s ago/);
+      expect(staleBody.checks?.[2]?.metrics).toEqual({ passes: 3, reconciled: 2 });
+    } finally {
+      await notStarted.close();
+      await neverPassed.close();
+      await stale.close();
+      await storage.stop();
+    }
   });
 
   test("an unusable store reports error in the body — and still answers 200", async () => {

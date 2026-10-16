@@ -142,7 +142,28 @@ export class JobsStorage {
         );
       },
     });
-    void this.runProbe();
+    this.launchProbe();
+  }
+
+  /**
+   * The guarded launch every probe gets — the first from `start()`, the rest
+   * from the cadence's timer. A rejected probe (its own reporting threw)
+   * must not become an unhandled rejection in the process that serves the
+   * health body: the report is sink-guarded because the sink throwing is
+   * exactly how a probe comes to reject here, and the probe's own `finally`
+   * has already scheduled the next one.
+   */
+  private launchProbe(): void {
+    void this.runProbe().catch((error) => {
+      try {
+        this.log.error(
+          { event: "jobs.storage.probe_rejected", err: error },
+          "a storage probe rejected out of its own failure reporting — the cadence continues",
+        );
+      } catch {
+        // The reporting sink is the rejection's origin; survival is the point.
+      }
+    });
   }
 
   /**
@@ -157,7 +178,20 @@ export class JobsStorage {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    await this.inFlight;
+    // A rejected probe must not break the release chain: its pool still
+    // ends. The report is sink-guarded because the sink throwing is exactly
+    // how a probe comes to reject here.
+    await this.inFlight?.catch((error) => {
+      try {
+        this.log.error(
+          { event: "jobs.storage.probe_rejected", err: error },
+          "a storage probe rejected out of its own failure reporting — the release continues",
+        );
+      } catch {
+        // The reporting sink is the rejection's origin; the release below is
+        // the part that must survive.
+      }
+    });
     const pool = this.pool;
     this.pool = null;
     await pool?.end();
@@ -169,10 +203,11 @@ export class JobsStorage {
   }
 
   /**
-   * One bounded probe, then the next wait. The probe never throws out of
-   * here: the real check answers every outcome as a verdict, and a defect
-   * that made it throw is recorded as a store that did not answer — the
-   * honest reading — never as a silent skip.
+   * One bounded probe, then the next wait. The check's every outcome —
+   * including a defect that made it throw — is answered as a verdict, never
+   * a silent skip; a probe rejects only when its own reporting threw, and
+   * that rejection is carried to the guarded launch's report while the
+   * `finally` inside has already scheduled the next probe.
    */
   private runProbe(): Promise<void> {
     const probe = this.probeOnce();
@@ -186,19 +221,33 @@ export class JobsStorage {
     try {
       verdict = await this.check(this.pool);
     } catch (error) {
-      this.log.error(
-        { event: "jobs.storage.probe_error", store: describeDsn(this.databaseUrl), err: error },
-        "the jobs storage compatibility probe threw — treating the store as unreachable",
-      );
+      // The catch arm's own report is sink-guarded: a sink that threw must
+      // not stop the verdict below from being recorded and the scheduling
+      // finally from being reached — a supervisor that died here would
+      // freeze the snapshot on its last `ready` and /health would read ok
+      // with the store down.
+      try {
+        this.log.error(
+          { event: "jobs.storage.probe_error", store: describeDsn(this.databaseUrl), err: error },
+          "the jobs storage compatibility probe threw — treating the store as unreachable",
+        );
+      } catch {
+        // The reporting sink is already failing; the verdict is the part
+        // that must survive.
+      }
       verdict = {
         kind: "unreachable",
         message: error instanceof Error ? error.message : String(error),
       };
     }
-    this.recordProbe(verdict);
-
-    if (this.stopped || !this.pool) return;
-    this.scheduleNext(verdict.kind === "compatible");
+    // The probe's evidence and the next scheduling are the loop's two halves:
+    // a reporting failure ends neither. The rejection (a reporting sink that
+    // threw) is carried to the guarded launch's report (`launchProbe`).
+    try {
+      this.recordProbe(verdict);
+    } finally {
+      if (!this.stopped && this.pool) this.scheduleNext(verdict.kind === "compatible");
+    }
   }
 
   private recordProbe(verdict: JobsStorageCompatibility): void {
@@ -265,7 +314,7 @@ export class JobsStorage {
         );
     this.timer = setTimeout(() => {
       this.timer = null;
-      void this.runProbe();
+      this.launchProbe();
     }, delay);
     // Never hold the process open for a probe: the listener and the graceful
     // shutdown own this process's lifetime, and stop() clears the timer anyway.

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
+import { PgBoss } from "pg-boss";
 
-import { JobsRunner } from "./runner.js";
+import { JobsRunner, readRunnerJobState } from "./runner.js";
 
 /**
  * The runtime runner's supervised start, against real failure modes: a store
@@ -120,5 +121,127 @@ describe("the supervised runner", () => {
     // The in-flight attempt (if any) settles without escaping; stop() awaits
     // it before ending the instance.
     await expect(runner.stop()).resolves.toBeUndefined();
+  });
+
+  test("the recovery sweeper's runner-row read answers unavailable until the runner is up, and after it stops", async () => {
+    // The sweeper's reconciliation reads the runner's state through THIS
+    // seam; before the instance exists (or after the runner stops) there is
+    // nothing to read through, and the honest answer is unavailable — the
+    // pass retries on its own cadence, never a fabricated state.
+    const runner = runnerWith({ warn: () => {} });
+    await expect(runner.jobState("not-a-uuid")).resolves.toEqual({
+      verdict: "unavailable",
+      reason: "the runner has not started",
+    });
+    runner.start();
+    try {
+      // A failed start's instance is discarded — the answer is still
+      // unavailable, with the loop retrying underneath.
+      await expect(runner.jobState("not-a-uuid")).resolves.toMatchObject({
+        verdict: "unavailable",
+      });
+    } finally {
+      await runner.stop();
+    }
+    await expect(runner.jobState("not-a-uuid")).resolves.toEqual({
+      verdict: "unavailable",
+      reason: "the runner has not started",
+    });
+  });
+});
+
+/**
+ * A start attempt can reject only through its own reporting — a log sink
+ * that threw. The `attempt_rejected` contract: the rejection is reported
+ * sink-guarded, the release chain survives it, and the timer-driven launch
+ * carries the same guard the first attempt's launch has.
+ */
+describe("a start attempt whose own reporting threw", () => {
+  /** A full-shape sink that records every call, then throws — the rejection's origin. */
+  function throwingLog(): {
+    events: string[];
+    log: ConstructorParameters<typeof JobsRunner>[0]["log"];
+  } {
+    const events: string[] = [];
+    const throwing = (fields: Record<string, unknown>): void => {
+      events.push(String(fields.event));
+      throw new Error("the reporting sink is down");
+    };
+    return {
+      events,
+      log: { info: throwing, warn: throwing, error: throwing },
+    };
+  }
+
+  test("stop releases through a rejected start attempt — the release chain survives", async () => {
+    const { events, log } = throwingLog();
+    const runner = new JobsRunner({
+      databaseUrl: DEAD_DSN,
+      statementTimeoutMs: 2_000,
+      retryInitialMs: 20,
+      retryMaxMs: 50,
+      registerWorker: async () => {},
+      log,
+    });
+    runner.start();
+    const rejectedBy = Date.now() + 5_000;
+    while (Date.now() < rejectedBy && !events.includes("jobs.runner.attempt_rejected")) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // stop() awaits a rejected in-flight attempt: it must resolve — a
+    // rejection here would break the shutdown's release chain.
+    await expect(runner.stop()).resolves.toBeUndefined();
+    expect(events.some((e) => e === "jobs.runner.attempt_rejected")).toBe(true);
+  });
+
+  test("a timer-driven start attempt whose reporting threw is not an unhandled rejection", async () => {
+    // Every start attempt's launch carries the guard, through the one
+    // `launchAttempt` helper: the first from start(), the rest from the
+    // backoff timer — so a rejected attempt is never an unhandled rejection
+    // in the process the runner serves. The attempt's own
+    // discard-and-reschedule still land
+    // (the loop keeps retrying); what this pin adds is the launch's guard on
+    // the steady-state path.
+    const { log } = throwingLog();
+    const captured: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      captured.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const runner = new JobsRunner({
+      databaseUrl: DEAD_DSN,
+      statementTimeoutMs: 2_000,
+      retryInitialMs: 20,
+      retryMaxMs: 50,
+      registerWorker: async () => {},
+      log,
+    });
+    try {
+      runner.start();
+      // Two backoff windows: the first attempt (guarded launch) and at least
+      // one timer-driven attempt after it.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(captured).toEqual([]);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+      await runner.stop().catch(() => {});
+    }
+  });
+});
+
+describe("readRunnerJobState", () => {
+  test("a read the runner's store cannot answer is unavailable with the failure's reason — never a fabricated state", async () => {
+    // The sweeper's reconciliation reads through THIS mapping; when the
+    // runner's store does not answer, the honest verdict is `unavailable`
+    // (the pass aborts and retries on its cadence) — never a guessed state.
+    // A real instance against a store that refuses connections: the read
+    // fails, the mapping answers, nothing throws out of the call.
+    const dead = new PgBoss({ connectionString: DEAD_DSN });
+    const lookup = await readRunnerJobState(dead, "not-a-uuid");
+    if (lookup.verdict !== "unavailable") {
+      throw new Error(`expected unavailable, got: ${lookup.verdict}`);
+    }
+    expect(typeof lookup.reason).toBe("string");
+    expect(lookup.reason.length).toBeGreaterThan(0);
   });
 });
