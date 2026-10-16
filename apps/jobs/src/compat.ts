@@ -3,11 +3,13 @@ import type { Pool, PoolClient } from "pg";
 import {
   JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_JOB_RECORD_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
   JOBS_QUEUE_POLICY_EFFECTIVE,
   JOBS_SCHEMA,
 } from "./policy.js";
+import { withJobsClient } from "./pool.js";
 
 // The expected pg-boss schema version, read from the installed package, so a
 // catalog bump moves the expectation with the dependency.
@@ -36,6 +38,7 @@ export type JobsStorageCompatibility =
   | { kind: "queue_policy"; diffs: readonly JobsQueuePolicyDiff[] }
   | { kind: "burn_missing" }
   | { kind: "lifecycle_missing" }
+  | { kind: "record_missing" }
   | { kind: "runtime_privileges"; missing: readonly string[] };
 
 /** The queue-table columns this check compares — pg-boss's effective queue policy. */
@@ -163,6 +166,10 @@ async function missingRuntimePrivileges(client: PoolClient): Promise<string[]> {
       name: `${privilege} on ${JOBS_APP_LIFECYCLE_QUALIFIED}`,
       sql: `SELECT has_table_privilege(current_user, '${JOBS_APP_LIFECYCLE_QUALIFIED}', '${privilege}') AS ok`,
     })),
+    ...(["SELECT", "INSERT", "UPDATE", "DELETE"] as const).map((privilege) => ({
+      name: `${privilege} on ${JOBS_JOB_RECORD_QUALIFIED}`,
+      sql: `SELECT has_table_privilege(current_user, '${JOBS_JOB_RECORD_QUALIFIED}', '${privilege}') AS ok`,
+    })),
   ];
   const missing: string[] = [];
   for (const probe of probes) {
@@ -183,17 +190,15 @@ async function missingRuntimePrivileges(client: PoolClient): Promise<string[]> {
  * repairs the ledger.
  */
 export async function checkJobsStorageCompatibility(pool: Pool): Promise<JobsStorageCompatibility> {
-  let client: PoolClient | undefined;
+  // The checkout window is withJobsClient's: a connection death mid-check is
+  // recorded on the client (destroyed on release, never parked back) and
+  // reported, while the awaited query's own rejection reaches the catch —
+  // a probe that cannot run is a store that did not answer. The specific
+  // verdicts (missing schema, denied probe) are classified where expected.
   try {
-    client = await pool.connect();
-    return await readVerdict(client);
+    return await withJobsClient(pool, (client) => readVerdict(client));
   } catch (error) {
-    // A probe that cannot run is a store that did not answer — connection
-    // death mid-check, an unresolvable server error. The specific verdicts
-    // (missing schema, denied probe) are classified where they are expected.
     return unreachable(error);
-  } finally {
-    client?.release();
   }
 }
 
@@ -270,6 +275,25 @@ async function readVerdict(client: PoolClient): Promise<JobsStorageCompatibility
   }
   if (!lifecyclePresent) {
     return { kind: "lifecycle_missing" };
+  }
+
+  // The job-record store is acceptance itself: without it no submission can
+  // commit, so its absence is its own verdict — the same remedy (the
+  // migration command) as the other stores', a different reason.
+  let recordPresent: boolean;
+  try {
+    const found = await client.query<{ found: string | null }>(
+      `SELECT to_regclass($1)::text AS found`,
+      [JOBS_JOB_RECORD_QUALIFIED],
+    );
+    recordPresent = found.rows[0]?.found != null;
+  } catch (error) {
+    return sqlState(error) === INSUFFICIENT_PRIVILEGE
+      ? { kind: "runtime_privileges", missing: ["SELECT on the job-record store's catalog entry"] }
+      : unreachable(error);
+  }
+  if (!recordPresent) {
+    return { kind: "record_missing" };
   }
 
   const missing = await missingRuntimePrivileges(client);

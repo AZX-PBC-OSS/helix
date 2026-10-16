@@ -1,6 +1,8 @@
 import type { ConstructorOptions, Queue, WorkOptions } from "pg-boss";
+import type { z } from "zod";
 
 import {
+  FetchJobInputSchema,
   JOB_TYPE_CATALOGUE,
   JOBS_FETCH_QUALIFIED_TYPE,
   type JobsCapacityLimits,
@@ -50,12 +52,27 @@ export const JOBS_INSTRUCTION_BURNS_QUALIFIED = `${JOBS_SCHEMA}.instruction_burn
 export const JOBS_APP_LIFECYCLE_QUALIFIED = `${JOBS_SCHEMA}.app_lifecycle`;
 
 /**
+ * The job-record store — the wrapper identity a job is accepted under: its
+ * immutable attribution, the lifecycle generation it was admitted under, its
+ * public status projection, the optional retry key's scoped claim, and the
+ * digest of the exact original input bytes. One row per accepted job; the
+ * runner job it was enqueued as is joined by the row's `runner_job_id`. The
+ * scoped-key unique constraint (the retry namespace) and the row's own
+ * lifetime are the durable retry-identity contract (ADR-0003).
+ */
+export const JOBS_JOB_RECORD_QUALIFIED = `${JOBS_SCHEMA}.job_record`;
+
+/**
  * The jobs-owned qualified table names are interpolated into SQL statements —
  * assert the bare-identifier invariant once, at the definition, so the
  * interpolation can never become a second input path (the same screen the
  * probes in `src/compat.ts` apply to the pg-boss objects).
  */
-for (const table of [JOBS_INSTRUCTION_BURNS_QUALIFIED, JOBS_APP_LIFECYCLE_QUALIFIED]) {
+for (const table of [
+  JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_APP_LIFECYCLE_QUALIFIED,
+  JOBS_JOB_RECORD_QUALIFIED,
+]) {
   if (!/^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/.test(table)) {
     throw new Error(
       `the jobs-owned table's qualified name is not a bare identifier pair: ${table}`,
@@ -134,16 +151,29 @@ export const JOBS_QUEUE_POLICY_EFFECTIVE = Object.freeze({
   notify: JOBS_QUEUE_POLICY.notify ?? false,
 });
 
-/** The execution policy a send-site must pass for one installed type. */
+/**
+ * The policy a send-site must pass for one installed type: its execution
+ * limits and the input contract admission validates NEW work against.
+ */
 export interface JobsTypePolicy {
   /** Automatic retries after a failed attempt. */
   retryLimit: number;
   /** Per-attempt claim bound, in seconds. */
   expireInSeconds: number;
+  /**
+   * The input contract admission validates new work against, before
+   * acceptance. Carried by the type's policy so the installed-type registry
+   * stays exhaustive in both directions — a type cannot be installed for
+   * execution without an input contract, and a catalogue type cannot exist
+   * without a policy. The retry-identity comparison deliberately precedes
+   * this validation (a retained key's identical bytes recover even when this
+   * schema has since changed), so it serves new-work admission only.
+   */
+  inputSchema: z.ZodType;
 }
 
 /**
- * The execution policy of every installed type, keyed by qualified type. Both
+ * The policy of every installed type, keyed by qualified type. Both
  * directions are screened at import — every key must be a production
  * catalogue type, and every catalogue type must carry a policy — so
  * production registration matches the catalogue in both directions and a
@@ -154,7 +184,11 @@ export const JOBS_TYPE_POLICIES: Record<string, JobsTypePolicy> = Object.freeze(
     // One execution attempt, no automatic outbound retry; the five-minute
     // type deadline bounds the claim (the absolute deadline machinery and the
     // 30-second outbound timeout close work earlier).
-    [JOBS_FETCH_QUALIFIED_TYPE]: { retryLimit: 0, expireInSeconds: JOBS_FETCH_DEADLINE_SECONDS },
+    [JOBS_FETCH_QUALIFIED_TYPE]: {
+      retryLimit: 0,
+      expireInSeconds: JOBS_FETCH_DEADLINE_SECONDS,
+      inputSchema: FetchJobInputSchema,
+    },
   }),
 );
 
@@ -198,6 +232,16 @@ export function jobTypePolicy(qualifiedType: string): JobsTypePolicy {
     throw new Error(`no execution policy is installed for job type "${qualifiedType}"`);
   }
   return { ...policy };
+}
+
+/**
+ * The trusted (appId, env) pair as one runner group id — the identity a send
+ * site scopes a job to and the worker's per-app/environment fairness counts
+ * by. One spelling for both ends (admission's send options, the fairness
+ * verification's expectations), so they cannot drift.
+ */
+export function jobsAppEnvGroupId(appId: string, env: string): string {
+  return `${appId}:${env}`;
 }
 
 /**

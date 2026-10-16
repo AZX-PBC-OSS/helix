@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  FetchJobInputSchema,
   JOBS_FETCH_QUALIFIED_TYPE,
   JOB_TYPE_CATALOGUE,
   resolveJobsCapacityLimits,
@@ -12,6 +13,7 @@ import {
   JOBS_FETCH_DEADLINE_SECONDS,
   JOBS_HEARTBEAT_SECONDS,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_JOB_RECORD_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
   JOBS_QUEUE_POLICY,
@@ -21,6 +23,7 @@ import {
   JOBS_SCHEMA,
   type JobsTypePolicy,
   jobTypePolicy,
+  jobsAppEnvGroupId,
   jobsMigrationBossOptions,
   jobsRuntimeBossOptions,
   jobsWorkOptions,
@@ -49,8 +52,8 @@ describe("the installed-handler policy registry", () => {
   test("the import-time screen refuses a policy for a type the catalogue does not install", () => {
     expect(() =>
       screenTypePolicies({
-        [JOBS_FETCH_QUALIFIED_TYPE]: { retryLimit: 0, expireInSeconds: 60 },
-        "jobs:ghost": { retryLimit: 0, expireInSeconds: 60 },
+        [JOBS_FETCH_QUALIFIED_TYPE]: fetchPolicyFixture(),
+        "jobs:ghost": fetchPolicyFixture(),
       }),
     ).toThrow('an execution policy is installed for non-catalogue type "jobs:ghost"');
   });
@@ -132,10 +135,7 @@ describe("the installed-handler policy registry", () => {
     // runtime process can import these objects, so a replaced key, a mutated
     // policy value, or a retuned concurrency option must refuse at the write.
     expect(() => {
-      (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy>)["jobs:ghost"] = {
-        retryLimit: 0,
-        expireInSeconds: 60,
-      };
+      (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy>)["jobs:ghost"] = fetchPolicyFixture();
     }).toThrow();
     expect(() => {
       (JOBS_TYPE_POLICIES[JOBS_FETCH_QUALIFIED_TYPE] as { retryLimit: number }).retryLimit = 99;
@@ -149,9 +149,19 @@ describe("the installed-handler policy registry", () => {
     expect(jobTypePolicy(JOBS_FETCH_QUALIFIED_TYPE)).toEqual({
       retryLimit: 0,
       expireInSeconds: JOBS_FETCH_DEADLINE_SECONDS,
+      inputSchema: expect.anything(),
     });
   });
 });
+
+/** A policy fixture for the screen's refusals — the shape, not a second copy of the platform values. */
+function fetchPolicyFixture(): JobsTypePolicy {
+  return {
+    retryLimit: 0,
+    expireInSeconds: 60,
+    inputSchema: FetchJobInputSchema,
+  };
+}
 
 describe("the runner's pg-boss constructor policy", () => {
   test("the runtime never migrates, never schedules, and never auto-instruments", () => {
@@ -216,5 +226,30 @@ describe("the runner's pg-boss constructor policy", () => {
     // bare-identifier load guard as the burn table's.
     expect(JOBS_SCHEMA).toBe("jobs");
     expect(JOBS_APP_LIFECYCLE_QUALIFIED).toBe("jobs.app_lifecycle");
+  });
+
+  test("the job-record table's qualified name is the jobs schema's own — the identifier every acceptance statement interpolates", () => {
+    // The record table's name rides into the acceptance transaction's lookup
+    // and insert, the compat probes and the migration's DDL by interpolation
+    // — one rename must move them together, under the same bare-identifier
+    // load guard as the other stores'.
+    expect(JOBS_SCHEMA).toBe("jobs");
+    expect(JOBS_JOB_RECORD_QUALIFIED).toBe("jobs.job_record");
+  });
+
+  test("every installed type's policy carries the input contract admission validates new work against", () => {
+    // The input schema rides the policy registry so a type cannot be
+    // installed for execution without one; the fetch type's is the shared
+    // wire contract's.
+    for (const policy of Object.values(JOBS_TYPE_POLICIES)) {
+      expect(policy.inputSchema).toBeDefined();
+    }
+    expect(jobTypePolicy(JOBS_FETCH_QUALIFIED_TYPE).inputSchema).toBe(FetchJobInputSchema);
+  });
+
+  test("the runner fairness group id is the trusted (appId, env) pair, spelled once", () => {
+    expect(jobsAppEnvGroupId("0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f", "prod")).toBe(
+      "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f:prod",
+    );
   });
 });

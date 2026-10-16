@@ -15,6 +15,7 @@ import { migrateJobsStorage } from "./migrate.js";
 import {
   JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_JOB_RECORD_QUALIFIED,
   JOBS_QUEUE_NAME,
   JOBS_PGBOSS_SCHEMA,
   JOBS_RUNTIME_ROLE,
@@ -139,6 +140,7 @@ describe("jobs storage migration and startup compatibility", () => {
       queuePolicyRepairs: [],
       burnStoreExisted: false,
       lifecycleStoreExisted: false,
+      jobRecordExisted: false,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -165,6 +167,7 @@ describe("jobs storage migration and startup compatibility", () => {
       queuePolicyRepairs: [],
       burnStoreExisted: true,
       lifecycleStoreExisted: true,
+      jobRecordExisted: true,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -343,6 +346,48 @@ describe("jobs storage migration and startup compatibility", () => {
       });
       await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
         expect.objectContaining({ lifecycleStoreExisted: true }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test(
+    "a dropped job-record store is its own verdict and the migration recreates it",
+    slow,
+    async () => {
+      // The job-record store is acceptance itself: without it no submission
+      // can commit, so its absence is an operator-facing answer distinct from
+      // the runner schema's.
+      await asMigrateRole(`DROP TABLE ${JOBS_JOB_RECORD_QUALIFIED}`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "record_missing",
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordExisted: false }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test(
+    "missing job-record privileges are detected and re-granted by the migration",
+    slow,
+    async () => {
+      await asMigrateRole(
+        `REVOKE DELETE ON ${JOBS_JOB_RECORD_QUALIFIED} FROM ${JOBS_RUNTIME_ROLE}`,
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "runtime_privileges",
+        missing: expect.arrayContaining([`DELETE on ${JOBS_JOB_RECORD_QUALIFIED}`]),
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordExisted: true }),
       );
       await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
         kind: "compatible",

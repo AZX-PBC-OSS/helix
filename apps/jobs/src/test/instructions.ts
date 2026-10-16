@@ -5,6 +5,7 @@ import {
   JOBS_FETCH_QUALIFIED_TYPE,
   type JobsLifecycleUpdate,
 } from "@azx-pbc/shared";
+import { JobsSubmitClaimsSchema, type JobsSubmitClaims } from "@azx-pbc/shared/jobsSigning";
 import {
   deriveJobsInstructionKey,
   mintJobsInstruction,
@@ -12,6 +13,7 @@ import {
 } from "@azx-pbc/shared/jobsSigning";
 import type { FastifyInstance } from "fastify";
 
+import type { JobsAdmission, JobsAdmissionRequest, JobsAdmissionResult } from "../acceptance.js";
 import type { JobsBurnOutcome, JobsBurnStore } from "../burns.js";
 import { createJobsInstructionAuth, type JobsInstructionAuth } from "../instructionAuth.js";
 import { buildApp } from "../app.js";
@@ -150,29 +152,58 @@ export class MemoryLifecycle implements JobsLifecycleApplier {
 }
 
 /**
+ * The in-memory admission seam — the `JobsAdmission` seam's second
+ * implementor, for the ROUTE's tests: the route's contract is mapping an
+ * admission outcome onto the protocol's responses and span vocabulary, and a
+ * leg arms the outcome it wants answered (or `failAdmits` to pin the
+ * store-failure mapping). The admission transaction's own semantics — the
+ * keyed recovery, the rollback, the enqueue — are pinned against real
+ * Postgres and the real runner in `acceptance.integration.test.ts`.
+ */
+export class MemoryAdmission implements JobsAdmission {
+  calls = 0;
+  lastRequest: JobsAdmissionRequest | null = null;
+  failAdmits = false;
+  outcome: JobsAdmissionResult = { outcome: "accepted", jobId: TEST_JOB_ID, status: "queued" };
+
+  async admit(request: JobsAdmissionRequest): Promise<JobsAdmissionResult> {
+    this.calls += 1;
+    this.lastRequest = request;
+    if (this.failAdmits) {
+      throw new Error("injected admission-store failure");
+    }
+    return this.outcome;
+  }
+}
+
+/**
  * A built app with a ready store, the receiver seam, and nothing else wired.
- * The lifecycle seam rides along as the in-memory applier — the lifecycle
- * route's accepted path against the REAL store is covered in
- * `lifecycle.integration.test.ts` and the boot suite.
+ * The lifecycle and admission seams ride along as in-memory doubles — the
+ * lifecycle route's accepted path against the REAL store is covered in
+ * `lifecycle.integration.test.ts` and the boot suite; the submit route's is
+ * covered in `acceptance.integration.test.ts`.
  */
 export async function appWithReceiver(receiver: TestReceiver): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
+  admission: MemoryAdmission;
 }> {
-  const { app, storage } = await appWithLifecycle(receiver, new MemoryLifecycle());
-  return { app, storage };
+  const admission = new MemoryAdmission();
+  const { app, storage } = await appWithLifecycle(receiver, new MemoryLifecycle(), admission);
+  return { app, storage, admission };
 }
 
 /** A built app whose lifecycle seam is the given applier. */
 export async function appWithLifecycle(
   receiver: TestReceiver,
   lifecycle: JobsLifecycleApplier,
+  admission: JobsAdmission = new MemoryAdmission(),
 ): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
 }> {
   const storage = await storageIn("ready");
-  const app = buildApp({ storage, instructions: receiver.auth, lifecycle });
+  const app = buildApp({ storage, instructions: receiver.auth, lifecycle, admission });
   return { app, storage };
 }
 
@@ -207,4 +238,34 @@ export function submitSpec(
     iatS: TEST_IAT,
     ...over,
   };
+}
+
+/**
+ * A submit-claims object as the receiver's verification produces it — the
+ * trusted input the admission seam consumes. Callers of the admission store
+ * directly (the integration suite) build these instead of minting tokens;
+ * the claims' own schema conformance is the signing vectors' seam. The build
+ * is parsed against the claims schema so a malformed fixture fails here,
+ * never downstream as a silently-trusted input.
+ */
+export function submitClaims(
+  over: Partial<Extract<JobsInstructionMintSpec, { operation: "submit" }>> = {},
+): JobsSubmitClaims {
+  const spec = submitSpec(over);
+  if (spec.operation !== "submit") throw new Error("unreachable");
+  return JobsSubmitClaimsSchema.parse({
+    server: spec.server,
+    operation: "submit",
+    method: "POST",
+    resource: "/internal/jobs/v1/jobs",
+    bodySha256: "0".repeat(64),
+    appId: spec.identity.appId,
+    env: spec.identity.env,
+    ownerKind: spec.identity.ownerKind,
+    ownerOid: spec.identity.ownerOid,
+    allowedTypes: [...spec.identity.allowedTypes],
+    type: spec.type,
+    generation: spec.generation,
+    idempotencyKey: spec.idempotencyKey,
+  });
 }

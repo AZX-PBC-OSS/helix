@@ -6,7 +6,7 @@ import { buildApp } from "./app.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
 import { JobsStorage } from "./storage.js";
-import { makeReceiver, MemoryLifecycle } from "./test/instructions.js";
+import { makeReceiver, MemoryAdmission, MemoryLifecycle } from "./test/instructions.js";
 
 /**
  * The listener's health contract and the unmatched-route behaviour, through
@@ -48,6 +48,7 @@ async function depsWith(storage: JobsStorage) {
     storage,
     instructions: makeReceiver().auth,
     lifecycle: new MemoryLifecycle(),
+    admission: new MemoryAdmission(),
   };
 }
 

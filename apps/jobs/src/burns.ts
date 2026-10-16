@@ -1,8 +1,9 @@
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
 import { JOBS_INSTRUCTION_BURN_RETENTION_SECONDS } from "@azx-pbc/shared/jobsSigning";
 import { ATTR_OUTCOME, type JobsBurnSweepOutcome } from "@azx-pbc/shared/telemetry";
 
+import { createJobsPool } from "./pool.js";
 import { JOBS_INSTRUCTION_BURNS_QUALIFIED } from "./policy.js";
 import { instruments } from "./telemetry.js";
 
@@ -102,21 +103,16 @@ export class JobsInstructionBurns implements JobsBurnStore {
    */
   start(): void {
     if (this.pool || this.stopped) return;
-    this.pool = new Pool({
-      connectionString: this.databaseUrl,
+    this.pool = createJobsPool({
+      databaseUrl: this.databaseUrl,
+      statementTimeoutMs: this.statementTimeoutMs,
       max: POOL_MAX,
-      connectionTimeoutMillis: this.statementTimeoutMs,
-      statement_timeout: this.statementTimeoutMs,
-    });
-    // pg-pool strips a checked-out client's 'error' listener, so a connection
-    // death while no query is outstanding would be an unhandled event that
-    // kills the process; this listener keeps the service alive and lets the
-    // next burn's own failure carry the cause.
-    this.pool.on("error", (error) => {
-      this.log.warn(
-        { event: "jobs.burn.pool_error", err: error },
-        "pooled jobs burn-store client dropped",
-      );
+      onClientError: (err, phase) => {
+        this.log.warn(
+          { event: "jobs.burn.pool_error", phase, err },
+          "pooled jobs burn-store client dropped",
+        );
+      },
     });
     this.scheduleSweep(0);
   }

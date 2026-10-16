@@ -9,11 +9,15 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   INSTRUCTION_HEADER,
   JOBS_MAX_INPUT_BYTES,
+  JobAcceptedSchema,
   JobsLifecycleUpdateAckSchema,
   JobsLifecycleUpdateSchema,
   jobRequestError,
   worstHealthState,
+  JOB_STATEFUL_ERROR_CODES,
+  type JobRequestErrorCode,
 } from "@azx-pbc/shared";
+import type { JobsSubmitClaims } from "@azx-pbc/shared/jobsSigning";
 import { JobsOperations, type JobsOperationName } from "@azx-pbc/shared/jobsSigning";
 import {
   ATTR_APP_ID,
@@ -27,11 +31,13 @@ import {
   SPAN_JOBS_RESULT,
   SPAN_JOBS_SNAPSHOT,
   SPAN_JOBS_SUBMIT,
+  type JobsSubmitOutcome,
 } from "@azx-pbc/shared/telemetry";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { Span } from "@opentelemetry/api";
 
+import type { JobsAdmission, JobsAdmissionResult } from "./acceptance.js";
 import { jobsDatabaseCheck } from "./health.js";
 import { SERVICE_NAME } from "./serviceName.js";
 import type { JobsStorage } from "./storage.js";
@@ -48,9 +54,10 @@ export { SERVICE_NAME };
  * each verifies its instruction and burns its nonce through the receiver seam
  * before anything else happens. Operation semantics land with the ticket that
  * owns each seam — lifecycle delivery (the portal's apply-before-acknowledge
- * generation authority) is served here; the rest answer the protocol's
- * retryable unavailable error until their tickets replace them, and the log
- * line is where that gap is named.
+ * generation authority) and submission (the acceptance transaction's keyed
+ * recovery, validation and atomic enqueue) are served here; the rest answer
+ * the protocol's retryable unavailable error until their tickets replace
+ * them, and the log line is where that gap is named.
  *
  * The health contract is the platform's always-200 three-state roll-up: a
  * service that can answer HTTP but cannot execute work reports the
@@ -65,6 +72,8 @@ export interface JobsDeps {
   instructions: JobsInstructionAuth;
   /** The durable app-lifecycle authority; the lifecycle route applies deliveries through it. */
   lifecycle: JobsLifecycleApplier;
+  /** The acceptance seam; the submit route's decisions run through it. */
+  admission: JobsAdmission;
 }
 
 /** A request that arrived with a body the raw-capturing parser held onto. */
@@ -159,6 +168,80 @@ async function serveLifecycle(
   );
 }
 
+/** The fixed refusal each non-accepted submit outcome answers with. (The store signals unavailability by throwing — the route's catch maps that.) */
+const SUBMIT_REFUSALS: Record<
+  Exclude<JobsAdmissionResult["outcome"], "accepted" | "recovered" | "conflict">,
+  {
+    status: number;
+    code: Exclude<JobRequestErrorCode, (typeof JOB_STATEFUL_ERROR_CODES)[number]>;
+  }
+> = {
+  invalid_input: { status: 400, code: "payload_invalid" },
+  type_unknown: { status: 403, code: "forbidden" },
+  closed: { status: 403, code: "forbidden" },
+  unseen: { status: 503, code: "jobs_unavailable" },
+};
+
+/**
+ * The submission's operation (ADR-0003): the acceptance transaction's decision
+ * — keyed recovery, conflict, validation or intake refusal, or a new job's
+ * reference — mapped onto the protocol's responses. A store that cannot
+ * answer leaves nothing committed and is the retryable 503; the edge mints a
+ * fresh instruction and presents the same retry identity again. The span's
+ * outcome is the admission's own vocabulary, with the bounded evidence the
+ * delivery-style operations carry (the submitting app and its claimed
+ * generation — never the retry key, the input, or the job id).
+ */
+async function serveSubmit(
+  deps: JobsDeps,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  span: Span,
+  claims: JobsSubmitClaims,
+  body: Uint8Array,
+): Promise<void> {
+  let result: JobsAdmissionResult;
+  try {
+    result = await deps.admission.admit({ claims, body });
+  } catch (error) {
+    req.log.error(
+      { event: "jobs.admission.unavailable", err: error },
+      "the acceptance store could not decide a submission",
+    );
+    span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsSubmitOutcome);
+    reply.header("cache-control", "no-store");
+    return reply.code(503).send(jobRequestError("jobs_unavailable"));
+  }
+  span.setAttributes({
+    [ATTR_APP_ID]: claims.appId,
+    [ATTR_JOBS_GENERATION]: claims.generation,
+  });
+  span.setAttribute(ATTR_OUTCOME, result.outcome satisfies JobsSubmitOutcome);
+  reply.header("cache-control", "no-store");
+  if (result.outcome === "accepted" || result.outcome === "recovered") {
+    // The response is validated against the wire schema before it is sent —
+    // a store answer that cannot parse is a defect answered 500 by the error
+    // boundary, never a malformed body on the wire.
+    return reply.code(202).send(
+      JobAcceptedSchema.parse({
+        server: claims.server,
+        jobId: result.jobId,
+        status: result.status,
+      }),
+    );
+  }
+  if (result.outcome === "conflict") {
+    return reply.code(409).send(
+      jobRequestError("idempotency_conflict", {
+        status: result.status,
+        error: result.error,
+      }),
+    );
+  }
+  const refusal = SUBMIT_REFUSALS[result.outcome];
+  return reply.code(refusal.status).send(jobRequestError(refusal.code));
+}
+
 const OPERATION_SPAN_NAMES = {
   submit: SPAN_JOBS_SUBMIT,
   snapshot: SPAN_JOBS_SNAPSHOT,
@@ -166,7 +249,6 @@ const OPERATION_SPAN_NAMES = {
   cancel: SPAN_JOBS_CANCEL,
   lifecycle: SPAN_JOBS_LIFECYCLE,
 } as const;
-
 type ReceivedOperation = keyof typeof OPERATION_SPAN_NAMES;
 
 /**
@@ -251,8 +333,18 @@ function signedOperationHandler(
         }
         // The operation's own semantics. Once one runs, its outcome is the
         // span's — the verification verdict's "accepted" is superseded by
-        // what the operation actually did.
+        // what the operation actually did. The claims are narrowed at the
+        // seam, not cast: the receiver parsed them with the operation's own
+        // claim schema, and the guard below is what holds that pairing — a
+        // receiver whose schema map drifted fails this route loudly instead
+        // of serving misparsed claims.
         switch (operation) {
+          case "submit": {
+            if (verdict.claims.operation !== "submit") {
+              throw new Error("the submit route served claims that are not submit claims");
+            }
+            return serveSubmit(deps, req, reply, span, verdict.claims, rawBodyOf(req));
+          }
           case "lifecycle":
             return serveLifecycle(deps, req, reply, span);
           default:
@@ -352,8 +444,9 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
   // operation matrix so a route and its signed binding cannot drift. Until an
   // operation's semantics land, a verified instruction reaches its route and
   // is answered with the protocol's retryable unavailable error; the
-  // lifecycle route serves its delivery (the generation authority's
-  // apply-before-acknowledge receiver).
+  // lifecycle route serves the portal's delivery (the generation authority's
+  // apply-before-acknowledge receiver) and the submit route serves the
+  // acceptance transaction (ADR-0003).
   app.route({
     method: ["POST"],
     url: JobsOperations.submit.path,

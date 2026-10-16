@@ -1,5 +1,9 @@
-import { Pool } from "pg";
 import { PgBoss, type UpdateQueueOptions } from "pg-boss";
+import type { Pool } from "pg";
+
+import { JOB_STATUSES } from "@azx-pbc/shared";
+
+import { createJobsPool } from "./pool.js";
 
 import {
   PGBOSS_SCHEMA_VERSION,
@@ -13,6 +17,7 @@ import { describeDsn } from "./dsn.js";
 import {
   JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_JOB_RECORD_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
   JOBS_QUEUE_POLICY,
@@ -61,6 +66,8 @@ export interface JobsMigrationSummary {
   burnStoreExisted: boolean;
   /** The app-lifecycle store already existed (nothing to create). */
   lifecycleStoreExisted: boolean;
+  /** The job-record store already existed (nothing to create). */
+  jobRecordExisted: boolean;
 }
 
 /**
@@ -114,20 +121,24 @@ function describeDiffs(diffs: readonly JobsQueuePolicyDiff[]): string {
  */
 export async function migrateJobsStorage(connectionString: string): Promise<JobsMigrationSummary> {
   const role = assertRoleName(JOBS_RUNTIME_ROLE);
-  const pool = new Pool({
-    connectionString,
+  // The migration's own pool, through the service's shared discipline: its
+  // DDL statements are long, so the per-query ceiling is looser than the
+  // runtime pools'. The migration runs raw SQL only through `pool.query()`
+  // (which plugs its own per-checkout error handler) — the checked-out
+  // window's bracket is for the runtime stores' transactions.
+  const pool = createJobsPool({
+    databaseUrl: connectionString,
+    statementTimeoutMs: 60_000,
     max: 2,
-    connectionTimeoutMillis: 10_000,
-    statement_timeout: 60_000,
-  });
-  // pg-pool strips a checked-out client's 'error' listener, so a connection
-  // death while no query is outstanding would be an unhandled event that
-  // kills the process before any await rejects; this listener keeps the run
-  // alive so the next query's own failure carries the cause.
-  pool.on("error", (error) => {
-    console.error(
-      JSON.stringify({ event: "jobs_storage_migration_pool_error", error: error.message }),
-    );
+    onClientError: (err, phase) => {
+      console.error(
+        JSON.stringify({
+          event: "jobs_storage_migration_pool_error",
+          phase,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
   });
   let boss: PgBoss | undefined;
   try {
@@ -200,6 +211,7 @@ export async function migrateJobsStorage(connectionString: string): Promise<Jobs
 
     const burnStoreExisted = await ensureInstructionBurnStore(pool);
     const lifecycleStoreExisted = await ensureAppLifecycleStore(pool);
+    const jobRecordExisted = await ensureJobRecordStore(pool);
 
     await grantRuntimeAccess(pool, role);
 
@@ -216,6 +228,7 @@ export async function migrateJobsStorage(connectionString: string): Promise<Jobs
       queuePolicyRepairs: repairable.map((diff) => diff.field),
       burnStoreExisted,
       lifecycleStoreExisted,
+      jobRecordExisted,
     };
   } finally {
     if (boss) {
@@ -291,6 +304,58 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
 }
 
 /**
+ * Create the job-record store — one row per accepted job carrying the
+ * wrapper identity the acceptance transaction commits with the runner's own
+ * row (ADR-0003): the immutable attribution, the admitted lifecycle
+ * generation, the public status projection, the optional retry key's scoped
+ * claim and the digest of the exact original input bytes. Idempotent, like
+ * the other stores.
+ *
+ * The scoped-key UNIQUE constraint is the retry namespace
+ * (`server/appId/env/ownerKind/ownerOid/type/key`): two keys' namespaces are
+ * disjoint by those columns, and unkeyed rows (a NULL `retry_key`) are
+ * distinct under the default NULLS DISTINCT semantics, so unkeyed
+ * submissions never collide. The status column carries only the shared
+ * public-status vocabulary; the check is generated from the shared constant
+ * so the SQL and the wire contract cannot drift. The `runner_job_id` is
+ * unique with the server — the join the worker and the cleanup consume.
+ *
+ * Returns whether the table already existed, for the run's summary.
+ */
+async function ensureJobRecordStore(pool: Pool): Promise<boolean> {
+  const before = await pool.query<{ found: string | null }>(
+    `SELECT to_regclass($1)::text AS found`,
+    [JOBS_JOB_RECORD_QUALIFIED],
+  );
+  const existed = before.rows[0]?.found != null;
+  // The status vocabulary is the shared contract's, interpolated — the SQL
+  // check and the wire enum cannot drift.
+  const publicStatuses = JOB_STATUSES.map((status) => `'${status}'`).join(", ");
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS ${JOBS_SCHEMA}`);
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS ${JOBS_JOB_RECORD_QUALIFIED} (
+       server        text        NOT NULL,
+       job_id        text        NOT NULL,
+       runner_job_id text        NOT NULL,
+       app_id        text        NOT NULL,
+       env           text        NOT NULL,
+       owner_kind    text        NOT NULL,
+       owner_oid     text        NOT NULL,
+       type          text        NOT NULL,
+       generation    bigint      NOT NULL,
+       status        text        NOT NULL CHECK (status IN (${publicStatuses})),
+       retry_key     text,
+       body_sha256   text        NOT NULL,
+       created_at    timestamptz NOT NULL,
+       PRIMARY KEY (server, job_id),
+       UNIQUE (server, runner_job_id),
+       UNIQUE (server, app_id, env, owner_kind, owner_oid, type, retry_key)
+     )`,
+  );
+  return existed;
+}
+
+/**
  * Grant the runtime role its DML on the runner's tables. The migration owns
  * the grants because provisioning sets no default privileges on either side
  * (fail-closed): a table that skipped its grant fails the runtime at first
@@ -319,6 +384,13 @@ async function grantRuntimeAccess(pool: Pool, role: string): Promise<void> {
   // state (a future app deletion still delivers its cancellation intent), so
   // the runtime reads, inserts and updates it — never removes from it.
   await pool.query(`GRANT SELECT, INSERT, UPDATE ON ${JOBS_APP_LIFECYCLE_QUALIFIED} TO ${role}`);
+  // The job-record store's full DML: the acceptance transaction inserts, the
+  // observation paths read, and the physical cleanup (the record's only
+  // remover) deletes the row together with its runner row — which is what
+  // releases the retry key.
+  await pool.query(
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ${JOBS_JOB_RECORD_QUALIFIED} TO ${role}`,
+  );
 
   // Verify the grants landed by asking the privilege system, not by trusting
   // the statements' success: a future pg-boss object kind that `ALL TABLES`
@@ -348,9 +420,18 @@ async function grantRuntimeAccess(pool: Pool, role: string): Promise<void> {
       )
       .join(", ")}`,
   );
+  const recordChecked = await pool.query<Record<string, boolean>>(
+    `SELECT ${["SELECT", "INSERT", "UPDATE", "DELETE"]
+      .map(
+        (privilege) =>
+          `has_table_privilege('${role}', '${JOBS_JOB_RECORD_QUALIFIED}', '${privilege}') AS ${privilege.toLowerCase()}`,
+      )
+      .join(", ")}`,
+  );
   const row = checked.rows[0];
   const burnRow = burnChecked.rows[0];
   const lifecycleRow = lifecycleChecked.rows[0];
+  const recordRow = recordChecked.rows[0];
   const missing: string[] = probes.filter((privilege) => row?.[privilege.toLowerCase()] !== true);
   for (const privilege of ["SELECT", "INSERT", "DELETE"] as const) {
     if (burnRow?.[privilege.toLowerCase()] !== true) {
@@ -360,6 +441,11 @@ async function grantRuntimeAccess(pool: Pool, role: string): Promise<void> {
   for (const privilege of ["SELECT", "INSERT", "UPDATE"] as const) {
     if (lifecycleRow?.[privilege.toLowerCase()] !== true) {
       missing.push(`${privilege} on ${JOBS_APP_LIFECYCLE_QUALIFIED}`);
+    }
+  }
+  for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"] as const) {
+    if (recordRow?.[privilege.toLowerCase()] !== true) {
+      missing.push(`${privilege} on ${JOBS_JOB_RECORD_QUALIFIED}`);
     }
   }
   if (missing.length > 0) {

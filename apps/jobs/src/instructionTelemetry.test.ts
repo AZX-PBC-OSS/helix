@@ -122,12 +122,9 @@ describe("instruction telemetry", () => {
         const attrs = span.attributes;
         expect(attrs["helix.jobs.operation"]).toBe("submit");
         expect(attrs["http.route"]).toBe("/internal/jobs/v1/jobs");
-        // The span names the route and the outcome; nothing that identifies a
-        // caller, a token or a job.
         for (const [key, value] of Object.entries(attrs)) {
           expect(String(value), `attr ${key} carries the token`).not.toContain(token);
           expect(String(value), `attr ${key} carries a retry key`).not.toContain("retry-key-1");
-          expect(String(value), `attr ${key} carries an app id`).not.toContain(TEST_IDENTITY.appId);
           expect(String(value), `attr ${key} carries an owner oid`).not.toContain(
             TEST_IDENTITY.ownerOid,
           );
@@ -137,6 +134,15 @@ describe("instruction telemetry", () => {
         expect(Object.keys(attrs).some((k) => k.startsWith("url."))).toBe(false);
         expect(Object.keys(attrs).some((k) => k.startsWith("http.url"))).toBe(false);
       }
+      // The served submission's span carries the operation's own bounded
+      // evidence — the submitting app and its admitted generation — as the
+      // lifecycle delivery's span does (`appId` is the platform's bounded
+      // non-personal dimension; AGENTS.md §Telemetry: "appId is a dimension;
+      // userOid never is"). A refusal at the receiver carries none of it:
+      // the operation never ran.
+      expect(spans[0]?.attributes["helix.app_id"]).toBe(TEST_IDENTITY.appId);
+      expect(spans[0]?.attributes["helix.jobs.generation"]).toBe("7");
+      expect(spans[1]?.attributes["helix.app_id"]).toBeUndefined();
     } finally {
       await app.close();
       await storage.stop();
@@ -172,21 +178,29 @@ describe("instruction telemetry", () => {
 
   test("a 401 refusal leaves the span UNSET; a 5xx reply grades it ERROR", async () => {
     const receiver = makeReceiver();
-    const { app, storage } = await appWithReceiver(receiver);
+    const { app, storage, admission } = await appWithReceiver(receiver);
     try {
       const token = await mint(submitSpec());
-      await submitOnce(app, token); // accepted — the placeholder answers 503
+      await submitOnce(app, token); // accepted — 202, the operation served
       await submitOnce(app, token); // replayed — 401
       await submitOnce(app, await mint(submitSpec(), TEST_KEYS.other)); // rejected — 401
 
       const [accepted, replayed, rejected] = recording.spans();
-      // The 5xx answer grades its span ERROR (the accepted-but-unserved
-      // placeholder state is a fault worth seeing), while the 401 denials
-      // stay UNSET: the receiver refusing a replay or a forgery is working
+      // The 202 answer and the 401 denials stay UNSET: a served submission
+      // and the receiver refusing a replay or a forgery are all working
       // exactly as designed, and marking those ERROR would bury real faults.
-      expect(accepted?.status.code).toBe(2); // ERROR
+      expect(accepted?.status.code).toBe(0); // UNSET
       expect(replayed?.status.code).toBe(0); // UNSET
       expect(rejected?.status.code).toBe(0); // UNSET
+
+      // The 5xx answer grades its span ERROR: an acceptance store that could
+      // not decide is a fault worth seeing, even though the handler answered
+      // normally instead of throwing.
+      admission.failAdmits = true;
+      await submitOnce(app, await mint(submitSpec()));
+      const unavailable = recording.spans().at(-1);
+      expect(unavailable?.attributes["helix.outcome"]).toBe("unavailable");
+      expect(unavailable?.status.code).toBe(2); // ERROR
     } finally {
       await app.close();
       await storage.stop();
@@ -328,6 +342,54 @@ describe("instruction telemetry", () => {
       const span = recording.spans().at(-1);
       expect(span?.attributes[ATTR_OUTCOME]).toBe("unavailable");
       expect(span?.status.code).toBe(2); // ERROR
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("a submission's span carries the admission's own bounded outcome, one word per exit", async () => {
+    const { app, storage, admission } = await appWithReceiver(makeReceiver());
+    try {
+      const submit = async (): Promise<void> => {
+        await app.inject({
+          method: "POST",
+          url: "/internal/jobs/v1/jobs",
+          headers: {
+            "content-type": "application/json",
+            ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+          },
+          payload: TEST_BODY,
+        });
+      };
+      const outcomes = [
+        { canned: { outcome: "accepted", jobId: TEST_JOB_ID, status: "queued" } },
+        { canned: { outcome: "recovered", jobId: TEST_JOB_ID, status: "queued" } },
+        { canned: { outcome: "conflict", status: "queued", error: null } },
+        { canned: { outcome: "invalid_input" } },
+        { canned: { outcome: "type_unknown" } },
+        { canned: { outcome: "closed" } },
+        { canned: { outcome: "unseen" } },
+      ] as const;
+      for (const o of outcomes) {
+        admission.outcome = o.canned;
+        await submit();
+      }
+      admission.failAdmits = true;
+      await submit();
+
+      // Every exit of the operation is one bounded word on its span — the
+      // vocabulary the inventory lists (`JOBS_SUBMIT_OUTCOMES`), never a
+      // reason string, a key, or an input.
+      const expectOutcomes = [...outcomes.map((o) => o.canned.outcome), "unavailable"];
+      const spans = recording.spans().slice(-expectOutcomes.length);
+      expect(spans.map((s) => s.attributes[ATTR_OUTCOME])).toEqual(expectOutcomes);
+      // The 202s and the fixed 4xx refusals are the route working as
+      // designed — UNSET spans. Every 5xx answer grades ERROR by the uniform
+      // rule, and two of this vocabulary's exits answer 503: the unseen wait
+      // (a misconfigured edge submitting before the portal's delivery — a
+      // run of these is visible) and the acceptance store failing to decide.
+      expect(spans.map((s) => s.status.code)).toEqual([0, 0, 0, 0, 0, 0, 2, 2]);
     } finally {
       await app.close();
       await storage.stop();

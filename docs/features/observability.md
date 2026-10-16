@@ -57,7 +57,7 @@ terminates untrusted traffic (decision 4).
 | `helix.providers.reconcile` | the egress provider-cache reconcile |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
 | `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine: the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption, the vendor redirect's completion state machine, and the read-only status decision (ADR-0031 as amended) |
-| `helix.jobs.submit` / `.snapshot` / `.result` / `.cancel` / `.lifecycle` | the jobs receiver's five signed internal operation routes — one root span each, named for the operation the ROUTE serves (never a name read from the token); verification outcomes and reject reasons ride `helix.outcome` / `helix.reason`, and `http.route` is the operation matrix's own path. Once an operation's semantics have landed, its own outcome supersedes the verification verdict on that span: the lifecycle delivery answers `applied` / `stale` / `invalid_body` / `unavailable` (`JOBS_LIFECYCLE_OUTCOMES`), with the delivered app, generation and archived flag as span attributes |
+| `helix.jobs.submit` / `.snapshot` / `.result` / `.cancel` / `.lifecycle` | the jobs receiver's five signed internal operation routes — one root span each, named for the operation the ROUTE serves (never a name read from the token); verification outcomes and reject reasons ride `helix.outcome` / `helix.reason`, and `http.route` is the operation matrix's own path. Once an operation's semantics have landed, its own outcome supersedes the verification verdict on that span: the lifecycle delivery answers `applied` / `stale` / `invalid_body` / `unavailable` (`JOBS_LIFECYCLE_OUTCOMES`), with the delivered app, generation and archived flag as span attributes; the submission answers `JOBS_SUBMIT_OUTCOMES` (see below), with the submitting app and its claimed generation as span attributes |
 | `helix.jobs.lifecycle.outbox` | the portal's lifecycle outbox write — the span around appending one intent per configured serving/retiring target inside the app transition's transaction (ADR-0007); carries `helix.app_id`, `helix.jobs.generation`, `helix.jobs.archived` and `helix.jobs.lifecycle.targets`. Not emitted when the deployment map is empty (fully disabled jobs writes no backlog) |
 | `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route — My Connections' metadata-only list |
 | `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
@@ -198,7 +198,16 @@ looked up:
   operation's own bounded vocabulary — the lifecycle delivery's is
   `JOBS_LIFECYCLE_OUTCOMES` (`applied`/`stale`/`invalid_body`/`unavailable`),
   beside `helix.app_id`, `helix.jobs.generation` and `helix.jobs.archived`
-  (pinned by the same suite's lifecycle scan).
+  (pinned by the same suite's lifecycle scan) — and the submission's is
+  `JOBS_SUBMIT_OUTCOMES`: `accepted` (new work committed),
+  `recovered` (a keyed resubmission's identical bytes recovered the original
+  job — deliberately not `replayed`, which stays the nonce's word),
+  `conflict` (different bytes for a retained key), `invalid_input`
+  (new work refused at validation), `type_unknown` (no installed policy for
+  the claimed type), `closed`/`unseen` (the lifecycle gate's final refusal
+  and its retryable wait for the portal's delivery), and `unavailable` (the
+  acceptance store could not decide) — beside `helix.app_id` and
+  `helix.jobs.generation` (pinned by the same suite's submit scan).
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |

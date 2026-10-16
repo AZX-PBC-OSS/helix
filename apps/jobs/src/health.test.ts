@@ -96,6 +96,10 @@ describe("jobsDatabaseCheck", () => {
         detailMatches: /app lifecycle store is absent.*run the migration command/s,
       },
       {
+        verdict: { kind: "record_missing" },
+        detailMatches: /job record store is absent.*run the migration command/s,
+      },
+      {
         verdict: {
           kind: "queue_policy",
           diffs: [

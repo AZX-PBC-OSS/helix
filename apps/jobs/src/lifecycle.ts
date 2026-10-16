@@ -1,7 +1,8 @@
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { JobsGenerationSchema, type JobsLifecycleUpdate } from "@azx-pbc/shared";
 
+import { createJobsPool, withJobsClient } from "./pool.js";
 import { JOBS_APP_LIFECYCLE_QUALIFIED } from "./policy.js";
 
 /**
@@ -228,21 +229,16 @@ export class JobsLifecycleStore implements JobsLifecycleApplier {
   /** Open the pool. No background work: the store has no loop of its own. */
   start(): void {
     if (this.pool || this.stopped) return;
-    this.pool = new Pool({
-      connectionString: this.databaseUrl,
+    this.pool = createJobsPool({
+      databaseUrl: this.databaseUrl,
+      statementTimeoutMs: this.statementTimeoutMs,
       max: POOL_MAX,
-      connectionTimeoutMillis: this.statementTimeoutMs,
-      statement_timeout: this.statementTimeoutMs,
-    });
-    // pg-pool strips a checked-out client's 'error' listener, so a connection
-    // death while no query is outstanding would be an unhandled event that
-    // kills the process; this listener keeps the service alive and lets the
-    // apply's own failure carry the cause.
-    this.pool.on("error", (error) => {
-      this.log.warn(
-        { event: "jobs.lifecycle.pool_error", err: error },
-        "pooled jobs lifecycle-store client dropped",
-      );
+      onClientError: (err, phase) => {
+        this.log.warn(
+          { event: "jobs.lifecycle.pool_error", phase, err },
+          "pooled jobs lifecycle-store client dropped",
+        );
+      },
     });
   }
 
@@ -272,73 +268,70 @@ export class JobsLifecycleStore implements JobsLifecycleApplier {
     // generation at all throws here, with no client checked out and nothing
     // acquired — never between the pool's acquire and its release.
     const deliveredGeneration = canonicalGeneration(update.generation);
-    const client = await pool.connect();
-    let result: JobsLifecycleApplyResult;
-    try {
+    // The checkout window is withJobsClient's (the same lesson the edge's
+    // partition helper encodes): a mid-apply socket death is recorded on the
+    // client — destroyed on release, never parked back — while the awaited
+    // query's own rejection reaches the catch below, rolls the unit back and
+    // answers the route's retryable unavailability.
+    return withJobsClient(pool, async (client) => {
       await client.query("BEGIN");
-      // Make the row exist, then judge against what was there: the insert's
-      // row count says whether the app was unknown (the delivery IS the new
-      // state) or the row predate the delivery (merge against it). The
-      // FOR UPDATE on the existing row is the serialization point against
-      // admissions and any other delivery for this app.
-      const inserted = await client.query(
-        `INSERT INTO ${JOBS_APP_LIFECYCLE_QUALIFIED} (app_id, generation, archived)
-           VALUES ($1, $2, $3)
-         ON CONFLICT (app_id) DO NOTHING`,
-        [appId, deliveredGeneration, update.archived],
-      );
-      if ((inserted.rowCount ?? 0) === 1) {
-        result = { appliedGeneration: deliveredGeneration, changed: true };
-      } else {
-        const current = await client.query<{
-          generation: string;
-          archived: boolean;
-        }>(
-          `SELECT generation, archived
-               FROM ${JOBS_APP_LIFECYCLE_QUALIFIED}
-              WHERE app_id = $1
-            FOR UPDATE`,
-          [appId],
-        );
-        const row = current.rows[0];
-        if (!row) {
-          throw new Error(
-            `the app lifecycle row for "${appId}" vanished inside its own transaction`,
-          );
-        }
-        const merged = mergeLifecycleUpdate(
-          { generation: row.generation, archived: row.archived },
-          update,
-        );
-        if (merged.changed) {
-          await client.query(
-            `UPDATE ${JOBS_APP_LIFECYCLE_QUALIFIED}
-                SET generation = $2, archived = $3
-              WHERE app_id = $1`,
-            [appId, merged.state.generation, merged.state.archived],
-          );
-        }
-        result = { appliedGeneration: merged.state.generation, changed: merged.changed };
-      }
-      await client.query("COMMIT");
-    } catch (error) {
-      // A failed unit is rolled back so no aborted transaction is returned to
-      // the pool; a rollback that itself failed leaves the connection's state
-      // unknown, so it is destroyed instead of reused (the original failure is
-      // the one the caller sees either way).
-      let rollbackFailed = false;
       try {
-        await client.query("ROLLBACK");
-      } catch {
-        rollbackFailed = true;
+        // Make the row exist, then judge against what was there: the insert's
+        // row count says whether the app was unknown (the delivery IS the new
+        // state) or the row predate the delivery (merge against it). The
+        // FOR UPDATE on the existing row is the serialization point against
+        // admissions and any other delivery for this app.
+        const inserted = await client.query(
+          `INSERT INTO ${JOBS_APP_LIFECYCLE_QUALIFIED} (app_id, generation, archived)
+             VALUES ($1, $2, $3)
+           ON CONFLICT (app_id) DO NOTHING`,
+          [appId, deliveredGeneration, update.archived],
+        );
+        let result: JobsLifecycleApplyResult;
+        if ((inserted.rowCount ?? 0) === 1) {
+          result = { appliedGeneration: deliveredGeneration, changed: true };
+        } else {
+          const current = await client.query<{
+            generation: string;
+            archived: boolean;
+          }>(
+            `SELECT generation, archived
+                 FROM ${JOBS_APP_LIFECYCLE_QUALIFIED}
+                WHERE app_id = $1
+              FOR UPDATE`,
+            [appId],
+          );
+          const row = current.rows[0];
+          if (!row) {
+            throw new Error(
+              `the app lifecycle row for "${appId}" vanished inside its own transaction`,
+            );
+          }
+          const merged = mergeLifecycleUpdate(
+            { generation: row.generation, archived: row.archived },
+            update,
+          );
+          if (merged.changed) {
+            await client.query(
+              `UPDATE ${JOBS_APP_LIFECYCLE_QUALIFIED}
+                  SET generation = $2, archived = $3
+                WHERE app_id = $1`,
+              [appId, merged.state.generation, merged.state.archived],
+            );
+          }
+          result = { appliedGeneration: merged.state.generation, changed: merged.changed };
+        }
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        // A failed unit is rolled back so no aborted transaction is returned
+        // to the pool. On a dead socket the ROLLBACK itself rejects through
+        // pg's handleError — the same death the client-level listener
+        // recorded — and the release below destroys that client.
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
       }
-      client.release(
-        rollbackFailed ? (error instanceof Error ? error : new Error(String(error))) : undefined,
-      );
-      throw error;
-    }
-    client.release();
-    return result;
+    });
   }
 }
 

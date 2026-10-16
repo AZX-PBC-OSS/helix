@@ -2,11 +2,13 @@ import { readFileSync } from "node:fs";
 import { installGracefulShutdown, resolveServicePort } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
+import { JobsAcceptanceStore } from "./acceptance.js";
 import { JobsInstructionBurns } from "./burns.js";
 import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
 import { JobsLifecycleStore } from "./lifecycle.js";
+import { JobsRunner } from "./runner.js";
 import type { JobsStorageLogger } from "./storage.js";
 import { JobsStorage } from "./storage.js";
 
@@ -93,6 +95,24 @@ const lifecycle = new JobsLifecycleStore({
   log: lateLog,
 });
 
+// The runtime runner — the one pg-boss instance, whose supervised start
+// converges once the store is usable. Its enqueue rides the acceptance
+// transaction; execution registers on the same instance.
+const runner = new JobsRunner({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  log: lateLog,
+});
+
+// The acceptance store — the durable retry identity and the transaction that
+// commits the wrapper record with the runner's enqueue (ADR-0003).
+const admission = new JobsAcceptanceStore({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  enqueuer: runner.enqueuer,
+  log: lateLog,
+});
+
 const app = buildApp({
   storage,
   instructions: createJobsInstructionAuth({
@@ -102,15 +122,19 @@ const app = buildApp({
     log: lateLog,
   }),
   lifecycle,
+  admission,
 });
 logRef.current = app.log;
 
 // The health-first boot contract: the listener comes up before the store is
 // usable, `/health` reports the store's state honestly while the bounded
-// retries continue, and shutdown releases what startup acquired — the sweep
-// timer and pool, the probes' timer and pool, the lifecycle pool, then the
+// retries continue, and shutdown releases what startup acquired — the runner
+// instance and its retry timer, the acceptance store's pool, the lifecycle
+// pool, the sweep timer and pool, the probes' timer and pool, then the
 // telemetry flush (ADR-0009).
 app.addHook("onClose", async () => {
+  await runner.stop();
+  await admission.stop();
   await lifecycle.stop();
   await burns.stop();
   await storage.stop();
@@ -128,6 +152,8 @@ try {
   storage.start();
   burns.start();
   lifecycle.start();
+  runner.start();
+  admission.start();
   await app.listen({ port, host });
   app.log.info(
     {
@@ -143,9 +169,12 @@ try {
 } catch (err) {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
-  // storage.start(), burns.start() and lifecycle.start() have already
-  // acquired their pools; release them here, not only on the shutdown path,
-  // bounded by each pool's own connect timeout.
+  // storage.start(), burns.start(), lifecycle.start(), runner.start() and
+  // admission.start() have already acquired their resources; release them
+  // here, not only on the shutdown path, bounded by each pool's own connect
+  // timeout.
+  await runner.stop();
+  await admission.stop();
   await lifecycle.stop();
   await burns.stop();
   await storage.stop();

@@ -553,6 +553,8 @@ describe("the production boot path", () => {
 
 describe("signed instructions through the running process", () => {
   const slow = { timeout: 180_000 };
+  /** The instruction legs' app — the identity the submissions and the lifecycle delivery share. */
+  const LIFECYCLE_APP = "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f";
 
   /** Mint one submit instruction against the child's own roots, right now. */
   async function mintSubmit(idempotencyKey: string | null): Promise<string> {
@@ -591,34 +593,101 @@ describe("signed instructions through the running process", () => {
     return { status: res.status, body: await res.json() };
   }
 
+  interface AcceptedBody {
+    server: string;
+    jobId: string;
+    status: string;
+  }
+
+  /**
+   * Deliver the app's open generation through the real lifecycle route — the
+   * portal's half of the assembly the submission gate is judged against. An
+   * app whose generation was never delivered answers every submission with
+   * the retryable unseen refusal (ADR-0007), so the instruction legs open
+   * generation 1 the same way the portal's sender does: a separately signed
+   * instruction, applied before it is acknowledged.
+   */
+  async function deliverOpenGeneration(port: number): Promise<void> {
+    const body = '{"generation":"1","archived":false}';
+    const token = await mintJobsInstruction(
+      {
+        operation: "lifecycle",
+        server: "jobs",
+        appId: LIFECYCLE_APP,
+        body: new TextEncoder().encode(body),
+        iatS: Math.floor(Date.now() / 1000) - 1,
+      },
+      deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+    );
+    const res = await fetch(
+      `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${LIFECYCLE_APP}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", [INSTRUCTION_HEADER]: token },
+        body,
+      },
+    );
+    expect(res.status).toBe(200);
+  }
+
+  /**
+   * Submit with fresh instructions (the same retry identity) until the
+   * acceptance commits — the client's own recovery loop over the retryable
+   * answers. The 503s on the way are real: the runner's supervised start
+   * converges in the background after the store verifies, and each refused
+   * attempt's instruction was consumed by the burn, so every try mints a
+   * fresh token. A bounded budget fails the leg naming the last answer.
+   */
+  async function submitUntilAccepted(port: number): Promise<{ body: AcceptedBody; token: string }> {
+    const deadline = Date.now() + 60_000;
+    let last: { status: number; body: unknown } | null = null;
+    let token: string;
+    while (Date.now() < deadline) {
+      token = await mintSubmit("retry-key-1");
+      last = await submit(port, token);
+      if (last.status === 202) return { body: last.body as AcceptedBody, token };
+      if (last.status !== 503) break; // a refusal that is not retryable ends the loop
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error(
+      `the submission never committed within its budget — last answer: ${JSON.stringify(last)}`,
+    );
+  }
+
   test(
-    "a valid instruction reaches its operation; its replay is refused across a receiver restart; a fresh token carries the same retry identity",
+    "a valid instruction reaches its operation; its replay is refused across a receiver restart; a fresh token carrying the same retry identity recovers the same job",
     slow,
     async () => {
       const port = await reservePort();
       // The scratch store migrates first: the leg needs a READY receiver —
       // the boot/recovery legs above cover the unhealthy paths.
       await migrateJobsStorage(MIGRATE_DSN);
-      const token = await mintSubmit("retry-key-1");
       let child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      let accepted: AcceptedBody;
+      let acceptedToken: string;
       try {
         await eventually(async () => {
           const body = await pollHealth(port, 10_000);
           return HealthStatusSchema.parse(body).status === "ok";
         }, 30_000);
 
-        // Accepted: the operation's placeholder answers the protocol's
-        // retryable unavailable error — the instruction was verified and its
-        // nonce burned, and nothing pretended to have served a job.
-        const first = await submit(port, token);
-        expect(first.status).toBe(503);
-        expect(first.body).toEqual({
-          code: "jobs_unavailable",
-          message: JobErrorMessages.jobs_unavailable,
-        });
+        // The portal's delivery opens the app's generation; the acceptance
+        // gate refuses every submission before it with the retryable
+        // unseen answer.
+        await deliverOpenGeneration(port);
+
+        // Accepted: the operation is served — the acceptance transaction
+        // commits the wrapper record and the runner enqueue together, and
+        // the answer is the job's durable reference.
+        const result = await submitUntilAccepted(port);
+        accepted = result.body;
+        acceptedToken = result.token;
+        expect(accepted.server).toBe("jobs");
+        expect(accepted.status).toBe("queued");
+        expect(typeof accepted.jobId).toBe("string");
 
         // The transport replay — the same token, re-presented — is refused.
-        const replay = await submit(port, token);
+        const replay = await submit(port, acceptedToken);
         expect(replay.status).toBe(401);
         expect(replay.body).toEqual({
           code: "unauthorized",
@@ -630,7 +699,10 @@ describe("signed instructions through the running process", () => {
       }
 
       // A restarted receiver against the same durable store still refuses
-      // the replay: the burn outlives the process.
+      // the replay: the burn outlives the process. And a fresh token
+      // carrying the same legitimate retry identity RECOVERS the original
+      // job — the lost-reply path of the retry-identity contract, across a
+      // restart, with the same reference and no second job.
       const restartedPort = await reservePort();
       child = await bootServer(restartedPort, childEnv(RUNTIME_DSN, restartedPort));
       try {
@@ -638,13 +710,123 @@ describe("signed instructions through the running process", () => {
           const body = await pollHealth(restartedPort, 10_000);
           return HealthStatusSchema.parse(body).status === "ok";
         }, 30_000);
-        const replayAfterRestart = await submit(restartedPort, token);
+        const replayAfterRestart = await submit(restartedPort, acceptedToken);
         expect(replayAfterRestart.status).toBe(401);
 
-        // A fresh token carrying the same legitimate retry identity is
-        // accepted — the retry key is a different mechanism from the nonce.
-        const fresh = await submit(restartedPort, await mintSubmit("retry-key-1"));
-        expect(fresh.status).toBe(503);
+        const recovered = await submit(restartedPort, await mintSubmit("retry-key-1"));
+        expect(recovered.status).toBe(202);
+        expect(recovered.body).toEqual(accepted);
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
+  test(
+    "a submission for a generation the portal has not delivered is answered by the retryable unseen refusal until the delivery opens it",
+    slow,
+    async () => {
+      // The unseen half of criterion 19 end to end: the client's recovery loop
+      // keys on the 503 — "uncertainty, not nonacceptance" — so the running
+      // process must answer a real signed submit for an undelivered generation
+      // with 503 `jobs_unavailable` (never a final 403/400 that would teach the
+      // client to give up or fix the wrong thing), the same retry identity must
+      // be claimable again after the refusal, and the portal's delivery must
+      // open the generation so the next identical submission commits. The
+      // acceptance gate's unseen verdict and the route's retryable mapping are
+      // pinned separately against the real store and the memory double; this
+      // leg drives their composition through the real receiver and process.
+      // The app id is this leg's own — the shared scratch store's deliveries
+      // for the other legs' app must not open this gate early.
+      const unseenApp = randomUUID();
+      const mintForUnseenApp = (idempotencyKey: string): Promise<string> =>
+        mintJobsInstruction(
+          {
+            operation: "submit",
+            server: "jobs",
+            identity: {
+              appId: unseenApp,
+              env: "prod",
+              ownerKind: "user",
+              ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+              allowedTypes: ["jobs:fetch"],
+            },
+            type: "jobs:fetch",
+            generation: "1",
+            idempotencyKey,
+            body: new TextEncoder().encode('{"url":"https://example.com/data.json"}'),
+            iatS: Math.floor(Date.now() / 1000) - 1,
+          },
+          deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+        );
+      const submitUnseenApp = async (token: string): Promise<{ status: number; body: unknown }> => {
+        const res = await fetch(`http://127.0.0.1:${port}/internal/jobs/v1/jobs`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [INSTRUCTION_HEADER]: token,
+            [IDEMPOTENCY_KEY_HEADER]: "unseen-app-key",
+          },
+          body: '{"url":"https://example.com/data.json"}',
+        });
+        return { status: res.status, body: await res.json() };
+      };
+
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        // The app is not known to this server: the retryable answer, twice —
+        // each with a fresh token (every refusal consumed the nonce) and the
+        // same retry identity, which must stay unclaimed.
+        const first = await submitUnseenApp(await mintForUnseenApp("unseen-app-key"));
+        expect(first.status).toBe(503);
+        expect(first.body).toEqual({
+          code: "jobs_unavailable",
+          message: JobErrorMessages.jobs_unavailable,
+        });
+        const second = await submitUnseenApp(await mintForUnseenApp("unseen-app-key"));
+        expect(second.status).toBe(503);
+        expect(second.body).toEqual({
+          code: "jobs_unavailable",
+          message: JobErrorMessages.jobs_unavailable,
+        });
+
+        // The portal's delivery opens the generation for THIS app; the next
+        // identical submission under the same retry identity commits — the
+        // refusals claimed nothing.
+        const body = '{"generation":"1","archived":false}';
+        const delivery = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${unseenApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: unseenApp,
+                  body: new TextEncoder().encode(body),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body,
+          },
+        );
+        expect(delivery.status).toBe(200);
+
+        const accepted = await submitUnseenApp(await mintForUnseenApp("unseen-app-key"));
+        expect(accepted.status).toBe(202);
+        expect(accepted.body).toMatchObject({ server: "jobs", status: "queued" });
       } finally {
         const exit = await stopServer(child);
         expect(exit.exitCode).toBe(0);
@@ -697,7 +879,6 @@ describe("signed instructions through the running process", () => {
     slow,
     async () => {
       const port = await reservePort();
-      const LIFECYCLE_APP = "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f";
 
       /** Mint one lifecycle instruction against the child's own portal root, right now. */
       const mintLifecycle = async (body: string): Promise<string> =>

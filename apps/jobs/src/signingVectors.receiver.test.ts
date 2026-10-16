@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { IDEMPOTENCY_KEY_HEADER, INSTRUCTION_HEADER } from "@azx-pbc/shared";
+import { JOBS_SUBMIT_OUTCOMES } from "@azx-pbc/shared/telemetry";
 import {
   deriveJobsInstructionKey,
   JobsOperations,
@@ -21,7 +22,7 @@ import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telem
 import { buildApp } from "./app.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
 import { JobsStorage } from "./storage.js";
-import { MemoryBurns, MemoryLifecycle } from "./test/instructions.js";
+import { MemoryAdmission, MemoryBurns, MemoryLifecycle } from "./test/instructions.js";
 
 /** One ended span, as the recording hands them over. */
 type RecordedSpan = ReturnType<RecordingTelemetry["spans"]>[number];
@@ -111,7 +112,12 @@ function receiverFor(server: string, operation: JobsOperationName, keyId: string
   });
   storage.start();
   const lifecycle = new MemoryLifecycle();
-  const app = buildApp({ storage, instructions: auth, lifecycle });
+  const app = buildApp({
+    storage,
+    instructions: auth,
+    lifecycle,
+    admission: new MemoryAdmission(),
+  });
   const receiver: Receiver = { app, storage, clock, burns, lifecycle };
   RECEIVERS.set(cacheKey, receiver);
   return receiver;
@@ -140,6 +146,9 @@ function lastSpan(): RecordedSpan | undefined {
  */
 const OPERATION_COMPLETION_OUTCOMES: Record<string, readonly string[]> = {
   "helix.jobs.lifecycle": ["applied", "stale"],
+  // Every outcome the submit operation can decide is post-verification: the
+  // receiver refused reject vectors long before the admission ran.
+  "helix.jobs.submit": [...JOBS_SUBMIT_OUTCOMES],
 };
 
 function conformant(

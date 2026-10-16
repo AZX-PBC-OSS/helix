@@ -93,11 +93,11 @@ describe("the routes' body binding under media types the receiver cannot bind", 
   });
 
   test("the platform input bound refuses a body over JOBS_MAX_INPUT_BYTES whatever media type carries it", async () => {
-    // The bound rides the application/json parser; a text/plain body is
-    // parsed by Fastify's built-in parser under the instance default (1 MiB),
-    // so the same-size body the JSON pin answers 413 is here parsed into the
-    // handler. Equal bodies on one route get one refusal: 413
-    // payload_too_large, before anything is verified.
+    // The bound rides both bounded parsers: a text/plain body meets the
+    // service's own capture-nothing parser at the same JOBS_MAX_INPUT_BYTES
+    // limit, so the same-size body the JSON pin answers 413 is refused here
+    // too — equal bodies on one route get one refusal: 413 payload_too_large,
+    // before anything is verified.
     const receiver = makeReceiver();
     const { app, storage } = await appWithReceiver(receiver);
     try {
@@ -300,7 +300,11 @@ describe("the routes' body binding under media types the receiver cannot bind", 
     // that carried exactly zero bytes. If the advertisement check were
     // tightened to read '0' as a body, honest empty presentations would be
     // refused — the line the unbindable-body refusal stands on is
-    // 'advertised and carried', not 'mentioned'.
+    // 'advertised and carried', not 'mentioned'. The nonce is spent (the
+    // instruction verified) and the operation runs — what it decides about
+    // zero bytes is the admission's seam, pinned with the real store in
+    // `acceptance.integration.test.ts`; this in-memory seam answers its
+    // canned acceptance.
     const receiver = makeReceiver();
     const { app, storage } = await appWithReceiver(receiver);
     try {
@@ -314,11 +318,8 @@ describe("the routes' body binding under media types the receiver cannot bind", 
           [INSTRUCTION_HEADER]: token,
         },
       });
-      expect(res.statusCode).toBe(503);
-      expect(res.json()).toEqual({
-        code: "jobs_unavailable",
-        message: JobErrorMessages.jobs_unavailable,
-      });
+      expect(res.statusCode).toBe(202);
+      expect(res.headers["cache-control"]).toBe("no-store");
       expect(receiver.burns.seen.size).toBe(1);
     } finally {
       await app.close();

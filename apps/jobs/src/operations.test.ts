@@ -9,6 +9,7 @@ import {
   appWithReceiver,
   instructionHeaders,
   makeReceiver,
+  MemoryAdmission,
   mint,
   MemoryLifecycle,
   storageIn,
@@ -41,8 +42,8 @@ const UNAUTHORIZED_BODY = {
 
 async function readyApp() {
   const receiver = makeReceiver();
-  const { app, storage } = await appWithReceiver(receiver);
-  return { receiver, app, storage };
+  const { app, storage, admission } = await appWithReceiver(receiver);
+  return { receiver, app, storage, admission };
 }
 
 async function close(app: Awaited<ReturnType<typeof readyApp>>["app"], storage: unknown) {
@@ -51,8 +52,8 @@ async function close(app: Awaited<ReturnType<typeof readyApp>>["app"], storage: 
 }
 
 describe("the signed operation routes", () => {
-  test("a valid submit instruction reaches its operation, answered 503 with the protocol's retryable error", async () => {
-    const { app, storage } = await readyApp();
+  test("a valid submit instruction reaches its operation and is answered 202 with the accepted reference", async () => {
+    const { app, storage, admission } = await readyApp();
     try {
       const token = await mint(submitSpec());
       const res = await app.inject({
@@ -61,9 +62,90 @@ describe("the signed operation routes", () => {
         headers: { ...JSON_HEADERS, ...instructionHeaders(token, "retry-key-1") },
         payload: TEST_BODY,
       });
-      expect(res.statusCode).toBe(503);
+      expect(res.statusCode).toBe(202);
       expect(res.headers["cache-control"]).toBe("no-store");
-      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      // The admission's own outcome, mapped onto the wire: the accepted
+      // reference — server, job id, status — and nothing else.
+      expect(res.json()).toEqual({
+        server: "jobs",
+        jobId: TEST_JOB_ID,
+        status: "queued",
+      });
+      // The route served the operation with what the receiver verified: the
+      // admission decided on those claims and those exact bytes.
+      expect(admission.calls).toBe(1);
+      expect(admission.lastRequest?.claims.type).toBe("jobs:fetch");
+      expect(admission.lastRequest?.claims.generation).toBe("7");
+      expect(new TextDecoder().decode(admission.lastRequest?.body)).toBe(TEST_BODY);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("the admission's refusals map onto the protocol's fixed responses", async () => {
+    const { app, storage, admission } = await readyApp();
+    try {
+      const cases = [
+        {
+          outcome: { outcome: "conflict", status: "queued", error: null },
+          status: 409,
+          body: {
+            code: "idempotency_conflict",
+            message: JobErrorMessages.idempotency_conflict,
+            status: "queued",
+            error: null,
+          },
+        },
+        {
+          outcome: { outcome: "invalid_input" },
+          status: 400,
+          body: { code: "payload_invalid", message: JobErrorMessages.payload_invalid },
+        },
+        {
+          outcome: { outcome: "type_unknown" },
+          status: 403,
+          body: { code: "forbidden", message: JobErrorMessages.forbidden },
+        },
+        {
+          outcome: { outcome: "closed" },
+          status: 403,
+          body: { code: "forbidden", message: JobErrorMessages.forbidden },
+        },
+        {
+          outcome: { outcome: "unseen" },
+          status: 503,
+          body: UNAVAILABLE_BODY,
+        },
+      ] as const;
+      for (const c of cases) {
+        admission.outcome = c.outcome;
+        const res = await app.inject({
+          method: "POST",
+          url: "/internal/jobs/v1/jobs",
+          headers: {
+            ...JSON_HEADERS,
+            ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+          },
+          payload: TEST_BODY,
+        });
+        expect(res.statusCode, c.outcome.outcome).toBe(c.status);
+        expect(res.headers["cache-control"], c.outcome.outcome).toBe("no-store");
+        expect(res.json(), c.outcome.outcome).toEqual(c.body);
+      }
+      // An admission the store could not decide is the retryable
+      // unavailability — never a fabricated acceptance or refusal.
+      admission.failAdmits = true;
+      const failed = await app.inject({
+        method: "POST",
+        url: "/internal/jobs/v1/jobs",
+        headers: {
+          ...JSON_HEADERS,
+          ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+        },
+        payload: TEST_BODY,
+      });
+      expect(failed.statusCode).toBe(503);
+      expect(failed.json()).toEqual(UNAVAILABLE_BODY);
     } finally {
       await close(app, storage);
     }
@@ -251,7 +333,7 @@ describe("the signed operation routes", () => {
         headers: present,
         payload: TEST_BODY,
       });
-      expect(first.statusCode).toBe(503); // accepted, placeholder-served
+      expect(first.statusCode).toBe(202); // accepted, served
 
       const replay = await app.inject({
         method: "POST",
@@ -273,7 +355,7 @@ describe("the signed operation routes", () => {
         },
         payload: TEST_BODY,
       });
-      expect(retry.statusCode).toBe(503);
+      expect(retry.statusCode).toBe(202);
     } finally {
       await close(app, storage);
     }
@@ -351,7 +433,7 @@ describe("the signed operation routes", () => {
         headers: { ...JSON_HEADERS, ...instructionHeaders(token, "retry-key-1") },
         payload: TEST_BODY,
       });
-      expect(retried.statusCode).toBe(503); // accepted on the retry
+      expect(retried.statusCode).toBe(202); // accepted on the retry
     } finally {
       await close(app, storage);
     }
@@ -482,6 +564,34 @@ describe("the signed operation routes", () => {
     }
   });
 
+  test("a body of exactly the platform input bound is served — the bound includes 65,536 bytes", async () => {
+    // The wire contract's boundary is inclusive: exactly JOBS_MAX_INPUT_BYTES
+    // is within the limit and the byte above is not. A stricter comparison at
+    // the transport would answer 413 here instead of serving the request.
+    const { app, storage, admission } = await readyApp();
+    try {
+      const base = '{"url":"https://example.com/';
+      const body = `${base}${"p".repeat(JOBS_MAX_INPUT_BYTES - base.length - 2)}"}`;
+      expect(new TextEncoder().encode(body)).toHaveLength(JOBS_MAX_INPUT_BYTES);
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/jobs/v1/jobs",
+        headers: {
+          ...JSON_HEADERS,
+          ...instructionHeaders(
+            await mint(submitSpec({ body: new TextEncoder().encode(body) })),
+            "retry-key-1",
+          ),
+        },
+        payload: body,
+      });
+      expect(res.statusCode).toBe(202);
+      expect(admission.calls).toBe(1);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
   test("a body the receiver cannot bind is never served — a valid instruction over a captured-nothing body still fails", async () => {
     // A media type the service parses without capturing (text/plain, replaced
     // with a bounded parser that captures nothing) hands the route a body with
@@ -556,7 +666,12 @@ describe("the signed operation routes", () => {
     const receiver = makeReceiver();
     const lifecycle = new MemoryLifecycle();
     const storage = await storageIn("unavailable");
-    const app = buildApp({ storage, instructions: receiver.auth, lifecycle });
+    const app = buildApp({
+      storage,
+      instructions: receiver.auth,
+      lifecycle,
+      admission: new MemoryAdmission(),
+    });
     try {
       const token = await mint({
         operation: "lifecycle",

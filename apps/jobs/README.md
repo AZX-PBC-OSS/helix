@@ -9,8 +9,9 @@ shared health vocabulary, and the signed internal operation receiver: every
 edge→jobs and portal→jobs instruction is verified and its nonce durably burned
 before its operation runs. The operations' own semantics land in their own
 tickets and compose from here — lifecycle delivery (the app-generation
-authority's apply-before-acknowledge receiver, `src/lifecycle.ts`) is served;
-the rest answer the protocol's retryable unavailable error until their tickets
+authority's apply-before-acknowledge receiver, `src/lifecycle.ts`) and
+submission (the acceptance transaction, `src/acceptance.ts`) are served; the
+rest answer the protocol's retryable unavailable error until their tickets
 replace the placeholder, and the log line is where that gap is named.
 
 ## Signed internal operations (`src/instructionAuth.ts`, `src/app.ts`)
@@ -42,9 +43,59 @@ migration command below; the startup compatibility check reports its absence
 (`burn_missing`) rather than serving instructions against a store that cannot
 remember burns.
 
-A legitimate HTTP retry mints a fresh instruction (fresh `jti`) carrying the
-same optional retry identity — the signed `idempotencyKey` claim, compared at
-admission (a later ticket's seam), never overridden by an unsigned header.
+A legitimate HTTP retry mints a fresh instruction (fresh `jti`) carrying
+the same optional retry identity — the signed `idempotencyKey` claim, compared
+at admission (`src/acceptance.ts`), never overridden by an unsigned header.
+
+## The acceptance transaction (`src/acceptance.ts`)
+
+Submission is decided in ONE transaction against the service's private store
+(ADR-0003, design §4), in the adopted order, each precedence load-bearing:
+
+1. The app's lifecycle row is locked `FOR UPDATE` (`lifecycleEligibilityInTx`,
+   the serialization boundary from `src/lifecycle.ts`) — held to the
+   transaction's end, so a lifecycle apply cannot land between the decision
+   and its effect and same-app admissions cannot interleave.
+2. The **retained-key comparison** — the scoped retry key
+   (`server/appId/env/ownerKind/ownerOid/type/key`, unique-constrained) is
+   looked up and its stored digest compared against the exact input bytes,
+   BEFORE new-input validation and BEFORE the eligibility verdict is applied:
+   identical bytes recover the original job (202 with its current status) even
+   when validation rules have since changed or intake has closed; different
+   bytes answer 409 `idempotency_conflict` with the job's state, even when
+   they are invalid for new work. Neither answer creates work or consumes a
+   slot.
+3. New-work validation — the type's installed policy (a type this server has
+   no policy for is refused 403) and its input contract (refused 400
+   `payload_invalid`), creating no job and no key claim.
+4. The eligibility verdict — `closed` refuses new work finally (403);
+   `unseen` waits for the portal's delivery (retryable 503), never auto-opening
+   a generation.
+5. The runner enqueue over the **borrowed connection** (pg-boss's public
+   `db.executeSql` adapter — the runner row joins the transaction), then the
+   wrapper record insert into `jobs.job_record`: the immutable attribution,
+   the admitted generation, the status projection (`queued` at admission),
+   the retry key and the body digest. The scoped-key unique constraint is the
+   concurrent-retry backstop; a claim lost to it rolls the already-enqueued
+   runner job back with the transaction, and the retry identity resolves
+   against the winner's committed mapping.
+
+A failure anywhere throws: nothing is committed, and the submit route answers
+the protocol's retryable 503 — a timeout is uncertainty, never proof of
+nonacceptance; the same keyed POST recovers the committed job. The send-time
+options are the type's installed policy (attempts, claim bound) and the
+trusted `(appId, env)` fairness group (`jobsAppEnvGroupId`).
+
+## The runtime runner (`src/runner.ts`)
+
+The one pg-boss instance the service composes — the enqueue half today,
+execution registration later. Its start is supervised and health-first: the
+instance's own start is a read-only schema check (`migrate: false`) that
+refuses a missing or behind schema, so the runner retries with capped backoff
+until the store verifies, logging each failed attempt; until it converges the
+enqueue refuses (retryable unavailability), which is honest — nothing can be
+durably enqueued into a store that has not come up. Shutdown stops the runner
+first, then the stores — the acceptance store's pool among them.
 
 ## The app-lifecycle authority (`src/lifecycle.ts`)
 
@@ -123,23 +174,25 @@ It refuses a DSN whose role holds no CREATE on the database (the runtime
 DSN's shape), installs or migrates the pg-boss schema, creates the platform
 queue with the policy above, converges policy drift that pg-boss can update
 (failing on drift fixed at queue creation), creates the instruction burn
-store (schema `jobs`, table `instruction_burns`, its `burn_until` index) and
-the app-lifecycle store (table `app_lifecycle`), grants the runtime role DML
+store (schema `jobs`, table `instruction_burns`, its `burn_until` index), the
+app-lifecycle store (table `app_lifecycle`) and the job-record store (table
+`job_record`, the retry namespace's unique constraint and the public-status
+check), grants the runtime role DML
 on all of it — provisioning sets no default privileges, so grants arrive by
 migration — and verifies the effective state by re-reading it. Later
-jobs-owned migrations (the wrapper tables and their grants) extend this
-command the same way: a step under the migration identity, after the schema
-they depend on exists.
+jobs-owned migrations extend this command the same way: a step under the
+migration identity, after the schema they depend on exists.
 
 ## Startup compatibility check (`src/compat.ts`)
 
 `checkJobsStorageCompatibility(pool)` answers, read-only, whether the
 runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, the instruction
-burn store and the app-lifecycle store present, and the runtime identity
-holding its DML. The verdict union (`compatible`, `unreachable`,
-`schema_missing`, `schema_version`, `queue_missing`, `queue_policy`,
-`burn_missing`, `lifecycle_missing`, `runtime_privileges`) is what the
+burn store, the app-lifecycle store and the job-record store present, and the
+runtime identity holding its DML. The verdict union (`compatible`,
+`unreachable`, `schema_missing`, `schema_version`, `queue_missing`,
+`queue_policy`, `burn_missing`, `lifecycle_missing`, `record_missing`,
+`runtime_privileges`) is what the
 storage supervisor and health reporting consume; the expected schema version
 is read from the installed pg-boss package, so a catalog bump moves the
 expectation with the dependency.
@@ -164,13 +217,31 @@ verified and later dies degrades the same way.
   listens; the roots derive to their direction keys at boot, so a malformed
   one stops the process, not the first instruction.
 - **Shutdown releases what startup acquired.** The `onClose` hook stops the
-  supervisor (awaiting any in-flight probe, ending the pool) and flushes
-  telemetry; the graceful-shutdown install bounds the drain.
+  runner (its retry timer and instance) first, then every store's pool — the
+  acceptance store, the lifecycle store, the burn store's sweep timer, the
+  storage supervisor's probe timer — and flushes telemetry; the
+  graceful-shutdown install bounds the drain.
 - **Probes are counted.** Every probe emits `helix.jobs.storage.probes`
   with `outcome` ∈ {`ok`, `unavailable`} — the retries an outage absorbs are
   visible; the _reason_ rides the `jobs_database` check body and the
   `jobs.storage.unavailable` log event. Telemetry stays inert unless an OTLP
   endpoint is configured, and the service's behavior is identical without it.
+
+## Pooled clients (`src/pool.ts`)
+
+Every jobs store builds its pool through `createJobsPool` and checks clients
+out only through `withJobsClient` — the edge's and egress's pooled-client
+discipline (`apps/edge/src/db/pool.ts`), copied after this service
+reproduced the hazard the pattern exists to prevent: pg-pool strips a
+checked-out client's `'error'` listener and pg emits `'error'` synchronously
+on a socket death, so a failover landing mid-transaction used to kill the
+process before the store's own rejection could run. The bracket records the
+death, releases exactly once, destroys the dead client on release, and the
+store's failure contract answers the caller with the retryable 503. The
+pool-level listener covers idle clients only, and every `pool_error` log
+event carries `phase` ∈ {`idle`, `checked-out`}. Bare `pool.connect()` is
+banned for this service by `eslint.config.mjs`; `src/pool.ts` holds the one
+sanctioned checkout.
 
 Development (the two roots are any independently generated base64 32-byte
 secrets — `openssl rand -base64 32` — and the local IdP/edge tooling may
@@ -185,10 +256,11 @@ JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… \
 
 The listener serves `/health` and the five signed internal operation routes
 (verification + durable burn). The lifecycle route serves the portal's
-delivery (the app-lifecycle authority above); the other operations' semantics
-arrive with their own tickets and answer 503 `jobs_unavailable` until then —
-an unmatched request answers 503 `jobs_unavailable` while the store is
-unusable, 404 on a ready service.
+delivery (the app-lifecycle authority above) and the submit route serves the
+acceptance transaction (above); the other operations' semantics arrive with
+their own tickets and answer 503 `jobs_unavailable` until then — an unmatched
+request answers 503 `jobs_unavailable` while the store is unusable, 404 on a
+ready service.
 
 ## Development
 

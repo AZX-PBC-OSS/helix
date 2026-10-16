@@ -50,6 +50,10 @@ const [POOL_CONNECT_IDENT, POOL_CONNECT_FIELD] = poolConnectSelectors(POOL_CONNE
 const [EGRESS_POOL_CONNECT_IDENT, EGRESS_POOL_CONNECT_FIELD] = poolConnectSelectors(
   EGRESS_POOL_CONNECT_MESSAGE,
 );
+const JOBS_POOL_CONNECT_MESSAGE =
+  "Bare `pool.connect()`: pg-pool REMOVES the client's 'error' listener for the duration of a checkout (_acquireClient), and pg emits 'error' SYNCHRONOUSLY on a socket death while deferring the query rejection to nextTick — so a mid-transaction connection drop is an unhandled 'error' event that kills the jobs service before your `await client.query()` ever rejects and the route's retryable unavailability can run (reproduced on this service: a Postgres failover would crash-loop the plane that hosts background jobs). Use `withJobsClient` (apps/jobs/src/pool.ts — the acceptance transaction, the lifecycle apply and the compat check are its consumers) or `Pool.query()` (it plugs its own temporary handler for the window), and build pools through `createJobsPool` (apps/jobs/src/pool.ts) so every pool carries the per-query `statement_timeout` and the idle-error listener.";
+const [JOBS_POOL_CONNECT_IDENT, JOBS_POOL_CONNECT_FIELD] =
+  poolConnectSelectors(JOBS_POOL_CONNECT_MESSAGE);
 
 const URL_ATTR_MESSAGE =
   "This is a span/metric attribute key that carries a WHOLE URL (ADR-0037 decision 6). Several platform URLs carry a live credential in the query string — the Appendix A handoff `token`, the OIDC `code`, and (uncoverable by any name list) the fetch-proxy target's own query, which may hold an app's API key or an Azure SAS `sig` — and a span attribute lands in the same 30-day-retained backend a log line does. Record `url.path` and `http.route` instead, and put anything URL-shaped through `redactUrl` (@azx-pbc/shared/logging) first. The list lives in FORBIDDEN_URL_ATTRS (@azx-pbc/shared/telemetry).";
@@ -235,10 +239,22 @@ export default defineConfig([
     // PROPAGATION_EXTRACT ban here by design: background-jobs-plane §9 permits
     // jobs to extract trace context only AFTER an internal caller
     // authenticates — the same shape as egress, enforced by review, not lint.
+    //
+    // The pool-connect selectors are the same guard the edge and egress blocks
+    // carry (same hole, same crash — jobs' own acceptance/lifecycle/compat
+    // checkouts were the last exposed ones, until this ban). The one sanctioned
+    // `pool.connect()` lives in apps/jobs/src/pool.ts, inside `withJobsClient`.
     files: ["apps/jobs/src/**/*.ts"],
-    ignores: ["apps/jobs/src/**/*.test.ts"],
+    ignores: ["apps/jobs/src/**/*.test.ts", "apps/jobs/src/pool.ts"],
     rules: {
-      "no-restricted-syntax": ["error", URL_ATTR_LITERAL, LOG_URL_DIRECT, LOG_URL_PROPERTY],
+      "no-restricted-syntax": [
+        "error",
+        URL_ATTR_LITERAL,
+        LOG_URL_DIRECT,
+        LOG_URL_PROPERTY,
+        JOBS_POOL_CONNECT_IDENT,
+        JOBS_POOL_CONNECT_FIELD,
+      ],
     },
   },
   {

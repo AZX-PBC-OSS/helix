@@ -357,6 +357,44 @@ export const JOBS_LIFECYCLE_OUTCOMES = ["applied", "stale", "invalid_body", "una
 export type JobsLifecycleOutcome = (typeof JOBS_LIFECYCLE_OUTCOMES)[number];
 
 /**
+ * How the jobs service decided one submission — the final `helix.outcome` on
+ * the `helix.jobs.submit` route span (overwriting the verification verdict
+ * once the operation runs). One word, one meaning on this span: the
+ * instruction counter's `replayed` (a spent nonce) is deliberately not
+ * reused for keyed recovery.
+ *
+ * - `accepted` — new work: the runner job and its wrapper record committed
+ *   together; answered 202 with the new reference.
+ * - `recovered` — a keyed resubmission whose exact original bytes matched a
+ *   retained key: the original job's reference and current status returned,
+ *   no new work created.
+ * - `conflict` — a keyed resubmission whose bytes differ from the retained
+ *   key's original (409 `idempotency_conflict`); no work created.
+ * - `invalid_input` — new work whose input failed the type's validation
+ *   (400 `payload_invalid`); no job, no key claim.
+ * - `type_unknown` — the instruction named a qualified type this server has
+ *   no installed policy for (403 `forbidden`); no job, no key claim.
+ * - `closed` — the app's lifecycle generation is applied and archived, or
+ *   older than the applied one: new work refused 403, final.
+ * - `unseen` — the claimed generation is newer than anything the portal has
+ *   delivered (or the app is not known here): retryable 503 until the
+ *   control-plane delivery opens it (ADR-0007).
+ * - `unavailable` — the acceptance store could not answer; nothing
+ *   committed, answered with the retryable 503.
+ */
+export const JOBS_SUBMIT_OUTCOMES = [
+  "accepted",
+  "recovered",
+  "conflict",
+  "invalid_input",
+  "type_unknown",
+  "closed",
+  "unseen",
+  "unavailable",
+] as const;
+export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
+
+/**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the
  * `helix.gateway.data` span, separating the deny path from an empty result
  * (ADR-0042 decision 7). Bounded by construction: these are the authorization
