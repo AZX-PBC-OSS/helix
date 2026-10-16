@@ -190,6 +190,38 @@ on — the attempt's retry decision reads the runner row's own policy.
   recovery never authorizes execution after the deadline. The write is
   `terminatePastDeadline`, shared with the recovery sweeper.
 
+## Execution fairness (`src/policy.ts`, `src/execution.ts`)
+
+The per-process execution allowance is the platform's, never an app's: one
+pg-boss worker registration per process, its options derived once from the
+shared capacity defaults (`jobsWorkOptions` — `runningPerWorker` 8 total,
+`runningPerAppEnv` 2 per trusted `(appId, env)` group), enforced by the one
+queue all installed types share. Job inputs and manifests carry nothing that
+reaches it; the send site scopes every job to its signed identity's group
+(`jobsAppEnvGroupId`) and carries the type's own policy columns.
+
+- **One live registration per process.** pg-boss spawns a full worker set per
+  `work()` call, so a second registration on one instance would silently
+  multiply the per-process total — the thing design §6 forbids ("never let
+  each type silently receive its own full allowance"). `JobsExecution`
+  refuses a second live registration on an instance it has already registered
+  (`releaseOn` is the sanctioned release), whichever component attempts it.
+- **The measured envelope.** `src/fairness.integration.test.ts` runs the real
+  chain — real acceptance transaction, real supervised runners, real role
+  split — with holding handlers, measures the delivered concurrency from the
+  handlers themselves, and publishes one `[jobs fairness]` record per leg.
+  Observed on this repository's dev cluster (Postgres 18, one suite run):
+  one worker peaks at 8 total with every app/environment group at 2 at the
+  same time (an app's `prod` and `dev` groups each at their own 2); two
+  overlapping worker processes — the rolling-deployment shape — peak at 16
+  total and 4 per group, never more, with the database's own connection count
+  at saturation read and published alongside (25 connections in that run —
+  the figure a deployment's overlap budget must size, design §4/§8). The same
+  legs pin the distinction from transactional capacity: five jobs accepted
+  for one group (far inside the 20-per-app unfinished cap) run two at a time
+  while the rest wait queued — the binding constraint is the execution
+  allowance, not storage.
+
 ## The recovery sweeper (`src/recovery.ts`)
 
 The supervised loop that owns interruption recovery (ADR-0009): the runner's

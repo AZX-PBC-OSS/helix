@@ -561,6 +561,25 @@ export interface JobsExecutionOptions {
 }
 
 /**
+ * The live worker registrations of every {@link JobsExecution} component,
+ * per runner instance. The per-process execution allowance is the ONE worker
+ * registration's options (`jobsWorkOptions`); pg-boss spawns a full
+ * concurrency worker set per `work()` call, so a second live registration on
+ * one instance would silently multiply the per-process total the platform
+ * adopted — the exact "never let each type silently receive its own full
+ * allowance" shape (design §6). The guard at `registerOn` makes that a
+ * refused composition defect instead, whichever component attempted it.
+ *
+ * The value is the registration's own settlement, recorded synchronously
+ * before the boundary call can be awaited — the decision and its record are
+ * one step, so even overlapping registrations cannot both pass the check and
+ * land two worker sets. The record is removed only when the boundary itself
+ * refused (nothing landed); a registration that landed stays held until
+ * released, whatever its own aftermath did.
+ */
+const liveWorkerIds = new WeakMap<PgBoss, Promise<string>>();
+
+/**
  * The execution component — the worker registration the runner invokes on its
  * started instance, and the attempt wrapper every claim passes through. The
  * component owns no loop or timer of its own: the worker lives on the
@@ -602,6 +621,13 @@ export class JobsExecution {
    * worker with it).
    */
   async registerOn(boss: PgBoss): Promise<string> {
+    if (liveWorkerIds.has(boss)) {
+      throw new Error(
+        "this runner instance already holds a live worker registration — a second one " +
+          "would multiply the per-process execution allowance (a work call spawns its own " +
+          "full worker set); release the current registration first",
+      );
+    }
     // The literal props after the spread keep their narrow types, so the
     // `work` overload resolves to the metadata handler signature.
     const workerOptions = {
@@ -609,14 +635,56 @@ export class JobsExecution {
       batchSize: 1,
       includeMetadata: true,
     } satisfies WorkOptions;
-    const workerId = await boss.work(JOBS_QUEUE_NAME, workerOptions, (jobs) =>
+    // The record lands before the boundary call can be awaited: the check
+    // above and the record below are one synchronous step, so an overlapping
+    // registration is refused instead of doubling the worker set through the
+    // guard itself.
+    const registration = boss.work(JOBS_QUEUE_NAME, workerOptions, (jobs) =>
       this.runBatch(boss, jobs),
     );
+    liveWorkerIds.set(boss, registration);
+    let workerId: string;
+    try {
+      workerId = await registration;
+    } catch (error) {
+      // The boundary refused the worker — nothing landed, so the record
+      // releases and the instance can take its worker once the boundary
+      // answers. The catch ends here: past it the worker set is LIVE, and
+      // nothing in the aftermath may free the record.
+      liveWorkerIds.delete(boss);
+      throw error;
+    }
     this.log.info(
       { event: "jobs.worker.registered", queue: JOBS_QUEUE_NAME, workerId },
       "the jobs worker is registered on the runner",
     );
     return workerId;
+  }
+
+  /**
+   * Release this component's worker registration on an instance — the
+   * sanctioned counterpart of {@link registerOn}, so a registration can end
+   * without taking the whole instance down (a test harness's per-leg worker;
+   * the production composition never calls it — the runner's stop() takes
+   * the instance with its worker). Releasing an unregistered instance is a
+   * no-op: there is nothing to release. A registration still in flight is
+   * waited out and whatever landed is released — a release can never strand
+   * a worker set that is still mid-registration.
+   */
+  async releaseOn(boss: PgBoss): Promise<void> {
+    const registration = liveWorkerIds.get(boss);
+    if (!registration) return;
+    const workerId = await registration;
+    // Forgotten only after the release answers, and only if the record is
+    // still the registration THIS release released: a stale overlapping
+    // release's forget must not erase a newer registration's record and
+    // reopen the guard over a live worker set. A release that threw also
+    // leaves the registration held — a re-registration cannot double a live
+    // worker; the next release retries the idempotent offWork.
+    await boss.offWork(JOBS_QUEUE_NAME, { id: workerId });
+    if (liveWorkerIds.get(boss) === registration) {
+      liveWorkerIds.delete(boss);
+    }
   }
 
   private async runBatch(boss: PgBoss, jobs: JobWithMetadata<unknown>[]): Promise<void> {

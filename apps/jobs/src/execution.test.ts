@@ -5,10 +5,12 @@ import {
   JOB_STATUSES,
   JOBS_MAX_RESULT_BYTES,
   JOBS_FETCH_QUALIFIED_TYPE,
+  resolveJobsCapacityLimits,
 } from "@azx-pbc/shared";
 
 import {
   deadlinePassed,
+  JobsExecution,
   JobsExecutionError,
   JobsHandlerRegistry,
   publicStatus,
@@ -20,9 +22,11 @@ import {
  * The execution seam's pure contracts: the handler registry's screening (only
  * an installed type can register, once), the result bound (a JSON value
  * within the platform's allowance, refused as a distinct reason otherwise),
- * the absolute deadline's boundary judgment, and the stored-value judgments
- * both record readers share (fail-closed on a stored value the wire contract
- * does not carry). The worker's own projections and the claim fencing are the
+ * the worker-registration invariant (one live registration per runner
+ * instance — the per-process execution allowance is not multipliable), the
+ * absolute deadline's boundary judgment, and the stored-value judgments both
+ * record readers share (fail-closed on a stored value the wire contract does
+ * not carry). The worker's own projections and the claim fencing are the
  * integration suite's, against the real store and the real runner.
  */
 
@@ -183,6 +187,254 @@ describe("the stored-value judgments both record readers share", () => {
     } catch (error) {
       expect((error as Error).message).toMatch(/not a public code: "upstream_erro"/);
     }
+  });
+});
+
+describe("the worker registration invariant", () => {
+  /** The registration surface's calls, counted at the pg-boss boundary. */
+  let workCalls = 0;
+  let offWorkCalls = 0;
+  /** The worker ids the boundary's answered offWork calls took off. */
+  const offWorkTargets: string[] = [];
+
+  /**
+   * The stub's first N calls of each surface fail — the boundary's own
+   * failure, injected where a real instance would fail. A `held` gate keeps
+   * the boundary's work answer pending until the test releases it, so an
+   * interleaving can be staged deterministically.
+   */
+  function stubBoss(
+    failures: { work?: number; offWork?: number } = {},
+    held?: { release(): void },
+  ): unknown {
+    workCalls = 0;
+    offWorkCalls = 0;
+    offWorkTargets.length = 0;
+    return {
+      work: async () => {
+        workCalls += 1;
+        if (workCalls <= (failures.work ?? 0)) {
+          throw new Error("the instance could not take the worker");
+        }
+        if (held && workCalls === 1) {
+          await new Promise<void>((resolve) => {
+            held.release = resolve;
+          });
+        }
+        return "worker-1";
+      },
+      offWork: async (_queue: string, target: { id: string }) => {
+        offWorkCalls += 1;
+        if (offWorkCalls <= (failures.offWork ?? 0)) {
+          throw new Error("the release could not be confirmed");
+        }
+        offWorkTargets.push(target.id);
+      },
+    };
+  }
+
+  function execution(log = { info: () => {}, warn: () => {}, error: () => {} }): JobsExecution {
+    return new JobsExecution({
+      databaseUrl: "postgresql://.jobs.unit.test/jobs",
+      statementTimeoutMs: 1_000,
+      handlers: new JobsHandlerRegistry(),
+      limits: resolveJobsCapacityLimits(),
+      log,
+    });
+  }
+
+  test("a second live registration on one instance is refused — a work call spawns its own full worker set, so the per-process allowance would silently multiply", async () => {
+    const boss = stubBoss() as never;
+    const component = execution();
+    await component.registerOn(boss);
+    expect(workCalls).toBe(1);
+    await expect(component.registerOn(boss)).rejects.toThrow(
+      /already holds a live worker registration/,
+    );
+    expect(workCalls).toBe(1); // the refusal happened before any second work call
+  });
+
+  test("the invariant holds across components — whichever component attempts the second live registration is refused", async () => {
+    const boss = stubBoss() as never;
+    await execution().registerOn(boss);
+    await expect(execution().registerOn(boss)).rejects.toThrow(
+      /already holds a live worker registration/,
+    );
+    expect(workCalls).toBe(1);
+  });
+
+  test("a released registration frees the instance — one live worker at a time, per instance", async () => {
+    const boss = stubBoss() as never;
+    const component = execution();
+    await component.registerOn(boss);
+    await component.releaseOn(boss);
+    expect(offWorkCalls).toBe(1);
+    await component.registerOn(boss);
+    expect(workCalls).toBe(2);
+  });
+
+  test("releasing what was never registered is a no-op", async () => {
+    const boss = stubBoss() as never;
+    await execution().releaseOn(boss);
+    expect(offWorkCalls).toBe(0);
+  });
+
+  test("a release that fails leaves the registration held — the retry takes the same worker off, and only its answer frees the instance", async () => {
+    const boss = stubBoss({ offWork: 1 }) as never;
+    const component = execution();
+    const workerId = await component.registerOn(boss);
+    await expect(component.releaseOn(boss)).rejects.toThrow(/could not be confirmed/);
+    // The failed release never freed the slot: a re-registration here would
+    // run two live worker sets on one instance.
+    await expect(component.registerOn(boss)).rejects.toThrow(
+      /already holds a live worker registration/,
+    );
+    await component.releaseOn(boss);
+    expect(offWorkTargets).toEqual([workerId]);
+    await component.registerOn(boss);
+  });
+
+  test("a failed registration attempt holds nothing — the instance can take its worker once the boundary answers", async () => {
+    const boss = stubBoss({ work: 1 }) as never;
+    const component = execution();
+    // The boundary's own failure propagates — not the guard's refusal: a
+    // failed start attempt must not brick the instance's future registrations.
+    await expect(component.registerOn(boss)).rejects.toThrow(/could not take the worker/);
+    await component.registerOn(boss);
+    expect(workCalls).toBe(2);
+  });
+
+  test("a landed registration keeps its record when the success report throws — only the release frees the instance", async () => {
+    // The runner's own reports are sink-guarded because a sink that throws is
+    // a real case (runner.ts's guard rails): here the sink throws AFTER the
+    // boundary answered, so the worker set is live. The sink's error still
+    // reaches the caller (the runner's failed-start disposition — the
+    // instance is discarded), but the record must hold: freeing it here would
+    // let a re-registration double the allowance through the guard itself.
+    const sink = new Error("the reporting sink is down");
+    const boss = stubBoss() as never;
+    const component = execution({
+      info: () => {
+        throw sink;
+      },
+      warn: () => {},
+      error: () => {},
+    });
+    await expect(component.registerOn(boss)).rejects.toBe(sink);
+    await expect(component.registerOn(boss)).rejects.toThrow(
+      /already holds a live worker registration/,
+    );
+    // And the held record still releases what landed.
+    await component.releaseOn(boss);
+    expect(offWorkCalls).toBe(1);
+  });
+
+  test("the invariant is per instance — every instance's own registration stands, and the refusal stays on the doubled one", async () => {
+    // Two worker processes in one process is the two-runner composition's
+    // shape: the guard counts registrations per instance, never process-wide.
+    const instanceA = stubBoss() as never;
+    const instanceB = stubBoss() as never;
+    await execution().registerOn(instanceA);
+    await execution().registerOn(instanceB);
+    await expect(execution().registerOn(instanceA)).rejects.toThrow(
+      /already holds a live worker registration/,
+    );
+  });
+
+  test("two overlapping registrations cannot both land — the guard's answer and its record must not straddle the boundary call", async () => {
+    // Two overlapping calls must leave exactly one live worker set: if both
+    // land, the per-process allowance the guard exists to hold has doubled,
+    // and only the recorded set is releasable — the other is an orphan until
+    // the instance dies.
+    const boss = stubBoss() as never;
+    const component = execution();
+    const attempts = await Promise.allSettled([
+      component.registerOn(boss),
+      component.registerOn(boss),
+    ]);
+    const refused = attempts.filter((attempt) => attempt.status === "rejected");
+    expect(
+      refused.length,
+      `both overlapping registrations landed (${workCalls} work calls answered) — the instance now runs a doubled worker set`,
+    ).toBe(1);
+    expect(workCalls).toBe(1);
+  });
+
+  test("a release landing during an in-flight registration waits it out and releases what landed", async () => {
+    // The record holds the registration's own promise, so a release that
+    // lands mid-registration can wait for the boundary's answer instead of
+    // stranding the worker set that is about to exist.
+    const gate = { release: () => {} };
+    const boss = stubBoss({}, gate) as never;
+    const component = execution();
+    const registering = component.registerOn(boss);
+    const releasing = component.releaseOn(boss);
+    gate.release();
+    const [workerId] = await Promise.all([registering, releasing]);
+    expect(offWorkTargets).toEqual([workerId]);
+    // Freed by that release: the instance's next registration stands.
+    await component.registerOn(boss);
+  });
+
+  test("a release landing during a registration the boundary refuses carries the refusal and holds nothing", async () => {
+    // The failure leg of the wait-out contract: the release waits on a
+    // registration that never lands. Nothing is releasable, so no offWork is
+    // attempted, the failure carries its cause to both callers, and the
+    // record frees — the instance can take its worker once the boundary
+    // answers.
+    const boss = stubBoss({ work: 1 }) as never;
+    const component = execution();
+    const registering = component.registerOn(boss);
+    const releasing = component.releaseOn(boss);
+    await expect(registering).rejects.toThrow(/could not take the worker/);
+    await expect(releasing).rejects.toThrow(/could not take the worker/);
+    expect(offWorkCalls).toBe(0);
+    await component.registerOn(boss);
+    expect(workCalls).toBe(2);
+  });
+
+  test("a stale overlapping release must not free a newer registration's record — the forget is only valid for the registration it released", async () => {
+    // Two releases overlap on one landed registration; the boundary confirms
+    // them out of order, and a re-registration lands in the window between
+    // the faster release's forget and the slower one's. The slower release
+    // released the OLD worker set — if its forget is unconditional it erases
+    // the NEW registration's record, and the guard reopens over a live
+    // worker set: the next registration doubles the per-process allowance.
+    const offWorkResolvers: Array<() => void> = [];
+    let registered = 0;
+    const takenOff: string[] = [];
+    const boss = {
+      work: async () => {
+        registered += 1;
+        return `worker-${registered}`;
+      },
+      offWork: async (_queue: string, target: { id: string }) => {
+        takenOff.push(target.id);
+        await new Promise<void>((resolve) => {
+          offWorkResolvers.push(resolve);
+        });
+      },
+    } as never;
+    const component = execution();
+    await component.registerOn(boss); // worker-1 live, record held
+    const firstRelease = component.releaseOn(boss);
+    const secondRelease = component.releaseOn(boss);
+    for (let i = 0; i < 10 && offWorkResolvers.length < 2; i += 1) {
+      await Promise.resolve(); // park both releases inside their offWork calls
+    }
+    const [firstOffWork, secondOffWork] = offWorkResolvers;
+    if (!firstOffWork || !secondOffWork) {
+      throw new Error("both releases must be parked in their offWork calls");
+    }
+    secondOffWork(); // the second release's offWork answers first
+    await secondRelease; // forgets the record — worker-1 is off, nothing held
+    await component.registerOn(boss); // worker-2 lands; the record is its own
+    firstOffWork(); // now the stale first release's offWork answers
+    await firstRelease; // it released worker-1 — it must not forget worker-2's record
+    expect(takenOff).toEqual(["worker-1", "worker-1"]);
+    await expect(component.registerOn(boss)).rejects.toThrow(
+      /already holds a live worker registration/,
+    );
   });
 });
 

@@ -25,7 +25,6 @@ import { JobsLifecycleStore } from "./lifecycle.js";
 import {
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
-  JOBS_QUEUE_NAME,
   JOBS_RUNTIME_ROLE,
   jobsRuntimeBossOptions,
 } from "./policy.js";
@@ -207,11 +206,14 @@ async function runnerRow(jobId: string): Promise<Record<string, unknown>> {
 
 /** Register the leg's worker, run the leg's body, take the worker off. */
 async function withWorker(run: () => Promise<void>): Promise<void> {
-  const workerId = await execution.registerOn(boss);
+  await execution.registerOn(boss);
   try {
     await run();
   } finally {
-    await boss.offWork(JOBS_QUEUE_NAME, { id: workerId });
+    // The component's sanctioned release — the registerOn seam's counterpart,
+    // so the next leg's registration on this shared instance is not a second
+    // live worker (a doubled per-process allowance).
+    await execution.releaseOn(boss);
   }
 }
 
@@ -482,7 +484,7 @@ describe("the execution seam", () => {
         log: LOG,
       });
       bare.start();
-      const workerId = await bare.registerOn(boss);
+      await bare.registerOn(boss);
       try {
         await waitFor("the unhandled job to terminate", async () => {
           const row = await recordRow(jobId);
@@ -492,7 +494,7 @@ describe("the execution seam", () => {
         expect(row.status).toBe("failed");
         expect(row.error_code).toBe("platform_error");
       } finally {
-        await boss.offWork(JOBS_QUEUE_NAME, { id: workerId });
+        await bare.releaseOn(boss);
         await bare.stop();
       }
     },
@@ -770,7 +772,7 @@ describe("the execution seam's telemetry", () => {
       log: LOG,
     });
     broken.start();
-    const workerId = await broken.registerOn(boss);
+    await broken.registerOn(boss);
     try {
       await broken.stop();
       const unavailableBefore = (await recording.metrics())
@@ -822,7 +824,7 @@ describe("the execution seam's telemetry", () => {
       expect(exceptionEvents.length).toBe(1);
       expect(String(exceptionEvents[0]?.attributes?.["exception.message"])).toMatch(/not running/);
     } finally {
-      await boss.offWork(JOBS_QUEUE_NAME, { id: workerId });
+      await broken.releaseOn(boss);
     }
   });
 
@@ -855,7 +857,7 @@ describe("the execution seam's telemetry", () => {
           m.name === "helix.jobs.executions" && m.attributes["helix.outcome"] === "unavailable",
       )
       .reduce((sum, m) => sum + m.value, 0);
-    const workerId = await midflight.registerOn(boss);
+    await midflight.registerOn(boss);
     try {
       // The span ends only after the whole attempt settles — its existence
       // means the fenced settlement and the failed projection have both run.
@@ -904,7 +906,7 @@ describe("the execution seam's telemetry", () => {
       expect(span?.attributes["helix.jobs.attempt"]).toBe(1);
       expect(span?.attributes["helix.app_id"]).toBe(appId);
     } finally {
-      await boss.offWork(JOBS_QUEUE_NAME, { id: workerId });
+      await midflight.releaseOn(boss);
       await midflight.stop().catch(() => {});
     }
   });
@@ -1071,7 +1073,7 @@ describe("the execution seam's telemetry", () => {
           m.name === "helix.jobs.executions" && m.attributes["helix.outcome"] === "unavailable",
       )
       .reduce((sum, m) => sum + m.value, 0);
-    const workerId = await fails.registerOn(boss);
+    await fails.registerOn(boss);
     try {
       await waitFor("the attempt's unavailable span", async () =>
         recording
@@ -1117,7 +1119,7 @@ describe("the execution seam's telemetry", () => {
       // The projected-failure reason is absent: the failure was not projected.
       expect(span?.attributes["helix.reason"]).toBeUndefined();
     } finally {
-      await boss.offWork(JOBS_QUEUE_NAME, { id: workerId });
+      await fails.releaseOn(boss);
       await fails.stop().catch(() => {});
     }
   });
