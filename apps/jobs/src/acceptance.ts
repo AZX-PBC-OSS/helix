@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { PgBoss, Db } from "pg-boss";
 import type { Pool, PoolClient } from "pg";
 
-import { JobStatusSchema, type JobError, type JobStatus } from "@azx-pbc/shared";
+import {
+  JOB_TERMINAL_STATUSES,
+  JobStatusSchema,
+  type JobError,
+  type JobStatus,
+  type JobsCapacityLimits,
+} from "@azx-pbc/shared";
 import { sha256BodyDigest, type JobsSubmitClaims } from "@azx-pbc/shared/jobsSigning";
 
 import { lifecycleEligibilityInTx } from "./lifecycle.js";
@@ -41,7 +47,12 @@ import {
  *    contract) — refusing here creates no job and no key claim;
  * 4. the eligibility verdict — `closed` refuses new work finally, `unseen`
  *    leaves the generation to the portal's delivery (retryable 503);
- * 5. the runner enqueue over the borrowed connection, then the wrapper
+ * 5. the capacity comparison — new work is admitted only inside the
+ *    server-wide admission lock's serialization (design §4), against the
+ *    unfinished and retained occupancy of the app/environment and the whole
+ *    server, under the platform's resolved limits. Full or lowered capacity
+ *    refuses with no eviction and no slot taken;
+ * 6. the runner enqueue over the borrowed connection, then the wrapper
  *    insert — the unique scoped-key constraint is the concurrent-retry
  *    backstop; a claim lost to it rolls the already-enqueued runner job back
  *    with the transaction, and the retry identity is resolved against the
@@ -71,7 +82,8 @@ export type JobsAdmissionResult =
   | { outcome: "invalid_input" }
   | { outcome: "type_unknown" }
   | { outcome: "closed" }
-  | { outcome: "unseen" };
+  | { outcome: "unseen" }
+  | { outcome: "capacity_exceeded" };
 
 /** The admission seam the submit route consumes (the durable store implements it; tests may substitute). */
 export interface JobsAdmission {
@@ -166,6 +178,67 @@ class JobsKeyClaimRace extends Error {
 const KEY_SCOPE_PREDICATE =
   "server = $1 AND app_id = $2 AND env = $3 AND owner_kind = $4 AND owner_oid = $5 AND type = $6 AND retry_key = $7";
 
+/**
+ * The new-work admission's serialization lock (design §4: "A local admission
+ * lock and bounded indexed counts are sufficient for the initial scale") — one
+ * transaction-scoped advisory lock per store. It is taken only for new work,
+ * after the retained-key comparison and the eligibility verdict, and held to
+ * the transaction's end, so an occupancy count and the insert it guards cannot
+ * interleave with another admission's — across types, apps and replicas
+ * (advisory locks are per-database state, and the store's replicas share one
+ * database). Same-app admissions are already serialized by the lifecycle row
+ * lock taken first; the advisory lock is taken second everywhere, so no
+ * admission ordering can cycle. The jobs store is private to one server (the
+ * deployment schema refuses two servers sharing a database), so one fixed key
+ * cannot collide with another server's or another component's locks.
+ */
+const JOBS_ADMISSION_LOCK_KEY = 6_283_185_307;
+
+/** The occupancy one new-work admission is compared against (design §4's four controls). */
+interface JobsOccupancyCounts {
+  /** Every physically stored job of the server — active or terminal, until the physical cleanup removes it. */
+  retained_server: number;
+  /** Every physically stored job of the app/environment. */
+  retained_app_env: number;
+  /** Nonterminal jobs of the server — queued or running, including delayed retries and pending cancellation. */
+  unfinished_server: number;
+  /** Nonterminal jobs of the app/environment. */
+  unfinished_app_env: number;
+}
+
+/** The saturated cap a refusal names — the operator's bounded evidence of which limit refused. */
+interface JobsSaturatedCap {
+  /** The control's own name in the shared limit set (`unfinishedPerAppEnv`, …). */
+  cap: keyof JobsCapacityLimits;
+  /** The limit that refused. */
+  limit: number;
+  /** The occupancy at the refusal — the count the comparison saw. */
+  occupancy: number;
+}
+
+/**
+ * Which capacity control — if any — the occupancy has exhausted: the first
+ * control whose count has reached its limit (the refused job would be the
+ * limit-plus-one-th). Every candidate is checked so a refusal names the cap
+ * that actually bound, in a stable order (unfinished before retained,
+ * app/environment before server).
+ */
+function saturatedCapacityCap(
+  occupancy: JobsOccupancyCounts,
+  limits: JobsCapacityLimits,
+): JobsSaturatedCap | null {
+  const candidates: [keyof JobsCapacityLimits, number, number][] = [
+    ["unfinishedPerAppEnv", limits.unfinishedPerAppEnv, occupancy.unfinished_app_env],
+    ["unfinishedPerServer", limits.unfinishedPerServer, occupancy.unfinished_server],
+    ["retainedPerAppEnv", limits.retainedPerAppEnv, occupancy.retained_app_env],
+    ["retainedPerServer", limits.retainedPerServer, occupancy.retained_server],
+  ];
+  for (const [cap, limit, count] of candidates) {
+    if (count >= limit) return { cap, limit, occupancy: count };
+  }
+  return null;
+}
+
 /** The lookup's parameters, in the predicate's order — one spelling for both reads. */
 function keyScopeParams(claims: JobsSubmitClaims, key: string): string[] {
   return [
@@ -183,6 +256,13 @@ export interface JobsAcceptanceStoreOptions {
   databaseUrl: string;
   /** Per-query ceiling, applied as both the pool's statement and connect timeout. */
   statementTimeoutMs: number;
+  /**
+   * The resolved capacity limits this store enforces with new enqueue —
+   * the shared defaults with any operator override applied
+   * (`resolveJobsCapacityLimits`). Platform-owned: no input, manifest or
+   * grant can change them.
+   */
+  limits: JobsCapacityLimits;
   /** The runner enqueue borrowed into the transaction — the real adapter wraps the runtime pg-boss. */
   enqueuer: JobsEnqueuer;
   log: JobsAcceptanceLogger;
@@ -193,7 +273,7 @@ export interface JobsAcceptanceLogger {
   warn(obj: Record<string, unknown>, msg: string): void;
 }
 
-/** The runtime pool stays small: admissions serialize per app on the lifecycle row lock. */
+/** The runtime pool stays small: new-work admissions serialize per app on the lifecycle row lock, then server-wide on the admission lock. */
 const POOL_MAX = 2;
 
 /**
@@ -206,6 +286,7 @@ const POOL_MAX = 2;
 export class JobsAcceptanceStore implements JobsAdmission {
   private readonly databaseUrl: string;
   private readonly statementTimeoutMs: number;
+  private readonly limits: JobsCapacityLimits;
   private readonly enqueuer: JobsEnqueuer;
   private readonly log: JobsAcceptanceLogger;
 
@@ -215,6 +296,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
   constructor(options: JobsAcceptanceStoreOptions) {
     this.databaseUrl = options.databaseUrl;
     this.statementTimeoutMs = options.statementTimeoutMs;
+    this.limits = options.limits;
     this.enqueuer = options.enqueuer;
     this.log = options.log;
   }
@@ -330,10 +412,42 @@ export class JobsAcceptanceStore implements JobsAdmission {
       throw new JobsAdmissionRefusal({ outcome: "unseen" });
     }
 
+    // Capacity, at the design's position in the order (after validation and
+    // intake, before enqueue): under one server-wide serialization lock, so
+    // the count and the insert it guards are indivisible against concurrent
+    // new work — across types, apps and replicas. Only admissions consume
+    // capacity (completion and physical cleanup only free it), so nothing
+    // outside this lock can move the counts in the unsafe direction. A
+    // lowered limit refuses with no eviction; a retained-key replay above
+    // never reached this point (no lock, no slot).
+    await client.query("SELECT pg_advisory_xact_lock($1)", [JOBS_ADMISSION_LOCK_KEY]);
+    const occupancy = await this.countOccupancy(client, claims);
+    const saturated = saturatedCapacityCap(occupancy, this.limits);
+    if (saturated) {
+      // Bounded rejection logging (ADR-0003): one line per refusal — the cap
+      // that bound, its limit and the count it saw — never a persistent
+      // audit row. The response stays the fixed 429 envelope; the app and
+      // environment are bounded, non-personal evidence of whose capacity
+      // refused.
+      this.log.warn(
+        {
+          event: "jobs.admission.capacity_refused",
+          cap: saturated.cap,
+          limit: saturated.limit,
+          occupancy: saturated.occupancy,
+          appId: claims.appId,
+          env: claims.env,
+        },
+        "new work refused: a capacity limit is exhausted",
+      );
+      throw new JobsAdmissionRefusal({ outcome: "capacity_exceeded" });
+    }
+
     // The enqueue and the wrapper claim commit or roll back together. The
     // scoped-key unique constraint is the concurrent-retry backstop: the
-    // lifecycle lock above already serializes same-app admissions, so losing
-    // this claim means a path outside that serialization took the key first.
+    // serialization above already holds every new-work admission (and the
+    // lifecycle lock every same-app one), so losing this claim means a path
+    // outside the admission transaction took the key first.
     const jobId = randomUUID();
     const runnerJobId = await this.enqueuer.enqueue(client, {
       type: claims.type,
@@ -382,6 +496,37 @@ export class JobsAcceptanceStore implements JobsAdmission {
       keyScopeParams(claims, key),
     );
     return result.rows[0] ?? null;
+  }
+
+  /**
+   * The four occupancy counts one comparison needs, from one indexed query.
+   * Retained counts EVERY physically stored row of the scope — active or
+   * terminal, whatever transient state the runner's own row is in (the
+   * wrapper record and its input bytes are the retained storage; only the
+   * physical cleanup removes it) — and unfinished counts the nonterminal
+   * statuses, the terminal list arriving as a parameter from the shared
+   * constant so the SQL and the wire contract cannot drift. The
+   * `(server, app_id, env, status)` index bounds every count.
+   */
+  private async countOccupancy(
+    client: PoolClient,
+    claims: JobsSubmitClaims,
+  ): Promise<JobsOccupancyCounts> {
+    const result = await client.query<JobsOccupancyCounts>(
+      `SELECT count(*)::int AS retained_server,
+              count(*) FILTER (WHERE app_id = $2 AND env = $3)::int AS retained_app_env,
+              count(*) FILTER (WHERE NOT status = ANY($4::text[]))::int AS unfinished_server,
+              count(*) FILTER (WHERE app_id = $2 AND env = $3
+                                 AND NOT status = ANY($4::text[]))::int AS unfinished_app_env
+         FROM ${JOBS_JOB_RECORD_QUALIFIED}
+        WHERE server = $1`,
+      [claims.server, claims.appId, claims.env, JOB_TERMINAL_STATUSES],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error("the occupancy count returned no row");
+    }
+    return row;
   }
 
   /**

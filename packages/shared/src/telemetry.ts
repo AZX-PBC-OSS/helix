@@ -379,6 +379,11 @@ export type JobsLifecycleOutcome = (typeof JOBS_LIFECYCLE_OUTCOMES)[number];
  * - `unseen` — the claimed generation is newer than anything the portal has
  *   delivered (or the app is not known here): retryable 503 until the
  *   control-plane delivery opens it (ADR-0007).
+ * - `capacity_exceeded` — new work that fits no unfinished or retained
+ *   capacity cap (per app/environment or server-wide): refused 429
+ *   `jobs_capacity_exceeded`, no job, no key claim, nothing evicted. A busy
+ *   refusal — clients back off and retry; the specific saturated cap and the
+ *   occupancy numbers ride the refusal's log event, never a dimension here.
  * - `unavailable` — the acceptance store could not answer; nothing
  *   committed, answered with the retryable 503.
  */
@@ -390,6 +395,7 @@ export const JOBS_SUBMIT_OUTCOMES = [
   "type_unknown",
   "closed",
   "unseen",
+  "capacity_exceeded",
   "unavailable",
 ] as const;
 export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];

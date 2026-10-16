@@ -1,4 +1,10 @@
-import { JobServerIdSchema, JobsDatabaseUrlSchema } from "@azx-pbc/shared";
+import {
+  JobServerIdSchema,
+  JobsDatabaseUrlSchema,
+  JobsCapacityOverridesSchema,
+  resolveJobsCapacityLimits,
+  type JobsCapacityLimits,
+} from "@azx-pbc/shared";
 import { deriveJobsInstructionKey, JobsSigningDomains } from "@azx-pbc/shared/jobsSigning";
 import { z } from "zod";
 
@@ -39,6 +45,13 @@ export interface JobsServiceConfig {
   edgeToJobsKey: Uint8Array;
   /** The derived portal→jobs verification key (HKDF over this server's portal root). */
   portalToJobsKey: Uint8Array;
+  /**
+   * The resolved capacity limits this service enforces with new enqueue —
+   * the shared platform defaults with this deployment's `JOBS_LIMITS`
+   * override applied. Platform-owned: inputs, manifests and grants cannot
+   * change them.
+   */
+  limits: JobsCapacityLimits;
 }
 
 /**
@@ -86,6 +99,40 @@ function requireReceiverKey(
 }
 
 /**
+ * Resolve the capacity limits this service enforces: the shared platform
+ * defaults, with this deployment's optional `JOBS_LIMITS` override (the JSON
+ * form of the shared override schema — the same fields a deployment map's
+ * `limits` entry carries) applied through the one shared resolver. Absent or
+ * blank means the defaults unchanged; anything present that does not parse as
+ * an override — unknown controls, zero, negative, non-finite, past the
+ * ceiling — is an explicit startup error, never a silently partial tuning.
+ */
+function loadCapacityLimits(env: NodeJS.ProcessEnv): JobsCapacityLimits {
+  const raw = env.JOBS_LIMITS;
+  if (raw === undefined || raw.trim() === "") {
+    return resolveJobsCapacityLimits();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    // The cause rides along for whoever inspects it, but never into a
+    // default-rendered message: a parse error quotes fragments of the value,
+    // and the operator needs the key, not the quote.
+    throw new Error("JOBS_LIMITS must be a JSON object of capacity-limit overrides", {
+      cause: error,
+    });
+  }
+  const verdict = JobsCapacityOverridesSchema.safeParse(parsed);
+  if (!verdict.success) {
+    throw new Error(
+      `JOBS_LIMITS is not a valid capacity override — ${z.prettifyError(verdict.error)}`,
+    );
+  }
+  return resolveJobsCapacityLimits(verdict.data);
+}
+
+/**
  * Resolve the boot configuration from the environment. Throws — with the key
  * named — on a missing credential, a value that cannot describe a valid
  * server identity or store, or a signing root that cannot derive a key. The
@@ -125,5 +172,6 @@ export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServic
     ),
     edgeToJobsKey: requireReceiverKey(env, "edgeToJobs"),
     portalToJobsKey: requireReceiverKey(env, "portalToJobs"),
+    limits: loadCapacityLimits(env),
   };
 }

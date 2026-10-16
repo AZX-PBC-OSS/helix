@@ -116,6 +116,14 @@ describe("the signed operation routes", () => {
           status: 503,
           body: UNAVAILABLE_BODY,
         },
+        {
+          outcome: { outcome: "capacity_exceeded" },
+          status: 429,
+          body: {
+            code: "jobs_capacity_exceeded",
+            message: JobErrorMessages.jobs_capacity_exceeded,
+          },
+        },
       ] as const;
       for (const c of cases) {
         admission.outcome = c.outcome;

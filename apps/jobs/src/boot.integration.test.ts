@@ -834,6 +834,130 @@ describe("signed instructions through the running process", () => {
     },
   );
 
+  test(
+    "a JOBS_LIMITS override reaches the running process's admission store — the capacity refusal is a real 429 through the signed route",
+    slow,
+    async () => {
+      // The route mapping is pinned against the admission double and the
+      // store's refusal against real Postgres; this leg drives their
+      // composition — the deployment's override resolved at boot and wired
+      // into the real store behind the real receiver, answering a real
+      // signed submission with the fixed 429 envelope. A boot that passed
+      // the platform defaults where the override resolved would fail here.
+      //
+      // The bound is the RETAINED per-app/environment cap, deliberately:
+      // retained occupancy moves only on physical deletion, which no seam in
+      // this process performs inside a seconds-long window (the cleanup
+      // loop's record horizon is 30 days) — so the saturated-cap premise is
+      // structural and survives worker registration landing in this same
+      // booted process, where an unfinished cap's occupancy could drain
+      // between the two submissions and turn the second answer into a 202.
+      // The unfinished cap itself is pinned by the store-level legs, which
+      // construct their own worker-less store.
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      const capApp = randomUUID(); // a fresh app: its per-app occupancy starts at zero
+      const identity = {
+        appId: capApp,
+        env: "prod",
+        ownerKind: "user",
+        ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+        allowedTypes: ["jobs:fetch"],
+      } as const;
+      const mintFor = (idempotencyKey: string): Promise<string> =>
+        mintJobsInstruction(
+          {
+            operation: "submit",
+            server: "jobs",
+            identity,
+            type: "jobs:fetch",
+            generation: "1",
+            idempotencyKey,
+            body: new TextEncoder().encode('{"url":"https://example.com/data.json"}'),
+            iatS: Math.floor(Date.now() / 1000) - 1,
+          },
+          deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+        );
+      const submitCapApp = async (
+        token: string,
+        idempotencyKey: string,
+      ): Promise<{ status: number; body: unknown }> => {
+        const res = await fetch(`http://127.0.0.1:${port}/internal/jobs/v1/jobs`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [INSTRUCTION_HEADER]: token,
+            [IDEMPOTENCY_KEY_HEADER]: idempotencyKey,
+          },
+          body: '{"url":"https://example.com/data.json"}',
+        });
+        return { status: res.status, body: await res.json() };
+      };
+      const child = await bootServer(
+        port,
+        childEnv(RUNTIME_DSN, port, {
+          JOBS_LIMITS: JSON.stringify({ retainedPerAppEnv: 1 }),
+        }),
+      );
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        // The portal's delivery opens the fresh app's generation through the
+        // real lifecycle route.
+        const delivery = '{"generation":"1","archived":false}';
+        const delivered = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${capApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: capApp,
+                  body: new TextEncoder().encode(delivery),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body: delivery,
+          },
+        );
+        expect(delivered.status).toBe(200);
+
+        // The first submission is accepted (the client's own retry loop over
+        // the 503s of the runner's convergence, the same retry identity);
+        // the second — the app's retained cap now full at one, the first
+        // job's record still stored — is the 429.
+        const deadline = Date.now() + 60_000;
+        let first: { status: number; body: unknown } | null = null;
+        while (Date.now() < deadline) {
+          first = await submitCapApp(await mintFor("capacity-leg-first"), "capacity-leg-first");
+          if (first.status !== 503) break;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        expect(first?.status, JSON.stringify(first)).toBe(202);
+        const second = await submitCapApp(
+          await mintFor("capacity-leg-second"),
+          "capacity-leg-second",
+        );
+        expect(second.status).toBe(429);
+        expect(second.body).toEqual({
+          code: "jobs_capacity_exceeded",
+          message: JobErrorMessages.jobs_capacity_exceeded,
+        });
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
   test("a forged instruction is refused by the running process", slow, async () => {
     const port = await reservePort();
     const child = await bootServer(port, childEnv(RUNTIME_DSN, port));

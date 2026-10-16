@@ -104,11 +104,13 @@ const runner = new JobsRunner({
   log: lateLog,
 });
 
-// The acceptance store — the durable retry identity and the transaction that
-// commits the wrapper record with the runner's enqueue (ADR-0003).
+// The acceptance store — the durable retry identity, the capacity limits'
+// enforcement and the transaction that commits the wrapper record with the
+// runner's enqueue (ADR-0003).
 const admission = new JobsAcceptanceStore({
   databaseUrl: config.databaseUrl,
   statementTimeoutMs: config.statementTimeoutMs,
+  limits: config.limits,
   enqueuer: runner.enqueuer,
   log: lateLog,
 });

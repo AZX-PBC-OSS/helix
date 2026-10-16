@@ -19,6 +19,7 @@ import {
   JOBS_QUEUE_NAME,
   JOBS_PGBOSS_SCHEMA,
   JOBS_RUNTIME_ROLE,
+  JOBS_SCHEMA,
   jobTypePolicy,
   jobsRuntimeBossOptions,
   jobsWorkOptions,
@@ -98,6 +99,21 @@ async function scratchStoreOwner(): Promise<string | null> {
       )
     ).rows[0];
     return row?.owner ?? null;
+  } finally {
+    await pool.end();
+  }
+}
+
+/** Whether the job-record store's occupancy index exists in the scratch store. */
+async function recordIndexExists(): Promise<boolean> {
+  const pool = new Pool({ connectionString: MIGRATE_DSN, max: 1 });
+  try {
+    const row = (
+      await pool.query<{ found: boolean }>(`SELECT to_regclass($1) IS NOT NULL AS found`, [
+        `${JOBS_SCHEMA}.idx_job_record_server_app_env_status`,
+      ])
+    ).rows[0];
+    return row?.found === true;
   } finally {
     await pool.end();
   }
@@ -372,8 +388,23 @@ describe("jobs storage migration and startup compatibility", () => {
         kind: "compatible",
         schemaVersion: PGBOSS_SCHEMA_VERSION,
       });
+      // The recreation carries the occupancy index the acceptance
+      // transaction's capacity counts are bounded by.
+      await expect(recordIndexExists()).resolves.toBe(true);
     },
   );
+
+  test("a dropped occupancy index is recreated by the migration's re-run", slow, async () => {
+    // An existing store from before the capacity seam lacks the index; the
+    // migration command is the convergence path, and the index's presence
+    // is the re-run's proof.
+    await asMigrateRole(`DROP INDEX IF EXISTS ${JOBS_SCHEMA}.idx_job_record_server_app_env_status`);
+    await expect(recordIndexExists()).resolves.toBe(false);
+    await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+      expect.objectContaining({ jobRecordExisted: true }),
+    );
+    await expect(recordIndexExists()).resolves.toBe(true);
+  });
 
   test(
     "missing job-record privileges are detected and re-granted by the migration",

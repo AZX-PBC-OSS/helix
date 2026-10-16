@@ -180,6 +180,10 @@ const SUBMIT_REFUSALS: Record<
   type_unknown: { status: 403, code: "forbidden" },
   closed: { status: 403, code: "forbidden" },
   unseen: { status: 503, code: "jobs_unavailable" },
+  // An ordinary busy refusal — the worker is fine; the caller backs off and
+  // retries (spec criterion 55: capacity refusal alone never marks anything
+  // unhealthy, and this 4xx keeps the span UNSET with it).
+  capacity_exceeded: { status: 429, code: "jobs_capacity_exceeded" },
 };
 
 /**

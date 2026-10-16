@@ -320,6 +320,12 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
  * so the SQL and the wire contract cannot drift. The `runner_job_id` is
  * unique with the server — the join the worker and the cleanup consume.
  *
+ * The occupancy index bounds the acceptance transaction's capacity counts
+ * (`server, app_id, env, status`): the leading column serves the server-wide
+ * counts, the whole index the per-app/environment ones, and the status
+ * column the unfinished/retained split — the design's "bounded indexed
+ * counts" (§4).
+ *
  * Returns whether the table already existed, for the run's summary.
  */
 async function ensureJobRecordStore(pool: Pool): Promise<boolean> {
@@ -351,6 +357,10 @@ async function ensureJobRecordStore(pool: Pool): Promise<boolean> {
        UNIQUE (server, runner_job_id),
        UNIQUE (server, app_id, env, owner_kind, owner_oid, type, retry_key)
      )`,
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_job_record_server_app_env_status
+        ON ${JOBS_JOB_RECORD_QUALIFIED} (server, app_id, env, status)`,
   );
   return existed;
 }

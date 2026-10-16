@@ -71,7 +71,18 @@ Submission is decided in ONE transaction against the service's private store
 4. The eligibility verdict — `closed` refuses new work finally (403);
    `unseen` waits for the portal's delivery (retryable 503), never auto-opening
    a generation.
-5. The runner enqueue over the **borrowed connection** (pg-boss's public
+5. The **capacity comparison** — new work is admitted only inside one
+   server-wide, transaction-scoped admission lock (design §4: "a local
+   admission lock and bounded indexed counts"), against the unfinished and
+   retained occupancy of both the app/environment and the whole server, under
+   the resolved capacity limits (below). Full or lowered capacity answers 429
+   `jobs_capacity_exceeded` and evicts nothing; the occupancy counts are
+   bounded indexed counts on `jobs.job_record` (the
+   `idx_job_record_server_app_env_status` index). Because only admissions
+   consume capacity — completion and physical cleanup only free it — the
+   counts the lock guards cannot move in the unsafe direction between the
+   check and the insert.
+6. The runner enqueue over the **borrowed connection** (pg-boss's public
    `db.executeSql` adapter — the runner row joins the transaction), then the
    wrapper record insert into `jobs.job_record`: the immutable attribution,
    the admitted generation, the status projection (`queued` at admission),
@@ -85,6 +96,27 @@ the protocol's retryable 503 — a timeout is uncertainty, never proof of
 nonacceptance; the same keyed POST recovers the committed job. The send-time
 options are the type's installed policy (attempts, claim bound) and the
 trusted `(appId, env)` fairness group (`jobsAppEnvGroupId`).
+
+## Capacity limits (`src/acceptance.ts`, `src/config.ts`)
+
+New work is refused 429 `jobs_capacity_exceeded` when it would exceed any of
+the four occupancy caps (design §4): **unfinished** (every nonterminal job —
+queued or running, including delayed retries and pending cancellation) and
+**retained** (every physically stored job, active or terminal, whatever
+transient state the runner's own row is in — the wrapper record and its input
+bytes are the retained storage), each per app/environment and server-wide.
+Completion releases unfinished capacity; only physical cleanup releases
+retained capacity; a retained-key replay uses no slot and is never counted
+against a cap. Refusals are ordinary busy answers — the 429 keeps the span
+UNSET, nothing degrades, and each refusal logs one bounded
+`jobs.admission.capacity_refused` event (the cap, the limit, the occupancy)
+that never becomes a persistent audit row.
+
+The limits are the shared platform defaults (`JOBS_CAPACITY_DEFAULTS`) with
+this deployment's optional `JOBS_LIMITS` override applied — the JSON form of
+the shared override schema, resolved through `resolveJobsCapacityLimits` at
+boot; a malformed or unbounded override is a startup error, never a silently
+partial tuning. Apps cannot change any limit through input or manifest.
 
 ## The runtime runner (`src/runner.ts`)
 
@@ -176,8 +208,9 @@ queue with the policy above, converges policy drift that pg-boss can update
 (failing on drift fixed at queue creation), creates the instruction burn
 store (schema `jobs`, table `instruction_burns`, its `burn_until` index), the
 app-lifecycle store (table `app_lifecycle`) and the job-record store (table
-`job_record`, the retry namespace's unique constraint and the public-status
-check), grants the runtime role DML
+`job_record`, the retry namespace's unique constraint, the public-status
+check and the occupancy index the capacity counts use), grants the runtime
+role DML
 on all of it — provisioning sets no default privileges, so grants arrive by
 migration — and verifies the effective state by re-reading it. Later
 jobs-owned migrations extend this command the same way: a step under the
@@ -251,6 +284,7 @@ already provision them):
 JOBS_SERVER_ID=jobs \
 JOBS_DATABASE_URL=postgresql://helix_jobs:…@db:5432/helix_jobs \
 JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… \
+[JOBS_LIMITS='{"unfinishedPerAppEnv":20}'] \
   pnpm dev:jobs
 ```
 

@@ -205,9 +205,13 @@ looked up:
   `conflict` (different bytes for a retained key), `invalid_input`
   (new work refused at validation), `type_unknown` (no installed policy for
   the claimed type), `closed`/`unseen` (the lifecycle gate's final refusal
-  and its retryable wait for the portal's delivery), and `unavailable` (the
-  acceptance store could not decide) — beside `helix.app_id` and
-  `helix.jobs.generation` (pinned by the same suite's submit scan).
+  and its retryable wait for the portal's delivery), `capacity_exceeded`
+  (new work that fit no unfinished or retained cap — the busy 429; the
+  specific saturated cap and its occupancy ride the
+  `jobs.admission.capacity_refused` log event, never a dimension here), and
+  `unavailable` (the acceptance store could not decide) — beside
+  `helix.app_id` and `helix.jobs.generation` (pinned by the same suite's
+  submit scan).
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |

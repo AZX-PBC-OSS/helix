@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 
+import { JOBS_CAPACITY_DEFAULTS, resolveJobsCapacityLimits } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 
 import { DEFAULT_JOBS_STATEMENT_TIMEOUT_MS, loadJobsConfig } from "./config.js";
@@ -119,5 +120,58 @@ describe("loadJobsConfig", () => {
     // credential nothing reads. Even a garbage value must not stop the boot.
     const config = loadJobsConfig({ ...VALID, JOBS_JOBS_TO_EDGE_SECRET: "not a root" });
     expect(config.serverId).toBe("jobs");
+  });
+
+  test("capacity limits default to the shared platform defaults", () => {
+    expect(loadJobsConfig({ ...VALID }).limits).toEqual(JOBS_CAPACITY_DEFAULTS);
+  });
+
+  test("a JOBS_LIMITS override resolves through the shared resolver, control by control", () => {
+    const config = loadJobsConfig({
+      ...VALID,
+      JOBS_LIMITS: JSON.stringify({ unfinishedPerAppEnv: 5 }),
+    });
+    // The overridden control moves; the untouched ones keep the shared
+    // defaults — one definition, never a second copy of the numbers.
+    expect(config.limits.unfinishedPerAppEnv).toBe(5);
+    expect(config.limits.retainedPerServer).toBe(JOBS_CAPACITY_DEFAULTS.retainedPerServer);
+    expect(config.limits).toEqual(resolveJobsCapacityLimits({ unfinishedPerAppEnv: 5 }));
+  });
+
+  test("a blank JOBS_LIMITS is an unset knob, not an error", () => {
+    expect(loadJobsConfig({ ...VALID, JOBS_LIMITS: "   " }).limits).toEqual(JOBS_CAPACITY_DEFAULTS);
+  });
+
+  test("a JOBS_LIMITS that is not JSON fails at boot, with the key named", () => {
+    expect(() => loadJobsConfig({ ...VALID, JOBS_LIMITS: "{not json" })).toThrow(
+      /JOBS_LIMITS must be a JSON object/,
+    );
+  });
+
+  test("a JOBS_LIMITS override outside the shared schema fails at boot, with the key named", () => {
+    for (const bad of [
+      JSON.stringify({ unfinishedPerAppEnv: 0 }), // zero is not a capacity
+      JSON.stringify({ unfinishedPerAppEnv: -2 }), // negative is not a capacity
+      JSON.stringify({ unfinishedPerAppEnv: Number.MAX_SAFE_INTEGER }), // past the finite ceiling
+      JSON.stringify({ unknwonLimit: 5 }), // a typo must not silently keep the default
+      JSON.stringify([5]), // not an override object at all
+    ]) {
+      expect(() => loadJobsConfig({ ...VALID, JOBS_LIMITS: bad }), bad).toThrow(/JOBS_LIMITS/);
+    }
+  });
+
+  test("a JOBS_LIMITS that JSON-parses but is not an override object fails at boot, with the key named", () => {
+    // The other side of the parse boundary: a value JSON.parse accepts but
+    // the override schema refuses must stop the boot as loudly as malformed
+    // JSON — a null, a scalar or a doubled-encoding that silently booted the
+    // platform defaults would look tuned while nothing was applied.
+    for (const bad of [
+      "null", // JSON null
+      "20", // a bare JSON number
+      '"20"', // a JSON string — the override encoded twice
+      JSON.stringify({ unfinishedPerAppEnv: 2.5 }), // not a whole number of jobs
+    ]) {
+      expect(() => loadJobsConfig({ ...VALID, JOBS_LIMITS: bad }), bad).toThrow(/JOBS_LIMITS/);
+    }
   });
 });
