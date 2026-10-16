@@ -174,4 +174,20 @@ describe("loadJobsConfig", () => {
       expect(() => loadJobsConfig({ ...VALID, JOBS_LIMITS: bad }), bad).toThrow(/JOBS_LIMITS/);
     }
   });
+
+  test("a JOBS_LIMITS pair the worker can never satisfy fails at boot — the contradiction is configuration, not a runtime fault", () => {
+    // runningPerAppEnv above runningPerWorker is unsatisfiable by
+    // construction, and the pair must be refused where configuration is
+    // judged: the runner's start-retry loop exists for TRANSIENT store
+    // unavailability and can never converge on an immutable configuration
+    // fault, so a refusal that landed only there would retry forever,
+    // indistinguishable from a store that will not come up. The shared
+    // resolver's pair refusal is what makes this a boot error.
+    expect(() =>
+      loadJobsConfig({
+        ...VALID,
+        JOBS_LIMITS: JSON.stringify({ runningPerWorker: 2, runningPerAppEnv: 4 }),
+      }),
+    ).toThrow(/runningPerAppEnv|JOBS_LIMITS/);
+  });
 });

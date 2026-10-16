@@ -15,17 +15,25 @@ import {
  */
 
 describe("the worker-options derivation under hostile limits", () => {
-  test("a limit pair the shared resolver accepts but pg-boss rejects cannot become worker options", () => {
+  test("a limit pair no worker can satisfy is refused at the resolver, before any caller sees it", () => {
     // `runningPerAppEnv` and `runningPerWorker` are validated independently by
     // the shared schema, so a deployment map carrying runningPerAppEnv >
-    // runningPerWorker resolves cleanly. The derivation forwards the pair
-    // straight into pg-boss WorkOptions, whose own worker validation refuses
-    // localGroupConcurrency above localConcurrency — the combination can only
-    // detonate later, at worker registration, as a dependency assert. The
-    // platform's derivation seam is the earliest stage that can catch it.
-    const contradictory = resolveJobsCapacityLimits({ runningPerWorker: 1, runningPerAppEnv: 2 });
-    expect(contradictory).toEqual({ ...contradictory, runningPerWorker: 1, runningPerAppEnv: 2 });
-    expect(() => jobsWorkOptions(contradictory)).toThrow();
+    // runningPerWorker is a contradiction only a seam that sees the pair
+    // together can refuse. The resolver is that seam — the derivation's first
+    // production caller sits inside the runner's retry loop, which exists for
+    // TRANSIENT store unavailability and can never converge on a
+    // configuration fault — so the refusal lives at resolve time (boot),
+    // where configuration failures belong, and the derivation re-runs the
+    // same shared refusal only as the guard for hand-built limit sets that
+    // bypassed the resolver.
+    expect(() => resolveJobsCapacityLimits({ runningPerWorker: 1, runningPerAppEnv: 2 })).toThrow(
+      /runningPerAppEnv/,
+    );
+    // A hand-built pair that bypassed the resolver still cannot become worker
+    // options: the derivation runs the same shared refusal.
+    expect(() =>
+      jobsWorkOptions({ ...resolveJobsCapacityLimits(), runningPerAppEnv: 4, runningPerWorker: 2 }),
+    ).toThrow(/unsatisfiable/);
   });
 
   test("the boundary case itself — equal limits — stays derivable", () => {

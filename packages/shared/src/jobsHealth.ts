@@ -12,7 +12,7 @@
 
 /** The jobs service's store: reachable, at the pinned schema, carrying the platform queue policy. */
 export const JOBS_DATABASE_CHECK = "jobs_database";
-/** The jobs service's worker execution (worker evidence lands with the execution tickets). */
+/** The jobs service's worker execution: the runner started and a worker is registered on it. */
 export const JOBS_WORKER_CHECK = "jobs_worker";
 /** The jobs service's pg-boss maintenance/heartbeat supervision. */
 export const JOBS_SWEEPER_CHECK = "jobs_sweeper";

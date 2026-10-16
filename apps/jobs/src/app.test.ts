@@ -1,10 +1,16 @@
 import { describe, expect, test } from "vitest";
 
-import { HealthStatusSchema, JOBS_DATABASE_CHECK, JobErrorMessages } from "@azx-pbc/shared";
+import {
+  HealthStatusSchema,
+  JOBS_DATABASE_CHECK,
+  JOBS_WORKER_CHECK,
+  JobErrorMessages,
+} from "@azx-pbc/shared";
 
 import { buildApp } from "./app.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
+import type { JobsRunnerSnapshot } from "./runner.js";
 import { JobsStorage } from "./storage.js";
 import { makeReceiver, MemoryAdmission, MemoryLifecycle } from "./test/instructions.js";
 
@@ -42,15 +48,21 @@ async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<Jo
   return storage;
 }
 
-/** The full deps: the storage state under test plus the receiver seam. */
-async function depsWith(storage: JobsStorage) {
+/** The full deps: the storage state under test plus the receiver seam. The
+ * worker's supervision state is the leg's to set — the health body reads it
+ * per request like the storage snapshot. */
+async function depsWith(storage: JobsStorage, worker: JobsRunnerSnapshot = RUNNING_WORKER) {
   return {
     storage,
     instructions: makeReceiver().auth,
     lifecycle: new MemoryLifecycle(),
     admission: new MemoryAdmission(),
+    worker: () => worker,
   };
 }
+
+/** The supervision state of a serving composition: the runner up, worker on it. */
+const RUNNING_WORKER: JobsRunnerSnapshot = { started: true, workerRegistered: true };
 
 describe("GET /health", () => {
   test("answers 200 with a schema-valid body while readiness is still unknown", async () => {
@@ -72,6 +84,7 @@ describe("GET /health", () => {
         detail: expect.stringMatching(/never been verified/),
         metrics: { probes: 0 },
       },
+      { name: JOBS_WORKER_CHECK, status: "ok" },
     ]);
     await app.close();
     await storage.stop();
@@ -88,6 +101,22 @@ describe("GET /health", () => {
     expect(body.checks?.[0]?.name).toBe(JOBS_DATABASE_CHECK);
     expect(body.checks?.[0]?.status).toBe("ok");
     expect(body.checks?.[0]?.lastSuccessAt).toEqual(expect.any(String));
+    expect(body.checks?.[1]?.name).toBe(JOBS_WORKER_CHECK);
+    expect(body.checks?.[1]?.status).toBe("ok");
+    await app.close();
+    await storage.stop();
+  });
+
+  test("a started runner with no worker registered reports error — a listener without execution is not healthy", async () => {
+    const storage = await storageIn("ready");
+    const app = buildApp(await depsWith(storage, { started: true, workerRegistered: false }));
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    const body = HealthStatusSchema.parse(res.json());
+    expect(body.status).toBe("error");
+    expect(body.checks?.[1]?.name).toBe(JOBS_WORKER_CHECK);
+    expect(body.checks?.[1]?.status).toBe("error");
+    expect(body.checks?.[1]?.detail).toMatch(/no worker is registered/);
     await app.close();
     await storage.stop();
   });

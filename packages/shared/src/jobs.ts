@@ -680,54 +680,162 @@ export const FetchJobInputSchema = strictWireObject({
 export type FetchJobInput = z.infer<typeof FetchJobInputSchema>;
 
 /**
- * Any value JSON could have produced — the shape `z.json()` asserts — judged
- * iteratively. A recursive walk cannot judge this contract: a result at the
- * inclusive 64-KiB byte cap legally nests ~32,000 deep (JSON.parse produces
- * it from wire bytes without complaint), past the engine's recursion limit,
- * where a recursive validator answers a stack overflow instead of a verdict —
- * and `safeParse` returning a verdict is the seam every consumer binds to.
- * Objects must be plain (nothing JSON.parse produces has another prototype),
- * numbers must be finite, and a cycle is refused rather than walked forever.
+ * Why a value is not a complete JSON value — one bounded kind per refusal,
+ * naming the RULE and never the value: the refusal's text can reach logs,
+ * and the value is untrusted input.
  */
-class SubtreeComplete {
-  constructor(readonly container: object) {}
+class JsonValueRefusal extends Error {
+  constructor(kind: string) {
+    super(`the value is not a complete JSON value (${kind})`);
+    this.name = "JsonValueRefusal";
+  }
 }
 
-function isJsonValue(value: unknown): boolean {
-  try {
-    const stack: unknown[] = [value];
-    const open = new Set<object>();
-    while (stack.length > 0) {
-      const current = stack.pop();
-      if (current instanceof SubtreeComplete) {
-        open.delete(current.container);
-        continue;
-      }
-      if (current === null) continue;
-      const kind = typeof current;
-      if (kind === "string" || kind === "boolean") continue;
-      if (kind === "number") {
-        if (!Number.isFinite(current)) return false;
-        continue;
-      }
-      if (kind !== "object") return false;
-      const container = current as object;
-      if (open.has(container)) return false;
-      open.add(container);
-      stack.push(new SubtreeComplete(container));
-      if (Array.isArray(container)) {
-        for (let i = container.length - 1; i >= 0; i--) stack.push(container[i]);
-      } else {
-        if (
-          Object.getPrototypeOf(container) !== Object.prototype &&
-          Object.getPrototypeOf(container) !== null
-        ) {
-          return false;
+/**
+ * The canonical JSON text of a complete JSON value — the serialization half
+ * of the value contract, whose judging half is {@link isJsonValue} (which is
+ * this walk with a boolean wrapper, so the two can never disagree about what
+ * is legal). Both are iterative, and both must be: a result at the inclusive
+ * 64-KiB byte cap legally nests ~32,000 deep (`JSON.parse` produces it from
+ * wire bytes without complaint), past the engine's recursive serializer's
+ * stack (~5,000 levels on Node 24, a RangeError) and past Postgres's own
+ * jsonb parser at its default `max_stack_depth` (~8,000, a query error) — a
+ * recursive walk or serializer answers a stack overflow where the contract
+ * demands a verdict, and a stored form must hold everything the bound
+ * accepts.
+ *
+ * The text is byte-identical to `JSON.stringify`'s for every value both can
+ * reach: object keys in `Object.keys` order (integer-like ascending, then
+ * insertion), strings escaped by `JSON.stringify` (lone surrogates
+ * included), finite numbers by `String`'s formatting. Anything the contract
+ * refuses throws a {@link JsonValueRefusal} naming its kind — cycles,
+ * non-plain prototypes, non-finite numbers, holes and undefined, functions,
+ * symbols and bigints — with the value's own content never in the message.
+ * A container met again after its walk closed is shared, not cyclic, and
+ * serializes twice.
+ */
+export function stringifyJsonValue(value: unknown): string {
+  const out: string[] = [];
+  // The containers whose walk is open — a container met again while its walk
+  // is open is a cycle and is refused; one met again after its close is a
+  // shared subvalue and is walked again.
+  const open = new Set<object>();
+  type Task =
+    | { readonly kind: "text"; readonly text: string }
+    | { readonly kind: "close"; readonly container: object; readonly text: string }
+    | { readonly kind: "value"; readonly value: unknown }
+    | { readonly kind: "array"; readonly container: object; readonly values: readonly unknown[] }
+    | {
+        readonly kind: "object";
+        readonly container: object;
+        readonly entries: readonly (readonly [string, unknown])[];
+      };
+  const stack: Task[] = [{ kind: "value", value }];
+  while (stack.length > 0) {
+    const task = stack.pop();
+    if (!task) break;
+    switch (task.kind) {
+      case "text":
+        out.push(task.text);
+        break;
+      case "close":
+        open.delete(task.container);
+        out.push(task.text);
+        break;
+      case "value": {
+        const v = task.value;
+        if (v === null) {
+          out.push("null");
+          break;
         }
-        const values = Object.values(container);
-        for (let i = values.length - 1; i >= 0; i--) stack.push(values[i]);
+        const kind = typeof v;
+        if (kind === "string") {
+          out.push(JSON.stringify(v));
+          break;
+        }
+        if (kind === "boolean") {
+          out.push(v ? "true" : "false");
+          break;
+        }
+        if (kind === "number") {
+          if (!Number.isFinite(v)) throw new JsonValueRefusal("a non-finite number");
+          out.push(String(v));
+          break;
+        }
+        if (kind !== "object") {
+          // bigint, symbol, function and undefined are all members the
+          // contract refuses (a function member includes any `toJSON` — the
+          // contract never calls one).
+          throw new JsonValueRefusal(`a ${kind} member`);
+        }
+        const container = v as object;
+        if (open.has(container)) throw new JsonValueRefusal("a cycle");
+        open.add(container);
+        if (Array.isArray(container)) {
+          // Materialized by index, not by own keys: a sparse array's hole
+          // reads as the undefined no JSON value can be, so the contract
+          // refuses it rather than compacting it away.
+          const values: unknown[] = [];
+          for (let i = 0; i < container.length; i++) values.push(container[i]);
+          stack.push({ kind: "array", container, values });
+          break;
+        }
+        const proto = Object.getPrototypeOf(container);
+        if (proto !== Object.prototype && proto !== null) {
+          throw new JsonValueRefusal("a non-plain-object prototype");
+        }
+        const entries = Object.entries(container).map(
+          ([key, member]) => [JSON.stringify(key), member] as const,
+        );
+        stack.push({ kind: "object", container, entries });
+        break;
+      }
+      case "array": {
+        out.push("[");
+        if (task.values.length === 0) {
+          open.delete(task.container);
+          out.push("]");
+          break;
+        }
+        stack.push({ kind: "close", container: task.container, text: "]" });
+        // The members' pop order is v0, ",", v1, ",", ... — built forward
+        // and pushed reversed.
+        const members: Task[] = [];
+        task.values.forEach((member, i) => {
+          members.push({ kind: "value", value: member });
+          if (i < task.values.length - 1) members.push({ kind: "text", text: "," });
+        });
+        members.reverse();
+        stack.push(...members);
+        break;
+      }
+      case "object": {
+        out.push("{");
+        if (task.entries.length === 0) {
+          open.delete(task.container);
+          out.push("}");
+          break;
+        }
+        stack.push({ kind: "close", container: task.container, text: "}" });
+        // Each pair's pop order is its key text then its value, with the
+        // comma before every pair but the first.
+        const pairs: Task[] = [];
+        task.entries.forEach(([keyJson, member], i) => {
+          pairs.push({ kind: "text", text: `${i > 0 ? "," : ""}${keyJson}:` });
+          pairs.push({ kind: "value", value: member });
+        });
+        pairs.reverse();
+        stack.push(...pairs);
+        break;
       }
     }
+  }
+  return out.join("");
+}
+
+export function isJsonValue(value: unknown): boolean {
+  try {
+    stringifyJsonValue(value);
     return true;
   } catch {
     return false;
@@ -747,6 +855,11 @@ export type FetchJobResult =
   | FetchJobResult[]
   | { [key: string]: FetchJobResult };
 
+/**
+ * The fetch result's wire schema over the shared {@link isJsonValue} judge —
+ * the same judge the execution seam bounds every job result's persistence
+ * with.
+ */
 export const FetchJobResultSchema = z.custom<FetchJobResult>(isJsonValue);
 
 // ── Lifecycle generations and delivery (background-jobs-plane design §5) ──────

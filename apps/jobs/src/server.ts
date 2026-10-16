@@ -6,6 +6,7 @@ import { JobsAcceptanceStore } from "./acceptance.js";
 import { JobsInstructionBurns } from "./burns.js";
 import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
+import { JobsExecution, JobsHandlerRegistry } from "./execution.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
 import { JobsLifecycleStore } from "./lifecycle.js";
 import { JobsRunner } from "./runner.js";
@@ -95,12 +96,33 @@ const lifecycle = new JobsLifecycleStore({
   log: lateLog,
 });
 
+// The handler registry — the dispatch's repertoire. Production registers the
+// platform-authored types only; the outbound fetch handler's registration and
+// the development fixtures' are their own tickets' work, so until one lands a
+// dispatched job is answered with the terminal platform error (the refusal is
+// the honest answer, and its evidence is the execution span's outcome).
+const handlers = new JobsHandlerRegistry();
+
+// The execution seam — the worker registration and the attempt projection
+// (progress, outcomes, results) into the wrapper record. Its pool serves the
+// attempts' writes; the worker itself lives on the runner's instance.
+const execution = new JobsExecution({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  handlers,
+  limits: config.limits,
+  log: lateLog,
+});
+
 // The runtime runner — the one pg-boss instance, whose supervised start
 // converges once the store is usable. Its enqueue rides the acceptance
-// transaction; execution registers on the same instance.
+// transaction; its worker registration is the execution seam's.
 const runner = new JobsRunner({
   databaseUrl: config.databaseUrl,
   statementTimeoutMs: config.statementTimeoutMs,
+  registerWorker: async (boss) => {
+    await execution.registerOn(boss);
+  },
   log: lateLog,
 });
 
@@ -125,17 +147,19 @@ const app = buildApp({
   }),
   lifecycle,
   admission,
+  worker: () => runner.snapshot,
 });
 logRef.current = app.log;
 
 // The health-first boot contract: the listener comes up before the store is
 // usable, `/health` reports the store's state honestly while the bounded
 // retries continue, and shutdown releases what startup acquired — the runner
-// instance and its retry timer, the acceptance store's pool, the lifecycle
-// pool, the sweep timer and pool, the probes' timer and pool, then the
-// telemetry flush (ADR-0009).
+// instance and its retry timer, the execution store's pool, the acceptance
+// store's pool, the lifecycle pool, the sweep timer and pool, the probes'
+// timer and pool, then the telemetry flush (ADR-0009).
 app.addHook("onClose", async () => {
   await runner.stop();
+  await execution.stop();
   await admission.stop();
   await lifecycle.stop();
   await burns.stop();
@@ -154,6 +178,7 @@ try {
   storage.start();
   burns.start();
   lifecycle.start();
+  execution.start();
   runner.start();
   admission.start();
   await app.listen({ port, host });
@@ -171,11 +196,12 @@ try {
 } catch (err) {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
-  // storage.start(), burns.start(), lifecycle.start(), runner.start() and
-  // admission.start() have already acquired their resources; release them
-  // here, not only on the shutdown path, bounded by each pool's own connect
-  // timeout.
+  // storage.start(), burns.start(), lifecycle.start(), execution.start(),
+  // runner.start() and admission.start() have already acquired their
+  // resources; release them here, not only on the shutdown path, bounded by
+  // each pool's own connect timeout.
   await runner.stop();
+  await execution.stop();
   await admission.stop();
   await lifecycle.stop();
   await burns.stop();

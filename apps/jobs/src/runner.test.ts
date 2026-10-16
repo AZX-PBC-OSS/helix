@@ -6,10 +6,12 @@ import { JobsRunner } from "./runner.js";
  * The runtime runner's supervised start, against real failure modes: a store
  * that refuses connections keeps the loop retrying (logged, bounded, never
  * throwing out of start()), the enqueue refuses honestly until the runner
- * comes up, and stop() releases the timer and the instance on every exit
- * path — safe twice, safe before start, and never restarting after stop.
- * The start-against-a-migrated-store success path is the boot suite's
- * instruction legs, which submit for real through the running process.
+ * comes up, a failing worker registration is a failed start (the instance is
+ * discarded and the loop retries until the registration succeeds), and stop()
+ * releases the timer and the instance on every exit path — safe twice, safe
+ * before start, and never restarting after stop. The start-against-a-
+ * migrated-store success path is the boot suite's instruction legs, which
+ * submit for real through the running process.
  */
 
 const DEAD_DSN = "postgresql://helix_jobs:pw@127.0.0.1:59999/none";
@@ -20,6 +22,10 @@ function runnerWith(log: { warn: (fields: { event: unknown }) => void }) {
     statementTimeoutMs: 2_000,
     retryInitialMs: 20,
     retryMaxMs: 50,
+    // The registration hook's own contract is exercised against the real
+    // store in `runner.integration.test.ts`; here a no-op stands in — these
+    // legs' subject is the store-driven loop.
+    registerWorker: async () => {},
     // The structural logger's real shape, narrowed at the call site.
     log: log as unknown as ConstructorParameters<typeof JobsRunner>[0]["log"],
   });
@@ -53,6 +59,7 @@ describe("the supervised runner", () => {
     // The loop retried at least twice before the stop, and the failures
     // never escaped start().
     expect(failedStarts).toBeGreaterThanOrEqual(2);
+    expect(runner.snapshot).toEqual({ started: false, workerRegistered: false });
   });
 
   test("the backoff is capped — the loop keeps retrying at the cap instead of spacing out toward giving up", async () => {

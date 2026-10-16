@@ -39,6 +39,7 @@ export type JobsStorageCompatibility =
   | { kind: "burn_missing" }
   | { kind: "lifecycle_missing" }
   | { kind: "record_missing" }
+  | { kind: "record_schema"; problems: readonly string[] }
   | { kind: "runtime_privileges"; missing: readonly string[] };
 
 /** The queue-table columns this check compares — pg-boss's effective queue policy. */
@@ -134,6 +135,26 @@ export function compareQueuePolicy(row: QueuePolicyRow): JobsQueuePolicyDiff[] {
   }
   return diffs;
 }
+
+/**
+ * The job-record store's own columns the execution projection writes — read
+ * back by the compatibility check so a record store from before the
+ * execution migration (present, but without the execution columns) is a
+ * startup-visible verdict, not a first-execution failure. The result
+ * column's TYPE is checked beside its presence: the projection stores the
+ * bound's canonical JSON text, and a store still carrying the earlier jsonb
+ * form would pass a presence-only probe and fail only when a result deep
+ * enough to exceed jsonb's own parser arrived — a latent failure the
+ * startup check exists to catch.
+ */
+const JOB_RECORD_COLUMNS = ["attempt", "progress", "error_code", "result"] as const;
+/** The type each column must carry, as `information_schema.columns` reports it. */
+const JOB_RECORD_COLUMN_TYPES: Record<(typeof JOB_RECORD_COLUMNS)[number], string> = {
+  attempt: "integer",
+  progress: "jsonb",
+  error_code: "text",
+  result: "text",
+};
 
 /**
  * The runtime DML the runner needs on the store, probed through the privilege
@@ -294,6 +315,41 @@ async function readVerdict(client: PoolClient): Promise<JobsStorageCompatibility
   }
   if (!recordPresent) {
     return { kind: "record_missing" };
+  }
+
+  // The record store's execution columns: a table from before the execution
+  // migration passes the presence probe but cannot carry an attempt, a
+  // progress snapshot or an outcome — its absence is its own verdict, the
+  // same remedy (the migration command) as the record store's. A column
+  // present at the wrong type is the same verdict: the projection's writes
+  // would fail only on the values the wrong type cannot hold.
+  let recordColumns: Map<string, string>;
+  try {
+    const columns = await client.query<{ column_name: string; data_type: string }>(
+      `SELECT column_name, data_type FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2`,
+      [JOBS_SCHEMA, "job_record"],
+    );
+    recordColumns = new Map(columns.rows.map((row) => [row.column_name, row.data_type]));
+  } catch (error) {
+    return sqlState(error) === INSUFFICIENT_PRIVILEGE
+      ? { kind: "runtime_privileges", missing: ["SELECT on the job-record store's columns"] }
+      : unreachable(error);
+  }
+  const problems: string[] = [];
+  for (const name of JOB_RECORD_COLUMNS) {
+    const found = recordColumns.get(name);
+    if (found === undefined) {
+      problems.push(`column "${name}" is missing`);
+      continue;
+    }
+    const expected = JOB_RECORD_COLUMN_TYPES[name];
+    if (found !== expected) {
+      problems.push(`column "${name}" is ${found}, expected ${expected}`);
+    }
+  }
+  if (problems.length > 0) {
+    return { kind: "record_schema", problems };
   }
 
   const missing = await missingRuntimePrivileges(client);

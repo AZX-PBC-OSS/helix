@@ -4,7 +4,6 @@ import type { Pool, PoolClient } from "pg";
 
 import {
   JOB_TERMINAL_STATUSES,
-  JobStatusSchema,
   type JobError,
   type JobStatus,
   type JobsCapacityLimits,
@@ -13,6 +12,7 @@ import { sha256BodyDigest, type JobsSubmitClaims } from "@azx-pbc/shared/jobsSig
 
 import { lifecycleEligibilityInTx } from "./lifecycle.js";
 import { createJobsPool, withJobsClient } from "./pool.js";
+import { publicStatus, storedExecutionError } from "./execution.js";
 import {
   JOBS_QUEUE_NAME,
   JOBS_JOB_RECORD_QUALIFIED,
@@ -148,6 +148,7 @@ interface KeyMappingRow {
   job_id: string;
   status: string;
   body_sha256: string;
+  error_code: string | null;
 }
 
 /**
@@ -490,7 +491,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     key: string,
   ): Promise<KeyMappingRow | null> {
     const result = await client.query<KeyMappingRow>(
-      `SELECT job_id, status, body_sha256
+      `SELECT job_id, status, body_sha256, error_code
          FROM ${JOBS_JOB_RECORD_QUALIFIED}
         WHERE ${KEY_SCOPE_PREDICATE}`,
       keyScopeParams(claims, key),
@@ -539,10 +540,10 @@ export class JobsAcceptanceStore implements JobsAdmission {
   private compareKeyMapping(row: KeyMappingRow, digest: string): JobsAdmissionResult {
     const status = publicStatus(row.status);
     if (row.body_sha256 !== digest) {
-      // The conflict's error is the job's stored execution error — none
-      // until execution persists outcomes (the execution ticket's seam); a
-      // queued job has none to report.
-      return { outcome: "conflict", status, error: null };
+      // The conflict's error is the job's stored execution error — the code
+      // the execution projection wrote for the attempt that failed (a queued
+      // job never executed, so none to report).
+      return { outcome: "conflict", status, error: storedExecutionError(row.error_code) };
     }
     return { outcome: "recovered", jobId: row.job_id, status };
   }
@@ -566,7 +567,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
       throw new Error("a key claim race cannot arise for an unkeyed submission");
     }
     const result = await pool.query<KeyMappingRow>(
-      `SELECT job_id, status, body_sha256
+      `SELECT job_id, status, body_sha256, error_code
          FROM ${JOBS_JOB_RECORD_QUALIFIED}
         WHERE ${KEY_SCOPE_PREDICATE}`,
       keyScopeParams(claims, claims.idempotencyKey),
@@ -579,20 +580,6 @@ export class JobsAcceptanceStore implements JobsAdmission {
     }
     return this.compareKeyMapping(row, digest);
   }
-}
-
-/**
- * The public status a stored record projects, parsed against the wire enum
- * before it can reach a response — a stored value the contract does not
- * carry is a defect answered by the error boundary, never a malformed body
- * on the wire.
- */
-function publicStatus(status: string): JobStatus {
-  const parsed = JobStatusSchema.safeParse(status);
-  if (!parsed.success) {
-    throw new Error(`the stored job status is not a public status: ${JSON.stringify(status)}`);
-  }
-  return parsed.data;
 }
 
 /**

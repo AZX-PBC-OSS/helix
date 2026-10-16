@@ -679,6 +679,7 @@ describe("the signed operation routes", () => {
       instructions: receiver.auth,
       lifecycle,
       admission: new MemoryAdmission(),
+      worker: () => ({ started: true, workerRegistered: true }),
     });
     try {
       const token = await mint({

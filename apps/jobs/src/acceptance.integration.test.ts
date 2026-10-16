@@ -988,11 +988,14 @@ describe("capacity admission", () => {
     appId: string,
     over: { status?: string; env?: string; ownerOid?: string; type?: string } = {},
   ): Promise<void> {
+    const status = over.status ?? "queued";
+    // A succeeded seed carries the result the execution projection writes —
+    // the store's own check refuses a succeeded row without one.
     await direct.query(
       `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
-          generation, status, retry_key, body_sha256, created_at)
-       VALUES ('jobs', $1, $2, $3, $4, 'user', $5, $6, 1, $7, NULL, 'seeded', now())`,
+          generation, status, retry_key, body_sha256, created_at, result)
+       VALUES ('jobs', $1, $2, $3, $4, 'user', $5, $6, 1, $7, NULL, 'seeded', now(), $8)`,
       [
         randomUUID(),
         randomUUID(),
@@ -1000,7 +1003,8 @@ describe("capacity admission", () => {
         over.env ?? "prod",
         over.ownerOid ?? TEST_IDENTITY.ownerOid,
         over.type ?? "jobs:fetch",
-        over.status ?? "queued",
+        status,
+        status === "succeeded" ? JSON.stringify({ seeded: true }) : null,
       ],
     );
   }
@@ -1188,7 +1192,7 @@ describe("capacity admission", () => {
       // unfinished drops to one and the cap admits again.
       const rows = await records(appId);
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
         [(rows[0] as { job_id: string }).job_id],
       );
       await expect(admit(appId, BODY, { idempotencyKey: null })).resolves.toMatchObject({
@@ -1216,7 +1220,7 @@ describe("capacity admission", () => {
       // Terminal, but physically retained: the retained cap is unmoved.
       const rows = await records(appId);
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
         [(rows[0] as { job_id: string }).job_id],
       );
       await expect(admit(appId, BODY, { idempotencyKey: null })).resolves.toMatchObject({
@@ -1398,7 +1402,7 @@ describe("capacity admission", () => {
       const rows = await records(appId);
       const completed = rows.find((r) => r.retry_key === "env-scope-a") as { job_id: string };
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
         [completed.job_id],
       );
       await expect(admit(appId, BODY, { idempotencyKey: "env-scope-d" })).resolves.toEqual({
@@ -1454,7 +1458,7 @@ describe("capacity admission", () => {
       // new work — its own job, not the completed one's reference.
       const rows = await records(appId);
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
         [(rows[0] as { job_id: string }).job_id],
       );
       const retried = await admit(appId, BODY, { idempotencyKey: "refusal-key-b" });

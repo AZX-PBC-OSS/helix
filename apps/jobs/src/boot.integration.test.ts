@@ -12,12 +12,15 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   INSTRUCTION_HEADER,
   JOBS_DATABASE_CHECK,
+  JOBS_WORKER_CHECK,
   JobErrorMessages,
+  JobStatusSchema,
 } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/jobsSigning";
 import { JOBS_SIGNING_VECTOR_ROOTS } from "@azx-pbc/shared/jobsSigningVectors";
 
 import { migrateJobsStorage } from "./migrate.js";
+import { JOBS_JOB_RECORD_QUALIFIED, JOBS_PGBOSS_SCHEMA } from "./policy.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 
 /**
@@ -580,23 +583,32 @@ describe("signed instructions through the running process", () => {
     );
   }
 
-  async function submit(port: number, token: string): Promise<{ status: number; body: unknown }> {
+  interface AcceptedBody {
+    server: string;
+    jobId: string;
+    status: string;
+  }
+
+  /** A submit presentation under one retry identity — the parameter the legs vary. */
+  async function submitFor(
+    port: number,
+    token: string,
+    idempotencyKey: string,
+  ): Promise<{ status: number; body: unknown }> {
     const res = await fetch(`http://127.0.0.1:${port}/internal/jobs/v1/jobs`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         [INSTRUCTION_HEADER]: token,
-        [IDEMPOTENCY_KEY_HEADER]: "retry-key-1",
+        [IDEMPOTENCY_KEY_HEADER]: idempotencyKey,
       },
       body: '{"url":"https://example.com/data.json"}',
     });
     return { status: res.status, body: await res.json() };
   }
 
-  interface AcceptedBody {
-    server: string;
-    jobId: string;
-    status: string;
+  async function submit(port: number, token: string): Promise<{ status: number; body: unknown }> {
+    return submitFor(port, token, "retry-key-1");
   }
 
   /**
@@ -702,7 +714,11 @@ describe("signed instructions through the running process", () => {
       // the replay: the burn outlives the process. And a fresh token
       // carrying the same legitimate retry identity RECOVERS the original
       // job — the lost-reply path of the retry-identity contract, across a
-      // restart, with the same reference and no second job.
+      // restart, with the same reference and no second job. The replay's
+      // status is the job's CURRENT one, not the acceptance instant's: this
+      // composition now executes accepted work (the worker registers through
+      // the same boot path), so the job may already be terminal when the
+      // recovery lands.
       const restartedPort = await reservePort();
       child = await bootServer(restartedPort, childEnv(RUNTIME_DSN, restartedPort));
       try {
@@ -715,7 +731,139 @@ describe("signed instructions through the running process", () => {
 
         const recovered = await submit(restartedPort, await mintSubmit("retry-key-1"));
         expect(recovered.status).toBe(202);
-        expect(recovered.body).toEqual(accepted);
+        const recoveredBody = recovered.body as AcceptedBody;
+        expect(recoveredBody.server).toBe(accepted.server);
+        expect(recoveredBody.jobId).toBe(accepted.jobId);
+        expect(JobStatusSchema.safeParse(recoveredBody.status).success).toBe(true);
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
+  test(
+    "accepted work executes through the running process — the worker claims it, and a type with no registered handler terminates with the platform error",
+    slow,
+    async () => {
+      // The production composition registers its worker on the same pg-boss
+      // instance the enqueue runs on, so an accepted job is executed (or
+      // refused at the dispatch) independently of any client — criterion 22's
+      // "independent of the initiating connection", here in the honest
+      // current state: no production handler is registered yet, so the
+      // dispatched job terminates with the fixed platform error, projected
+      // into the wrapper record. The leg proves the whole chain — the
+      // worker's start gate, the attempt projection and the terminal write —
+      // through the real process, real store and real role split.
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+        // The health body's worker check is real here: a listener without
+        // its worker must not read healthy.
+        const healthy = await pollHealth(port, 10_000);
+        expect(healthy.checks?.some((c) => c.name === JOBS_WORKER_CHECK && c.status === "ok")).toBe(
+          true,
+        );
+
+        const executionApp = randomUUID();
+        const mintFor = (idempotencyKey: string): Promise<string> =>
+          mintJobsInstruction(
+            {
+              operation: "submit",
+              server: "jobs",
+              identity: {
+                appId: executionApp,
+                env: "prod",
+                ownerKind: "user",
+                ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+                allowedTypes: ["jobs:fetch"],
+              },
+              type: "jobs:fetch",
+              generation: "1",
+              idempotencyKey,
+              body: new TextEncoder().encode('{"url":"https://example.com/data.json"}'),
+              iatS: Math.floor(Date.now() / 1000) - 1,
+            },
+            deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+          );
+        const delivery = '{"generation":"1","archived":false}';
+        const delivered = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${executionApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: executionApp,
+                  body: new TextEncoder().encode(delivery),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body: delivery,
+          },
+        );
+        expect(delivered.status).toBe(200);
+
+        const deadline = Date.now() + 60_000;
+        let accepted: { status: number; body: unknown } | null = null;
+        while (Date.now() < deadline) {
+          accepted = await submitFor(port, await mintFor("execution-leg"), "execution-leg");
+          if (accepted.status !== 503) break;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        expect(accepted?.status, JSON.stringify(accepted)).toBe(202);
+        const jobId = (accepted!.body as { jobId: string }).jobId;
+
+        // The running process's own worker claims the job; the store's
+        // wrapper record is where the outcome lands (read back as the store
+        // owner — the test's own connection, not the runtime role's).
+        const reader = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+        try {
+          await eventually(async () => {
+            const { rows } = await reader.query<{
+              status: string;
+              error_code: string | null;
+              attempt: number | null;
+            }>(
+              `SELECT status, error_code, attempt FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+              [jobId],
+            );
+            return rows[0]?.status === "failed";
+          }, 60_000);
+          const { rows } = await reader.query<{
+            status: string;
+            error_code: string | null;
+            attempt: number | null;
+            result: unknown;
+          }>(
+            `SELECT status, error_code, attempt, result FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+            [jobId],
+          );
+          const record = rows[0];
+          if (!record) throw new Error(`no record row for job ${jobId}`);
+          expect(record.status).toBe("failed");
+          expect(record.error_code).toBe("platform_error");
+          expect(record.attempt).toBe(1);
+          expect(record.result).toBeNull();
+          const runnerState = await reader.query<{ state: string }>(
+            `SELECT state FROM ${JOBS_PGBOSS_SCHEMA}.job
+               WHERE id::text IN (SELECT runner_job_id FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1)`,
+            [jobId],
+          );
+          expect(runnerState.rows[0]?.state).toBe("failed");
+        } finally {
+          await reader.end();
+        }
       } finally {
         const exit = await stopServer(child);
         expect(exit.exitCode).toBe(0);

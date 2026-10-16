@@ -1,9 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { HealthCheckSchema, JOBS_DATABASE_CHECK } from "@azx-pbc/shared";
+import { HealthCheckSchema, JOBS_DATABASE_CHECK, JOBS_WORKER_CHECK } from "@azx-pbc/shared";
 
 import type { JobsStorageCompatibility } from "./compat.js";
-import { jobsDatabaseCheck } from "./health.js";
+import { jobsDatabaseCheck, jobsWorkerCheck } from "./health.js";
+import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
 
 /**
@@ -101,6 +102,14 @@ describe("jobsDatabaseCheck", () => {
       },
       {
         verdict: {
+          kind: "record_schema",
+          problems: ['column "attempt" is missing', 'column "result" is jsonb, expected text'],
+        },
+        detailMatches:
+          /not at its expected shape \(column "attempt" is missing; column "result" is jsonb, expected text\).*run the migration command/s,
+      },
+      {
+        verdict: {
           kind: "queue_policy",
           diffs: [
             { field: "retry_limit", expected: 5, actual: 0 },
@@ -163,5 +172,34 @@ describe("jobsDatabaseCheck", () => {
     const check = jobsDatabaseCheck(snapshot({ state: "unavailable", verdict: null, probes: 2 }));
     expect(check.status).toBe("error");
     expect(check.detail).toMatch(/no verdict recorded/);
+  });
+});
+
+describe("jobsWorkerCheck", () => {
+  test("a started runner with its worker registered is ok", () => {
+    const check = jobsWorkerCheck({ started: true, workerRegistered: true });
+    expect(HealthCheckSchema.parse(check)).toBeTruthy();
+    expect(check.name).toBe(JOBS_WORKER_CHECK);
+    expect(check.status).toBe("ok");
+  });
+
+  test("an unstarted runner is error — no worker is executing", () => {
+    const check = jobsWorkerCheck({ started: false, workerRegistered: false });
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/runner has not started/);
+  });
+
+  test("a started runner with no worker is error — a listener without execution never reads healthy", () => {
+    const check = jobsWorkerCheck({ started: true, workerRegistered: false });
+    expect(HealthCheckSchema.parse(check)).toBeTruthy();
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/no worker is registered/);
+  });
+
+  test("the check is named for the alert rules and carries the runner snapshot's own shape", () => {
+    // The runner's snapshot type is the grading's whole input — an extra
+    // field the runner later adds must not silently change this check.
+    const snapshot: JobsRunnerSnapshot = { started: true, workerRegistered: true };
+    expect(jobsWorkerCheck(snapshot)).toEqual({ name: JOBS_WORKER_CHECK, status: "ok" });
   });
 });

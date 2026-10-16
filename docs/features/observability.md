@@ -59,6 +59,7 @@ terminates untrusted traffic (decision 4).
 | `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine: the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption, the vendor redirect's completion state machine, and the read-only status decision (ADR-0031 as amended) |
 | `helix.jobs.submit` / `.snapshot` / `.result` / `.cancel` / `.lifecycle` | the jobs receiver's five signed internal operation routes — one root span each, named for the operation the ROUTE serves (never a name read from the token); verification outcomes and reject reasons ride `helix.outcome` / `helix.reason`, and `http.route` is the operation matrix's own path. Once an operation's semantics have landed, its own outcome supersedes the verification verdict on that span: the lifecycle delivery answers `applied` / `stale` / `invalid_body` / `unavailable` (`JOBS_LIFECYCLE_OUTCOMES`), with the delivered app, generation and archived flag as span attributes; the submission answers `JOBS_SUBMIT_OUTCOMES` (see below), with the submitting app and its claimed generation as span attributes |
 | `helix.jobs.lifecycle.outbox` | the portal's lifecycle outbox write — the span around appending one intent per configured serving/retiring target inside the app transition's transaction (ADR-0007); carries `helix.app_id`, `helix.jobs.generation`, `helix.jobs.archived` and `helix.jobs.lifecycle.targets`. Not emitted when the deployment map is empty (fully disabled jobs writes no backlog) |
+| `helix.jobs.execute` | the jobs worker's execution of one attempt of one job — a root consumer span (background work has no inbound context to continue), one per attempt; carries `helix.app_id`, `helix.jobs.type` (the qualified type — a bounded deployment-catalogue dimension), `helix.jobs.job_id` (the public reference, the join between a trace and the snapshot the app polls) and `helix.jobs.attempt` (1-based). Its final `helix.outcome` is `JOBS_EXECUTE_OUTCOMES` (see below) |
 | `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route — My Connections' metadata-only list |
 | `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
 
@@ -212,6 +213,26 @@ looked up:
   `unavailable` (the acceptance store could not decide) — beside
   `helix.app_id` and `helix.jobs.generation` (pinned by the same suite's
   submit scan).
+- The `helix.jobs.execute` span (the worker's attempt) carries `helix.outcome`
+  ∈ `JOBS_EXECUTE_OUTCOMES` — `succeeded` (the handler's result, inside the
+  platform's bounds, projected durably after the claim's own fenced
+  settlement), `failed` (the attempt's failure projected durably; the bounded
+  `JobError` code rides `helix.reason`), `gate_refused` (the worker-start gate
+  refused an ineligible lifecycle generation — the handler never ran),
+  `terminal_fenced` (the record was already terminal or the runner claim had
+  lapsed — no outcome overwritten), and `unavailable` (the execution store
+  could not answer). The grading is a decided contract, uniform at every exit:
+  a designed failure (`failed` with the job's own reason) and the refusals
+  (`gate_refused`, `terminal_fenced`) stay UNSET — the platform working as
+  designed; `failed` with reason `platform_error` and `unavailable` grade
+  ERROR — a platform fault and an infrastructure outage are what a trace
+  backend's error views exist to surface, and the
+  `helix.jobs.executions` counter's dimensions tell the same story. Never the
+  input, the result, a retry key, an owner oid or a URL (pinned by the
+  execution suite's every-attribute scan and its span-status pins); the
+  "links to enqueue" join of ADR-0009 is the span's own
+  `helix.jobs.job_id` attribute — no trace context is stored on jobs, so
+  there is nothing to link against.
 
 | Instrument | Kind | Attributes |
 | --- | --- | --- |
@@ -232,6 +253,7 @@ looked up:
 | `helix.jobs.storage.probes` | counter | `outcome` ∈ {`ok`, `unavailable`} — the jobs service's storage-readiness probes (`JOBS_STORAGE_PROBE_OUTCOMES`). An attempt counter, like `helix.providers.reconciles`: a run of `unavailable` with no `ok` is a store outage, and the *reason* (unreachable / schema / queue-policy / burn store / privileges) is carried by the `jobs_database` check's body and the `jobs.storage.unavailable` log event, which the body-aware alerts read |
 | `helix.jobs.instructions` | counter | `helix.jobs.operation` ∈ {`submit`, `snapshot`, `result`, `cancel`, `lifecycle`} (the route's own name, never read from the token), `outcome` ∈ {`accepted`, `replayed`, `rejected`, `unavailable`} (`JOBS_INSTRUCTION_OUTCOMES`) — every presentation of a signed internal instruction, refused or not. A run of `replayed` is a capture-and-replay attempt (the burn caught it; no effect ran); a run of `rejected` is a forged or misconfigured minter, and the *reason* rides the span's `helix.reason` (`JOBS_INSTRUCTION_REJECT_REASONS`, plus `missing`/`malformed` for a header that never was a token, and `resource` for a path that cannot name one) — never a metric dimension; a run of `unavailable` is the burn store failing closed. Identity, token and retry-key material never appear in any dimension |
 | `helix.jobs.burn.sweeps` | counter | `outcome` ∈ {`ok`, `failed`} — the burn store's bounded cleanup passes, emitted by BOTH planes that run a burn store: the jobs service (its `instruction_burns` table) and the edge (its `jobs_callback_jti` table, prod tier; the dev-gateway emits the same instrument for the dev tier). Passes that remove rows are routine silence; a run of `failed` with no `ok` is a store that stopped answering its cleanup, and burned nonces then grow with instruction volume until it answers |
+| `helix.jobs.executions` | counter | `outcome` ∈ {`succeeded`, `failed`, `gate_refused`, `terminal_fenced`, `unavailable`} (`JOBS_EXECUTE_OUTCOMES`) — every execution attempt's disposition, one per attempt. A run of `unavailable` is an execution store that stopped answering; `gate_refused` marks work whose lifecycle generation closed before it could start (its durable cancellation is the recovery loop's); the failure *reason* rides the span's `helix.reason`, never a dimension. The attempt number is a span attribute, never a metric dimension |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained

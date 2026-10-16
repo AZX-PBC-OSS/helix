@@ -117,6 +117,7 @@ function receiverFor(server: string, operation: JobsOperationName, keyId: string
     instructions: auth,
     lifecycle,
     admission: new MemoryAdmission(),
+    worker: () => ({ started: true, workerRegistered: true }),
   });
   const receiver: Receiver = { app, storage, clock, burns, lifecycle };
   RECEIVERS.set(cacheKey, receiver);

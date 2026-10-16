@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { PgBoss } from "pg-boss";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 
 import { migrateJobsStorage } from "./migrate.js";
 import { JobsRunner } from "./runner.js";
@@ -70,6 +71,7 @@ describe("the supervised runner's convergence", () => {
             failedStarts += 1;
         },
       },
+      registerWorker: async () => {},
     });
     runner.start();
   }, 60_000);
@@ -133,4 +135,208 @@ describe("the supervised runner's convergence", () => {
     );
     expect(after.rows[0]?.n).toBe(0);
   }, 90_000);
+});
+
+describe("the runner's worker registration", () => {
+  test("a registration that fails is a failed start — the instance is discarded and a later attempt succeeds", async () => {
+    await applyRolesProvisioning(SCRATCH_DB);
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    let registrations = 0;
+    const seenInstances = new Set<object>();
+    const failing = new JobsRunner({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: 10_000,
+      retryInitialMs: 25,
+      retryMaxMs: 100,
+      registerWorker: async (boss) => {
+        registrations += 1;
+        seenInstances.add(boss);
+        if (registrations < 3) throw new Error("the worker registration failed");
+      },
+      log: { info: () => {}, warn: () => {} },
+    });
+    failing.start();
+    try {
+      // The first two attempts fail as starts (their half-started
+      // instances are discarded); the third registers and the runner
+      // reports its worker.
+      const by = Date.now() + 30_000;
+      while (Date.now() < by && !failing.snapshot.workerRegistered) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(failing.snapshot).toEqual({ started: true, workerRegistered: true });
+      expect(registrations).toBe(3);
+      // Every retried attempt registered on a FRESH instance — a
+      // half-started one is never re-registered onto.
+      expect(seenInstances.size).toBe(registrations);
+    } finally {
+      await failing.stop();
+    }
+    expect(failing.snapshot).toEqual({ started: false, workerRegistered: false });
+  }, 60_000);
+
+  test("a runner that converged on a retried instance still contains the instance's 'error' events — the containment rides every attempt's instance, not only the first", async () => {
+    await applyRolesProvisioning(SCRATCH_DB);
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    let registrations = 0;
+    let serving: PgBoss | undefined;
+    const retried = new JobsRunner({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: 10_000,
+      retryInitialMs: 25,
+      retryMaxMs: 100,
+      registerWorker: async (boss) => {
+        registrations += 1;
+        // The first attempt fails as a start; the loop converges on a fresh
+        // instance — the one this test then probes.
+        if (registrations === 1) throw new Error("the worker registration failed");
+        serving = boss;
+      },
+      log: { info: () => {}, warn: () => {} },
+    });
+    retried.start();
+    try {
+      const by = Date.now() + 30_000;
+      while (Date.now() < by && !retried.snapshot.workerRegistered) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(retried.snapshot.workerRegistered).toBe(true);
+      expect(registrations).toBeGreaterThanOrEqual(2);
+      // pg-boss emits the errors its own supervision absorbs (a failed
+      // maintenance pass, a dropped pool client) on the instance's event
+      // emitter; an "error" event with no listener throws out of the
+      // emitter and kills the process — the crash the runner's own
+      // containment exists to prevent. The serving instance must absorb it:
+      // contained means logged, never thrown.
+      expect(() =>
+        serving?.emit("error", new Error("a supervision error the runner must absorb")),
+      ).not.toThrow();
+    } finally {
+      await retried.stop();
+    }
+  }, 60_000);
+
+  test("the containment reports what it absorbs — an instance's 'error' event is logged with its cause, at warn", async () => {
+    await applyRolesProvisioning(SCRATCH_DB);
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    const warns: Array<{ fields: Record<string, unknown>; msg: string }> = [];
+    let serving: PgBoss | undefined;
+    const reporting = new JobsRunner({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: 10_000,
+      registerWorker: async (boss) => {
+        serving = boss;
+      },
+      log: {
+        info: () => {},
+        warn: (fields, msg) => warns.push({ fields, msg }),
+      },
+    });
+    reporting.start();
+    try {
+      const by = Date.now() + 30_000;
+      while (Date.now() < by && !reporting.snapshot.workerRegistered) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(reporting.snapshot.workerRegistered).toBe(true);
+      // The absorbed emission is not silent: the operator's evidence for the
+      // supervision failures nothing else reports is this event, with the
+      // error itself attached — a containment that swallowed without
+      // reporting would pass the leg above while hiding every instance
+      // error it absorbed. Warn, not error: the runner survived the
+      // emission, and the probes and operations carry the fatal cases.
+      const cause = new Error("a supervision error worth an operator's attention");
+      serving?.emit("error", cause);
+      const instanceError = warns.find((w) => w.fields["event"] === "jobs.runner.instance_error");
+      expect(instanceError).toBeDefined();
+      expect(instanceError?.fields["err"]).toBe(cause);
+      expect(instanceError?.msg).toMatch(/the runner emitted an error/);
+    } finally {
+      await reporting.stop();
+    }
+  }, 60_000);
+
+  test("a stop landing during a registration wait is waited out — the snapshot never reads healthy for a stopped runner", async () => {
+    await applyRolesProvisioning(SCRATCH_DB);
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    let hookEnteredResolve: () => void = () => {};
+    const hookEntered = new Promise<void>((resolve) => {
+      hookEnteredResolve = resolve;
+    });
+    let releaseRegistration: () => void = () => {};
+    const registrationReleased = new Promise<void>((resolve) => {
+      releaseRegistration = resolve;
+    });
+    const stopping = new JobsRunner({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: 10_000,
+      registerWorker: async () => {
+        // The attempt is inside the hook: the store verified, the instance is
+        // live, and the start's outcome is still pending on this gate.
+        hookEnteredResolve();
+        await registrationReleased;
+      },
+      log: { info: () => {}, warn: () => {} },
+    });
+    stopping.start();
+    await hookEntered;
+    // The stop lands while the registration is still pending. The in-flight
+    // attempt is awaited before the stop's own teardown: the registration's
+    // success below must never outlive the stop and leave the snapshot
+    // claiming a healthy worker on a stopped runner — a state no later
+    // attempt would correct, since the loop is over.
+    const stopped = stopping.stop();
+    releaseRegistration();
+    await stopped;
+    expect(stopping.snapshot).toEqual({ started: false, workerRegistered: false });
+  }, 60_000);
+
+  test("a discarded instance whose own stop fails is survived and reported — the teardown never takes the loop down", async () => {
+    await applyRolesProvisioning(SCRATCH_DB);
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    const warns: Array<{ fields: Record<string, unknown>; msg: string }> = [];
+    let registrations = 0;
+    const surviving = new JobsRunner({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: 10_000,
+      retryInitialMs: 25,
+      retryMaxMs: 100,
+      registerWorker: async (boss) => {
+        registrations += 1;
+        if (registrations === 1) {
+          // The first attempt's registration fails as a start, and the
+          // discard's own stop then rejects — forced at the boundary (the
+          // instance's stop method), the same technique the execution suite
+          // uses for a lost settle answer. A discard-stop failure the loop
+          // did not absorb would escape as an unhandled rejection and take
+          // the process down.
+          vi.spyOn(boss, "stop").mockRejectedValueOnce(new Error("the stop itself failed"));
+          throw new Error("the worker registration failed");
+        }
+      },
+      log: {
+        info: () => {},
+        warn: (fields, msg) => warns.push({ fields, msg }),
+      },
+    });
+    surviving.start();
+    try {
+      const by = Date.now() + 30_000;
+      while (Date.now() < by && !surviving.snapshot.workerRegistered) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // The loop survived the failed discard and converged on a fresh
+      // instance: the runner's contract is that start() never throws and
+      // the loop owns every failure, including the teardown's.
+      expect(surviving.snapshot).toEqual({ started: true, workerRegistered: true });
+      expect(registrations).toBe(2);
+      const discardWarn = warns.find(
+        (w) => w.fields["event"] === "jobs.runner.discard_stop_failed",
+      );
+      expect(discardWarn).toBeDefined();
+      expect(discardWarn?.msg).toMatch(/discarded instance's stop failed/);
+    } finally {
+      await surviving.stop();
+    }
+  }, 60_000);
 });

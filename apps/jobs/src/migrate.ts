@@ -1,7 +1,7 @@
 import { PgBoss, type UpdateQueueOptions } from "pg-boss";
 import type { Pool } from "pg";
 
-import { JOB_STATUSES } from "@azx-pbc/shared";
+import { JOB_ERROR_CODES, JOB_STATUSES } from "@azx-pbc/shared";
 
 import { createJobsPool } from "./pool.js";
 
@@ -68,6 +68,8 @@ export interface JobsMigrationSummary {
   lifecycleStoreExisted: boolean;
   /** The job-record store already existed (nothing to create). */
   jobRecordExisted: boolean;
+  /** Execution columns this run added to the job-record store (empty: already present). */
+  jobRecordColumnsAdded: readonly string[];
 }
 
 /**
@@ -211,7 +213,8 @@ export async function migrateJobsStorage(connectionString: string): Promise<Jobs
 
     const burnStoreExisted = await ensureInstructionBurnStore(pool);
     const lifecycleStoreExisted = await ensureAppLifecycleStore(pool);
-    const jobRecordExisted = await ensureJobRecordStore(pool);
+    const { existed: jobRecordExisted, columnsAdded: jobRecordColumnsAdded } =
+      await ensureJobRecordStore(pool);
 
     await grantRuntimeAccess(pool, role);
 
@@ -229,6 +232,7 @@ export async function migrateJobsStorage(connectionString: string): Promise<Jobs
       burnStoreExisted,
       lifecycleStoreExisted,
       jobRecordExisted,
+      jobRecordColumnsAdded,
     };
   } finally {
     if (boss) {
@@ -308,8 +312,12 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
  * wrapper identity the acceptance transaction commits with the runner's own
  * row (ADR-0003): the immutable attribution, the admitted lifecycle
  * generation, the public status projection, the optional retry key's scoped
- * claim and the digest of the exact original input bytes. Idempotent, like
- * the other stores.
+ * claim and the digest of the exact original input bytes. The execution
+ * seam's columns ride the same table: the attempt number, the bounded latest
+ * progress snapshot, the last attempt's failure code and the successful
+ * result. Idempotent, like the other stores — the execution columns converge
+ * by `ADD COLUMN IF NOT EXISTS`, so a record store created before the
+ * execution migration is brought forward in place, never rebuilt.
  *
  * The scoped-key UNIQUE constraint is the retry namespace
  * (`server/appId/env/ownerKind/ownerOid/type/key`): two keys' namespaces are
@@ -320,6 +328,11 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
  * so the SQL and the wire contract cannot drift. The `runner_job_id` is
  * unique with the server — the join the worker and the cleanup consume.
  *
+ * The execution columns' checks carry the projection's state machine in the
+ * store: a successful row always has its result, a result exists only on a
+ * row projecting success (including its expired-but-uncleaned form), the
+ * error code is always from the shared vocabulary, and an attempt is 1-based.
+ *
  * The occupancy index bounds the acceptance transaction's capacity counts
  * (`server, app_id, env, status`): the leading column serves the server-wide
  * counts, the whole index the per-app/environment ones, and the status
@@ -328,7 +341,9 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
  *
  * Returns whether the table already existed, for the run's summary.
  */
-async function ensureJobRecordStore(pool: Pool): Promise<boolean> {
+async function ensureJobRecordStore(
+  pool: Pool,
+): Promise<{ existed: boolean; columnsAdded: string[] }> {
   const before = await pool.query<{ found: string | null }>(
     `SELECT to_regclass($1)::text AS found`,
     [JOBS_JOB_RECORD_QUALIFIED],
@@ -353,6 +368,10 @@ async function ensureJobRecordStore(pool: Pool): Promise<boolean> {
        retry_key     text,
        body_sha256   text        NOT NULL,
        created_at    timestamptz NOT NULL,
+       attempt       integer,
+       progress      jsonb,
+       error_code    text,
+       result        text,
        PRIMARY KEY (server, job_id),
        UNIQUE (server, runner_job_id),
        UNIQUE (server, app_id, env, owner_kind, owner_oid, type, retry_key)
@@ -362,7 +381,97 @@ async function ensureJobRecordStore(pool: Pool): Promise<boolean> {
     `CREATE INDEX IF NOT EXISTS idx_job_record_server_app_env_status
         ON ${JOBS_JOB_RECORD_QUALIFIED} (server, app_id, env, status)`,
   );
-  return existed;
+  // The execution columns, converged for a store created before them.
+  const added: string[] = [];
+  for (const [name, ddl] of [
+    [
+      "attempt",
+      `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS attempt integer`,
+    ],
+    [
+      "progress",
+      `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS progress jsonb`,
+    ],
+    [
+      "error_code",
+      `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS error_code text`,
+    ],
+    ["result", `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS result text`],
+  ] as const) {
+    const had = await pool.query<{ found: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+       ) AS found`,
+      [JOBS_SCHEMA, "job_record", name],
+    );
+    await pool.query(ddl);
+    if (had.rows[0]?.found !== true) added.push(name);
+  }
+  // The result column is TEXT — the bound's own canonical JSON text, never
+  // parsed or re-serialized server-side: jsonb's parser is recursive and
+  // refuses past ~8,000 nesting levels at the default max_stack_depth, and
+  // the store must hold everything the result bound accepts (the wire
+  // contract's judge is iterative; the storage form is what makes that true
+  // end to end). An older store's jsonb column converges in place — its
+  // jsonb text form is the same canonical JSON.
+  const resultType = await pool.query<{ data_type: string }>(
+    `SELECT data_type FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = $2 AND column_name = 'result'`,
+    [JOBS_SCHEMA, "job_record"],
+  );
+  const resultColumnType = resultType.rows[0]?.data_type;
+  if (resultColumnType !== undefined && resultColumnType !== "text") {
+    await pool.query(
+      `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ALTER COLUMN result TYPE text USING result::text`,
+    );
+  }
+  const errorCodes = JOB_ERROR_CODES.map((code) => `'${code}'`).join(", ");
+  await ensureCheckConstraint(
+    pool,
+    "job_record_attempt_positive",
+    `attempt IS NULL OR attempt >= 1`,
+  );
+  await ensureCheckConstraint(
+    pool,
+    "job_record_error_code_vocabulary",
+    `error_code IS NULL OR error_code IN (${errorCodes})`,
+  );
+  // The result's lifecycle: a row projecting success always has its result,
+  // and a result exists only while the public record still projects it —
+  // `expired` keeps its (soon-to-be-removed) result until the physical
+  // cleanup clears both together.
+  await ensureCheckConstraint(
+    pool,
+    "job_record_success_has_result",
+    `status <> 'succeeded' OR result IS NOT NULL`,
+  );
+  await ensureCheckConstraint(
+    pool,
+    "job_record_result_only_while_projected",
+    `result IS NULL OR status IN ('succeeded', 'expired')`,
+  );
+  return { existed, columnsAdded: added };
+}
+
+/**
+ * Add one named CHECK constraint when it is missing — Postgres has no
+ * `ADD CONSTRAINT IF NOT EXISTS`, so the constraint's presence is probed in
+ * the catalog first and the migration converges instead of failing on
+ * re-run.
+ */
+async function ensureCheckConstraint(pool: Pool, name: string, definition: string): Promise<void> {
+  const present = await pool.query<{ found: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM pg_constraint
+        WHERE conname = $1 AND conrelid = '${JOBS_JOB_RECORD_QUALIFIED}'::regclass
+     ) AS found`,
+    [name],
+  );
+  if (present.rows[0]?.found === true) return;
+  await pool.query(
+    `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD CONSTRAINT ${name} CHECK (${definition})`,
+  );
 }
 
 /**

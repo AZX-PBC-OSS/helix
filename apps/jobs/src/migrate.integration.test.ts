@@ -157,6 +157,10 @@ describe("jobs storage migration and startup compatibility", () => {
       burnStoreExisted: false,
       lifecycleStoreExisted: false,
       jobRecordExisted: false,
+      // A fresh creation carries the execution columns in the CREATE TABLE
+      // itself; the summary's list names only what an OLDER store needed
+      // added in place.
+      jobRecordColumnsAdded: [],
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -184,6 +188,7 @@ describe("jobs storage migration and startup compatibility", () => {
       burnStoreExisted: true,
       lifecycleStoreExisted: true,
       jobRecordExisted: true,
+      jobRecordColumnsAdded: [],
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -404,6 +409,112 @@ describe("jobs storage migration and startup compatibility", () => {
       expect.objectContaining({ jobRecordExisted: true }),
     );
     await expect(recordIndexExists()).resolves.toBe(true);
+  });
+
+  test(
+    "a record store from before the execution migration converges in place, and its absence is a startup verdict",
+    slow,
+    async () => {
+      // The execution projection's columns: a store created before them
+      // (every row the acceptance transaction has committed so far) must be
+      // brought forward by the migration command — the runtime's own
+      // compatibility check names the missing columns instead of failing the
+      // first execution write.
+      await asMigrateRole(`
+        ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED}
+          DROP COLUMN IF EXISTS attempt,
+          DROP COLUMN IF EXISTS progress,
+          DROP COLUMN IF EXISTS error_code,
+          DROP COLUMN IF EXISTS result`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "record_schema",
+        problems: [
+          'column "attempt" is missing',
+          'column "progress" is missing',
+          'column "error_code" is missing',
+          'column "result" is missing',
+        ],
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({
+          jobRecordExisted: true,
+          jobRecordColumnsAdded: ["attempt", "progress", "error_code", "result"],
+        }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+      // The convergence is stable: a re-run adds nothing.
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordColumnsAdded: [] }),
+      );
+    },
+  );
+
+  test(
+    "a result column left at the earlier jsonb type is a startup verdict and the migration converges the type in place",
+    slow,
+    async () => {
+      // The projection stores the result bound's canonical TEXT; jsonb's own
+      // parser is recursive and would refuse a deep result the bound accepts.
+      // A store that missed its re-run therefore fails at STARTUP (the
+      // compatibility check reads the column's type beside its presence),
+      // never at the first deep result.
+      await asMigrateRole(`
+        ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED}
+          ALTER COLUMN result TYPE jsonb USING result::jsonb`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "record_schema",
+        problems: ['column "result" is jsonb, expected text'],
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordColumnsAdded: [] }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test("the execution projection's state-machine checks hold in the store", slow, async () => {
+    // A result exists only on a row still projecting success, and a
+    // successful row always has one — the store refuses the projection
+    // states no honest writer produces.
+    await expect(
+      asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, retry_key, body_sha256, created_at, result)
+        VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'queued', NULL, '${"0".repeat(64)}', now(), '{"x":1}')`),
+    ).rejects.toThrow(/job_record_result_only_while_projected/);
+    await expect(
+      asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, retry_key, body_sha256, created_at)
+        VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'succeeded', NULL, '${"0".repeat(64)}', now())`),
+    ).rejects.toThrow(/job_record_success_has_result/);
+    await expect(
+      asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, retry_key, body_sha256, created_at, error_code)
+        VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'failed', NULL, '${"0".repeat(64)}', now(), 'not_a_code')`),
+    ).rejects.toThrow(/job_record_error_code_vocabulary/);
+    // Attempts are 1-based — the projection never holds a zeroth attempt.
+    await expect(
+      asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, retry_key, body_sha256, created_at, attempt)
+        VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'queued', NULL, '${"0".repeat(64)}', now(), 0)`),
+    ).rejects.toThrow(/job_record_attempt_positive/);
   });
 
   test(

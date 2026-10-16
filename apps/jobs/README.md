@@ -120,14 +120,69 @@ partial tuning. Apps cannot change any limit through input or manifest.
 
 ## The runtime runner (`src/runner.ts`)
 
-The one pg-boss instance the service composes — the enqueue half today,
-execution registration later. Its start is supervised and health-first: the
-instance's own start is a read-only schema check (`migrate: false`) that
-refuses a missing or behind schema, so the runner retries with capped backoff
-until the store verifies, logging each failed attempt; until it converges the
-enqueue refuses (retryable unavailability), which is honest — nothing can be
-durably enqueued into a store that has not come up. Shutdown stops the runner
-first, then the stores — the acceptance store's pool among them.
+The one pg-boss instance the service composes — the enqueue half of the
+acceptance seam, and the worker execution registers on. Its start is supervised
+and health-first: the instance's own start is a read-only schema check
+(`migrate: false`) that refuses a missing or behind schema, so the runner
+retries with capped backoff until the store verifies, logging each failed
+attempt; until it converges the enqueue refuses (retryable unavailability),
+which is honest — nothing can be durably enqueued into a store that has not
+come up. The composition's worker registration runs as part of every start
+attempt: a registration failure is a failed start (the half-started instance is
+discarded and the loop retries), so a listener without its worker never reports
+healthy — `/health`'s `jobs_worker` check grades the runner's snapshot
+(`started`, `workerRegistered`). The instance's `error` containment — pg-boss
+emits the errors its own loops absorbed on the instance's event emitter, and
+unhandled they kill the process — attaches in `buildBoss()`, so every retried
+attempt's fresh instance carries it too. Shutdown stops the runner first (its
+worker with it), then the stores.
+
+## The execution seam (`src/execution.ts`)
+
+One pg-boss worker on the single queue dispatches each claim to the handler
+registered for the record's qualified type, and every attempt's state is
+projected into the `jobs.job_record` wrapper the observation paths read. The
+options are the shared policy's derivation (`jobsWorkOptions` — per-process
+total and per-app/environment group concurrency), one job per batch, metadata
+on — the attempt's retry decision reads the runner row's own policy.
+
+- **The start gate.** An attempt begins in the transaction that judges the
+  record's admitted lifecycle generation (`lifecycleEligibilityInTx`, the row
+  locked to the commit): work starts only under an eligible generation, and a
+  lifecycle apply cannot land between the gate's decision and the recorded
+  start. A refused claim does not run the handler and leaves the wrapper record
+  untouched — the durable cancellation of closed-generation work is the
+  recovery path's.
+- **The attempt projection.** Begin writes `running` at the attempt number
+  (`retryCount + 1`), resets the progress and clears the previous attempt's
+  error; a handler reports bounded progress (`{step, of, label}`, validated at
+  the seam) which persists only while its attempt is the record's current one.
+  A failure whose type permits retries writes `queued` — the failed attempt's
+  error and its progress stay clearly identified while waiting — and a
+  terminal failure writes `failed` with the error's code. A success writes
+  `succeeded` with the bounded result (a complete JSON value within 64 KiB;
+  `result_invalid` / `result_too_large` are the terminal refusals).
+- **The claim is the arbiter.** The runner's own attempt-fenced
+  `complete`/`fail` settle FIRST; only a settle that reports the claim held may
+  write the wrapper. A late completion whose claim lapsed (a claim timeout, a
+  lost lease) is discarded, never stored — the timeout outcome the claim's
+  expiry produced is the truth, and the recovery path projects it.
+- **Execution-time validation.** The job's input is re-validated against the
+  type's CURRENT contract before the handler runs: a job accepted under older
+  rules terminates with the distinct `execution_input_invalid` reason (never a
+  re-run of admission). A type with no registered handler cannot execute —
+  the dispatch refuses with the terminal platform error.
+- **The handler registry.** Registration requires an installed execution
+  policy — a synthetic or non-catalogue type cannot register, and a second
+  registration of one type fails loudly. The production registrations (the
+  outbound fetch handler, the development fixtures) are their own tickets'
+  work.
+- **Telemetry.** One root consumer span per attempt (`helix.jobs.execute`)
+  carries the app, the qualified type, the job's public id and the attempt
+  number; its outcome is `JOBS_EXECUTE_OUTCOMES` and a failure's code rides
+  `helix.reason`. `helix.jobs.executions` counts the attempts by outcome. The
+  redaction rules hold: no input, result, retry key, owner identity or URL
+  anywhere on the span.
 
 ## The app-lifecycle authority (`src/lifecycle.ts`)
 
@@ -209,8 +264,10 @@ queue with the policy above, converges policy drift that pg-boss can update
 store (schema `jobs`, table `instruction_burns`, its `burn_until` index), the
 app-lifecycle store (table `app_lifecycle`) and the job-record store (table
 `job_record`, the retry namespace's unique constraint, the public-status
-check and the occupancy index the capacity counts use), grants the runtime
-role DML
+check, the execution projection's columns — attempt, progress, error_code,
+result, with the state-machine checks that keep a result only where the
+public record projects it — and the occupancy index the capacity counts
+use), grants the runtime role DML
 on all of it — provisioning sets no default privileges, so grants arrive by
 migration — and verifies the effective state by re-reading it. Later
 jobs-owned migrations extend this command the same way: a step under the
@@ -221,11 +278,12 @@ migration identity, after the schema they depend on exists.
 `checkJobsStorageCompatibility(pool)` answers, read-only, whether the
 runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, the instruction
-burn store, the app-lifecycle store and the job-record store present, and the
+burn store, the app-lifecycle store and the job-record store present with its
+execution columns, and the
 runtime identity holding its DML. The verdict union (`compatible`,
 `unreachable`, `schema_missing`, `schema_version`, `queue_missing`,
 `queue_policy`, `burn_missing`, `lifecycle_missing`, `record_missing`,
-`runtime_privileges`) is what the
+`record_schema`, `runtime_privileges`) is what the
 storage supervisor and health reporting consume; the expected schema version
 is read from the installed pg-boss package, so a catalog bump moves the
 expectation with the dependency.
@@ -239,10 +297,12 @@ retries while `/health` reports the store unavailable. A later probe that
 verifies compatible recovers the service without a restart; a store that
 verified and later dies degrades the same way.
 
-- **`/health` always answers 200.** The body carries the degradation:
-  the `jobs_database` check (names in `@azx-pbc/shared`, `JOBS_HEALTH_CHECK_NAMES`)
-  grades the supervisor's snapshot, and **unknown readiness never appears
-  healthy** — before any probe has answered, the state is `error`.
+- **`/health` always answers 200.** The body carries the degradation: the
+  `jobs_database` check grades the storage supervisor's snapshot and the
+  `jobs_worker` check grades the runner's (names in `@azx-pbc/shared`,
+  `JOBS_HEALTH_CHECK_NAMES`), and **unknown readiness never appears
+  healthy** — before any probe has answered, the state is `error`; a listener
+  without its worker is `error`, not ok.
 - **Invalid configuration is an explicit startup error.** `loadJobsConfig`
   (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID`,
   `JOBS_DATABASE_URL` or either receiver signing root
@@ -250,10 +310,10 @@ verified and later dies degrades the same way.
   listens; the roots derive to their direction keys at boot, so a malformed
   one stops the process, not the first instruction.
 - **Shutdown releases what startup acquired.** The `onClose` hook stops the
-  runner (its retry timer and instance) first, then every store's pool — the
-  acceptance store, the lifecycle store, the burn store's sweep timer, the
-  storage supervisor's probe timer — and flushes telemetry; the
-  graceful-shutdown install bounds the drain.
+  runner (its retry timer, its instance and the worker on it) first, then every
+  store's pool — the execution store, the acceptance store, the lifecycle
+  store, the burn store's sweep timer, the storage supervisor's probe timer —
+  and flushes telemetry; the graceful-shutdown install bounds the drain.
 - **Probes are counted.** Every probe emits `helix.jobs.storage.probes`
   with `outcome` ∈ {`ok`, `unavailable`} — the retries an outage absorbs are
   visible; the _reason_ rides the `jobs_database` check body and the
@@ -290,8 +350,9 @@ JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… \
 
 The listener serves `/health` and the five signed internal operation routes
 (verification + durable burn). The lifecycle route serves the portal's
-delivery (the app-lifecycle authority above) and the submit route serves the
-acceptance transaction (above); the other operations' semantics arrive with
+delivery (the app-lifecycle authority above), the submit route serves the
+acceptance transaction (above), and the worker executes accepted work (the
+execution seam above); the other operations' semantics arrive with
 their own tickets and answer 503 `jobs_unavailable` until then — an unmatched
 request answers 503 `jobs_unavailable` while the store is unusable, 404 on a
 ready service.

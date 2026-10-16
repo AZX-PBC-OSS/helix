@@ -41,6 +41,7 @@ export const INSTR_APP_VISITS = "helix.app.visits";
 export const INSTR_JOBS_STORAGE_PROBES = "helix.jobs.storage.probes";
 export const INSTR_JOBS_INSTRUCTIONS = "helix.jobs.instructions";
 export const INSTR_JOBS_BURN_SWEEPS = "helix.jobs.burn.sweeps";
+export const INSTR_JOBS_EXECUTIONS = "helix.jobs.executions";
 
 /**
  * Attribute keys.
@@ -99,6 +100,24 @@ export const ATTR_JOBS_OPERATION = "helix.jobs.operation";
  * app's identity rides {@link ATTR_APP_ID}.
  */
 export const ATTR_JOBS_GENERATION = "helix.jobs.generation";
+/**
+ * The qualified job type a jobs execution signal is about — a bounded
+ * deployment-catalogue dimension (the installed types are the catalogue's),
+ * never a caller-supplied name.
+ */
+export const ATTR_JOBS_TYPE = "helix.jobs.type";
+/**
+ * Which execution attempt of a job a signal is about — a small positive
+ * integer (1-based). A span attribute; job attempt numbers are never metric
+ * dimensions.
+ */
+export const ATTR_JOBS_ATTEMPT = "helix.jobs.attempt";
+/**
+ * The job's public reference id — a bounded opaque server-local string, as a
+ * span attribute so an operator can join a trace to the snapshot the app
+ * polls. Never a metric dimension.
+ */
+export const ATTR_JOBS_JOB_ID = "helix.jobs.job_id";
 /**
  * Whether a lifecycle signal's generation closes the app (an archive —
  * `true`) or opens one (creation/unarchive — `false`). Bounded boolean.
@@ -192,6 +211,9 @@ export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
 export const SPAN_JOBS_RESULT = "helix.jobs.result";
 export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
 export const SPAN_JOBS_LIFECYCLE = "helix.jobs.lifecycle";
+/** The jobs worker's execution of one attempt of one job — a root consumer
+ * span (background work has no inbound request context to continue). */
+export const SPAN_JOBS_EXECUTE = "helix.jobs.execute";
 /** The portal's lifecycle outbox write — the transaction that commits app
  * state, the next generation and the per-target intents together (ADR-0007).
  * The receiver's `helix.jobs.lifecycle` route span is the delivery's other end. */
@@ -399,6 +421,40 @@ export const JOBS_SUBMIT_OUTCOMES = [
   "unavailable",
 ] as const;
 export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
+
+/**
+ * How the jobs worker disposed of one execution attempt — the final
+ * `helix.outcome` on the `helix.jobs.execute` span, and the dimension on the
+ * `helix.jobs.executions` counter. One word, one meaning, and every value is
+ * one exit of the attempt wrapper:
+ *
+ * - `succeeded` — the handler returned a result inside the platform's bounds,
+ *   the runner claim was settled (its own fenced complete), and the wrapper
+ *   record projects the durable success.
+ * - `failed` — the attempt ended in a failure the wrapper projected durably
+ *   (a handler-reported reason, an execution-time input refusal, an
+ *   unregistered handler, or an oversized/invalid result). The bounded
+ *   `JobError` code rides the span's `helix.reason`, never a dimension;
+ *   whether a retry follows is the type's own policy.
+ * - `gate_refused` — the worker-start gate refused to run the job (its
+ *   lifecycle generation is closed, or not yet delivered): the handler never
+ *   executed and the wrapper record stays untouched.
+ * - `terminal_fenced` — the attempt was fenced and no outcome was projected:
+ *   the record was already terminal when the worker reached it, or the
+ *   runner claim had lapsed before the attempt could settle (a late
+ *   completion after a claim timeout, or a failure racing an already-settled
+ *   claim).
+ * - `unavailable` — the execution store could not answer; the attempt failed
+ *   through the runner's own retry policy without a projected outcome.
+ */
+export const JOBS_EXECUTE_OUTCOMES = [
+  "succeeded",
+  "failed",
+  "gate_refused",
+  "terminal_fenced",
+  "unavailable",
+] as const;
+export type JobsExecuteOutcome = (typeof JOBS_EXECUTE_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

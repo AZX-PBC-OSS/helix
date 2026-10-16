@@ -167,15 +167,24 @@ describe("token-endpoint modes", () => {
         challenge: s256CodeChallenge(verifier),
       });
       const started = Date.now();
-      await expect(
-        exchangeAuthorizationCode(
-          vendor,
-          grant.code as string,
-          { verifier, redirectUri: REDIRECT_URI },
-          AbortSignal.timeout(250),
-        ),
-      ).rejects.toThrowError();
-      expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+      const rejection = await exchangeAuthorizationCode(
+        vendor,
+        grant.code as string,
+        { verifier, redirectUri: REDIRECT_URI },
+        AbortSignal.timeout(250),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      // The stall ended by the CALLER's own bound: the rejection is the
+      // abort's TimeoutError — not an instant transport refusal, and not a
+      // vendor answer (any HTTP answer would resolve, not reject).
+      expect((rejection as Error | null)?.name).toBe("TimeoutError");
+      // And it genuinely waited. The elapsed reading races the abort timer's
+      // own clock at exactly the timeout value (observed 249 against 250), so
+      // the floor carries slack; its job is only to distinguish a real stall
+      // from an instant refusal, which no scheduling skew approaches.
+      expect(Date.now() - started).toBeGreaterThanOrEqual(200);
     });
   });
 

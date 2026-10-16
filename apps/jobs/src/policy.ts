@@ -5,6 +5,7 @@ import {
   FetchJobInputSchema,
   JOB_TYPE_CATALOGUE,
   JOBS_FETCH_QUALIFIED_TYPE,
+  assertSatisfiableRunningPair,
   type JobsCapacityLimits,
 } from "@azx-pbc/shared";
 
@@ -251,21 +252,13 @@ export function jobsAppEnvGroupId(appId: string, env: string): string {
  * registration; the values are the platform's fairness defaults, never
  * app-tunable.
  *
- * The shared resolver validates each control independently, so an operator
- * override can carry a per-group allowance above the per-process total — a
- * pair pg-boss's own worker validation refuses at registration. This
- * derivation is the earliest stage that can see the pair together, so the
- * contradiction is refused here, as a platform-owned error, instead of
- * detonating later as a raw dependency assert.
+ * The unsatisfiable pair (a per-group allowance above the per-process total)
+ * is refused by the shared resolver at boot; the check here is the same
+ * shared refusal guarding hand-built limit sets that bypassed the resolver —
+ * a raw dependency assert at registration is never the answer.
  */
 export function jobsWorkOptions(limits: JobsCapacityLimits): WorkOptions {
-  if (limits.runningPerAppEnv > limits.runningPerWorker) {
-    throw new Error(
-      `the per-app/environment running limit (${limits.runningPerAppEnv}) cannot exceed ` +
-        `the per-process total (${limits.runningPerWorker}) — a group allowance above ` +
-        `the worker's own concurrency is unsatisfiable`,
-    );
-  }
+  assertSatisfiableRunningPair(limits);
   return Object.freeze({
     localConcurrency: limits.runningPerWorker,
     localGroupConcurrency: limits.runningPerAppEnv,

@@ -1,5 +1,6 @@
-import { JOBS_DATABASE_CHECK, type HealthCheck } from "@azx-pbc/shared";
+import { JOBS_DATABASE_CHECK, JOBS_WORKER_CHECK, type HealthCheck } from "@azx-pbc/shared";
 
+import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
 
 /**
@@ -88,6 +89,12 @@ export function jobsDatabaseCheck(snapshot: JobsStorageSnapshot): HealthCheck {
         status: "error",
         detail: `the job record store is absent${since} — run the migration command`,
       };
+    case "record_schema":
+      return {
+        ...base,
+        status: "error",
+        detail: `the job record store is not at its expected shape (${verdict.problems.join("; ")})${since} — run the migration command`,
+      };
     case "queue_policy":
       return {
         ...base,
@@ -103,4 +110,30 @@ export function jobsDatabaseCheck(snapshot: JobsStorageSnapshot): HealthCheck {
         detail: `the runtime identity is missing ${verdict.missing.join(", ")}${since}`,
       };
   }
+}
+
+/**
+ * Grade the runner's supervision state into the `jobs_worker` health check
+ * (ADR-0009) — the same pure-lookup shape as the store check: the runner
+ * started AND its worker registration completed, or the body names which of
+ * the two is missing. A listener that can answer HTTP but has no worker
+ * executing must never read as healthy.
+ */
+export function jobsWorkerCheck(snapshot: JobsRunnerSnapshot): HealthCheck {
+  if (!snapshot.started) {
+    return {
+      name: JOBS_WORKER_CHECK,
+      status: "error",
+      detail: "the runner has not started — no worker is executing accepted work",
+    };
+  }
+  if (!snapshot.workerRegistered) {
+    return {
+      name: JOBS_WORKER_CHECK,
+      status: "error",
+      detail:
+        "the runner started but no worker is registered on it — accepted work cannot execute yet",
+    };
+  }
+  return { name: JOBS_WORKER_CHECK, status: "ok" };
 }

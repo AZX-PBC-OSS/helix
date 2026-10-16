@@ -40,6 +40,7 @@ import {
   jobError,
   jobRequestError,
   qualifiedTypeMatchesServer,
+  stringifyJsonValue,
 } from "./jobs.js";
 import { JobsProtocolV1 } from "./jobsProtocol.js";
 
@@ -736,5 +737,209 @@ describe("JobsProtocolV1", () => {
     for (const [name, schema] of Object.entries(JobsProtocolV1)) {
       expect(typeof (schema as { safeParse?: unknown }).safeParse, name).toBe("function");
     }
+  });
+});
+
+describe("the value contract's serialization half", () => {
+  it("the canonical text is byte-identical to JSON.stringify's for every value both can reach", () => {
+    // The walk's text is what the result column stores and what the result
+    // projection will later serve; its canonical-form claim — key order,
+    // string escaping, number formatting — is the property that lets any
+    // JSON reader consume the stored bytes. Every shape here is one where a
+    // hand-rolled walk plausibly drifts from the engine's answer.
+    const deep = (() => {
+      let node: unknown = "floor";
+      for (let i = 0; i < 500; i++) node = [node];
+      return node;
+    })();
+    const wireLegal: unknown[] = [
+      null,
+      true,
+      false,
+      0,
+      -0,
+      -1.5,
+      0.1,
+      1e21,
+      -1e-7,
+      Number.MAX_SAFE_INTEGER,
+      "",
+      "text",
+      "é 𝄞 汉字 🐙",
+      "line\nbreak\ttab",
+      'quote"backslash\\slash/',
+      "null\u0000text\u0001\u001fcontrol",
+      "lone surrogate \uD800 pair 𝄞",
+      [],
+      [1, 2, 3],
+      [null, "x", true, [1, [2, [3]]]],
+      deep,
+      {},
+      { a: 1 },
+      { a: { b: [1, "x", null] } },
+      { b: 1, a: 2 },
+      { 3: "c", 1: "a", 2: "b" },
+      { 2: "b", 0: "c", x: "a" },
+      { "ké\t y": 1 },
+      JSON.parse('{"__proto__":1,"ok":true}'),
+    ];
+    for (const value of wireLegal) {
+      expect(stringifyJsonValue(value), JSON.stringify(value).slice(0, 40)).toBe(
+        JSON.stringify(value),
+      );
+    }
+  });
+
+  it("each refusal names its rule and never the value's content", () => {
+    // The refusal's text can reach logs (the projection logs the wrapped
+    // cause), and the value is untrusted input — so every refusal is the
+    // fixed prefix plus a bounded kind phrase and nothing else: no marker of
+    // the value itself may ride the message. The markers below are
+    // distinctive enough that a quoting implementation fails.
+    const distinctiveFunction = function distinctiveHandlerName(): void {};
+    const cyclesAt = { "secret-token": 1 } as Record<string, unknown>;
+    cyclesAt["self"] = cyclesAt;
+    const refusals: Array<{ value: unknown; kind: RegExp; never?: RegExp }> = [
+      { value: cyclesAt, kind: /a cycle/, never: /secret-token/ },
+      {
+        value: (() => {
+          const list: unknown[] = ["distinctive-member"];
+          list.push(list);
+          return list;
+        })(),
+        kind: /a cycle/,
+        never: /distinctive-member/,
+      },
+      { value: { nested: { deep: NaN } }, kind: /a non-finite number/ },
+      { value: Infinity, kind: /a non-finite number/, never: /Infinity/ },
+      {
+        value: 123456789012345678901234567890n,
+        kind: /a bigint member/,
+        never: /123456789/,
+      },
+      {
+        value: Symbol("distinctive-symbol"),
+        kind: /a symbol member/,
+        never: /distinctive-symbol/,
+      },
+      {
+        value: distinctiveFunction,
+        kind: /a function member/,
+        never: /distinctiveHandlerName/,
+      },
+      {
+        value: { toJSON: () => "distinctive-tojson" },
+        kind: /a function member/,
+        never: /distinctive-tojson/,
+      },
+      { value: undefined, kind: /undefined member/ },
+      { value: [1, undefined, 3], kind: /undefined member/ },
+      {
+        value: (() => {
+          const hole: unknown[] = [1, 2, 3];
+          delete hole[1]; // a true hole, not an undefined member
+          return hole;
+        })(),
+        kind: /undefined member/,
+      },
+      {
+        value: new Date(0),
+        kind: /a non-plain-object prototype/,
+        never: /1970/,
+      },
+      {
+        value: new Map([[1, 2]]),
+        kind: /a non-plain-object prototype/,
+      },
+    ];
+    for (const { value, kind, never } of refusals) {
+      let message = "";
+      try {
+        stringifyJsonValue(value);
+        expect.unreachable(`the refusal for ${kind} must throw`);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      // The whole message is the prefix plus the kind — a bounded, lowercase
+      // phrase. Anything quoting the value fails here before the `never`
+      // checks below are even reached.
+      expect(message, `refusal shape for ${kind}`).toMatch(
+        /^the value is not a complete JSON value \([a-z][a-z -]*\)$/,
+      );
+      expect(message, `refusal kind for ${kind}`).toMatch(kind);
+      if (never) expect(message, `refusal for ${kind}`).not.toMatch(never);
+    }
+  });
+
+  it("the canonical text survives the engine's number and key boundaries — the walk's number half is its own serializer", () => {
+    // The shape fuzz above samples the plausible drift sites; the number half
+    // is the one place the walk genuinely runs a DIFFERENT engine path
+    // (`String`) from the one it is claimed to match (`JSON.stringify`'s own
+    // number serializer), so the boundaries where ToString changes format —
+    // the sign of zero, the denormal floor, the float ceiling, the
+    // exact-integer cliff, and the switchover to exponential — are attacked
+    // directly rather than trusted to the spec's say-so. Keys get the escape
+    // shapes an own name can carry (quote, backslash, control, line
+    // separators, a lone surrogate) and the integer-like look-alikes that
+    // must NOT reorder.
+    const numbers = [
+      0,
+      -0,
+      1,
+      -1,
+      2 ** 31,
+      2 ** 53,
+      2 ** 53 + 1,
+      -(2 ** 53) - 1,
+      Number.MAX_SAFE_INTEGER,
+      Number.MIN_SAFE_INTEGER,
+      Number.EPSILON,
+      Number.MIN_VALUE,
+      5e-324,
+      0.1,
+      1 / 3,
+      0.30000000000000004,
+      1.7976931348623157e308,
+      Number.MAX_VALUE,
+      1e-7,
+      9.999999e-7,
+      1e20,
+      1e21,
+      1e22,
+      -1e21,
+      1.2345678901234568e29, // the nearest double to 123456789012345678901234567890 — written as the double, not a precision-losing literal
+    ];
+    for (const n of numbers) {
+      expect(Number.isFinite(n), `fixture ${n} stays finite`).toBe(true);
+      expect(stringifyJsonValue(n), `number ${n}`).toBe(JSON.stringify(n));
+    }
+    const awkwardKeys = {
+      'quote"key': 1,
+      "backslash\\key": 2,
+      "newline\nkey": 3,
+      "del\u007fkey": 4,
+      "line\u2028sep\u2029key": 5,
+      "lone\uD800surrogate": 6,
+      "-1": 7,
+      "1.5": 8,
+      "": 9,
+    };
+    expect(stringifyJsonValue(awkwardKeys)).toBe(JSON.stringify(awkwardKeys));
+  });
+
+  it("a shared subvalue serializes twice, byte-identically — the open-set bookkeeping's output, not just its verdict", () => {
+    // Sharing is accepted (the contract's adversarial suite pins the verdict);
+    // the OUTPUT for a shared value is its own risk. The walk registers a
+    // container on open and deregisters it on close, so a shared subvalue is
+    // walked twice — a bookkeeping slip (a deletion that lands early, a close
+    // bracket dropped on the second pass) breaks only this shape, and no
+    // byte-identity shape above exercises it. The cyclic form next door stays
+    // refused.
+    const shared = { a: [1, "x"] };
+    const root = { p: shared, q: shared, r: [shared, shared] };
+    expect(stringifyJsonValue(root)).toBe(JSON.stringify(root));
+    const cyclic: Record<string, unknown> = { ok: true };
+    cyclic["self"] = cyclic;
+    expect(() => stringifyJsonValue(cyclic)).toThrow(/a cycle/);
   });
 });

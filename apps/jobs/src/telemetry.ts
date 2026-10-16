@@ -10,11 +10,14 @@ import {
   type Tracer,
 } from "@opentelemetry/api";
 import {
-  ATTR_JOBS_OPERATION,
   ATTR_OUTCOME,
+  ATTR_JOBS_OPERATION,
   INSTR_JOBS_BURN_SWEEPS,
+  INSTR_JOBS_EXECUTIONS,
   INSTR_JOBS_INSTRUCTIONS,
   INSTR_JOBS_STORAGE_PROBES,
+  SPAN_JOBS_EXECUTE,
+  type JobsExecuteOutcome,
   type JobsInstructionOutcome,
 } from "@azx-pbc/shared/telemetry";
 import type { FastifyReply } from "fastify";
@@ -48,6 +51,8 @@ export interface JobsInstruments {
   instructions: Counter;
   /** `outcome` ∈ `JOBS_BURN_SWEEP_OUTCOMES` — the burn store's sweep passes. */
   burnSweeps: Counter;
+  /** `outcome` ∈ `JOBS_EXECUTE_OUTCOMES` — the worker's execution attempts. */
+  executions: Counter;
 }
 
 /**
@@ -91,6 +96,14 @@ export function instruments(): JobsInstruments {
         "Burn-store sweep passes by outcome. Operational only — a run of failed with " +
         "no ok is a store that stopped answering its cleanup.",
     }),
+    executions: meter.createCounter(INSTR_JOBS_EXECUTIONS, {
+      description:
+        "Job execution attempts by outcome. An attempt counter over every " +
+        "disposition: a run of unavailable is an execution store that stopped " +
+        "answering, a run of gate_refused is work whose lifecycle generation " +
+        "closed before it could start, and failed counts the attempts a job " +
+        "reported (the reason rides the span, never a dimension).",
+    }),
   };
   return cached;
 }
@@ -108,13 +121,25 @@ export function countInstruction(operation: string, outcome: JobsInstructionOutc
 }
 
 /**
+ * Count one execution attempt's disposition. The outcome is the bounded
+ * vocabulary (`JOBS_EXECUTE_OUTCOMES`); the failure reason rides the span's
+ * `helix.reason`, never a dimension here.
+ */
+export function countExecution(outcome: JobsExecuteOutcome): void {
+  instruments().executions.add(1, { [ATTR_OUTCOME]: outcome });
+}
+
+/**
  * Record a thrown value on a span and mark it failed.
  *
  * The message reaches the span, which is a retained backend — acceptable
  * here: this plane's errors are our own (no upstream text, no token material —
  * the verifier answers in fixed reasons and nothing records token bytes).
+ * Exported for the execution seam's deliberate grading: its `unavailable`
+ * disposition (the execution store could not answer) is an infrastructure
+ * fault and grades ERROR at every site that decides it.
  */
-function failSpan(span: Span, err: unknown): void {
+export function failSpan(span: Span, err: unknown): void {
   span.recordException(err instanceof Error ? err : new Error(String(err)));
   span.setStatus({ code: SpanStatusCode.ERROR });
 }
@@ -160,6 +185,32 @@ export function withRootSpan<T>(
         throw err;
       } finally {
         gradeFromResponse(span, options.reply);
+        span.end();
+      }
+    },
+  );
+}
+
+/**
+ * Run one execution attempt inside a fresh **root** consumer span. Background
+ * work has no inbound request context to continue — nothing is extracted, and
+ * "execution links to enqueue" (ADR-0009) is carried by the span's bounded
+ * attributes (the app, the qualified type, the job's public id and the attempt
+ * number), which is the join an operator can make without a stored trace
+ * context.
+ *
+ * The attempt's disposition sets its own outcome and status on the span; this
+ * wrapper only ends it. A failure that escapes without a disposition is the
+ * wrapper's own defect — the caller failSpans it explicitly.
+ */
+export function withExecutionSpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
+  return tracer.startActiveSpan(
+    SPAN_JOBS_EXECUTE,
+    { root: true, kind: SpanKind.CONSUMER },
+    async (span) => {
+      try {
+        return await fn(span);
+      } finally {
         span.end();
       }
     },

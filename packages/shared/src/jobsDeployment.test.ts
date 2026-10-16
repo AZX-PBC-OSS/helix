@@ -119,6 +119,20 @@ describe("capacity defaults", () => {
     }
   });
 
+  it("resolve refuses the pair no worker can satisfy — a per-group running allowance above the per-process total", () => {
+    // The two running controls are validated independently by the schema;
+    // the contradiction is only visible to a seam that sees the pair
+    // together. The resolver is the earliest such seam — every consumer's
+    // limit set passes through it — so an unsatisfiable JOBS_LIMITS or
+    // deployment map is a boot-time refusal, never a runtime retry loop
+    // that can never converge. Equal limits stay resolvable (the boundary
+    // is strictly-above).
+    expect(() => resolveJobsCapacityLimits({ runningPerWorker: 2, runningPerAppEnv: 4 })).toThrow(
+      /runningPerAppEnv.*runningPerWorker/s,
+    );
+    expect(resolveJobsCapacityLimits({ runningPerWorker: 2, runningPerAppEnv: 2 })).toBeTruthy();
+  });
+
   it("resolve refuses a hand-built override past the ceiling — an unbounded limit bounds nothing", () => {
     expect(JOBS_CAPACITY_LIMIT_MAX).toBe(1_000_000);
     expect(JobsCapacityLimitsSchema.safeParse({ ...JOBS_CAPACITY_DEFAULTS }).success).toBe(true);

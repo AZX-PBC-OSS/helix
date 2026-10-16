@@ -203,7 +203,15 @@ export async function appWithLifecycle(
   storage: JobsStorage;
 }> {
   const storage = await storageIn("ready");
-  const app = buildApp({ storage, instructions: receiver.auth, lifecycle, admission });
+  const app = buildApp({
+    storage,
+    instructions: receiver.auth,
+    lifecycle,
+    admission,
+    // The route suites exercise the receiver's routes, not the worker; the
+    // supervision state they report is the registered composition's.
+    worker: () => ({ started: true, workerRegistered: true }),
+  });
   return { app, storage };
 }
 

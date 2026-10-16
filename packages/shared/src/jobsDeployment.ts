@@ -137,11 +137,35 @@ export const JOBS_CAPACITY_DEFAULTS: JobsCapacityLimits = Object.freeze({
 });
 
 /**
+ * Why a resolved limit set can name no worker: a per-app/environment running
+ * allowance above the per-process total is a pair no worker can satisfy —
+ * pg-boss's own registration assert is the same refusal, but a platform-owned
+ * error at the earliest stage that can see the pair together is the answer
+ * instead of a raw dependency assert inside a retry loop. Shared by the
+ * resolver (which sees every resolved limit set) and the worker-options
+ * derivation (which also guards hand-built ones), so the refusal has one
+ * wording and one home.
+ */
+export function assertSatisfiableRunningPair(limits: JobsCapacityLimits): void {
+  if (limits.runningPerAppEnv > limits.runningPerWorker) {
+    throw new Error(
+      `the capacity control "runningPerAppEnv" (${limits.runningPerAppEnv}) cannot exceed ` +
+        `"runningPerWorker" (${limits.runningPerWorker}) — a group allowance above ` +
+        `the worker's own concurrency is unsatisfiable`,
+    );
+  }
+}
+
+/**
  * Resolve the effective capacity limits: the platform defaults with any
  * operator overrides applied. Accepts `undefined` (no tuning) and the
  * `limits` field of a validated {@link JobsDeploymentConfig}; the merge is
  * re-checked against the complete schema, so a hand-built override carrying a
  * zero, a non-finite value or an unknown key throws instead of resolving.
+ * A set the pair of running controls makes unsatisfiable is refused here
+ * too — the earliest stage any consumer can see the pair together, so an
+ * unsatisfiable `JOBS_LIMITS` (or deployment map) is a boot-time refusal,
+ * never a runtime retry loop that can never converge.
  */
 export function resolveJobsCapacityLimits(overrides?: JobsCapacityOverrides): JobsCapacityLimits {
   // An explicitly-undefined control means what an absent key means — the
@@ -169,7 +193,9 @@ export function resolveJobsCapacityLimits(overrides?: JobsCapacityOverrides): Jo
       });
     }
   }
-  return JobsCapacityLimitsSchema.parse(merged);
+  const limits = JobsCapacityLimitsSchema.parse(merged);
+  assertSatisfiableRunningPair(limits);
+  return limits;
 }
 
 // ── The installed-type rules, shared by every map parse ──────────────────────

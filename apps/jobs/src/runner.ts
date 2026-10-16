@@ -6,10 +6,11 @@ import { jobsRuntimeBossOptions } from "./policy.js";
 /**
  * The jobs service's runtime runner — the one pg-boss instance the service
  * composes, owned by its supervised start (ADR-0009: boot owns supervision
- * and resource lifetime). The instance is the enqueue half of the acceptance
- * seam today; the worker tickets register their execution on the same
- * instance, so one queue, one pool and one maintenance lifecycle serve the
- * whole service.
+ * and resource lifetime). The instance carries the acceptance seam's enqueue
+ * half and the execution worker: the composition's `registerWorker` hook is
+ * invoked on the started instance, and a registration failure is a failed
+ * start — the half-started instance is discarded and the loop retries, so a
+ * listener without its worker never reports healthy.
  *
  * Starting is health-first, like every store in this service: the instance's
  * own start runs a read-only schema check (`migrate: false`) and refuses a
@@ -22,10 +23,25 @@ import { jobsRuntimeBossOptions } from "./policy.js";
  * be durably enqueued into a store that has not come up.
  */
 
+/** The runner's supervision state, as `/health` reports it. */
+export interface JobsRunnerSnapshot {
+  /** The instance is started against its store. */
+  started: boolean;
+  /** The composition's worker registration completed on the started instance. */
+  workerRegistered: boolean;
+}
+
 export interface JobsRunnerOptions {
   databaseUrl: string;
   /** Per-attempt ceiling, applied as the instance pool's statement and connect timeout. */
   statementTimeoutMs: number;
+  /**
+   * The worker registration, invoked on the started instance as part of every
+   * start attempt — its failure is a failed start (the instance is discarded
+   * and the loop retries), and its success is what `workerRegistered`
+   * reports. Required: a runner without its worker is not a serving runner.
+   */
+  registerWorker: (boss: PgBoss) => Promise<void>;
   /** First retry delay after a failed start attempt. */
   retryInitialMs?: number;
   /** The cap the retry backoff never exceeds. */
@@ -45,6 +61,7 @@ const RETRY_MAX_MS = 30_000;
 export class JobsRunner {
   private readonly databaseUrl: string;
   private readonly statementTimeoutMs: number;
+  private readonly registerWorker: (boss: PgBoss) => Promise<void>;
   private readonly retryInitialMs: number;
   private readonly retryMaxMs: number;
   private readonly log: JobsRunnerLogger;
@@ -53,15 +70,23 @@ export class JobsRunner {
   private timer: NodeJS.Timeout | null = null;
   private inFlight: Promise<void> | null = null;
   private stopped = false;
+  private begun = false;
   private started = false;
+  private workerRegistered = false;
   private failedStarts = 0;
 
   constructor(options: JobsRunnerOptions) {
     this.databaseUrl = options.databaseUrl;
     this.statementTimeoutMs = options.statementTimeoutMs;
+    this.registerWorker = options.registerWorker;
     this.retryInitialMs = options.retryInitialMs ?? RETRY_INITIAL_MS;
     this.retryMaxMs = options.retryMaxMs ?? RETRY_MAX_MS;
     this.log = options.log;
+  }
+
+  /** The supervision state, for `/health` — a lookup, never a live probe. */
+  get snapshot(): JobsRunnerSnapshot {
+    return { started: this.started, workerRegistered: this.workerRegistered };
   }
 
   /**
@@ -70,8 +95,30 @@ export class JobsRunner {
    * an attempt succeeds.
    */
   start(): void {
-    if (this.boss || this.stopped) return;
-    this.boss = new PgBoss({
+    // One supervised loop per runner: the retry attempts discard their
+    // instances, so the instance's presence is not the "already begun" sign.
+    if (this.begun || this.stopped) return;
+    this.begun = true;
+    this.boss = this.buildBoss();
+    void this.runAttempt();
+  }
+
+  /**
+   * The instance, built with the runtime's own options (`migrate: false`, no
+   * schedules, no native OpenTelemetry) and this attempt's timeouts, with its
+   * error containment attached — here, at the construction, not in `start()`:
+   * a fresh one per retry (a half-started instance is discarded below, never
+   * reused), and EVERY attempt's instance must be contained, not only the
+   * first. pg-boss emits the errors its own loops absorbed (a failed
+   * maintenance pass, a dropped pool client) on its event emitter; unhandled,
+   * they would kill the process — an `error` emission with no listener throws
+   * out of the emitter, and from a maintenance timer that is an uncaught
+   * exception. The storage supervisor's probes and each operation's own
+   * failure carry the causes an operator needs; this listener keeps the
+   * service alive through them.
+   */
+  private buildBoss(): PgBoss {
+    const boss = new PgBoss({
       connectionString: this.databaseUrl,
       connectionTimeoutMillis: this.statementTimeoutMs,
       // The per-statement ceiling rides the connection options string —
@@ -79,18 +126,13 @@ export class JobsRunner {
       options: `-c statement_timeout=${this.statementTimeoutMs}`,
       ...jobsRuntimeBossOptions(),
     });
-    // pg-boss emits the errors its own loops absorbed (a failed maintenance
-    // pass, a dropped pool client) on its event emitter; unhandled, they
-    // would kill the process. The storage supervisor's probes and each
-    // operation's own failure carry the causes an operator needs; this
-    // listener keeps the service alive through them.
-    this.boss.on("error", (error) => {
+    boss.on("error", (error) => {
       this.log.warn(
         { event: "jobs.runner.instance_error", err: error },
         "the runner emitted an error from its own supervision",
       );
     });
-    void this.runAttempt();
+    return boss;
   }
 
   /**
@@ -108,6 +150,7 @@ export class JobsRunner {
     const boss = this.boss;
     this.boss = null;
     this.started = false;
+    this.workerRegistered = false;
     await boss?.stop({ graceful: true, timeout: 5_000 }).catch(() => {});
   }
 
@@ -138,28 +181,46 @@ export class JobsRunner {
   }
 
   /**
-   * One bounded start attempt, then the next wait until one succeeds. Never
-   * throws out of here: a failed attempt is logged and retried, which is the
-   * loop's whole job.
+   * One bounded start attempt — the instance's start, then the worker
+   * registration — then the next wait until one succeeds. Never throws out
+   * of here: a failed attempt is logged, its half-started instance discarded,
+   * and the whole attempt retried, which is the loop's whole job.
    */
   private async attemptOnce(): Promise<void> {
-    if (this.stopped || !this.boss || this.started) return;
+    if (this.stopped || this.started) return;
+    const boss = this.boss ?? this.buildBoss();
+    this.boss = boss;
     try {
-      await this.boss.start();
+      await boss.start();
+      await this.registerWorker(boss);
       this.started = true;
+      this.workerRegistered = true;
       this.failedStarts = 0;
       this.log.info(
         { event: "jobs.runner.started" },
-        "the runner started against its store — enqueue and execution are available",
+        "the runner started against its store — the enqueue and the worker are up",
       );
     } catch (error) {
       this.failedStarts += 1;
+      this.workerRegistered = false;
       this.log.warn(
         { event: "jobs.runner.start_failed", err: error },
-        "the runner could not start — the store is not usable yet; retrying",
+        "the runner could not start — the store is not usable yet or the worker registration failed; retrying",
       );
+      // A half-started instance — the store verified but the registration
+      // failed — is discarded: the next attempt builds a fresh one rather
+      // than re-registering onto an instance whose own loops are mid-flight.
+      // A discard whose own stop fails abandons that instance's pool to the
+      // server's idle reaper — reported, never silent.
+      this.boss = null;
+      await boss.stop({ graceful: true, timeout: 5_000 }).catch((stopError) => {
+        this.log.warn(
+          { event: "jobs.runner.discard_stop_failed", err: stopError },
+          "a discarded instance's stop failed — its pool is left for the server to reap",
+        );
+      });
     }
-    if (this.stopped || this.started || !this.boss) return;
+    if (this.stopped || this.started) return;
     this.scheduleNext();
   }
 

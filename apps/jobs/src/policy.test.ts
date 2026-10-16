@@ -123,10 +123,15 @@ describe("the installed-handler policy registry", () => {
   });
 
   test("the contradictory-limit refusal carries both numbers, so the boot failure names its cause", () => {
-    // The shared resolver validates each control independently, so this pair
-    // reaches the derivation cleanly and the refusal is the operator's only
-    // diagnosis. The numbers identify the occurrence; the wording is free.
-    const contradictory = resolveJobsCapacityLimits({ runningPerWorker: 1, runningPerAppEnv: 2 });
+    // The resolver refuses the pair at boot; the derivation's own guard is
+    // what a HAND-BUILT limit set (bypassing the resolver) meets. The
+    // refusal names the controls as the operator's configuration spells
+    // them, and the numbers identify the occurrence; the wording is free.
+    const contradictory = {
+      ...resolveJobsCapacityLimits(),
+      runningPerWorker: 1,
+      runningPerAppEnv: 2,
+    };
     expect(() => jobsWorkOptions(contradictory)).toThrow(/\(2\).*\(1\)/);
   });
 
