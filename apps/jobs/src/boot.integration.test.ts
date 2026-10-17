@@ -1744,4 +1744,130 @@ describe("signed instructions through the running process", () => {
       }
     },
   );
+
+  test(
+    "a signed status poll and result read through the running process answer the complete snapshot and the stateful refusal",
+    slow,
+    async () => {
+      // The observation chain through the real composition: a submitted job
+      // (whose dispatch terminates with the platform error — no production
+      // handler is registered) is polled with a signed GET, and the answers
+      // are the wire contract's own — the complete snapshot with the
+      // horizons, then the stateful 409 for the result — both no-store,
+      // both schema-conformant.
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      const observationApp = randomUUID();
+      const mintRead = async (operation: "snapshot" | "result", jobId: string): Promise<string> =>
+        mintJobsInstruction(
+          {
+            operation,
+            server: "jobs",
+            identity: {
+              appId: observationApp,
+              env: "prod",
+              ownerKind: "user",
+              ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+              allowedTypes: ["jobs:fetch"],
+            },
+            jobId,
+            iatS: Math.floor(Date.now() / 1000) - 1,
+          },
+          deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+        );
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        const delivery = '{"generation":"1","archived":false}';
+        const delivered = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${observationApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: observationApp,
+                  body: new TextEncoder().encode(delivery),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body: delivery,
+          },
+        );
+        expect(delivered.status).toBe(200);
+
+        // Submit and wait for the dispatch's terminal platform failure.
+        const deadline = Date.now() + 60_000;
+        let accepted: { status: number; body: unknown } | null = null;
+        while (Date.now() < deadline) {
+          accepted = await submitFor(
+            port,
+            await mintSubmitFor(observationApp, "obs-leg"),
+            "obs-leg",
+          );
+          if (accepted.status !== 503) break;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        expect(accepted?.status, JSON.stringify(accepted)).toBe(202);
+        const jobId = (accepted!.body as { jobId: string }).jobId;
+
+        await eventually(async () => {
+          const snapshot = await fetch(`http://127.0.0.1:${port}/internal/jobs/v1/jobs/${jobId}`, {
+            headers: { [INSTRUCTION_HEADER]: await mintRead("snapshot", jobId) },
+          });
+          if (snapshot.status !== 200) return false;
+          const body = (await snapshot.json()) as { status?: string };
+          return body.status === "failed";
+        }, 60_000);
+
+        // The complete snapshot: the terminal outcome, the attempt that
+        // carried it, the platform-error reason, and the record horizon —
+        // the result horizon null (no successful result ever existed).
+        const snapshot = await fetch(`http://127.0.0.1:${port}/internal/jobs/v1/jobs/${jobId}`, {
+          headers: { [INSTRUCTION_HEADER]: await mintRead("snapshot", jobId) },
+        });
+        expect(snapshot.status).toBe(200);
+        expect(snapshot.headers.get("cache-control")).toBe("no-store");
+        const snapshotBody = (await snapshot.json()) as Record<string, unknown>;
+        expect(snapshotBody).toEqual({
+          server: "jobs",
+          jobId,
+          type: "jobs:fetch",
+          status: "failed",
+          attempt: 1,
+          progress: null,
+          cancellationRequested: false,
+          resultExpiresAt: null,
+          recordExpiresAt: expect.any(String),
+          error: { code: "platform_error", message: JobErrorMessages.platform_error },
+        });
+
+        // The result read: the stateful 409 with the job's own state.
+        const result = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/jobs/${jobId}/result`,
+          { headers: { [INSTRUCTION_HEADER]: await mintRead("result", jobId) } },
+        );
+        expect(result.status).toBe(409);
+        expect(result.headers.get("cache-control")).toBe("no-store");
+        expect(await result.json()).toEqual({
+          code: "job_terminal",
+          message: JobErrorMessages.job_terminal,
+          status: "failed",
+          error: { code: "platform_error", message: JobErrorMessages.platform_error },
+        });
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
 });

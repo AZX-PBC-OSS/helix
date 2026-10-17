@@ -5,10 +5,12 @@ import {
   JobErrorMessages,
   JOBS_FETCH_QUALIFIED_TYPE,
   JOBS_MAX_INPUT_BYTES,
+  JOBS_MAX_RESULT_BYTES,
 } from "@azx-pbc/shared";
 
 import { buildApp } from "./app.js";
 import type { JobsLifecycleApplyResult } from "./lifecycle.js";
+import type { JobsSnapshotVerdict } from "./observation.js";
 import {
   appWithLifecycle,
   appWithReceiver,
@@ -17,6 +19,7 @@ import {
   makeReceiver,
   MemoryAdmission,
   MemoryCancellation,
+  MemoryObservation,
   mint,
   MemoryLifecycle,
   storageIn,
@@ -32,9 +35,9 @@ import {
  * The signed internal operation routes, through the real composition: a valid
  * instruction reaches exactly its own operation, every denial is the fixed
  * sanitized envelope before any effect, and the durable burn answers replays.
- * The operations' semantics are later tickets' seams — until one lands its
- * route answers the protocol's retryable unavailable error, and the tests pin
- * that the placeholder cannot be mistaken for a served operation.
+ * Each served operation's response mapping is pinned against its own seam's
+ * in-memory double — the doubles' durability semantics are the integration
+ * suites' seam, and the receiver's refusals are the same on every route.
  */
 
 const JSON_HEADERS = { "content-type": "application/json" };
@@ -46,11 +49,19 @@ const UNAUTHORIZED_BODY = {
   code: "unauthorized",
   message: JobErrorMessages.unauthorized,
 };
+const NOT_FOUND_BODY = {
+  code: "job_not_found",
+  message: JobErrorMessages.job_not_found,
+};
+const FORBIDDEN_BODY = {
+  code: "forbidden",
+  message: JobErrorMessages.forbidden,
+};
 
 async function readyApp() {
   const receiver = makeReceiver();
-  const { app, storage, admission, cancellation } = await appWithReceiver(receiver);
-  return { receiver, app, storage, admission, cancellation };
+  const { app, storage, admission, cancellation, observation } = await appWithReceiver(receiver);
+  return { receiver, app, storage, admission, cancellation, observation };
 }
 
 async function close(app: Awaited<ReturnType<typeof readyApp>>["app"], storage: unknown) {
@@ -131,6 +142,13 @@ describe("the signed operation routes", () => {
             message: JobErrorMessages.jobs_capacity_exceeded,
           },
         },
+        {
+          // An identical-bytes keyed replay of a job whose public record
+          // access has expired: the unknown-job 404, no work created.
+          outcome: { outcome: "not_found" },
+          status: 404,
+          body: NOT_FOUND_BODY,
+        },
       ] as const;
       for (const c of cases) {
         admission.outcome = c.outcome;
@@ -167,10 +185,12 @@ describe("the signed operation routes", () => {
   });
 
   test("each operation accepts its own instruction and nothing else", async () => {
-    const { app, storage, cancellation } = await readyApp();
+    const { app, storage, cancellation, observation } = await readyApp();
     try {
-      // Snapshot and result: the bodyless operations on their routes,
-      // still placeholder-served until their tickets land.
+      // Snapshot and result: the bodyless operations on their routes, served
+      // by the observation seam (the default in-memory verdict is the
+      // not_found refusal — the claims reaching the seam is what this leg
+      // pins; the verdicts' full response mapping is the next tests).
       for (const operation of ["snapshot", "result"] as const) {
         const token = await mint({
           operation,
@@ -184,9 +204,17 @@ describe("the signed operation routes", () => {
           url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}${operation === "result" ? "/result" : ""}`,
           headers: instructionHeaders(token),
         });
-        expect(res.statusCode, operation).toBe(503);
-        expect(res.json(), operation).toEqual(UNAVAILABLE_BODY);
+        expect(res.statusCode, operation).toBe(404);
+        expect(res.json(), operation).toEqual(NOT_FOUND_BODY);
       }
+      expect(observation.calls).toBe(2);
+      expect(observation.lastRequest?.claims.operation).toBe("result");
+      expect(observation.lastRequest?.claims.appId).toBe(TEST_IDENTITY.appId);
+      expect(observation.lastRequest?.claims.env).toBe(TEST_IDENTITY.env);
+      expect(observation.lastRequest?.claims.ownerKind).toBe(TEST_IDENTITY.ownerKind);
+      expect(observation.lastRequest?.claims.ownerOid).toBe(TEST_IDENTITY.ownerOid);
+      expect(observation.lastRequest?.claims.allowedTypes).toEqual([JOBS_FETCH_QUALIFIED_TYPE]);
+      expect(observation.lastRequest?.jobId).toBe(TEST_JOB_ID);
 
       // Cancel: served (the owner-cancellation seam's durable intent plus
       // runner drive). Its full response mapping is the next tests; this
@@ -309,6 +337,204 @@ describe("the signed operation routes", () => {
       });
       expect(failed.statusCode).toBe(503);
       expect(failed.json()).toEqual(UNAVAILABLE_BODY);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a status poll's verdicts map onto the protocol's fixed responses", async () => {
+    const { app, storage, observation } = await readyApp();
+    try {
+      const snapshotJobId = TEST_JOB_ID;
+      const cases = [
+        {
+          verdict: {
+            outcome: "found",
+            snapshot: {
+              server: "jobs",
+              jobId: snapshotJobId,
+              type: "jobs:fetch",
+              status: "running",
+              attempt: 1,
+              progress: { step: 1, of: 1, label: "Fetched" },
+              cancellationRequested: false,
+              resultExpiresAt: null,
+              recordExpiresAt: null,
+              error: null,
+            },
+          },
+          status: 200,
+          body: {
+            server: "jobs",
+            jobId: snapshotJobId,
+            type: "jobs:fetch",
+            status: "running",
+            attempt: 1,
+            progress: { step: 1, of: 1, label: "Fetched" },
+            cancellationRequested: false,
+            resultExpiresAt: null,
+            recordExpiresAt: null,
+            error: null,
+          },
+        },
+        { verdict: { outcome: "not_found" }, status: 404, body: NOT_FOUND_BODY },
+        { verdict: { outcome: "forbidden" }, status: 403, body: FORBIDDEN_BODY },
+      ] as const;
+      for (const c of cases) {
+        observation.snapshotVerdict = c.verdict;
+        const res = await app.inject({
+          method: "GET",
+          url: `/internal/jobs/v1/jobs/${snapshotJobId}`,
+          headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+        });
+        expect(res.statusCode, c.verdict.outcome).toBe(c.status);
+        expect(res.headers["cache-control"], c.verdict.outcome).toBe("no-store");
+        expect(res.json(), c.verdict.outcome).toEqual(c.body);
+      }
+      // A store that cannot answer is the retryable unavailability — never a
+      // fabricated snapshot, and the last known state stays visibly stale.
+      observation.failReads = true;
+      const failed = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${snapshotJobId}`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+      });
+      expect(failed.statusCode).toBe(503);
+      expect(failed.json()).toEqual(UNAVAILABLE_BODY);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a result read's verdicts map onto the protocol's fixed responses", async () => {
+    const { app, storage, observation } = await readyApp();
+    try {
+      const resultJobId = TEST_JOB_ID;
+      const cases = [
+        {
+          verdict: { outcome: "found", resultText: '{"kept":true}' },
+          status: 200,
+          body: { kept: true },
+        },
+        {
+          verdict: {
+            outcome: "not_ready",
+            status: "queued",
+            error: { code: "upstream_error", message: JobErrorMessages.upstream_error },
+          },
+          status: 409,
+          body: {
+            code: "job_not_ready",
+            message: JobErrorMessages.job_not_ready,
+            status: "queued",
+            error: { code: "upstream_error", message: JobErrorMessages.upstream_error },
+          },
+        },
+        {
+          verdict: { outcome: "terminal", status: "failed", error: null },
+          status: 409,
+          body: {
+            code: "job_terminal",
+            message: JobErrorMessages.job_terminal,
+            status: "failed",
+            error: null,
+          },
+        },
+        {
+          verdict: { outcome: "expired" },
+          status: 410,
+          body: {
+            code: "result_expired",
+            message: JobErrorMessages.result_expired,
+          },
+        },
+        { verdict: { outcome: "not_found" }, status: 404, body: NOT_FOUND_BODY },
+        { verdict: { outcome: "forbidden" }, status: 403, body: FORBIDDEN_BODY },
+      ] as const;
+      for (const c of cases) {
+        observation.resultVerdict = c.verdict;
+        const res = await app.inject({
+          method: "GET",
+          url: `/internal/jobs/v1/jobs/${resultJobId}/result`,
+          headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+        });
+        expect(res.statusCode, c.verdict.outcome).toBe(c.status);
+        expect(res.headers["cache-control"], c.verdict.outcome).toBe("no-store");
+        expect(res.json(), c.verdict.outcome).toEqual(c.body);
+      }
+      // The found body is the raw JSON value itself — the content type is
+      // JSON and the bytes are the stored text, never a re-serialization.
+      observation.resultVerdict = { outcome: "found", resultText: '{"kept":true}' };
+      const raw = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${resultJobId}/result`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+      });
+      expect(raw.headers["content-type"]).toContain("application/json");
+      expect(raw.body).toBe('{"kept":true}');
+
+      // A result nested to the byte cap travels as the same bytes: the send
+      // path never re-serializes (the engine's recursive serializer cannot
+      // hold this depth — a regression there answers 500 here, visibly).
+      const deepText = `${"[".repeat((JOBS_MAX_RESULT_BYTES - 4) / 2)}null${"]".repeat(
+        (JOBS_MAX_RESULT_BYTES - 4) / 2,
+      )}`;
+      observation.resultVerdict = { outcome: "found", resultText: deepText };
+      const deep = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${resultJobId}/result`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+      });
+      expect(deep.statusCode).toBe(200);
+      expect(deep.body).toBe(deepText);
+
+      // A store that cannot answer is the retryable unavailability.
+      observation.failReads = true;
+      const failed = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${resultJobId}/result`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+      });
+      expect(failed.statusCode).toBe(503);
+      expect(failed.json()).toEqual(UNAVAILABLE_BODY);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a snapshot's verdict the wire schema refuses is a 500, never a malformed body on the wire", async () => {
+    // The snapshot is validated against the wire schema before it is sent: a
+    // store answer with a missing nullable field (here, no `error` key — the
+    // explicit-null rule) is a defect answered by the route's error boundary.
+    const { app, storage, observation } = await readyApp();
+    try {
+      const malformed: JobsSnapshotVerdict = {
+        outcome: "found",
+        // Intentionally malformed: the explicit `error` null is missing.
+        snapshot: {
+          server: "jobs",
+          jobId: TEST_JOB_ID,
+          type: "jobs:fetch",
+          status: "queued",
+          attempt: null,
+          progress: null,
+          cancellationRequested: false,
+          resultExpiresAt: null,
+          recordExpiresAt: null,
+        },
+      } as unknown as JobsSnapshotVerdict;
+      observation.snapshotVerdict = malformed;
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual({
+        code: "platform_error",
+        message: JobErrorMessages.platform_error,
+      });
     } finally {
       await close(app, storage);
     }
@@ -807,6 +1033,7 @@ describe("the signed operation routes", () => {
       lifecycle,
       admission: new MemoryAdmission(),
       cancellation: new MemoryCancellation(),
+      observation: new MemoryObservation(),
       worker: () => ({ started: true, workerRegistered: true }),
       recovery: () => ({
         started: true,

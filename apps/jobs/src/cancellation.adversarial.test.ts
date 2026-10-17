@@ -652,7 +652,7 @@ describe("the cancellation seam under race", () => {
         // terminal with its result while the gate holds its stale read.
         await direct.query(
           `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
-              SET status = 'succeeded', result = '{"won":true}', error_code = NULL
+              SET status = 'succeeded', result = '{"won":true}', error_code = NULL, terminal_at = now()
             WHERE job_id = $1`,
           [jobId],
         );

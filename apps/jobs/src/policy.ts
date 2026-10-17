@@ -97,6 +97,24 @@ export const JOBS_FETCH_DEADLINE_SECONDS = 300;
 export const JOBS_HEARTBEAT_SECONDS = 10;
 
 /**
+ * How long a successful result stays publicly readable, in seconds from the
+ * original terminal outcome (seven days). Past it the result read answers 410
+ * `result_expired` and the job's public status is `expired` — however delayed
+ * the physical cleanup of the stored bytes is (design §7).
+ */
+export const JOBS_RESULT_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * How long a job's record stays publicly readable, in seconds from the
+ * ORIGINAL terminal outcome (thirty days) — the same lifetime for every
+ * terminal outcome, and result expiry never restarts it. Past it every read
+ * of the record answers 404 like an unknown job, while the physically
+ * retained row still holds the retry key until the cleanup removes them
+ * together (design §7; the retained-key replay's unreadable answer).
+ */
+export const JOBS_RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
  * The platform-owned queue policy, applied by the migration command when it
  * creates the queue and verified by the startup compatibility check.
  *

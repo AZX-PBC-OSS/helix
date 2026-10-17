@@ -556,9 +556,13 @@ export class JobsRecovery {
       }
       case "failed":
       case "crashed": {
+        // The terminal write stamps `terminal_at` (the original terminal
+        // outcome's instant, the store clock) — the same stamp every other
+        // terminal projection carries, the input both public-read horizons
+        // derive from.
         const updated = await pool.query(
           `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
-              SET status = $3, error_code = $4
+              SET status = $3, error_code = $4, terminal_at = now()
             WHERE server = $1 AND job_id = $2 AND NOT (status = ANY($5::text[]))`,
           [
             candidate.server,

@@ -18,6 +18,8 @@ import {
   JOBS_QUEUE_NAME,
   JOBS_QUEUE_POLICY,
   JOBS_QUEUE_POLICY_EFFECTIVE,
+  JOBS_RECORD_TTL_SECONDS,
+  JOBS_RESULT_TTL_SECONDS,
   JOBS_TYPE_POLICIES,
   JOBS_RUNTIME_ROLE,
   JOBS_SCHEMA,
@@ -109,6 +111,15 @@ describe("the installed-handler policy registry", () => {
   test("the queue carries a heartbeat window workers must keep, at pg-boss's minimum", () => {
     expect(JOBS_QUEUE_POLICY.heartbeatSeconds).toBe(JOBS_HEARTBEAT_SECONDS);
     expect(JOBS_HEARTBEAT_SECONDS).toBeGreaterThanOrEqual(10);
+  });
+
+  test("the public-read horizons are the spec's own lifetimes — seven days for a result, thirty for the record", () => {
+    // The values are the spec's (criteria 35 and 36), not derivable: the
+    // horizon suites compute their boundaries FROM these constants, so a
+    // drifted value would pass them while silently shortening or extending
+    // the contract's lifetimes.
+    expect(JOBS_RESULT_TTL_SECONDS).toBe(7 * 24 * 60 * 60);
+    expect(JOBS_RECORD_TTL_SECONDS).toBe(30 * 24 * 60 * 60);
   });
 
   test("the expected effective queue row is derived from the policy, not restated", () => {

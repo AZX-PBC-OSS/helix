@@ -169,6 +169,7 @@ function seedJob(options: {
   appId: string;
   data: object;
   retryLimit?: number;
+  retryDelay?: number;
   expireInSeconds?: number;
 }): Promise<string> {
   return seedRunnerJobWithRecord(boss, direct, options);
@@ -319,6 +320,90 @@ describe("the execution seam", () => {
       expect(done.error_code).toBeNull();
       expect(storedResult(done)).toBe("recovered");
       expect(seenAttempts).toEqual([1, 2]);
+    },
+  );
+
+  test(
+    "a retrying failure stamps nothing — the waiting record has no terminal instant",
+    { timeout: 120_000 },
+    async () => {
+      const appId = anApp();
+      await deliverGeneration(appId, "1", false);
+      const jobId = await seedJob({
+        appId,
+        data: { url: "https://example.com/data.json" },
+        retryLimit: 1,
+        retryDelay: 60,
+      });
+      currentHandler = async (context) => {
+        if (context.attempt === 1) throw new JobsExecutionError("upstream_error");
+        return "recovered";
+      };
+      await withWorker(async () => {
+        await waitFor("the first attempt to fail back to queued", async () => {
+          const row = await recordRow(jobId);
+          return row.status === "queued" && row.attempt === 1;
+        });
+        // The retry arm's write stamps nothing: an unfinished record carries
+        // no terminal instant, so the read horizons can never apply to it —
+        // work that is merely waiting can never read expired or unknown by
+        // age. The store's own check requires the instant only of terminal
+        // rows, so a retry arm that stamped would corrupt the horizons
+        // silently; this assertion is what holds the arm's restraint.
+        const waiting = await recordRow(jobId);
+        expect(waiting.terminal_at).toBeNull();
+      });
+    },
+  );
+
+  test(
+    "a terminal write stamps the store clock, not another column's instant",
+    { timeout: 120_000 },
+    async () => {
+      // `created_at` is backdated under the type's absolute deadline (300s):
+      // if a terminal write ever stamped the acceptance instant instead of
+      // its own, both public-read horizons would begin early and no check in
+      // the store would refuse it — the freshness bound below is what makes
+      // that regression red.
+      const appId = anApp();
+      await deliverGeneration(appId, "1", false);
+      const succeededId = await seedJob({ appId, data: { url: "https://example.com/data.json" } });
+      await direct.query(
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET created_at = now() - interval '120 seconds'
+          WHERE job_id = $1`,
+        [succeededId],
+      );
+      currentHandler = async () => "done";
+      await withWorker(() =>
+        waitFor(
+          "the job to succeed",
+          async () => (await recordRow(succeededId)).status === "succeeded",
+        ),
+      );
+      const succeeded = await recordRow(succeededId);
+      expect(Math.abs(Date.now() - (succeeded.terminal_at as Date).getTime())).toBeLessThan(60_000);
+
+      // The failure projection's terminal arm stamps the same way — the
+      // original terminal outcome's instant, whichever outcome it was.
+      const failedApp = anApp();
+      await deliverGeneration(failedApp, "1", false);
+      const failedId = await seedJob({
+        appId: failedApp,
+        data: { url: "https://example.com/data.json" },
+      });
+      await direct.query(
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET created_at = now() - interval '120 seconds'
+          WHERE job_id = $1`,
+        [failedId],
+      );
+      currentHandler = async () => {
+        throw new JobsExecutionError("upstream_error");
+      };
+      await withWorker(() =>
+        waitFor("the job to fail", async () => (await recordRow(failedId)).status === "failed"),
+      );
+      const failed = await recordRow(failedId);
+      expect(Math.abs(Date.now() - (failed.terminal_at as Date).getTime())).toBeLessThan(60_000);
     },
   );
 

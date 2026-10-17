@@ -273,7 +273,9 @@ export function deadlinePassed(acceptedAt: Date, deadlineSeconds: number): boole
  * still being nonterminal; returns the affected count, so a caller that lost
  * a race to a competing terminal write knows nothing was changed. The
  * attempt and progress columns stay — they are the attribution of the work
- * the deadline denied.
+ * the deadline denied. The write stamps `terminal_at` (the store clock,
+ * atomic with the status): the original terminal outcome's instant, the
+ * input both public-read horizons derive from.
  */
 export async function terminatePastDeadline(
   executor: Pick<Pool, "query"> | Pick<PoolClient, "query">,
@@ -282,7 +284,7 @@ export async function terminatePastDeadline(
 ): Promise<number> {
   const updated = await executor.query(
     `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
-        SET status = 'failed', error_code = 'timeout'
+        SET status = 'failed', error_code = 'timeout', terminal_at = now()
       WHERE server = $1 AND job_id = $2 AND NOT (status = ANY($3::text[]))`,
     [server, jobId, JOB_TERMINAL_STATUSES],
   );
@@ -297,7 +299,9 @@ export async function terminatePastDeadline(
  * affected count, so a caller that lost a race to a competing terminal write
  * knows nothing was changed (the first terminal outcome to commit wins). The
  * attempt and progress columns stay — they are the attribution of the work
- * the cancellation denied.
+ * the cancellation denied. The write stamps `terminal_at` (the store clock,
+ * atomic with the status): the original terminal outcome's instant, the
+ * input both public-read horizons derive from.
  */
 export async function projectCancellation(
   executor: Pick<Pool, "query"> | Pick<PoolClient, "query">,
@@ -306,7 +310,7 @@ export async function projectCancellation(
 ): Promise<number> {
   const updated = await executor.query(
     `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
-        SET status = 'cancelled', error_code = 'cancelled'
+        SET status = 'cancelled', error_code = 'cancelled', terminal_at = now()
       WHERE server = $1 AND job_id = $2 AND NOT (status = ANY($3::text[]))`,
     [server, jobId, JOB_TERMINAL_STATUSES],
   );
@@ -608,7 +612,9 @@ export class JobsExecutionStore {
    * Project a failed attempt: `queued` with the failure's reason when the
    * type's policy will retry (the previous attempt's progress and error stay
    * — the attribution the snapshot shows while waiting), terminal `failed`
-   * when no attempt remains. Conditional on this attempt still being the
+   * when no attempt remains. The terminal arm stamps `terminal_at` (the
+   * original terminal outcome's instant — the read horizons' input); the
+   * retry arm never does. Conditional on this attempt still being the
    * record's current one; `fenced` means a competing outcome won.
    */
   async failAttempt(
@@ -623,7 +629,7 @@ export class JobsExecutionStore {
     }
     const updated = await pool.query(
       `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
-          SET status = $5, error_code = $4
+          SET status = $5, error_code = $4, terminal_at = CASE WHEN $5 = 'failed' THEN now() END
         WHERE server = $1 AND job_id = $2 AND status = 'running' AND attempt = $3`,
       [record.server, record.jobId, attempt, code, retrying ? "queued" : "failed"],
     );
@@ -633,8 +639,12 @@ export class JobsExecutionStore {
   /**
    * Project a successful attempt: the bounded result, the terminal success,
    * the error cleared. The progress stays — it is the attempt that produced
-   * the result. Conditional like every projection; `fenced` means a competing
-   * terminal outcome (a cancellation, a recovery's crash) won the race.
+   * the result. `terminal_at` is stamped here (the original terminal
+   * outcome's instant): the result horizon (seven days) and the record
+   * horizon (thirty days) both derive from it, and a later logical expiry
+   * never rewrites it. Conditional like every projection; `fenced` means a
+   * competing terminal outcome (a cancellation, a recovery's crash) won the
+   * race.
    */
   async completeAttempt(
     record: JobsAttemptRecord,
@@ -654,7 +664,7 @@ export class JobsExecutionStore {
     const text = stringifyJsonValue(result);
     const updated = await pool.query(
       `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
-          SET status = 'succeeded', result = $4, error_code = NULL
+          SET status = 'succeeded', result = $4, error_code = NULL, terminal_at = now()
         WHERE server = $1 AND job_id = $2 AND status = 'running' AND attempt = $3`,
       [record.server, record.jobId, attempt, text],
     );

@@ -211,18 +211,32 @@ looked up:
   and its retryable wait for the portal's delivery), `capacity_exceeded`
   (new work that fit no unfinished or retained cap — the busy 429; the
   specific saturated cap and its occupancy ride the
-  `jobs.admission.capacity_refused` log event, never a dimension here), and
+  `jobs.admission.capacity_refused` log event, never a dimension here),
+  `not_found` (an identical-bytes replay of a job whose public record access
+  has expired — the 404 an unknown job answers with, no work created while
+  the row is still retained), and
   `unavailable` (the acceptance store could not decide) — beside
   `helix.app_id` and `helix.jobs.generation` (pinned by the same suite's
   submit scan). The cancellation's is `JOBS_CANCEL_OUTCOMES`: `requested`
   (the durable intent committed — a repeat while active answers the same),
-  `not_found` (no record answers the reference, or its identity does not
-  match the signed caller — the same 404 an unknown job answers with),
+  `not_found` (no record answers the reference, its identity does not
+  match the signed caller, or its public record access has expired — the
+  same 404 an unknown job answers with),
   `forbidden` (the signed grants do not cover the record's type),
   `terminal` (the job already carries a terminal outcome; the 409 leaves it
-  exactly as it was), and `unavailable` (the cancellation store could not
+  exactly as it was, and a successful result past its seven days reads
+  `expired`), and `unavailable` (the cancellation store could not
   decide) — beside `helix.app_id` and `helix.jobs.job_id` (pinned by the
-  same suite's cancel scan).
+  same suite's cancel scan). The status poll's is `JOBS_SNAPSHOT_OUTCOMES`
+  (`found` — the complete latest snapshot; `not_found`/`forbidden`/
+  `unavailable` as the cancellation's, the same unknown-job 404, lapsed-grant
+  403 and retryable 503) and the result read's is `JOBS_RESULT_OUTCOMES`
+  (`found` — the raw JSON result, JSON `null` included; `not_ready` — the
+  stateful 409 while the job is unfinished; `terminal` — the stateful 409
+  for a terminal job without a successful result; `expired` — the 410 from
+  the result horizon's boundary onward; plus the shared
+  `not_found`/`forbidden`/`unavailable`) — beside `helix.app_id` and
+  `helix.jobs.job_id` on both (pinned by the same suite's observation scan).
 - The `helix.jobs.execute` span (the worker's attempt) carries `helix.outcome`
   ∈ `JOBS_EXECUTE_OUTCOMES` — `succeeded` (the handler's result, inside the
   platform's bounds, projected durably after the claim's own fenced

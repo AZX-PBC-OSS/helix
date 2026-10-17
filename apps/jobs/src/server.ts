@@ -10,6 +10,7 @@ import { describeDsn } from "./dsn.js";
 import { JobsExecution, JobsHandlerRegistry } from "./execution.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
 import { JobsLifecycleStore } from "./lifecycle.js";
+import { JobsObservationStore } from "./observation.js";
 import { JobsRunner } from "./runner.js";
 import { JobsRecovery } from "./recovery.js";
 import type { JobsStorageLogger } from "./storage.js";
@@ -165,6 +166,15 @@ const admission = new JobsAcceptanceStore({
   log: lateLog,
 });
 
+// The observation store — the owner-scoped status/result reads, projected
+// against the logical public-read horizons. Read-only: polling never
+// mutates execution.
+const observation = new JobsObservationStore({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  log: lateLog,
+});
+
 const app = buildApp({
   storage,
   instructions: createJobsInstructionAuth({
@@ -176,6 +186,7 @@ const app = buildApp({
   lifecycle,
   admission,
   cancellation,
+  observation,
   worker: () => runner.snapshot,
   recovery: () => recovery.snapshot(),
 });
@@ -185,17 +196,18 @@ logRef.current = app.log;
 // usable, `/health` reports the store's state honestly while the bounded
 // retries continue, and shutdown releases what startup acquired — the
 // recovery sweeper's pool and timer, the cancellation store's pool, the
-// runner instance and its retry timer, the execution store's pool, the
-// acceptance store's pool, the lifecycle pool, the sweep timer and pool,
-// the probes' timer and pool, then the telemetry flush (ADR-0009). The
-// sweeper and the cancellation store release before the runner: both drive
-// runner cancels through the runner's instance.
+// observation store's pool, the runner instance and its retry timer, the
+// execution store's pool, the acceptance store's pool, the lifecycle pool,
+// the sweep timer and pool, the probes' timer and pool, then the telemetry
+// flush (ADR-0009). The sweeper and the cancellation store release before
+// the runner: both drive runner cancels through the runner's instance.
 app.addHook("onClose", async () => {
   await recovery.stop();
   await cancellation.stop();
   await runner.stop();
   await execution.stop();
   await admission.stop();
+  await observation.stop();
   await lifecycle.stop();
   await burns.stop();
   await storage.stop();
@@ -218,6 +230,7 @@ try {
   recovery.start();
   cancellation.start();
   admission.start();
+  observation.start();
   await app.listen({ port, host });
   app.log.info(
     {
@@ -234,15 +247,16 @@ try {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
   // storage.start(), burns.start(), lifecycle.start(), execution.start(),
-  // runner.start(), recovery.start(), cancellation.start() and
-  // admission.start() have already acquired their resources; release them
-  // here, not only on the shutdown
-  // path, bounded by each pool's own connect timeout.
+  // runner.start(), recovery.start(), cancellation.start(),
+  // admission.start() and observation.start() have already acquired their
+  // resources; release them here, not only on the shutdown path, bounded by
+  // each pool's own connect timeout.
   await recovery.stop();
   await cancellation.stop();
   await runner.stop();
   await execution.stop();
   await admission.stop();
+  await observation.stop();
   await lifecycle.stop();
   await burns.stop();
   await storage.stop();

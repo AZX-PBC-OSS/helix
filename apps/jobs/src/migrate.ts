@@ -1,7 +1,7 @@
 import { PgBoss, type UpdateQueueOptions } from "pg-boss";
 import type { Pool } from "pg";
 
-import { JOB_ERROR_CODES, JOB_STATUSES } from "@azx-pbc/shared";
+import { JOB_ERROR_CODES, JOB_STATUSES, JOB_TERMINAL_STATUSES } from "@azx-pbc/shared";
 
 import { createJobsPool } from "./pool.js";
 
@@ -332,7 +332,9 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
  * The execution columns' checks carry the projection's state machine in the
  * store: a successful row always has its result, a result exists only on a
  * row projecting success (including its expired-but-uncleaned form), the
- * error code is always from the shared vocabulary, and an attempt is 1-based.
+ * error code is always from the shared vocabulary, an attempt is 1-based,
+ * and every terminal row carries the instant of its original terminal
+ * outcome — the input both public-read horizons derive from.
  *
  * The occupancy index bounds the acceptance transaction's capacity counts
  * (`server, app_id, env, status`): the leading column serves the server-wide
@@ -370,6 +372,7 @@ async function ensureJobRecordStore(
        retry_key     text,
        body_sha256   text        NOT NULL,
        created_at    timestamptz NOT NULL,
+       terminal_at   timestamptz,
        attempt       integer,
        progress      jsonb,
        error_code    text,
@@ -405,6 +408,13 @@ async function ensureJobRecordStore(
       // intent" — the only value the projection paths wrote before the column
       // could exist.
       `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS cancellation_requested boolean NOT NULL DEFAULT false`,
+    ],
+    [
+      "terminal_at",
+      // The original terminal outcome's instant — the input both public-read
+      // horizons derive from (result 7 days, record 30 days). NULL while the
+      // record is non-terminal.
+      `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS terminal_at timestamptz`,
     ],
   ] as const) {
     const had = await pool.query<{ found: boolean }>(
@@ -459,6 +469,25 @@ async function ensureJobRecordStore(
     pool,
     "job_record_result_only_while_projected",
     `result IS NULL OR status IN ('succeeded', 'expired')`,
+  );
+  // The horizons' input is never missing on a terminal row: every writer of a
+  // terminal status stamps `terminal_at` in the same statement, so a row that
+  // reads terminal without it is a store this convergence did not see. The
+  // backfill dates pre-existing terminal rows at the migration instant — the
+  // true terminal instant of an already-terminal row is unrecoverable, and
+  // the migration instant is the conservative choice (it can only extend the
+  // record's readability, never shorten it); without it those rows would
+  // escape both public horizons forever.
+  const terminalStatuses = JOB_TERMINAL_STATUSES.map((status) => `'${status}'`).join(", ");
+  await pool.query(
+    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+        SET terminal_at = now()
+      WHERE status IN (${terminalStatuses}) AND terminal_at IS NULL`,
+  );
+  await ensureCheckConstraint(
+    pool,
+    "job_record_terminal_outcome_dated",
+    `NOT (status IN (${terminalStatuses})) OR terminal_at IS NOT NULL`,
   );
   return { existed, columnsAdded: added };
 }

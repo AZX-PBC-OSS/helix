@@ -7,13 +7,12 @@ migration/configuration command, the startup compatibility check — the service
 boot: the health-first listener, the storage-readiness supervisor and the
 shared health vocabulary, and the signed internal operation receiver: every
 edge→jobs and portal→jobs instruction is verified and its nonce durably burned
-before its operation runs. The operations' own semantics land in their own
-tickets and compose from here — lifecycle delivery (the app-generation
-authority's apply-before-acknowledge receiver, `src/lifecycle.ts`), submission
-(the acceptance transaction, `src/acceptance.ts`) and cancellation (the durable
-intent plus the runner drive, `src/cancellation.ts`) are served; the rest
-answer the protocol's retryable unavailable error until their tickets
-replace the placeholder, and the log line is where that gap is named.
+before its operation runs. All five receiving operations are served:
+lifecycle delivery (the app-generation authority's apply-before-acknowledge
+receiver, `src/lifecycle.ts`), submission (the acceptance transaction,
+`src/acceptance.ts`), cancellation (the durable intent plus the runner drive,
+`src/cancellation.ts`) and the owner-scoped observation reads (the logical
+public-read horizons' projection, `src/observation.ts`).
 
 ## Signed internal operations (`src/instructionAuth.ts`, `src/app.ts`)
 
@@ -48,6 +47,45 @@ A legitimate HTTP retry mints a fresh instruction (fresh `jti`) carrying
 the same optional retry identity — the signed `idempotencyKey` claim, compared
 at admission (`src/acceptance.ts`), never overridden by an unsigned header.
 
+## The observation seam (`src/observation.ts`)
+
+The owner-scoped status and result reads — the polling half of the protocol
+(ADR-0005), projected against the **logical public-read horizons**:
+
+- **Authorization runs on every read**, in the order the contract fixes:
+  existence, then the signed identity (app, environment, principal kind,
+  owner), then the record's public readability, then the type grant. A
+  foreign or unknown reference — and a record past its public horizon —
+  answers the same 404 `job_not_found` (never a disclosure that someone
+  else's or an expired job exists); a lapsed grant answers 403 `forbidden`,
+  fail-closed, ahead of any state revelation. Reads are read-only: polling
+  never mutates execution, and a failed observation is never an execution
+  failure (the retryable 503, the last known state staying visibly stale).
+- **The horizons are computed from the record's `terminal_at`** — the
+  instant of its ORIGINAL terminal outcome, stamped by every terminal write
+  in the same statement that writes the status. A successful result stays
+  readable for seven days (`resultExpiresAt`), the record for thirty
+  (`recordExpiresAt`); past the result boundary the job's public status reads
+  `expired` and the result read answers 410 `result_expired` — however
+  delayed the physical cleanup is; past the record boundary every read
+  answers 404 while the physically retained row still holds the retry key
+  (criterion 14). One shared projection (`projectedPublicStatus` and its
+  neighbours) is what every reader of the record's public state consumes —
+  the observation routes, the cancellation seam's terminal classification
+  and the acceptance transaction's retained-key comparison — so no path can
+  show a stale `succeeded` past the horizon or read an expired record.
+- **The snapshot is the complete latest state** (criterion 40): terminal
+  outcome, cancellation intent, attempt and progress, both horizons, the
+  bounded execution error — one fixed camelCase shape with explicit nulls,
+  validated against the wire schema before it is sent.
+- **The result is the stored canonical JSON, as exact bytes** — objects,
+  scalars and JSON `null` (a result, never expiry), never re-serialized: a
+  result at the 64-KiB cap nests past the engine's recursive serializer, and
+  the value the job produced is the value the caller reads. An unfinished
+  job answers the stateful 409 `job_not_ready`; a terminal job without a
+  successful result, 409 `job_terminal` — each with the job's status and
+  applicable bounded error.
+
 ## The owner-cancellation seam (`src/cancellation.ts`)
 
 An authorized cancel request becomes durable intent first, then the runner
@@ -60,11 +98,15 @@ drive — in that order, and never the reverse:
    non-terminal — so a state that changed before the write landed cannot be
    acted on. A repeat while active writes the same value and answers the same
    acknowledgement (harmless by construction). The refusals classify the
-   record as it stands: a foreign or unknown reference answers the same 404
-   `job_not_found` (never a disclosure that someone else's job exists), a
+   record as it stands: a foreign or unknown reference — and a record past
+   its public record horizon — answers the same 404
+   `job_not_found` (never a disclosure that someone else's or an expired job
+   exists), a
    grant that does not cover the record's type answers 403 `forbidden`, and a
    terminal job answers 409 `job_terminal` with its own status and stored
-   error, its outcome preserved.
+   error, its outcome preserved (a successful result past its seven days
+   reads `expired` — the read horizons' projection, never a stale stored
+   status).
 2. **Then the runner.** The record's runner row is cancelled through the
    runner's own fenced adapter call (`cancelRunnerJob`): a waiting row moves
    to `cancelled` and will never dispatch; an active row's claim is lost,
@@ -97,11 +139,16 @@ Submission is decided in ONE transaction against the service's private store
    (`server/appId/env/ownerKind/ownerOid/type/key`, unique-constrained) is
    looked up and its stored digest compared against the exact input bytes,
    BEFORE new-input validation and BEFORE the eligibility verdict is applied:
-   identical bytes recover the original job (202 with its current status) even
+   identical bytes recover the original job (202 with its CURRENT public
+   status — the read horizons' projection, so a replay after result expiry
+   returns the original job as `expired`) even
    when validation rules have since changed or intake has closed; different
    bytes answer 409 `idempotency_conflict` with the job's state, even when
-   they are invalid for new work. Neither answer creates work or consumes a
-   slot.
+   they are invalid for new work. A record past its public record horizon is
+   unreadable: the identical replay answers the unknown-job 404 without
+   creating work while the row is still physically retained, and the
+   changed-bytes conflict still stands. Neither answer creates work or
+   consumes a slot.
 3. New-work validation — the type's installed policy (a type this server has
    no policy for is refused 403) and its input contract (refused 400
    `payload_invalid`), creating no job and no key claim.
@@ -401,16 +448,20 @@ store (schema `jobs`, table `instruction_burns`, its `burn_until` index), the
 app-lifecycle store (table `app_lifecycle`) and the job-record store (table
 `job_record`, the retry namespace's unique constraint, the public-status
 check, the execution projection's columns — attempt, progress, error_code,
-result — and the durable owner-cancellation intent column
-(`cancellation_requested`), with the state-machine checks that keep a result
+result — the durable owner-cancellation intent column
+(`cancellation_requested`) and the terminal-outcome instant column
+(`terminal_at`, the input both public-read horizons derive from), with the
+state-machine checks that keep a result
 only where the
-public record projects it — and the occupancy index the capacity counts
+public record projects it and a terminal status always dated — and the
+occupancy index the capacity counts
 use), grants the runtime role DML
 on all of it — provisioning sets no default privileges, so grants arrive by
 migration — and verifies the effective state by re-reading it. The
-job-record store carries the durable owner-cancellation intent column
-(`cancellation_requested`, converged in place for an existing store like the
-execution columns). Later
+job-record store's added columns converge in place for an existing store,
+and a pre-existing terminal row is dated at the migration instant (the
+conservative direction: it can only extend readability, never shorten it).
+Later
 jobs-owned migrations extend this command the same way: a step under the
 migration identity, after the schema they depend on exists.
 
@@ -420,7 +471,8 @@ migration identity, after the schema they depend on exists.
 runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, the instruction
 burn store, the app-lifecycle store and the job-record store present with its
-execution columns and the cancellation-intent column, and the
+execution columns, the cancellation-intent column and the terminal-instant
+column, and the
 runtime identity holding its DML. The verdict union (`compatible`,
 `unreachable`, `schema_missing`, `schema_version`, `queue_missing`,
 `queue_policy`, `burn_missing`, `lifecycle_missing`, `record_missing`,
@@ -458,6 +510,7 @@ verified and later dies degrades the same way.
   then the cancellation store (its runner drive rides the same instance),
   then the runner (its retry timer, its instance and the worker on it), then
   every store's pool — the execution store, the acceptance store, the
+  observation store, the
   lifecycle store, the burn store's sweep timer, the storage supervisor's
   probe timer — and flushes telemetry; the graceful-shutdown install bounds
   the drain. The failed-partial-initialization exit releases the same set.
@@ -499,9 +552,9 @@ The listener serves `/health` and the five signed internal operation routes
 (verification + durable burn). The lifecycle route serves the portal's
 delivery (the app-lifecycle authority above), the submit route serves the
 acceptance transaction (above), the cancel route serves the owner-cancellation
-seam (above), and the worker executes accepted work (the
-execution seam above); the other operations' semantics arrive with
-their own tickets and answer 503 `jobs_unavailable` until then — an unmatched
+seam (above), the snapshot and result routes serve the owner-scoped
+observation reads (above), and the worker executes accepted work (the
+execution seam above); an unmatched
 request answers 503 `jobs_unavailable` while the store is unusable, 404 on a
 ready service.
 

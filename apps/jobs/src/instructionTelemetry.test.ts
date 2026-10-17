@@ -1,10 +1,20 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { propagation } from "@opentelemetry/api";
+import type { InjectOptions } from "fastify";
 
-import { ATTR_OUTCOME } from "@azx-pbc/shared/telemetry";
+import {
+  ATTR_OUTCOME,
+  SPAN_JOBS_RESULT,
+  SPAN_JOBS_SNAPSHOT,
+  SPAN_JOBS_SUBMIT,
+  type JobsResultOutcome,
+  type JobsSnapshotOutcome,
+} from "@azx-pbc/shared/telemetry";
 import { propagatorFor } from "@azx-pbc/telemetry";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import { JobsOperations } from "@azx-pbc/shared/jobsSigning";
+
+import type { JobsResultVerdict, JobsSnapshotVerdict } from "./observation.js";
 
 import {
   appWithLifecycle,
@@ -237,6 +247,215 @@ describe("instruction telemetry", () => {
     }
   });
 
+  test("a served observation read's span carries the operation's own outcome and none of the owner's identity", async () => {
+    const receiver = makeReceiver();
+    const { app, storage, observation } = await appWithReceiver(receiver);
+    try {
+      const jobId = TEST_JOB_ID;
+      const snapshotRequest = (token: string): InjectOptions => ({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${jobId}`,
+        headers: instructionHeaders(token),
+      });
+      const resultRequest = (token: string): InjectOptions => ({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${jobId}/result`,
+        headers: instructionHeaders(token),
+      });
+      const mintSnapshot = (): Promise<string> =>
+        mint({
+          operation: "snapshot",
+          server: "jobs",
+          identity: { ...TEST_IDENTITY },
+          jobId,
+          iatS: TEST_IAT,
+        });
+      const mintResult = (): Promise<string> =>
+        mint({
+          operation: "result",
+          server: "jobs",
+          identity: { ...TEST_IDENTITY },
+          jobId,
+          iatS: TEST_IAT,
+        });
+
+      // The found read: the operation's own outcome supersedes the
+      // verification verdict; the bounded evidence is the addressed app and
+      // the job's public id — never the owner identity, never the snapshot's
+      // own values.
+      observation.snapshotVerdict = {
+        outcome: "found",
+        snapshot: {
+          server: "jobs",
+          jobId,
+          type: "jobs:fetch",
+          status: "expired",
+          attempt: 1,
+          progress: null,
+          cancellationRequested: false,
+          resultExpiresAt: "2026-10-20T12:00:00.000Z",
+          recordExpiresAt: "2026-11-12T12:00:00.000Z",
+          error: null,
+        },
+      };
+      await app.inject(snapshotRequest(await mintSnapshot()));
+      const found = recording.spans().at(-1);
+      expect(found?.name).toBe("helix.jobs.snapshot");
+      expect(found?.attributes["helix.outcome"]).toBe("found");
+      expect(found?.attributes["helix.app_id"]).toBe(TEST_IDENTITY.appId);
+      expect(found?.attributes["helix.jobs.job_id"]).toBe(jobId);
+      expect(found?.status.code).toBe(0); // UNSET — the designed answer
+      for (const [key, value] of Object.entries(found?.attributes ?? {})) {
+        expect(String(value), `attr ${key} carries an owner oid`).not.toContain(
+          TEST_IDENTITY.ownerOid,
+        );
+        expect(String(value), `attr ${key} carries the snapshot`).not.toContain("2026-10-20");
+      }
+
+      // The refusals answer their own outcomes, all UNSET (designed answers).
+      observation.snapshotVerdict = { outcome: "not_found" };
+      await app.inject(snapshotRequest(await mintSnapshot()));
+      expect(recording.spans().at(-1)?.attributes["helix.outcome"]).toBe("not_found");
+      observation.resultVerdict = { outcome: "expired" };
+      await app.inject(resultRequest(await mintResult()));
+      const expired = recording.spans().at(-1);
+      expect(expired?.name).toBe("helix.jobs.result");
+      expect(expired?.attributes["helix.outcome"]).toBe("expired");
+      expect(expired?.status.code).toBe(0);
+
+      // A store that cannot answer is the retryable 503 — and its span
+      // grades ERROR, the same rule every unavailable answer follows.
+      observation.failReads = true;
+      await app.inject(snapshotRequest(await mintSnapshot()));
+      const unavailable = recording.spans().at(-1);
+      expect(unavailable?.attributes["helix.outcome"]).toBe("unavailable");
+      expect(unavailable?.status.code).toBe(2); // ERROR
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("every exit of each observation vocabulary carries its own word on its span", async () => {
+    // The full vocabulary, not a sample: each route's span names its
+    // operation and carries the verdict's own bounded word with the uniform
+    // grading (4xx answers UNSET, the 503 ERROR). Keyed by the shared
+    // outcome unions, so a word added to a vocabulary without a pinned exit
+    // fails to compile here instead of shipping unpinned.
+    const receiver = makeReceiver();
+    const { app, storage, observation } = await appWithReceiver(receiver);
+    try {
+      const foundSnapshot: JobsSnapshotVerdict = {
+        outcome: "found",
+        snapshot: {
+          server: "jobs",
+          jobId: TEST_JOB_ID,
+          type: "jobs:fetch",
+          status: "running",
+          attempt: 1,
+          progress: { step: 1, of: 1, label: "Fetched" },
+          cancellationRequested: false,
+          resultExpiresAt: null,
+          recordExpiresAt: null,
+          error: null,
+        },
+      };
+      type Exit = { verdict: JobsSnapshotVerdict | null; status: number; graded: boolean };
+      const snapshotExits: Record<JobsSnapshotOutcome, Exit> = {
+        found: { verdict: foundSnapshot, status: 200, graded: false },
+        not_found: { verdict: { outcome: "not_found" }, status: 404, graded: false },
+        forbidden: { verdict: { outcome: "forbidden" }, status: 403, graded: false },
+        unavailable: { verdict: null, status: 503, graded: true },
+      };
+      type ResultExit = { verdict: JobsResultVerdict | null; status: number; graded: boolean };
+      const resultExits: Record<JobsResultOutcome, ResultExit> = {
+        found: {
+          verdict: { outcome: "found", resultText: '{"kept":true}' },
+          status: 200,
+          graded: false,
+        },
+        not_found: { verdict: { outcome: "not_found" }, status: 404, graded: false },
+        forbidden: { verdict: { outcome: "forbidden" }, status: 403, graded: false },
+        not_ready: {
+          verdict: { outcome: "not_ready", status: "queued", error: null },
+          status: 409,
+          graded: false,
+        },
+        terminal: {
+          verdict: { outcome: "terminal", status: "failed", error: null },
+          status: 409,
+          graded: false,
+        },
+        expired: { verdict: { outcome: "expired" }, status: 410, graded: false },
+        unavailable: { verdict: null, status: 503, graded: true },
+      };
+      const injectRead = async (url: string, operation: "snapshot" | "result"): Promise<void> => {
+        await app.inject({
+          method: "GET",
+          url,
+          headers: instructionHeaders(
+            await mint({
+              operation,
+              server: "jobs",
+              identity: { ...TEST_IDENTITY },
+              jobId: TEST_JOB_ID,
+              iatS: TEST_IAT,
+            }),
+          ),
+        });
+      };
+      for (const [outcome, exit] of Object.entries(snapshotExits) as [
+        JobsSnapshotOutcome,
+        Exit,
+      ][]) {
+        recording.reset();
+        observation.failReads = exit.verdict === null;
+        observation.snapshotVerdict = exit.verdict ?? { outcome: "not_found" };
+        await injectRead(`/internal/jobs/v1/jobs/${TEST_JOB_ID}`, "snapshot");
+        const span = recording.spans().at(-1);
+        expect(span?.name, outcome).toBe(SPAN_JOBS_SNAPSHOT);
+        expect(span?.attributes[ATTR_OUTCOME], outcome).toBe(outcome);
+        expect(span?.status.code, outcome).toBe(exit.graded ? 2 : 0);
+      }
+      for (const [outcome, exit] of Object.entries(resultExits) as [
+        JobsResultOutcome,
+        ResultExit,
+      ][]) {
+        recording.reset();
+        observation.failReads = exit.verdict === null;
+        observation.resultVerdict = exit.verdict ?? { outcome: "not_found" };
+        await injectRead(`/internal/jobs/v1/jobs/${TEST_JOB_ID}/result`, "result");
+        const span = recording.spans().at(-1);
+        expect(span?.name, outcome).toBe(SPAN_JOBS_RESULT);
+        expect(span?.attributes[ATTR_OUTCOME], outcome).toBe(outcome);
+        expect(span?.status.code, outcome).toBe(exit.graded ? 2 : 0);
+      }
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the admission's record-expired replay exit carries its own bounded word on the submission span", async () => {
+    // The `not_found` admission outcome (an identical-bytes keyed replay of a
+    // job whose public record access expired) belongs to the submit
+    // vocabulary, not the observation sweep above: its span evidence is
+    // pinned here — the replay's own word, UNSET like every designed 4xx
+    // refusal.
+    const { app, storage, admission } = await appWithReceiver(makeReceiver());
+    try {
+      admission.outcome = { outcome: "not_found" };
+      await submitOnce(app, await mint(submitSpec()));
+      const span = recording.spans().at(-1);
+      expect(span?.name).toBe(SPAN_JOBS_SUBMIT);
+      expect(span?.attributes[ATTR_OUTCOME]).toBe("not_found");
+      expect(span?.status.code).toBe(0); // UNSET — a designed 4xx refusal
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
   test("a 401 refusal leaves the span UNSET; a 5xx reply grades it ERROR", async () => {
     const receiver = makeReceiver();
     const { app, storage, admission } = await appWithReceiver(receiver);
@@ -380,9 +599,8 @@ describe("instruction telemetry", () => {
 
   test("a lifecycle delivery the store cannot answer carries the unavailable outcome and grades the span ERROR", async () => {
     // The last of the four lifecycle outcomes on the span: the retryable
-    // refusal. A 5xx reply is a fault worth seeing — like the submit
-    // placeholder's 503, the reply grades the span ERROR even though the
-    // handler answered normally instead of throwing.
+    // refusal. A 5xx reply is a fault worth seeing: it grades the span ERROR
+    // even though the handler answered normally instead of throwing.
     const lifecycle = new MemoryLifecycle();
     lifecycle.failApplies = true;
     const { app, storage } = await appWithLifecycle(makeReceiver(), lifecycle);

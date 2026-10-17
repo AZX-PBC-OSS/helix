@@ -19,6 +19,7 @@ import {
   MemoryAdmission,
   MemoryCancellation,
   MemoryLifecycle,
+  MemoryObservation,
 } from "./test/instructions.js";
 
 /**
@@ -69,6 +70,7 @@ async function depsWith(
     lifecycle: new MemoryLifecycle(),
     admission: new MemoryAdmission(),
     cancellation: new MemoryCancellation(),
+    observation: new MemoryObservation(),
     worker: () => worker,
     recovery,
   };

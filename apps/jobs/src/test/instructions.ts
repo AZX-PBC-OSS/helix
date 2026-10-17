@@ -7,10 +7,14 @@ import {
 } from "@azx-pbc/shared";
 import {
   JobsCancelClaimsSchema,
+  JobsResultClaimsSchema,
+  JobsSnapshotClaimsSchema,
   JobsSubmitClaimsSchema,
   sha256BodyDigest,
   JOBS_EMPTY_BODY,
   type JobsCancelClaims,
+  type JobsResultClaims,
+  type JobsSnapshotClaims,
   type JobsSubmitClaims,
 } from "@azx-pbc/shared/jobsSigning";
 import {
@@ -22,6 +26,12 @@ import type { FastifyInstance } from "fastify";
 
 import type { JobsAdmission, JobsAdmissionRequest, JobsAdmissionResult } from "../acceptance.js";
 import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "../cancellation.js";
+import type {
+  JobsObservation,
+  JobsObservationRequest,
+  JobsResultVerdict,
+  JobsSnapshotVerdict,
+} from "../observation.js";
 import type { JobsBurnOutcome, JobsBurnStore } from "../burns.js";
 import { createJobsInstructionAuth, type JobsInstructionAuth } from "../instructionAuth.js";
 import { buildApp } from "../app.js";
@@ -211,28 +221,66 @@ export class MemoryCancellation implements JobsCancellation {
 }
 
 /**
+ * The in-memory observation seam — the `JobsObservation` seam's second
+ * implementor, for the ROUTE's tests: the routes' contract is mapping a
+ * snapshot/result verdict onto the protocol's responses and span vocabulary,
+ * and a leg arms the verdict it wants answered (or `failReads` to pin the
+ * store-failure mapping). The durable reads' own semantics — the
+ * authorization classification, the logical horizons, the raw-bytes result —
+ * are pinned against real Postgres in `observation.integration.test.ts`.
+ */
+export class MemoryObservation implements JobsObservation {
+  calls = 0;
+  lastRequest: JobsObservationRequest | null = null;
+  failReads = false;
+  snapshotVerdict: JobsSnapshotVerdict = { outcome: "not_found" };
+  resultVerdict: JobsResultVerdict = { outcome: "not_found" };
+
+  async snapshot(request: JobsObservationRequest): Promise<JobsSnapshotVerdict> {
+    return this.read(request, this.snapshotVerdict);
+  }
+
+  async result(request: JobsObservationRequest): Promise<JobsResultVerdict> {
+    return this.read(request, this.resultVerdict);
+  }
+
+  private async read<T>(request: JobsObservationRequest, verdict: T): Promise<T> {
+    this.calls += 1;
+    this.lastRequest = request;
+    if (this.failReads) {
+      throw new Error("injected observation-store failure");
+    }
+    return verdict;
+  }
+}
+
+/**
  * A built app with a ready store, the receiver seam, and nothing else wired.
- * The lifecycle, admission and cancellation seams ride along as in-memory
- * doubles — the lifecycle route's accepted path against the REAL store is
- * covered in `lifecycle.integration.test.ts` and the boot suite; the submit
- * route's is covered in `acceptance.integration.test.ts`; the cancel route's
- * is covered in `cancellation.integration.test.ts`.
+ * The lifecycle, admission, cancellation and observation seams ride along as
+ * in-memory doubles — the lifecycle route's accepted path against the REAL
+ * store is covered in `lifecycle.integration.test.ts` and the boot suite; the
+ * submit route's is covered in `acceptance.integration.test.ts`; the cancel
+ * route's is covered in `cancellation.integration.test.ts`; the snapshot and
+ * result routes' are covered in `observation.integration.test.ts`.
  */
 export async function appWithReceiver(receiver: TestReceiver): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
   admission: MemoryAdmission;
   cancellation: MemoryCancellation;
+  observation: MemoryObservation;
 }> {
   const admission = new MemoryAdmission();
   const cancellation = new MemoryCancellation();
+  const observation = new MemoryObservation();
   const { app, storage } = await appWithLifecycle(
     receiver,
     new MemoryLifecycle(),
     admission,
     cancellation,
+    observation,
   );
-  return { app, storage, admission, cancellation };
+  return { app, storage, admission, cancellation, observation };
 }
 
 /** A built app whose lifecycle seam is the given applier. */
@@ -241,6 +289,7 @@ export async function appWithLifecycle(
   lifecycle: JobsLifecycleApplier,
   admission: JobsAdmission = new MemoryAdmission(),
   cancellation: JobsCancellation = new MemoryCancellation(),
+  observation: JobsObservation = new MemoryObservation(),
 ): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
@@ -252,6 +301,7 @@ export async function appWithLifecycle(
     lifecycle,
     admission,
     cancellation,
+    observation,
     // The route suites exercise the receiver's routes, not the worker or the
     // sweeper; the supervision states they report are the registered
     // composition's, with the sweeper's last pass fresh.
@@ -372,4 +422,33 @@ export function cancelClaims(
     ownerOid: spec.identity.ownerOid,
     allowedTypes: [...spec.identity.allowedTypes],
   });
+}
+
+/**
+ * A snapshot or result claims object as the receiver's verification produces
+ * it — the trusted input the observation seam consumes, built exactly like
+ * {@link cancelClaims} over the same bodyless identity shape.
+ */
+export function recordReadClaims(
+  operation: "snapshot" | "result",
+  over: Partial<
+    Extract<JobsInstructionMintSpec, { operation: "snapshot" | "result" | "cancel" }>
+  > = {},
+): JobsSnapshotClaims | JobsResultClaims {
+  const spec = cancelSpec({ operation, ...over });
+  const shape = {
+    server: spec.server,
+    operation,
+    method: "GET",
+    resource: `/internal/jobs/v1/jobs/${spec.jobId}${operation === "result" ? "/result" : ""}`,
+    bodySha256: sha256BodyDigest(JOBS_EMPTY_BODY),
+    appId: spec.identity.appId,
+    env: spec.identity.env,
+    ownerKind: spec.identity.ownerKind,
+    ownerOid: spec.identity.ownerOid,
+    allowedTypes: [...spec.identity.allowedTypes],
+  };
+  return operation === "snapshot"
+    ? JobsSnapshotClaimsSchema.parse(shape)
+    : JobsResultClaimsSchema.parse(shape);
 }

@@ -285,7 +285,7 @@ afterAll(async () => {
  */
 async function settleLeftover(jobId: string): Promise<void> {
   await direct.query(
-    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'cancelled', error_code = 'cancelled'
+    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'cancelled', error_code = 'cancelled', terminal_at = now()
       WHERE job_id = $1`,
     [jobId],
   );
@@ -489,6 +489,30 @@ describe("the runner-row reconciliation's remaining branches", () => {
     const row = await recordRow(jobId);
     expect(row.status).toBe("failed");
     expect(row.error_code).toBe("upstream_error");
+  });
+
+  test("the reconciliation's terminal projection stamps the store clock, not another column's instant", async () => {
+    // `created_at` is backdated under the absolute deadline (300s): if the
+    // sweeper's terminal write ever stamped the acceptance instant instead
+    // of its own, the record horizon would begin early and no store check
+    // would refuse it — the freshness bound is what makes that red.
+    const appId = anApp();
+    const jobId = await seedJob({ appId, startAfterSeconds: 3_600 });
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET created_at = now() - interval '120 seconds'
+        WHERE job_id = $1`,
+      [jobId],
+    );
+    const runnerJobId = await runnerJobIdOf(jobId);
+    const settle = (await boss.fail(JOBS_QUEUE_NAME, [runnerJobId], {
+      code: "upstream_error",
+    })) as { affected?: number };
+    expect(settle.affected ?? 0).toBe(1);
+
+    await recovery.runPass();
+    const row = await recordRow(jobId);
+    expect(row.status).toBe("failed");
+    expect(Math.abs(Date.now() - (row.terminal_at as Date).getTime())).toBeLessThan(60_000);
   });
 
   test("a cancelled runner row projects the cancellation — recovery never reissues cancelled work", async () => {
@@ -816,7 +840,7 @@ describe("the reconciliation's conditional writes fence a loser", () => {
 
     const succeededJobId = await seedJob({ appId: anApp(), startAfterSeconds: 3_600 });
     await direct.query(
-      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '"settled"'
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '"settled"', terminal_at = now()
         WHERE job_id = $1`,
       [succeededJobId],
     );
@@ -824,6 +848,24 @@ describe("the reconciliation's conditional writes fence a loser", () => {
     const settled = await recordRow(succeededJobId);
     expect(settled.status).toBe("succeeded");
     expect(settled.error_code).toBeNull();
+  });
+
+  test("the shared timeout write stamps the store clock, not another column's instant", async () => {
+    // `created_at` is backdated (well inside the absolute deadline the write
+    // enforces): if the timeout write ever stamped the acceptance instant
+    // instead of its own, the record horizon would begin early and no store
+    // check would refuse it — the freshness bound is what makes that red.
+    const jobId = await seedJob({ appId: anApp(), startAfterSeconds: 3_600 });
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET created_at = now() - interval '120 seconds'
+        WHERE job_id = $1`,
+      [jobId],
+    );
+
+    expect(await terminatePastDeadline(direct, "jobs", jobId)).toBe(1);
+    const row = await recordRow(jobId);
+    expect(row.status).toBe("failed");
+    expect(Math.abs(Date.now() - (row.terminal_at as Date).getTime())).toBeLessThan(60_000);
   });
 });
 

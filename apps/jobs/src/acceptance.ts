@@ -12,7 +12,8 @@ import { sha256BodyDigest, type JobsSubmitClaims } from "@azx-pbc/shared/jobsSig
 
 import { lifecycleEligibilityInTx } from "./lifecycle.js";
 import { createJobsPool, withJobsClient } from "./pool.js";
-import { publicStatus, storedExecutionError } from "./execution.js";
+import { storedExecutionError } from "./execution.js";
+import { projectedPublicStatus, recordHorizonPassed } from "./observation.js";
 import {
   JOBS_QUEUE_NAME,
   JOBS_JOB_RECORD_QUALIFIED,
@@ -83,7 +84,8 @@ export type JobsAdmissionResult =
   | { outcome: "type_unknown" }
   | { outcome: "closed" }
   | { outcome: "unseen" }
-  | { outcome: "capacity_exceeded" };
+  | { outcome: "capacity_exceeded" }
+  | { outcome: "not_found" };
 
 /** The admission seam the submit route consumes (the durable store implements it; tests may substitute). */
 export interface JobsAdmission {
@@ -149,6 +151,7 @@ interface KeyMappingRow {
   status: string;
   body_sha256: string;
   error_code: string | null;
+  terminal_at: Date | null;
 }
 
 /**
@@ -393,7 +396,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     if (claims.idempotencyKey !== null) {
       const existing = await this.findKeyMapping(client, claims, claims.idempotencyKey);
       if (existing) {
-        return this.compareKeyMapping(existing, digest);
+        return this.compareKeyMapping(existing, digest, new Date());
       }
     }
 
@@ -491,7 +494,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     key: string,
   ): Promise<KeyMappingRow | null> {
     const result = await client.query<KeyMappingRow>(
-      `SELECT job_id, status, body_sha256, error_code
+      `SELECT job_id, status, body_sha256, error_code, terminal_at
          FROM ${JOBS_JOB_RECORD_QUALIFIED}
         WHERE ${KEY_SCOPE_PREDICATE}`,
       keyScopeParams(claims, key),
@@ -532,18 +535,28 @@ export class JobsAcceptanceStore implements JobsAdmission {
 
   /**
    * The retained-key comparison, from a row as stored: identical original
-   * bytes recover the original job with its current status; different bytes
-   * conflict with the job's state. Neither answer validates the input and
-   * neither creates work — the comparison precedes new-work validation by
-   * contract, so a job accepted under older validation rules still recovers.
+   * bytes recover the original job with its CURRENT public status — the
+   * read horizons' projection, so a replay after result expiry returns the
+   * original job as `expired` while its record is still publicly readable
+   * (criterion 14). Different bytes conflict with the job's state at any
+   * age — the key-holder's own claim is what the conflict answers. A
+   * record past its public record horizon is unreadable: the identical
+   * replay answers `not_found` (404, no work created, no slot taken) while
+   * the row is still physically retained, and the changed-bytes conflict
+   * still stands. Neither answer validates the input and neither creates
+   * work — the comparison precedes new-work validation by contract, so a
+   * job accepted under older validation rules still recovers.
    */
-  private compareKeyMapping(row: KeyMappingRow, digest: string): JobsAdmissionResult {
-    const status = publicStatus(row.status);
+  private compareKeyMapping(row: KeyMappingRow, digest: string, now: Date): JobsAdmissionResult {
+    const status = projectedPublicStatus(row, now);
     if (row.body_sha256 !== digest) {
       // The conflict's error is the job's stored execution error — the code
       // the execution projection wrote for the attempt that failed (a queued
       // job never executed, so none to report).
       return { outcome: "conflict", status, error: storedExecutionError(row.error_code) };
+    }
+    if (recordHorizonPassed(row, now)) {
+      return { outcome: "not_found" };
     }
     return { outcome: "recovered", jobId: row.job_id, status };
   }
@@ -567,7 +580,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
       throw new Error("a key claim race cannot arise for an unkeyed submission");
     }
     const result = await pool.query<KeyMappingRow>(
-      `SELECT job_id, status, body_sha256, error_code
+      `SELECT job_id, status, body_sha256, error_code, terminal_at
          FROM ${JOBS_JOB_RECORD_QUALIFIED}
         WHERE ${KEY_SCOPE_PREDICATE}`,
       keyScopeParams(claims, claims.idempotencyKey),
@@ -578,7 +591,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
         `the retry key's scoped claim vanished between the constraint and its resolution`,
       );
     }
-    return this.compareKeyMapping(row, digest);
+    return this.compareKeyMapping(row, digest, new Date());
   }
 }
 

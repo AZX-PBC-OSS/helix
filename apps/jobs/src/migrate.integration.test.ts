@@ -425,7 +425,8 @@ describe("jobs storage migration and startup compatibility", () => {
           DROP COLUMN IF EXISTS attempt,
           DROP COLUMN IF EXISTS progress,
           DROP COLUMN IF EXISTS error_code,
-          DROP COLUMN IF EXISTS result`);
+          DROP COLUMN IF EXISTS result,
+          DROP COLUMN IF EXISTS terminal_at`);
       await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
         kind: "record_schema",
         problems: [
@@ -433,12 +434,13 @@ describe("jobs storage migration and startup compatibility", () => {
           'column "progress" is missing',
           'column "error_code" is missing',
           'column "result" is missing',
+          'column "terminal_at" is missing',
         ],
       });
       await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
         expect.objectContaining({
           jobRecordExisted: true,
-          jobRecordColumnsAdded: ["attempt", "progress", "error_code", "result"],
+          jobRecordColumnsAdded: ["attempt", "progress", "error_code", "result", "terminal_at"],
         }),
       );
       await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
@@ -449,6 +451,60 @@ describe("jobs storage migration and startup compatibility", () => {
       await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
         expect.objectContaining({ jobRecordColumnsAdded: [] }),
       );
+    },
+  );
+
+  test(
+    "the terminal-instant backfill dates pre-existing terminal rows at the migration instant and leaves active work undated",
+    slow,
+    async () => {
+      // The pre-change store: rows whose writers never stamped terminal_at.
+      // The backfill's WHERE clause is the only thing standing between active
+      // work and a phantom record horizon — a queued row stamped here would
+      // carry a recordExpiresAt and read as unknown after thirty days while
+      // still queued, and no store check refuses a non-terminal row's stamp.
+      await asMigrateRole(
+        `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} DROP COLUMN IF EXISTS terminal_at`,
+      );
+      await asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, retry_key, body_sha256, created_at)
+        VALUES ('jobs', 'backfill-terminal', 'backfill-terminal-runner',
+                'backfill-app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'failed', NULL, '${"0".repeat(64)}', now() - interval '120 seconds'),
+               ('jobs', 'backfill-queued', 'backfill-queued-runner',
+                'backfill-app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'queued', NULL, '${"0".repeat(64)}', now() - interval '120 seconds')`);
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({
+          jobRecordExisted: true,
+          jobRecordColumnsAdded: ["terminal_at"],
+        }),
+      );
+      const stamped = await new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        const rows = await stamped.query<{ job_id: string; terminal_at: Date | null }>(
+          `SELECT job_id, terminal_at FROM ${JOBS_JOB_RECORD_QUALIFIED}
+            WHERE job_id IN ('backfill-terminal', 'backfill-queued')`,
+        );
+        const terminal = rows.rows.find((r) => r.job_id === "backfill-terminal");
+        const queued = rows.rows.find((r) => r.job_id === "backfill-queued");
+        expect(queued?.terminal_at).toBeNull();
+        // The terminal row is dated at the MIGRATION instant — the store
+        // clock (created_at is backdated 120 s as the discriminator), within
+        // a fresh stamp's bound. The migration instant can only extend the
+        // record's readability, never shorten it.
+        expect(Math.abs(Date.now() - (terminal?.terminal_at as Date).getTime())).toBeLessThan(
+          60_000,
+        );
+      } finally {
+        await stamped.end();
+      }
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
     },
   );
 
@@ -532,6 +588,49 @@ describe("jobs storage migration and startup compatibility", () => {
     },
   );
 
+  test(
+    "a drifted terminal_at type is a startup verdict naming the column and both types",
+    slow,
+    async () => {
+      // The horizons' input is read as a timestamptz by every projection and
+      // stamped by every terminal write; a store carrying it at another type
+      // would pass a presence-only probe and mis-derive the horizons at the
+      // first read. Unlike the result column's legacy jsonb form, a drifted
+      // terminal_at has no convergence — the migration adds nothing and the
+      // verdict persists, so a hand-patched store fails loudly at startup
+      // until repaired. The exact problem line is the pin: a wrong expected
+      // string (or the entry dropped from the compatibility check entirely)
+      // leaves the drifted column unreported and this leg red.
+      await asMigrateRole(`
+        ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED}
+          ALTER COLUMN terminal_at TYPE timestamp USING terminal_at AT TIME ZONE 'UTC'`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "record_schema",
+        problems: [
+          'column "terminal_at" is timestamp without time zone, expected timestamp with time zone',
+        ],
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordColumnsAdded: [] }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "record_schema",
+        problems: [
+          'column "terminal_at" is timestamp without time zone, expected timestamp with time zone',
+        ],
+      });
+      // Restore the runtime type — the file's legs are serial, and the legs
+      // after this one expect the compatible store the migration last left.
+      await asMigrateRole(`
+        ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED}
+          ALTER COLUMN terminal_at TYPE timestamptz USING terminal_at AT TIME ZONE 'UTC'`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
   test("the execution projection's state-machine checks hold in the store", slow, async () => {
     // A result exists only on a row still projecting success, and a
     // successful row always has one — the store refuses the projection
@@ -548,17 +647,17 @@ describe("jobs storage migration and startup compatibility", () => {
       asMigrateRole(`
         INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
           (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
-           generation, status, retry_key, body_sha256, created_at)
+           generation, status, retry_key, body_sha256, created_at, terminal_at)
         VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
-                'jobs:fetch', 1, 'succeeded', NULL, '${"0".repeat(64)}', now())`),
+                'jobs:fetch', 1, 'succeeded', NULL, '${"0".repeat(64)}', now(), now())`),
     ).rejects.toThrow(/job_record_success_has_result/);
     await expect(
       asMigrateRole(`
         INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
           (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
-           generation, status, retry_key, body_sha256, created_at, error_code)
+           generation, status, retry_key, body_sha256, created_at, error_code, terminal_at)
         VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
-                'jobs:fetch', 1, 'failed', NULL, '${"0".repeat(64)}', now(), 'not_a_code')`),
+                'jobs:fetch', 1, 'failed', NULL, '${"0".repeat(64)}', now(), 'not_a_code', now())`),
     ).rejects.toThrow(/job_record_error_code_vocabulary/);
     // Attempts are 1-based — the projection never holds a zeroth attempt.
     await expect(
@@ -569,6 +668,17 @@ describe("jobs storage migration and startup compatibility", () => {
         VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
                 'jobs:fetch', 1, 'queued', NULL, '${"0".repeat(64)}', now(), 0)`),
     ).rejects.toThrow(/job_record_attempt_positive/);
+    // Every terminal row carries the instant of its original terminal
+    // outcome — the input both public-read horizons derive from; a writer
+    // that stamped the status without the instant is refused by the store.
+    await expect(
+      asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, retry_key, body_sha256, created_at)
+        VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'failed', NULL, '${"0".repeat(64)}', now())`),
+    ).rejects.toThrow(/job_record_terminal_outcome_dated/);
   });
 
   test(

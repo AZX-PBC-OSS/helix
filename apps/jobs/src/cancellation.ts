@@ -3,7 +3,8 @@ import type { Pool } from "pg";
 import { JOB_TERMINAL_STATUSES, type JobError, type JobStatus } from "@azx-pbc/shared";
 import type { JobsCancelClaims } from "@azx-pbc/shared/jobsSigning";
 
-import { publicStatus, storedExecutionError } from "./execution.js";
+import { storedExecutionError } from "./execution.js";
+import { projectedPublicStatus, recordHorizonPassed } from "./observation.js";
 import { createJobsPool } from "./pool.js";
 import { JOBS_JOB_RECORD_QUALIFIED } from "./policy.js";
 
@@ -104,15 +105,26 @@ interface RecordRow {
   type: string;
   status: string;
   error_code: string | null;
+  terminal_at: Date | null;
 }
 
 /**
  * Why the conditional intent write affected no row — the disambiguation the
  * refusal paths read out of the record itself. The checks apply in the order
  * the contract fixes: existence, then identity (both answer the unknown-job
- * 404), then the type grant, then the terminal state.
+ * 404), then the record's public readability (a record past its thirty-day
+ * horizon is indistinguishable from an unknown one — cancelling it cannot
+ * disclose it), then the type grant, then the terminal state — projected at
+ * the read horizons, so a successful result past its seven-day lifetime
+ * answers `expired` however delayed the physical cleanup is. One `now` judges
+ * the whole classification: the horizon check and the projected status read
+ * the same instant, so they cannot straddle a boundary.
  */
-function classifyRefusal(row: RecordRow | undefined, claims: JobsCancelClaims): JobsCancelVerdict {
+function classifyRefusal(
+  row: RecordRow | undefined,
+  claims: JobsCancelClaims,
+  now: Date,
+): JobsCancelVerdict {
   if (
     !row ||
     row.app_id !== claims.appId ||
@@ -125,12 +137,15 @@ function classifyRefusal(row: RecordRow | undefined, claims: JobsCancelClaims): 
     // (spec criterion 4).
     return { outcome: "not_found" };
   }
+  if (recordHorizonPassed(row, now)) {
+    return { outcome: "not_found" };
+  }
   if (!claims.allowedTypes.includes(row.type)) {
     return { outcome: "forbidden" };
   }
   return {
     outcome: "terminal",
-    status: publicStatus(row.status),
+    status: projectedPublicStatus(row, now),
     error: storedExecutionError(row.error_code),
   };
 }
@@ -225,12 +240,12 @@ export class JobsCancellationStore implements JobsCancellation {
       // that completed before this write answers 409 terminal). The read is
       // classification, never a decision a later write then acts on.
       const current = await pool.query<RecordRow>(
-        `SELECT app_id, env, owner_kind, owner_oid, type, status, error_code
+        `SELECT app_id, env, owner_kind, owner_oid, type, status, error_code, terminal_at
            FROM ${JOBS_JOB_RECORD_QUALIFIED}
           WHERE server = $1 AND job_id = $2`,
         [claims.server, request.jobId],
       );
-      return classifyRefusal(current.rows[0], claims);
+      return classifyRefusal(current.rows[0], claims, new Date());
     }
     // The intent is durable — the acknowledgement's basis is committed. Now
     // the runner: its fenced cancel stops a waiting row before dispatch and

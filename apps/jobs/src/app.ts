@@ -11,6 +11,7 @@ import {
   JOBS_MAX_INPUT_BYTES,
   JobAcceptedSchema,
   JobCancellationAcceptedSchema,
+  JobSnapshotSchema,
   JobsLifecycleUpdateAckSchema,
   JobsLifecycleUpdateSchema,
   jobRequestError,
@@ -18,8 +19,13 @@ import {
   JOB_STATEFUL_ERROR_CODES,
   type JobRequestErrorCode,
 } from "@azx-pbc/shared";
-import type { JobsCancelClaims, JobsSubmitClaims } from "@azx-pbc/shared/jobsSigning";
-import { JobsOperations, type JobsOperationName } from "@azx-pbc/shared/jobsSigning";
+import type {
+  JobsCancelClaims,
+  JobsResultClaims,
+  JobsSubmitClaims,
+  JobsSnapshotClaims,
+} from "@azx-pbc/shared/jobsSigning";
+import { JobsOperations } from "@azx-pbc/shared/jobsSigning";
 import {
   ATTR_APP_ID,
   ATTR_JOBS_ARCHIVED,
@@ -34,6 +40,8 @@ import {
   SPAN_JOBS_SNAPSHOT,
   SPAN_JOBS_SUBMIT,
   type JobsCancelOutcome,
+  type JobsResultOutcome,
+  type JobsSnapshotOutcome,
   type JobsSubmitOutcome,
 } from "@azx-pbc/shared/telemetry";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
@@ -43,6 +51,7 @@ import type { Span } from "@opentelemetry/api";
 import type { JobsAdmission, JobsAdmissionResult } from "./acceptance.js";
 import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "./cancellation.js";
 import { jobsDatabaseCheck, jobsSweeperCheck, jobsWorkerCheck } from "./health.js";
+import type { JobsObservation, JobsResultVerdict, JobsSnapshotVerdict } from "./observation.js";
 import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import { SERVICE_NAME } from "./serviceName.js";
@@ -58,13 +67,12 @@ export { SERVICE_NAME };
  * helix-jobs — the background-jobs service (ADR-0045). This composition owns
  * the listener's health contract and the signed internal operation routes:
  * each verifies its instruction and burns its nonce through the receiver seam
- * before anything else happens. Operation semantics land with the ticket that
- * owns each seam — lifecycle delivery (the portal's apply-before-acknowledge
- * generation authority), submission (the acceptance transaction's keyed
- * recovery, validation and atomic enqueue) and cancellation (the durable
- * intent write plus the runner drive) are served here; the rest answer
- * the protocol's retryable unavailable error until their tickets replace
- * them, and the log line is where that gap is named.
+ * before anything else happens. Lifecycle delivery (the portal's
+ * apply-before-acknowledge generation authority), submission (the acceptance
+ * transaction's keyed recovery, validation and atomic enqueue), cancellation
+ * (the durable intent write plus the runner drive) and the owner-scoped
+ * observation reads (the logical public-read horizons' projection) are served
+ * here, and the served surface is exactly the shared operation matrix.
  *
  * The health contract is the platform's always-200 three-state roll-up: a
  * service that can answer HTTP but cannot execute work reports the
@@ -83,6 +91,8 @@ export interface JobsDeps {
   admission: JobsAdmission;
   /** The owner-cancellation seam; the cancel route's decisions run through it — the durable intent write plus the runner drive, in that order. */
   cancellation: JobsCancellation;
+  /** The owner-scoped observation seam; the snapshot and result routes' reads run through it — the logical public-read horizons' projection. */
+  observation: JobsObservation;
   /**
    * The runner's supervision state, read per request — `/health`'s
    * `jobs_worker` check grades it (the runner started, the worker
@@ -100,26 +110,6 @@ export interface JobsDeps {
 /** A request that arrived with a body the raw-capturing parser held onto. */
 interface RawBodyRequest extends FastifyRequest {
   rawBody?: Buffer;
-}
-
-/**
- * A signed operation's post-authentication seam — what each route does once
- * its instruction has verified and its nonce has burned. Operations land with
- * the ticket that owns them; until then the receiver answers the protocol's
- * retryable unavailable error rather than pretending, and the log line is
- * where the gap is named.
- */
-async function notYetServed(
-  operation: JobsOperationName,
-  req: FastifyRequest,
-  reply: FastifyReply,
-): Promise<void> {
-  req.log.warn(
-    { event: "jobs.operation.unimplemented", operation },
-    "the instruction verified and its nonce burned, but this operation has no implementation yet",
-  );
-  reply.header("cache-control", "no-store");
-  return reply.code(503).send(jobRequestError("jobs_unavailable"));
 }
 
 /**
@@ -205,6 +195,10 @@ const SUBMIT_REFUSALS: Record<
   // retries (spec criterion 55: capacity refusal alone never marks anything
   // unhealthy, and this 4xx keeps the span UNSET with it).
   capacity_exceeded: { status: 429, code: "jobs_capacity_exceeded" },
+  // An identical-bytes keyed replay of a job whose public record access has
+  // expired: the same 404 an unknown job answers with, no work created while
+  // the row is still retained (criterion 14).
+  not_found: { status: 404, code: "job_not_found" },
 };
 
 /**
@@ -339,6 +333,128 @@ async function serveCancel(
   }
 }
 
+/** The refusals every record operation answers with — the unknown-job 404 and the lapsed grant's 403. */
+const RECORD_ACCESS_REFUSALS = {
+  not_found: { status: 404, body: jobRequestError("job_not_found") },
+  forbidden: { status: 403, body: jobRequestError("forbidden") },
+} as const;
+
+/**
+ * The owner status poll's operation (ADR-0005): the observation store's
+ * complete latest snapshot — terminal outcome, cancellation intent and
+ * result/record expiry information included — mapped onto the protocol.
+ * Authorization runs on every poll: a foreign or publicly expired record is
+ * the same 404 an unknown job answers with, a lapsed grant the 403, and a
+ * store that cannot answer the retryable 503 — an observation failure, never
+ * an execution one, and the last known state stays visibly stale. The span
+ * carries the bounded evidence — the addressed app and the job's public id —
+ * never the owner identity or any job value.
+ */
+async function serveSnapshot(
+  deps: JobsDeps,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  span: Span,
+  claims: JobsSnapshotClaims,
+): Promise<void> {
+  const jobId = (req.params as { jobId?: string }).jobId;
+  if (jobId === undefined) {
+    // Unreachable through the route (the path parameter is mandatory) — a
+    // defect in the wiring, not a request answer.
+    throw new Error("the snapshot route served a request with no job id parameter");
+  }
+  span.setAttributes({
+    [ATTR_APP_ID]: claims.appId,
+    [ATTR_JOBS_JOB_ID]: jobId,
+  });
+  let verdict: JobsSnapshotVerdict;
+  try {
+    verdict = await deps.observation.snapshot({ claims, jobId });
+  } catch (error) {
+    req.log.error(
+      { event: "jobs.observation.unavailable", appId: claims.appId, err: error },
+      "the observation store could not answer a status read",
+    );
+    span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsSnapshotOutcome);
+    reply.header("cache-control", "no-store");
+    return reply.code(503).send(jobRequestError("jobs_unavailable"));
+  }
+  reply.header("cache-control", "no-store");
+  if (verdict.outcome !== "found") {
+    span.setAttribute(ATTR_OUTCOME, verdict.outcome satisfies JobsSnapshotOutcome);
+    if (verdict.outcome === "not_found")
+      return reply.code(404).send(RECORD_ACCESS_REFUSALS.not_found.body);
+    return reply.code(403).send(RECORD_ACCESS_REFUSALS.forbidden.body);
+  }
+  span.setAttribute(ATTR_OUTCOME, "found" satisfies JobsSnapshotOutcome);
+  // The snapshot is validated against the wire schema before it is sent — a
+  // store answer that cannot parse is a defect answered 500 by the error
+  // boundary, never a malformed body on the wire.
+  return reply.code(200).send(JobSnapshotSchema.parse(verdict.snapshot));
+}
+
+/**
+ * The owner result read's operation (background-jobs-plane design §7): the
+ * job's successful result as the raw JSON value — JSON `null` included, sent
+ * as the stored canonical bytes, never re-serialized — or the stateful 409
+ * while the work is unfinished (`job_not_ready`) or terminal without a
+ * result (`job_terminal`), or the 410 `result_expired` from the result
+ * horizon's boundary onward. Authorization is the snapshot's, with the same
+ * 404 for a foreign or publicly expired record. The span carries the same
+ * bounded evidence as the status poll's.
+ */
+async function serveResult(
+  deps: JobsDeps,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  span: Span,
+  claims: JobsResultClaims,
+): Promise<void> {
+  const jobId = (req.params as { jobId?: string }).jobId;
+  if (jobId === undefined) {
+    throw new Error("the result route served a request with no job id parameter");
+  }
+  span.setAttributes({
+    [ATTR_APP_ID]: claims.appId,
+    [ATTR_JOBS_JOB_ID]: jobId,
+  });
+  let verdict: JobsResultVerdict;
+  try {
+    verdict = await deps.observation.result({ claims, jobId });
+  } catch (error) {
+    req.log.error(
+      { event: "jobs.observation.unavailable", appId: claims.appId, err: error },
+      "the observation store could not answer a result read",
+    );
+    span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsResultOutcome);
+    reply.header("cache-control", "no-store");
+    return reply.code(503).send(jobRequestError("jobs_unavailable"));
+  }
+  reply.header("cache-control", "no-store");
+  span.setAttribute(ATTR_OUTCOME, verdict.outcome satisfies JobsResultOutcome);
+  switch (verdict.outcome) {
+    case "found":
+      // The stored canonical JSON text, as exact bytes: the stored form is
+      // what the result bound measured, and a re-serialization could not hold
+      // a result at the cap's maximum legal depth.
+      return reply.code(200).type("application/json").send(Buffer.from(verdict.resultText, "utf8"));
+    case "not_ready":
+      return reply
+        .code(409)
+        .send(jobRequestError("job_not_ready", { status: verdict.status, error: verdict.error }));
+    case "terminal":
+      return reply
+        .code(409)
+        .send(jobRequestError("job_terminal", { status: verdict.status, error: verdict.error }));
+    case "expired":
+      return reply.code(410).send(jobRequestError("result_expired"));
+    case "not_found":
+      return reply.code(404).send(RECORD_ACCESS_REFUSALS.not_found.body);
+    case "forbidden":
+      return reply.code(403).send(RECORD_ACCESS_REFUSALS.forbidden.body);
+  }
+}
+
 const OPERATION_SPAN_NAMES = {
   submit: SPAN_JOBS_SUBMIT,
   snapshot: SPAN_JOBS_SNAPSHOT,
@@ -442,6 +558,18 @@ function signedOperationHandler(
             }
             return serveSubmit(deps, req, reply, span, verdict.claims, rawBodyOf(req));
           }
+          case "snapshot": {
+            if (verdict.claims.operation !== "snapshot") {
+              throw new Error("the snapshot route served claims that are not snapshot claims");
+            }
+            return serveSnapshot(deps, req, reply, span, verdict.claims);
+          }
+          case "result": {
+            if (verdict.claims.operation !== "result") {
+              throw new Error("the result route served claims that are not result claims");
+            }
+            return serveResult(deps, req, reply, span, verdict.claims);
+          }
           case "cancel": {
             if (verdict.claims.operation !== "cancel") {
               throw new Error("the cancel route served claims that are not cancel claims");
@@ -450,8 +578,6 @@ function signedOperationHandler(
           }
           case "lifecycle":
             return serveLifecycle(deps, req, reply, span);
-          default:
-            return notYetServed(operation, req, reply);
         }
       },
       { reply },
@@ -548,12 +674,12 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
   });
 
   // The signed internal operations, registered verbatim from the shared
-  // operation matrix so a route and its signed binding cannot drift. Until an
-  // operation's semantics land, a verified instruction reaches its route and
-  // is answered with the protocol's retryable unavailable error; the
-  // lifecycle route serves the portal's delivery (the generation authority's
-  // apply-before-acknowledge receiver) and the submit route serves the
-  // acceptance transaction (ADR-0003).
+  // operation matrix so a route and its signed binding cannot drift. Each
+  // route serves its own seam: the lifecycle delivery (the generation
+  // authority's apply-before-acknowledge receiver), the acceptance
+  // transaction (ADR-0003), the owner cancellation (the durable intent plus
+  // the runner drive) and the owner-scoped observation reads (the logical
+  // public-read horizons' projection).
   app.route({
     method: ["POST"],
     url: JobsOperations.submit.path,

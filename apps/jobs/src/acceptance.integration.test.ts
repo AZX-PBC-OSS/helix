@@ -290,7 +290,7 @@ describe("the acceptance transaction", () => {
     // The recovery projects the job's CURRENT stored status, whatever it is
     // — not a hard-coded admission state.
     await direct.query(
-      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'cancelled'
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'cancelled', terminal_at = now()
         WHERE server = 'jobs' AND job_id = 'old-era-job'`,
     );
     await expect(admit(appId, INVALID_BODY, { idempotencyKey: "old-era" })).resolves.toEqual({
@@ -990,12 +990,15 @@ describe("capacity admission", () => {
   ): Promise<void> {
     const status = over.status ?? "queued";
     // A succeeded seed carries the result the execution projection writes —
-    // the store's own check refuses a succeeded row without one.
+    // the store's own check refuses a succeeded row without one. A terminal
+    // seed carries the terminal instant the store's own check requires (the
+    // stamp every production projection writes).
     await direct.query(
       `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
-          generation, status, retry_key, body_sha256, created_at, result)
-       VALUES ('jobs', $1, $2, $3, $4, 'user', $5, $6, 1, $7, NULL, 'seeded', now(), $8)`,
+          generation, status, retry_key, body_sha256, created_at, result, terminal_at)
+       VALUES ('jobs', $1, $2, $3, $4, 'user', $5, $6, 1, $7, NULL, 'seeded', now(), $8,
+               CASE WHEN $7 = ANY($9::text[]) THEN now() END)`,
       [
         randomUUID(),
         randomUUID(),
@@ -1005,6 +1008,7 @@ describe("capacity admission", () => {
         over.type ?? "jobs:fetch",
         status,
         status === "succeeded" ? JSON.stringify({ seeded: true }) : null,
+        JOB_TERMINAL_STATUSES,
       ],
     );
   }
@@ -1192,7 +1196,7 @@ describe("capacity admission", () => {
       // unfinished drops to one and the cap admits again.
       const rows = await records(appId);
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}', terminal_at = now() WHERE server = 'jobs' AND job_id = $1`,
         [(rows[0] as { job_id: string }).job_id],
       );
       await expect(admit(appId, BODY, { idempotencyKey: null })).resolves.toMatchObject({
@@ -1220,7 +1224,7 @@ describe("capacity admission", () => {
       // Terminal, but physically retained: the retained cap is unmoved.
       const rows = await records(appId);
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}', terminal_at = now() WHERE server = 'jobs' AND job_id = $1`,
         [(rows[0] as { job_id: string }).job_id],
       );
       await expect(admit(appId, BODY, { idempotencyKey: null })).resolves.toMatchObject({
@@ -1402,7 +1406,7 @@ describe("capacity admission", () => {
       const rows = await records(appId);
       const completed = rows.find((r) => r.retry_key === "env-scope-a") as { job_id: string };
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}', terminal_at = now() WHERE server = 'jobs' AND job_id = $1`,
         [completed.job_id],
       );
       await expect(admit(appId, BODY, { idempotencyKey: "env-scope-d" })).resolves.toEqual({
@@ -1458,7 +1462,7 @@ describe("capacity admission", () => {
       // new work — its own job, not the completed one's reference.
       const rows = await records(appId);
       await direct.query(
-        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}' WHERE server = 'jobs' AND job_id = $1`,
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET status = 'succeeded', result = '{}', terminal_at = now() WHERE server = 'jobs' AND job_id = $1`,
         [(rows[0] as { job_id: string }).job_id],
       );
       const retried = await admit(appId, BODY, { idempotencyKey: "refusal-key-b" });
@@ -1804,5 +1808,118 @@ describe("capacity admission", () => {
     // The recovery created nothing: one wrapper record per app.
     expect(await records(appA)).toHaveLength(1);
     expect(await records(appB)).toHaveLength(1);
+  });
+});
+
+describe("the retained-key replay across the read horizons", () => {
+  /**
+   * The public-read horizons' projection (the observation seam's, which the
+   * comparison consumes) bounds what a replay
+   * recovers: a matching replay after result expiry returns the original job
+   * as `expired` while its record is publicly readable; once public record
+   * access expires, the identical replay answers the unknown-job `not_found`
+   * without creating work while the row is still physically retained, and
+   * the changed-bytes conflict still stands (criterion 14). The horizons'
+   * input is the record's `terminal_at` — a leg backdates it directly, the
+   * way elapsed time actually reaches the boundary.
+   */
+  async function completeRecordAsSucceeded(appId: string, jobId: string): Promise<void> {
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+          SET status = 'succeeded', result = '{"kept":true}', error_code = NULL, terminal_at = now()
+        WHERE server = 'jobs' AND job_id = $1 AND app_id = $2`,
+      [jobId, appId],
+    );
+  }
+
+  test("a matching replay after result expiry returns the original job as expired, creating nothing", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const first = await admit(appId, BODY, { idempotencyKey: "replay-result-expired" });
+    expect(first.outcome).toBe("accepted");
+    if (first.outcome !== "accepted") return;
+    await completeRecordAsSucceeded(appId, first.jobId);
+
+    // Still readable: the replay recovers the success.
+    await expect(admit(appId, BODY, { idempotencyKey: "replay-result-expired" })).resolves.toEqual({
+      outcome: "recovered",
+      jobId: first.jobId,
+      status: "succeeded",
+    });
+
+    // Past the seven-day result horizon, within the record's own: the replay
+    // returns the original EXPIRED job.
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+          SET terminal_at = now() - ($2 * interval '1 second')
+        WHERE server = 'jobs' AND job_id = $1`,
+      [first.jobId, 7 * 24 * 3_600 + 3_600],
+    );
+    await expect(admit(appId, BODY, { idempotencyKey: "replay-result-expired" })).resolves.toEqual({
+      outcome: "recovered",
+      jobId: first.jobId,
+      status: "expired",
+    });
+
+    // No second job, no second slot.
+    expect(await records(appId)).toHaveLength(1);
+    expect(await runnerRows(appId)).toHaveLength(1);
+  });
+
+  test("an identical replay past the public record horizon answers the unknown-job not_found without enqueueing; changed bytes still conflict", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const first = await admit(appId, BODY, { idempotencyKey: "replay-record-expired" });
+    expect(first.outcome).toBe("accepted");
+    if (first.outcome !== "accepted") return;
+    await completeRecordAsSucceeded(appId, first.jobId);
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+          SET terminal_at = now() - ($2 * interval '1 second')
+        WHERE server = 'jobs' AND job_id = $1`,
+      [first.jobId, 30 * 24 * 3_600 + 3_600],
+    );
+
+    // The identical replay: 404's answer, no work created, the retained row
+    // still holding the key.
+    await expect(admit(appId, BODY, { idempotencyKey: "replay-record-expired" })).resolves.toEqual({
+      outcome: "not_found",
+    });
+    expect(await records(appId)).toHaveLength(1);
+    expect(await runnerRows(appId)).toHaveLength(1);
+
+    // Changed bytes: the conflict still stands — the key-holder's own claim
+    // is what the 409 answers — with the job's projected state in the body.
+    await expect(
+      admit(appId, OTHER_BODY, { idempotencyKey: "replay-record-expired" }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      status: "expired",
+      error: null,
+    });
+    expect(await records(appId)).toHaveLength(1);
+    expect(await runnerRows(appId)).toHaveLength(1);
+  });
+
+  test("a replay's conflict carries the projected state while the record is readable — a failed job's own error", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const first = await admit(appId, BODY, { idempotencyKey: "replay-failed-state" });
+    expect(first.outcome).toBe("accepted");
+    if (first.outcome !== "accepted") return;
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+          SET status = 'failed', error_code = 'upstream_error', terminal_at = now()
+        WHERE server = 'jobs' AND job_id = $1 AND app_id = $2`,
+      [first.jobId, appId],
+    );
+
+    await expect(
+      admit(appId, OTHER_BODY, { idempotencyKey: "replay-failed-state" }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      status: "failed",
+      error: { code: "upstream_error", message: "The upstream request failed." },
+    });
   });
 });

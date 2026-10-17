@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { IDEMPOTENCY_KEY_HEADER, INSTRUCTION_HEADER } from "@azx-pbc/shared";
-import { JOBS_CANCEL_OUTCOMES, JOBS_SUBMIT_OUTCOMES } from "@azx-pbc/shared/telemetry";
+import {
+  JOBS_CANCEL_OUTCOMES,
+  JOBS_RESULT_OUTCOMES,
+  JOBS_SNAPSHOT_OUTCOMES,
+  JOBS_SUBMIT_OUTCOMES,
+} from "@azx-pbc/shared/telemetry";
 import {
   deriveJobsInstructionKey,
   JobsOperations,
@@ -27,6 +32,7 @@ import {
   MemoryBurns,
   MemoryCancellation,
   MemoryLifecycle,
+  MemoryObservation,
 } from "./test/instructions.js";
 
 /** One ended span, as the recording hands them over. */
@@ -123,6 +129,7 @@ function receiverFor(server: string, operation: JobsOperationName, keyId: string
     lifecycle,
     admission: new MemoryAdmission(),
     cancellation: new MemoryCancellation(),
+    observation: new MemoryObservation(),
     worker: () => ({ started: true, workerRegistered: true }),
     recovery: () => ({
       started: true,
@@ -152,11 +159,12 @@ function lastSpan(): RecordedSpan | undefined {
  * operation never conforms to a rejection, and no outcome never conforms to
  * an acceptance.
  *
- * "Reaching its operation" is the verification verdict ("accepted") while the
- * operation is still a placeholder, and the operation's own completion
- * outcome once it has landed — the lifecycle delivery answers `applied` or
- * `stale` (both mean the instruction verified, the nonce burned and the
- * operation ran to completion).
+ * "Reaching its operation" means the span's final outcome is the operation's
+ * own completion vocabulary: every receiving operation is served, and each
+ * served path overwrites the verification verdict, so a span still carrying
+ * the verifier's "accepted" on a route whose vocabulary does not name that
+ * word means the operation never ran — a misparsed-claims refusal answered
+ * 500 must not read as an acceptance.
  */
 const OPERATION_COMPLETION_OUTCOMES: Record<string, readonly string[]> = {
   "helix.jobs.lifecycle": ["applied", "stale"],
@@ -166,6 +174,9 @@ const OPERATION_COMPLETION_OUTCOMES: Record<string, readonly string[]> = {
   // The cancellation's own verdicts — requested, its refusals and its
   // unavailable — all mean the instruction verified and the operation ran.
   "helix.jobs.cancel": [...JOBS_CANCEL_OUTCOMES],
+  // The observation reads' own verdicts, on the same terms.
+  "helix.jobs.snapshot": [...JOBS_SNAPSHOT_OUTCOMES],
+  "helix.jobs.result": [...JOBS_RESULT_OUTCOMES],
 };
 
 function conformant(
@@ -174,9 +185,12 @@ function conformant(
 ): boolean {
   const outcome = span?.attributes["helix.outcome"];
   if (vector.expect === "accept") {
-    if (outcome === "accepted") return true;
-    // An operation that has landed answers with its own completion outcome
-    // instead of the verification verdict — equally an acceptance.
+    // The operation's own vocabulary, in full — the verification verdict's
+    // "accepted" is superseded by every served path, so for the routes whose
+    // vocabulary does not carry the word, a final "accepted" is the
+    // operation-never-ran refusal, not an acceptance. (The submit
+    // vocabulary legitimately carries "accepted" — the admission's own word
+    // for new work — so its accept vectors conform through the table.)
     const completions = OPERATION_COMPLETION_OUTCOMES[span?.name ?? ""];
     return completions !== undefined && completions.includes(String(outcome));
   }

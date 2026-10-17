@@ -411,6 +411,11 @@ export type JobsLifecycleOutcome = (typeof JOBS_LIFECYCLE_OUTCOMES)[number];
  *   `jobs_capacity_exceeded`, no job, no key claim, nothing evicted. A busy
  *   refusal — clients back off and retry; the specific saturated cap and the
  *   occupancy numbers ride the refusal's log event, never a dimension here.
+ * - `not_found` — an identical-bytes keyed replay of a job whose public
+ *   record access has expired (the 30-day record horizon passed while the
+ *   row is still physically retained): answered 404 like an unknown job, no
+ *   work created, no slot taken. Different bytes still conflict (`conflict`)
+ *   — the key-holder's own claim is what the 409 answers.
  * - `unavailable` — the acceptance store could not answer; nothing
  *   committed, answered with the retryable 503.
  */
@@ -423,6 +428,7 @@ export const JOBS_SUBMIT_OUTCOMES = [
   "closed",
   "unseen",
   "capacity_exceeded",
+  "not_found",
   "unavailable",
 ] as const;
 export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
@@ -454,6 +460,55 @@ export const JOBS_CANCEL_OUTCOMES = [
   "unavailable",
 ] as const;
 export type JobsCancelOutcome = (typeof JOBS_CANCEL_OUTCOMES)[number];
+
+/**
+ * How the jobs service answered one owner status poll — the final
+ * `helix.outcome` on the `helix.jobs.snapshot` route span (overwriting the
+ * verification verdict once the operation runs). One word, one meaning on
+ * this span:
+ *
+ * - `found` — the authorized owner's complete latest snapshot answered 200.
+ * - `not_found` — no record answers the reference, its identity does not
+ *   match the signed caller, or its public record access has expired (the
+ *   30-day record horizon): the same 404 an unknown job answers with, never
+ *   a disclosure of someone else's or an expired job.
+ * - `forbidden` — the signed caller's grants do not cover the job's type:
+ *   403, nothing disclosed about the state.
+ * - `unavailable` — the observation store could not answer: the retryable
+ *   503, and the last known state stays visibly stale (an observation
+ *   failure, never an execution one).
+ */
+export const JOBS_SNAPSHOT_OUTCOMES = ["found", "not_found", "forbidden", "unavailable"] as const;
+export type JobsSnapshotOutcome = (typeof JOBS_SNAPSHOT_OUTCOMES)[number];
+
+/**
+ * How the jobs service answered one owner result read — the final
+ * `helix.outcome` on the `helix.jobs.result` route span. One word, one
+ * meaning on this span:
+ *
+ * - `found` — the job's successful result answered 200 as the raw JSON
+ *   value, JSON `null` included.
+ * - `not_ready` — the job is unfinished (queued or running): the stateful
+ *   409 `job_not_ready` with the job's status.
+ * - `terminal` — the job reached a terminal outcome without a successful
+ *   result (failed, crashed, cancelled): the stateful 409 `job_terminal`
+ *   with that status and error.
+ * - `expired` — the successful result's seven-day lifetime ended (the job
+ *   reads `expired`): 410 `result_expired`, however delayed the physical
+ *   cleanup is.
+ * - `not_found` / `forbidden` / `unavailable` — as the snapshot's, the same
+ *   answers an unknown, ungranted or unreadable store gives.
+ */
+export const JOBS_RESULT_OUTCOMES = [
+  "found",
+  "not_found",
+  "forbidden",
+  "not_ready",
+  "terminal",
+  "expired",
+  "unavailable",
+] as const;
+export type JobsResultOutcome = (typeof JOBS_RESULT_OUTCOMES)[number];
 
 /**
  * How the jobs worker disposed of one execution attempt — the final
