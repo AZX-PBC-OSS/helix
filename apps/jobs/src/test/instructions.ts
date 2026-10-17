@@ -3,6 +3,7 @@ import {
   INSTRUCTION_HEADER,
   JOBS_SERVER_NAME,
   JOBS_FETCH_QUALIFIED_TYPE,
+  resolveJobsCapacityLimits,
   type JobsLifecycleUpdate,
 } from "@azx-pbc/shared";
 import {
@@ -26,6 +27,7 @@ import type { FastifyInstance } from "fastify";
 
 import type { JobsAdmission, JobsAdmissionRequest, JobsAdmissionResult } from "../acceptance.js";
 import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "../cancellation.js";
+import type { JobsCleanupSnapshot } from "../cleanup.js";
 import type {
   JobsObservation,
   JobsObservationRequest,
@@ -254,6 +256,24 @@ export class MemoryObservation implements JobsObservation {
   }
 }
 
+/** The supervision state of a serving cleanup loop: mid-cadence, its last pass fresh and clear. */
+export function runningCleanup(): JobsCleanupSnapshot {
+  return {
+    started: true,
+    passes: 1,
+    lastPassAt: new Date().toISOString(),
+    lastOkPassAt: new Date().toISOString(),
+    resultsRemoved: 0,
+    recordsRetired: 0,
+    evidence: {
+      retainedServer: 0,
+      unfinishedServer: 0,
+      overdueResults: 0,
+      overdueRecords: 0,
+    },
+  };
+}
+
 /**
  * A built app with a ready store, the receiver seam, and nothing else wired.
  * The lifecycle, admission, cancellation and observation seams ride along as
@@ -290,6 +310,7 @@ export async function appWithLifecycle(
   admission: JobsAdmission = new MemoryAdmission(),
   cancellation: JobsCancellation = new MemoryCancellation(),
   observation: JobsObservation = new MemoryObservation(),
+  cleanup: () => JobsCleanupSnapshot = runningCleanup,
 ): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
@@ -302,9 +323,10 @@ export async function appWithLifecycle(
     admission,
     cancellation,
     observation,
-    // The route suites exercise the receiver's routes, not the worker or the
-    // sweeper; the supervision states they report are the registered
-    // composition's, with the sweeper's last pass fresh.
+    // The route suites exercise the receiver's routes, not the worker, the
+    // sweeper or the cleanup loop; the supervision states they report are the
+    // registered composition's, with the sweeper's last pass fresh and the
+    // cleanup loop's evidence fresh and clear.
     worker: () => ({ started: true, workerRegistered: true }),
     recovery: () => ({
       started: true,
@@ -313,6 +335,8 @@ export async function appWithLifecycle(
       lastOkPassAt: new Date().toISOString(),
       reconciled: 0,
     }),
+    cleanup,
+    capacityLimits: resolveJobsCapacityLimits(),
   });
   return { app, storage };
 }

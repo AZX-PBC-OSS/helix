@@ -5,12 +5,15 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 
 import {
   HealthStatusSchema,
   IDEMPOTENCY_KEY_HEADER,
   INSTRUCTION_HEADER,
+  JOBS_CAPACITY_CHECK,
+  JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
@@ -21,7 +24,12 @@ import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/j
 import { JOBS_SIGNING_VECTOR_ROOTS } from "@azx-pbc/shared/jobsSigningVectors";
 
 import { migrateJobsStorage } from "./migrate.js";
-import { JOBS_JOB_RECORD_QUALIFIED, JOBS_PGBOSS_SCHEMA } from "./policy.js";
+import {
+  JOBS_JOB_RECORD_QUALIFIED,
+  JOBS_PGBOSS_SCHEMA,
+  JOBS_QUEUE_NAME,
+  jobsRuntimeBossOptions,
+} from "./policy.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 
 /**
@@ -1867,6 +1875,190 @@ describe("signed instructions through the running process", () => {
       } finally {
         const exit = await stopServer(child);
         expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+});
+
+describe("the composed cleanup loop", () => {
+  /**
+   * The retention contract's physical half through the running process. Every
+   * other suite that exercises the record arm wires its runner-row deletion
+   * by hand (`deleteRunnerJobs(boss, …)`), which proves the mechanism but not
+   * the composition — server.ts handing the loop the runner's own adapter is
+   * a connection nothing else executes. The same for the health side: the
+   * `jobs_cleanup` and `jobs_capacity` checks grade the loop's snapshot only
+   * if `cleanup.start()` ran and the composition's getter was wired. These
+   * legs are the ones that go red when those parts are never connected.
+   */
+
+  test(
+    "a backdated terminal record and its runner row leave the store through the running process — the record arm's whole unit, wired",
+    { timeout: 120_000 },
+    async () => {
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+
+      // A parked runner row, enqueued the way admission does, and its
+      // wrapper record backdated past the thirty-day record horizon.
+      const seedBoss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+      await seedBoss.start();
+      const runnerJobId = await seedBoss.send(
+        JOBS_QUEUE_NAME,
+        { url: "https://example.com/boot-cleanup.json" },
+        {
+          retryLimit: 0,
+          expireInSeconds: 300,
+          startAfter: 3_600,
+          group: { id: `${randomUUID()}:prod` },
+        },
+      );
+      await seedBoss.stop();
+      if (!runnerJobId) throw new Error("the seeded runner job was not enqueued");
+      const jobId = randomUUID();
+
+      const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        await pool.query(
+          `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+             (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+              generation, status, retry_key, body_sha256, created_at)
+           VALUES ('jobs', $1, $2, $3, 'prod', 'user', $4, 'jobs:fetch', '1', 'queued',
+                   null, 'boot-seed-digest', now())`,
+          [jobId, runnerJobId, randomUUID(), "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d"],
+        );
+        await pool.query(
+          `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+              SET status = 'failed', error_code = 'upstream_error',
+                  terminal_at = now() - interval '31 days'
+            WHERE job_id = $1`,
+          [jobId],
+        );
+        const seeded = await pool.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${JOBS_PGBOSS_SCHEMA}.job WHERE id::text = $1`,
+          [runnerJobId],
+        );
+        expect(seeded.rows[0]?.n).toBe(1);
+
+        const port = await reservePort();
+        const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+        try {
+          // The loop's first passes may fail honestly until the runner's own
+          // supervised start converges — a retirement that cannot reach the
+          // runner rows rolls back — and the backoff brings the next pass.
+          // The health body is the loop's own report that a pass succeeded
+          // with the record retired.
+          await eventually(async () => {
+            const body = await pollHealth(port, 10_000);
+            const check = body.checks?.find((c) => c.name === JOBS_CLEANUP_CHECK);
+            return (check?.metrics?.recordsRetired ?? 0) >= 1 && check?.status === "ok";
+          }, 90_000);
+          const body = await pollHealth(port, 10_000);
+          const cleanupCheck = body.checks?.find((c) => c.name === JOBS_CLEANUP_CHECK);
+          expect(cleanupCheck?.status).toBe("ok");
+          expect(cleanupCheck?.lastSuccessAt).toEqual(expect.any(String));
+          const capacityCheck = body.checks?.find((c) => c.name === JOBS_CAPACITY_CHECK);
+          expect(capacityCheck?.status).toBe("ok");
+          expect(capacityCheck?.metrics?.retainedServer).toEqual(expect.any(Number));
+
+          // And the store itself: the record AND the runner row it was
+          // accepted under are gone — the retirement's whole unit, through
+          // the real composition.
+          const record = await pool.query(
+            `SELECT * FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+            [jobId],
+          );
+          expect(record.rows).toHaveLength(0);
+          const runnerRow = await pool.query(
+            `SELECT * FROM ${JOBS_PGBOSS_SCHEMA}.job WHERE id::text = $1`,
+            [runnerJobId],
+          );
+          expect(runnerRow.rows).toHaveLength(0);
+        } finally {
+          const exit = await stopServer(child);
+          expect(exit.exitCode).toBe(0);
+        }
+      } finally {
+        await pool.end();
+      }
+    },
+  );
+
+  test(
+    "a JOBS_LIMITS override reaches the loop's capacity check — the health body grades the deployment's own retained cap",
+    { timeout: 120_000 },
+    async () => {
+      // server.ts wires the check with the same resolved limits the
+      // admission enforces; a composition that passed the platform defaults
+      // where the override resolved would grade a capacity posture the
+      // process does not enforce — the silent lie the wiring note names. A
+      // cap of one with the leg's own retained record seeded before boot is
+      // saturated at the loop's first measurement, whatever else the shared
+      // scratch store holds, and the record is queued — age-immune — so the
+      // degraded reading is stable while the leg runs.
+      await migrateJobsStorage(MIGRATE_DSN);
+      const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        const runnerJobId = await (async () => {
+          const seedBoss = new PgBoss({
+            connectionString: RUNTIME_DSN,
+            ...jobsRuntimeBossOptions(),
+          });
+          await seedBoss.start();
+          const sent = await seedBoss.send(
+            JOBS_QUEUE_NAME,
+            { url: "https://example.com/boot-capacity.json" },
+            {
+              retryLimit: 0,
+              expireInSeconds: 300,
+              startAfter: 3_600,
+              group: { id: `${randomUUID()}:prod` },
+            },
+          );
+          await seedBoss.stop();
+          if (!sent) throw new Error("the seeded runner job was not enqueued");
+          return sent;
+        })();
+        await pool.query(
+          `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+             (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+              generation, status, retry_key, body_sha256, created_at)
+           VALUES ('jobs', $1, $2, $3, 'prod', 'user', $4, 'jobs:fetch', '1', 'queued',
+                   null, 'boot-capacity-digest', now())`,
+          [randomUUID(), runnerJobId, randomUUID(), "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d"],
+        );
+
+        const port = await reservePort();
+        const child = await bootServer(
+          port,
+          childEnv(RUNTIME_DSN, port, {
+            JOBS_LIMITS: JSON.stringify({ retainedPerServer: 1 }),
+          }),
+        );
+        try {
+          // The roll-up settles at degraded once every supervision state has
+          // converged — the runner's own start is the slowest — and stays
+          // there: the seeded record is queued, age-immune, so the loop's
+          // first measurement's saturation never lifts.
+          await eventually(async () => {
+            const body = await pollHealth(port, 10_000);
+            return HealthStatusSchema.parse(body).status === "degraded";
+          }, 60_000);
+          const body = await pollHealth(port, 10_000);
+          const capacity = body.checks?.find((c) => c.name === JOBS_CAPACITY_CHECK);
+          expect(capacity?.status).toBe("degraded");
+          expect(capacity?.detail).toMatch(/ of 1 retained jobs server-wide/);
+          // The cleanup check grades the same loop's snapshot and stays ok —
+          // retained saturation degrades exactly its own check.
+          const cleanup = body.checks?.find((c) => c.name === JOBS_CLEANUP_CHECK);
+          expect(cleanup?.status).toBe("ok");
+          expect(cleanup?.metrics?.passes).toBeGreaterThanOrEqual(1);
+          expect(body.status).toBe("degraded");
+        } finally {
+          const exit = await stopServer(child);
+          expect(exit.exitCode).toBe(0);
+        }
+      } finally {
+        await pool.end();
       }
     },
   );

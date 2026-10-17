@@ -1,10 +1,14 @@
 import {
+  JOBS_CAPACITY_CHECK,
+  JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   type HealthCheck,
+  type JobsCapacityLimits,
 } from "@azx-pbc/shared";
 
+import { JOBS_CLEANUP_STALE_AFTER_MS, type JobsCleanupSnapshot } from "./cleanup.js";
 import { JOBS_RECOVERY_STALE_AFTER_MS, type JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
@@ -167,37 +171,224 @@ export function jobsSweeperCheck(
     metrics: { passes: snapshot.passes, reconciled: snapshot.reconciled },
   };
 
-  if (!snapshot.started) {
-    return {
-      ...base,
-      status: "error",
-      detail: "the recovery sweeper is not running — interrupted work is not being reconciled",
-    };
+  const freshness = passFreshness(snapshot, staleAfterMs, nowMs);
+  switch (freshness.kind) {
+    case "not_started":
+      return {
+        ...base,
+        status: "error",
+        detail: "the recovery sweeper is not running — interrupted work is not being reconciled",
+      };
+    case "no_pass":
+      return {
+        ...base,
+        status: "error",
+        detail: `the recovery sweeper has completed no successful pass${lastPassAgeSuffix(freshness.lastPassSeconds)} — interrupted work is not being reconciled`,
+      };
+    case "stale":
+      return {
+        ...base,
+        status: "degraded",
+        detail: `the recovery sweeper's last successful pass was ${freshness.sinceSeconds}s ago`,
+        // Non-null in this arm by the skeleton's own decision (stale implies
+        // a last successful pass); the schema's field is optional, not
+        // nullable.
+        lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
+    case "fresh":
+      return {
+        ...base,
+        status: "ok",
+        lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
   }
+}
+
+/**
+ * The freshness skeleton THREE loop-graded checks share — one grading of a
+ * supervised pass loop's supervision state (is it running; has a pass ever
+ * completed; is the last successful pass fresh), rendered by each check in
+ * its own wording. The parameter is structural — the three fields the
+ * grading reads — so the recovery sweeper's and the cleanup loop's
+ * different snapshots grade through this one function and cannot drift into
+ * different staleness semantics; a boundary correction here is all three
+ * checks' correction, and no leg can pass on a private copy.
+ */
+type PassFreshness =
+  | { kind: "not_started" }
+  | { kind: "no_pass"; lastPassSeconds: number | null }
+  | { kind: "stale"; sinceSeconds: number }
+  | { kind: "fresh" };
+
+function passFreshness(
+  snapshot: { started: boolean; lastPassAt: string | null; lastOkPassAt: string | null },
+  staleAfterMs: number,
+  nowMs: number,
+): PassFreshness {
+  if (!snapshot.started) return { kind: "not_started" };
   if (snapshot.lastOkPassAt === null) {
-    // The distinction the last pass's own instant buys: a loop that never ran
-    // at all and one that runs but cannot complete a pass read differently.
-    const lastPass = snapshot.lastPassAt
-      ? ` — its last pass was ${Math.round((nowMs - Date.parse(snapshot.lastPassAt)) / 1000)}s ago`
-      : "";
     return {
-      ...base,
-      status: "error",
-      detail: `the recovery sweeper has completed no successful pass${lastPass} — interrupted work is not being reconciled`,
+      kind: "no_pass",
+      lastPassSeconds: snapshot.lastPassAt
+        ? Math.round((nowMs - Date.parse(snapshot.lastPassAt)) / 1000)
+        : null,
     };
   }
   const sinceMs = nowMs - Date.parse(snapshot.lastOkPassAt);
-  if (sinceMs > staleAfterMs) {
-    return {
-      ...base,
-      status: "degraded",
-      detail: `the recovery sweeper's last successful pass was ${Math.round(sinceMs / 1000)}s ago`,
-      lastSuccessAt: snapshot.lastOkPassAt,
-    };
-  }
-  return {
-    ...base,
-    status: "ok",
-    lastSuccessAt: snapshot.lastOkPassAt,
+  if (sinceMs > staleAfterMs) return { kind: "stale", sinceSeconds: Math.round(sinceMs / 1000) };
+  return { kind: "fresh" };
+}
+
+/** The distinction the last pass's own instant buys: a loop that never ran at all and one that runs but cannot complete a pass read differently. */
+function lastPassAgeSuffix(lastPassSeconds: number | null): string {
+  return lastPassSeconds === null ? "" : ` — its last pass was ${lastPassSeconds}s ago`;
+}
+
+/**
+ * Grade the cleanup loop's supervision into the `jobs_cleanup` health check
+ * (ADR-0009) — the same pure-lookup shape as the other checks. Beyond the
+ * shared freshness skeleton (a stopped or never-passed loop errors, a stale
+ * one degrades), the check carries the lag evidence the retention contract
+ * binds: content that has stood past its 48-hour physical-removal deadline
+ * — an expired result still in storage, an expired record still holding its
+ * retry key and runner row — degrades until a pass opens on it cleared
+ * (spec criteria 36, 55). Removal finishing within the bound is the loop's
+ * own steady behavior; the degraded reading is for the outage story an
+ * operator must see until recovery completes it.
+ */
+export function jobsCleanupCheck(
+  snapshot: JobsCleanupSnapshot,
+  options?: { staleAfterMs?: number; nowMs?: number },
+): HealthCheck {
+  const staleAfterMs = options?.staleAfterMs ?? JOBS_CLEANUP_STALE_AFTER_MS;
+  const nowMs = options?.nowMs ?? Date.now();
+  const base = {
+    name: JOBS_CLEANUP_CHECK,
+    metrics: {
+      passes: snapshot.passes,
+      resultsRemoved: snapshot.resultsRemoved,
+      recordsRetired: snapshot.recordsRetired,
+    },
   };
+  const freshness = passFreshness(snapshot, staleAfterMs, nowMs);
+  switch (freshness.kind) {
+    case "not_started":
+      return {
+        ...base,
+        status: "error",
+        detail:
+          "the cleanup loop is not running — expired results and records are not being removed",
+      };
+    case "no_pass":
+      return {
+        ...base,
+        status: "error",
+        detail: `the cleanup loop has completed no successful pass${lastPassAgeSuffix(freshness.lastPassSeconds)} — expired content is not being removed`,
+      };
+    case "stale":
+      return {
+        ...base,
+        status: "degraded",
+        detail: `the cleanup loop's last successful pass was ${freshness.sinceSeconds}s ago — its lag and saturation evidence is stale`,
+        lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
+    case "fresh": {
+      const evidence = snapshot.evidence;
+      if (!evidence) {
+        // Unreachable through the loop (a fresh pass always measures) —
+        // refuse the healthy reading rather than assume one.
+        return { ...base, status: "error", detail: "the cleanup pass carried no measurement" };
+      }
+      if (evidence.overdueResults > 0 || evidence.overdueRecords > 0) {
+        return {
+          ...base,
+          status: "degraded",
+          detail:
+            `${evidence.overdueResults} expired result(s) and ${evidence.overdueRecords} expired ` +
+            "job record(s) stand past their 48-hour physical-removal deadline — cleanup is overdue until a pass removes them",
+          lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+        };
+      }
+      return { ...base, status: "ok", lastSuccessAt: snapshot.lastOkPassAt ?? undefined };
+    }
+  }
+}
+
+/**
+ * Grade the measured retained-storage occupancy into the `jobs_capacity`
+ * health check (ADR-0009) — the producer the capacity-enforcement ticket
+ * deferred to this loop, because saturation is visible only through occupancy
+ * evidence measured on a cadence. Retained saturation degrades (spec
+ * criterion 55): reads, recovery and cancellation remain available, and new
+ * work is being refused 429 — but a saturated retained cap blocks new work
+ * until cleanup frees it, and that state must not read as healthy.
+ * Unfinished-capacity refusal alone deliberately does not degrade anything
+ * here (criterion 55: ordinary busy answers are not unhealthy) — the
+ * unfinished count rides the metrics as context, never the grade.
+ */
+export function jobsCapacityCheck(
+  snapshot: JobsCleanupSnapshot,
+  limits: JobsCapacityLimits,
+  options?: { staleAfterMs?: number; nowMs?: number },
+): HealthCheck {
+  const staleAfterMs = options?.staleAfterMs ?? JOBS_CLEANUP_STALE_AFTER_MS;
+  const nowMs = options?.nowMs ?? Date.now();
+  const freshness = passFreshness(snapshot, staleAfterMs, nowMs);
+  switch (freshness.kind) {
+    case "not_started":
+      return {
+        name: JOBS_CAPACITY_CHECK,
+        status: "error",
+        detail:
+          "no occupancy evidence — the cleanup loop that measures retained storage is not running",
+      };
+    case "no_pass":
+      return {
+        name: JOBS_CAPACITY_CHECK,
+        status: "error",
+        detail:
+          "no occupancy evidence — the cleanup loop that measures retained storage has completed no successful pass",
+      };
+    case "stale":
+      return {
+        name: JOBS_CAPACITY_CHECK,
+        status: "degraded",
+        detail: `the retained-storage measurement is stale — its last successful pass was ${freshness.sinceSeconds}s ago`,
+        lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
+    case "fresh": {
+      const evidence = snapshot.evidence;
+      if (!evidence) {
+        return {
+          name: JOBS_CAPACITY_CHECK,
+          status: "error",
+          detail: "the cleanup pass carried no measurement",
+        };
+      }
+      const metrics = {
+        retainedServer: evidence.retainedServer,
+        unfinishedServer: evidence.unfinishedServer,
+      };
+      if (evidence.retainedServer >= limits.retainedPerServer) {
+        return {
+          name: JOBS_CAPACITY_CHECK,
+          status: "degraded",
+          metrics,
+          detail:
+            `retained storage is saturated: ${evidence.retainedServer} of ` +
+            `${limits.retainedPerServer} retained jobs server-wide — new work is refused until cleanup frees capacity`,
+          // The degraded arm grades the same measurement as the ok arm — its
+          // evidence is exactly as time-based, and the state where new work
+          // is refused is where the reading's instant matters most.
+          lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+        };
+      }
+      return {
+        name: JOBS_CAPACITY_CHECK,
+        status: "ok",
+        metrics,
+        lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
+    }
+  }
 }

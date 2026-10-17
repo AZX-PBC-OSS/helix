@@ -218,8 +218,10 @@ healthy — `/health`'s `jobs_worker` check grades the runner's snapshot
 (`started`, `workerRegistered`). The instance's `error` containment — pg-boss
 emits the errors its own loops absorbed on the instance's event emitter, and
 unhandled they kill the process — attaches in `buildBoss()`, so every retried
-attempt's fresh instance carries it too. Shutdown stops the runner first (its
-worker with it), then the stores.
+attempt's fresh instance carries it too. Shutdown stops the loops that drive
+runner operations through the instance (the recovery sweeper, the
+cancellation store, the cleanup loop) before the runner itself, then the
+stores.
 
 ## The execution seam (`src/execution.ts`)
 
@@ -366,6 +368,63 @@ died is projected `crashed` — execution lost, never reissued.
   dispositioned job (`helix.jobs.recover`, outcome `JOBS_RECOVER_OUTCOMES`)
   and the `helix.jobs.recoveries` counter — `row_missing` grades ERROR (a
   corrupt store); everything else is the sweeper working as designed.
+
+## The cleanup loop (`src/cleanup.ts`)
+
+The retention contract's physical half (`src/observation.ts` owns the logical
+horizons; design §7 owns the bounds): expired content stops being READ at its
+horizon and stops being STORED within 48 hours after it — including after a
+service restoration. One supervised pass, on a one-minute cadence:
+
+- **The result arm.** Every stored result whose seven-day lifetime has ended
+  is removed from the live record, and the row's stored status converges to
+  `expired` in the same statement (the store's own CHECK constraints require
+  it — a success always carries its result). The record itself, its retry
+  key and every other column stay: the record stays publicly readable as
+  `expired` until its record horizon.
+- **The record arm.** Every terminal record past its thirty-day horizon —
+  the same lifetime for every terminal outcome — is retired TOGETHER with the
+  runner row it was accepted under, in one transaction: the runner ids come
+  from the record deletion's own `RETURNING`, and their deletion rides the
+  runner adapter's borrowed-connection delete (`runner.deleter`, the pinned
+  dependency's own `deleteJob` on the caller's client), so a rollback — for
+  example a runner row that cannot be removed — leaves the record, its retry
+  key and its runner row all in place. Nothing is ever half-retired. Because
+  the runner ids are the retired records' OWN ids, a key reused by a
+  replacement job — which cannot exist until the deletion that releases the
+  scoped-key constraint commits — can never be caught by a pass's runner
+  deletes, and two replicas' passes racing the same rows each delete exactly
+  what their own statement returned.
+- **Active work is never pruned by age.** Both arms select on the record's
+  terminal instant; a non-terminal record has none, whatever its age — the
+  absolute deadline's enforcement is the recovery sweeper's and the start
+  gate's, and a terminal status is absorbing.
+- **The bounds.** Each arm touches at most 500 rows per pass; a pass that
+  removed a full batch is followed immediately by the next (a backlog left
+  by an outage converges in minutes of drained passes instead of standing on
+  the cadence). A FAILED pass retries on the storage supervisor's capped
+  backoff, not the steady cadence — the recovery after a repair is measured
+  in seconds. Native pg-boss maintenance cannot race this contract: the
+  queue policy disables its deletion sweep on both arms, and the startup
+  compatibility check refuses a store whose queue policy drifts.
+- **The measurement.** A pass opens by measuring the server-wide retained
+  and unfinished occupancy and the overdue content — what has already stood
+  past its 48-hour removal deadline. That measurement is the evidence two
+  health checks grade (both lookup-only, like every other check): the
+  `jobs_cleanup` check (a stopped or never-passed loop → `error`; a stale
+  pass → `degraded`; overdue content → `degraded` until a pass opens on it
+  cleared — "operators see overdue cleanup until it completes") and the
+  `jobs_capacity` check (retained saturation at the server-wide cap →
+  `degraded`, the state where new work is refused and only cleanup frees
+  it). Unfinished-capacity refusal alone deliberately degrades nothing — an
+  ordinary busy answer is not an unhealthy worker.
+- **Supervision and telemetry.** The recovery sweeper's discipline verbatim:
+  `start()` never throws, a failed pass is counted, logged and never ends
+  the cadence, `stop()` releases the pool and the timer on every exit path.
+  One root consumer span per pass (`helix.jobs.cleanup`, outcome
+  `JOBS_CLEANUP_OUTCOMES`, the pass's removed counts as its batch-bounded
+  attributes) and the `helix.jobs.cleanups` counter — a run of `failed` with
+  no `ok` is a store that stopped answering its cleanup.
 
 ## The app-lifecycle authority (`src/lifecycle.ts`)
 

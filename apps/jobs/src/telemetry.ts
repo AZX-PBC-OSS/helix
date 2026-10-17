@@ -13,12 +13,15 @@ import {
   ATTR_OUTCOME,
   ATTR_JOBS_OPERATION,
   INSTR_JOBS_BURN_SWEEPS,
+  INSTR_JOBS_CLEANUPS,
   INSTR_JOBS_EXECUTIONS,
   INSTR_JOBS_INSTRUCTIONS,
   INSTR_JOBS_RECOVERIES,
   INSTR_JOBS_STORAGE_PROBES,
+  SPAN_JOBS_CLEANUP,
   SPAN_JOBS_EXECUTE,
   SPAN_JOBS_RECOVER,
+  type JobsCleanupOutcome,
   type JobsExecuteOutcome,
   type JobsInstructionOutcome,
   type JobsRecoverOutcome,
@@ -58,6 +61,8 @@ export interface JobsInstruments {
   executions: Counter;
   /** `outcome` ∈ `JOBS_RECOVER_OUTCOMES` — the recovery sweeper's dispositions. */
   recoveries: Counter;
+  /** `outcome` ∈ `JOBS_CLEANUP_OUTCOMES` — the cleanup loop's physical-retention passes. */
+  cleanups: Counter;
 }
 
 /**
@@ -120,6 +125,14 @@ export function instruments(): JobsInstruments {
         "row_missing is an inconsistent store. The pass cadence itself is " +
         "graded by the jobs_sweeper health check, never a dimension here.",
     }),
+    cleanups: meter.createCounter(INSTR_JOBS_CLEANUPS, {
+      description:
+        "Physical-retention passes the cleanup loop ran, by outcome. Passes " +
+        "that remove nothing are routine silence; a run of failed with no ok " +
+        "is a store that stopped answering its cleanup, and expired content " +
+        "then grows past its removal bound until the jobs_cleanup health " +
+        "check's overdue evidence clears.",
+    }),
   };
   return cached;
 }
@@ -152,6 +165,16 @@ export function countExecution(outcome: JobsExecuteOutcome): void {
  */
 export function countRecovery(outcome: JobsRecoverOutcome): void {
   instruments().recoveries.add(1, { [ATTR_OUTCOME]: outcome });
+}
+
+/**
+ * Count one physical-retention pass the cleanup loop ran. The outcome is the
+ * bounded pass vocabulary (`JOBS_CLEANUP_OUTCOMES`); the pass's removed
+ * counts and lag evidence ride the pass span and the health checks, never a
+ * dimension here.
+ */
+export function countCleanup(outcome: JobsCleanupOutcome): void {
+  instruments().cleanups.add(1, { [ATTR_OUTCOME]: outcome });
 }
 
 /**
@@ -241,6 +264,16 @@ export function withExecutionSpan<T>(fn: (span: Span) => Promise<T>): Promise<T>
  */
 export function withRecoverySpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
   return withRootConsumerSpan(SPAN_JOBS_RECOVER, fn);
+}
+
+/**
+ * Run one physical-retention pass inside a fresh **root** consumer span —
+ * one per pass, never per row (the burn-sweep/cadence proportionality). The
+ * pass's own outcome and its batch-bounded removed counts are the span's
+ * evidence; the lag and saturation measurements are the health checks'.
+ */
+export function withCleanupSpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
+  return withRootConsumerSpan(SPAN_JOBS_CLEANUP, fn);
 }
 
 /** The shared mechanism behind both background-work spans: a fresh root consumer span, ended when the work settles. */

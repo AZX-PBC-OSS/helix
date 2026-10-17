@@ -6,6 +6,7 @@ import {
   JOBS_FETCH_QUALIFIED_TYPE,
   JOBS_MAX_INPUT_BYTES,
   JOBS_MAX_RESULT_BYTES,
+  resolveJobsCapacityLimits,
 } from "@azx-pbc/shared";
 
 import { buildApp } from "./app.js";
@@ -22,6 +23,7 @@ import {
   MemoryObservation,
   mint,
   MemoryLifecycle,
+  runningCleanup,
   storageIn,
   submitSpec,
   TEST_BODY,
@@ -1042,6 +1044,8 @@ describe("the signed operation routes", () => {
         lastOkPassAt: new Date().toISOString(),
         reconciled: 0,
       }),
+      cleanup: runningCleanup,
+      capacityLimits: resolveJobsCapacityLimits(),
     });
     try {
       const token = await mint({

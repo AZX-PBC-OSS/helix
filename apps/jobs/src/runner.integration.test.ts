@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PgBoss } from "pg-boss";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 
 import { migrateJobsStorage } from "./migrate.js";
@@ -135,6 +135,67 @@ describe("the supervised runner's convergence", () => {
       [runnerJobId, JOBS_QUEUE_NAME],
     );
     expect(after.rows[0]?.n).toBe(0);
+  }, 90_000);
+
+  test("the runner's deleter — the getter the cleanup composes — deletes the named row on the caller's transaction, and the deletion shares the transaction's fate", async () => {
+    // The cleanup loop's record arm retires runner rows through THIS getter
+    // (`server.ts` wires `deleteRunnerRows: runner.deleter`) inside its own
+    // transaction, so the deletion must land on the CALLER's client — the
+    // same borrowed-connection property the enqueue half proves above. The
+    // row is gone inside the borrowing transaction, back after its rollback,
+    // and gone for good after a commit: one rollback discards the retirement
+    // of the wrapper record and the runner row together.
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    await waitFor("the runner to be started", 30_000, () => runner.snapshot.started);
+
+    // Two connections: the borrowing transaction holds one while the
+    // outside reads answer on the other.
+    const legPool = new Pool({ connectionString: RUNTIME_DSN, max: 2 });
+    try {
+      // A committed runner row, enqueued through the runner's own getter.
+      const writer = await legPool.connect();
+      let runnerJobId: string | undefined;
+      try {
+        await writer.query("BEGIN");
+        runnerJobId = await runner.enqueuer.enqueue(writer, {
+          type: "jobs:fetch",
+          appId: randomUUID(),
+          env: "prod",
+          input: { url: "https://example.com/data.json" },
+        });
+        await writer.query("COMMIT");
+      } finally {
+        writer.release();
+      }
+      expect(runnerJobId).toBeTruthy();
+
+      const countRow = async (withinTx: Pool | PoolClient): Promise<number> => {
+        const result = await withinTx.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${JOBS_PGBOSS_SCHEMA}.job WHERE id::text = $1`,
+          [runnerJobId],
+        );
+        return result.rows[0]?.n ?? -1;
+      };
+      expect(await countRow(legPool)).toBe(1);
+
+      const client = await legPool.connect();
+      try {
+        await client.query("BEGIN");
+        await runner.deleter.delete(client, [runnerJobId!]);
+        expect(await countRow(client)).toBe(0); // gone inside the transaction
+        await client.query("ROLLBACK");
+        expect(await countRow(legPool)).toBe(1); // the rollback brought it back
+
+        await client.query("BEGIN");
+        await runner.deleter.delete(client, [runnerJobId!]);
+        await client.query("COMMIT");
+        expect(await countRow(legPool)).toBe(0); // gone for good
+      } finally {
+        client.release();
+      }
+    } finally {
+      await legPool.end();
+    }
   }, 90_000);
 });
 

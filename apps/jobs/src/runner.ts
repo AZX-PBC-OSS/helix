@@ -1,4 +1,5 @@
 import { PgBoss } from "pg-boss";
+import type { PoolClient } from "pg";
 
 import { createPgbossEnqueuer, type JobsEnqueuer } from "./acceptance.js";
 import type { RunnerCancelVerdict } from "./cancellation.js";
@@ -71,6 +72,35 @@ export async function cancelRunnerJob(
       reason: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * The runner-row retirement the cleanup transaction borrows: the pinned
+ * adapter's own delete, run on the CALLER'S client through the same public
+ * `db.executeSql` seam the enqueue borrows — so one transaction commits the
+ * wrapper record's removal and the runner row's together, and one rollback
+ * discards both. The runner's schema knowledge (which table the queue's rows
+ * live in, the delete's own shape) stays here, in the adapter; a throw is
+ * the failure contract — the caller's transaction rolls back and the records
+ * it had begun retiring remain in place.
+ */
+export async function deleteRunnerJobs(
+  boss: PgBoss,
+  withinTx: PoolClient,
+  runnerJobIds: readonly string[],
+): Promise<number> {
+  if (runnerJobIds.length === 0) return 0;
+  const response = (await boss.deleteJob(JOBS_QUEUE_NAME, [...runnerJobIds], {
+    db: {
+      executeSql: (text, values) => withinTx.query(text, values),
+    },
+  })) as { affected?: number };
+  return response.affected ?? 0;
+}
+
+/** The borrowed-connection runner-row delete the cleanup transaction consumes. */
+export interface JobsRunnerDeleter {
+  delete(withinTx: PoolClient, runnerJobIds: readonly string[]): Promise<number>;
 }
 
 /** The runner's supervision state, as `/health` reports it. */
@@ -254,10 +284,25 @@ export class JobsRunner {
     };
   }
 
-  /** The started instance, or the refusal every early consumer answers. */
+  /**
+   * The runner-row retirement adapter over this instance — the cleanup
+   * transaction's borrowed-connection delete. Refuses (a rejection, the
+   * declared `Promise` contract's own failure surface, exactly like the
+   * enqueue's) while the runner has not started: a retirement that cannot
+   * reach the runner's row must roll the whole unit back, never retire the
+   * wrapper record alone and orphan the runner row's stored input.
+   */
+  get deleter(): JobsRunnerDeleter {
+    return {
+      delete: async (withinTx, runnerJobIds) =>
+        deleteRunnerJobs(this.requireBoss(), withinTx, runnerJobIds),
+    };
+  }
+
+  /** The started instance, or the refusal every early consumer answers — operation-neutral, since the enqueue, the worker registration and the cleanup's retirement all reach it. */
   private requireBoss(): PgBoss {
     if (!this.started || !this.boss) {
-      throw new Error("the runner has not started — nothing can be enqueued yet");
+      throw new Error("the runner has not started");
     }
     return this.boss;
   }

@@ -2,13 +2,23 @@ import { describe, expect, test } from "vitest";
 
 import {
   HealthCheckSchema,
+  JOBS_CAPACITY_CHECK,
+  JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
+  resolveJobsCapacityLimits,
 } from "@azx-pbc/shared";
 
+import { JOBS_CLEANUP_STALE_AFTER_MS, type JobsCleanupSnapshot } from "./cleanup.js";
 import type { JobsStorageCompatibility } from "./compat.js";
-import { jobsDatabaseCheck, jobsSweeperCheck, jobsWorkerCheck } from "./health.js";
+import {
+  jobsCapacityCheck,
+  jobsCleanupCheck,
+  jobsDatabaseCheck,
+  jobsSweeperCheck,
+  jobsWorkerCheck,
+} from "./health.js";
 import { JOBS_RECOVERY_STALE_AFTER_MS, type JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
@@ -277,5 +287,283 @@ describe("jobsSweeperCheck", () => {
     expect(jobsSweeperCheck(at30s, { nowMs: NOW, staleAfterMs: 20_000 }).status).toBe("degraded");
     // The default is derived from the sweeper's own cadence constant.
     expect(JOBS_RECOVERY_STALE_AFTER_MS).toBe(45_000);
+  });
+});
+
+describe("jobsCleanupCheck", () => {
+  const NOW = Date.parse("2026-10-16T08:00:00.000Z");
+
+  function cleaned(overrides: Partial<JobsCleanupSnapshot>): JobsCleanupSnapshot {
+    return {
+      started: true,
+      passes: 4,
+      lastPassAt: new Date(NOW - 1_000).toISOString(),
+      lastOkPassAt: new Date(NOW - 1_000).toISOString(),
+      resultsRemoved: 3,
+      recordsRetired: 2,
+      evidence: {
+        retainedServer: 12,
+        unfinishedServer: 4,
+        overdueResults: 0,
+        overdueRecords: 0,
+      },
+      ...overrides,
+    };
+  }
+
+  test("a loop that is not running, or has never completed a pass, is never healthy", () => {
+    const notRunning = jobsCleanupCheck(
+      cleaned({ started: false, passes: 0, lastPassAt: null, lastOkPassAt: null, evidence: null }),
+      { nowMs: NOW },
+    );
+    expect(HealthCheckSchema.parse(notRunning)).toBeTruthy();
+    expect(notRunning.name).toBe(JOBS_CLEANUP_CHECK);
+    expect(notRunning.status).toBe("error");
+    expect(notRunning.detail).toMatch(/cleanup loop is not running/);
+
+    const neverPassed = jobsCleanupCheck(cleaned({ lastOkPassAt: null, evidence: null }), {
+      nowMs: NOW,
+    });
+    expect(neverPassed.status).toBe("error");
+    // The last pass's own instant distinguishes a loop that never ran from
+    // one that runs but cannot complete a pass — the shared grader's
+    // `no_pass` arm, rendered here and by the sweeper check.
+    expect(neverPassed.detail).toMatch(/no successful pass — its last pass was 1s ago/);
+  });
+
+  test("a fresh pass on a store with nothing overdue is ok, with the removal counts riding the metrics", () => {
+    const check = jobsCleanupCheck(cleaned({}), { nowMs: NOW });
+    expect(check.status).toBe("ok");
+    expect(check.lastSuccessAt).toBe(new Date(NOW - 1_000).toISOString());
+    expect(check.metrics).toEqual({ passes: 4, resultsRemoved: 3, recordsRetired: 2 });
+  });
+
+  test("a last successful pass older than the staleness bound degrades — stale evidence never reads as health", () => {
+    const check = jobsCleanupCheck(
+      cleaned({ lastOkPassAt: new Date(NOW - 10 * 60_000).toISOString() }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("degraded");
+    expect(check.detail).toMatch(/last successful pass was 600s ago/);
+  });
+
+  test("content standing past its 48-hour removal deadline degrades, naming both overdue counts", () => {
+    const overdue = jobsCleanupCheck(
+      cleaned({
+        evidence: {
+          retainedServer: 12,
+          unfinishedServer: 4,
+          overdueResults: 7,
+          overdueRecords: 2,
+        },
+      }),
+      { nowMs: NOW },
+    );
+    expect(HealthCheckSchema.parse(overdue)).toBeTruthy();
+    expect(overdue.status).toBe("degraded");
+    expect(overdue.detail).toMatch(/7 expired result\(s\) and 2 expired job record\(s\).*48-hour/s);
+  });
+
+  test("either overdue arm alone degrades — the check grades the pair's disjunction", () => {
+    // Each one-sided shape is an ordinary lag story (an expired result still
+    // stored; an expired record still holding its key and runner row), and
+    // either alone is overdue cleanup — a conjunction here would let one
+    // arm's backlog hide behind the other's absence.
+    const recordsOnly = jobsCleanupCheck(
+      cleaned({
+        evidence: {
+          retainedServer: 12,
+          unfinishedServer: 4,
+          overdueResults: 0,
+          overdueRecords: 3,
+        },
+      }),
+      { nowMs: NOW },
+    );
+    expect(recordsOnly.status).toBe("degraded");
+    expect(recordsOnly.detail).toMatch(/0 expired result\(s\) and 3 expired job record\(s\)/);
+
+    const resultsOnly = jobsCleanupCheck(
+      cleaned({
+        evidence: {
+          retainedServer: 12,
+          unfinishedServer: 4,
+          overdueResults: 5,
+          overdueRecords: 0,
+        },
+      }),
+      { nowMs: NOW },
+    );
+    expect(resultsOnly.status).toBe("degraded");
+    expect(resultsOnly.detail).toMatch(/5 expired result\(s\) and 0 expired job record\(s\)/);
+  });
+
+  test("a last successful pass at exactly the staleness bound still reads ok — degradation begins after it", () => {
+    // The threshold is strictly-greater — the shared freshness skeleton's own
+    // rule (the sweeper check pins the same boundary through its own
+    // surface), so a pass exactly as old as the bound is the last instant the
+    // loop's own cadence can still answer for.
+    const atBound = cleaned({
+      lastOkPassAt: new Date(NOW - JOBS_CLEANUP_STALE_AFTER_MS).toISOString(),
+    });
+    expect(jobsCleanupCheck(atBound, { nowMs: NOW }).status).toBe("ok");
+    const pastBound = cleaned({
+      lastOkPassAt: new Date(NOW - JOBS_CLEANUP_STALE_AFTER_MS - 1).toISOString(),
+    });
+    expect(jobsCleanupCheck(pastBound, { nowMs: NOW }).status).toBe("degraded");
+  });
+
+  test("a fresh pass that carried no measurement is refused, never read as healthy", () => {
+    // A shape the loop never writes (a successful pass always measures) — the
+    // fail-closed pin: if a refactor ever produces it, the answer is error,
+    // not an assumed healthy reading.
+    const check = jobsCleanupCheck(cleaned({ evidence: null }), { nowMs: NOW });
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/carried no measurement/);
+  });
+
+  test("the staleness bound is the cleanup cadence's fixed multiple", () => {
+    expect(JOBS_CLEANUP_STALE_AFTER_MS).toBe(3 * 60_000);
+  });
+});
+
+describe("jobsCapacityCheck", () => {
+  const NOW = Date.parse("2026-10-16T08:00:00.000Z");
+  const LIMITS = resolveJobsCapacityLimits();
+
+  function measured(
+    retainedServer: number,
+    overrides: Partial<JobsCleanupSnapshot> = {},
+  ): JobsCleanupSnapshot {
+    return {
+      started: true,
+      passes: 2,
+      lastPassAt: new Date(NOW - 1_000).toISOString(),
+      lastOkPassAt: new Date(NOW - 1_000).toISOString(),
+      resultsRemoved: 0,
+      recordsRetired: 0,
+      evidence: {
+        retainedServer,
+        unfinishedServer: LIMITS.unfinishedPerServer, // at its cap: busy answers, not an unhealthy worker
+        overdueResults: 0,
+        overdueRecords: 0,
+      },
+      ...overrides,
+    };
+  }
+
+  test("no evidence — a stopped or never-passed measurement loop — is error, never healthy", () => {
+    const notRunning = jobsCapacityCheck(
+      measured(0, {
+        started: false,
+        passes: 0,
+        lastPassAt: null,
+        lastOkPassAt: null,
+        evidence: null,
+      }),
+      LIMITS,
+      { nowMs: NOW },
+    );
+    expect(HealthCheckSchema.parse(notRunning)).toBeTruthy();
+    expect(notRunning.name).toBe(JOBS_CAPACITY_CHECK);
+    expect(notRunning.status).toBe("error");
+    expect(notRunning.detail).toMatch(/no occupancy evidence.*not running/s);
+
+    const neverPassed = jobsCapacityCheck(
+      measured(0, { lastOkPassAt: null, evidence: null }),
+      LIMITS,
+      {
+        nowMs: NOW,
+      },
+    );
+    expect(neverPassed.status).toBe("error");
+    expect(neverPassed.detail).toMatch(/no occupancy evidence/);
+  });
+
+  test("stale measurement evidence degrades — a saturated store must not hide behind an old pass", () => {
+    const check = jobsCapacityCheck(
+      measured(0, { lastOkPassAt: new Date(NOW - 10 * 60_000).toISOString() }),
+      LIMITS,
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("degraded");
+    expect(check.detail).toMatch(/measurement is stale/);
+  });
+
+  test("a last successful pass at exactly the staleness bound still reads ok — the bound is the cleanup cadence's own multiple, through the check's default", () => {
+    // The capacity check carries its OWN default staleness constant, and
+    // every other leg here is blind to which one it is: the stale leg's
+    // snapshot is ten minutes past (degraded under any bound) and the ok
+    // legs' snapshots are one second old (fine under any bound). A default
+    // that drifted to the recovery sweeper's 45s sibling — or to a hardcoded
+    // number — would flap the check degraded at the production cadence
+    // (passes every 60s, requests landing 45–60s after one) with no red leg
+    // anywhere. Grading the boundary through the DEFAULT pins the constant's
+    // use, the same pin the cleanup check's boundary leg carries for its own
+    // default.
+    const atBound = measured(0, {
+      lastOkPassAt: new Date(NOW - JOBS_CLEANUP_STALE_AFTER_MS).toISOString(),
+    });
+    expect(jobsCapacityCheck(atBound, LIMITS, { nowMs: NOW }).status).toBe("ok");
+    const pastBound = measured(0, {
+      lastOkPassAt: new Date(NOW - JOBS_CLEANUP_STALE_AFTER_MS - 1).toISOString(),
+    });
+    expect(jobsCapacityCheck(pastBound, LIMITS, { nowMs: NOW }).status).toBe("degraded");
+  });
+
+  test("retained storage at or past the server-wide cap degrades, with the occupancy riding the metrics", () => {
+    const atCap = jobsCapacityCheck(measured(LIMITS.retainedPerServer), LIMITS, { nowMs: NOW });
+    expect(atCap.status).toBe("degraded");
+    expect(atCap.detail).toMatch(
+      new RegExp(`${LIMITS.retainedPerServer} of ${LIMITS.retainedPerServer} retained jobs`),
+    );
+    expect(atCap.metrics).toEqual({
+      retainedServer: LIMITS.retainedPerServer,
+      unfinishedServer: LIMITS.unfinishedPerServer,
+    });
+
+    const pastCap = jobsCapacityCheck(measured(LIMITS.retainedPerServer + 1), LIMITS, {
+      nowMs: NOW,
+    });
+    expect(pastCap.status).toBe("degraded");
+
+    const belowCap = jobsCapacityCheck(measured(LIMITS.retainedPerServer - 1), LIMITS, {
+      nowMs: NOW,
+    });
+    expect(belowCap.status).toBe("ok");
+  });
+
+  test("the saturated arm reports its measurement's freshness instant like every other time-based arm", () => {
+    // The check's own declared consistency (the same one that added
+    // `lastSuccessAt` to the stale and ok arms): the saturated arm grades the
+    // measurement too — a fresh one, inside the `fresh` branch — so its
+    // evidence is exactly as time-based, and an operator reading a degraded
+    // `jobs_capacity` needs the instant as much as the occupancy to judge how
+    // old the saturation reading is. The cleanup check's degraded (overdue)
+    // arm carries it; this arm must not be the one time-based-graded arm in
+    // the file that drops it.
+    const saturated = jobsCapacityCheck(measured(LIMITS.retainedPerServer), LIMITS, {
+      nowMs: NOW,
+    });
+    expect(saturated.status).toBe("degraded");
+    expect(saturated.lastSuccessAt).toBe(new Date(NOW - 1_000).toISOString());
+    expect(HealthCheckSchema.parse(saturated)).toBeTruthy();
+  });
+
+  test("unfinished saturation alone never degrades — a busy answer is not an unhealthy worker", () => {
+    // Criterion 55's distinction: ordinary unfinished-capacity refusal is a
+    // routine 429; only retained saturation degrades this check.
+    const check = jobsCapacityCheck(measured(0), LIMITS, { nowMs: NOW });
+    expect(check.status).toBe("ok");
+    expect(check.metrics?.unfinishedServer).toBe(LIMITS.unfinishedPerServer);
+  });
+
+  test("a fresh pass that carried no measurement is refused, never read as healthy", () => {
+    // The same fail-closed pin the cleanup check carries: a fresh pass always
+    // measures, so a refactor that ever produces this shape must read as
+    // error, not as an assumed healthy occupancy.
+    const check = jobsCapacityCheck(measured(0, { evidence: null }), LIMITS, { nowMs: NOW });
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/carried no measurement/);
   });
 });

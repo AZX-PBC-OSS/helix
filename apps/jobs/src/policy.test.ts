@@ -19,6 +19,7 @@ import {
   JOBS_QUEUE_POLICY,
   JOBS_QUEUE_POLICY_EFFECTIVE,
   JOBS_RECORD_TTL_SECONDS,
+  JOBS_REMOVAL_GRACE_SECONDS,
   JOBS_RESULT_TTL_SECONDS,
   JOBS_TYPE_POLICIES,
   JOBS_RUNTIME_ROLE,
@@ -120,6 +121,11 @@ describe("the installed-handler policy registry", () => {
     // the contract's lifetimes.
     expect(JOBS_RESULT_TTL_SECONDS).toBe(7 * 24 * 60 * 60);
     expect(JOBS_RECORD_TTL_SECONDS).toBe(30 * 24 * 60 * 60);
+    // The physical-removal bound is the third constant of the same kind: the
+    // cleanup suites compute their overdue boundaries FROM it, so a drifted
+    // value would pass them while silently moving the 48-hour deadline the
+    // `jobs_cleanup` check and the design both speak of.
+    expect(JOBS_REMOVAL_GRACE_SECONDS).toBe(48 * 60 * 60);
   });
 
   test("the expected effective queue row is derived from the policy, not restated", () => {

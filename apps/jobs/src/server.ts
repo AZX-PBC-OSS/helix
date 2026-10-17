@@ -5,6 +5,7 @@ import { buildApp, SERVICE_NAME } from "./app.js";
 import { JobsAcceptanceStore } from "./acceptance.js";
 import { JobsInstructionBurns } from "./burns.js";
 import { JobsCancellationStore } from "./cancellation.js";
+import { JobsCleanup } from "./cleanup.js";
 import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
 import { JobsExecution, JobsHandlerRegistry } from "./execution.js";
@@ -175,6 +176,20 @@ const observation = new JobsObservationStore({
   log: lateLog,
 });
 
+// The cleanup loop — the retention contract's physical half: expired results
+// removed from live storage at the seven-day horizon, terminal records
+// retired together with their runner rows and retry mappings at the
+// thirty-day horizon, each within the 48-hour removal bound (including after
+// a restoration). Its record arm's runner-row deletes ride the runner's
+// instance through the borrowed-connection adapter; its measurement feeds
+// the jobs_capacity and jobs_cleanup health checks.
+const cleanup = new JobsCleanup({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  deleteRunnerRows: runner.deleter,
+  log: lateLog,
+});
+
 const app = buildApp({
   storage,
   instructions: createJobsInstructionAuth({
@@ -189,6 +204,8 @@ const app = buildApp({
   observation,
   worker: () => runner.snapshot,
   recovery: () => recovery.snapshot(),
+  cleanup: () => cleanup.snapshot(),
+  capacityLimits: config.limits,
 });
 logRef.current = app.log;
 
@@ -196,14 +213,16 @@ logRef.current = app.log;
 // usable, `/health` reports the store's state honestly while the bounded
 // retries continue, and shutdown releases what startup acquired — the
 // recovery sweeper's pool and timer, the cancellation store's pool, the
-// observation store's pool, the runner instance and its retry timer, the
-// execution store's pool, the acceptance store's pool, the lifecycle pool,
-// the sweep timer and pool, the probes' timer and pool, then the telemetry
-// flush (ADR-0009). The sweeper and the cancellation store release before
-// the runner: both drive runner cancels through the runner's instance.
+// cleanup loop's pool and timer, the observation store's pool, the runner
+// instance and its retry timer, the execution store's pool, the acceptance
+// store's pool, the lifecycle pool, the sweep timer and pool, the probes'
+// timer and pool, then the telemetry flush (ADR-0009). The sweeper, the
+// cancellation store and the cleanup loop release before the runner: all
+// three drive runner operations through the runner's instance.
 app.addHook("onClose", async () => {
   await recovery.stop();
   await cancellation.stop();
+  await cleanup.stop();
   await runner.stop();
   await execution.stop();
   await admission.stop();
@@ -229,6 +248,7 @@ try {
   runner.start();
   recovery.start();
   cancellation.start();
+  cleanup.start();
   admission.start();
   observation.start();
   await app.listen({ port, host });
@@ -247,12 +267,13 @@ try {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
   // storage.start(), burns.start(), lifecycle.start(), execution.start(),
-  // runner.start(), recovery.start(), cancellation.start(),
+  // runner.start(), recovery.start(), cancellation.start(), cleanup.start(),
   // admission.start() and observation.start() have already acquired their
   // resources; release them here, not only on the shutdown path, bounded by
   // each pool's own connect timeout.
   await recovery.stop();
   await cancellation.stop();
+  await cleanup.stop();
   await runner.stop();
   await execution.stop();
   await admission.stop();

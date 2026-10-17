@@ -43,6 +43,7 @@ export const INSTR_JOBS_INSTRUCTIONS = "helix.jobs.instructions";
 export const INSTR_JOBS_BURN_SWEEPS = "helix.jobs.burn.sweeps";
 export const INSTR_JOBS_EXECUTIONS = "helix.jobs.executions";
 export const INSTR_JOBS_RECOVERIES = "helix.jobs.recoveries";
+export const INSTR_JOBS_CLEANUPS = "helix.jobs.cleanups";
 
 /**
  * Attribute keys.
@@ -129,6 +130,16 @@ export const ATTR_JOBS_ARCHIVED = "helix.jobs.archived";
  * configured serving/retiring server, so bounded by the deployment map.
  */
 export const ATTR_JOBS_LIFECYCLE_TARGETS = "helix.jobs.lifecycle.targets";
+/**
+ * How many expired results one jobs cleanup pass removed from live storage —
+ * bounded by the pass's own batch cap.
+ */
+export const ATTR_JOBS_CLEANUP_RESULTS_REMOVED = "helix.jobs.cleanup.results_removed";
+/**
+ * How many job records (each with its runner row) one jobs cleanup pass
+ * retired — bounded by the pass's own batch cap.
+ */
+export const ATTR_JOBS_CLEANUP_RECORDS_RETIRED = "helix.jobs.cleanup.records_retired";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
 /**
@@ -219,6 +230,10 @@ export const SPAN_JOBS_EXECUTE = "helix.jobs.execute";
  * consumer span, one per job the pass dispositioned (never for the passing
  * through of consistent work). */
 export const SPAN_JOBS_RECOVER = "helix.jobs.recover";
+/** The jobs cleanup loop's physical-retention pass — a root consumer span,
+ * one per pass (the loop's cadence, not per row). Its removed-count
+ * attributes are the pass's own batch-bounded evidence. */
+export const SPAN_JOBS_CLEANUP = "helix.jobs.cleanup";
 /** The portal's lifecycle outbox write — the transaction that commits app
  * state, the next generation and the per-target intents together (ADR-0007).
  * The receiver's `helix.jobs.lifecycle` route span is the delivery's other end. */
@@ -599,6 +614,20 @@ export const JOBS_RECOVER_OUTCOMES = [
   "fenced",
 ] as const;
 export type JobsRecoverOutcome = (typeof JOBS_RECOVER_OUTCOMES)[number];
+
+/**
+ * How one jobs cleanup pass ended — the `helix.outcome` dimension on
+ * `helix.jobs.cleanups` and the final `helix.outcome` on the per-pass
+ * `helix.jobs.cleanup` span. Pass-shaped, like the burn sweep's: routine
+ * passes (including ones that remove nothing) are `ok`, and only a pass that
+ * could not run is `failed` — a run of `failed` with no `ok` is a store that
+ * stopped answering its cleanup. The pass's removed counts ride the span's
+ * `helix.jobs.cleanup.*` attributes, and the lag/saturation evidence the pass
+ * measured is graded by the `jobs_cleanup` / `jobs_capacity` health checks,
+ * never a dimension here.
+ */
+export const JOBS_CLEANUP_OUTCOMES = ["ok", "failed"] as const;
+export type JobsCleanupOutcome = (typeof JOBS_CLEANUP_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

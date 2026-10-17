@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { PgBoss } from "pg-boss";
+import type { PoolClient } from "pg";
 
 import { JobsRunner, cancelRunnerJob, readRunnerJobState } from "./runner.js";
 
@@ -45,7 +46,7 @@ describe("the supervised runner", () => {
       // The refusal is immediate and honest — never a hang, never a plausible
       // enqueue into a store that does not exist.
       await expect(
-        runner.enqueuer.enqueue({ query: async () => ({ rows: [] }) } as never, {
+        runner.enqueuer.enqueue({ query: async () => ({ rows: [] }) } as unknown as PoolClient, {
           type: "jobs:fetch",
           appId: "app",
           env: "prod",
@@ -61,6 +62,25 @@ describe("the supervised runner", () => {
     // never escaped start().
     expect(failedStarts).toBeGreaterThanOrEqual(2);
     expect(runner.snapshot).toEqual({ started: false, workerRegistered: false });
+  });
+
+  test("the cleanup's runner-row retirement refuses until the runner is up, like the enqueue does", async () => {
+    // The deleter getter is the composition's other borrowed-connection seam
+    // (`server.ts` wires it as the cleanup loop's `deleteRunnerRows`); its
+    // refusal while unstarted is what makes a retirement that cannot reach
+    // the runner rows roll the whole unit back, never retire the wrapper
+    // record alone and orphan the runner row's stored input. The refusal
+    // must surface as the DECLARED contract's rejection — a caller that
+    // wrote `runner.deleter.delete(...).catch(...)` against the
+    // `Promise<number>` interface must never meet a synchronous throw (its
+    // enqueue sibling rejects; a caller treating the two identically must be
+    // answered identically).
+    const runner = runnerWith({ warn: () => {} });
+    await expect(
+      runner.deleter.delete({ query: async () => ({ rows: [] }) } as unknown as PoolClient, [
+        "not-a-uuid",
+      ]),
+    ).rejects.toThrow(/not started/);
   });
 
   test("the backoff is capped — the loop keeps retrying at the cap instead of spacing out toward giving up", async () => {
@@ -104,7 +124,7 @@ describe("the supervised runner", () => {
     await new Promise((r) => setTimeout(r, 400));
     expect(failedStarts).toBe(atStop);
     await expect(
-      runner.enqueuer.enqueue(undefined as never, {
+      runner.enqueuer.enqueue(undefined as unknown as PoolClient, {
         type: "jobs:fetch",
         appId: "app",
         env: "prod",

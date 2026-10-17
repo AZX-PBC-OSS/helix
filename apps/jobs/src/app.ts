@@ -18,6 +18,7 @@ import {
   worstHealthState,
   JOB_STATEFUL_ERROR_CODES,
   type JobRequestErrorCode,
+  type JobsCapacityLimits,
 } from "@azx-pbc/shared";
 import type {
   JobsCancelClaims,
@@ -50,7 +51,14 @@ import type { Span } from "@opentelemetry/api";
 
 import type { JobsAdmission, JobsAdmissionResult } from "./acceptance.js";
 import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "./cancellation.js";
-import { jobsDatabaseCheck, jobsSweeperCheck, jobsWorkerCheck } from "./health.js";
+import type { JobsCleanupSnapshot } from "./cleanup.js";
+import {
+  jobsCapacityCheck,
+  jobsCleanupCheck,
+  jobsDatabaseCheck,
+  jobsSweeperCheck,
+  jobsWorkerCheck,
+} from "./health.js";
 import type { JobsObservation, JobsResultVerdict, JobsSnapshotVerdict } from "./observation.js";
 import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
@@ -105,6 +113,21 @@ export interface JobsDeps {
    * successful pass fresh), never a live probe.
    */
   recovery: () => JobsRecoverySnapshot;
+  /**
+   * The cleanup loop's supervision state, read per request — `/health`'s
+   * `jobs_cleanup` (lag/overdue) and `jobs_capacity` (retained saturation)
+   * checks grade the measurement its last successful pass took, never a
+   * live probe.
+   */
+  cleanup: () => JobsCleanupSnapshot;
+  /**
+   * The resolved capacity limits this deployment enforces — the
+   * `jobs_capacity` check grades server-wide retained saturation against
+   * them. The same resolved set the acceptance store enforces; a hand-built
+   * app carrying different numbers would grade a capacity posture the
+   * service does not run under.
+   */
+  capacityLimits: JobsCapacityLimits;
 }
 
 /** A request that arrived with a body the raw-capturing parser held onto. */
@@ -662,6 +685,8 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
         jobsDatabaseCheck(deps.storage.snapshot()),
         jobsWorkerCheck(deps.worker()),
         jobsSweeperCheck(deps.recovery()),
+        jobsCapacityCheck(deps.cleanup(), deps.capacityLimits),
+        jobsCleanupCheck(deps.cleanup()),
       ];
       reply.header("cache-control", "no-store"); // a degraded body must not be cached
       return HealthStatusSchema.parse({

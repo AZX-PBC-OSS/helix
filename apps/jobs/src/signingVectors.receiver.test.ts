@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { IDEMPOTENCY_KEY_HEADER, INSTRUCTION_HEADER } from "@azx-pbc/shared";
+import {
+  IDEMPOTENCY_KEY_HEADER,
+  INSTRUCTION_HEADER,
+  resolveJobsCapacityLimits,
+} from "@azx-pbc/shared";
 import {
   JOBS_CANCEL_OUTCOMES,
   JOBS_RESULT_OUTCOMES,
@@ -33,6 +37,7 @@ import {
   MemoryCancellation,
   MemoryLifecycle,
   MemoryObservation,
+  runningCleanup,
 } from "./test/instructions.js";
 
 /** One ended span, as the recording hands them over. */
@@ -138,6 +143,8 @@ function receiverFor(server: string, operation: JobsOperationName, keyId: string
       lastOkPassAt: new Date().toISOString(),
       reconciled: 0,
     }),
+    cleanup: runningCleanup,
+    capacityLimits: resolveJobsCapacityLimits(),
   });
   const receiver: Receiver = { app, storage, clock, burns, lifecycle };
   RECEIVERS.set(cacheKey, receiver);

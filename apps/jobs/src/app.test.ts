@@ -2,13 +2,17 @@ import { describe, expect, test } from "vitest";
 
 import {
   HealthStatusSchema,
+  JOBS_CAPACITY_CHECK,
+  JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   JobErrorMessages,
+  resolveJobsCapacityLimits,
 } from "@azx-pbc/shared";
 
 import { buildApp } from "./app.js";
+import type { JobsCleanupSnapshot } from "./cleanup.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
 import type { JobsRecoverySnapshot } from "./recovery.js";
@@ -20,6 +24,7 @@ import {
   MemoryCancellation,
   MemoryLifecycle,
   MemoryObservation,
+  runningCleanup,
 } from "./test/instructions.js";
 
 /**
@@ -57,12 +62,14 @@ async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<Jo
 }
 
 /** The full deps: the storage state under test plus the receiver seam. The
- * worker's and the sweeper's supervision states are the leg's to set — the
- * health body reads them per request like the storage snapshot. */
+ * worker's, the sweeper's and the cleanup loop's supervision states are the
+ * leg's to set — the health body reads them per request like the storage
+ * snapshot. */
 async function depsWith(
   storage: JobsStorage,
   worker: JobsRunnerSnapshot = RUNNING_WORKER,
   recovery: () => JobsRecoverySnapshot = () => RUNNING_RECOVERY(),
+  cleanup: () => JobsCleanupSnapshot = runningCleanup,
 ) {
   return {
     storage,
@@ -73,6 +80,8 @@ async function depsWith(
     observation: new MemoryObservation(),
     worker: () => worker,
     recovery,
+    cleanup,
+    capacityLimits: resolveJobsCapacityLimits(),
   };
 }
 
@@ -113,6 +122,18 @@ describe("GET /health", () => {
         name: JOBS_SWEEPER_CHECK,
         status: "ok",
         metrics: { passes: 1, reconciled: 0 },
+        lastSuccessAt: expect.any(String),
+      },
+      {
+        name: JOBS_CAPACITY_CHECK,
+        status: "ok",
+        metrics: { retainedServer: 0, unfinishedServer: 0 },
+        lastSuccessAt: expect.any(String),
+      },
+      {
+        name: JOBS_CLEANUP_CHECK,
+        status: "ok",
+        metrics: { passes: 1, resultsRemoved: 0, recordsRetired: 0 },
         lastSuccessAt: expect.any(String),
       },
     ]);
@@ -206,6 +227,47 @@ describe("GET /health", () => {
       await notStarted.close();
       await neverPassed.close();
       await stale.close();
+      await storage.stop();
+    }
+  });
+
+  test("a stopped cleanup loop reads error in both of its checks, and the body rolls up to error", async () => {
+    // The route wiring of the two cleanup-graded checks in a non-ok state:
+    // both grade the ONE cleanup getter, so a loop that is not running must
+    // surface as error in both — `jobs_capacity` (its occupancy evidence's
+    // producer) and `jobs_cleanup` (its remover) — and the roll-up must carry
+    // the degradation. The ok shape is pinned by the exact-body leg; this is
+    // the body an operator reads while the loop is down.
+    const storage = await storageIn("ready");
+    const app = buildApp(
+      await depsWith(
+        storage,
+        RUNNING_WORKER,
+        () => RUNNING_RECOVERY(),
+        () => ({
+          started: false,
+          passes: 0,
+          lastPassAt: null,
+          lastOkPassAt: null,
+          resultsRemoved: 0,
+          recordsRetired: 0,
+          evidence: null,
+        }),
+      ),
+    );
+    try {
+      const res = await app.inject({ method: "GET", url: "/health" });
+      expect(res.statusCode).toBe(200);
+      const body = HealthStatusSchema.parse(res.json());
+      expect(body.status).toBe("error");
+      expect(body.checks?.[3]?.name).toBe(JOBS_CAPACITY_CHECK);
+      expect(body.checks?.[3]?.status).toBe("error");
+      expect(body.checks?.[3]?.detail).toMatch(/no occupancy evidence.*not running/s);
+      expect(body.checks?.[4]?.name).toBe(JOBS_CLEANUP_CHECK);
+      expect(body.checks?.[4]?.status).toBe("error");
+      expect(body.checks?.[4]?.detail).toMatch(/cleanup loop is not running/);
+    } finally {
+      await app.close();
       await storage.stop();
     }
   });

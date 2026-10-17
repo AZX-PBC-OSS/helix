@@ -115,6 +115,17 @@ export const JOBS_RESULT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const JOBS_RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 /**
+ * The physical-removal bound, in seconds after each logical expiry boundary
+ * (48 hours): the cleanup loop must remove an expired result within this
+ * long after the seven-day result horizon, and the remaining job-specific
+ * content within this long after the thirty-day record horizon — including
+ * after a service restoration (design §7). Past the bound the content is
+ * OVERDUE, and the `jobs_cleanup` health check degrades until the removal
+ * completes.
+ */
+export const JOBS_REMOVAL_GRACE_SECONDS = 48 * 60 * 60;
+
+/**
  * The platform-owned queue policy, applied by the migration command when it
  * creates the queue and verified by the startup compatibility check.
  *
