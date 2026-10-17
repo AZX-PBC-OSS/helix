@@ -638,6 +638,11 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
     // metadata never carries authority. The signed-instruction verification
     // is what authenticates a jobs caller; the request id stays self-minted.
     ...requestIdOptions({ trustInbound: false }),
+    // Job ids are legal to 128 characters (the shared reference grammar);
+    // the router's own default (100) would refuse them 414 before the
+    // record routes' handlers ran. A router-level option, so every
+    // parametric route here shares the bound.
+    routerOptions: { maxParamLength: 128 },
   });
 
   // The internal routes bind the exact body bytes by digest, so the raw bytes

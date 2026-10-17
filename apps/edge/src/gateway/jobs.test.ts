@@ -1,27 +1,27 @@
-import { randomUUID } from "node:crypto";
 import { connect } from "node:net";
 import { describe, expect, it } from "vitest";
 import { request as undiciRequest } from "undici";
 import type { FastifyInstance } from "fastify";
-import { hashDevToken } from "@azx-pbc/shared/devToken";
 import { SESSION_COOKIE } from "../auth/cookies.js";
-import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
-import { buildApp } from "../app.js";
-import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "../test/config.js";
-import {
-  FakeBlobReader,
-  FakeOidcClient,
-  FakeRegistry,
-  FakeSessionStore,
-  registryEntry,
-} from "../test/fakes.js";
-import { type JobRequestError, jobRequestError, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
-import type { JobsSubmitForward, JobsForwarder, JobsSubmitSpec } from "../jobs/forwarder.js";
-import type { DevTokenStore } from "../devGateway/devTokenStore.js";
+import { jobRequestError, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
 import { HttpJobsForwarder } from "../jobs/forwarder.js";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 import { FakeJobsServiceReceiver } from "../test/jobsReceiver.js";
 import { until, withServer } from "../test/socket.js";
+import {
+  buildDevJobsEdge,
+  buildDisabledJobsEdge,
+  buildJobsEdge,
+  buildJobsEdgeApp as buildEdgeApp,
+  FakeJobsForwarder,
+  isJobsError,
+  JOBS_APP_ID as APP_ID,
+  JOBS_DEV_APP_ID as DEV_APP_ID,
+  JOBS_HOST as HOST,
+  JOBS_ORIGIN as ORIGIN,
+  seedJobsSession as seedSession,
+  type JobsHarness,
+} from "../test/jobsGateway.js";
 import {
   ROUTE_JOBS_SUBMIT,
   ROUTE_JOBS_SUBMIT_DEV,
@@ -37,113 +37,8 @@ import {
  * what each forward verdict answers — is pinned in isolation.
  */
 
-const APP_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const PREFIX = "apps/a/1/";
-const HOST = { host: "demo.local.helix.azxlabs.io" };
-const ORIGIN = "https://demo.local.helix.azxlabs.io:8080";
-
-const ACCEPTED_BYTES = JSON.stringify({
-  server: "jobs",
-  jobId: "job-123",
-  status: "queued",
-});
-
-class FakeJobsForwarder implements JobsForwarder {
-  readonly #configured = new Set<string>();
-  specs: JobsSubmitSpec[] = [];
-  verdict: JobsSubmitForward = {
-    kind: "accepted",
-    status: 202,
-    accepted: { server: "jobs", jobId: "job-123", status: "queued" },
-    rawBody: new TextEncoder().encode(ACCEPTED_BYTES),
-  };
-
-  constructor(...configured: string[]) {
-    for (const s of configured) this.#configured.add(s);
-  }
-
-  has(server: string): boolean {
-    return this.#configured.has(server);
-  }
-
-  async submit(spec: JobsSubmitSpec): Promise<JobsSubmitForward> {
-    this.specs.push(spec);
-    return this.verdict;
-  }
-
-  async close(): Promise<void> {}
-}
-
-interface Harness {
-  app: FastifyInstance;
-  forwarder: FakeJobsForwarder;
-  sessions: FakeSessionStore;
-}
-
-interface EntryOpts {
-  visibilityMode?: "internal" | "public" | "group";
-  jobs?: { types: string[] } | null;
-  jobsGeneration?: string;
-  appSlug?: string;
-  archived?: boolean;
-  loaded?: boolean;
-}
-
-/** The base build: ANY forwarder (the real one in the join tests, a fake otherwise). */
-function buildEdgeApp(
-  forwarder: JobsForwarder,
-  opts: EntryOpts = {},
-): { app: FastifyInstance; sessions: FakeSessionStore } {
-  const sessions = new FakeSessionStore();
-  const app = buildApp({
-    config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
-    registry: new FakeRegistry(
-      [
-        registryEntry({
-          appId: APP_ID,
-          slug: opts.appSlug ?? "demo",
-          blobPrefix: PREFIX,
-          visibilityMode: opts.visibilityMode ?? "internal",
-          jobs: opts.jobs === undefined ? { types: ["jobs:fetch"] } : opts.jobs,
-          archived: opts.archived ?? false,
-          ...(opts.jobsGeneration !== undefined ? { jobsGeneration: opts.jobsGeneration } : {}),
-        }),
-      ],
-      { loaded: opts.loaded ?? true },
-    ),
-    blob: new FakeBlobReader(),
-    sessions,
-    oidc: new FakeOidcClient(),
-    jobsForwarder: forwarder,
-  });
-  return { app, sessions };
-}
-
-function buildJobsEdge(opts: { forwarder?: FakeJobsForwarder } & EntryOpts = {}): Harness {
-  const forwarder = opts.forwarder ?? new FakeJobsForwarder("jobs");
-  return { ...buildEdgeApp(forwarder, opts), forwarder };
-}
-
-async function seedSession(
-  sessions: FakeSessionStore,
-  oid: string,
-  kind: "user" | "password" = "user",
-): Promise<string> {
-  const id = randomUUID();
-  await sessions.createPending({
-    id,
-    appId: APP_ID,
-    user: { oid, displayName: oid, name: null, email: null, kind, groups: [] },
-    refreshDueAt: new Date(Date.now() + 60_000),
-    expiresAt: new Date(Date.now() + 3_600_000),
-  });
-  const token = newSessionToken();
-  await sessions.redeem(id, APP_ID, hashSessionToken(token));
-  return token;
-}
-
 async function submit(
-  edge: Pick<Harness, "app" | "sessions">,
+  edge: Pick<JobsHarness, "app" | "sessions">,
   url: string,
   opts: {
     token?: string | null;
@@ -180,81 +75,8 @@ async function submit(
   };
 }
 
-function isJobsError(value: unknown, code: string): value is JobRequestError {
-  return typeof value === "object" && value !== null && (value as { code?: unknown }).code === code;
-}
-
-/** The disabled build: no forwarding seam wired — the app alone answers. */
-function buildDisabledJobsEdge(): Harness {
-  const sessions = new FakeSessionStore();
-  const app = buildApp({
-    config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
-    registry: new FakeRegistry([
-      registryEntry({
-        appId: APP_ID,
-        slug: "demo",
-        blobPrefix: PREFIX,
-        visibilityMode: "internal",
-        jobs: { types: ["jobs:fetch"] },
-      }),
-    ]),
-    blob: new FakeBlobReader(),
-    sessions,
-    oidc: new FakeOidcClient(),
-    jobsForwarder: null,
-  });
-  // The forwarder field is never consulted on this build; the type wants one.
-  return { app, forwarder: new FakeJobsForwarder(), sessions };
-}
-
-const DEV_APP_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const DEV_BEARER = "dev-token-plant";
 const DEV_ORIGIN = "https://myapp.lovable.app";
-
-function fakeDevTokens(): DevTokenStore {
-  return {
-    async resolve(tokenHash: string) {
-      return tokenHash === hashDevToken(DEV_BEARER)
-        ? {
-            appId: DEV_APP_ID,
-            developerOid: "oid-developer",
-            origins: [DEV_ORIGIN],
-            expiresAt: new Date(Date.now() + 60_000),
-            revokedAt: null,
-          }
-        : null;
-    },
-    async originAllowed() {
-      return false;
-    },
-    async close() {},
-  };
-}
-
-async function buildDevJobsEdge(jobsForwarder: JobsForwarder | null): Promise<FastifyInstance> {
-  const { buildDevGateway } = await import("../devGateway/app.js");
-  const app = buildDevGateway({
-    config: testDevGatewayConfig(),
-    registry: new FakeRegistry([
-      registryEntry({
-        appId: DEV_APP_ID,
-        slug: "myapp",
-        blobPrefix: "apps/d/1/",
-        visibilityMode: "internal",
-        jobs: { types: ["jobs:fetch"] },
-      }),
-    ]),
-    devTokens: fakeDevTokens(),
-    appData: null,
-    usage: null,
-    llmProvider: null,
-    egress: null,
-    instructionKey: null,
-    jobsForwarder,
-    portal: null,
-  });
-  return app;
-}
 
 function devSubmit(
   app: FastifyInstance,
@@ -302,7 +124,7 @@ describe("the serving and caller gates keep their existing responses", () => {
     });
     expect(res.status).toBe(404);
     expect(res.text).toContain("Not found");
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("an archived app is the 410 — before any jobs decision", async () => {
@@ -313,7 +135,7 @@ describe("the serving and caller gates keep their existing responses", () => {
       payload: "{}",
     });
     expect(res.status).toBe(410);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("a stale registry is the serving gate's 503 — no jobs envelope", async () => {
@@ -325,7 +147,7 @@ describe("the serving and caller gates keep their existing responses", () => {
     });
     expect(res.status).toBe(503);
     expect(isJobsError(res.json, "jobs_disabled")).toBe(false);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("an unauthenticated caller gets the caller gate's 401, not a jobs envelope", async () => {
@@ -336,7 +158,7 @@ describe("the serving and caller gates keep their existing responses", () => {
     });
     expect(res.status).toBe(401);
     expect(isJobsError(res.json, "unauthorized")).toBe(false);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("a cross-origin submission is refused before any forward", async () => {
@@ -348,7 +170,7 @@ describe("the serving and caller gates keep their existing responses", () => {
       origin: "https://evil.example",
     });
     expect(res.status).toBe(403);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 });
 
@@ -361,7 +183,7 @@ describe("the jobs authorization check (after the serving/caller gates)", () => 
     });
     expect(res.status).toBe(403);
     expect(isJobsError(res.json, "forbidden")).toBe(true);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("a shared-password principal is refused the same way", async () => {
@@ -373,7 +195,7 @@ describe("the jobs authorization check (after the serving/caller gates)", () => 
     });
     expect(res.status).toBe(403);
     expect(isJobsError(res.json, "forbidden")).toBe(true);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("an app without the jobs grant is refused, and one granted another server's type too", async () => {
@@ -381,7 +203,7 @@ describe("the jobs authorization check (after the serving/caller gates)", () => 
     const t1 = await seedSession(noGrant.sessions, "alice");
     const r1 = await submit(noGrant, "/_api/jobs/jobs/types/fetch", { token: t1, payload: "{}" });
     expect(r1.status).toBe(403);
-    expect(noGrant.forwarder.specs).toHaveLength(0);
+    expect(noGrant.forwarder.submitSpecs).toHaveLength(0);
 
     const otherServer = buildJobsEdge({ jobs: { types: ["other:fetch"] } });
     const t2 = await seedSession(otherServer.sessions, "alice");
@@ -391,7 +213,7 @@ describe("the jobs authorization check (after the serving/caller gates)", () => 
     });
     expect(r2.status).toBe(403);
     expect(isJobsError(r2.json, "forbidden")).toBe(true);
-    expect(otherServer.forwarder.specs).toHaveLength(0);
+    expect(otherServer.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("a type that is not a type is one no grant can cover — 403, nothing forwarded", async () => {
@@ -402,7 +224,7 @@ describe("the jobs authorization check (after the serving/caller gates)", () => 
       payload: "{}",
     });
     expect(res.status).toBe(403);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 });
 
@@ -413,7 +235,7 @@ describe("submission reachability", () => {
     const res = await submit(harness, "/_api/jobs/nosuch/types/fetch", { token, payload: "{}" });
     expect(res.status).toBe(400);
     expect(isJobsError(res.json, "job_server_unknown")).toBe(true);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("a fully disabled installation answers 503 jobs_disabled", async () => {
@@ -436,8 +258,8 @@ describe("submission reachability", () => {
       headers: { "idempotency-key": "retry-key-1" },
     });
     expect(res.status).toBe(202);
-    expect(harness.forwarder.specs).toHaveLength(1);
-    const spec = harness.forwarder.specs[0]!;
+    expect(harness.forwarder.submitSpecs).toHaveLength(1);
+    const spec = harness.forwarder.submitSpecs[0]!;
     expect(spec).toMatchObject({
       server: "jobs",
       type: "jobs:fetch",
@@ -464,14 +286,14 @@ describe("submission reachability", () => {
     const raw = "this is not json — and it must still reach the comparison whole";
     const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: raw });
     expect(res.status).toBe(202);
-    expect(Buffer.from(harness.forwarder.specs[0]!.body).toString()).toBe(raw);
+    expect(Buffer.from(harness.forwarder.submitSpecs[0]!.body).toString()).toBe(raw);
   });
 
   it("grants for other servers ride the projection, scoped to the addressed one", async () => {
     const harness = buildJobsEdge({ jobs: { types: ["jobs:fetch", "other:gen"] } });
     const token = await seedSession(harness.sessions, "alice");
     await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
-    expect(harness.forwarder.specs[0]!.identity.allowedTypes).toEqual(["jobs:fetch"]);
+    expect(harness.forwarder.submitSpecs[0]!.identity.allowedTypes).toEqual(["jobs:fetch"]);
   });
 
   it("a valid acceptance is forwarded unchanged, no-store", async () => {
@@ -480,7 +302,7 @@ describe("submission reachability", () => {
     // Odd spacing in the acceptance body: what the server sent is what the
     // caller reads.
     const oddBytes = '{"server":"jobs",  "jobId":"job-123","status":"queued"}';
-    harness.forwarder.verdict = {
+    harness.forwarder.submitVerdict = {
       kind: "accepted",
       status: 202,
       accepted: { server: "jobs", jobId: "job-123", status: "queued" },
@@ -502,7 +324,7 @@ describe("submission reachability", () => {
       status: "queued",
       error: null,
     });
-    harness.forwarder.verdict = { kind: "refused", status: 409, error: conflict };
+    harness.forwarder.submitVerdict = { kind: "refused", status: 409, error: conflict };
     const res = await submit(harness, "/_api/jobs/jobs/types/fetch", {
       token,
       payload: "{}",
@@ -516,13 +338,13 @@ describe("submission reachability", () => {
     const harness = buildJobsEdge();
     const token = await seedSession(harness.sessions, "alice");
 
-    harness.forwarder.verdict = { kind: "unreachable", error: new Error("no answer") };
+    harness.forwarder.submitVerdict = { kind: "unreachable", error: new Error("no answer") };
     const r1 = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
     expect(r1.status).toBe(503);
     expect(isJobsError(r1.json, "jobs_unavailable")).toBe(true);
     expect(r1.headers["cache-control"]).toBe("no-store");
 
-    harness.forwarder.verdict = { kind: "invalid_response", status: 202 };
+    harness.forwarder.submitVerdict = { kind: "invalid_response", status: 202 };
     const r2 = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
     expect(r2.status).toBe(503);
     expect(isJobsError(r2.json, "jobs_unavailable")).toBe(true);
@@ -545,7 +367,7 @@ describe("the retry key and the body bound", () => {
       headers: { "idempotency-key": "a, b" },
     });
     expect(res.status).toBe(202);
-    expect(harness.forwarder.specs[0]!.idempotencyKey).toBe("a, b");
+    expect(harness.forwarder.submitSpecs[0]!.idempotencyKey).toBe("a, b");
   });
 
   it("a present-but-empty retry key is refused, never silently dropped to keyless", async () => {
@@ -561,7 +383,7 @@ describe("the retry key and the body bound", () => {
     });
     expect(res.status).toBe(400);
     expect(isJobsError(res.json, "idempotency_key_invalid")).toBe(true);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("a retry key that is whitespace-only or over 128 UTF-8 bytes is invalid", async () => {
@@ -576,7 +398,7 @@ describe("the retry key and the body bound", () => {
       expect(res.status).toBe(400);
       expect(isJobsError(res.json, "idempotency_key_invalid")).toBe(true);
     }
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
     // 128 bytes exactly is valid, and a multibyte key under the byte cap rides.
     const okKey = "k".repeat(128);
     const res = await submit(harness, "/_api/jobs/jobs/types/fetch", {
@@ -585,7 +407,7 @@ describe("the retry key and the body bound", () => {
       headers: { "idempotency-key": okKey },
     });
     expect(res.status).toBe(202);
-    expect(harness.forwarder.specs[0]!.idempotencyKey).toBe(okKey);
+    expect(harness.forwarder.submitSpecs[0]!.idempotencyKey).toBe(okKey);
   });
 
   it("a body of exactly the 64-KiB bound is accepted and forwarded whole", async () => {
@@ -596,7 +418,9 @@ describe("the retry key and the body bound", () => {
     const raw = "x".repeat(JOBS_MAX_INPUT_BYTES);
     const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: raw });
     expect(res.status).toBe(202);
-    expect(Buffer.from(harness.forwarder.specs[0]!.body).byteLength).toBe(JOBS_MAX_INPUT_BYTES);
+    expect(Buffer.from(harness.forwarder.submitSpecs[0]!.body).byteLength).toBe(
+      JOBS_MAX_INPUT_BYTES,
+    );
   });
 
   it("a lying content-length over the 64-KiB input bound is refused before reading", async () => {
@@ -609,7 +433,7 @@ describe("the retry key and the body bound", () => {
     });
     expect(res.status).toBe(413);
     expect(isJobsError(res.json, "payload_too_large")).toBe(true);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 
   it("a body over the cap with a lying small content-length is refused by the byte count", async () => {
@@ -623,7 +447,7 @@ describe("the retry key and the body bound", () => {
     });
     expect(res.status).toBe(413);
     expect(isJobsError(res.json, "payload_too_large")).toBe(true);
-    expect(harness.forwarder.specs).toHaveLength(0);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
   });
 });
 
@@ -809,7 +633,7 @@ describe("transport-level behavior on a real socket", () => {
       // Release before the harness closes the app: the handler is still
       // awaiting the held forward, and a graceful close waits for it.
       release();
-      await until(() => harness.forwarder.specs.length === 1, "the forward to settle");
+      await until(() => harness.forwarder.submitSpecs.length === 1, "the forward to settle");
     });
   });
 
@@ -850,7 +674,7 @@ describe("transport-level behavior on a real socket", () => {
 
       const answer = Buffer.concat(chunks).toString();
       expect(answer.startsWith("HTTP/1.1 400"), answer.slice(0, 60)).toBe(true);
-      expect(harness.forwarder.specs).toHaveLength(0);
+      expect(harness.forwarder.submitSpecs).toHaveLength(0);
     });
   });
 });
@@ -911,7 +735,7 @@ describe("the dev gateway's submission route", () => {
     const res = await devSubmit(app, DEV_BEARER);
     expect(res.status).toBe(202);
     expect(res.headers["cache-control"]).toBe("no-store");
-    const spec = forwarder.specs[0]!;
+    const spec = forwarder.submitSpecs[0]!;
     expect(spec.identity).toEqual({
       appId: DEV_APP_ID,
       env: "dev",
@@ -928,7 +752,7 @@ describe("the dev gateway's submission route", () => {
     const res = await devSubmit(app, null);
     expect(res.status).toBe(401);
     expect(isJobsError(res.json, "forbidden")).toBe(false);
-    expect(forwarder.specs).toHaveLength(0);
+    expect(forwarder.submitSpecs).toHaveLength(0);
     await app.close();
   });
 

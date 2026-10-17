@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { request as undiciRequest } from "undici";
@@ -15,18 +14,17 @@ import {
   type RecordedMetric,
   type RecordingTelemetry,
 } from "@azx-pbc/telemetry/testing";
-import { buildApp } from "../app.js";
-import { testAuthConfig, testEdgeConfig } from "../test/config.js";
-import {
-  FakeBlobReader,
-  FakeOidcClient,
-  FakeRegistry,
-  FakeSessionStore,
-  registryEntry,
-} from "../test/fakes.js";
 import { SESSION_COOKIE } from "../auth/cookies.js";
-import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
-import type { JobsForwarder, JobsSubmitForward, JobsSubmitSpec } from "../jobs/forwarder.js";
+import {
+  buildDisabledJobsEdge as buildDisabledJobsEdgeHarness,
+  buildJobsEdge as buildJobsEdgeHarness,
+  FakeJobsForwarder,
+  JOBS_APP_ID as APP_ID,
+  JOBS_HOST as HOST,
+  JOBS_ORIGIN as ORIGIN,
+  seedJobsSession as seedSession,
+  type JobsHarness,
+} from "../test/jobsGateway.js";
 import { until, withServer } from "../test/socket.js";
 
 /**
@@ -63,43 +61,7 @@ vi.mock(import("@azx-pbc/shared/logging"), async (importOriginal) => {
   return { ...actual, loggerOption: () => withSink };
 });
 
-const APP_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const PREFIX = "apps/a/1/";
-const HOST = { host: "demo.local.helix.azxlabs.io" };
-const ORIGIN = "https://demo.local.helix.azxlabs.io:8080";
 const SUBMIT_URL = "/_api/jobs/jobs/types/fetch";
-
-class FakeJobsForwarder implements JobsForwarder {
-  readonly #configured = new Set<string>();
-  specs: JobsSubmitSpec[] = [];
-  verdict: JobsSubmitForward = {
-    kind: "accepted",
-    status: 202,
-    accepted: { server: "jobs", jobId: "job-123", status: "queued" },
-    rawBody: new TextEncoder().encode('{"server":"jobs","jobId":"job-123","status":"queued"}'),
-  };
-
-  constructor(...configured: string[]) {
-    for (const s of configured) this.#configured.add(s);
-  }
-
-  has(server: string): boolean {
-    return this.#configured.has(server);
-  }
-
-  async submit(spec: JobsSubmitSpec): Promise<JobsSubmitForward> {
-    this.specs.push(spec);
-    return this.verdict;
-  }
-
-  async close(): Promise<void> {}
-}
-
-interface Harness {
-  app: FastifyInstance;
-  forwarder: FakeJobsForwarder;
-  sessions: FakeSessionStore;
-}
 
 const openApps: FastifyInstance[] = [];
 let recording: RecordingTelemetry;
@@ -119,77 +81,23 @@ afterAll(async () => {
   await recording.restore();
 });
 
-function buildEdgeApp(
-  forwarder: JobsForwarder,
-  opts: { visibilityMode?: "internal" | "public" } = {},
-): { app: FastifyInstance; sessions: FakeSessionStore } {
-  const sessions = new FakeSessionStore();
-  const app = buildApp({
-    config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
-    registry: new FakeRegistry([
-      registryEntry({
-        appId: APP_ID,
-        slug: "demo",
-        blobPrefix: PREFIX,
-        visibilityMode: opts.visibilityMode ?? "internal",
-        jobs: { types: ["jobs:fetch"] },
-      }),
-    ]),
-    blob: new FakeBlobReader(),
-    sessions,
-    oidc: new FakeOidcClient(),
-    jobsForwarder: forwarder,
-  });
-  openApps.push(app);
-  return { app, sessions };
-}
-
+/** The shared builders, wrapped so this file's afterEach closes every app. */
 function buildJobsEdge(
   opts: { forwarder?: FakeJobsForwarder; visibilityMode?: "internal" | "public" } = {},
-): Harness {
-  const forwarder = opts.forwarder ?? new FakeJobsForwarder("jobs");
-  return { ...buildEdgeApp(forwarder, opts), forwarder };
+): JobsHarness {
+  const harness = buildJobsEdgeHarness(opts);
+  openApps.push(harness.app);
+  return harness;
 }
 
-/** The disabled build: no forwarding seam wired — the app alone answers. */
-function buildDisabledJobsEdge(): Harness {
-  const sessions = new FakeSessionStore();
-  const app = buildApp({
-    config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
-    registry: new FakeRegistry([
-      registryEntry({
-        appId: APP_ID,
-        slug: "demo",
-        blobPrefix: PREFIX,
-        visibilityMode: "internal",
-        jobs: { types: ["jobs:fetch"] },
-      }),
-    ]),
-    blob: new FakeBlobReader(),
-    sessions,
-    oidc: new FakeOidcClient(),
-    jobsForwarder: null,
-  });
-  openApps.push(app);
-  return { app, forwarder: new FakeJobsForwarder(), sessions };
-}
-
-async function seedSession(sessions: FakeSessionStore, oid: string): Promise<string> {
-  const id = randomUUID();
-  await sessions.createPending({
-    id,
-    appId: APP_ID,
-    user: { oid, displayName: oid, name: null, email: null, kind: "user", groups: [] },
-    refreshDueAt: new Date(Date.now() + 60_000),
-    expiresAt: new Date(Date.now() + 3_600_000),
-  });
-  const token = newSessionToken();
-  await sessions.redeem(id, APP_ID, hashSessionToken(token));
-  return token;
+function buildDisabledJobsEdge(): JobsHarness {
+  const harness = buildDisabledJobsEdgeHarness();
+  openApps.push(harness.app);
+  return harness;
 }
 
 async function submit(
-  edge: Pick<Harness, "app" | "sessions">,
+  edge: Pick<JobsHarness, "app" | "sessions">,
   url: string,
   opts: {
     token?: string | null;
@@ -332,7 +240,7 @@ describe("the submission route's outcome telemetry", () => {
       {
         word: "server_refused",
         run: () => {
-          std.forwarder.verdict = {
+          std.forwarder.submitVerdict = {
             kind: "refused",
             status: 409,
             error: jobRequestError("idempotency_conflict", { status: "queued", error: null }),
@@ -347,7 +255,7 @@ describe("the submission route's outcome telemetry", () => {
       {
         word: "unreachable",
         run: () => {
-          std.forwarder.verdict = { kind: "unreachable", error: new Error("no answer") };
+          std.forwarder.submitVerdict = { kind: "unreachable", error: new Error("no answer") };
           return submit(std, SUBMIT_URL, {
             token,
             payload: plantedPayload("unreachable"),
@@ -358,7 +266,7 @@ describe("the submission route's outcome telemetry", () => {
       {
         word: "invalid_response",
         run: () => {
-          std.forwarder.verdict = { kind: "invalid_response", status: 202 };
+          std.forwarder.submitVerdict = { kind: "invalid_response", status: 202 };
           return submit(std, SUBMIT_URL, {
             token,
             payload: plantedPayload("invalid_response"),
@@ -437,13 +345,13 @@ describe("the submission route's outcome telemetry", () => {
     const token = await seedSession(harness.sessions, "alice");
     logLines.length = 0;
 
-    harness.forwarder.verdict = { kind: "unreachable", error: new Error("no answer") };
+    harness.forwarder.submitVerdict = { kind: "unreachable", error: new Error("no answer") };
     const r1 = await submit(harness, SUBMIT_URL, {
       token,
       payload: '{"url":"https://api.vendor.test/PLANTED-BODY-VALUE"}',
       headers: { "idempotency-key": "PLANTED-RETRY-KEY" },
     });
-    harness.forwarder.verdict = { kind: "invalid_response", status: 202 };
+    harness.forwarder.submitVerdict = { kind: "invalid_response", status: 202 };
     const r2 = await submit(harness, SUBMIT_URL, { token, payload: "{}" });
 
     expect(r1.status).toBe(503);
@@ -525,7 +433,7 @@ describe("the submission route's outcome telemetry", () => {
         "the payload_invalid outcome",
       );
       // The verdict is the refusal, never a forward of the collected prefix.
-      expect(harness.forwarder.specs).toHaveLength(0);
+      expect(harness.forwarder.submitSpecs).toHaveLength(0);
       expect(submissionsDelta(before, await recording.metrics()).get("payload_invalid")).toBe(1);
     });
   });

@@ -230,6 +230,23 @@ export const SPAN_JOBS_SUBMIT = "helix.jobs.submit";
 export const SPAN_JOBS_SUBMIT_EDGE = "helix.jobs.submit.edge";
 /** The dev gateway's submission route (`POST /:slug/_api/jobs/:server/types/:type`). */
 export const SPAN_JOBS_SUBMIT_DEV = "helix.jobs.submit.dev";
+/**
+ * The prod edge's app-facing poll route (`GET /_api/jobs/:server/:jobId`) —
+ * the caller-facing half of the observation hop, whose forward lands in the
+ * receiver's own `helix.jobs.snapshot` span. Named for the surface, like the
+ * submission pair.
+ */
+export const SPAN_JOBS_SNAPSHOT_EDGE = "helix.jobs.snapshot.edge";
+/** The dev gateway's poll route (`GET /:slug/_api/jobs/:server/:jobId`). */
+export const SPAN_JOBS_SNAPSHOT_DEV = "helix.jobs.snapshot.dev";
+/** The prod edge's app-facing result read (`GET /_api/jobs/:server/:jobId/result`). */
+export const SPAN_JOBS_RESULT_EDGE = "helix.jobs.result.edge";
+/** The dev gateway's result read (`GET /:slug/_api/jobs/:server/:jobId/result`). */
+export const SPAN_JOBS_RESULT_DEV = "helix.jobs.result.dev";
+/** The prod edge's app-facing cancel route (`DELETE /_api/jobs/:server/:jobId`). */
+export const SPAN_JOBS_CANCEL_EDGE = "helix.jobs.cancel.edge";
+/** The dev gateway's cancel route (`DELETE /:slug/_api/jobs/:server/:jobId`). */
+export const SPAN_JOBS_CANCEL_DEV = "helix.jobs.cancel.dev";
 export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
 export const SPAN_JOBS_RESULT = "helix.jobs.result";
 export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
@@ -275,6 +292,15 @@ export const ROUTE_CONNECTIONS_MINE_ID = "/api/v1/connections/mine/:id";
 export const ROUTE_EGRESS_EXCHANGE = "/exchange";
 export const ROUTE_JOBS_SUBMIT = "/_api/jobs/:server/types/:type";
 export const ROUTE_JOBS_SUBMIT_DEV = "/:slug/_api/jobs/:server/types/:type";
+/** The app-facing poll route — the snapshot and cancel spans share the pattern
+ * (the method carries the verb), so one constant is the single source. */
+export const ROUTE_JOBS_SNAPSHOT = "/_api/jobs/:server/:jobId";
+export const ROUTE_JOBS_CANCEL = ROUTE_JOBS_SNAPSHOT;
+/** The dev gateway's poll / cancel route pattern (same share, `:slug` prefixed). */
+export const ROUTE_JOBS_SNAPSHOT_DEV = "/:slug/_api/jobs/:server/:jobId";
+export const ROUTE_JOBS_CANCEL_DEV = ROUTE_JOBS_SNAPSHOT_DEV;
+export const ROUTE_JOBS_RESULT = "/_api/jobs/:server/:jobId/result";
+export const ROUTE_JOBS_RESULT_DEV = "/:slug/_api/jobs/:server/:jobId/result";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
@@ -510,6 +536,55 @@ export const JOBS_SUBMISSION_OUTCOMES = [
   "payload_too_large",
 ] as const;
 export type JobsSubmissionOutcome = (typeof JOBS_SUBMISSION_OUTCOMES)[number];
+
+/**
+ * How the edge's app-facing reference routes (poll / result / cancel) answered
+ * — the `helix.outcome` values on the `helix.jobs.snapshot` / `.result` /
+ * `.cancel` `.edge` / `.dev` spans. Bounded by construction: each value is one
+ * early return shared by all three handlers. The receiver's own vocabularies
+ * (`JOBS_SNAPSHOT_OUTCOMES` etc.) are deliberately NOT reused — those describe
+ * the admission decision about a record this store holds; these describe what
+ * the caller-facing route answered, including the local refusals that never
+ * mint an instruction.
+ *
+ * - `found` — a validated success was forwarded as received: the complete
+ *   snapshot, the raw JSON result (JSON `null` included), or the cancellation
+ *   acknowledgement — each naming the addressed reference.
+ * - `server_refused` — the jobs service answered a validated jobs error
+ *   response (the unknown-job 404, the lapsed-grant 403, the stateful 409s,
+ *   the 410) and it was forwarded with its own status.
+ * - `unreachable` — no answer: a transport failure or the request bound
+ *   expired after the instruction was sent. Answered with the retryable 503 —
+ *   an observation failure, never an execution one, and never a fabricated
+ *   404 or acknowledgement.
+ * - `invalid_response` — the jobs service answered an unusable body (or a
+ *   success naming another reference). Also the retryable 503.
+ * - `disabled` — no configured servers (fully disabled jobs): 503.
+ * - `server_unknown` — the addressed server is not configured: a reference
+ *   operation reads the same 404 `job_not_found` as an unknown job (never the
+ *   submission's 400 — there is no namespace to search).
+ * - `reference_invalid` — the addressed job id is not a job id, so it names no
+ *   job on any server: the same 404 `job_not_found`.
+ * - `forbidden` — the origin guard (cancel is a mutation) or the jobs
+ *   authorization check refused the principal: 403.
+ * - `unauthorized` — the serving/caller gates denied; their existing responses
+ *   are preserved (this word only records it).
+ * - `unavailable` — the serving surface could not answer (stale registry,
+ *   unknown app, archived): the serving gate's own response is preserved.
+ */
+export const JOBS_REFERENCE_OUTCOMES = [
+  "found",
+  "server_refused",
+  "unreachable",
+  "invalid_response",
+  "disabled",
+  "server_unknown",
+  "reference_invalid",
+  "forbidden",
+  "unauthorized",
+  "unavailable",
+] as const;
+export type JobsReferenceOutcome = (typeof JOBS_REFERENCE_OUTCOMES)[number];
 
 /**
  * How the jobs service answered one owner-cancellation request — the final

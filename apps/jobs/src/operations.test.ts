@@ -408,6 +408,45 @@ describe("the signed operation routes", () => {
     }
   });
 
+  test("a job id at the reference grammar's 128-character bound reaches the record route's handler", async () => {
+    // Fastify 5 reads maxParamLength once, at the factory, for every
+    // parametric route: the router's default (100) answered a legal
+    // 128-character id before any handler ran, on these record routes the
+    // same as on the edge's. The bound is the grammar's own, and the id must
+    // survive the hop intact — the verified resource is built from the
+    // arrival's path segment.
+    const { app, storage, observation } = await readyApp();
+    try {
+      const jobId = "j".repeat(128);
+      observation.snapshotVerdict = {
+        outcome: "found",
+        snapshot: {
+          server: "jobs",
+          jobId,
+          type: "jobs:fetch",
+          status: "running",
+          attempt: 1,
+          progress: null,
+          cancellationRequested: false,
+          resultExpiresAt: null,
+          recordExpiresAt: null,
+          error: null,
+        },
+      };
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${jobId}`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot", jobId }))),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json().jobId).toBe(jobId);
+      expect(observation.lastRequest?.jobId).toBe(jobId);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
   test("a result read's verdicts map onto the protocol's fixed responses", async () => {
     const { app, storage, observation } = await readyApp();
     try {

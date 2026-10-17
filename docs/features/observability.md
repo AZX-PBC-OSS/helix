@@ -50,6 +50,8 @@ terminates untrusted traffic (decision 4).
 | `helix.consent.status.dev` | the dev gateway's `GET /:slug/_api/connections/:ref/status` — the dev tier's bearer status read |
 | `helix.jobs.submit.edge` | the app host's `POST /_api/jobs/:server/types/:type` — the app-facing jobs submission route, forwarding to the receiver's own `helix.jobs.submit` span |
 | `helix.jobs.submit.dev` | the dev gateway's `POST /:slug/_api/jobs/:server/types/:type` — the dev tier's submission route over the same forwarding seam |
+| `helix.jobs.snapshot.edge` / `.result.edge` / `.cancel.edge` | the app host's `GET /_api/jobs/:server/:jobId` (poll), `GET …/:jobId/result` (result read) and `DELETE …/:jobId` (cancellation) — the app-facing reference routes, each forwarding to the receiver's own `helix.jobs.snapshot` / `.result` / `.cancel` span |
+| `helix.jobs.snapshot.dev` / `.result.dev` / `.cancel.dev` | the dev gateway's `/:slug`-prefixed reference routes over the same forwarding seam |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.egress.resolution` | egress delegated-call resolution — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation |
@@ -257,6 +259,23 @@ looked up:
   `:server`/`:type` segments are caller-chosen — and never the retry key, the
   input bytes, the instruction token or the owner oid (pinned by
   `gateway/jobs.test.ts`'s attribute scan).
+- The `helix.jobs.snapshot` / `.result` / `.cancel` `.edge` / `.dev` spans
+  (the app-facing reference routes — poll, result read, cancellation) carry
+  the same shape: `helix.jobs.operation` = the route's own operation,
+  `http.route`, `helix.app.slug` once the serving entry resolves,
+  `helix.app_id` and `helix.jobs.job_id` (the validated reference) once the
+  request is on its way to a forward, and `helix.outcome` ∈
+  `JOBS_REFERENCE_OUTCOMES` — one word per early return: `found` (a validated
+  snapshot / raw result / acknowledgement forwarded as received),
+  `server_refused`, `unreachable` / `invalid_response` (the retryable 503 —
+  an observation failure, never an execution one), `disabled`,
+  `server_unknown` and `reference_invalid` (both the unknown-job 404 — an
+  unconfigured server and a reference outside the grammar respectively),
+  `forbidden` (the cancellation's origin guard, then the jobs authorization
+  check), `unauthorized` / `unavailable` (the caller and serving gates' own
+  preserved responses). No `url.path` — the route's `:server`/`:jobId`
+  segments are caller-chosen — and never the owner oid (pinned by
+  `gateway/jobsRecord.telemetry.test.ts`'s attribute scan).
 - The `helix.jobs.execute` span (the worker's attempt) carries `helix.outcome`
   ∈ `JOBS_EXECUTE_OUTCOMES` — `succeeded` (the handler's result, inside the
   platform's bounds, projected durably after the claim's own fenced

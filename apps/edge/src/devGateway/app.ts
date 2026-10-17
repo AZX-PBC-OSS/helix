@@ -18,10 +18,16 @@ import type { EgressProvider } from "../gateway/egressProvider.js";
 import type { UsageStore } from "../gateway/usage.js";
 import type { AppDataStore } from "../gateway/data.js";
 import type { JobsForwarder } from "../jobs/forwarder.js";
-import { makeJobsSubmitHandler } from "../gateway/jobs.js";
+import { makeJobsSubmitHandler, makeJobsRecordHandler } from "../gateway/jobs.js";
 import {
+  ROUTE_JOBS_CANCEL_DEV,
+  ROUTE_JOBS_RESULT_DEV,
+  ROUTE_JOBS_SNAPSHOT_DEV,
   ROUTE_JOBS_SUBMIT_DEV,
   ROUTE_OPENAI,
+  SPAN_JOBS_CANCEL_DEV,
+  SPAN_JOBS_RESULT_DEV,
+  SPAN_JOBS_SNAPSHOT_DEV,
   SPAN_JOBS_SUBMIT_DEV,
 } from "@azx-pbc/shared/telemetry";
 import { makeDevTokenResolver } from "./resolver.js";
@@ -125,6 +131,9 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     // app-chosen target URL, credentials and all, becomes our query string.
     logger: loggerOption(undefined, { prefix: "EDGE", mixin: traceContextMixin }),
     ...requestIdOptions(),
+    // The reference grammar's bound, as on the edge: job ids are legal to 128
+    // characters and the router's default (100) would refuse them first.
+    routerOptions: { maxParamLength: 128 },
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;
@@ -177,17 +186,34 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     usage: deps.usage,
     instructionKey: deps.instructionKey,
   });
-  // The dev tier's jobs submission route — the edge's own handler factory over
-  // the dev resolver seams, so a dev submission carries `env: 'dev'` and the
-  // dev principal, and never the production tier's.
-  const handleJobsSubmit = makeJobsSubmitHandler(
-    {
-      registry: deps.registry,
-      resolveCaller,
-      checkOrigin,
-      forwarder: deps.jobsForwarder,
-    },
-    { span: SPAN_JOBS_SUBMIT_DEV, route: ROUTE_JOBS_SUBMIT_DEV },
+  // The dev tier's jobs routes — the edge's own handler factories over the
+  // dev resolver seams, so a dev submission carries `env: 'dev'` and the dev
+  // principal, and never the production tier's. The reference operations
+  // (poll, result, cancellation) share the runtime and the forwarding seam.
+  const jobsRuntime = {
+    registry: deps.registry,
+    resolveCaller,
+    checkOrigin,
+    forwarder: deps.jobsForwarder,
+  };
+  const handleJobsSubmit = makeJobsSubmitHandler(jobsRuntime, {
+    span: SPAN_JOBS_SUBMIT_DEV,
+    route: ROUTE_JOBS_SUBMIT_DEV,
+  });
+  const handleJobsSnapshot = makeJobsRecordHandler(
+    jobsRuntime,
+    { span: SPAN_JOBS_SNAPSHOT_DEV, route: ROUTE_JOBS_SNAPSHOT_DEV },
+    "snapshot",
+  );
+  const handleJobsResult = makeJobsRecordHandler(
+    jobsRuntime,
+    { span: SPAN_JOBS_RESULT_DEV, route: ROUTE_JOBS_RESULT_DEV },
+    "result",
+  );
+  const handleJobsCancel = makeJobsRecordHandler(
+    jobsRuntime,
+    { span: SPAN_JOBS_CANCEL_DEV, route: ROUTE_JOBS_CANCEL_DEV },
+    "cancel",
   );
 
   // The dev tier's consent entry — the bearer POST that returns
@@ -350,17 +376,28 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     doneRegister();
   });
 
-  // The dev tier's jobs submission route — the same passthrough-parser
-  // encapsulation as the fetch scope (the forward binds exact request bytes;
-  // nothing may parse them first).
+  // The dev tier's jobs routes — the same passthrough-parser encapsulation as
+  // the fetch scope (the submission forward binds exact request bytes; nothing
+  // may parse them first; the record operations carry no body).
   void app.register((jobsScope, _opts, doneRegister) => {
     jobsScope.removeAllContentTypeParsers();
     jobsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
     jobsScope.route({
       method: "POST",
-      url: "/:slug/_api/jobs/:server/types/:type",
+      url: ROUTE_JOBS_SUBMIT_DEV,
       handler: (req, reply) => handleJobsSubmit(req, reply, slugOf(req)),
     });
+    for (const [method, url, handler] of [
+      ["GET", ROUTE_JOBS_SNAPSHOT_DEV, handleJobsSnapshot],
+      ["GET", ROUTE_JOBS_RESULT_DEV, handleJobsResult],
+      ["DELETE", ROUTE_JOBS_CANCEL_DEV, handleJobsCancel],
+    ] as const) {
+      jobsScope.route({
+        method,
+        url,
+        handler: (req, reply) => handler(req, reply, slugOf(req)),
+      });
+    }
     doneRegister();
   });
 

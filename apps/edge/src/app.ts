@@ -35,7 +35,7 @@ import { openAiCodec } from "./gateway/openaiCodec.js";
 import { makeOpenAiModelsHandler } from "./gateway/openaiModels.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
-import { makeJobsSubmitHandler } from "./gateway/jobs.js";
+import { makeJobsSubmitHandler, makeJobsRecordHandler } from "./gateway/jobs.js";
 import { DenialThrottle } from "./gateway/denialThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
@@ -57,9 +57,15 @@ import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
 import type { JobsForwarder } from "./jobs/forwarder.js";
 import {
+  ROUTE_JOBS_CANCEL,
+  ROUTE_JOBS_RESULT,
+  ROUTE_JOBS_SNAPSHOT,
   ROUTE_JOBS_SUBMIT,
   ROUTE_OPENAI,
   ROUTE_CONSENT_CANCEL,
+  SPAN_JOBS_CANCEL_EDGE,
+  SPAN_JOBS_RESULT_EDGE,
+  SPAN_JOBS_SNAPSHOT_EDGE,
   SPAN_JOBS_SUBMIT_EDGE,
 } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
@@ -181,6 +187,11 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     // A fresh UUID per request, never the caller's: every request here comes
     // from untrusted app code (ADR-0019).
     ...requestIdOptions(),
+    // The reference grammar's bound: job ids are legal to 128 characters, and
+    // the router's own default (100) would refuse them 414 before the jobs
+    // routes' handlers ran. It is a router-level option in this Fastify, so
+    // every parametric route here shares the bound.
+    routerOptions: { maxParamLength: 128 },
     // Which proxy addresses to trust when deriving `req.ip` (the rate-limit /
     // login-throttle key). Default false = the socket peer. Behind Container
     // Apps' Envoy ingress that peer is the ingress, so per-client limits need
@@ -321,18 +332,53 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // pattern. Unconfigured jobs (no servers) is the fail-closed 503 inward —
   // the route exists whenever the gateway runtime does, so an unconfigured
   // deployment answers a distinguishable refusal rather than disappearing.
-  const handleJobsSubmit =
+  const jobsRuntime =
     appApiRuntime && resolveCaller
-      ? makeJobsSubmitHandler(
-          {
-            registry: deps.registry,
-            resolveCaller,
-            checkOrigin,
-            forwarder: deps.jobsForwarder ?? null,
-          },
-          { span: SPAN_JOBS_SUBMIT_EDGE, route: ROUTE_JOBS_SUBMIT },
-        )
+      ? {
+          registry: deps.registry,
+          resolveCaller,
+          checkOrigin,
+          forwarder: deps.jobsForwarder ?? null,
+        }
       : null;
+  const handleJobsSubmit = jobsRuntime
+    ? makeJobsSubmitHandler(jobsRuntime, {
+        span: SPAN_JOBS_SUBMIT_EDGE,
+        route: ROUTE_JOBS_SUBMIT,
+      })
+    : null;
+  // The three reference operations on an existing job — poll, result read,
+  // cancellation — over the same runtime and forwarding seam.
+  const handleJobsSnapshot = jobsRuntime
+    ? makeJobsRecordHandler(
+        jobsRuntime,
+        {
+          span: SPAN_JOBS_SNAPSHOT_EDGE,
+          route: ROUTE_JOBS_SNAPSHOT,
+        },
+        "snapshot",
+      )
+    : null;
+  const handleJobsResult = jobsRuntime
+    ? makeJobsRecordHandler(
+        jobsRuntime,
+        {
+          span: SPAN_JOBS_RESULT_EDGE,
+          route: ROUTE_JOBS_RESULT,
+        },
+        "result",
+      )
+    : null;
+  const handleJobsCancel = jobsRuntime
+    ? makeJobsRecordHandler(
+        jobsRuntime,
+        {
+          span: SPAN_JOBS_CANCEL_EDGE,
+          route: ROUTE_JOBS_CANCEL,
+        },
+        "cancel",
+      )
+    : null;
   // The CSP report sink is unauthenticated (browsers send no credentials with
   // report beacons) and always available — it only ever appends.
   const handleCspReport = makeCspReportHandler({
@@ -721,26 +767,43 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     });
   }
 
-  // The jobs submission route (background-jobs-plane design §1). App hosts
-  // only. The same passthrough-parser encapsulation as the fetch scope: the
-  // submission forwards EXACT request bytes (the signed instruction binds
-  // their digest), so nothing may parse or normalize the body first — the
-  // handler reads `req.raw` to bytes under its own cap.
-  if (handleJobsSubmit) {
+  // The jobs routes (background-jobs-plane design §1). App hosts only. The
+  // same passthrough-parser encapsulation as the fetch scope: the submission
+  // forwards EXACT request bytes (the signed instruction binds their digest),
+  // so nothing may parse or normalize a body first — the record operations
+  // carry no body at all.
+  if (jobsRuntime) {
     void app.register((jobsScope, _opts, doneRegister) => {
       jobsScope.removeAllContentTypeParsers();
       jobsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
       jobsScope.route({
         method: "POST",
-        url: "/_api/jobs/:server/types/:type",
+        url: ROUTE_JOBS_SUBMIT,
         handler: async (req, reply) => {
-          if (req.hostClass.kind === "app") {
+          if (req.hostClass.kind === "app" && handleJobsSubmit) {
             await handleJobsSubmit(req, reply, req.hostClass.slug);
             return;
           }
           sendNotFound(reply);
         },
       });
+      for (const [method, url, handler] of [
+        ["GET", ROUTE_JOBS_SNAPSHOT, handleJobsSnapshot],
+        ["GET", ROUTE_JOBS_RESULT, handleJobsResult],
+        ["DELETE", ROUTE_JOBS_CANCEL, handleJobsCancel],
+      ] as const) {
+        jobsScope.route({
+          method,
+          url,
+          handler: async (req, reply) => {
+            if (req.hostClass.kind === "app" && handler) {
+              await handler(req, reply, req.hostClass.slug);
+              return;
+            }
+            sendNotFound(reply);
+          },
+        });
+      }
       doneRegister();
     });
   }
