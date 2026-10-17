@@ -17,6 +17,7 @@ import {
   INSTR_GATEWAY_CALLS,
   INSTR_GATEWAY_DURATION,
   INSTR_JOBS_BURN_SWEEPS,
+  INSTR_JOBS_SUBMISSIONS,
   INSTR_REGISTRY_LOAD_FAILURES,
   INSTR_REGISTRY_STALE_FOR_MS,
   INSTR_SESSION_GATE_DENIED,
@@ -79,6 +80,15 @@ export interface EdgeInstruments {
    * always `helix-edge`, including in the dev-gateway process that shares it.
    */
   jobsBurnSweeps: Counter;
+  /**
+   * `outcome` ∈ `JOBS_SUBMISSION_OUTCOMES` — the app-facing jobs submission
+   * routes' answers (`gateway/jobs.ts`), one point per request including the
+   * local refusals that never mint an instruction. The receiver counts the
+   * instructions it presented (`helix.jobs.instructions`); this is the
+   * caller-facing half, and the two are never reconciled. Per-app attribution
+   * is the request ledger's job, never this counter's.
+   */
+  jobsSubmissions: Counter;
 }
 
 /**
@@ -142,6 +152,11 @@ export function instruments(): EdgeInstruments {
       description:
         "Jobs-callback burn-store sweep passes by outcome. Operational only — a run of " +
         "failed with no ok is a store that stopped answering its cleanup.",
+    }),
+    jobsSubmissions: meter.createCounter(INSTR_JOBS_SUBMISSIONS, {
+      description:
+        "App-facing jobs submission route answers by outcome. Operational only — never " +
+        "an accepted-job count (keyed replays and uncertain failures are all in here).",
     }),
   };
   return cached;

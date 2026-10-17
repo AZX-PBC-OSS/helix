@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+import {
+  JobServerIdSchema,
+  JobsInternalUrlSchema,
+  isValidJobsRootSecret,
+  strictWireObject,
+  strictWireRecord,
+} from "@azx-pbc/shared";
+import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./db/pool.js";
 
 /**
@@ -238,6 +246,17 @@ export interface GatewayConfig {
    */
   portalUrl: string | null;
   /**
+   * Background-jobs wiring (ADR-0008's custody matrix): the configured job
+   * servers this process forwards authorized operations to, each with the
+   * edge→jobs signing root. Loaded from `EDGE_JOBS_CONFIG` by
+   * {@link loadEdgeJobsConfig}; an absent variable is a fully disabled
+   * installation (empty map), never a boot failure — ordinary app hosting
+   * must not depend on jobs configuration. Both gateway processes (edge and
+   * dev-gateway) load the same document and forward with their own trusted
+   * environment tier.
+   */
+  jobs: EdgeJobsConfig;
+  /**
    * Scheme for externally built URLs (redirect targets, cookie origins, the
    * dev journey's popup URL). The platform is **HTTPS-only** — always `https`.
    * Dev terminates TLS at the edge (mkcert); prod terminates at ingress and the
@@ -248,6 +267,128 @@ export interface GatewayConfig {
   /** Public port for built URLs; scheme-default ports are omitted. */
   publicPort: number;
 }
+
+/** One configured jobs server, as the edge's forwarding plane consumes it. */
+export interface JobsGatewayServerConfig {
+  /** The validated server id — the map key, restated (the map schema's own rule). */
+  server: string;
+  /** The server's private internal endpoint the signed operations are forwarded to. */
+  endpoint: string;
+  /**
+   * The derived edge→jobs HS256 mint key — HKDF over this server's root at
+   * config-load time, so a malformed root is an explicit startup error rather
+   * than a first-request failure. Only this direction's key is held: the
+   * jobs→edge callback root and the portal→jobs root are other components'
+   * custody and never parsed here.
+   */
+  edgeToJobsKey: Uint8Array;
+}
+
+/** The edge's jobs forwarding configuration. */
+export interface EdgeJobsConfig {
+  /** The configured servers, keyed by validated server id. Empty = fully disabled. */
+  servers: Record<string, JobsGatewayServerConfig>;
+  /**
+   * Bound for one forwarding round-trip, in ms — the whole mint→answer wait
+   * the edge allows before the request is answered with the retryable 503.
+   * Acceptance is uncertain past it (the client's keyed retry recovers).
+   */
+  timeoutMs: number;
+}
+
+// The entry is a `strictWireObject`, not a bare z.strictObject: zod's strict
+// object skips an own `__proto__` key before its unrecognized-key check, so a
+// credential leaked under that key inside an entry would be SHED — the parse
+// would boot holding a document that quietly does not say what it carries —
+// exactly the side effect the shared screen refuses. Every level of the
+// document (document, server map, entry) parses under the same screen.
+const EdgeJobsServerEntrySchema = strictWireObject({
+  endpoint: JobsInternalUrlSchema,
+  edgeToJobsRoot: z.string().refine(isValidJobsRootSecret, {
+    message: "a signing root must be the canonical base64 encoding of exactly 32 bytes",
+  }),
+});
+
+/**
+ * The edge's permitted subset of the jobs deployment map, as one environment
+ * document (`EDGE_JOBS_CONFIG`). Deliberately NOT the shared
+ * `JobsDeploymentConfigSchema`: that document carries every server's database
+ * URL and portal→jobs root, and the edge's custody is only the edge→jobs root
+ * (ADR-0008) — parsing the subset with strict fields means handing this
+ * process the full map fails the boot naming the leaked field, instead of
+ * silently holding credentials it must never read.
+ */
+const EdgeJobsConfigDocumentSchema = strictWireObject({
+  // The strict record, not a plain z.record: a `__proto__` key in the
+  // server map is shed by zod's record iteration and refused by this one —
+  // the same screen every document of the jobs contract family parses under.
+  servers: strictWireRecord(JobServerIdSchema, EdgeJobsServerEntrySchema),
+});
+
+/**
+ * Parse the jobs forwarding configuration from the environment. Absent or
+ * blank means fully disabled (empty map) — the routes answer 503 and ordinary
+ * hosting needs no jobs configuration. A present document must parse whole:
+ * a malformed endpoint or a root that is not a canonical base64 32-byte
+ * secret is an explicit startup error. Keys derive here, at boot. One root
+ * per server is enforced by the deployment map that produces this document;
+ * this parse keeps the same rule locally (see {@link assertDistinctRoots}).
+ */
+export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
+  const raw = env.EDGE_JOBS_CONFIG;
+  if (raw === undefined || raw.trim() === "") {
+    return { servers: {}, timeoutMs: DEFAULT_JOBS_FORWARD_TIMEOUT_MS };
+  }
+  let document: unknown;
+  try {
+    document = JSON.parse(raw);
+  } catch (error) {
+    throw new Error("EDGE_JOBS_CONFIG must be a JSON object of configured job servers", {
+      cause: error,
+    });
+  }
+  const parsed = EdgeJobsConfigDocumentSchema.parse(document);
+  assertDistinctRoots(parsed.servers);
+  const servers: Record<string, JobsGatewayServerConfig> = {};
+  for (const [serverId, entry] of Object.entries(parsed.servers)) {
+    servers[serverId] = {
+      server: serverId,
+      endpoint: entry.endpoint.replace(/\/+$/, ""),
+      edgeToJobsKey: deriveJobsInstructionKey(entry.edgeToJobsRoot, "edgeToJobs"),
+    };
+  }
+  return {
+    servers,
+    timeoutMs: requirePositiveMs(
+      env.EDGE_JOBS_TIMEOUT_MS,
+      DEFAULT_JOBS_FORWARD_TIMEOUT_MS,
+      "EDGE_JOBS_TIMEOUT_MS",
+    ),
+  };
+}
+
+/**
+ * The last parse that can see two servers' roots side by side: a root shared
+ * across servers derives the same mint key for both, collapsing the custody
+ * that keeps one server's authority off another (the shared deployment map
+ * refuses the same shape — this holds it for the subset document too).
+ */
+function assertDistinctRoots(servers: Record<string, { edgeToJobsRoot: string }>): void {
+  const seen = new Map<string, string>();
+  for (const [serverId, entry] of Object.entries(servers)) {
+    const first = seen.get(entry.edgeToJobsRoot);
+    if (first !== undefined) {
+      throw new Error(
+        `EDGE_JOBS_CONFIG: the edgeToJobs root configured for "${serverId}" is the same ` +
+          `secret as "${first}"'s — each server holds an independently generated root`,
+      );
+    }
+    seen.set(entry.edgeToJobsRoot, serverId);
+  }
+}
+
+/** Default bound for one forwarding round-trip — the signed instruction's own validity window. */
+export const DEFAULT_JOBS_FORWARD_TIMEOUT_MS = 30_000;
 
 /**
  * Edge (data/policy plane) config: the gateway base plus everything the edge
@@ -774,6 +915,7 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     },
     internalSecret: loadInternalSecret(env),
     portalUrl: env.EDGE_PORTAL_URL || null,
+    jobs: loadEdgeJobsConfig(env),
     publicScheme: "https",
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
   };

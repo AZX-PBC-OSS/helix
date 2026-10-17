@@ -21,6 +21,7 @@ import { PgCounterStore } from "./gateway/counterStore.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
 import { PgVisitStore } from "./serving/visits.js";
 import { PgJobsCallbackBurnStore } from "./jobs/burns.js";
+import { HttpJobsForwarder, type JobsForwarder } from "./jobs/forwarder.js";
 import type { PoolClientErrorPhase } from "./db/pool.js";
 
 /**
@@ -207,6 +208,18 @@ const instructionKey = config.fetch.instructionSecret
   ? deriveInstructionKey(config.fetch.instructionSecret)
   : null;
 
+// The jobs forwarding seam (background-jobs-plane design §3): one signed
+// forwarder over the configured servers from EDGE_JOBS_CONFIG. An empty map
+// (the variable absent) is a fully disabled installation — null forwarder, the
+// jobs routes answer 503 jobs_disabled, and ordinary hosting needs no jobs
+// configuration at all.
+const jobsForwarder: JobsForwarder | null =
+  Object.keys(config.jobs.servers).length > 0
+    ? new HttpJobsForwarder(Object.values(config.jobs.servers), {
+        timeoutMs: config.jobs.timeoutMs,
+      })
+    : null;
+
 // The auth-host `/connections/*` reverse proxy: the
 // consent surface is portal-rendered but auth-host-terminated, so the edge
 // forwards it over the internal PortalProvider seam, authorized per call by a
@@ -258,6 +271,7 @@ const app = buildApp({
   appData,
   egress,
   instructionKey,
+  jobsForwarder,
   portal,
   cspReports,
   visits,
@@ -299,6 +313,7 @@ app.addHook("onClose", async () => {
   await usage?.close();
   await appData?.close();
   await egress?.close();
+  await jobsForwarder?.close();
   await portal?.close();
   await cspReports.close();
   await visits.close();

@@ -467,6 +467,7 @@ describe("span attributes never carry a credential", () => {
         llmProvider: null,
         egress: null,
         instructionKey: null,
+        jobsForwarder: null,
         portal,
       });
     }
@@ -615,6 +616,7 @@ describe("span attributes never carry a credential", () => {
         llmProvider: null,
         egress: null,
         instructionKey: null,
+        jobsForwarder: null,
         portal,
       });
 

@@ -106,6 +106,7 @@ function build(opts: { withPortal?: boolean; withInternalSecret?: boolean } = {}
     egress: null,
     instructionKey: null,
     portal: opts.withPortal === false ? null : portal,
+    jobsForwarder: null,
   });
   return { app, portal, tokens };
 }

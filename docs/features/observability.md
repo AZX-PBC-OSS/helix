@@ -48,6 +48,8 @@ terminates untrusted traffic (decision 4).
 | `helix.consent.cancel.edge` | the app host's `/_api/connections/attempt/cancel` route — the connect helper's cancellation acknowledgement, forwarding to the portal's own `.cancel` span |
 | `helix.consent.status.edge` | the app host's `GET /_api/connections/:ref/status` route (ADR-0031 as amended) — the app-facing connection-status read, forwarding to the portal's own `.status` span |
 | `helix.consent.status.dev` | the dev gateway's `GET /:slug/_api/connections/:ref/status` — the dev tier's bearer status read |
+| `helix.jobs.submit.edge` | the app host's `POST /_api/jobs/:server/types/:type` — the app-facing jobs submission route, forwarding to the receiver's own `helix.jobs.submit` span |
+| `helix.jobs.submit.dev` | the dev gateway's `POST /:slug/_api/jobs/:server/types/:type` — the dev tier's submission route over the same forwarding seam |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.egress.resolution` | egress delegated-call resolution — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation |
@@ -238,6 +240,23 @@ looked up:
   the result horizon's boundary onward; plus the shared
   `not_found`/`forbidden`/`unavailable`) — beside `helix.app_id` and
   `helix.jobs.job_id` on both (pinned by the same suite's observation scan).
+- The `helix.jobs.submit.edge` / `helix.jobs.submit.dev` spans (the two
+  app-facing submission routes) carry `helix.jobs.operation` = `submit` (the
+  operation the route forwards, taken from the route's own registration),
+  `http.route` (the surface's route pattern), `helix.app.slug` once the
+  serving entry resolves, `helix.app_id` once the grant check passes, and
+  `helix.outcome` ∈ `JOBS_SUBMISSION_OUTCOMES` — the caller-facing route's own
+  answer, one word per early return: `accepted` (a validated 202 forwarded),
+  `server_refused` (the server's validated error response forwarded as
+  received), `unreachable` / `invalid_response` (no answer, or an unusable
+  one — acceptance is uncertain, answered with the retryable 503),
+  `disabled`, `server_unknown`, `forbidden` (the origin guard, then the jobs
+  authorization check), `unauthorized` / `unavailable` (the caller and
+  serving gates' own preserved responses), `key_invalid`,
+  `payload_invalid`, `payload_too_large`. No `url.path` — the route's
+  `:server`/`:type` segments are caller-chosen — and never the retry key, the
+  input bytes, the instruction token or the owner oid (pinned by
+  `gateway/jobs.test.ts`'s attribute scan).
 - The `helix.jobs.execute` span (the worker's attempt) carries `helix.outcome`
   ∈ `JOBS_EXECUTE_OUTCOMES` — `succeeded` (the handler's result, inside the
   platform's bounds, projected durably after the claim's own fenced
@@ -296,6 +315,7 @@ looked up:
 | `helix.jobs.storage.probes` | counter | `outcome` ∈ {`ok`, `unavailable`} — the jobs service's storage-readiness probes (`JOBS_STORAGE_PROBE_OUTCOMES`). An attempt counter, like `helix.providers.reconciles`: a run of `unavailable` with no `ok` is a store outage, and the *reason* (unreachable / schema / queue-policy / burn store / privileges) is carried by the `jobs_database` check's body and the `jobs.storage.unavailable` log event, which the body-aware alerts read |
 | `helix.jobs.instructions` | counter | `helix.jobs.operation` ∈ {`submit`, `snapshot`, `result`, `cancel`, `lifecycle`} (the route's own name, never read from the token), `outcome` ∈ {`accepted`, `replayed`, `rejected`, `unavailable`} (`JOBS_INSTRUCTION_OUTCOMES`) — every presentation of a signed internal instruction, refused or not. A run of `replayed` is a capture-and-replay attempt (the burn caught it; no effect ran); a run of `rejected` is a forged or misconfigured minter, and the *reason* rides the span's `helix.reason` (`JOBS_INSTRUCTION_REJECT_REASONS`, plus `missing`/`malformed` for a header that never was a token, and `resource` for a path that cannot name one) — never a metric dimension; a run of `unavailable` is the burn store failing closed. Identity, token and retry-key material never appear in any dimension |
 | `helix.jobs.burn.sweeps` | counter | `outcome` ∈ {`ok`, `failed`} — the burn store's bounded cleanup passes, emitted by BOTH planes that run a burn store: the jobs service (its `instruction_burns` table) and the edge (its `jobs_callback_jti` table, prod tier; the dev-gateway emits the same instrument for the dev tier). Passes that remove rows are routine silence; a run of `failed` with no `ok` is a store that stopped answering its cleanup, and burned nonces then grow with instruction volume until it answers |
+| `helix.jobs.submissions` | counter | `outcome` ∈ `JOBS_SUBMISSION_OUTCOMES` — the app-facing submission routes' answers (the `helix.jobs.submit.edge` / `.dev` spans), one point per request including the local refusals that never mint an instruction. An attempt counter over submissions, NOT an accepted-job count: keyed replays and uncertain outcomes are all in here, and the receiver's `helix.jobs.instructions` counts the same operations' presentations from the other side — the two are never reconciled. Per-app attribution is the request ledger's job (ADR-0004), never this counter's |
 | `helix.jobs.executions` | counter | `outcome` ∈ {`succeeded`, `failed`, `gate_refused`, `deadline_exceeded`, `cancelled`, `terminal_fenced`, `unavailable`} (`JOBS_EXECUTE_OUTCOMES`) — every execution attempt's disposition, one per attempt. A run of `unavailable` is an execution store that stopped answering; `gate_refused` marks work whose lifecycle generation closed before it could start (its durable cancellation is the recovery loop's); `deadline_exceeded` marks work the absolute deadline terminated before an attempt; `cancelled` marks work whose durable cancellation intent the worker-start gate committed as the terminal outcome before the handler ran; the failure *reason* rides the span's `helix.reason`, never a dimension. The attempt number is a span attribute, never a metric dimension |
 | `helix.jobs.recoveries` | counter | `outcome` ∈ {`deadline_exceeded`, `crashed`, `failed`, `requeued`, `cancelled`, `row_missing`, `fenced`} (`JOBS_RECOVER_OUTCOMES`) — interrupted jobs the recovery sweeper dispositioned, one per `helix.jobs.recover` span. A run of `crashed` is worker loss recovering to its truthful terminal outcome; a run of `deadline_exceeded` is deadline pressure (queue wait or retries consuming the acceptance-to-close bound); `cancelled` covers a cancelled runner row reconciled into its record, a pending owner/lifecycle cancellation intent the pass re-drove to its terminal outcome, and a code-less failed settle under intent — the fence's own signature (the claim refused because the intent committed, or the drive was lost and the claim expired); a run of `row_missing` is an inconsistent store. The pass cadence itself is graded by the `jobs_sweeper` health check, never a dimension here |
 | `helix.jobs.cleanups` | counter | `outcome` ∈ {`ok`, `failed`} (`JOBS_CLEANUP_OUTCOMES`) — the cleanup loop's physical-retention passes, one per `helix.jobs.cleanup` span. Passes that remove nothing are routine silence; a run of `failed` with no `ok` is a store that stopped answering its cleanup, and expired content then grows past its 48-hour removal bound — the state the `jobs_cleanup` check's overdue evidence and the `jobs_capacity` check's saturation evidence degrade on |

@@ -44,6 +44,7 @@ export const INSTR_JOBS_BURN_SWEEPS = "helix.jobs.burn.sweeps";
 export const INSTR_JOBS_EXECUTIONS = "helix.jobs.executions";
 export const INSTR_JOBS_RECOVERIES = "helix.jobs.recoveries";
 export const INSTR_JOBS_CLEANUPS = "helix.jobs.cleanups";
+export const INSTR_JOBS_SUBMISSIONS = "helix.jobs.submissions";
 
 /**
  * Attribute keys.
@@ -219,6 +220,16 @@ export const SPAN_CONNECTIONS_DISCONNECT = "helix.connections.disconnect";
 /** The jobs receiver's signed-operation routes (one span each, named for the
  * operation the ROUTE serves — never a name read from the token). */
 export const SPAN_JOBS_SUBMIT = "helix.jobs.submit";
+/**
+ * The prod edge's app-facing jobs submission route (`POST
+ * /_api/jobs/:server/types/:type`) — the caller-facing half of the submission
+ * hop, whose forward lands in the receiver's `helix.jobs.submit` span. Named
+ * for the surface, not reusing the receiver's name: one trace shows both ends
+ * and neither can be mistaken for the other.
+ */
+export const SPAN_JOBS_SUBMIT_EDGE = "helix.jobs.submit.edge";
+/** The dev gateway's submission route (`POST /:slug/_api/jobs/:server/types/:type`). */
+export const SPAN_JOBS_SUBMIT_DEV = "helix.jobs.submit.dev";
 export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
 export const SPAN_JOBS_RESULT = "helix.jobs.result";
 export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
@@ -262,6 +273,8 @@ export const ROUTE_CONNECTIONS_CALLBACK = "/connections/callback";
 export const ROUTE_CONNECTIONS_MINE = "/api/v1/connections/mine";
 export const ROUTE_CONNECTIONS_MINE_ID = "/api/v1/connections/mine/:id";
 export const ROUTE_EGRESS_EXCHANGE = "/exchange";
+export const ROUTE_JOBS_SUBMIT = "/_api/jobs/:server/types/:type";
+export const ROUTE_JOBS_SUBMIT_DEV = "/:slug/_api/jobs/:server/types/:type";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
@@ -447,6 +460,56 @@ export const JOBS_SUBMIT_OUTCOMES = [
   "unavailable",
 ] as const;
 export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
+
+/**
+ * How the edge's app-facing submission route answered — the `helix.outcome`
+ * values on the `helix.jobs.submit.edge` / `.dev` spans, and the dimension on
+ * the `helix.jobs.submissions` counter. Bounded by construction: each value is
+ * exactly one early return of the handler. The receiver's own
+ * {@link JOBS_SUBMIT_OUTCOMES} vocabulary is deliberately NOT reused — that one
+ * describes the admission decision; this one describes what the caller-facing
+ * route answered, including the local refusals that never mint an instruction.
+ *
+ * - `accepted` — a validated 202 acceptance (or keyed recovery) was forwarded.
+ * - `server_refused` — the jobs service answered and its validated error
+ *   response was forwarded as received (any status; the specific refusal is
+ *   the response's own code).
+ * - `unreachable` — no answer: a transport failure or the request bound
+ *   expired after the instruction was sent. Answered with the retryable 503 —
+ *   acceptance is uncertain (the client's keyed retry recovers a committed job).
+ * - `invalid_response` — the jobs service answered an unusable body (or an
+ *   acceptance whose reference did not match the requested server). Also the
+ *   retryable 503, never a fabricated 202.
+ * - `disabled` — no configured servers (fully disabled jobs): 503.
+ * - `server_unknown` — the requested server id is not configured: 400.
+ * - `forbidden` — the jobs authorization check refused the principal (not an
+ *   authenticated user/dev caller) or no current grant covers the type: 403.
+ * - `unauthorized` — the serving/caller gates denied; their existing responses
+ *   are preserved (this word only records it).
+ * - `unavailable` — the serving surface could not answer (stale registry,
+ *   unknown app, archived): the serving gate's own response is preserved.
+ * - `key_invalid` — an `Idempotency-Key` header that is repeated or not a
+ *   valid retry key: 400.
+ * - `payload_invalid` — the body errored before it could be read to bytes
+ *   (an unreadable request): 400, before any comparison.
+ * - `payload_too_large` — input over the 64-KiB bound: 413, before anything
+ *   was forwarded.
+ */
+export const JOBS_SUBMISSION_OUTCOMES = [
+  "accepted",
+  "server_refused",
+  "unreachable",
+  "invalid_response",
+  "disabled",
+  "server_unknown",
+  "forbidden",
+  "unauthorized",
+  "unavailable",
+  "key_invalid",
+  "payload_invalid",
+  "payload_too_large",
+] as const;
+export type JobsSubmissionOutcome = (typeof JOBS_SUBMISSION_OUTCOMES)[number];
 
 /**
  * How the jobs service answered one owner-cancellation request — the final

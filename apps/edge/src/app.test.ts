@@ -53,6 +53,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
     },
     internalSecret: null,
     portalUrl: null,
+    jobs: { servers: {}, timeoutMs: 30_000 },
     ...overrides,
   };
 }

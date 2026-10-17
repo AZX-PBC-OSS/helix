@@ -857,6 +857,7 @@ beforeAll(async () => {
     llmProvider: null,
     egress: new HttpEgressProvider(egressBaseUrl, { timeoutMs: 10_000 }),
     instructionKey,
+    jobsForwarder: null,
     portal: new HttpPortalProvider(portalBaseUrl),
   });
   await devGateway.ready();

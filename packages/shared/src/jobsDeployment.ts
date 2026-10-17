@@ -258,9 +258,12 @@ function refineInstalledTypes(
  * consumer logs, so it draws a boot-time refusal instead. No query string or
  * fragment either: these are bases the callers append internal routes to, and
  * a query there would be silently dropped by URL composition while looking
- * configured.
+ * configured. Exported because a deployment map's own endpoint fields are not
+ * its only consumers — a component loading its permitted subset of the map
+ * (the edge's forwarding targets) validates the same endpoint shape it was
+ * handed, so the rule has one home.
  */
-const JobsInternalUrlSchema = z.url({ protocol: /^https?$/ }).refine(
+export const JobsInternalUrlSchema = z.url({ protocol: /^https?$/ }).refine(
   (url) => {
     const parsed = new URL(url);
     return (

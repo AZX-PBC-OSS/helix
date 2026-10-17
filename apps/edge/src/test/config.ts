@@ -100,6 +100,9 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     // Auth-host /connections reverse proxy unset by default; the proxy suites
     // set it (and pass a portal provider into buildApp).
     portalUrl: null,
+    // Jobs fully disabled by default (no configured servers); the jobs suites
+    // override with a document under test (or inject a forwarder directly).
+    jobs: { servers: {}, timeoutMs: 30_000 },
     ...overrides,
   };
 }
@@ -140,6 +143,9 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
     },
     internalSecret: null,
     portalUrl: null,
+    // Jobs fully disabled by default (no configured servers); the jobs suites
+    // override with a document under test (or inject a forwarder directly).
+    jobs: { servers: {}, timeoutMs: 30_000 },
     devGateway: {
       databaseUrl: "postgresql://helix_dev:unused@db/helix",
       allowDevMode: true,

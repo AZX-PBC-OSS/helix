@@ -35,6 +35,7 @@ import { openAiCodec } from "./gateway/openaiCodec.js";
 import { makeOpenAiModelsHandler } from "./gateway/openaiModels.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
+import { makeJobsSubmitHandler } from "./gateway/jobs.js";
 import { DenialThrottle } from "./gateway/denialThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
@@ -54,7 +55,13 @@ import {
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
-import { ROUTE_OPENAI, ROUTE_CONSENT_CANCEL } from "@azx-pbc/shared/telemetry";
+import type { JobsForwarder } from "./jobs/forwarder.js";
+import {
+  ROUTE_JOBS_SUBMIT,
+  ROUTE_OPENAI,
+  ROUTE_CONSENT_CANCEL,
+  SPAN_JOBS_SUBMIT_EDGE,
+} from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -89,6 +96,11 @@ export interface EdgeDeps {
   appData?: AppDataStore | null;
   /** Egress client for the fetch-proxy (M4.5); null = the capability 503s. */
   egress?: EgressProvider | null;
+  /**
+   * The signed jobs forwarding seam over the configured servers; null = jobs
+   * is fully disabled and the routes answer 503 `jobs_disabled`.
+   */
+  jobsForwarder?: JobsForwarder | null;
   /**
    * Portal client for the auth-host `/connections/*` reverse proxy; null = the
    * surface 503s fail-closed.
@@ -303,6 +315,23 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           usage: deps.usage ?? null,
           instructionKey: deps.instructionKey ?? null,
         })
+      : null;
+  // The jobs submission route (background-jobs-plane design §1): one handler
+  // for both serving surfaces, distinguished here by the span name + route
+  // pattern. Unconfigured jobs (no servers) is the fail-closed 503 inward —
+  // the route exists whenever the gateway runtime does, so an unconfigured
+  // deployment answers a distinguishable refusal rather than disappearing.
+  const handleJobsSubmit =
+    appApiRuntime && resolveCaller
+      ? makeJobsSubmitHandler(
+          {
+            registry: deps.registry,
+            resolveCaller,
+            checkOrigin,
+            forwarder: deps.jobsForwarder ?? null,
+          },
+          { span: SPAN_JOBS_SUBMIT_EDGE, route: ROUTE_JOBS_SUBMIT },
+        )
       : null;
   // The CSP report sink is unauthenticated (browsers send no credentials with
   // report beacons) and always available — it only ever appends.
@@ -614,7 +643,6 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       sendNotFound(reply);
     },
   });
-
   // OpenAI-compatible surface (same runtime + policy, OpenAI wire). An app points
   // its OpenAI client at `baseURL = <origin>/_api/openai/v1`; the `__Host-session`
   // cookie authenticates same-origin, so the SDK `apiKey` is ignored. App hosts only.
@@ -684,6 +712,30 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         handler: async (req, reply) => {
           if (req.hostClass.kind === "app") {
             await handleFetch(req, reply, req.hostClass.slug);
+            return;
+          }
+          sendNotFound(reply);
+        },
+      });
+      doneRegister();
+    });
+  }
+
+  // The jobs submission route (background-jobs-plane design §1). App hosts
+  // only. The same passthrough-parser encapsulation as the fetch scope: the
+  // submission forwards EXACT request bytes (the signed instruction binds
+  // their digest), so nothing may parse or normalize the body first — the
+  // handler reads `req.raw` to bytes under its own cap.
+  if (handleJobsSubmit) {
+    void app.register((jobsScope, _opts, doneRegister) => {
+      jobsScope.removeAllContentTypeParsers();
+      jobsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+      jobsScope.route({
+        method: "POST",
+        url: "/_api/jobs/:server/types/:type",
+        handler: async (req, reply) => {
+          if (req.hostClass.kind === "app") {
+            await handleJobsSubmit(req, reply, req.hostClass.slug);
             return;
           }
           sendNotFound(reply);

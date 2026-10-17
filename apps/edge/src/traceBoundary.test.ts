@@ -260,6 +260,7 @@ describe("the dev-gateway consent start route is a fresh root too", () => {
       llmProvider: null,
       egress: null,
       instructionKey: null,
+      jobsForwarder: null,
       portal,
     });
     const res = await app.inject({

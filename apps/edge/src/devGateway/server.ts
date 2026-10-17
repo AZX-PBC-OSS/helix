@@ -15,6 +15,7 @@ import type { LlmProvider } from "../gateway/provider.js";
 import { HttpPortalProvider } from "../routing/portalProvider.js";
 import { PgDevTokenStore } from "./devTokenStore.js";
 import { PgJobsCallbackBurnStore } from "../jobs/burns.js";
+import { HttpJobsForwarder, type JobsForwarder } from "../jobs/forwarder.js";
 import type { PoolClientErrorPhase } from "../db/pool.js";
 
 /**
@@ -180,6 +181,16 @@ const llmProvider: LlmProvider | null =
 // on the shared gateway config. Unset ⇒ the consent route 503s fail-closed.
 const portal = config.portalUrl ? new HttpPortalProvider(config.portalUrl) : null;
 
+// The jobs forwarding seam — the same EDGE_JOBS_CONFIG document the edge
+// loads; this process forwards with its own trusted dev tier (the resolver's
+// env) and the same server endpoints. An empty map is fully disabled.
+const jobsForwarder: JobsForwarder | null =
+  Object.keys(config.jobs.servers).length > 0
+    ? new HttpJobsForwarder(Object.values(config.jobs.servers), {
+        timeoutMs: config.jobs.timeoutMs,
+      })
+    : null;
+
 const app = buildDevGateway({
   config,
   registry,
@@ -189,6 +200,7 @@ const app = buildDevGateway({
   llmProvider,
   egress,
   instructionKey,
+  jobsForwarder,
   portal,
   https,
 });
@@ -205,6 +217,7 @@ app.addHook("onClose", async () => {
   await jobsCallbackBurns.stop();
   await egress?.close();
   await llmProvider?.close();
+  await jobsForwarder?.close();
   await portal?.close();
   // Last, after everything that could still record.
   await telemetry.shutdown();

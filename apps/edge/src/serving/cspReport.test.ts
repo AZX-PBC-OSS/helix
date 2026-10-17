@@ -51,6 +51,7 @@ function testConfig(): EdgeConfig {
     },
     internalSecret: null,
     portalUrl: null,
+    jobs: { servers: {}, timeoutMs: 30_000 },
   };
 }
 

@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { loadConfig, loadDevGatewayConfig, parseConnectionString, publicOrigin } from "./config.js";
+import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 
 // The well-known Azurite dev credentials (public, not a secret).
 const AZURITE_KEY =
@@ -811,5 +812,189 @@ describe("loadDevGatewayConfig", () => {
     });
     expect(config.tls).toBeNull();
     expect(config.devGateway.databaseUrl).toBe(DEV_ENV.EDGE_DEV_DATABASE_URL);
+  });
+});
+
+describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
+  // Two distinct, canonical base64 32-byte roots (the fixture encodings of 32
+  // bytes of 0x01 / 0x02) — syntax examples, never real credentials.
+  const ROOT_A = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+  const ROOT_B = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+  const ENV = {
+    DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
+    EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
+    AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
+  };
+
+  it("is fully disabled when the variable is absent or blank — never a boot failure", () => {
+    for (const absent of [{}, { EDGE_JOBS_CONFIG: "" }, { EDGE_JOBS_CONFIG: "   " }]) {
+      const config = loadConfig({ ...ENV, ...absent });
+      expect(config.jobs.servers).toEqual({});
+      expect(config.jobs.timeoutMs).toBe(30_000);
+      // The dev-gateway shares the parse and the disabled default.
+      expect(
+        loadDevGatewayConfig({
+          ...ENV,
+          EDGE_DEV_DATABASE_URL: "postgresql://helix_dev@db/helix",
+          ...absent,
+        }).jobs.servers,
+      ).toEqual({});
+    }
+  });
+
+  it("parses the configured servers and derives the mint keys at boot", () => {
+    const config = loadConfig({
+      ...ENV,
+      EDGE_JOBS_CONFIG: JSON.stringify({
+        servers: { jobs: { endpoint: "https://jobs.internal.helix/", edgeToJobsRoot: ROOT_A } },
+      }),
+    });
+    const jobs = config.jobs.servers.jobs;
+    expect(jobs).toBeDefined();
+    expect(jobs!.endpoint).toBe("https://jobs.internal.helix");
+    expect(jobs!.edgeToJobsKey).toBeInstanceOf(Uint8Array);
+    expect(jobs!.edgeToJobsKey.byteLength).toBe(32);
+  });
+
+  it("derives the same key the shared verifier derives from the same root", () => {
+    // The mint half and the receiver's verify half must derive identically —
+    // proven against the shared derivation, not a re-implementation.
+    const config = loadConfig({
+      ...ENV,
+      EDGE_JOBS_CONFIG: JSON.stringify({
+        servers: { jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A } },
+      }),
+    });
+    const verifierKey = deriveJobsInstructionKey(ROOT_A, "edgeToJobs");
+    expect(Buffer.from(config.jobs.servers.jobs!.edgeToJobsKey)).toEqual(Buffer.from(verifierKey));
+  });
+
+  it("refuses malformed JSON, a bad root, and a leaked full-map entry", () => {
+    expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: "{not json" })).toThrow(
+      /EDGE_JOBS_CONFIG must be a JSON object/,
+    );
+    // A root that is not the canonical base64 of exactly 32 bytes.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: { jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: "short" } },
+        }),
+      }),
+    ).toThrow();
+    // Custody enforced by the parse: the full deployment-map entry carries the
+    // jobs database URL and the portal root — handing this process that
+    // document must fail the boot naming the leak, not silently hold them.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {
+            jobs: {
+              endpoint: "https://jobs.internal.helix",
+              edgeToJobsRoot: ROOT_A,
+              databaseUrl: "postgresql://helix_jobs@db/helix_jobs",
+            },
+          },
+        }),
+      }),
+    ).toThrow(/databaseUrl/);
+  });
+
+  it("refuses a server id that is not one, and a non-https-query-free endpoint", () => {
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {
+            Bad_Server: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A },
+          },
+        }),
+      }),
+    ).toThrow();
+    // A query string on the endpoint would be silently dropped by URL
+    // composition while looking configured.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {
+            jobs: { endpoint: "https://jobs.internal.helix/?x=1", edgeToJobsRoot: ROOT_A },
+          },
+        }),
+      }),
+    ).toThrow();
+  });
+
+  it("holds the map-level __proto__ screen when the document arrives as the string the environment carries", () => {
+    // The screen's actual input is a JSON string (the environment's value), so
+    // the refusal must fire on the parsed document's own __proto__ key —
+    // JSON.parse materializes it as an own key, and the shared strict-record
+    // screen refuses it instead of shedding it. (A test feeding the document
+    // as a pre-parsed OBJECT is vacuous here: loadEdgeJobsConfig calls
+    // raw.trim() first, so the input dies on its type before any screen runs.)
+    const document =
+      '{"servers":{"jobs":{"endpoint":"https://jobs.internal.helix","edgeToJobsRoot":"' +
+      ROOT_A +
+      '"},"__proto__":{"polluted":true}}}';
+    expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: document })).toThrow(/__proto__/);
+  });
+
+  it("holds the same screen over a server ENTRY — an own __proto__ key inside one is refused, not shed", () => {
+    // The document and the servers map are screened; the entry shape must be
+    // part of the same family. A bare strictObject sheds an own __proto__ key
+    // (zod skips it before the unrecognized-key check), so a credential leaked
+    // under that key inside an entry would parse instead of failing the boot
+    // naming the leak — the exact side effect RawInputKeyScreen exists for.
+    const document =
+      '{"servers":{"jobs":{"endpoint":"https://jobs.internal.helix","edgeToJobsRoot":"' +
+      ROOT_A +
+      '","__proto__":{"databaseUrl":"postgresql://helix_jobs@db/helix_jobs"}}}}';
+    expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: document })).toThrow(/__proto__/);
+  });
+
+  it("refuses two servers sharing an edgeToJobs root — the custody line's last parse", () => {
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {
+            jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A },
+            other: { endpoint: "https://other.internal.helix", edgeToJobsRoot: ROOT_A },
+          },
+        }),
+      }),
+    ).toThrow(/independently generated root/);
+  });
+
+  it("accepts two servers holding distinct roots — the multi-server map", () => {
+    const config = loadConfig({
+      ...ENV,
+      EDGE_JOBS_CONFIG: JSON.stringify({
+        servers: {
+          jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A },
+          other: { endpoint: "https://other.internal.helix", edgeToJobsRoot: ROOT_B },
+        },
+      }),
+    });
+    expect(Object.keys(config.jobs.servers)).toEqual(["jobs", "other"]);
+    expect(Buffer.from(config.jobs.servers.jobs!.edgeToJobsKey)).not.toEqual(
+      Buffer.from(config.jobs.servers.other!.edgeToJobsKey),
+    );
+  });
+
+  it("honors EDGE_JOBS_TIMEOUT_MS and refuses unusable values", () => {
+    const doc = JSON.stringify({
+      servers: { jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A } },
+    });
+    expect(loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc }).jobs.timeoutMs).toBe(30_000);
+    expect(
+      loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc, EDGE_JOBS_TIMEOUT_MS: "5000" }).jobs.timeoutMs,
+    ).toBe(5000);
+    expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc, EDGE_JOBS_TIMEOUT_MS: "0" })).toThrow(
+      /EDGE_JOBS_TIMEOUT_MS must be a positive number/,
+    );
   });
 });

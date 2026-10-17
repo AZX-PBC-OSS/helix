@@ -17,7 +17,13 @@ import type { LlmProvider } from "../gateway/provider.js";
 import type { EgressProvider } from "../gateway/egressProvider.js";
 import type { UsageStore } from "../gateway/usage.js";
 import type { AppDataStore } from "../gateway/data.js";
-import { ROUTE_OPENAI } from "@azx-pbc/shared/telemetry";
+import type { JobsForwarder } from "../jobs/forwarder.js";
+import { makeJobsSubmitHandler } from "../gateway/jobs.js";
+import {
+  ROUTE_JOBS_SUBMIT_DEV,
+  ROUTE_OPENAI,
+  SPAN_JOBS_SUBMIT_DEV,
+} from "@azx-pbc/shared/telemetry";
 import { makeDevTokenResolver } from "./resolver.js";
 import { makeDevConsentStartHandler } from "./consentStart.js";
 import { makeDevConnectionStatusHandler } from "./connectionStatus.js";
@@ -81,6 +87,12 @@ export interface DevGatewayDeps {
   llmProvider: LlmProvider | null;
   egress: EgressProvider | null;
   instructionKey: Buffer | null;
+  /**
+   * The signed jobs forwarding seam over the configured servers; null = jobs
+   * is fully disabled and the route answers 503 `jobs_disabled` (the same
+   * fail-closed posture the edge's surface takes).
+   */
+  jobsForwarder: JobsForwarder | null;
   /**
    * Portal client for the dev tier's consent consult; null — or an unset
    * internal mint key — leaves the
@@ -165,6 +177,18 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     usage: deps.usage,
     instructionKey: deps.instructionKey,
   });
+  // The dev tier's jobs submission route — the edge's own handler factory over
+  // the dev resolver seams, so a dev submission carries `env: 'dev'` and the
+  // dev principal, and never the production tier's.
+  const handleJobsSubmit = makeJobsSubmitHandler(
+    {
+      registry: deps.registry,
+      resolveCaller,
+      checkOrigin,
+      forwarder: deps.jobsForwarder,
+    },
+    { span: SPAN_JOBS_SUBMIT_DEV, route: ROUTE_JOBS_SUBMIT_DEV },
+  );
 
   // The dev tier's consent entry — the bearer POST that returns
   // the single-use popup URL. Same dev resolver seam as every other route
@@ -322,6 +346,20 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
       url: "/:slug/_api/fetch/*",
       handler: (req, reply) => handleFetch(req, reply, slugOf(req)),
+    });
+    doneRegister();
+  });
+
+  // The dev tier's jobs submission route — the same passthrough-parser
+  // encapsulation as the fetch scope (the forward binds exact request bytes;
+  // nothing may parse them first).
+  void app.register((jobsScope, _opts, doneRegister) => {
+    jobsScope.removeAllContentTypeParsers();
+    jobsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+    jobsScope.route({
+      method: "POST",
+      url: "/:slug/_api/jobs/:server/types/:type",
+      handler: (req, reply) => handleJobsSubmit(req, reply, slugOf(req)),
     });
     doneRegister();
   });
