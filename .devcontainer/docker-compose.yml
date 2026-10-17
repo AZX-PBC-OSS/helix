@@ -192,6 +192,13 @@ services:
 
   db:
     image: postgres:18
+    # The integration suites run their scratch stores in parallel (each jobs
+    # suite composes a pg-boss instance plus several 2-connection pools, and
+    # the boot suites spawn whole service processes); the default 100-slot
+    # cluster peaks within a few connections of exhaustion and fails
+    # whichever suite asks for a slot at the peak ("remaining connection
+    # slots are reserved"). 300 holds the whole parallel run with headroom.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: helix
       POSTGRES_PASSWORD: helix

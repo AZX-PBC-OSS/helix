@@ -147,13 +147,20 @@ export function compareQueuePolicy(row: QueuePolicyRow): JobsQueuePolicyDiff[] {
  * enough to exceed jsonb's own parser arrived — a latent failure the
  * startup check exists to catch.
  */
-const JOB_RECORD_COLUMNS = ["attempt", "progress", "error_code", "result"] as const;
+const JOB_RECORD_COLUMNS = [
+  "attempt",
+  "progress",
+  "error_code",
+  "result",
+  "cancellation_requested",
+] as const;
 /** The type each column must carry, as `information_schema.columns` reports it. */
 const JOB_RECORD_COLUMN_TYPES: Record<(typeof JOB_RECORD_COLUMNS)[number], string> = {
   attempt: "integer",
   progress: "jsonb",
   error_code: "text",
   result: "text",
+  cancellation_requested: "boolean",
 };
 
 /**

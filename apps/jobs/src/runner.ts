@@ -1,6 +1,7 @@
 import { PgBoss } from "pg-boss";
 
 import { createPgbossEnqueuer, type JobsEnqueuer } from "./acceptance.js";
+import type { RunnerCancelVerdict } from "./cancellation.js";
 import { JOBS_QUEUE_NAME, jobsRuntimeBossOptions } from "./policy.js";
 import type { RunnerJobLookup } from "./recovery.js";
 
@@ -38,6 +39,32 @@ export async function readRunnerJobState(
     const job = await boss.getJobById(JOBS_QUEUE_NAME, runnerJobId);
     if (!job) return { verdict: "missing" };
     return { verdict: "found", state: job.state, output: job.output };
+  } catch (error) {
+    return {
+      verdict: "unavailable",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * The runner's own fenced cancel of one runner row — the adapter behind
+ * {@link JobsRunner.cancelJob}, standalone for the same reason the read
+ * above is: one spelling for the runner's method and for any caller holding
+ * a started instance, so the drive's verdicts cannot drift between them.
+ */
+export async function cancelRunnerJob(
+  boss: PgBoss,
+  runnerJobId: string,
+): Promise<RunnerCancelVerdict> {
+  try {
+    // Why the structural type: the pinned dependency's `CommandResponse`
+    // declaration is empty — see the settlement note in `execution.ts` —
+    // and its cancel path returns `{jobs, requested, affected, settled?}`.
+    const response = (await boss.cancel(JOBS_QUEUE_NAME, runnerJobId)) as {
+      affected?: number;
+    };
+    return (response.affected ?? 0) > 0 ? { verdict: "cancelled" } : { verdict: "not_cancellable" };
   } catch (error) {
     return {
       verdict: "unavailable",
@@ -236,7 +263,7 @@ export class JobsRunner {
   }
 
   /**
-   * One runner row's own durable state, read through the pinned adapter's
+   * The runner row's own durable state, read through the pinned adapter's
    * public job read — the recovery sweeper's lookup seam, and nothing else's:
    * the wrapper projections and the enqueue have their own paths. Answers
    * `unavailable` while the runner has not started (there is no instance to
@@ -250,6 +277,25 @@ export class JobsRunner {
       return { verdict: "unavailable", reason: "the runner has not started" };
     }
     return readRunnerJobState(this.boss, runnerJobId);
+  }
+
+  /**
+   * The runner's own fenced cancel of one runner row — the cancellation
+   * seam's drive and the recovery sweeper's re-drive, composed here so both
+   * share one adapter call and neither opens a second SQL path into the
+   * pinned dependency's schema. The fence is the dependency's own (`state <
+   * completed`): a waiting row moves to `cancelled` and will never dispatch;
+   * an active row's claim is lost, which trips its worker's per-job abort
+   * signal on the next heartbeat; an already-terminal row answers zero
+   * affected rows — the competing outcome won its race. `unavailable` while
+   * the runner has not started or the call failed: the caller's pending
+   * durable intent is what converges, and the next cadence re-drives.
+   */
+  async cancelJob(runnerJobId: string): Promise<RunnerCancelVerdict> {
+    if (!this.started || !this.boss) {
+      return { verdict: "unavailable", reason: "the runner has not started" };
+    }
+    return cancelRunnerJob(this.boss, runnerJobId);
   }
 
   private runAttempt(): Promise<void> {

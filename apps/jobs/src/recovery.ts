@@ -11,7 +11,13 @@ import {
   type JobsRecoverOutcome,
 } from "@azx-pbc/shared/telemetry";
 
-import { deadlinePassed, publicStatus, terminatePastDeadline } from "./execution.js";
+import type { RunnerJobCanceller } from "./cancellation.js";
+import {
+  deadlinePassed,
+  projectCancellation,
+  publicStatus,
+  terminatePastDeadline,
+} from "./execution.js";
 import { createJobsPool } from "./pool.js";
 import { JOBS_JOB_RECORD_QUALIFIED, jobsAbsoluteDeadline } from "./policy.js";
 import { countRecovery, withRecoverySpan } from "./telemetry.js";
@@ -28,6 +34,17 @@ import { countRecovery, withRecoverySpan } from "./telemetry.js";
  * outcome — `crashed` for execution lost with no attempt left, `timeout` when
  * the absolute deadline has passed, `cancelled` for cancelled runner rows —
  * without ever changing its reference or reissuing the work.
+ *
+ * Durable cancellation intent is part of the same reconciliation: a record
+ * whose `cancellation_requested` was committed but whose runner cancel did
+ * not land (a crash between the intent write and the drive, a runner outage)
+ * is pending cancellation work — the pass re-drives the runner cancel (the
+ * dependency's own fence makes a re-drive safe against a racing completion)
+ * and, when the runner row is no longer live, projects the terminal
+ * `cancelled` outcome the intent promised. A waiting row that cannot be
+ * cancelled never reaches a handler here: the projection is skipped and the
+ * next pass re-reads, so the wrapper never projects an outcome over a runner
+ * row this pass could not see.
  *
  * The reconciliation is a projection, never a re-driver: the only mechanism
  * that re-runs work is the runner's own retry policy, so a single-attempt
@@ -79,7 +96,7 @@ export type WorkRecoveryDecision =
   | { outcome: "requeued"; code: JobErrorCode }
   | { outcome: "failed"; code: JobErrorCode }
   | { outcome: "crashed"; code: "platform_error" }
-  | { outcome: "cancelled"; code: "cancelled" }
+  | { outcome: "cancelled"; code: "cancelled"; resumeCancel: boolean }
   | { outcome: "row_missing" }
   | { outcome: "unaffected" };
 
@@ -87,37 +104,59 @@ export type WorkRecoveryDecision =
  * The reconciliation decision for one non-terminal wrapper record — the pure
  * heart of the pass, so the state machine is table-testable without a store.
  * Inputs: the record's own status (the sweep only reads non-terminal
- * records), whether its absolute deadline has passed, and the runner row's
- * answer. The deadline arm decides first and needs no runner I/O — deadline
- * enforcement never depends on the runner being up.
+ * records), whether its absolute deadline has passed, whether a durable
+ * cancellation intent is recorded on it, and the runner row's answer. The
+ * deadline arm decides first and needs no runner I/O — deadline enforcement
+ * never depends on the runner being up.
  *
  * The state machine, from the runner row's side:
  *
- * - waiting (`created`/`retry`) — the work is queued or will be re-driven;
- *   a record still reading `running` is put back to `queued` with the lost
- *   attempt's attribution retained (its failure code if the settle carried a
- *   worker-reported one, else `timeout` — the claim expiry that re-queued
- *   it), and the next claim's begin resets it. A record already reading
- *   `queued` is consistent.
- * - `active` — the claim is live and the worker is between its claim and its
- *   projections; nothing to reconcile, and a stale claim is the runner's own
- *   maintenance business, never a second settlement mechanism here.
- * - terminal `failed` — no attempt remains and the wrapper never got the
- *   outcome: a settle output carrying a worker-reported code projects that
- *   code (the reported failure whose wrapper projection was lost — the
- *   execution-store-outage case); anything else is a claim the runner's own
- *   expiry machinery settled — execution lost through a platform
- *   interruption, projected `crashed`.
+ * - deadline passed — `timeout`, whatever the intent says: the platform's
+ *   absolute bound is the first terminal outcome to commit here, and a
+ *   pending cancellation competing with it has lost (criterion 47).
+ * - waiting (`created`/`retry`) with cancellation intent — the intent's
+ *   runner drive never landed (a crash between the intent write and the
+ *   drive, or a runner outage): the row must be cancelled before it can
+ *   dispatch and the record must reach the intent's terminal `cancelled`
+ *   outcome. `resumeCancel` says the pass re-drives the runner cancel first;
+ *   a row the drive could not stop is left for the next pass rather than
+ *   projected over.
+ * - `active` with cancellation intent — the claim is live and the route's
+ *   drive may not have landed: re-drive it (fenced — a completion that
+ *   settled the row first wins), and the next pass reads the row's own
+ *   `cancelled` state. The wrapper is not projected from an `active` row.
+ * - `active` without intent — the claim is live and the worker is between
+ *   its claim and its projections; nothing to reconcile, and a stale claim
+ *   is the runner's own maintenance business, never a second settlement
+ *   mechanism here.
+ * - waiting (`created`/`retry`) without intent — the work is queued or will
+ *   be re-driven; a record still reading `running` is put back to `queued`
+ *   with the lost attempt's attribution retained (its failure code if the
+ *   settle carried a worker-reported one, else `timeout` — the claim expiry
+ *   that re-queued it), and the next claim's begin resets it. A record
+ *   already reading `queued` is consistent.
+ * - terminal `failed` — a settle output carrying a worker-reported code
+ *   projects that code (the reported failure whose wrapper projection was
+ *   lost — the execution-store-outage case; the job's own answer outranks a
+ *   pending intent). A code-less failed row projects `crashed` — execution
+ *   lost through a platform interruption — UNLESS the record carries a
+ *   pending cancellation intent: a code-less settle under intent is the
+ *   fence's own signature (the claim refused because the intent committed,
+ *   or the drive was lost and the claim expired), and the outcome the owner
+ *   was acknowledged is `cancelled`.
  * - terminal `completed` — the attempt finished but its result was never
  *   projected (a crash or a store outage between the claim's completion and
  *   the wrapper write): the result bytes are gone with the attempt's
  *   process, so the truthful outcome is `crashed`, not a fabricated success.
+ *   A pending cancellation intent loses to this completion — its terminal
+ *   outcome committed first on the runner row.
  * - terminal `cancelled` — the row's cancellation wins: the wrapper projects
  *   `cancelled` and recovery never reissues the work.
  */
 export function decideWorkRecovery(input: {
   status: "queued" | "running";
   pastDeadline: boolean;
+  cancellationRequested: boolean;
   row: AnsweredRunnerJobLookup;
 }): WorkRecoveryDecision {
   if (input.pastDeadline) {
@@ -130,22 +169,41 @@ export function decideWorkRecovery(input: {
   switch (row.state) {
     case "created":
     case "retry":
+      if (input.cancellationRequested) {
+        return { outcome: "cancelled", code: "cancelled", resumeCancel: true };
+      }
       if (input.status === "running") {
         return { outcome: "requeued", code: reportedFailureCode(row.output) ?? "timeout" };
       }
       return { outcome: "unaffected" };
     case "active":
+      if (input.cancellationRequested) {
+        return { outcome: "cancelled", code: "cancelled", resumeCancel: true };
+      }
       return { outcome: "unaffected" };
     case "failed": {
       const reported = reportedFailureCode(row.output);
-      return reported
-        ? { outcome: "failed", code: reported }
-        : { outcome: "crashed", code: "platform_error" };
+      if (reported) {
+        return { outcome: "failed", code: reported };
+      }
+      // A code-less failed settle under a pending intent is the fence's own
+      // signature: the row failed because the cancellation's fence refused
+      // its claim (the intent committed inside the gate's begin, or the
+      // drive was lost and the claim expired) — the work never produced an
+      // outcome, and the owner's acknowledged intent is the terminal
+      // outcome it was promised. It is not a platform crash, and the
+      // crashed disposition would contradict the recorded cancellation.
+      // A worker-reported code still outranks the intent: that is the
+      // job's own answer, not the fence's.
+      if (input.cancellationRequested) {
+        return { outcome: "cancelled", code: "cancelled", resumeCancel: false };
+      }
+      return { outcome: "crashed", code: "platform_error" };
     }
     case "completed":
       return { outcome: "crashed", code: "platform_error" };
     case "cancelled":
-      return { outcome: "cancelled", code: "cancelled" };
+      return { outcome: "cancelled", code: "cancelled", resumeCancel: false };
   }
 }
 
@@ -198,6 +256,14 @@ export interface JobsRecoveryOptions {
    * job read; the sweeper never opens its own pg-boss instance or SQL.
    */
   readRunnerJob: RunnerJobStateReader;
+  /**
+   * The runner cancel — the re-drive a pending cancellation's pass runs
+   * through (the same fenced adapter call the cancellation store drives).
+   * Required: a sweeper that cannot cancel cannot carry a pending intent to
+   * its terminal outcome, and that gap must be a composition defect, not a
+   * silent stall.
+   */
+  cancelRunnerJob: RunnerJobCanceller;
   /** The cadence between passes. */
   intervalMs?: number;
   /** The largest number of records one pass considers — the bound that keeps a pass bounded. */
@@ -228,6 +294,7 @@ interface RecoveryCandidateRow {
   env: string;
   status: string;
   attempt: number | null;
+  cancellation_requested: boolean;
   runner_job_id: string;
   created_at: Date;
 }
@@ -236,6 +303,7 @@ export class JobsRecovery {
   private readonly databaseUrl: string;
   private readonly statementTimeoutMs: number;
   private readonly readRunnerJob: RunnerJobStateReader;
+  private readonly cancelRunnerJob: RunnerJobCanceller;
   private readonly intervalMs: number;
   private readonly batch: number;
   private readonly log: JobsRecoveryLogger;
@@ -257,6 +325,7 @@ export class JobsRecovery {
     this.databaseUrl = options.databaseUrl;
     this.statementTimeoutMs = options.statementTimeoutMs;
     this.readRunnerJob = options.readRunnerJob;
+    this.cancelRunnerJob = options.cancelRunnerJob;
     this.intervalMs = options.intervalMs ?? RECOVERY_INTERVAL_MS;
     this.batch = options.batch ?? RECOVERY_BATCH;
     this.log = options.log;
@@ -425,6 +494,7 @@ export class JobsRecovery {
         const decision = decideWorkRecovery({
           status,
           pastDeadline,
+          cancellationRequested: candidate.cancellation_requested,
           row: row ?? { verdict: "missing" },
         });
         if (decision.outcome === "unaffected") continue;
@@ -447,7 +517,8 @@ export class JobsRecovery {
   /** The oldest non-terminal records, up to the batch cap — the reconciliation's candidates. */
   private async nextCandidates(pool: Pool): Promise<RecoveryCandidateRow[]> {
     const result = await pool.query<RecoveryCandidateRow>(
-      `SELECT server, job_id, type, app_id, env, status, attempt, runner_job_id, created_at
+      `SELECT server, job_id, type, app_id, env, status, attempt,
+              cancellation_requested, runner_job_id, created_at
          FROM ${JOBS_JOB_RECORD_QUALIFIED}
         WHERE NOT (status = ANY($1::text[]))
          ORDER BY created_at
@@ -484,8 +555,7 @@ export class JobsRecovery {
         return (updated.rowCount ?? 0) === 1 ? "requeued" : "fenced";
       }
       case "failed":
-      case "crashed":
-      case "cancelled": {
+      case "crashed": {
         const updated = await pool.query(
           `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
               SET status = $3, error_code = $4
@@ -499,6 +569,47 @@ export class JobsRecovery {
           ],
         );
         return (updated.rowCount ?? 0) === 1 ? decision.outcome : "fenced";
+      }
+      case "cancelled": {
+        // The intent's re-drive, before the projection: a pending intent on
+        // a runner row this pass read as live re-drives the fenced cancel —
+        // a waiting row stops before it can ever dispatch, an active row's
+        // claim is lost and its worker's signal aborts. The projection runs
+        // only when the drive CONFIRMS the row cancelled: a row the drive
+        // could not stop (unavailable) or that went terminal between the
+        // read and the drive (not_cancellable — its own completion or
+        // failure is the outcome the next pass reads truthfully) is left
+        // for the next pass, never projected over an unseen runner state.
+        // The row-cancelled arm (resumeCancel false) skips the drive: the
+        // row's own state was read cancelled.
+        if (decision.resumeCancel) {
+          const redrive = await this.cancelRunnerJob(candidate.runner_job_id);
+          if (redrive.verdict === "unavailable") {
+            this.log.warn(
+              {
+                event: "jobs.recovery.cancellation_resume_failed",
+                appId: candidate.app_id,
+                jobId: candidate.job_id,
+                reason: redrive.reason,
+              },
+              "a pending cancellation's runner re-drive could not answer — the intent stays pending and the next pass retries",
+            );
+            return "fenced";
+          }
+          if (redrive.verdict === "not_cancellable") {
+            this.log.info(
+              {
+                event: "jobs.recovery.cancellation_raced",
+                appId: candidate.app_id,
+                jobId: candidate.job_id,
+              },
+              "a pending cancellation's runner row went terminal before the re-drive — the next pass reconciles the row's own outcome",
+            );
+            return "fenced";
+          }
+        }
+        const cancelled = await projectCancellation(pool, candidate.server, candidate.job_id);
+        return cancelled === 1 ? "cancelled" : "fenced";
       }
       case "row_missing":
         return "row_missing";

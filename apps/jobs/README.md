@@ -9,9 +9,10 @@ shared health vocabulary, and the signed internal operation receiver: every
 edge→jobs and portal→jobs instruction is verified and its nonce durably burned
 before its operation runs. The operations' own semantics land in their own
 tickets and compose from here — lifecycle delivery (the app-generation
-authority's apply-before-acknowledge receiver, `src/lifecycle.ts`) and
-submission (the acceptance transaction, `src/acceptance.ts`) are served; the
-rest answer the protocol's retryable unavailable error until their tickets
+authority's apply-before-acknowledge receiver, `src/lifecycle.ts`), submission
+(the acceptance transaction, `src/acceptance.ts`) and cancellation (the durable
+intent plus the runner drive, `src/cancellation.ts`) are served; the rest
+answer the protocol's retryable unavailable error until their tickets
 replace the placeholder, and the log line is where that gap is named.
 
 ## Signed internal operations (`src/instructionAuth.ts`, `src/app.ts`)
@@ -46,6 +47,42 @@ remember burns.
 A legitimate HTTP retry mints a fresh instruction (fresh `jti`) carrying
 the same optional retry identity — the signed `idempotencyKey` claim, compared
 at admission (`src/acceptance.ts`), never overridden by an unsigned header.
+
+## The owner-cancellation seam (`src/cancellation.ts`)
+
+An authorized cancel request becomes durable intent first, then the runner
+drive — in that order, and never the reverse:
+
+1. **The intent write is the authorization check and the fence in one
+   statement.** `cancellation_requested` is set on the record conditional on
+   the signed caller's identity (app, environment, principal kind, owner), the
+   record's type being inside the signed grants, and the record still being
+   non-terminal — so a state that changed before the write landed cannot be
+   acted on. A repeat while active writes the same value and answers the same
+   acknowledgement (harmless by construction). The refusals classify the
+   record as it stands: a foreign or unknown reference answers the same 404
+   `job_not_found` (never a disclosure that someone else's job exists), a
+   grant that does not cover the record's type answers 403 `forbidden`, and a
+   terminal job answers 409 `job_terminal` with its own status and stored
+   error, its outcome preserved.
+2. **Then the runner.** The record's runner row is cancelled through the
+   runner's own fenced adapter call (`cancelRunnerJob`): a waiting row moves
+   to `cancelled` and will never dispatch; an active row's claim is lost,
+   which trips its worker's per-job abort signal on the next heartbeat. A
+   drive that could not answer is logged and left to the sweeper's
+   cancellation arm — the 202 confirms the durable intent, not the runner
+   row's state.
+
+The pending intent is enforced by two readers: the worker-start gate (below)
+refuses any claim that arrives after it and commits the terminal `cancelled`
+outcome in the gate's own transaction, and the recovery sweeper re-drives the
+runner cancel and projects the outcome for everything else — so an
+acknowledged cancellation reaches a terminal outcome within the
+healthy-service bound (the heartbeat and sweep cadences) while required
+services remain available, and stays pending, honestly, during an outage.
+Whichever terminal outcome commits first wins: a completion settling after
+the cancellation is fenced by the conditional writes; a cancellation arriving
+after a committed completion reads `terminal` and changes nothing.
 
 ## The acceptance transaction (`src/acceptance.ts`)
 
@@ -150,9 +187,16 @@ on — the attempt's retry decision reads the runner row's own policy.
   record's admitted lifecycle generation (`lifecycleEligibilityInTx`, the row
   locked to the commit): work starts only under an eligible generation, and a
   lifecycle apply cannot land between the gate's decision and the recorded
-  start. A refused claim does not run the handler and leaves the wrapper record
-  untouched — the durable cancellation of closed-generation work is the
-  recovery path's.
+  start. The same transaction judges the record's durable cancellation
+  intent: a claim arriving after it commits the record's terminal `cancelled`
+  outcome in the gate's own transaction (the handler never runs, and the
+  intent can never turn into a run or a retry), and the begin's own projection
+  is conditional on the intent — an intent committing between the gate's read
+  and its write stops the attempt at the write. A refused claim does not run
+  the handler; the deadline and cancellation refusals commit their own
+  terminal outcomes, and the closed-generation refusal leaves the wrapper
+  record untouched — the durable cancellation of closed-generation work is
+  the recovery path's.
 - **The attempt projection.** Begin writes `running` at the attempt number
   (`retryCount + 1`), resets the progress and clears the previous attempt's
   error; a handler reports bounded progress (`{step, of, label}`, validated at
@@ -162,6 +206,12 @@ on — the attempt's retry decision reads the runner row's own policy.
   terminal failure writes `failed` with the error's code. A success writes
   `succeeded` with the bounded result (a complete JSON value within 64 KiB;
   `result_invalid` / `result_too_large` are the terminal refusals).
+- **The handler's abort signal.** The attempt context carries the claim's own
+  `AbortSignal`: the runner aborts it when the claim is cancelled (an owner's
+  or a lifecycle delivery's) or expires, and a supported handler stops its
+  bounded I/O on it. An ignored signal changes nothing — the claim's
+  settlement is fenced either way, so the attempt's result can never land
+  after the abort.
 - **The claim is the arbiter.** The runner's own attempt-fenced
   `complete`/`fail` settle FIRST; only a settle that reports the claim held may
   write the wrapper. A late completion whose claim lapsed (a claim timeout, a
@@ -247,6 +297,17 @@ died is projected `crashed` — execution lost, never reissued.
   success); `cancelled` projects the cancellation. A record with no runner
   row is corruption: logged at error and left for the deadline arm's bounded
   termination.
+- **Durable cancellation intent is part of the same reconciliation.** A
+  record whose `cancellation_requested` is pending on a runner row still
+  waiting or active re-drives the runner cancel (the dependency's own fence
+  makes the re-drive safe against a racing completion) and, when the drive
+  confirms the row cancelled, projects the intent's terminal `cancelled`
+  outcome. A drive that could not answer — or that found the row already
+  terminal — projects nothing this pass: the next pass reads the row's own
+  state truthfully. This is the recovery of a lost runner drive (a crash
+  between the intent write and the cancel) and the outage-resume path: the
+  intent stays pending and the passes keep applying it until no active work
+  remains.
 - **Supervision.** `start()` never throws; a failed pass is logged, counted
   and never ends the cadence (a pass whose own reporting threw rejects to its
   caller, clears the in-flight guard, and the timer's next pass runs);
@@ -340,11 +401,16 @@ store (schema `jobs`, table `instruction_burns`, its `burn_until` index), the
 app-lifecycle store (table `app_lifecycle`) and the job-record store (table
 `job_record`, the retry namespace's unique constraint, the public-status
 check, the execution projection's columns — attempt, progress, error_code,
-result, with the state-machine checks that keep a result only where the
+result — and the durable owner-cancellation intent column
+(`cancellation_requested`), with the state-machine checks that keep a result
+only where the
 public record projects it — and the occupancy index the capacity counts
 use), grants the runtime role DML
 on all of it — provisioning sets no default privileges, so grants arrive by
-migration — and verifies the effective state by re-reading it. Later
+migration — and verifies the effective state by re-reading it. The
+job-record store carries the durable owner-cancellation intent column
+(`cancellation_requested`, converged in place for an existing store like the
+execution columns). Later
 jobs-owned migrations extend this command the same way: a step under the
 migration identity, after the schema they depend on exists.
 
@@ -354,7 +420,7 @@ migration identity, after the schema they depend on exists.
 runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, the instruction
 burn store, the app-lifecycle store and the job-record store present with its
-execution columns, and the
+execution columns and the cancellation-intent column, and the
 runtime identity holding its DML. The verdict union (`compatible`,
 `unreachable`, `schema_missing`, `schema_version`, `queue_missing`,
 `queue_policy`, `burn_missing`, `lifecycle_missing`, `record_missing`,
@@ -388,12 +454,13 @@ verified and later dies degrades the same way.
   listens; the roots derive to their direction keys at boot, so a malformed
   one stops the process, not the first instruction.
 - **Shutdown releases what startup acquired.** The `onClose` hook stops the
-  recovery sweeper first (its runner-row reads ride the runner's instance), then
-  the runner (its retry timer, its instance and the worker on it), then every
-  store's pool — the execution store, the acceptance store, the lifecycle
-  store, the burn store's sweep timer, the storage supervisor's probe timer —
-  and flushes telemetry; the graceful-shutdown install bounds the drain. The
-  failed-partial-initialization exit releases the same set.
+  recovery sweeper first (its runner-row reads ride the runner's instance),
+  then the cancellation store (its runner drive rides the same instance),
+  then the runner (its retry timer, its instance and the worker on it), then
+  every store's pool — the execution store, the acceptance store, the
+  lifecycle store, the burn store's sweep timer, the storage supervisor's
+  probe timer — and flushes telemetry; the graceful-shutdown install bounds
+  the drain. The failed-partial-initialization exit releases the same set.
 - **Probes are counted.** Every probe emits `helix.jobs.storage.probes`
   with `outcome` ∈ {`ok`, `unavailable`} — the retries an outage absorbs are
   visible; the _reason_ rides the `jobs_database` check body and the
@@ -431,7 +498,8 @@ JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… \
 The listener serves `/health` and the five signed internal operation routes
 (verification + durable burn). The lifecycle route serves the portal's
 delivery (the app-lifecycle authority above), the submit route serves the
-acceptance transaction (above), and the worker executes accepted work (the
+acceptance transaction (above), the cancel route serves the owner-cancellation
+seam (above), and the worker executes accepted work (the
 execution seam above); the other operations' semantics arrive with
 their own tickets and answer 503 `jobs_unavailable` until then — an unmatched
 request answers 503 `jobs_unavailable` while the store is unusable, 404 on a

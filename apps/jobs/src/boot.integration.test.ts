@@ -562,13 +562,18 @@ describe("signed instructions through the running process", () => {
 
   /** Mint one submit instruction against the child's own roots, right now. */
   async function mintSubmit(idempotencyKey: string | null): Promise<string> {
+    return mintSubmitFor(LIFECYCLE_APP, idempotencyKey);
+  }
+
+  /** The same, for a leg's own app — the identity every leg owns disjointly. */
+  async function mintSubmitFor(appId: string, idempotencyKey: string | null): Promise<string> {
     const key = deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs");
     return mintJobsInstruction(
       {
         operation: "submit",
         server: "jobs",
         identity: {
-          appId: "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f",
+          appId,
           env: "prod",
           ownerKind: "user",
           ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
@@ -665,6 +670,78 @@ describe("signed instructions through the running process", () => {
     throw new Error(
       `the submission never committed within its budget — last answer: ${JSON.stringify(last)}`,
     );
+  }
+
+  /**
+   * The cancel legs' arrangement: submit a fresh keyed job, hold its runner
+   * row off-claim (a future `start_after` the dispatcher never fetches —
+   * written as the store owner, the seeder's own trick), verify the hold won
+   * the submit→hold race, then cancel. The 202's basis is the committed
+   * intent alone — a worker poll landing in the submit→cancel gap is a
+   * designed outcome (the record goes `running`, or the unhandled platform
+   * failure settles it `failed`), none of which is the state a convergence
+   * assertion can ride — so the hold+verify is what makes the 202, the
+   * runner row's cancellation and the record's convergence all
+   * deterministic: past the verification no claim can begin, the drive
+   * lands on the held row, and the record's only writer is a sweeper whose
+   * single reachable projection is the intent's own `cancelled`. A claim
+   * that won the gap reads back `active` or non-`queued` and the cycle
+   * retries on a fresh job; the loop is bounded, its exhaustion a leg
+   * failure. Returns the cancelled job's public id.
+   */
+  async function cancelAHeldJob(options: {
+    port: number;
+    appId: string;
+    keyPrefix: string;
+    holder: Pool;
+    cancelTokenFor: (jobId: string) => Promise<string>;
+  }): Promise<string> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const key = `${options.keyPrefix}-${attempt}`;
+      const deadline = Date.now() + 60_000;
+      let accepted: { status: number; body: unknown } | null = null;
+      while (Date.now() < deadline) {
+        accepted = await submitFor(options.port, await mintSubmitFor(options.appId, key), key);
+        if (accepted.status !== 503) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(accepted?.status, JSON.stringify(accepted)).toBe(202);
+      const candidate = (accepted!.body as { jobId: string }).jobId;
+      await options.holder.query(
+        `UPDATE ${JOBS_PGBOSS_SCHEMA}.job
+            SET start_after = now() + interval '1 hour'
+          WHERE id::text = (SELECT runner_job_id FROM ${JOBS_JOB_RECORD_QUALIFIED}
+                             WHERE job_id = $1)`,
+        [candidate],
+      );
+      const held = await options.holder.query<{ state: string; status: string }>(
+        `SELECT r.state AS state, w.status AS status
+           FROM ${JOBS_PGBOSS_SCHEMA}.job r
+           JOIN ${JOBS_JOB_RECORD_QUALIFIED} w ON w.runner_job_id = r.id::text
+          WHERE w.job_id = $1`,
+        [candidate],
+      );
+      const heldRow = held.rows[0];
+      if (heldRow?.state !== "created" || heldRow?.status !== "queued") {
+        continue; // the claim won the submit→hold gap — a fresh job, a fresh cycle
+      }
+      const cancelled = await fetch(
+        `http://127.0.0.1:${options.port}/internal/jobs/v1/jobs/${candidate}`,
+        {
+          method: "DELETE",
+          headers: { [INSTRUCTION_HEADER]: await options.cancelTokenFor(candidate) },
+        },
+      );
+      expect(cancelled.status, "a held job's cancellation is deterministic").toBe(202);
+      expect(cancelled.headers.get("cache-control")).toBe("no-store");
+      expect(await cancelled.json()).toEqual({
+        server: "jobs",
+        jobId: candidate,
+        cancellationRequested: true,
+      });
+      return candidate;
+    }
+    throw new Error("no attempt's cancellation reached a held job");
   }
 
   test(
@@ -874,6 +951,442 @@ describe("signed instructions through the running process", () => {
       } finally {
         const exit = await stopServer(child);
         expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
+  test(
+    "a signed owner cancellation through the running process acknowledges the durable intent and the record reaches its terminal cancelled outcome within the healthy-service bound",
+    slow,
+    async () => {
+      // The whole cancellation chain through the real composition: the
+      // signed DELETE's intent write and runner drive, the runner row
+      // stopping before dispatch, and the composition's own recovery
+      // sweeper projecting the terminal outcome — with no test-driven pass,
+      // the bound is the service's own cadence.
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      const cancelApp = randomUUID();
+      const reader = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+      const holder = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        const delivery = '{"generation":"1","archived":false}';
+        const delivered = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${cancelApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: cancelApp,
+                  body: new TextEncoder().encode(delivery),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body: delivery,
+          },
+        );
+        expect(delivered.status).toBe(200);
+
+        // The arrangement (the helper above) holds the job off-claim and
+        // verifies before cancelling, so the 202 and the convergence below
+        // are deterministic: the record's only reachable terminal outcome is
+        // the intent's own.
+        const cancelledJobId = await cancelAHeldJob({
+          port,
+          appId: cancelApp,
+          keyPrefix: "cancel-leg",
+          holder,
+          cancelTokenFor: (jobId: string) =>
+            mintJobsInstruction(
+              {
+                operation: "cancel",
+                server: "jobs",
+                identity: {
+                  appId: cancelApp,
+                  env: "prod",
+                  ownerKind: "user",
+                  ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+                  allowedTypes: ["jobs:fetch"],
+                },
+                jobId,
+                iatS: Math.floor(Date.now() / 1000) - 1,
+              },
+              deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+            ),
+        });
+
+        // The intent is durable and the runner row stopped before dispatch;
+        // the composition's own sweeper carries the record to its terminal
+        // outcome — the 60-second healthy-service bound is the service's own
+        // cadence here, not a test's. With the row held and cancelled, the
+        // `cancelled` projection is the record's only reachable convergence.
+        await eventually(async () => {
+          const { rows } = await reader.query<{ status: string; error_code: string | null }>(
+            `SELECT status, error_code FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+            [cancelledJobId],
+          );
+          return rows[0]?.status === "cancelled";
+        }, 60_000);
+        const { rows } = await reader.query<{ status: string; error_code: string | null }>(
+          `SELECT status, error_code FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+          [cancelledJobId],
+        );
+        const record = rows[0];
+        if (!record) throw new Error(`no record row for job ${cancelledJobId}`);
+        expect(record.status).toBe("cancelled");
+        expect(record.error_code).toBe("cancelled");
+
+        // A repeated request after the terminal outcome is the 409 with the
+        // job's state — the outcome is preserved, never overwritten.
+        const repeatToken = await mintJobsInstruction(
+          {
+            operation: "cancel",
+            server: "jobs",
+            identity: {
+              appId: cancelApp,
+              env: "prod",
+              ownerKind: "user",
+              ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+              allowedTypes: ["jobs:fetch"],
+            },
+            jobId: cancelledJobId,
+            iatS: Math.floor(Date.now() / 1000) - 1,
+          },
+          deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+        );
+        const repeat = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/jobs/${cancelledJobId}`,
+          {
+            method: "DELETE",
+            headers: { [INSTRUCTION_HEADER]: repeatToken },
+          },
+        );
+        expect(repeat.status).toBe(409);
+        expect(await repeat.json()).toEqual({
+          code: "job_terminal",
+          message: JobErrorMessages.job_terminal,
+          status: "cancelled",
+          error: { code: "cancelled", message: JobErrorMessages.cancelled },
+        });
+      } finally {
+        await reader.end();
+        await holder.end();
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
+  test(
+    "a pending cancellation intent survives the process dying and the restarted composition carries it to the same terminal outcome",
+    slow,
+    async () => {
+      // Durability's process-level claim, which no store-level or
+      // test-driven-pass leg can carry: the 202's basis outlives the process
+      // that recorded it. The arrangement holds the job's runner row
+      // off-claim while the cancel lands (so the claim cannot win the
+      // submit→cancel gap), and the first child is stopped inside its own
+      // sweeper cadence — so only the restarted composition's own sweeper
+      // carries the persisted intent to its terminal outcome (or the first
+      // child's pass was due in exactly that window and the state already
+      // holds), from the shared store alone.
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN);
+      const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      const restartApp = randomUUID();
+      let childStopped = false;
+      // The arrangement writer — the store owner's own connection, for the
+      // off-claim hold and the stop-time reads.
+      const holder = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        const delivery = '{"generation":"1","archived":false}';
+        const delivered = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${restartApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: restartApp,
+                  body: new TextEncoder().encode(delivery),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body: delivery,
+          },
+        );
+        expect(delivered.status).toBe(200);
+
+        // The same held-job arrangement as the other cancel legs (the
+        // helper above): the hold+verify makes the 202 deterministic, so
+        // the stop-time state below is the reachable set, never a
+        // claim-race artifact.
+        const cancelTokenFor = (jobId: string): Promise<string> =>
+          mintJobsInstruction(
+            {
+              operation: "cancel",
+              server: "jobs",
+              identity: {
+                appId: restartApp,
+                env: "prod",
+                ownerKind: "user",
+                ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+                allowedTypes: ["jobs:fetch"],
+              },
+              jobId,
+              iatS: Math.floor(Date.now() / 1000) - 1,
+            },
+            deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+          );
+        const cancelledJobId = await cancelAHeldJob({
+          port,
+          appId: restartApp,
+          keyPrefix: "restart-cancel-leg",
+          holder,
+          cancelTokenFor,
+        });
+
+        // Stop the first process immediately: the next sweeper pass is
+        // cadences away, so the record survives as persisted intent (or, if
+        // a pass was due in exactly this window, the intent already reached
+        // its terminal outcome — the process-death durability holds either
+        // way, and the restarted half asserts the state's own promise).
+        const exit = await stopServer(child);
+        childStopped = true;
+        expect(exit.exitCode).toBe(0);
+
+        // What the dead process left: the intent durable; the record still
+        // `queued` (the crash window's exact state, reached through the
+        // real route) or already `cancelled` by a sweeper pass that ran
+        // inside the stop window — both designed, both carried below.
+        const left = await holder.query<{ status: string; cancellation_requested: boolean }>(
+          `SELECT status, cancellation_requested FROM ${JOBS_JOB_RECORD_QUALIFIED}
+              WHERE job_id = $1`,
+          [cancelledJobId],
+        );
+        const leftRow = left.rows[0];
+        expect(
+          leftRow?.status === "queued" || leftRow?.status === "cancelled",
+          `the record at stop is one of the two designed outcomes, got: ${String(leftRow?.status)}`,
+        ).toBe(true);
+        expect(leftRow).toMatchObject({ cancellation_requested: true });
+        const leftRunner = await holder.query<{ state: string }>(
+          `SELECT r.state FROM ${JOBS_PGBOSS_SCHEMA}.job r
+               JOIN ${JOBS_JOB_RECORD_QUALIFIED} w ON w.runner_job_id = r.id::text
+              WHERE w.job_id = $1`,
+          [cancelledJobId],
+        );
+        expect(leftRunner.rows[0]?.state).toBe("cancelled");
+
+        // The restarted composition on the same scratch store: its own
+        // sweeper reads the pending intent and carries it to the terminal
+        // outcome within the healthy-service bound — no request drives it.
+        const port2 = await reservePort();
+        const secondChild = await bootServer(port2, childEnv(RUNTIME_DSN, port2));
+        try {
+          await eventually(async () => {
+            const { rows } = await holder.query<{ status: string }>(
+              `SELECT status FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+              [cancelledJobId],
+            );
+            return rows[0]?.status === "cancelled";
+          }, 60_000);
+          const done = await holder.query<{
+            status: string;
+            error_code: string | null;
+            cancellation_requested: boolean;
+          }>(
+            `SELECT status, error_code, cancellation_requested
+                 FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+            [cancelledJobId],
+          );
+          expect(done.rows[0]).toMatchObject({
+            status: "cancelled",
+            error_code: "cancelled",
+            cancellation_requested: true,
+          });
+
+          // A cancellation of the restarted record answers 409 with the
+          // outcome the restarted process committed — the state is the
+          // store's, not the first process's memory.
+          const repeat = await fetch(
+            `http://127.0.0.1:${port2}/internal/jobs/v1/jobs/${cancelledJobId}`,
+            {
+              method: "DELETE",
+              headers: { [INSTRUCTION_HEADER]: await cancelTokenFor(cancelledJobId) },
+            },
+          );
+          expect(repeat.status).toBe(409);
+          expect(await repeat.json()).toMatchObject({
+            code: "job_terminal",
+            status: "cancelled",
+          });
+        } finally {
+          const secondExit = await stopServer(secondChild);
+          expect(secondExit.exitCode).toBe(0);
+        }
+      } finally {
+        if (!childStopped) {
+          const exit = await stopServer(child);
+          expect(exit.exitCode).toBe(0);
+        }
+        await holder.end();
+      }
+    },
+  );
+
+  test(
+    "two replicas on one store converge a cancellation to exactly one outcome, and either replica answers the repeat",
+    slow,
+    async () => {
+      // The multi-replica shape the fencing was designed for and no leg
+      // exercised: two processes' workers, sweepers and cancellation stores
+      // on one queue and one store. The cancel through the first replica
+      // must converge to exactly one terminal outcome through whichever
+      // replica's pass arrives first, and the second replica must read the
+      // same state the first recorded.
+      const portA = await reservePort();
+      const portB = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN);
+      let childA: ChildProcess | null = null;
+      let childB: ChildProcess | null = null;
+      const replicaApp = randomUUID();
+      // The arrangement writer (the store owner's connection) for the
+      // held-job cancellation below, and the record reads after it.
+      const holder = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+      try {
+        childA = await bootServer(portA, childEnv(RUNTIME_DSN, portA));
+        childB = await bootServer(portB, childEnv(RUNTIME_DSN, portB));
+        for (const replicaPort of [portA, portB]) {
+          await eventually(async () => {
+            const body = await pollHealth(replicaPort, 10_000);
+            return HealthStatusSchema.parse(body).status === "ok";
+          }, 30_000);
+        }
+
+        const delivery = '{"generation":"1","archived":false}';
+        const delivered = await fetch(
+          `http://127.0.0.1:${portA}/internal/jobs/v1/lifecycle/${replicaApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: replicaApp,
+                  body: new TextEncoder().encode(delivery),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body: delivery,
+          },
+        );
+        expect(delivered.status).toBe(200);
+
+        const cancelTokenFor = (jobId: string): Promise<string> =>
+          mintJobsInstruction(
+            {
+              operation: "cancel",
+              server: "jobs",
+              identity: {
+                appId: replicaApp,
+                env: "prod",
+                ownerKind: "user",
+                ownerOid: "4f7a2b3c-9d1e-4a5b-8c6d-0e2f4a6b8c0d",
+                allowedTypes: ["jobs:fetch"],
+              },
+              jobId,
+              iatS: Math.floor(Date.now() / 1000) - 1,
+            },
+            deriveJobsInstructionKey(vectorRoot("edge-to-jobs.jobs"), "edgeToJobs"),
+          );
+
+        // The submit+cancel through replica A, on the same held-job
+        // arrangement as the other cancel legs: the hold+verify makes the
+        // 202 deterministic (a claim that won the submit→hold gap retries
+        // the cycle on a fresh job), and past it the record's only reachable
+        // convergence is the intent's own `cancelled`.
+        const cancelledJobId = await cancelAHeldJob({
+          port: portA,
+          appId: replicaApp,
+          keyPrefix: "replica-cancel-leg",
+          holder,
+          cancelTokenFor,
+        });
+
+        // Either replica's sweeper may carry the intent to the terminal
+        // outcome — the conditional writes fence them to ONE outcome, and
+        // the bound is the replicas' own cadence.
+        const reader = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+        try {
+          await eventually(async () => {
+            const { rows } = await reader.query<{ status: string; error_code: string | null }>(
+              `SELECT status, error_code FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+              [cancelledJobId],
+            );
+            return rows[0]?.status === "cancelled" && rows[0]?.error_code === "cancelled";
+          }, 60_000);
+
+          // The repeat answered by the OTHER replica: the state is the
+          // store's, not the first replica's memory.
+          const repeat = await fetch(
+            `http://127.0.0.1:${portB}/internal/jobs/v1/jobs/${cancelledJobId}`,
+            {
+              method: "DELETE",
+              headers: { [INSTRUCTION_HEADER]: await cancelTokenFor(cancelledJobId) },
+            },
+          );
+          expect(repeat.status).toBe(409);
+          expect(await repeat.json()).toMatchObject({
+            code: "job_terminal",
+            status: "cancelled",
+          });
+
+          // And the record stays exactly where it converged.
+          const after = await reader.query<{ status: string }>(
+            `SELECT status FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+            [cancelledJobId],
+          );
+          expect(after.rows[0]?.status).toBe("cancelled");
+        } finally {
+          await reader.end();
+        }
+      } finally {
+        await holder.end();
+        if (childB) {
+          const exitB = await stopServer(childB);
+          expect(exitB.exitCode).toBe(0);
+        }
+        if (childA) {
+          const exitA = await stopServer(childA);
+          expect(exitA.exitCode).toBe(0);
+        }
       }
     },
   );

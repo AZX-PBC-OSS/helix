@@ -14,7 +14,12 @@ import { loadJobsConfig } from "./config.js";
 import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import { JobsStorage } from "./storage.js";
-import { makeReceiver, MemoryAdmission, MemoryLifecycle } from "./test/instructions.js";
+import {
+  makeReceiver,
+  MemoryAdmission,
+  MemoryCancellation,
+  MemoryLifecycle,
+} from "./test/instructions.js";
 
 /**
  * The listener's health contract and the unmatched-route behaviour, through
@@ -63,6 +68,7 @@ async function depsWith(
     instructions: makeReceiver().auth,
     lifecycle: new MemoryLifecycle(),
     admission: new MemoryAdmission(),
+    cancellation: new MemoryCancellation(),
     worker: () => worker,
     recovery,
   };

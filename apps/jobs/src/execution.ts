@@ -66,7 +66,12 @@ import { countExecution, failSpan, withExecutionSpan } from "./telemetry.js";
  *   transaction that judges the record's admitted generation
  *   (`lifecycleEligibilityInTx`), so work starts only under an eligible
  *   generation and a lifecycle apply cannot land between the gate's decision
- *   and the recorded start (ADR-0007).
+ *   and the recorded start (ADR-0007). The same transaction judges the
+ *   record's durable cancellation intent: a claim arriving after the intent
+ *   was recorded never runs the handler and commits the record's terminal
+ *   `cancelled` outcome in the gate's own transaction, and the begin's
+ *   projection itself is conditional on the intent, so an intent committing
+ *   between the gate's read and its write stops the attempt at the write.
  */
 
 /** The bounded progress a handler reports for its attempt. */
@@ -87,6 +92,15 @@ export interface JobsExecutionContext {
   input: unknown;
   /** Which attempt this execution is — 1 for the first, +1 per retry. */
   attempt: number;
+  /**
+   * Aborts when the attempt can no longer land its outcome: the runner claim
+   * was cancelled or expired (the dependency aborts the per-job signal when
+   * its heartbeat finds the claim gone). A supported handler honors it —
+   * bounded I/O stops rather than running on past its own fence — and an
+   * ignored one changes nothing: the claim's settlement is fenced either
+   * way, so the attempt's result can never land after the abort.
+   */
+  signal: AbortSignal;
   /**
    * Persist one bounded progress snapshot for THIS attempt. Answers
    * `refused` — and writes nothing — when the value is off the bounded shape
@@ -223,14 +237,16 @@ export interface JobsAttemptRecord {
  * What one attempt's begin decided. `started` hands back the record and the
  * attempt number the projection wrote; the refusals leave the record
  * untouched and the claim to the runner's own retry policy — except the
- * deadline refusal, which terminates the record itself (the timeout outcome
- * committed in the same transaction that decided it, so recovery never
- * authorizes execution after the deadline).
+ * deadline refusal and the cancellation refusal, which terminate the record
+ * themselves (their outcomes committed in the same transaction that decided
+ * them, so recovery never authorizes execution past the deadline and never
+ * re-runs cancelled work).
  */
 export type BeginAttemptVerdict =
   | { verdict: "started"; record: JobsAttemptRecord; attempt: number }
   | { verdict: "gate_refused"; reason: "closed" | "unseen" }
   | { verdict: "deadline_exceeded"; record: JobsAttemptRecord }
+  | { verdict: "cancelled"; record: JobsAttemptRecord }
   | { verdict: "terminal_fenced" };
 
 export interface JobsExecutionStoreOptions {
@@ -273,6 +289,30 @@ export async function terminatePastDeadline(
   return updated.rowCount ?? 0;
 }
 
+/**
+ * The cancellation outcome's one write — the statement every committer of
+ * the terminal `cancelled` outcome runs: the worker-start gate's intent arm,
+ * the gate's fenced-begin re-read, and the recovery sweeper's cancellation
+ * arm. Conditional on the record still being nonterminal; returns the
+ * affected count, so a caller that lost a race to a competing terminal write
+ * knows nothing was changed (the first terminal outcome to commit wins). The
+ * attempt and progress columns stay — they are the attribution of the work
+ * the cancellation denied.
+ */
+export async function projectCancellation(
+  executor: Pick<Pool, "query"> | Pick<PoolClient, "query">,
+  server: string,
+  jobId: string,
+): Promise<number> {
+  const updated = await executor.query(
+    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+        SET status = 'cancelled', error_code = 'cancelled'
+      WHERE server = $1 AND job_id = $2 AND NOT (status = ANY($3::text[]))`,
+    [server, jobId, JOB_TERMINAL_STATUSES],
+  );
+  return updated.rowCount ?? 0;
+}
+
 /** The structural logger the execution seam reports through (the pino surface, without importing Fastify). */
 export interface JobsExecutionLogger {
   info(obj: Record<string, unknown>, msg: string): void;
@@ -292,6 +332,7 @@ interface RecordRow {
   env: string;
   status: string;
   generation: string;
+  cancellation_requested: boolean;
   created_at: Date;
 }
 
@@ -356,7 +397,8 @@ export class JobsExecutionStore {
       await client.query("BEGIN");
       try {
         const found = await client.query<RecordRow>(
-          `SELECT server, job_id, type, app_id, env, status, generation, created_at
+          `SELECT server, job_id, type, app_id, env, status, generation,
+                  cancellation_requested, created_at
              FROM ${JOBS_JOB_RECORD_QUALIFIED}
             WHERE runner_job_id = $1`,
           [runnerJobId],
@@ -411,21 +453,92 @@ export class JobsExecutionStore {
             : { verdict: "terminal_fenced" };
         }
 
+        // Durable cancellation intent: the owner's (or a lifecycle
+        // delivery's) recorded request was committed before this claim, so
+        // the work must not start and the terminal `cancelled` outcome
+        // commits here — the same transaction that decided it, so the
+        // intent can never turn into a run or a retry (spec criterion 48).
+        // Conditional like every terminal write: a completion that settled
+        // the record between the read and here loses this write, and its
+        // outcome keeps the record.
+        if (row.cancellation_requested) {
+          const cancelled = await projectCancellation(client, row.server, row.job_id);
+          await client.query("COMMIT");
+          return cancelled === 1
+            ? {
+                verdict: "cancelled",
+                record: {
+                  server: row.server,
+                  jobId: row.job_id,
+                  type: row.type,
+                  appId: row.app_id,
+                  env: row.env,
+                },
+              }
+            : { verdict: "terminal_fenced" };
+        }
+
         // The attempt's projection, conditional on the record still being
         // nonterminal AND this attempt's number being newer than the stored
-        // one: a competing terminal write between the read and here loses
-        // this update, and so does a claim whose begin was delayed past its
-        // own claim expiry and lands after a newer claim's begin — the stale
-        // attempt number is fenced instead of overwriting the newer one.
+        // one AND no cancellation intent having been recorded: a competing
+        // terminal write between the read and here loses this update, so
+        // does a claim whose begin was delayed past its own claim expiry and
+        // lands after a newer claim's begin — the stale attempt number is
+        // fenced instead of overwriting the newer one — and a cancellation
+        // intent committed in the gap between the read above and this write
+        // stops the attempt at the write itself (queued cancelled work never
+        // starts).
         const updated = await client.query(
           `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
               SET status = 'running', attempt = $1, progress = NULL, error_code = NULL
             WHERE server = $2 AND job_id = $3
               AND NOT (status = ANY($4::text[]))
+              AND NOT cancellation_requested
               AND (attempt IS NULL OR attempt < $1)`,
           [attempt, row.server, row.job_id, JOB_TERMINAL_STATUSES],
         );
         if ((updated.rowCount ?? 0) !== 1) {
+          // The projection was fenced — a terminal write won the gap, the
+          // attempt number went stale, or the intent committed inside it
+          // (the fence's whole purpose). Re-read to distinguish: a record
+          // still non-terminal and carrying the intent gets its terminal
+          // `cancelled` outcome committed HERE, in the transaction that
+          // discovered the race — the handler never runs, and the claim's
+          // settle through the runner's own retry policy can never leave a
+          // code-less failed row for the recovery path to mislabel as a
+          // platform crash. The intent's projection is conditional like
+          // every terminal write: a competing outcome committing inside
+          // this second gap loses it, and the fence's original answer
+          // stands.
+          const current = await client.query<{
+            status: string;
+            cancellation_requested: boolean;
+          }>(
+            `SELECT status, cancellation_requested
+               FROM ${JOBS_JOB_RECORD_QUALIFIED}
+              WHERE server = $1 AND job_id = $2`,
+            [row.server, row.job_id],
+          );
+          const currentRow = current.rows[0];
+          const stillOpen =
+            currentRow !== undefined &&
+            !(JOB_TERMINAL_STATUSES as readonly string[]).includes(publicStatus(currentRow.status));
+          if (stillOpen && currentRow.cancellation_requested) {
+            const cancelled = await projectCancellation(client, row.server, row.job_id);
+            await client.query("COMMIT");
+            return cancelled === 1
+              ? {
+                  verdict: "cancelled",
+                  record: {
+                    server: row.server,
+                    jobId: row.job_id,
+                    type: row.type,
+                    appId: row.app_id,
+                    env: row.env,
+                  },
+                }
+              : { verdict: "terminal_fenced" };
+          }
           await client.query("ROLLBACK");
           return { verdict: "terminal_fenced" };
         }
@@ -768,11 +881,32 @@ export class JobsExecution {
     if (begun.verdict === "terminal_fenced") {
       this.log.warn(
         { event: "jobs.execution.terminal_fenced", runnerJobId: job.id },
-        "the record was already terminal — the attempt did not run",
+        "the record was already terminal or carries a durable cancellation — the attempt did not run",
       );
       span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
       countExecution("terminal_fenced");
-      throw new JobsStartRefused("the record was already terminal");
+      throw new JobsStartRefused(
+        "the record was already terminal or carries a durable cancellation",
+      );
+    }
+    if (begun.verdict === "cancelled") {
+      const { record } = begun;
+      span.setAttributes({
+        [ATTR_APP_ID]: record.appId,
+        [ATTR_JOBS_TYPE]: record.type,
+        [ATTR_JOBS_JOB_ID]: record.jobId,
+      });
+      this.log.info(
+        {
+          event: "jobs.execution.cancelled_before_start",
+          runnerJobId: job.id,
+          appId: record.appId,
+        },
+        "the worker-start gate committed the record's cancellation — the durable intent was recorded before the attempt could begin",
+      );
+      span.setAttribute(ATTR_OUTCOME, "cancelled" satisfies JobsExecuteOutcome);
+      countExecution("cancelled");
+      throw new JobsStartRefused("the job's cancellation was recorded before this attempt");
     }
     const { record, attempt } = begun;
     span.setAttributes({
@@ -869,10 +1003,14 @@ export class JobsExecution {
     }
 
     // The handler's attempt. Its result is any JSON value within the
-    // platform's bound; its distinct failures carry their own reasons.
+    // platform's bound; its distinct failures carry their own reasons. The
+    // attempt's own abort signal rides with it: the runner claim's
+    // cancellation (an owner's or a lifecycle delivery's) and expiry are
+    // what trip it, and a supported handler stops its bounded I/O on it.
     const raw = await handler({
       input: parsed.data,
       attempt,
+      signal: job.signal,
       report: (progress) => this.store.reportProgress(record, attempt, progress),
     });
     const stored = serializeBoundedResult(raw);

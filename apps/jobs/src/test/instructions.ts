@@ -5,7 +5,14 @@ import {
   JOBS_FETCH_QUALIFIED_TYPE,
   type JobsLifecycleUpdate,
 } from "@azx-pbc/shared";
-import { JobsSubmitClaimsSchema, type JobsSubmitClaims } from "@azx-pbc/shared/jobsSigning";
+import {
+  JobsCancelClaimsSchema,
+  JobsSubmitClaimsSchema,
+  sha256BodyDigest,
+  JOBS_EMPTY_BODY,
+  type JobsCancelClaims,
+  type JobsSubmitClaims,
+} from "@azx-pbc/shared/jobsSigning";
 import {
   deriveJobsInstructionKey,
   mintJobsInstruction,
@@ -14,6 +21,7 @@ import {
 import type { FastifyInstance } from "fastify";
 
 import type { JobsAdmission, JobsAdmissionRequest, JobsAdmissionResult } from "../acceptance.js";
+import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "../cancellation.js";
 import type { JobsBurnOutcome, JobsBurnStore } from "../burns.js";
 import { createJobsInstructionAuth, type JobsInstructionAuth } from "../instructionAuth.js";
 import { buildApp } from "../app.js";
@@ -177,20 +185,54 @@ export class MemoryAdmission implements JobsAdmission {
 }
 
 /**
+ * The in-memory cancellation seam — the `JobsCancellation` seam's second
+ * implementor, for the ROUTE's tests: the route's contract is mapping a
+ * cancellation verdict onto the protocol's responses and span vocabulary,
+ * and a leg arms the verdict it wants answered (or `failRequests` to pin the
+ * store-failure mapping). The durable intent's own semantics — the
+ * conditional write, the ownership/grant refusals, the runner drive — are
+ * pinned against real Postgres and the real runner in
+ * `cancellation.integration.test.ts`.
+ */
+export class MemoryCancellation implements JobsCancellation {
+  calls = 0;
+  lastRequest: JobsCancelRequest | null = null;
+  failRequests = false;
+  verdict: JobsCancelVerdict = { outcome: "requested" };
+
+  async requestCancel(request: JobsCancelRequest): Promise<JobsCancelVerdict> {
+    this.calls += 1;
+    this.lastRequest = request;
+    if (this.failRequests) {
+      throw new Error("injected cancellation-store failure");
+    }
+    return this.verdict;
+  }
+}
+
+/**
  * A built app with a ready store, the receiver seam, and nothing else wired.
- * The lifecycle and admission seams ride along as in-memory doubles — the
- * lifecycle route's accepted path against the REAL store is covered in
- * `lifecycle.integration.test.ts` and the boot suite; the submit route's is
- * covered in `acceptance.integration.test.ts`.
+ * The lifecycle, admission and cancellation seams ride along as in-memory
+ * doubles — the lifecycle route's accepted path against the REAL store is
+ * covered in `lifecycle.integration.test.ts` and the boot suite; the submit
+ * route's is covered in `acceptance.integration.test.ts`; the cancel route's
+ * is covered in `cancellation.integration.test.ts`.
  */
 export async function appWithReceiver(receiver: TestReceiver): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
   admission: MemoryAdmission;
+  cancellation: MemoryCancellation;
 }> {
   const admission = new MemoryAdmission();
-  const { app, storage } = await appWithLifecycle(receiver, new MemoryLifecycle(), admission);
-  return { app, storage, admission };
+  const cancellation = new MemoryCancellation();
+  const { app, storage } = await appWithLifecycle(
+    receiver,
+    new MemoryLifecycle(),
+    admission,
+    cancellation,
+  );
+  return { app, storage, admission, cancellation };
 }
 
 /** A built app whose lifecycle seam is the given applier. */
@@ -198,6 +240,7 @@ export async function appWithLifecycle(
   receiver: TestReceiver,
   lifecycle: JobsLifecycleApplier,
   admission: JobsAdmission = new MemoryAdmission(),
+  cancellation: JobsCancellation = new MemoryCancellation(),
 ): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
@@ -208,6 +251,7 @@ export async function appWithLifecycle(
     instructions: receiver.auth,
     lifecycle,
     admission,
+    cancellation,
     // The route suites exercise the receiver's routes, not the worker or the
     // sweeper; the supervision states they report are the registered
     // composition's, with the sweeper's last pass fresh.
@@ -283,5 +327,49 @@ export function submitClaims(
     type: spec.type,
     generation: spec.generation,
     idempotencyKey: spec.idempotencyKey,
+  });
+}
+
+/** A cancel spec over the shared fixed world (the bodyless operation binds the empty digest). */
+export function cancelSpec(
+  over: Partial<
+    Extract<JobsInstructionMintSpec, { operation: "snapshot" | "result" | "cancel" }>
+  > = {},
+): Extract<JobsInstructionMintSpec, { operation: "snapshot" | "result" | "cancel" }> {
+  return {
+    operation: "cancel",
+    server: JOBS_SERVER_NAME,
+    identity: { ...TEST_IDENTITY },
+    jobId: TEST_JOB_ID,
+    iatS: TEST_IAT,
+    ...over,
+  };
+}
+
+/**
+ * A cancel-claims object as the receiver's verification produces it — the
+ * trusted input the cancellation seam consumes. Callers of the cancellation
+ * store directly (the integration suite) build these instead of minting
+ * tokens; the schema conformance is the signing vectors' seam. The digest is
+ * the bodyless operation's real one (SHA-256 of empty), so the fixture is
+ * exactly the claims a verified cancel instruction would carry.
+ */
+export function cancelClaims(
+  over: Partial<
+    Extract<JobsInstructionMintSpec, { operation: "snapshot" | "result" | "cancel" }>
+  > = {},
+): JobsCancelClaims {
+  const spec = cancelSpec(over);
+  return JobsCancelClaimsSchema.parse({
+    server: spec.server,
+    operation: "cancel",
+    method: "DELETE",
+    resource: `/internal/jobs/v1/jobs/${spec.jobId}`,
+    bodySha256: sha256BodyDigest(JOBS_EMPTY_BODY),
+    appId: spec.identity.appId,
+    env: spec.identity.env,
+    ownerKind: spec.identity.ownerKind,
+    ownerOid: spec.identity.ownerOid,
+    allowedTypes: [...spec.identity.allowedTypes],
   });
 }

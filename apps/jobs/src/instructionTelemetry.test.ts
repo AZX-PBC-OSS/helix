@@ -9,6 +9,7 @@ import { JobsOperations } from "@azx-pbc/shared/jobsSigning";
 import {
   appWithLifecycle,
   appWithReceiver,
+  cancelSpec,
   instructionHeaders,
   makeReceiver,
   MemoryLifecycle,
@@ -170,6 +171,66 @@ describe("instruction telemetry", () => {
       // the counter's vocabulary, and a run of unavailable is the operator's
       // burn-store-down signal.
       expect((await unavailableCount()) - before).toBe(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("a served cancellation's span carries the operation's own outcome and none of the owner's identity", async () => {
+    const receiver = makeReceiver();
+    const { app, storage, cancellation } = await appWithReceiver(receiver);
+    try {
+      // The served request's span: the verification verdict's "accepted" is
+      // superseded by the operation's own outcome, and the bounded evidence
+      // is the addressed app and the job's public id — the join an operator
+      // can make, never the owner identity or a retry key.
+      await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec())),
+      });
+      const requested = recording.spans().at(-1);
+      expect(requested?.name).toBe("helix.jobs.cancel");
+      expect(requested?.attributes["helix.outcome"]).toBe("requested");
+      expect(requested?.attributes["helix.app_id"]).toBe(TEST_IDENTITY.appId);
+      expect(requested?.attributes["helix.jobs.job_id"]).toBe(TEST_JOB_ID);
+      expect(requested?.status.code).toBe(0); // UNSET — the designed answer
+      for (const [key, value] of Object.entries(requested?.attributes ?? {})) {
+        expect(String(value), `attr ${key} carries an owner oid`).not.toContain(
+          TEST_IDENTITY.ownerOid,
+        );
+      }
+
+      // The refusals answer their own outcomes: a foreign job is the same
+      // 404 an unknown job answers with, a terminal job the 409 with its
+      // state — both UNSET (designed answers, not faults).
+      cancellation.verdict = { outcome: "not_found" };
+      await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec())),
+      });
+      expect(recording.spans().at(-1)?.attributes["helix.outcome"]).toBe("not_found");
+      cancellation.verdict = { outcome: "terminal", status: "succeeded", error: null };
+      await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec())),
+      });
+      expect(recording.spans().at(-1)?.attributes["helix.outcome"]).toBe("terminal");
+
+      // A store that cannot decide is the retryable 503 — and its span
+      // grades ERROR, the same rule the submit route's unavailable answers.
+      cancellation.failRequests = true;
+      await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec())),
+      });
+      const unavailable = recording.spans().at(-1);
+      expect(unavailable?.attributes["helix.outcome"]).toBe("unavailable");
+      expect(unavailable?.status.code).toBe(2); // ERROR
     } finally {
       await app.close();
       await storage.stop();

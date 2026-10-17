@@ -428,6 +428,34 @@ export const JOBS_SUBMIT_OUTCOMES = [
 export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
 
 /**
+ * How the jobs service answered one owner-cancellation request — the final
+ * `helix.outcome` on the `helix.jobs.cancel` route span (overwriting the
+ * verification verdict once the operation runs). Bounded by construction:
+ * each value is one exit of the cancellation decision.
+ *
+ * - `requested` — the intent is durable (including a harmless repeat while
+ *   the job is still active) and the runner cancellation was driven; answered
+ *   202. The acknowledgement confirms intent, not a terminal outcome.
+ * - `not_found` — no record answers the reference, or its identity does not
+ *   match the signed caller: the same 404 an unknown job answers with, never
+ *   a disclosure of someone else's job.
+ * - `forbidden` — the signed caller's grants do not cover the record's job
+ *   type: 403, nothing recorded.
+ * - `terminal` — the job already carries a terminal outcome: 409 with that
+ *   status, and the outcome is left exactly as it was.
+ * - `unavailable` — the cancellation store could not answer: nothing was
+ *   recorded, answered with the retryable 503.
+ */
+export const JOBS_CANCEL_OUTCOMES = [
+  "requested",
+  "not_found",
+  "forbidden",
+  "terminal",
+  "unavailable",
+] as const;
+export type JobsCancelOutcome = (typeof JOBS_CANCEL_OUTCOMES)[number];
+
+/**
  * How the jobs worker disposed of one execution attempt — the final
  * `helix.outcome` on the `helix.jobs.execute` span, and the dimension on the
  * `helix.jobs.executions` counter. One word, one meaning, and every value is
@@ -448,6 +476,10 @@ export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
  *   its absolute deadline (from acceptance, queue wait and retries included)
  *   had passed, and terminated it with the platform's timeout outcome in the
  *   same transaction: recovery never authorizes execution after the deadline.
+ * - `cancelled` — the worker-start gate found the record's durable
+ *   cancellation intent and committed its terminal `cancelled` outcome in the
+ *   gate's own transaction: the handler never executed, and the intent can
+ *   never turn into a run or a retry.
  * - `terminal_fenced` — the attempt was fenced and no outcome was projected:
  *   the record was already terminal when the worker reached it, or the
  *   runner claim had lapsed before the attempt could settle (a late
@@ -461,6 +493,7 @@ export const JOBS_EXECUTE_OUTCOMES = [
   "failed",
   "gate_refused",
   "deadline_exceeded",
+  "cancelled",
   "terminal_fenced",
   "unavailable",
 ] as const;
@@ -485,14 +518,21 @@ export type JobsExecuteOutcome = (typeof JOBS_EXECUTE_OUTCOMES)[number];
  *   still read `running`: the record is put back to `queued` with the failed
  *   attempt's attribution retained, and the next claim re-drives the work.
  * - `cancelled` — the runner row was cancelled while the wrapper record was
- *   not yet terminal: the cancellation is projected (recovery never reissues
- *   cancelled work).
+ *   not yet terminal; or the record carried a pending owner/lifecycle
+ *   cancellation intent on a runner row still waiting or active (the pass
+ *   re-drives that runner cancellation first); or the record's intent was
+ *   pending on a code-less failed settle — the fence's own signature (the
+ *   claim refused because the intent committed, or the drive was lost and
+ *   the claim expired), never a platform crash: the cancellation is
+ *   projected (recovery never reissues cancelled work).
  * - `row_missing` — no runner row answered for a non-terminal record: the
  *   store is inconsistent (the acceptance transaction commits both), reported
  *   loudly and left for the deadline arm's bounded termination.
  * - `fenced` — the reconciliation's conditional write lost a race against a
  *   concurrent terminal write (another replica's sweeper, a worker settling,
- *   a cancellation): nothing was changed.
+ *   a cancellation), or a pending cancellation's runner re-drive could not
+ *   confirm the row stopped and the projection was left for the next pass:
+ *   nothing was changed.
  */
 export const JOBS_RECOVER_OUTCOMES = [
   "deadline_exceeded",

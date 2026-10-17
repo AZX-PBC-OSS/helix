@@ -4,6 +4,7 @@ import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { JobsAcceptanceStore } from "./acceptance.js";
 import { JobsInstructionBurns } from "./burns.js";
+import { JobsCancellationStore } from "./cancellation.js";
 import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
 import { JobsExecution, JobsHandlerRegistry } from "./execution.js";
@@ -128,13 +129,28 @@ const runner = new JobsRunner({
 });
 
 // The recovery sweeper — the interruption-recovery loop that reconciles the
-// non-terminal wrapper records against the runner rows' own state and
-// enforces the absolute deadline. Its runner-row reads ride the runner's
-// instance through the jobState seam; its writes ride its own pool.
+// non-terminal wrapper records against the runner rows' own state, enforces
+// the absolute deadline and carries a pending owner/lifecycle cancellation
+// to its terminal outcome. Its runner-row reads ride the runner's instance
+// through the jobState seam; its re-drives of a pending cancellation ride
+// the same instance through the runner's fenced cancel; its writes ride its
+// own pool.
 const recovery = new JobsRecovery({
   databaseUrl: config.databaseUrl,
   statementTimeoutMs: config.statementTimeoutMs,
   readRunnerJob: (runnerJobId) => runner.jobState(runnerJobId),
+  cancelRunnerJob: (runnerJobId) => runner.cancelJob(runnerJobId),
+  log: lateLog,
+});
+
+// The owner-cancellation store — the durable intent write (the
+// acknowledgement's basis) plus the runner drive, in that order. Its runner
+// cancel rides the runner's instance through the same fenced seam the
+// sweeper re-drives through.
+const cancellation = new JobsCancellationStore({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  cancelRunnerJob: (runnerJobId) => runner.cancelJob(runnerJobId),
   log: lateLog,
 });
 
@@ -159,6 +175,7 @@ const app = buildApp({
   }),
   lifecycle,
   admission,
+  cancellation,
   worker: () => runner.snapshot,
   recovery: () => recovery.snapshot(),
 });
@@ -167,13 +184,15 @@ logRef.current = app.log;
 // The health-first boot contract: the listener comes up before the store is
 // usable, `/health` reports the store's state honestly while the bounded
 // retries continue, and shutdown releases what startup acquired — the
-// recovery sweeper's pool and timer, the runner instance and its retry
-// timer, the execution store's pool, the acceptance store's pool, the
-// lifecycle pool, the sweep timer and pool, the probes' timer and pool,
-// then the telemetry flush (ADR-0009). The sweeper releases before the
-// runner: its runner-row reads ride the runner's instance.
+// recovery sweeper's pool and timer, the cancellation store's pool, the
+// runner instance and its retry timer, the execution store's pool, the
+// acceptance store's pool, the lifecycle pool, the sweep timer and pool,
+// the probes' timer and pool, then the telemetry flush (ADR-0009). The
+// sweeper and the cancellation store release before the runner: both drive
+// runner cancels through the runner's instance.
 app.addHook("onClose", async () => {
   await recovery.stop();
+  await cancellation.stop();
   await runner.stop();
   await execution.stop();
   await admission.stop();
@@ -197,6 +216,7 @@ try {
   execution.start();
   runner.start();
   recovery.start();
+  cancellation.start();
   admission.start();
   await app.listen({ port, host });
   app.log.info(
@@ -214,10 +234,12 @@ try {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
   // storage.start(), burns.start(), lifecycle.start(), execution.start(),
-  // runner.start(), recovery.start() and admission.start() have already
-  // acquired their resources; release them here, not only on the shutdown
+  // runner.start(), recovery.start(), cancellation.start() and
+  // admission.start() have already acquired their resources; release them
+  // here, not only on the shutdown
   // path, bounded by each pool's own connect timeout.
   await recovery.stop();
+  await cancellation.stop();
   await runner.stop();
   await execution.stop();
   await admission.stop();

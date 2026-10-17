@@ -1,15 +1,22 @@
 import { describe, expect, test } from "vitest";
 
-import { INSTRUCTION_HEADER, JobErrorMessages, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
+import {
+  INSTRUCTION_HEADER,
+  JobErrorMessages,
+  JOBS_FETCH_QUALIFIED_TYPE,
+  JOBS_MAX_INPUT_BYTES,
+} from "@azx-pbc/shared";
 
 import { buildApp } from "./app.js";
 import type { JobsLifecycleApplyResult } from "./lifecycle.js";
 import {
   appWithLifecycle,
   appWithReceiver,
+  cancelSpec,
   instructionHeaders,
   makeReceiver,
   MemoryAdmission,
+  MemoryCancellation,
   mint,
   MemoryLifecycle,
   storageIn,
@@ -42,8 +49,8 @@ const UNAUTHORIZED_BODY = {
 
 async function readyApp() {
   const receiver = makeReceiver();
-  const { app, storage, admission } = await appWithReceiver(receiver);
-  return { receiver, app, storage, admission };
+  const { app, storage, admission, cancellation } = await appWithReceiver(receiver);
+  return { receiver, app, storage, admission, cancellation };
 }
 
 async function close(app: Awaited<ReturnType<typeof readyApp>>["app"], storage: unknown) {
@@ -159,12 +166,12 @@ describe("the signed operation routes", () => {
     }
   });
 
-  test("each other operation accepts its own instruction and nothing else", async () => {
-    const { app, storage } = await readyApp();
+  test("each operation accepts its own instruction and nothing else", async () => {
+    const { app, storage, cancellation } = await readyApp();
     try {
-      // Snapshot, result, cancel: the bodyless operations on their routes,
+      // Snapshot and result: the bodyless operations on their routes,
       // still placeholder-served until their tickets land.
-      for (const operation of ["snapshot", "result", "cancel"] as const) {
+      for (const operation of ["snapshot", "result"] as const) {
         const token = await mint({
           operation,
           server: "jobs",
@@ -173,13 +180,39 @@ describe("the signed operation routes", () => {
           iatS: TEST_IAT,
         });
         const res = await app.inject({
-          method: operation === "cancel" ? "DELETE" : "GET",
+          method: "GET",
           url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}${operation === "result" ? "/result" : ""}`,
           headers: instructionHeaders(token),
         });
         expect(res.statusCode, operation).toBe(503);
         expect(res.json(), operation).toEqual(UNAVAILABLE_BODY);
       }
+
+      // Cancel: served (the owner-cancellation seam's durable intent plus
+      // runner drive). Its full response mapping is the next tests; this
+      // leg pins that a valid instruction reaches the operation through the
+      // real composition with exactly the verified claims.
+      const token = await mint(cancelSpec());
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(token),
+      });
+      expect(res.statusCode).toBe(202);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual({
+        server: "jobs",
+        jobId: TEST_JOB_ID,
+        cancellationRequested: true,
+      });
+      expect(cancellation.calls).toBe(1);
+      expect(cancellation.lastRequest?.claims.operation).toBe("cancel");
+      expect(cancellation.lastRequest?.claims.appId).toBe(TEST_IDENTITY.appId);
+      expect(cancellation.lastRequest?.claims.env).toBe(TEST_IDENTITY.env);
+      expect(cancellation.lastRequest?.claims.ownerKind).toBe(TEST_IDENTITY.ownerKind);
+      expect(cancellation.lastRequest?.claims.ownerOid).toBe(TEST_IDENTITY.ownerOid);
+      expect(cancellation.lastRequest?.claims.allowedTypes).toEqual([JOBS_FETCH_QUALIFIED_TYPE]);
+      expect(cancellation.lastRequest?.jobId).toBe(TEST_JOB_ID);
 
       // Lifecycle: the portal's direction, its own root — served (the
       // generation authority's apply-before-acknowledge receiver), answered
@@ -202,6 +235,100 @@ describe("the signed operation routes", () => {
       expect(lifecycle.statusCode).toBe(200);
       expect(lifecycle.headers["cache-control"]).toBe("no-store");
       expect(lifecycle.json()).toEqual({ appliedGeneration: "8" });
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a cancellation's verdicts map onto the protocol's fixed responses", async () => {
+    const { app, storage, cancellation } = await readyApp();
+    try {
+      const cases = [
+        {
+          verdict: { outcome: "requested" },
+          status: 202,
+          body: { server: "jobs", jobId: TEST_JOB_ID, cancellationRequested: true },
+        },
+        {
+          verdict: { outcome: "not_found" },
+          status: 404,
+          body: { code: "job_not_found", message: JobErrorMessages.job_not_found },
+        },
+        {
+          verdict: { outcome: "forbidden" },
+          status: 403,
+          body: { code: "forbidden", message: JobErrorMessages.forbidden },
+        },
+        {
+          verdict: {
+            outcome: "terminal",
+            status: "succeeded",
+            error: null,
+          },
+          status: 409,
+          body: {
+            code: "job_terminal",
+            message: JobErrorMessages.job_terminal,
+            status: "succeeded",
+            error: null,
+          },
+        },
+        {
+          verdict: {
+            outcome: "terminal",
+            status: "failed",
+            error: { code: "upstream_error", message: JobErrorMessages.upstream_error },
+          },
+          status: 409,
+          body: {
+            code: "job_terminal",
+            message: JobErrorMessages.job_terminal,
+            status: "failed",
+            error: { code: "upstream_error", message: JobErrorMessages.upstream_error },
+          },
+        },
+      ] as const;
+      for (const c of cases) {
+        cancellation.verdict = c.verdict;
+        const res = await app.inject({
+          method: "DELETE",
+          url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+          headers: instructionHeaders(await mint(cancelSpec())),
+        });
+        expect(res.statusCode, c.verdict.outcome).toBe(c.status);
+        expect(res.headers["cache-control"], c.verdict.outcome).toBe("no-store");
+        expect(res.json(), c.verdict.outcome).toEqual(c.body);
+      }
+      // A store that cannot decide is the retryable unavailability — never
+      // a fabricated acknowledgement or refusal.
+      cancellation.failRequests = true;
+      const failed = await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec())),
+      });
+      expect(failed.statusCode).toBe(503);
+      expect(failed.json()).toEqual(UNAVAILABLE_BODY);
+    } finally {
+      await close(app, storage);
+    }
+  });
+
+  test("a cancel instruction bound to another job's resource is refused before the seam", async () => {
+    const { app, storage, cancellation } = await readyApp();
+    try {
+      // The signed resource names one job id; the route served a different
+      // one. The receiver rebuilds the resource from the ROUTE and refuses
+      // before the token is spent — the seam is never reached.
+      const token = await mint(cancelSpec({ jobId: "aDifferentJobId1234567" }));
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(token),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual(UNAUTHORIZED_BODY);
+      expect(cancellation.calls).toBe(0);
     } finally {
       await close(app, storage);
     }
@@ -679,6 +806,7 @@ describe("the signed operation routes", () => {
       instructions: receiver.auth,
       lifecycle,
       admission: new MemoryAdmission(),
+      cancellation: new MemoryCancellation(),
       worker: () => ({ started: true, workerRegistered: true }),
       recovery: () => ({
         started: true,

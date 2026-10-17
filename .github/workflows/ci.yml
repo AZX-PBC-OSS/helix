@@ -123,8 +123,21 @@ jobs:
         shard: ["1/3", "2/3", "3/3"]
 
     services:
-      # Matches .devcontainer/docker-compose.yml's `db`. Least-privilege runtime
-      # roles are created below from the same db-init SQL the container uses.
+      # Matches .devcontainer/docker-compose.yml's `db` in image, credentials,
+      # ports and the db-init SQL (the runtime roles) — deliberately NOT the
+      # dev cluster's `max_connections = 300` override, which a service
+      # container cannot carry (there is no `command:`, and services start
+      # before any step could ALTER SYSTEM + restart). The default 100 slots
+      # are sized for this job's shape: a shard runs ~a third of the suite on
+      # one runner's few cores (4 vCPU on current GitHub-hosted images), so
+      # only a few integration files (each ~6-10 pool
+      # connections at its peak) are ever concurrent here — the local
+      # full-suite peak that needed the raise (~95/100 across ~15 concurrent
+      # integration files on 14 cores) does not arise per shard. The browser
+      # lane's Postgres pressure is smaller still. If a shard ever fails with
+      # "remaining connection slots are reserved", the honest fix is moving
+      # this service to a `docker run` step (the Azurite pattern below) with
+      # the flag — not lowering the suite's own pool sizes.
       db:
         image: postgres:18
         env:

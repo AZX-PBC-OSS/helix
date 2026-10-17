@@ -31,7 +31,8 @@ import {
   jobsRuntimeBossOptions,
 } from "./policy.js";
 import { JobsRecovery, type JobsRecoveryLogger } from "./recovery.js";
-import { readRunnerJobState } from "./runner.js";
+import type { RunnerJobCanceller } from "./cancellation.js";
+import { cancelRunnerJob, readRunnerJobState } from "./runner.js";
 import { seedRunnerJobWithRecord } from "./test/recordSeed.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 import { TEST_IDENTITY } from "./test/instructions.js";
@@ -75,6 +76,15 @@ const LOG = {
 
 const LIMITS: JobsCapacityLimits = resolveJobsCapacityLimits();
 
+/**
+ * The stub canceller every leg that arranges no pending cancellation runs
+ * with: if a decision ever reaches it, the leg's arrangement is wrong and
+ * the throw fails the pass loudly, never silently.
+ */
+const neverCancel: RunnerJobCanceller = async () => {
+  throw new Error("no pending cancellation is arranged in this leg");
+};
+
 /** Bounded wait for a store state the machinery's own cadence produces. */
 async function waitFor(what: string, probe: () => Promise<boolean>): Promise<void> {
   const by = Date.now() + 45_000;
@@ -114,11 +124,13 @@ beforeAll(async () => {
   // that need unclaimed work hold the runner row off-claim with startAfter.
   await execution.registerOn(boss);
   // The sweeper's cadence is test-driven (every pass below is explicit);
-  // its runner-row reads are the production mapping over a started instance.
+  // its runner-row reads and its cancellation re-drives are the production
+  // mappings over a started instance.
   recovery = new JobsRecovery({
     databaseUrl: RUNTIME_DSN,
     statementTimeoutMs: 10_000,
     readRunnerJob: (runnerJobId) => readRunnerJobState(boss, runnerJobId),
+    cancelRunnerJob: (runnerJobId) => cancelRunnerJob(boss, runnerJobId),
     intervalMs: 3_600_000,
     log: LOG,
   });
@@ -236,6 +248,7 @@ function sweeperWithInterleavedRead(
   interleave: () => Promise<void>,
 ): JobsRecovery {
   return new JobsRecovery({
+    cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
     databaseUrl: RUNTIME_DSN,
     statementTimeoutMs: 10_000,
     readRunnerJob: async (candidate) => {
@@ -532,6 +545,7 @@ describe("the sweeper's own supervision", () => {
     const appId = anApp();
     const jobId = await seedJob({ appId, startAfterSeconds: 3_600 });
     const broken = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async () => ({ verdict: "unavailable", reason: "the runner has not started" }),
@@ -554,6 +568,7 @@ describe("the sweeper's own supervision", () => {
 
   test("runPass is safe after stop, and the component does not restart", async () => {
     const once = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async () => ({ verdict: "missing" }),
@@ -573,6 +588,7 @@ describe("the sweeper's own supervision", () => {
     // pins it: no pass is counted, no instant recorded, and the snapshot the
     // jobs_sweeper check grades still reads not-started.
     const dormant = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async () => ({ verdict: "missing" }),
@@ -849,6 +865,7 @@ describe("the pass bound", () => {
     const newest = await seedRecordOnly(anApp(), new Date(now - 10_000));
 
     const bounded = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       // The bound, not the runner's answer, is the leg's subject: `cancelled`
@@ -882,6 +899,7 @@ describe("the pass bound", () => {
 describe("the cadence under failure", () => {
   test("a pass that cannot answer is retried on the cadence — the loop never ends itself", async () => {
     const failing = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async () => ({ verdict: "unavailable", reason: "the runner has not started" }),
@@ -914,6 +932,7 @@ describe("the cadence under failure", () => {
       },
     };
     const unreachable = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: urlFor(SCRATCH_DB, "helix_jobs_no_such_role"),
       statementTimeoutMs: 2_000,
       readRunnerJob: async () => ({ verdict: "missing" }),
@@ -944,6 +963,7 @@ describe("the cadence under failure", () => {
     const runnerJobId = await runnerJobIdOf(jobId);
     let passSettled = false;
     const settling = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async (candidate) => {
@@ -993,6 +1013,7 @@ describe("the recovery writes against a live attempt", () => {
   /** A sweeper whose runner read answers only this leg's job with its real row. */
   function sweeperForOwnJob(runnerJobId: string): JobsRecovery {
     return new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async (candidate) =>
@@ -1071,6 +1092,7 @@ describe("the recovery writes against a live attempt", () => {
       );
 
       const sweeper = new JobsRecovery({
+        cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
         databaseUrl: RUNTIME_DSN,
         statementTimeoutMs: 10_000,
         readRunnerJob: async (candidate) => {
@@ -1174,6 +1196,7 @@ describe("a pass whose reporting threw, at stop", () => {
       throw new Error("the reporting sink is down");
     };
     const broken = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       // The leg's own record is the pass's candidate: the pass is held open
@@ -1225,6 +1248,7 @@ describe("a timer-driven pass whose reporting threw", () => {
     };
     process.on("unhandledRejection", onUnhandled);
     const broken = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       // No such role: the pass's own store query fails, its catch reports,
       // and the report's sink throw is what rejects the pass.
       databaseUrl: urlFor(SCRATCH_DB, "helix_jobs_no_such_role"),
@@ -1294,6 +1318,7 @@ describe("a failed pass's accounting survives its own reporting", () => {
   test("a pass whose store query fails is still counted when the reporting sink is down", async () => {
     const { events, log } = brokenSink();
     const broken = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       // No such role: every pass's candidate query fails, the catch arm
       // reports `pass_failed` (the sink throws), and the accounting after it
       // is the part that must survive.
@@ -1330,6 +1355,7 @@ describe("a failed pass's accounting survives its own reporting", () => {
     const jobId = await seedJob({ appId, startAfterSeconds: 3_600 });
     const runnerJobId = await runnerJobIdOf(jobId);
     const broken = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       // The store answers (the candidate read succeeds); the leg's own
       // candidate's runner read answers unavailable — the abort arm reports
       // `runner_unavailable` (the sink throws) and the accounting after it
@@ -1377,6 +1403,7 @@ describe("a failed pass's accounting survives its own reporting", () => {
     const jobId = await seedJob({ appId, startAfterSeconds: 3_600 });
     const runnerJobId = await runnerJobIdOf(jobId);
     const counted = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async (candidate) =>
@@ -1426,6 +1453,7 @@ describe("a failed pass's accounting survives its own reporting", () => {
       error: () => {},
     };
     const counted = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       // The leg's own candidates disposition via the deadline arm (backdated
@@ -1483,6 +1511,7 @@ describe("a rejected pass at the runPass seam", () => {
     // sink throwing in the catch arm is what rejects it.
     const { events, log } = brokenSink();
     const broken = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: urlFor(SCRATCH_DB, "helix_jobs_no_such_role"),
       statementTimeoutMs: 2_000,
       readRunnerJob: async () => ({ verdict: "missing" }),
@@ -1530,6 +1559,7 @@ describe("the recovery log lines' documented fields", () => {
     await direct.query(`DELETE FROM ${JOBS_PGBOSS_SCHEMA}.job WHERE id = $1`, [runnerJobId]);
 
     const sweeper = new JobsRecovery({
+      cancelRunnerJob: neverCancel, // no pending cancellation is arranged in these legs
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       readRunnerJob: async (candidate) =>

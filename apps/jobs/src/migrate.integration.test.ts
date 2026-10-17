@@ -453,6 +453,60 @@ describe("jobs storage migration and startup compatibility", () => {
   );
 
   test(
+    "a record store from before the cancellation column converges in place, its absence is a startup verdict, and pre-existing rows read no intent",
+    slow,
+    async () => {
+      // A pre-existing row — the store's data before the convergence — is
+      // what proves the column's NOT NULL DEFAULT on the rows that predate
+      // it: every row the acceptance transaction committed before the column
+      // could exist must read "no cancellation intent", not NULL.
+      await asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, retry_key, body_sha256, created_at)
+        VALUES ('jobs', 'cancel-convergence', 'cancel-convergence-runner',
+                'cancel-convergence-app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'queued', NULL, '${"0".repeat(64)}', now())`);
+      await asMigrateRole(
+        `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} DROP COLUMN IF EXISTS cancellation_requested`,
+      );
+      // The runtime's own compatibility check names the missing column —
+      // an old store is a boot verdict, not a first-cancel failure.
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "record_schema",
+        problems: ['column "cancellation_requested" is missing'],
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({
+          jobRecordExisted: true,
+          jobRecordColumnsAdded: ["cancellation_requested"],
+        }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+      // The pre-existing row survived the convergence and reads no intent.
+      const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        const row = (
+          await pool.query<{ cancellation_requested: boolean }>(
+            `SELECT cancellation_requested FROM ${JOBS_JOB_RECORD_QUALIFIED}
+              WHERE job_id = 'cancel-convergence'`,
+          )
+        ).rows[0];
+        expect(row?.cancellation_requested).toBe(false);
+      } finally {
+        await pool.end();
+      }
+      // The convergence is stable: a re-run adds nothing.
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordColumnsAdded: [] }),
+      );
+    },
+  );
+
+  test(
     "a result column left at the earlier jsonb type is a startup verdict and the migration converges the type in place",
     slow,
     async () => {

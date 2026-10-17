@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { PgBoss } from "pg-boss";
 
-import { JobsRunner, readRunnerJobState } from "./runner.js";
+import { JobsRunner, cancelRunnerJob, readRunnerJobState } from "./runner.js";
 
 /**
  * The runtime runner's supervised start, against real failure modes: a store
@@ -243,5 +243,49 @@ describe("readRunnerJobState", () => {
     }
     expect(typeof lookup.reason).toBe("string");
     expect(lookup.reason.length).toBeGreaterThan(0);
+  });
+});
+
+describe("cancelRunnerJob", () => {
+  test("a cancel the runner's store cannot answer is unavailable with the failure's reason — never a fabricated verdict", async () => {
+    // Both cancellation drives (the store's post-intent drive and the
+    // sweeper's re-drive) run through THIS mapping; when the runner's store
+    // does not answer, the honest verdict is `unavailable` — the caller's
+    // durable intent stays pending and the next cadence retries, never a
+    // guessed "cancelled" that could stop the re-drive.
+    const dead = new PgBoss({ connectionString: DEAD_DSN });
+    const verdict = await cancelRunnerJob(dead, "not-a-uuid");
+    if (verdict.verdict !== "unavailable") {
+      throw new Error(`expected unavailable, got: ${verdict.verdict}`);
+    }
+    expect(typeof verdict.reason).toBe("string");
+    expect(verdict.reason.length).toBeGreaterThan(0);
+  });
+
+  test("the cancellation drive answers unavailable until the runner is up, and after it stops", async () => {
+    // The method both drives are composed over (`runner.cancelJob`): before
+    // the instance exists, and after the runner stops, there is nothing to
+    // drive through — the same honest answer the runner-row read gives, so a
+    // cancellation requested against an unstarted runner is retried by the
+    // sweeper rather than reported against.
+    const runner = runnerWith({ warn: () => {} });
+    await expect(runner.cancelJob("not-a-uuid")).resolves.toEqual({
+      verdict: "unavailable",
+      reason: "the runner has not started",
+    });
+    runner.start();
+    try {
+      // A failed start's instance is discarded — the answer is still
+      // unavailable, with the loop retrying underneath.
+      await expect(runner.cancelJob("not-a-uuid")).resolves.toMatchObject({
+        verdict: "unavailable",
+      });
+    } finally {
+      await runner.stop();
+    }
+    await expect(runner.cancelJob("not-a-uuid")).resolves.toEqual({
+      verdict: "unavailable",
+      reason: "the runner has not started",
+    });
   });
 });

@@ -311,8 +311,9 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
  * Create the job-record store — one row per accepted job carrying the
  * wrapper identity the acceptance transaction commits with the runner's own
  * row (ADR-0003): the immutable attribution, the admitted lifecycle
- * generation, the public status projection, the optional retry key's scoped
- * claim and the digest of the exact original input bytes. The execution
+ * generation, the public status projection, the durable owner-cancellation
+ * intent, the optional retry key's scoped claim and the digest of the exact
+ * original input bytes. The execution
  * seam's columns ride the same table: the attempt number, the bounded latest
  * progress snapshot, the last attempt's failure code and the successful
  * result. Idempotent, like the other stores — the execution columns converge
@@ -365,6 +366,7 @@ async function ensureJobRecordStore(
        type          text        NOT NULL,
        generation    bigint      NOT NULL,
        status        text        NOT NULL CHECK (status IN (${publicStatuses})),
+       cancellation_requested boolean NOT NULL DEFAULT false,
        retry_key     text,
        body_sha256   text        NOT NULL,
        created_at    timestamptz NOT NULL,
@@ -397,6 +399,13 @@ async function ensureJobRecordStore(
       `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS error_code text`,
     ],
     ["result", `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS result text`],
+    [
+      "cancellation_requested",
+      // NOT NULL DEFAULT so every pre-existing row reads as "no cancellation
+      // intent" — the only value the projection paths wrote before the column
+      // could exist.
+      `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS cancellation_requested boolean NOT NULL DEFAULT false`,
+    ],
   ] as const) {
     const had = await pool.query<{ found: boolean }>(
       `SELECT EXISTS (

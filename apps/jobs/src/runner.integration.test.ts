@@ -342,6 +342,89 @@ describe("the runner's worker registration", () => {
       await surviving.stop();
     }
   }, 60_000);
+
+  test("the runner's own pool carries the statement ceiling — a drive against a locked row answers at the injected bound, never hangs", async () => {
+    // The runtime instance's `options` string (`-c statement_timeout=…`,
+    // runner.ts's buildBoss) is what bounds every statement its pool runs —
+    // the cancellation drives, the worker's settles and the sweeper's reads.
+    // The platform-pool pin (`pool.test.ts`) covers `createJobsPool`'s
+    // pools; THIS pool is pg-boss's, and the leg makes its ceiling
+    // observable through the real drive: a runner row locked by a stalled
+    // leg-side transaction (the production state a parked transaction
+    // holds), the injected bound, the honest `unavailable` answer carrying
+    // the timeout's reason at the bound, and the drive succeeding once the
+    // lock releases. A regression that drops the options string leaves the
+    // drive hanging past the leg's own timeout — this leg goes red there.
+    await applyRolesProvisioning(SCRATCH_DB);
+    await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
+    const BOUND = 1_500;
+    const bounded = new JobsRunner({
+      databaseUrl: RUNTIME_DSN,
+      statementTimeoutMs: BOUND,
+      registerWorker: async () => {},
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    bounded.start();
+    let pool: Pool | null = null;
+    let holder: Pool | null = null;
+    try {
+      await waitFor("the bounded runner to start", 30_000, () => bounded.snapshot.started);
+
+      // One runner row, enqueued through the borrowed-connection adapter —
+      // the row the drive below targets.
+      pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      const client = await pool.connect();
+      let runnerJobId: string;
+      try {
+        await client.query("BEGIN");
+        runnerJobId = await bounded.enqueuer.enqueue(client, {
+          type: "jobs:fetch",
+          appId: randomUUID(),
+          env: "prod",
+          input: { url: "https://example.com/data.json" },
+        });
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+      expect(runnerJobId).toBeTruthy();
+
+      holder = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      const lock = await holder.connect();
+      try {
+        await lock.query("BEGIN");
+        await lock.query(
+          `SELECT id FROM ${JOBS_PGBOSS_SCHEMA}.job WHERE id::text = $1 FOR UPDATE`,
+          [runnerJobId],
+        );
+
+        const startedAt = Date.now();
+        const verdict = await bounded.cancelJob(runnerJobId);
+        const elapsed = Date.now() - startedAt;
+        // The honest verdict, at the ceiling — never a hang: past the
+        // bound (plus scheduling margin) the leg's own timeout is the
+        // failure the pin exists to catch.
+        if (verdict.verdict !== "unavailable") {
+          throw new Error(`expected unavailable, got: ${verdict.verdict}`);
+        }
+        expect(verdict.reason).toMatch(/statement timeout/i);
+        expect(elapsed).toBeLessThan(15_000);
+
+        await lock.query("ROLLBACK");
+      } finally {
+        lock.release();
+      }
+
+      // The pool kept serving: released from the lock, the drive succeeds.
+      await expect(bounded.cancelJob(runnerJobId)).resolves.toEqual({
+        verdict: "cancelled",
+      });
+    } finally {
+      await bounded.stop();
+      await pool?.end();
+      await holder?.end();
+    }
+  }, 60_000);
 });
 
 describe("a start whose own reporting threw", () => {

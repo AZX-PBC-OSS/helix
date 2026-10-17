@@ -10,6 +10,7 @@ import {
   INSTRUCTION_HEADER,
   JOBS_MAX_INPUT_BYTES,
   JobAcceptedSchema,
+  JobCancellationAcceptedSchema,
   JobsLifecycleUpdateAckSchema,
   JobsLifecycleUpdateSchema,
   jobRequestError,
@@ -17,12 +18,13 @@ import {
   JOB_STATEFUL_ERROR_CODES,
   type JobRequestErrorCode,
 } from "@azx-pbc/shared";
-import type { JobsSubmitClaims } from "@azx-pbc/shared/jobsSigning";
+import type { JobsCancelClaims, JobsSubmitClaims } from "@azx-pbc/shared/jobsSigning";
 import { JobsOperations, type JobsOperationName } from "@azx-pbc/shared/jobsSigning";
 import {
   ATTR_APP_ID,
   ATTR_JOBS_ARCHIVED,
   ATTR_JOBS_GENERATION,
+  ATTR_JOBS_JOB_ID,
   ATTR_JOBS_OPERATION,
   ATTR_OUTCOME,
   ATTR_REASON,
@@ -31,6 +33,7 @@ import {
   SPAN_JOBS_RESULT,
   SPAN_JOBS_SNAPSHOT,
   SPAN_JOBS_SUBMIT,
+  type JobsCancelOutcome,
   type JobsSubmitOutcome,
 } from "@azx-pbc/shared/telemetry";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
@@ -38,6 +41,7 @@ import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { Span } from "@opentelemetry/api";
 
 import type { JobsAdmission, JobsAdmissionResult } from "./acceptance.js";
+import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "./cancellation.js";
 import { jobsDatabaseCheck, jobsSweeperCheck, jobsWorkerCheck } from "./health.js";
 import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
@@ -56,8 +60,9 @@ export { SERVICE_NAME };
  * each verifies its instruction and burns its nonce through the receiver seam
  * before anything else happens. Operation semantics land with the ticket that
  * owns each seam — lifecycle delivery (the portal's apply-before-acknowledge
- * generation authority) and submission (the acceptance transaction's keyed
- * recovery, validation and atomic enqueue) are served here; the rest answer
+ * generation authority), submission (the acceptance transaction's keyed
+ * recovery, validation and atomic enqueue) and cancellation (the durable
+ * intent write plus the runner drive) are served here; the rest answer
  * the protocol's retryable unavailable error until their tickets replace
  * them, and the log line is where that gap is named.
  *
@@ -76,6 +81,8 @@ export interface JobsDeps {
   lifecycle: JobsLifecycleApplier;
   /** The acceptance seam; the submit route's decisions run through it. */
   admission: JobsAdmission;
+  /** The owner-cancellation seam; the cancel route's decisions run through it — the durable intent write plus the runner drive, in that order. */
+  cancellation: JobsCancellation;
   /**
    * The runner's supervision state, read per request — `/health`'s
    * `jobs_worker` check grades it (the runner started, the worker
@@ -260,6 +267,78 @@ async function serveSubmit(
   return reply.code(refusal.status).send(jobRequestError(refusal.code));
 }
 
+/**
+ * The owner-cancellation's operation (background-jobs-plane design §6): the
+ * durable intent write plus the runner drive, in that order, mapped onto the
+ * protocol's responses. The 202 is the acknowledgement the durable intent
+ * earns — it confirms the request was recorded, never that the job has
+ * stopped (a competing terminal outcome may still win the race, and the
+ * bounded paths — the worker-start gate, the recovery sweeper's cancellation
+ * arm — carry the pending intent to its terminal outcome within the
+ * healthy-service bound). A repeat while active is the same 202; a terminal
+ * job answers 409 with its own status and nothing changes; an unknown or
+ * foreign-owned job is the same 404; a caller whose grants do not cover the
+ * job's type is 403. The span carries the bounded evidence — the addressed
+ * app and the job's public id — never the owner identity or any job value.
+ */
+async function serveCancel(
+  deps: JobsDeps,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  span: Span,
+  claims: JobsCancelClaims,
+): Promise<void> {
+  const jobId = (req.params as { jobId?: string }).jobId;
+  if (jobId === undefined) {
+    // Unreachable through the route (the path parameter is mandatory) — a
+    // defect in the wiring, not a request answer.
+    throw new Error("the cancel route served a request with no job id parameter");
+  }
+  span.setAttributes({
+    [ATTR_APP_ID]: claims.appId,
+    [ATTR_JOBS_JOB_ID]: jobId,
+  });
+  const request: JobsCancelRequest = { claims, jobId };
+  let verdict: JobsCancelVerdict;
+  try {
+    verdict = await deps.cancellation.requestCancel(request);
+  } catch (error) {
+    req.log.error(
+      { event: "jobs.cancellation.unavailable", appId: claims.appId, err: error },
+      "the cancellation store could not decide a request",
+    );
+    span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsCancelOutcome);
+    reply.header("cache-control", "no-store");
+    return reply.code(503).send(jobRequestError("jobs_unavailable"));
+  }
+  reply.header("cache-control", "no-store");
+  switch (verdict.outcome) {
+    case "requested":
+      span.setAttribute(ATTR_OUTCOME, "requested" satisfies JobsCancelOutcome);
+      // The acknowledgement is validated against the wire schema before it
+      // is sent — a constructed body that cannot parse is a defect answered
+      // 500 by the error boundary, never a malformed body on the wire.
+      return reply.code(202).send(
+        JobCancellationAcceptedSchema.parse({
+          server: claims.server,
+          jobId,
+          cancellationRequested: true,
+        }),
+      );
+    case "not_found":
+      span.setAttribute(ATTR_OUTCOME, "not_found" satisfies JobsCancelOutcome);
+      return reply.code(404).send(jobRequestError("job_not_found"));
+    case "forbidden":
+      span.setAttribute(ATTR_OUTCOME, "forbidden" satisfies JobsCancelOutcome);
+      return reply.code(403).send(jobRequestError("forbidden"));
+    case "terminal":
+      span.setAttribute(ATTR_OUTCOME, "terminal" satisfies JobsCancelOutcome);
+      return reply
+        .code(409)
+        .send(jobRequestError("job_terminal", { status: verdict.status, error: verdict.error }));
+  }
+}
+
 const OPERATION_SPAN_NAMES = {
   submit: SPAN_JOBS_SUBMIT,
   snapshot: SPAN_JOBS_SNAPSHOT,
@@ -362,6 +441,12 @@ function signedOperationHandler(
               throw new Error("the submit route served claims that are not submit claims");
             }
             return serveSubmit(deps, req, reply, span, verdict.claims, rawBodyOf(req));
+          }
+          case "cancel": {
+            if (verdict.claims.operation !== "cancel") {
+              throw new Error("the cancel route served claims that are not cancel claims");
+            }
+            return serveCancel(deps, req, reply, span, verdict.claims);
           }
           case "lifecycle":
             return serveLifecycle(deps, req, reply, span);
