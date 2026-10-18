@@ -563,6 +563,69 @@ describe("jobs storage migration and startup compatibility", () => {
   );
 
   test(
+    "a record store from before the pending-cancellation instant converges in place, and intent older than the run is dated at it",
+    slow,
+    async () => {
+      // Dropping the instant column takes its CHECK with it, so the leg can
+      // commit intent-without-an-instant — the exact shape a store from
+      // before the column could hold, and the shape whose wait the recovery
+      // backlog's oldest-age evidence could not see. The migration dates
+      // such intent at the migration instant (the true pending-since is
+      // unrecoverable; the migration instant can only extend the measured
+      // wait, never shorten it) and re-asserts the check.
+      await asMigrateRole(
+        `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} DROP COLUMN IF EXISTS cancellation_requested_at`,
+      );
+      await asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, cancellation_requested, retry_key, body_sha256, created_at)
+        VALUES ('jobs', 'cancel-instant-convergence', 'cancel-instant-convergence-runner',
+                'cancel-instant-app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'queued', true, NULL, '${"0".repeat(64)}', now())`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "record_schema",
+        problems: ['column "cancellation_requested_at" is missing'],
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({
+          jobRecordExisted: true,
+          jobRecordColumnsAdded: ["cancellation_requested_at"],
+        }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+      const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        const row = (
+          await pool.query<{ cancellation_requested_at: Date | null }>(
+            `SELECT cancellation_requested_at FROM ${JOBS_JOB_RECORD_QUALIFIED}
+              WHERE job_id = 'cancel-instant-convergence'`,
+          )
+        ).rows[0];
+        expect(row?.cancellation_requested_at).toBeInstanceOf(Date);
+        // Intent without an instant is unrepresentable from here on.
+        await expect(
+          asMigrateRole(`
+            INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+              (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+               generation, status, cancellation_requested, retry_key, body_sha256, created_at)
+            VALUES ('jobs', 'undated-intent', 'undated-intent-runner', 'app', 'prod', 'user', 'oid',
+                    'jobs:fetch', 1, 'queued', true, NULL, '${"0".repeat(64)}', now())`),
+        ).rejects.toThrow(/job_record_cancellation_intent_dated/);
+      } finally {
+        await pool.end();
+      }
+      // The convergence is stable: a re-run adds nothing.
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordColumnsAdded: [] }),
+      );
+    },
+  );
+
+  test(
     "a result column left at the earlier jsonb type is a startup verdict and the migration converges the type in place",
     slow,
     async () => {
@@ -679,6 +742,17 @@ describe("jobs storage migration and startup compatibility", () => {
         VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
                 'jobs:fetch', 1, 'failed', NULL, '${"0".repeat(64)}', now())`),
     ).rejects.toThrow(/job_record_terminal_outcome_dated/);
+    // Cancellation intent always carries its pending-since instant — the
+    // recovery backlog's oldest-age evidence reads it; a writer that stamped
+    // the intent without the instant is refused by the store.
+    await expect(
+      asMigrateRole(`
+        INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+          (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+           generation, status, cancellation_requested, retry_key, body_sha256, created_at)
+        VALUES ('jobs', 'integrity-check', 'integrity-check-runner', 'app', 'prod', 'user', 'oid',
+                'jobs:fetch', 1, 'queued', true, NULL, '${"0".repeat(64)}', now())`),
+    ).rejects.toThrow(/job_record_cancellation_intent_dated/);
   });
 
   test(

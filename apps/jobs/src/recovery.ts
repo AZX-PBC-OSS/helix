@@ -18,6 +18,7 @@ import {
   publicStatus,
   terminatePastDeadline,
 } from "./execution.js";
+import { measureClosedGenerationBacklog, stampClosedGenerationCancellations } from "./lifecycle.js";
 import { createJobsPool } from "./pool.js";
 import { JOBS_JOB_RECORD_QUALIFIED, jobsAbsoluteDeadline } from "./policy.js";
 import { countRecovery, withRecoverySpan } from "./telemetry.js";
@@ -45,6 +46,16 @@ import { countRecovery, withRecoverySpan } from "./telemetry.js";
  * cancelled never reaches a handler here: the projection is skipped and the
  * next pass re-reads, so the wrapper never projects an outcome over a runner
  * row this pass could not see.
+ *
+ * Lifecycle cancellation intent — a delivered archive or newer generation —
+ * reaches the records stamped by the lifecycle apply's own transaction; this
+ * pass is also the healing arm that stamps any still-unstamped closed-
+ * generation work (a store whose closed generations predate that stamping)
+ * and the measurement that keeps the remaining count and oldest pending age
+ * separately visible from delivery lag (spec criterion 52) — the
+ * `jobs_lifecycle_recovery` health check grades what the pass measures, and
+ * the reconciliation carries each stamped record to its terminal `cancelled`
+ * outcome by the same arms as an owner's intent.
  *
  * The reconciliation is a projection, never a re-driver: the only mechanism
  * that re-runs work is the runner's own retry policy, so a single-attempt
@@ -226,6 +237,14 @@ function reportedFailureCode(output: unknown): JobErrorCode | null {
 /** A decision whose write (or report) the pass applies — the pass filters `unaffected` before either. */
 type ActionableRecoveryDecision = Exclude<WorkRecoveryDecision, { outcome: "unaffected" }>;
 
+/** The archive-cancellation backlog evidence one pass measured, as `/health` grades it. */
+export interface JobsLifecycleRecoveryEvidence {
+  /** Active (queued/running) records under a closed generation — the remaining cancellation work. */
+  outstanding: number;
+  /** Wall-clock ISO instant of the oldest pending cancellation; null when nothing is pending. */
+  oldestPendingAt: string | null;
+}
+
 /** The sweeper's supervision state, as `/health` reports it. */
 export interface JobsRecoverySnapshot {
   /** The loop has been started (its first pass may not have completed yet). */
@@ -238,6 +257,12 @@ export interface JobsRecoverySnapshot {
   lastOkPassAt: string | null;
   /** Jobs the sweeper has dispositioned (including fenced attempts) since start. */
   reconciled: number;
+  /**
+   * The last pass's archive-cancellation backlog measurement — null before
+   * the first pass measures. Taken at pass start, after the healing stamp:
+   * the same pass's reconciliation may cancel some of it.
+   */
+  lifecycle: JobsLifecycleRecoveryEvidence | null;
 }
 
 /** The structural logger the sweeper reports through (the pino surface, without importing Fastify). */
@@ -282,6 +307,18 @@ const RECOVERY_BATCH = 100;
  */
 export const JOBS_RECOVERY_STALE_AFTER_MS = 3 * RECOVERY_INTERVAL_MS;
 
+/**
+ * How long a pending archive cancellation may await its terminal outcome
+ * before the `jobs_lifecycle_recovery` check degrades — the acceptance
+ * contract's own bound (criterion 52: pending work older than 60 seconds
+ * degrades the corresponding health check; ADR-0009: lifecycle backlog older
+ * than 60 seconds remains degraded). Cancellation converging inside the
+ * healthy-service bound (the sweep cadence plus the runner's abort response)
+ * stays `ok` with its count visible in the metrics; the degraded reading is
+ * for recovery that has stopped keeping up.
+ */
+export const JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS = 60_000;
+
 /** The runtime pool stays small: one candidate read and one bounded write per disposition. */
 const POOL_MAX = 2;
 
@@ -319,6 +356,7 @@ export class JobsRecovery {
     lastPassAt: null,
     lastOkPassAt: null,
     reconciled: 0,
+    lifecycle: null,
   };
 
   constructor(options: JobsRecoveryOptions) {
@@ -467,6 +505,29 @@ export class JobsRecovery {
       this.recordPass(false, startedAt, reconciled);
     };
     try {
+      // The lifecycle-cancellation arm first — it needs no runner: the
+      // healing stamp re-records intent this store's closed generations
+      // imply but no record carries yet, store-wide (the apply's own stamp
+      // is scoped to the app its delivery names — cross-app residue is this
+      // arm's news, never a delivery's), and the measurement is the backlog
+      // evidence the `jobs_lifecycle_recovery` check grades. The evidence is
+      // recorded before the reconciliation below, so a pass that cannot
+      // reach the runner still reports the backlog it measured.
+      const stamped = await stampClosedGenerationCancellations(pool);
+      if (stamped > 0) {
+        this.log.info(
+          { event: "jobs.recovery.lifecycle_stamped", stamped },
+          "closed-generation work still carrying no cancellation intent was stamped — the recovery arms carry it to its terminal outcome",
+        );
+      }
+      const backlog = await measureClosedGenerationBacklog(pool);
+      this.current = {
+        ...this.current,
+        lifecycle: {
+          outstanding: backlog.outstanding,
+          oldestPendingAt: backlog.oldestPendingAt ? backlog.oldestPendingAt.toISOString() : null,
+        },
+      };
       const candidates = await this.nextCandidates(pool);
       for (const candidate of candidates) {
         // The status column is check-constrained to the public vocabulary;

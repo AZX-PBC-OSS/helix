@@ -2,6 +2,7 @@ import {
   JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
+  JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   lastPassAgeSuffix,
@@ -11,7 +12,12 @@ import {
 } from "@azx-pbc/shared";
 
 import { JOBS_CLEANUP_STALE_AFTER_MS, type JobsCleanupSnapshot } from "./cleanup.js";
-import { JOBS_RECOVERY_STALE_AFTER_MS, type JobsRecoverySnapshot } from "./recovery.js";
+import {
+  JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS,
+  JOBS_RECOVERY_STALE_AFTER_MS,
+  type JobsLifecycleRecoveryEvidence,
+  type JobsRecoverySnapshot,
+} from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
 
@@ -203,6 +209,99 @@ export function jobsSweeperCheck(
         status: "ok",
         lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
       };
+  }
+}
+
+/**
+ * Grade the archive-cancellation backlog into the `jobs_lifecycle_recovery`
+ * health check (ADR-0009) — the producer for the check name the shared
+ * vocabulary has carried since the lifecycle authority landed. The same
+ * pure-lookup shape as the other loop checks: beyond the shared freshness
+ * skeleton (a stopped or never-passed sweeper errors, a stale one degrades),
+ * the check carries the backlog evidence the acceptance contract binds — the
+ * outstanding count and oldest pending age of still-active work under closed
+ * generations, kept SEPARATELY visible from delivery lag (the portal's
+ * `jobs_lifecycle_delivery` check owns that half; this one speaks for the
+ * recovery). Pending work older than 60 seconds degrades (spec criterion
+ * 52); a backlog converging inside the healthy-service bound reads `ok` with
+ * its count in the metrics, and an empty backlog reads `ok` — recovery never
+ * hides unfinished work, because the count rides every reading it exists in.
+ */
+export function jobsLifecycleRecoveryCheck(
+  snapshot: JobsRecoverySnapshot,
+  options?: { staleAfterMs?: number; nowMs?: number; overdueAfterMs?: number },
+): HealthCheck {
+  const staleAfterMs = options?.staleAfterMs ?? JOBS_RECOVERY_STALE_AFTER_MS;
+  const nowMs = options?.nowMs ?? Date.now();
+  const overdueAfterMs = options?.overdueAfterMs ?? JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS;
+  const base = {
+    name: JOBS_LIFECYCLE_RECOVERY_CHECK,
+    metrics: { passes: snapshot.passes, reconciled: snapshot.reconciled },
+  };
+
+  const freshness = passFreshness(snapshot, staleAfterMs, nowMs);
+  switch (freshness.kind) {
+    case "not_started":
+      return {
+        ...base,
+        status: "error",
+        detail:
+          "the recovery sweeper is not running — delivered archive cancellation is not being applied to still-active work",
+      };
+    case "no_pass":
+      return {
+        ...base,
+        status: "error",
+        detail: `the recovery sweeper has completed no successful pass${lastPassAgeSuffix(freshness.lastPassSeconds)} — archive cancellation has no backlog evidence and no convergence`,
+      };
+    case "stale":
+      return {
+        ...base,
+        status: "degraded",
+        detail: `the recovery sweeper's last successful pass was ${freshness.sinceSeconds}s ago — the archive-cancellation backlog evidence is stale`,
+        lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
+    case "fresh": {
+      const evidence: JobsLifecycleRecoveryEvidence | null = snapshot.lifecycle;
+      if (!evidence) {
+        // Unreachable through the loop (a fresh pass always measures) —
+        // refuse the healthy reading rather than assume one.
+        return {
+          ...base,
+          status: "error",
+          detail: "the recovery pass carried no archive-cancellation measurement",
+        };
+      }
+      // The overdue decision reads the MILLISECONDS the store carries —
+      // rounding to whole seconds before comparing would let a cancellation
+      // aged 60.4s (past the contract's bound, criterion 52) display as 60
+      // and read ok. The seconds are the metric's display unit only.
+      const oldestAgeMs =
+        evidence.oldestPendingAt !== null ? nowMs - Date.parse(evidence.oldestPendingAt) : 0;
+      const oldestSeconds = Math.round(oldestAgeMs / 1000);
+      const metrics = {
+        ...base.metrics,
+        outstanding: evidence.outstanding,
+        oldestSeconds,
+      };
+      if (evidence.outstanding > 0 && oldestAgeMs > overdueAfterMs) {
+        return {
+          ...base,
+          status: "degraded",
+          metrics,
+          detail:
+            `archive cancellation is overdue: ${evidence.outstanding} job(s) still active under closed ` +
+            `generations, the oldest pending ${oldestSeconds}s — recovery keeps cancelling until none remains`,
+          lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+        };
+      }
+      return {
+        ...base,
+        status: "ok",
+        metrics,
+        lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
+    }
   }
 }
 

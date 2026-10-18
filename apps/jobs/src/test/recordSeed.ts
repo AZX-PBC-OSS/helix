@@ -26,14 +26,19 @@ export async function seedRunnerJobWithRecord(
     expireInSeconds?: number;
     retryDelay?: number;
     startAfterSeconds?: number;
+    /** The environment tier the record carries — both tiers' work is real for the lifecycle legs. */
+    env?: "prod" | "dev";
+    /** The lifecycle generation the record is admitted under (the current one by default). */
+    generation?: string;
   },
 ): Promise<string> {
+  const env = options.env ?? "prod";
   const runnerJobId = await boss.send(JOBS_QUEUE_NAME, options.data, {
     retryLimit: options.retryLimit ?? 0,
     expireInSeconds: options.expireInSeconds ?? 300,
     ...(options.retryDelay !== undefined ? { retryDelay: options.retryDelay } : {}),
     ...(options.startAfterSeconds !== undefined ? { startAfter: options.startAfterSeconds } : {}),
-    group: { id: jobsAppEnvGroupId(options.appId, "prod") },
+    group: { id: jobsAppEnvGroupId(options.appId, env) },
   });
   if (runnerJobId === null) throw new Error("the seeded runner job was not enqueued");
   const jobId = randomUUID();
@@ -47,11 +52,11 @@ export async function seedRunnerJobWithRecord(
       jobId,
       runnerJobId,
       options.appId,
-      "prod",
+      env,
       "user",
       TEST_IDENTITY.ownerOid,
       "jobs:fetch",
-      "1",
+      options.generation ?? "1",
       sha256BodyDigest(new TextEncoder().encode(JSON.stringify(options.data))),
       new Date().toISOString(),
     ],

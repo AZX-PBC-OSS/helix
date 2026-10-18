@@ -153,6 +153,7 @@ const JOB_RECORD_COLUMNS = [
   "error_code",
   "result",
   "cancellation_requested",
+  "cancellation_requested_at",
   "terminal_at",
 ] as const;
 /** The type each column must carry, as `information_schema.columns` reports it. */
@@ -162,6 +163,7 @@ const JOB_RECORD_COLUMN_TYPES: Record<(typeof JOB_RECORD_COLUMNS)[number], strin
   error_code: "text",
   result: "text",
   cancellation_requested: "boolean",
+  cancellation_requested_at: "timestamp with time zone",
   terminal_at: "timestamp with time zone",
 };
 

@@ -213,10 +213,14 @@ export class JobsCancellationStore implements JobsCancellation {
     // against or affects nothing. A repeat while active writes the same
     // value again and answers the same acknowledgement (harmless by
     // construction). RETURNING hands back the runner id the drive below
-    // needs — no second read on the happy path.
+    // needs — no second read on the happy path. The pending-since stamp is
+    // COALESCEd for the same reason: the first intent's instant is the one
+    // the recovery backlog's age reads, whatever later writers rewrote the
+    // flag beside.
     const recorded = await pool.query<{ runner_job_id: string }>(
       `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
-          SET cancellation_requested = true
+          SET cancellation_requested = true,
+              cancellation_requested_at = COALESCE(cancellation_requested_at, now())
         WHERE server = $1 AND job_id = $2
           AND app_id = $3 AND env = $4 AND owner_kind = $5 AND owner_oid = $6
           AND type = ANY($7::text[])

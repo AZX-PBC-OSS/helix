@@ -190,10 +190,15 @@ async function runnerJobIdOf(jobId: string): Promise<string> {
 /**
  * Write the durable intent directly — the state a crash between the intent
  * write and the runner drive leaves, which no settled request can produce.
+ * The pending-since instant rides the write: intent without it is
+ * unrepresentable in the store (the check the migration converges), and the
+ * instant is what the recovery backlog's age reads.
  */
 async function writeIntentDirectly(jobId: string): Promise<void> {
   await direct.query(
-    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET cancellation_requested = true WHERE job_id = $1`,
+    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+        SET cancellation_requested = true, cancellation_requested_at = COALESCE(cancellation_requested_at, now())
+      WHERE job_id = $1`,
     [jobId],
   );
 }
@@ -268,11 +273,17 @@ describe("the owner-cancellation seam", () => {
       const jobId = await seedJob({ appId, startAfterSeconds: 3_600 });
       const first = await cancellation.requestCancel(cancelRequestFor(jobId, appId));
       expect(first).toEqual({ outcome: "requested" });
+      // The pending-since instant: the first request's — the age the recovery
+      // backlog reads, so a repeat can never reset the wait it measures.
+      const firstPendingAt = (await recordRow(jobId)).cancellation_requested_at;
+      expect(firstPendingAt).toBeInstanceOf(Date);
       const second = await cancellation.requestCancel(cancelRequestFor(jobId, appId));
       expect(second).toEqual({ outcome: "requested" });
       // The state the first request recorded is exactly what the second
-      // left: no second effect, the same acknowledgement.
-      expect((await recordRow(jobId)).cancellation_requested).toBe(true);
+      // left: no second effect, the same acknowledgement, the same instant.
+      const row = await recordRow(jobId);
+      expect(row.cancellation_requested).toBe(true);
+      expect(row.cancellation_requested_at).toEqual(firstPendingAt);
       expect((await runnerRow(jobId)).state).toBe("cancelled");
     },
   );

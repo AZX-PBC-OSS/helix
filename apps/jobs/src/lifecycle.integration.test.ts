@@ -4,9 +4,19 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { INSTRUCTION_HEADER, JobsGenerationSchema } from "@azx-pbc/shared";
+import {
+  ATTR_JOBS_LIFECYCLE_STAMPED,
+  ATTR_OUTCOME,
+  SPAN_JOBS_LIFECYCLE,
+} from "@azx-pbc/shared/telemetry";
+import { startRecordingTelemetry } from "@azx-pbc/telemetry/testing";
 
 import { migrateJobsStorage } from "./migrate.js";
-import { JOBS_APP_LIFECYCLE_QUALIFIED, JOBS_RUNTIME_ROLE } from "./policy.js";
+import {
+  JOBS_APP_LIFECYCLE_QUALIFIED,
+  JOBS_JOB_RECORD_QUALIFIED,
+  JOBS_RUNTIME_ROLE,
+} from "./policy.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 import { JobsLifecycleStore, lifecycleEligibilityInTx } from "./lifecycle.js";
 import { appWithLifecycle, makeReceiver, mint, TEST_IAT } from "./test/instructions.js";
@@ -98,7 +108,7 @@ describe("the durable lifecycle store", () => {
     store.start();
     try {
       await expect(store.apply("app-first", { generation: "1", archived: false })).resolves.toEqual(
-        { appliedGeneration: "1", changed: true },
+        { appliedGeneration: "1", changed: true, stamped: 0 },
       );
       await expect(storedState("app-first")).resolves.toEqual({
         generation: "1",
@@ -115,7 +125,7 @@ describe("the durable lifecycle store", () => {
     try {
       await store.apply("app-repeat", { generation: "3", archived: true });
       await expect(store.apply("app-repeat", { generation: "3", archived: true })).resolves.toEqual(
-        { appliedGeneration: "3", changed: false },
+        { appliedGeneration: "3", changed: false, stamped: 0 },
       );
       await expect(storedState("app-repeat")).resolves.toEqual({
         generation: "3",
@@ -133,11 +143,13 @@ describe("the durable lifecycle store", () => {
       await expect(store.apply("app-newer", { generation: "2", archived: true })).resolves.toEqual({
         appliedGeneration: "2",
         changed: true,
+        stamped: 0,
       });
       await expect(store.apply("app-newer", { generation: "5", archived: false })).resolves.toEqual(
         {
           appliedGeneration: "5",
           changed: true,
+          stamped: 0,
         },
       );
       // The out-of-order archive (generation 2) arriving after the newer
@@ -146,6 +158,7 @@ describe("the durable lifecycle store", () => {
       await expect(store.apply("app-newer", { generation: "2", archived: true })).resolves.toEqual({
         appliedGeneration: "5",
         changed: false,
+        stamped: 0,
       });
       await expect(storedState("app-newer")).resolves.toEqual({
         generation: "5",
@@ -166,11 +179,12 @@ describe("the durable lifecycle store", () => {
     store.start();
     try {
       await expect(store.apply("app-brief", { generation: "6", archived: false })).resolves.toEqual(
-        { appliedGeneration: "6", changed: true },
+        { appliedGeneration: "6", changed: true, stamped: 0 },
       );
       await expect(store.apply("app-brief", { generation: "5", archived: true })).resolves.toEqual({
         appliedGeneration: "6",
         changed: false,
+        stamped: 0,
       });
 
       const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
@@ -216,7 +230,7 @@ describe("the durable lifecycle store", () => {
       // highest applied generation; the closed generation stays closed.
       await expect(
         restarted.apply("app-restart", { generation: "7", archived: false }),
-      ).resolves.toEqual({ appliedGeneration: "8", changed: false });
+      ).resolves.toEqual({ appliedGeneration: "8", changed: false, stamped: 0 });
       await expect(storedState("app-restart")).resolves.toEqual({
         generation: "8",
         archived: true,
@@ -262,7 +276,7 @@ describe("the durable lifecycle store", () => {
 
       await expect(
         store.apply("app-overflow", { generation: "1", archived: true }),
-      ).resolves.toEqual({ appliedGeneration: "1", changed: true });
+      ).resolves.toEqual({ appliedGeneration: "1", changed: true, stamped: 0 });
       await expect(storedState("app-overflow")).resolves.toEqual({
         generation: "1",
         archived: true,
@@ -342,16 +356,16 @@ describe("the durable lifecycle store", () => {
     try {
       await expect(
         store.apply("app-canonical", { generation: "7", archived: false }),
-      ).resolves.toEqual({ appliedGeneration: "7", changed: true });
+      ).resolves.toEqual({ appliedGeneration: "7", changed: true, stamped: 0 });
       // Equal under canonicalization: a redelivery in a non-canonical
       // spelling is the no-op it would have been in the canonical one.
       await expect(
         store.apply("app-canonical", { generation: "007", archived: false }),
-      ).resolves.toEqual({ appliedGeneration: "7", changed: false });
+      ).resolves.toEqual({ appliedGeneration: "7", changed: false, stamped: 0 });
       // Newer under canonicalization: applies as the value it denotes.
       await expect(
         store.apply("app-canonical", { generation: "0x10", archived: true }),
-      ).resolves.toEqual({ appliedGeneration: "16", changed: true });
+      ).resolves.toEqual({ appliedGeneration: "16", changed: true, stamped: 0 });
       await expect(storedState("app-canonical")).resolves.toEqual({
         generation: "16",
         archived: true,
@@ -375,7 +389,7 @@ describe("the durable lifecycle store", () => {
       await expect(storedState("app-unparseable")).resolves.toBeNull();
       await expect(
         store.apply("app-unparseable", { generation: "1", archived: false }),
-      ).resolves.toEqual({ appliedGeneration: "1", changed: true });
+      ).resolves.toEqual({ appliedGeneration: "1", changed: true, stamped: 0 });
     } finally {
       await store.stop();
     }
@@ -406,7 +420,7 @@ describe("the durable lifecycle store", () => {
         // The gate's caller commits; the waiting apply then succeeds.
         await client.query("COMMIT");
         await expect(store.apply("app-lock", { generation: "3", archived: true })).resolves.toEqual(
-          { appliedGeneration: "3", changed: true },
+          { appliedGeneration: "3", changed: true, stamped: 0 },
         );
       } finally {
         client.release();
@@ -457,7 +471,7 @@ describe("the durable lifecycle store", () => {
         // One apply leaves a pooled, now-idle client to terminate.
         await expect(
           store.apply("app-pool-error", { generation: "1", archived: false }),
-        ).resolves.toEqual({ appliedGeneration: "1", changed: true });
+        ).resolves.toEqual({ appliedGeneration: "1", changed: true, stamped: 0 });
 
         const control = new Pool({ connectionString: urlFor("postgres"), max: 1 });
         try {
@@ -486,7 +500,7 @@ describe("the durable lifecycle store", () => {
         // and answers normally.
         await expect(
           store.apply("app-pool-error", { generation: "2", archived: true }),
-        ).resolves.toEqual({ appliedGeneration: "2", changed: true });
+        ).resolves.toEqual({ appliedGeneration: "2", changed: true, stamped: 0 });
       } finally {
         await store.stop();
       }
@@ -510,10 +524,10 @@ describe("the durable lifecycle store", () => {
           const generation = String(i + 1);
           await expect(
             store.apply("app-release", { generation, archived: false }),
-          ).resolves.toEqual({ appliedGeneration: generation, changed: true });
+          ).resolves.toEqual({ appliedGeneration: generation, changed: true, stamped: 0 });
           await expect(
             store.apply("app-release", { generation, archived: false }),
-          ).resolves.toEqual({ appliedGeneration: generation, changed: false });
+          ).resolves.toEqual({ appliedGeneration: generation, changed: false, stamped: 0 });
           await expect(
             store.apply("app-release", { generation: "9223372036854775808", archived: false }),
           ).rejects.toThrow(/out of range/);
@@ -521,7 +535,7 @@ describe("the durable lifecycle store", () => {
         // The pool still answers after the loop: no client was stranded.
         await expect(
           store.apply("app-release", { generation: "99", archived: true }),
-        ).resolves.toEqual({ appliedGeneration: "99", changed: true });
+        ).resolves.toEqual({ appliedGeneration: "99", changed: true, stamped: 0 });
       } finally {
         await store.stop();
       }
@@ -557,6 +571,263 @@ describe("the durable lifecycle store", () => {
   });
 });
 
+/** Ad-hoc pool for the record-store arrangements the legs read back directly. */
+async function withRecordPool<T>(body: (pool: Pool) => Promise<T>): Promise<T> {
+  const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+  try {
+    return await body(pool);
+  } finally {
+    await pool.end();
+  }
+}
+
+let recordSeq = 0;
+function aRunnerId(): string {
+  recordSeq += 1;
+  return `stamp-fixture-${recordSeq}`;
+}
+
+/** Seed one wrapper record the way acceptance would commit it (no runner row — nothing here executes). */
+async function seedRecord(options: {
+  appId: string;
+  env?: string;
+  generation?: string;
+  status?: string;
+}): Promise<string> {
+  const jobId = randomUUID();
+  const status = options.status ?? "queued";
+  await withRecordPool(async (pool) =>
+    pool.query(
+      `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+         (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+          generation, status, retry_key, body_sha256, created_at, terminal_at, error_code)
+       VALUES ('jobs', $1, $2, $3, $4, 'user', 'oid', 'jobs:fetch', $5, $6, NULL, $7, now(),
+               CASE WHEN $6 = ANY(ARRAY['succeeded','failed','crashed','cancelled','expired']) THEN now() END,
+               CASE WHEN $6 = ANY(ARRAY['failed','crashed','cancelled','expired']) THEN 'cancelled' END)`,
+      [
+        jobId,
+        aRunnerId(),
+        options.appId,
+        options.env ?? "prod",
+        options.generation ?? "1",
+        status,
+        "0".repeat(64),
+      ],
+    ),
+  );
+  return jobId;
+}
+
+async function recordOf(jobId: string): Promise<{
+  status: string;
+  cancellation_requested: boolean;
+  cancellation_requested_at: Date | null;
+}> {
+  return withRecordPool(async (pool) => {
+    const result = await pool.query<{
+      status: string;
+      cancellation_requested: boolean;
+      cancellation_requested_at: Date | null;
+    }>(
+      `SELECT status, cancellation_requested, cancellation_requested_at
+         FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+      [jobId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error(`no record row for job ${jobId}`);
+    return row;
+  });
+}
+
+describe("the apply's cancellation stamping", () => {
+  test("a delivered archive stamps still-active work in both environments; terminal records and other apps are untouched", async () => {
+    const store = newStore();
+    store.start();
+    try {
+      await store.apply("app-stamp", { generation: "1", archived: false });
+      await store.apply("app-other", { generation: "1", archived: false });
+      const prod = await seedRecord({ appId: "app-stamp" });
+      const dev = await seedRecord({ appId: "app-stamp", env: "dev" });
+      const foreign = await seedRecord({ appId: "app-other" });
+      const done = await seedRecord({ appId: "app-stamp", status: "cancelled" });
+
+      await expect(store.apply("app-stamp", { generation: "2", archived: true })).resolves.toEqual({
+        appliedGeneration: "2",
+        changed: true,
+        stamped: 2,
+      });
+
+      for (const jobId of [prod, dev]) {
+        const row = await recordOf(jobId);
+        expect(row.cancellation_requested).toBe(true);
+        expect(row.cancellation_requested_at).toBeInstanceOf(Date);
+        expect(row.status).toBe("queued");
+      }
+      // Another app's work is not the archive's to cancel; a record already
+      // terminal keeps the outcome it won.
+      expect((await recordOf(foreign)).cancellation_requested).toBe(false);
+      expect((await recordOf(done)).cancellation_requested).toBe(false);
+    } finally {
+      await store.stop();
+    }
+  });
+
+  test("an unarchive stamps pre-archive work but never the eligible new generation's", async () => {
+    const store = newStore();
+    store.start();
+    try {
+      await store.apply("app-unarchive", { generation: "1", archived: false });
+      const preArchive = await seedRecord({ appId: "app-unarchive", generation: "1" });
+
+      // The unarchive OPENS generation 2 — and closes everything below it
+      // forever: the pre-archive record is stamped by the very delivery that
+      // opens the new work.
+      await expect(
+        store.apply("app-unarchive", { generation: "2", archived: false }),
+      ).resolves.toEqual({ appliedGeneration: "2", changed: true, stamped: 1 });
+      expect((await recordOf(preArchive)).cancellation_requested).toBe(true);
+
+      // The eligible new generation is not cancellation-eligible work.
+      const newGeneration = await seedRecord({ appId: "app-unarchive", generation: "2" });
+      await expect(
+        store.apply("app-unarchive", { generation: "2", archived: false }),
+      ).resolves.toEqual({ appliedGeneration: "2", changed: false, stamped: 0 });
+      expect((await recordOf(newGeneration)).cancellation_requested).toBe(false);
+    } finally {
+      await store.stop();
+    }
+  });
+
+  test("an archive delivered at the applied generation stamps its same-generation work", async () => {
+    // The predicate's third disjunct: a record admitted at the applied
+    // generation is cancellation-eligible the moment that generation is
+    // archived — the merge arm that closes a generation without moving the
+    // watermark (an archive is never undone at the generation it claims)
+    // stamps the work it closes, exactly as a watermark-moving archive does.
+    const store = newStore();
+    store.start();
+    try {
+      await store.apply("app-same-gen", { generation: "4", archived: false });
+      const jobId = await seedRecord({ appId: "app-same-gen", generation: "4" });
+
+      await expect(
+        store.apply("app-same-gen", { generation: "4", archived: true }),
+      ).resolves.toEqual({ appliedGeneration: "4", changed: true, stamped: 1 });
+      const row = await recordOf(jobId);
+      expect(row.cancellation_requested).toBe(true);
+      expect(row.cancellation_requested_at).toBeInstanceOf(Date);
+      expect(row.status).toBe("queued");
+    } finally {
+      await store.stop();
+    }
+  });
+
+  test("a submission committing under the archive's lock is stamped by the apply that closes its generation", async () => {
+    // The serialization boundary's cancellation half: an admission holds the
+    // lifecycle row while it commits its record; the archive apply waits for
+    // that commit — and then stamps the record it sees, so no acceptance can
+    // land between the closed generation and the intent that cancels it.
+    const store = newStore();
+    store.start();
+    await store.apply("app-race-stamp", { generation: "1", archived: false });
+    const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await expect(lifecycleEligibilityInTx(client, "app-race-stamp", "1")).resolves.toEqual({
+          verdict: "admit",
+        });
+        const racingJobId = randomUUID();
+        await client.query(
+          `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}
+             (server, job_id, runner_job_id, app_id, env, owner_kind, owner_oid, type,
+              generation, status, retry_key, body_sha256, created_at)
+           VALUES ('jobs', $1, $2, 'app-race-stamp', 'prod', 'user', 'oid', 'jobs:fetch',
+                   '1', 'queued', NULL, $3, now())`,
+          [racingJobId, aRunnerId(), "0".repeat(64)],
+        );
+
+        // The archive apply blocks on the admission's lock; the admission
+        // commits first, and the unblocked apply stamps the record it then
+        // sees.
+        const archiveApply = store.apply("app-race-stamp", { generation: "2", archived: true });
+        await client.query("COMMIT");
+        await expect(archiveApply).resolves.toEqual({
+          appliedGeneration: "2",
+          changed: true,
+          stamped: 1,
+        });
+        expect((await recordOf(racingJobId)).cancellation_requested).toBe(true);
+      } finally {
+        client.release();
+      }
+    } finally {
+      await pool.end();
+      await store.stop();
+    }
+  });
+
+  test("a repeated delivery does not rewrite the pending-cancellation instant", async () => {
+    const store = newStore();
+    store.start();
+    try {
+      await store.apply("app-repeat-stamp", { generation: "1", archived: false });
+      const jobId = await seedRecord({ appId: "app-repeat-stamp" });
+      await store.apply("app-repeat-stamp", { generation: "2", archived: true });
+      const first = (await recordOf(jobId)).cancellation_requested_at;
+      expect(first).toBeInstanceOf(Date);
+
+      // The redelivery is a no-op merge and stamps nothing — the first
+      // intent's instant is the one the recovery backlog's age reads.
+      await expect(
+        store.apply("app-repeat-stamp", { generation: "2", archived: true }),
+      ).resolves.toEqual({ appliedGeneration: "2", changed: false, stamped: 0 });
+      expect((await recordOf(jobId)).cancellation_requested_at).toEqual(first);
+    } finally {
+      await store.stop();
+    }
+  });
+
+  test("a no-op delivery still stamps the standing closed set's residue", async () => {
+    // The stamp reads the CURRENT closed set of the delivery's own app, not
+    // the delivered change: a stale delivery that merges nothing still
+    // commits intent on active work its app's standing state already closes
+    // (criterion 65's synchronized state — the closed-set predicate, not
+    // "newly closed"). The residue here is the shape a store from before the
+    // stamping holds; the recovery sweeper's healing arm is the backstop for
+    // stores — and other apps' residue — that never receive a delivery.
+    const store = newStore();
+    store.start();
+    try {
+      await store.apply("app-stale-stamp", { generation: "3", archived: false });
+      const jobId = await seedRecord({ appId: "app-stale-stamp", generation: "1" });
+      // The residue: active work under the standing watermark, carrying no
+      // intent (the healing-arm leg's shape).
+      await withRecordPool(async (pool) =>
+        pool.query(
+          `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+              SET cancellation_requested = false, cancellation_requested_at = NULL
+            WHERE job_id = $1`,
+          [jobId],
+        ),
+      );
+
+      // The stale archive closes nothing new — and still stamps what the
+      // standing state already closes.
+      await expect(
+        store.apply("app-stale-stamp", { generation: "2", archived: true }),
+      ).resolves.toEqual({ appliedGeneration: "3", changed: false, stamped: 1 });
+      const row = await recordOf(jobId);
+      expect(row.cancellation_requested).toBe(true);
+      expect(row.cancellation_requested_at).toBeInstanceOf(Date);
+      expect(row.status).toBe("queued");
+    } finally {
+      await store.stop();
+    }
+  });
+});
+
 describe("the lifecycle route against the real store", () => {
   const APP_ID = "0b9e8c3e-6f2a-4c9b-9e1f-2a4b6c8d0e2f";
 
@@ -564,17 +835,18 @@ describe("the lifecycle route against the real store", () => {
   async function deliver(
     app: FastifyInstance,
     body: string,
+    appId: string = APP_ID,
   ): Promise<{ statusCode: number; body: unknown; headers: Record<string, unknown> }> {
     const token = await mint({
       operation: "lifecycle",
       server: "jobs",
-      appId: APP_ID,
+      appId,
       body: new TextEncoder().encode(body),
       iatS: TEST_IAT,
     });
     const res = await app.inject({
       method: "POST",
-      url: `/internal/jobs/v1/lifecycle/${APP_ID}`,
+      url: `/internal/jobs/v1/lifecycle/${appId}`,
       headers: {
         "content-type": "application/json",
         [INSTRUCTION_HEADER]: token,
@@ -629,6 +901,49 @@ describe("the lifecycle route against the real store", () => {
       await app.close();
       await storage.stop();
       await store.stop();
+    }
+  });
+
+  test("the route span carries the delivery's stamped reach through the real store", async () => {
+    // The in-memory double's span always reads stamped: 0 — the attribute's
+    // real reach is the durable apply's, so this leg drives it: two queued
+    // records, one archive through the signed route, and the count the
+    // delivery's cancellation evidence names.
+    const recording = startRecordingTelemetry();
+    const receiver = makeReceiver();
+    const store = newStore();
+    store.start();
+    const { app, storage } = await appWithLifecycle(receiver, store);
+    // This leg's own app — the describe's shared APP_ID already holds a
+    // newer generation from an earlier leg, and a stale archive here would
+    // ack that instead of stamping.
+    const appId = randomUUID();
+    try {
+      await deliver(app, '{"generation":"1","archived":false}', appId);
+      const prod = await seedRecord({ appId });
+      const dev = await seedRecord({ appId, env: "dev" });
+      recording.reset(); // the open generation's delivery is not this leg's subject
+
+      const archive = await deliver(app, '{"generation":"2","archived":true}', appId);
+      expect(archive.statusCode).toBe(200);
+      expect(archive.body).toEqual({ appliedGeneration: "2" });
+
+      const spans = recording.spans().filter((s) => s.name === SPAN_JOBS_LIFECYCLE);
+      expect(spans).toHaveLength(1);
+      const span = spans[0];
+      expect(span?.attributes[ATTR_OUTCOME]).toBe("applied");
+      expect(span?.attributes[ATTR_JOBS_LIFECYCLE_STAMPED]).toBe(2);
+
+      // The span's count is the store's own answer: both records carry the
+      // durable intent the delivery reached.
+      for (const jobId of [prod, dev]) {
+        expect((await recordOf(jobId)).cancellation_requested).toBe(true);
+      }
+    } finally {
+      await app.close();
+      await storage.stop();
+      await store.stop();
+      await recording.restore();
     }
   });
 });

@@ -1082,6 +1082,7 @@ describe("the signed operation routes", () => {
         lastPassAt: new Date().toISOString(),
         lastOkPassAt: new Date().toISOString(),
         reconciled: 0,
+        lifecycle: { outstanding: 0, oldestPendingAt: null },
       }),
       cleanup: runningCleanup,
       capacityLimits: resolveJobsCapacityLimits(),
@@ -1120,7 +1121,7 @@ describe("the signed operation routes", () => {
     // the route's error boundary, never delivered 200 off-wire.
     class BadAckLifecycle extends MemoryLifecycle {
       override async apply(): Promise<JobsLifecycleApplyResult> {
-        return { appliedGeneration: "007", changed: true };
+        return { appliedGeneration: "007", changed: true, stamped: 0 };
       }
     }
     const receiver = makeReceiver();

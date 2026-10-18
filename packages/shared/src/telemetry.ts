@@ -134,6 +134,13 @@ export const ATTR_JOBS_ARCHIVED = "helix.jobs.archived";
  */
 export const ATTR_JOBS_LIFECYCLE_TARGETS = "helix.jobs.lifecycle.targets";
 /**
+ * How many still-active job records one lifecycle delivery stamped with
+ * cancellation intent — every queued/running job the applied state closes,
+ * in both environments. Bounded by the store's own capacity; the records'
+ * convergence to their terminal outcomes is the recovery paths'.
+ */
+export const ATTR_JOBS_LIFECYCLE_STAMPED = "helix.jobs.lifecycle.stamped";
+/**
  * Which configured jobs server a signal is about — a deployment-map server id
  * (`JobServerIdSchema`: 1–63 lowercase letters/digits/hyphens). Bounded by the
  * deployment map, so a span attribute and a health-check detail word; never a

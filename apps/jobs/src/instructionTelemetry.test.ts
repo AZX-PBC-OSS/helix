@@ -575,11 +575,15 @@ describe("instruction telemetry", () => {
       // body-shape refusal are the route working as designed, never faults.
       expect(spans.map((s) => s.status.code)).toEqual([0, 0, 0]);
       // The delivery's own evidence: the target app, the delivered generation
-      // and its archived flag — all bounded, all non-personal.
+      // and its archived flag — all bounded, all non-personal — plus the
+      // delivery's cancellation reach (the in-memory double stamps no
+      // records; the durable stamping's reach is pinned against real
+      // Postgres in `lifecycle.integration.test.ts`).
       const applied = spans[0];
       expect(applied?.attributes["helix.app_id"]).toBe(TEST_IDENTITY.appId);
       expect(applied?.attributes["helix.jobs.generation"]).toBe("8");
       expect(applied?.attributes["helix.jobs.archived"]).toBe(true);
+      expect(applied?.attributes["helix.jobs.lifecycle.stamped"]).toBe(0);
 
       // The same every-attribute redaction scan the submit spans take: no
       // token material, no retry key, no owner identity, no URL.

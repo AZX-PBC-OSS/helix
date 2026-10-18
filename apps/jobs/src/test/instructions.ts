@@ -170,7 +170,10 @@ export class MemoryLifecycle implements JobsLifecycleApplier {
     const stored = this.apps.get(appId) ?? null;
     const merged = mergeLifecycleUpdate(stored, update);
     this.apps.set(appId, merged.state);
-    return { appliedGeneration: merged.state.generation, changed: merged.changed };
+    // The in-memory double holds no job records, so a real apply's stamping
+    // arm has nothing to reach here — the durable stamping's own semantics
+    // are pinned against real Postgres in `lifecycle.integration.test.ts`.
+    return { appliedGeneration: merged.state.generation, changed: merged.changed, stamped: 0 };
   }
 }
 
@@ -337,6 +340,7 @@ export async function appWithLifecycle(
       lastPassAt: new Date().toISOString(),
       lastOkPassAt: new Date().toISOString(),
       reconciled: 0,
+      lifecycle: { outstanding: 0, oldestPendingAt: null },
     }),
     cleanup,
     capacityLimits: resolveJobsCapacityLimits(),

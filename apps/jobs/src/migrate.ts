@@ -312,8 +312,8 @@ async function ensureAppLifecycleStore(pool: Pool): Promise<boolean> {
  * wrapper identity the acceptance transaction commits with the runner's own
  * row (ADR-0003): the immutable attribution, the admitted lifecycle
  * generation, the public status projection, the durable owner-cancellation
- * intent, the optional retry key's scoped claim and the digest of the exact
- * original input bytes. The execution
+ * intent with the instant it became pending, the optional retry key's scoped
+ * claim and the digest of the exact original input bytes. The execution
  * seam's columns ride the same table: the attempt number, the bounded latest
  * progress snapshot, the last attempt's failure code and the successful
  * result. Idempotent, like the other stores — the execution columns converge
@@ -369,6 +369,7 @@ async function ensureJobRecordStore(
        generation    bigint      NOT NULL,
        status        text        NOT NULL CHECK (status IN (${publicStatuses})),
        cancellation_requested boolean NOT NULL DEFAULT false,
+       cancellation_requested_at timestamptz,
        retry_key     text,
        body_sha256   text        NOT NULL,
        created_at    timestamptz NOT NULL,
@@ -408,6 +409,15 @@ async function ensureJobRecordStore(
       // intent" — the only value the projection paths wrote before the column
       // could exist.
       `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS cancellation_requested boolean NOT NULL DEFAULT false`,
+    ],
+    [
+      "cancellation_requested_at",
+      // The instant cancellation became pending for the record — the owner's
+      // request or a lifecycle delivery's stamp, whichever committed first.
+      // The recovery backlog's oldest-age evidence reads it (criterion 52's
+      // oldest ages), so a pending intent without one would be work whose
+      // wait nobody could measure.
+      `ALTER TABLE ${JOBS_JOB_RECORD_QUALIFIED} ADD COLUMN IF NOT EXISTS cancellation_requested_at timestamptz`,
     ],
     [
       "terminal_at",
@@ -488,6 +498,21 @@ async function ensureJobRecordStore(
     pool,
     "job_record_terminal_outcome_dated",
     `NOT (status IN (${terminalStatuses})) OR terminal_at IS NOT NULL`,
+  );
+  // The pending-cancellation instant: intent older than this convergence is
+  // dated at the migration instant — its true pending-since is unrecoverable
+  // and the migration instant can only extend the measured wait, never
+  // shorten it — and the check makes "intent without an instant" (a wait the
+  // backlog's age cannot see) unrepresentable in the store.
+  await pool.query(
+    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+        SET cancellation_requested_at = now()
+      WHERE cancellation_requested AND cancellation_requested_at IS NULL`,
+  );
+  await ensureCheckConstraint(
+    pool,
+    "job_record_cancellation_intent_dated",
+    `NOT cancellation_requested OR cancellation_requested_at IS NOT NULL`,
   );
   return { existed, columnsAdded: added };
 }

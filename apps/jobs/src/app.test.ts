@@ -5,6 +5,7 @@ import {
   JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
+  JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   JobErrorMessages,
@@ -98,6 +99,7 @@ const RUNNING_RECOVERY = (): JobsRecoverySnapshot => ({
   lastPassAt: new Date().toISOString(),
   lastOkPassAt: new Date().toISOString(),
   reconciled: 0,
+  lifecycle: { outstanding: 0, oldestPendingAt: null },
 });
 
 describe("GET /health", () => {
@@ -131,6 +133,12 @@ describe("GET /health", () => {
         name: JOBS_CAPACITY_CHECK,
         status: "ok",
         metrics: { retainedServer: 0, unfinishedServer: 0 },
+        lastSuccessAt: expect.any(String),
+      },
+      {
+        name: JOBS_LIFECYCLE_RECOVERY_CHECK,
+        status: "ok",
+        metrics: { passes: 1, reconciled: 0, outstanding: 0, oldestSeconds: 0 },
         lastSuccessAt: expect.any(String),
       },
       {
@@ -184,6 +192,7 @@ describe("GET /health", () => {
         lastPassAt: null,
         lastOkPassAt: null,
         reconciled: 0,
+        lifecycle: null,
       })),
     );
     const neverPassed = buildApp(
@@ -193,6 +202,7 @@ describe("GET /health", () => {
         lastPassAt: new Date().toISOString(),
         lastOkPassAt: null,
         reconciled: 0,
+        lifecycle: null,
       })),
     );
     const stale = buildApp(
@@ -202,6 +212,7 @@ describe("GET /health", () => {
         lastPassAt: new Date().toISOString(),
         lastOkPassAt: new Date(Date.now() - 10 * 60_000).toISOString(),
         reconciled: 2,
+        lifecycle: { outstanding: 0, oldestPendingAt: null },
       })),
     );
     try {
@@ -266,9 +277,9 @@ describe("GET /health", () => {
       expect(body.checks?.[3]?.name).toBe(JOBS_CAPACITY_CHECK);
       expect(body.checks?.[3]?.status).toBe("error");
       expect(body.checks?.[3]?.detail).toMatch(/no occupancy evidence.*not running/s);
-      expect(body.checks?.[4]?.name).toBe(JOBS_CLEANUP_CHECK);
-      expect(body.checks?.[4]?.status).toBe("error");
-      expect(body.checks?.[4]?.detail).toMatch(/cleanup loop is not running/);
+      expect(body.checks?.[5]?.name).toBe(JOBS_CLEANUP_CHECK);
+      expect(body.checks?.[5]?.status).toBe("error");
+      expect(body.checks?.[5]?.detail).toMatch(/cleanup loop is not running/);
     } finally {
       await app.close();
       await storage.stop();

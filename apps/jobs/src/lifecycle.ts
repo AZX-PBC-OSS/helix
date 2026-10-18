@@ -1,9 +1,13 @@
 import type { Pool, PoolClient } from "pg";
 
-import { JobsGenerationSchema, type JobsLifecycleUpdate } from "@azx-pbc/shared";
+import {
+  JOB_TERMINAL_STATUSES,
+  JobsGenerationSchema,
+  type JobsLifecycleUpdate,
+} from "@azx-pbc/shared";
 
 import { createJobsPool, withJobsClient } from "./pool.js";
-import { JOBS_APP_LIFECYCLE_QUALIFIED } from "./policy.js";
+import { JOBS_APP_LIFECYCLE_QUALIFIED, JOBS_JOB_RECORD_QUALIFIED } from "./policy.js";
 
 /**
  * The jobs-side app-lifecycle authority (ADR-0007, background-jobs-plane
@@ -31,7 +35,14 @@ import { JOBS_APP_LIFECYCLE_QUALIFIED } from "./policy.js";
  * recovery that consumes this state — cancelling still-active jobs under
  * closed generations until none remain — is its own supervised loop, which
  * reads the same row: active work under a generation below the applied one
- * (or equal to it while archived) is cancellation-eligible work.
+ * (or equal to it while archived) is cancellation-eligible work. The apply is
+ * where that eligibility becomes per-record durable intent for the app the
+ * delivery names: every apply stamps `cancellation_requested` on the
+ * still-active closed-generation records of its own app before it commits
+ * ({@link stampClosedGenerationCancellations}), so the acknowledgement
+ * confirms intent the recovery paths can act on, and the worker-start gate
+ * and recovery sweeper read the same per-record flag an owner cancellation
+ * writes.
  *
  * Application acknowledges with the highest applied generation — never the
  * delivered one — so a replayed older update cannot make the portal believe a
@@ -168,6 +179,105 @@ export interface JobsLifecycleApplyResult {
   appliedGeneration: string;
   /** Whether the delivery moved the state forward (`applied`) or not (`stale`). */
   changed: boolean;
+  /**
+   * How many still-active job records of this app the apply stamped with
+   * cancellation intent — every queued/running job under a generation this
+   * state closes, in both environments. The delivery's cancellation reach,
+   * carried on the route span; the records' convergence to their terminal
+   * `cancelled` outcomes is the recovery paths' (the worker-start gate and
+   * the recovery sweeper), never this transaction's.
+   */
+  stamped: number;
+}
+
+/**
+ * The closed-generation cancellation predicate over `job_record r` joined to
+ * `app_lifecycle l` — the records whose admitted generation the applied state
+ * closes (below the watermark, or equal to it while archived). One spelling
+ * for every statement that selects, stamps or measures cancellation-eligible
+ * work, so the apply's intent, the recovery loop's healing stamp and the
+ * backlog's health evidence cannot drift into three definitions of the same
+ * fact.
+ */
+const CLOSED_GENERATION_PREDICATE =
+  "(r.generation < l.generation OR (r.generation = l.generation AND l.archived))";
+
+/**
+ * Stamp durable cancellation intent on the still-active job records the
+ * applied lifecycle state closes — the one write that turns a delivered
+ * archive (or a newer generation) into per-record intent the existing
+ * cancellation machinery carries to terminal outcomes. Conditional on the
+ * record still being non-terminal and not already carrying intent, so a
+ * repeat is a no-op; returns the stamped count.
+ *
+ * The scope is the caller's contract:
+ *
+ * - **The lifecycle apply passes its own `appId`** — the intent commits with
+ *   that app's generation change, before the acknowledgement, and the count
+ *   is the delivery's own cancellation reach (the route span's
+ *   `helix.jobs.lifecycle.stamped`). Stamping across apps there would
+ *   misattribute another app's residue to a delivery that never named it.
+ * - **The recovery sweeper's healing arm passes none** — the store-wide
+ *   reach that re-records intent a store's closed generations imply but no
+ *   record carries yet (a store whose closed generations predate the
+ *   stamping, or any record the stamp could not have covered); its evidence
+ *   is the healing log event and the backlog measurement, never one
+ *   delivery's.
+ */
+export async function stampClosedGenerationCancellations(
+  executor: Pick<Pool, "query"> | Pick<PoolClient, "query">,
+  appId?: string,
+): Promise<number> {
+  const stamped = await executor.query(
+    `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} r
+        SET cancellation_requested = true,
+            cancellation_requested_at = COALESCE(r.cancellation_requested_at, now())
+       FROM ${JOBS_APP_LIFECYCLE_QUALIFIED} l
+      WHERE l.app_id = r.app_id
+        AND ($2::text IS NULL OR l.app_id = $2)
+        AND NOT r.cancellation_requested
+        AND NOT (r.status = ANY($1::text[]))
+        AND ${CLOSED_GENERATION_PREDICATE}`,
+    [JOB_TERMINAL_STATUSES, appId ?? null],
+  );
+  return stamped.rowCount ?? 0;
+}
+
+/** The archive-cancellation backlog one measurement reports. */
+export interface ClosedGenerationBacklog {
+  /** Active (queued/running) records under a closed generation — the remaining work. */
+  outstanding: number;
+  /** The oldest pending cancellation's instant (the intent's own stamp), null when nothing is pending. */
+  oldestPendingAt: Date | null;
+}
+
+/**
+ * Measure the archive-cancellation backlog: the still-active closed-generation
+ * records and the oldest pending-cancellation instant among them — the
+ * outstanding count and oldest age criterion 52 makes separately visible from
+ * delivery lag. The age reads the records' own intent stamps, so it measures
+ * how long the work has been awaiting its cancellation (the healthy-service
+ * bound's input), never how old the work itself is.
+ */
+export async function measureClosedGenerationBacklog(
+  executor: Pick<Pool, "query"> | Pick<PoolClient, "query">,
+): Promise<ClosedGenerationBacklog> {
+  const result = await executor.query<{
+    outstanding: number;
+    oldest_pending_at: Date | null;
+  }>(
+    `SELECT count(*)::int AS outstanding, min(r.cancellation_requested_at) AS oldest_pending_at
+       FROM ${JOBS_JOB_RECORD_QUALIFIED} r
+       JOIN ${JOBS_APP_LIFECYCLE_QUALIFIED} l ON l.app_id = r.app_id
+      WHERE NOT (r.status = ANY($1::text[]))
+        AND ${CLOSED_GENERATION_PREDICATE}`,
+    [JOB_TERMINAL_STATUSES],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error("the closed-generation backlog measurement returned no row");
+  }
+  return { outstanding: row.outstanding, oldestPendingAt: row.oldest_pending_at };
 }
 
 /**
@@ -204,7 +314,8 @@ const POOL_MAX = 2;
  * never silently succeeds.
  *
  * The apply is one transaction: ensure the app's row exists, lock it, merge
- * the delivery, write the merge, commit — and only the committed state is
+ * the delivery, write the merge, stamp the still-active closed-generation
+ * records with cancellation intent, commit — and only the committed state is
  * acknowledged, so a crash or a refusal between them acknowledges nothing the
  * store does not already hold. The row lock held to the commit is also the
  * serialization boundary the admission and worker-start gates use: a
@@ -287,7 +398,7 @@ export class JobsLifecycleStore implements JobsLifecycleApplier {
            ON CONFLICT (app_id) DO NOTHING`,
           [appId, deliveredGeneration, update.archived],
         );
-        let result: JobsLifecycleApplyResult;
+        let result: Omit<JobsLifecycleApplyResult, "stamped">;
         if ((inserted.rowCount ?? 0) === 1) {
           result = { appliedGeneration: deliveredGeneration, changed: true };
         } else {
@@ -321,8 +432,18 @@ export class JobsLifecycleStore implements JobsLifecycleApplier {
           }
           result = { appliedGeneration: merged.state.generation, changed: merged.changed };
         }
+        // The per-record cancellation intent, committed with the generation
+        // change it follows from — never after the acknowledgement. The
+        // stamp is idempotent and scoped to THIS app: the transaction's own
+        // row lock serializes it against the admissions, so every admission
+        // that committed before it is visible to the stamp and every
+        // admission after it reads the closed generation at the gate and is
+        // refused — no active record of this app slips past unclosed.
+        // Another app's unstamped residue is the recovery sweeper's healing
+        // arm's news, never this delivery's count.
+        const stamped = await stampClosedGenerationCancellations(client, appId);
         await client.query("COMMIT");
-        return result;
+        return { ...result, stamped };
       } catch (error) {
         // A failed unit is rolled back so no aborted transaction is returned
         // to the pool. On a dead socket the ROLLBACK itself rejects through

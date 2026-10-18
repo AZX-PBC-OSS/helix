@@ -5,6 +5,7 @@ import {
   JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
+  JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   resolveJobsCapacityLimits,
@@ -16,10 +17,15 @@ import {
   jobsCapacityCheck,
   jobsCleanupCheck,
   jobsDatabaseCheck,
+  jobsLifecycleRecoveryCheck,
   jobsSweeperCheck,
   jobsWorkerCheck,
 } from "./health.js";
-import { JOBS_RECOVERY_STALE_AFTER_MS, type JobsRecoverySnapshot } from "./recovery.js";
+import {
+  JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS,
+  JOBS_RECOVERY_STALE_AFTER_MS,
+  type JobsRecoverySnapshot,
+} from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import type { JobsStorageSnapshot } from "./storage.js";
 
@@ -230,6 +236,7 @@ describe("jobsSweeperCheck", () => {
       lastPassAt: new Date(NOW - 1_000).toISOString(),
       lastOkPassAt: new Date(NOW - 1_000).toISOString(),
       reconciled: 2,
+      lifecycle: { outstanding: 0, oldestPendingAt: null },
       ...overrides,
     };
   }
@@ -287,6 +294,117 @@ describe("jobsSweeperCheck", () => {
     expect(jobsSweeperCheck(at30s, { nowMs: NOW, staleAfterMs: 20_000 }).status).toBe("degraded");
     // The default is derived from the sweeper's own cadence constant.
     expect(JOBS_RECOVERY_STALE_AFTER_MS).toBe(45_000);
+  });
+});
+
+describe("jobsLifecycleRecoveryCheck", () => {
+  const NOW = Date.parse("2026-10-16T08:00:00.000Z");
+
+  function recovery(overrides: Partial<JobsRecoverySnapshot>): JobsRecoverySnapshot {
+    return {
+      started: true,
+      passes: 4,
+      lastPassAt: new Date(NOW - 1_000).toISOString(),
+      lastOkPassAt: new Date(NOW - 1_000).toISOString(),
+      reconciled: 0,
+      lifecycle: { outstanding: 0, oldestPendingAt: null },
+      ...overrides,
+    };
+  }
+
+  test("a sweeper that is not running, or has never completed a pass, is never healthy", () => {
+    const notRunning = jobsLifecycleRecoveryCheck(
+      recovery({ started: false, passes: 0, lastPassAt: null, lastOkPassAt: null }),
+      { nowMs: NOW },
+    );
+    expect(HealthCheckSchema.parse(notRunning)).toBeTruthy();
+    expect(notRunning.name).toBe(JOBS_LIFECYCLE_RECOVERY_CHECK);
+    expect(notRunning.status).toBe("error");
+    expect(notRunning.detail).toMatch(/sweeper is not running/);
+
+    const neverPassed = jobsLifecycleRecoveryCheck(
+      recovery({ lastOkPassAt: null, passes: 3, lastPassAt: new Date(NOW).toISOString() }),
+      { nowMs: NOW },
+    );
+    expect(neverPassed.status).toBe("error");
+    expect(neverPassed.detail).toMatch(/no successful pass/);
+  });
+
+  test("a stale sweeper degrades this check too — the backlog evidence is only as fresh as its pass", () => {
+    const check = jobsLifecycleRecoveryCheck(
+      recovery({ lastOkPassAt: new Date(NOW - 10 * 60_000).toISOString() }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("degraded");
+    expect(check.detail).toMatch(/last successful pass was 600s ago/);
+  });
+
+  test("a fresh pass that measured nothing pending is ok — an empty backlog reads ok", () => {
+    const check = jobsLifecycleRecoveryCheck(recovery({}), { nowMs: NOW });
+    expect(check.status).toBe("ok");
+    expect(check.lastSuccessAt).toBe(new Date(NOW - 1_000).toISOString());
+    expect(check.metrics).toEqual({ passes: 4, reconciled: 0, outstanding: 0, oldestSeconds: 0 });
+  });
+
+  test("a fresh pass that could not have measured is an error, never a healthy guess", () => {
+    // Unreachable through the loop (a fresh pass always measures); the
+    // refusal of the healthy reading is the point — missing evidence never
+    // reports ok.
+    const check = jobsLifecycleRecoveryCheck(recovery({ lifecycle: null }), { nowMs: NOW });
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/no archive-cancellation measurement/);
+  });
+
+  test("a backlog converging inside the healthy-service bound reads ok, with the count and age visible", () => {
+    const check = jobsLifecycleRecoveryCheck(
+      recovery({
+        lifecycle: { outstanding: 3, oldestPendingAt: new Date(NOW - 20_000).toISOString() },
+      }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("ok");
+    expect(check.metrics).toEqual({ passes: 4, reconciled: 0, outstanding: 3, oldestSeconds: 20 });
+  });
+
+  test("pending work older than the 60-second bound degrades, carrying the outstanding count and oldest age", () => {
+    const check = jobsLifecycleRecoveryCheck(
+      recovery({
+        lifecycle: { outstanding: 2, oldestPendingAt: new Date(NOW - 120_000).toISOString() },
+      }),
+      { nowMs: NOW },
+    );
+    expect(HealthCheckSchema.parse(check)).toBeTruthy();
+    expect(check.status).toBe("degraded");
+    expect(check.metrics).toEqual({ passes: 4, reconciled: 0, outstanding: 2, oldestSeconds: 120 });
+    expect(check.detail).toMatch(/2 job\(s\) still active under closed generations/);
+    expect(check.detail).toMatch(/oldest pending 120s/);
+  });
+
+  test("the overdue threshold is strictly-greater on the milliseconds, not the displayed seconds", () => {
+    // Work aged exactly 60s is the bound's last instant of healthy
+    // convergence; 60.4s is past it — and must not display as 60 and read ok
+    // (the same rounding trap the delivery check's own boundary leg pins).
+    const atBound = recovery({
+      lifecycle: {
+        outstanding: 1,
+        oldestPendingAt: new Date(NOW - JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS).toISOString(),
+      },
+    });
+    expect(jobsLifecycleRecoveryCheck(atBound, { nowMs: NOW }).status).toBe("ok");
+    const pastBound = recovery({
+      lifecycle: {
+        outstanding: 1,
+        oldestPendingAt: new Date(NOW - JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS - 400).toISOString(),
+      },
+    });
+    expect(jobsLifecycleRecoveryCheck(pastBound, { nowMs: NOW }).status).toBe("degraded");
+    // The degraded reading displays 60s — the raw comparison is what decided.
+    expect(jobsLifecycleRecoveryCheck(pastBound, { nowMs: NOW }).metrics?.oldestSeconds).toBe(60);
+    // The bound itself is the contract's 60 seconds (criterion 52) — pinned
+    // as a value, not just used, so a constant drift cannot move the
+    // degradation contract silently (the sweeper check pins its own the same
+    // way).
+    expect(JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS).toBe(60_000);
   });
 });
 

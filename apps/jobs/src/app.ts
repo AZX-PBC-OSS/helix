@@ -32,6 +32,7 @@ import {
   ATTR_JOBS_ARCHIVED,
   ATTR_JOBS_GENERATION,
   ATTR_JOBS_JOB_ID,
+  ATTR_JOBS_LIFECYCLE_STAMPED,
   ATTR_JOBS_OPERATION,
   ATTR_OUTCOME,
   ATTR_REASON,
@@ -56,6 +57,7 @@ import {
   jobsCapacityCheck,
   jobsCleanupCheck,
   jobsDatabaseCheck,
+  jobsLifecycleRecoveryCheck,
   jobsSweeperCheck,
   jobsWorkerCheck,
 } from "./health.js";
@@ -187,10 +189,14 @@ async function serveLifecycle(
     reply.header("cache-control", "no-store");
     return reply.code(503).send(jobRequestError("jobs_unavailable"));
   }
-  span.setAttribute(
-    ATTR_OUTCOME,
-    (applied.changed ? "applied" : "stale") satisfies JobsLifecycleOutcome,
-  );
+  span.setAttributes({
+    [ATTR_OUTCOME]: (applied.changed ? "applied" : "stale") satisfies JobsLifecycleOutcome,
+    // The delivery's cancellation reach: the still-active closed-generation
+    // records this apply stamped with durable intent before the commit — the
+    // archive's own evidence of the work its recovery paths will carry to
+    // terminal outcomes. A bounded count; never a job id, URL or owner.
+    [ATTR_JOBS_LIFECYCLE_STAMPED]: applied.stamped,
+  });
   reply.header("cache-control", "no-store");
   // The ack is validated against the wire schema before it is sent — a store
   // answer that cannot parse is a defect answered 500 by the error boundary,
@@ -691,6 +697,7 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
         jobsWorkerCheck(deps.worker()),
         jobsSweeperCheck(deps.recovery()),
         jobsCapacityCheck(deps.cleanup(), deps.capacityLimits),
+        jobsLifecycleRecoveryCheck(deps.recovery()),
         jobsCleanupCheck(deps.cleanup()),
       ];
       reply.header("cache-control", "no-store"); // a degraded body must not be cached

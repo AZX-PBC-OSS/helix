@@ -409,6 +409,20 @@ died is projected `crashed` — execution lost, never reissued.
   between the intent write and the cancel) and the outage-resume path: the
   intent stays pending and the passes keep applying it until no active work
   remains.
+- **Archive-cancellation recovery rides the same arms.** A delivered archive
+  (or a newer generation) reaches the records as durable intent stamped by
+  the lifecycle apply's own transaction — the per-record flag the arms above
+  already carry to terminal outcomes. The pass opens with that state's
+  lifecycle half: a healing stamp re-records intent on still-active
+  closed-generation work that carries none (a store whose closed generations
+  predate the stamping), then measures the backlog — the outstanding count
+  and oldest pending age of still-active closed-generation work, in both
+  environments. That measurement is the `jobs_lifecycle_recovery` health
+  check's evidence, kept separately visible from the portal's delivery lag:
+  a backlog converging inside the healthy-service bound reads `ok` with its
+  count in the metrics; pending work older than 60 seconds degrades
+  (criterion 52), and recovery keeps applying until none remains active —
+  with no promised overall completion time.
 - **Supervision.** `start()` never throws; a failed pass is logged, counted
   and never ends the cadence (a pass whose own reporting threw rejects to its
   caller, clears the in-flight guard, and the timer's next pass runs);
@@ -485,13 +499,23 @@ jobs-side state its delivery lands in — one row per known app in the
 `jobs.app_lifecycle` table: the highest lifecycle generation durably applied
 and whether that generation is archived. The lifecycle route applies a
 delivered `{generation, archived}` in one transaction — ensure the row, lock
-it, merge, write, commit — and acknowledges **after** the commit with the
-highest applied generation, never the delivered one: a redelivery or an
+it, merge, write, stamp, commit — and acknowledges **after** the commit with
+the highest applied generation, never the delivered one: a redelivery or an
 out-of-order older change acknowledges the highest and changes nothing, so
 older deliveries can never reopen a closed generation (each new generation's
 watermark already closes every generation below it — an immediate
 archive/unarchive delivered in either order keeps every pre-archive
 generation ineligible).
+
+The stamp is how a delivered archive becomes per-record cancellation intent:
+every still-active job record of the app that the applied state closes — in
+both environments — is stamped `cancellation_requested` (with the instant it
+became pending) in the same transaction, before the acknowledgement. The
+admission/start gate's row lock makes that race-free: an acceptance that
+committed before the apply is visible to the stamp, and one after it reads
+the closed generation and is refused. The recovery sweeper's arms carry each
+stamped record to its terminal `cancelled` outcome; the acknowledgement
+confirms durable intent, never that cancellation has finished running.
 
 The same row is the **admission/start gate**: `lifecycleEligibility` (pure,
 unit-pinned) judges a claimed generation as `admit` (applied and open),
@@ -582,8 +606,8 @@ migration identity, after the schema they depend on exists.
 runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, the instruction
 burn store, the app-lifecycle store and the job-record store present with its
-execution columns, the cancellation-intent column and the terminal-instant
-column, and the
+execution columns, the cancellation-intent column, the pending-cancellation
+instant column, and the terminal-instant column, and the
 runtime identity holding its DML. The verdict union (`compatible`,
 `unreachable`, `schema_missing`, `schema_version`, `queue_missing`,
 `queue_policy`, `burn_missing`, `lifecycle_missing`, `record_missing`,
@@ -603,13 +627,14 @@ verified and later dies degrades the same way.
 
 - **`/health` always answers 200.** The body carries the degradation: the
   `jobs_database` check grades the storage supervisor's snapshot, the
-  `jobs_worker` check grades the runner's, and the `jobs_sweeper` check
-  grades the recovery sweeper's (names in `@azx-pbc/shared`,
-  `JOBS_HEALTH_CHECK_NAMES`), and **unknown readiness never appears
-  healthy** — before any probe has answered, the state is `error`; a listener
-  without its worker is `error`, not ok; a sweeper that never completed a
-  pass, or whose last successful pass is older than three sweep cadences, is
-  `error`/`degraded`, never ok.
+  `jobs_worker` check grades the runner's, the `jobs_sweeper` and
+  `jobs_lifecycle_recovery` checks grade the recovery sweeper's (the loop's
+  freshness and its archive-cancellation backlog measurement — names in
+  `@azx-pbc/shared`, `JOBS_HEALTH_CHECK_NAMES`), and **unknown readiness
+  never appears healthy** — before any probe has answered, the state is
+  `error`; a listener without its worker is `error`, not ok; a sweeper that
+  never completed a pass, or whose last successful pass is older than three
+  sweep cadences, is `error`/`degraded`, never ok.
 - **Invalid configuration is an explicit startup error.** `loadJobsConfig`
   (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID`,
   `JOBS_DATABASE_URL`, any of the server's three signing roots

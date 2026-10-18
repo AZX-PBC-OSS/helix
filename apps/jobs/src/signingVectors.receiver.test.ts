@@ -142,6 +142,7 @@ function receiverFor(server: string, operation: JobsOperationName, keyId: string
       lastPassAt: new Date().toISOString(),
       lastOkPassAt: new Date().toISOString(),
       reconciled: 0,
+      lifecycle: { outstanding: 0, oldestPendingAt: null },
     }),
     cleanup: runningCleanup,
     capacityLimits: resolveJobsCapacityLimits(),

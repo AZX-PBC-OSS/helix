@@ -15,6 +15,7 @@ import {
   JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
+  JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
   JobErrorMessages,
@@ -738,28 +739,26 @@ describe("signed instructions through the running process", () => {
   }
 
   /**
-   * The cancel legs' arrangement: submit a fresh keyed job, hold its runner
-   * row off-claim (a future `start_after` the dispatcher never fetches —
-   * written as the store owner, the seeder's own trick), verify the hold won
-   * the submit→hold race, then cancel. The 202's basis is the committed
+   * The cancel legs' arrangement: submit a fresh keyed job and hold its
+   * runner row off-claim (a future `start_after` the dispatcher never
+   * fetches — written as the store owner, the seeder's own trick), verifying
+   * the hold won the submit→hold race. The 202's basis is the committed
    * intent alone — a worker poll landing in the submit→cancel gap is a
    * designed outcome (the record goes `running`, or the unhandled platform
    * failure settles it `failed`), none of which is the state a convergence
-   * assertion can ride — so the hold+verify is what makes the 202, the
-   * runner row's cancellation and the record's convergence all
-   * deterministic: past the verification no claim can begin, the drive
-   * lands on the held row, and the record's only writer is a sweeper whose
-   * single reachable projection is the intent's own `cancelled`. A claim
-   * that won the gap reads back `active` or non-`queued` and the cycle
-   * retries on a fresh job; the loop is bounded, its exhaustion a leg
-   * failure. Returns the cancelled job's public id.
+   * assertion can ride — so the hold+verify is what makes the cancellation's
+   * aftermath deterministic: past the verification no claim can begin, and
+   * the record's only writer is a sweeper whose single reachable projection
+   * is the intent's own `cancelled`. A claim that won the gap reads back
+   * `active` or non-`queued` and the cycle retries on a fresh job; the loop
+   * is bounded, its exhaustion a leg failure. Returns the held job's public
+   * id.
    */
-  async function cancelAHeldJob(options: {
+  async function holdAQueuedJob(options: {
     port: number;
     appId: string;
     keyPrefix: string;
     holder: Pool;
-    cancelTokenFor: (jobId: string) => Promise<string>;
   }): Promise<string> {
     for (let attempt = 0; attempt < 5; attempt++) {
       const key = `${options.keyPrefix}-${attempt}`;
@@ -790,23 +789,34 @@ describe("signed instructions through the running process", () => {
       if (heldRow?.state !== "created" || heldRow?.status !== "queued") {
         continue; // the claim won the submit→hold gap — a fresh job, a fresh cycle
       }
-      const cancelled = await fetch(
-        `http://127.0.0.1:${options.port}/internal/jobs/v1/jobs/${candidate}`,
-        {
-          method: "DELETE",
-          headers: { [INSTRUCTION_HEADER]: await options.cancelTokenFor(candidate) },
-        },
-      );
-      expect(cancelled.status, "a held job's cancellation is deterministic").toBe(202);
-      expect(cancelled.headers.get("cache-control")).toBe("no-store");
-      expect(await cancelled.json()).toEqual({
-        server: "jobs",
-        jobId: candidate,
-        cancellationRequested: true,
-      });
       return candidate;
     }
-    throw new Error("no attempt's cancellation reached a held job");
+    throw new Error("no attempt's hold reached a queued job");
+  }
+
+  async function cancelAHeldJob(options: {
+    port: number;
+    appId: string;
+    keyPrefix: string;
+    holder: Pool;
+    cancelTokenFor: (jobId: string) => Promise<string>;
+  }): Promise<string> {
+    const candidate = await holdAQueuedJob(options);
+    const cancelled = await fetch(
+      `http://127.0.0.1:${options.port}/internal/jobs/v1/jobs/${candidate}`,
+      {
+        method: "DELETE",
+        headers: { [INSTRUCTION_HEADER]: await options.cancelTokenFor(candidate) },
+      },
+    );
+    expect(cancelled.status, "a held job's cancellation is deterministic").toBe(202);
+    expect(cancelled.headers.get("cache-control")).toBe("no-store");
+    expect(await cancelled.json()).toEqual({
+      server: "jobs",
+      jobId: candidate,
+      cancellationRequested: true,
+    });
+    return candidate;
   }
 
   test(
@@ -1308,6 +1318,106 @@ describe("signed instructions through the running process", () => {
           status: "cancelled",
           error: { code: "cancelled", message: JobErrorMessages.cancelled },
         });
+      } finally {
+        await reader.end();
+        await holder.end();
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
+  test(
+    "a delivered archive through the running process cancels its still-active work in both environments within the healthy-service bound, and the recovery check reports the backlog honestly",
+    slow,
+    async () => {
+      // The lifecycle cancellation chain through the real composition: the
+      // signed archive delivery stamps every still-active closed-generation
+      // job (both environments) with durable intent before its
+      // acknowledgement; the composition's own recovery sweeper carries each
+      // to its terminal `cancelled` outcome; the `jobs_lifecycle_recovery`
+      // check — the name ADR-0009 reserves — grades the backlog until none
+      // remains active. The hold trick makes the record's convergence
+      // deterministic exactly as the owner-cancellation leg's does.
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
+      const archiveApp = randomUUID();
+      const reader = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+      const holder = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+      const deliverLifecycle = async (body: string): Promise<number> => {
+        const token = await mintJobsInstruction(
+          {
+            operation: "lifecycle",
+            server: "jobs",
+            appId: archiveApp,
+            body: new TextEncoder().encode(body),
+            iatS: Math.floor(Date.now() / 1000) - 1,
+          },
+          deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+        );
+        const res = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${archiveApp}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json", [INSTRUCTION_HEADER]: token },
+            body,
+          },
+        );
+        return res.status;
+      };
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        // Generation 1 open, then the held job under it.
+        expect(await deliverLifecycle('{"generation":"1","archived":false}')).toBe(200);
+        const heldJobId = await holdAQueuedJob({
+          port,
+          appId: archiveApp,
+          keyPrefix: "archive-leg",
+          holder,
+        });
+
+        // The archive delivery: acknowledged AFTER its apply committed the
+        // per-record intent — the stamp is durable before the 200 exists.
+        expect(await deliverLifecycle('{"generation":"2","archived":true}')).toBe(200);
+        const stamped = await reader.query<{ cancellation_requested: boolean }>(
+          `SELECT cancellation_requested FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+          [heldJobId],
+        );
+        expect(stamped.rows[0]?.cancellation_requested).toBe(true);
+
+        // The composition's own sweeper converges the stamped work: the
+        // 60-second healthy-service bound is the service's own cadence.
+        await eventually(async () => {
+          const { rows } = await reader.query<{ status: string; error_code: string | null }>(
+            `SELECT status, error_code FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+            [heldJobId],
+          );
+          return rows[0]?.status === "cancelled" && rows[0]?.error_code === "cancelled";
+        }, 60_000);
+        const runner = await reader.query<{ state: string }>(
+          `SELECT r.state AS state FROM ${JOBS_PGBOSS_SCHEMA}.job r
+             JOIN ${JOBS_JOB_RECORD_QUALIFIED} w ON w.runner_job_id = r.id::text
+            WHERE w.job_id = $1`,
+          [heldJobId],
+        );
+        expect(runner.rows[0]?.state).toBe("cancelled");
+
+        // The recovery check the backlog grades: present on the serving
+        // process. Its evidence is taken at each pass's opening — the pass
+        // that cleared the backlog reported the state it opened on — so the
+        // empty reading arrives with the next pass, and reads ok: recovery
+        // without hiding unfinished work while it ran, an honest empty
+        // reading once it settled.
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          const check = body.checks?.find((c) => c.name === JOBS_LIFECYCLE_RECOVERY_CHECK);
+          return check?.status === "ok" && check.metrics?.outstanding === 0;
+        }, 60_000);
       } finally {
         await reader.end();
         await holder.end();
