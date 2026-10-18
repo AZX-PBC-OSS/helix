@@ -32,6 +32,7 @@ import type { DenialThrottle } from "./denialThrottle.js";
 import type { JobsSubmissionThrottle } from "./jobsThrottle.js";
 import { readBoundedBody } from "../jobs/boundedBody.js";
 import type { JobsForwarder, JobsRecordSpec } from "../jobs/forwarder.js";
+import { abortOnClientGone } from "./clientGone.js";
 
 /**
  * The app-facing jobs routes (background-jobs-plane design §1): the
@@ -212,21 +213,6 @@ async function passJobsGates(
     return null;
   }
   return { entry, caller, ownerKind: caller.kind, ownerOid: caller.oid };
-}
-
-/**
- * Abort the forward if the caller goes away — the RESPONSE's close, not the
- * request stream's (the ended body stream auto-destroys; see fetch.ts for the
- * measured details of that trap). A poll abandoned mid-flight aborts its
- * forward too — an observation failure, never a cancellation and never a
- * resubmission.
- */
-function abortOnClientGone(reply: FastifyReply): AbortSignal {
-  const abort = new AbortController();
-  reply.raw.on("close", () => {
-    if (!reply.raw.writableEnded) abort.abort();
-  });
-  return abort.signal;
 }
 
 /**

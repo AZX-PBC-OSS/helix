@@ -1,10 +1,13 @@
 import type { CounterStore } from "./counterStore.js";
 
 /**
- * Limit fetch allowlist-denial ledger rows per app and time window.
- * Authenticated callers bypass the anonymous limiter; denied origins return
- * before the daily request budget, which also excludes forbidden outcomes.
- * A retry loop could therefore write denial rows continuously.
+ * Limit pre-egress fetch-policy denial ledger rows per app and time window —
+ * the allowlist refusal, the unattended-only refusals (delegated origin,
+ * stale generation) and the oversized-body fast path, every denial
+ * `meterPolicyDenial` can reach. Authenticated callers bypass the anonymous
+ * limiter; denied origins return before the daily request budget, which also
+ * excludes forbidden outcomes. A retry loop could therefore write denial rows
+ * continuously.
  *
  * Use memory to avoid a database round-trip for each dropped row. The bound is
  * per replica, unlike the shared counters used for security rate limits.

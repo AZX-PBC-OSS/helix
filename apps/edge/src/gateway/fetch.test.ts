@@ -132,10 +132,11 @@ function buildFetchEdge(
     requestsPerDay?: number | null;
     withEgress?: boolean;
     maxBodyBytes?: number;
+    usage?: FakeUsageStore;
   } = {},
 ): FetchEdge {
   const egress = new FakeEgress();
-  const usage = new FakeUsageStore();
+  const usage = opts.usage ?? new FakeUsageStore();
   const connections =
     opts.connections ??
     new Map<string, ProxiedOriginCredential>([
@@ -910,5 +911,63 @@ describe("/_api/fetch over a real socket", () => {
       expect(((await res?.body.json()) as { code: string }).code).toBe("too_large");
     });
     expect(usage.records).toContainEqual(expect.objectContaining({ statusCode: 413 }));
+  });
+
+  /**
+   * A budget read the test parks mid-flight — standing in for the pre-forward
+   * policy phase (the budget check, the mint) that runs between the route's
+   * abort wiring and the egress dial.
+   */
+  class GatedBudgetStore extends FakeUsageStore {
+    entered = false;
+    #release: (() => void) | null = null;
+
+    override async fetchRequestsToday(): Promise<number> {
+      this.entered = true;
+      await new Promise<void>((resolve) => {
+        this.#release = resolve;
+      });
+      return super.fetchRequestsToday();
+    }
+
+    release(): void {
+      this.#release?.();
+    }
+  }
+
+  it("aborts the egress call when the client hangs up during the policy phase, before egress is dialed", async () => {
+    // The abort listener registers before the policy run, so a hang-up during
+    // the budget check — or the mint — aborts the forward too, instead of
+    // completing a call nobody is waiting for. The budget read is parked
+    // mid-flight, the client hangs up inside it, and only then does the
+    // policy proceed: egress must observe the abort, and the abandoned
+    // forward must ledger as the failed call it was.
+    const gated = new GatedBudgetStore();
+    const { app, egress, usage } = buildFetchEdge({ requestsPerDay: 5, usage: gated });
+    egress.delayMs = 5_000; // held open — nothing may answer a caller who left
+    await withServer(app, async (base) => {
+      const ac = new AbortController();
+      const pending = undiciRequest(`${base}${URL_PATH}`, {
+        method: "GET",
+        headers: { ...HOST, origin: ORIGIN },
+        signal: ac.signal,
+      }).catch(() => undefined);
+      await until(() => gated.entered, "the budget check to be in flight");
+      try {
+        ac.abort();
+        await pending;
+        gated.release();
+        await until(() => egress.abortedDuringCall, "the egress call to be aborted");
+        await until(
+          () => usage.records.some((r) => r.capability === "fetch" && r.outcome === "error"),
+          "the failed forward's ledger row",
+        );
+      } finally {
+        gated.release(); // the gate must open on every exit, or close() hangs
+      }
+    });
+    expect(usage.records).toContainEqual(
+      expect.objectContaining({ capability: "fetch", outcome: "error", statusCode: null }),
+    );
   });
 });

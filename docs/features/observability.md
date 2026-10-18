@@ -438,8 +438,9 @@ bounded by design. Status/result/cancel requests are not ledger rows.
 - **OTel replaces neither `gateway_calls` nor the pino logs.** The ledger stays
   the sole authority for metering, budgets and audit; `helix.gateway.calls` is
   an operational counter that happens to count the same events and is never
-  reconciled against it. The two provably differ — the ledger throttles
-  allowlist-denial rows and the counter does not.
+  reconciled against it. The two provably differ — the ledger throttles fetch
+  policy-denial rows (allowlist, unattended refusals, oversized-body) and the
+  counter does not.
 
 An ESLint rule enforces the SDK boundary and the forbidden attribute keys; the
 adversarial suites (`spanRedaction.test.ts`, `traceBoundary.test.ts`,
