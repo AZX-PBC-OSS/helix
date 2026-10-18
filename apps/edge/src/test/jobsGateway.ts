@@ -291,6 +291,7 @@ export async function buildDevJobsEdge(
     egress: null,
     instructionKey: null,
     jobsForwarder,
+    jobsCallbackBurns: null,
     portal: null,
   });
 }

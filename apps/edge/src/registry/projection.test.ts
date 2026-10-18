@@ -631,6 +631,49 @@ describe("RegistryProjection", () => {
     expect(projection.getApp("demo")).toBeUndefined();
   });
 
+  // The app-id index the signed jobs callback dispatches with: the claims
+  // carry the app's id, never a host or slug, so the projection must resolve
+  // the CURRENT entry by id — the same copy the slug index serves, refreshed
+  // and dropped by every load the slug map is.
+  describe("app-id index (getAppById)", () => {
+    it("resolves the current entry by app id — the same copy the slug index serves", async () => {
+      const projection = new RegistryProjection(
+        querierFor([[ROW, { ...ROW, id: "2", slug: "other" }]]),
+      );
+      await projection.load();
+      expect(projection.getAppById(ROW.id)).toBe(projection.getApp("demo"));
+      expect(projection.getAppById("2")?.slug).toBe("other");
+      expect(projection.getAppById("no-such-app")).toBeUndefined();
+    });
+
+    it("keeps the id resolvable across a slug rename and drops a deleted app's id on reload", async () => {
+      const projection = new RegistryProjection(
+        querierFor([
+          [ROW, { ...ROW, id: "2", slug: "gone" }],
+          // The renamed app keeps its id; the other app vanishes from the
+          // source — both index changes ride the same load.
+          [{ ...ROW, slug: "renamed", jobs_generation: 2 }],
+        ]),
+      );
+      await projection.load();
+      await projection.load();
+      expect(projection.getApp("demo")).toBeUndefined();
+      expect(projection.getAppById("2")).toBeUndefined();
+      const renamed = projection.getAppById(ROW.id);
+      expect(renamed?.slug).toBe("renamed");
+      expect(renamed?.jobsGeneration).toBe("2");
+      expect(renamed).toBe(projection.getApp("renamed"));
+    });
+
+    it("serves the same stale copy from both indexes when a reload fails", async () => {
+      const projection = new RegistryProjection(querierFor([[ROW], new Error("db down")]));
+      await projection.load();
+      await projection.load(); // fails
+      expect(projection.getAppById(ROW.id)).toBe(projection.getApp("demo"));
+      expect(projection.getAppById(ROW.id)).toBeDefined();
+    });
+  });
+
   it("collapses loads requested during an in-flight load into one follow-up", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));

@@ -201,6 +201,7 @@ const app = buildDevGateway({
   egress,
   instructionKey,
   jobsForwarder,
+  jobsCallbackBurns,
   portal,
   https,
 });

@@ -279,6 +279,7 @@ const app = buildApp({
   instructionKey,
   jobsForwarder,
   jobsSubmissionThrottle,
+  jobsCallbackBurns,
   portal,
   cspReports,
   visits,

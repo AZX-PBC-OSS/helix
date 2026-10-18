@@ -114,6 +114,7 @@ function build(opts: { withPortal?: boolean; withInternalSecret?: boolean } = {}
     instructionKey: null,
     portal: opts.withPortal === false ? null : portal,
     jobsForwarder: null,
+    jobsCallbackBurns: null,
   });
   return { app, portal, tokens };
 }
@@ -356,6 +357,7 @@ describe("fail-closed seams and routing discipline", () => {
       instructionKey: null,
       portal: null,
       jobsForwarder: null,
+      jobsCallbackBurns: null,
     });
     expect((await post(app2)).statusCode).toBe(410);
     await app2.close();

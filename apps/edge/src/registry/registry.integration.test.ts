@@ -1,7 +1,7 @@
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { LiveRegistry } from "./listener.js";
-import { TEST_DATABASE_URL, deleteApp, seedApp, type SeededApp } from "../test/seed.js";
+import { TEST_DATABASE_URL, deleteApp, seedApp, uniqueSlug, type SeededApp } from "../test/seed.js";
 
 // Against the real test database (migrated by vitest.globalSetup.ts, so the
 // portal's NOTIFY trigger is present): proves SQL → projection and the full
@@ -189,6 +189,39 @@ describe("LiveRegistry against the test database", () => {
       );
       await eventually(() => live.getApp(app.slug)?.jobsGeneration === "2");
       expect(live.getApp(app.slug)?.archived).toBe(true);
+    } finally {
+      await live.stop();
+    }
+  });
+
+  // The app-id lookup the signed jobs callback dispatches with: the claims
+  // carry the app's id, never a host or slug, so the live projection must
+  // resolve the CURRENT entry by id — through the same trigger → NOTIFY →
+  // reload loop every other projection change rides, with no restart.
+  it("resolves the current entry by app id, and keeps it current through renames and deletes", async () => {
+    const app = await seed({ live: true });
+    const live = new LiveRegistry({
+      databaseUrl: TEST_DATABASE_URL,
+      reconcileIntervalMs: 60_000,
+      log: QUIET,
+    });
+    try {
+      await live.start();
+      // The id and the slug resolve the same served entry.
+      expect(live.getAppById(app.appId)).toEqual(live.getApp(app.slug));
+
+      // A slug rename must not orphan the id: the callback resolves by the
+      // signed app id, so the current entry follows it.
+      const renamed = uniqueSlug("renamed");
+      await pool.query(`UPDATE apps SET slug = $1 WHERE id = $2`, [renamed, app.appId]);
+      await eventually(() => live.getAppById(app.appId)?.slug === renamed);
+      expect(live.getApp(app.slug)).toBeUndefined();
+
+      // And a delete stops the id resolving at all — the callback refuses an
+      // unknown app on its next refresh, without a restart.
+      await deleteApp(pool, app.appId);
+      seeded.splice(seeded.indexOf(app), 1);
+      await eventually(() => live.getAppById(app.appId) === undefined);
     } finally {
       await live.stop();
     }

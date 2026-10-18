@@ -816,10 +816,12 @@ describe("loadDevGatewayConfig", () => {
 });
 
 describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
-  // Two distinct, canonical base64 32-byte roots (the fixture encodings of 32
-  // bytes of 0x01 / 0x02) — syntax examples, never real credentials.
+  // Four distinct, canonical base64 32-byte roots (the fixture encodings of
+  // 32 bytes of 0x01 / 0x02 / 0x03 / 0x04) — syntax examples, never real credentials.
   const ROOT_A = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
   const ROOT_B = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+  const ROOT_C = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=";
+  const ROOT_D = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=";
   const ENV = {
     DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
     EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
@@ -848,7 +850,13 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
     const config = loadConfig({
       ...ENV,
       EDGE_JOBS_CONFIG: JSON.stringify({
-        servers: { jobs: { endpoint: "https://jobs.internal.helix/", edgeToJobsRoot: ROOT_A } },
+        servers: {
+          jobs: {
+            endpoint: "https://jobs.internal.helix/",
+            edgeToJobsRoot: ROOT_A,
+            jobsToEdgeRoot: ROOT_C,
+          },
+        },
       }),
     });
     const jobs = config.jobs.servers.jobs;
@@ -864,11 +872,102 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
     const config = loadConfig({
       ...ENV,
       EDGE_JOBS_CONFIG: JSON.stringify({
-        servers: { jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A } },
+        servers: {
+          jobs: {
+            endpoint: "https://jobs.internal.helix",
+            edgeToJobsRoot: ROOT_A,
+            jobsToEdgeRoot: ROOT_C,
+          },
+        },
       }),
     });
     const verifierKey = deriveJobsInstructionKey(ROOT_A, "edgeToJobs");
     expect(Buffer.from(config.jobs.servers.jobs!.edgeToJobsKey)).toEqual(Buffer.from(verifierKey));
+  });
+
+  it("derives the callback verification key in the jobsToEdge domain", () => {
+    // The receiver half of the callback hop: the same root must derive the
+    // same verification key the shared verifier derives for that direction —
+    // the two edges of the hop agree by derivation, not by configuration.
+    const config = loadConfig({
+      ...ENV,
+      EDGE_JOBS_CONFIG: JSON.stringify({
+        servers: {
+          jobs: {
+            endpoint: "https://jobs.internal.helix",
+            edgeToJobsRoot: ROOT_A,
+            jobsToEdgeRoot: ROOT_C,
+          },
+        },
+      }),
+    });
+    const verifierKey = deriveJobsInstructionKey(ROOT_C, "jobsToEdge");
+    expect(Buffer.from(config.jobs.servers.jobs!.jobsToEdgeKey)).toEqual(Buffer.from(verifierKey));
+    // And a direction's key never equals the other's from the same root —
+    // the HKDF info strings domain-separate them.
+    expect(Buffer.from(config.jobs.servers.jobs!.jobsToEdgeKey)).not.toEqual(
+      Buffer.from(config.jobs.servers.jobs!.edgeToJobsKey),
+    );
+  });
+
+  it("refuses a jobsToEdge root shared across servers or directions", () => {
+    // Same server, both directions one secret: the direction domains stop
+    // being independent, so the parse refuses before the keys can collide.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {
+            jobs: {
+              endpoint: "https://jobs.internal.helix",
+              edgeToJobsRoot: ROOT_A,
+              jobsToEdgeRoot: ROOT_A,
+            },
+          },
+        }),
+      }),
+    ).toThrow(/independently generated root/);
+    // Cross-server, cross-direction: the same walk sees every root.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {
+            jobs: {
+              endpoint: "https://jobs.internal.helix",
+              edgeToJobsRoot: ROOT_A,
+              jobsToEdgeRoot: ROOT_C,
+            },
+            other: {
+              endpoint: "https://other.internal.helix",
+              edgeToJobsRoot: ROOT_B,
+              jobsToEdgeRoot: ROOT_A,
+            },
+          },
+        }),
+      }),
+    ).toThrow(/independently generated root/);
+    // Cross-server, same direction, jobsToEdge side — with each server's
+    // edgeToJobs root distinct, so the refusal can only be about this one.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {
+            jobs: {
+              endpoint: "https://jobs.internal.helix",
+              edgeToJobsRoot: ROOT_A,
+              jobsToEdgeRoot: ROOT_C,
+            },
+            other: {
+              endpoint: "https://other.internal.helix",
+              edgeToJobsRoot: ROOT_B,
+              jobsToEdgeRoot: ROOT_C,
+            },
+          },
+        }),
+      }),
+    ).toThrow(/independently generated root/);
   });
 
   it("refuses malformed JSON, a bad root, and a leaked full-map entry", () => {
@@ -880,7 +979,13 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
       loadConfig({
         ...ENV,
         EDGE_JOBS_CONFIG: JSON.stringify({
-          servers: { jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: "short" } },
+          servers: {
+            jobs: {
+              endpoint: "https://jobs.internal.helix",
+              edgeToJobsRoot: "short",
+              jobsToEdgeRoot: ROOT_C,
+            },
+          },
         }),
       }),
     ).toThrow();
@@ -909,7 +1014,11 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
         ...ENV,
         EDGE_JOBS_CONFIG: JSON.stringify({
           servers: {
-            Bad_Server: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A },
+            Bad_Server: {
+              endpoint: "https://jobs.internal.helix",
+              edgeToJobsRoot: ROOT_A,
+              jobsToEdgeRoot: ROOT_C,
+            },
           },
         }),
       }),
@@ -921,7 +1030,11 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
         ...ENV,
         EDGE_JOBS_CONFIG: JSON.stringify({
           servers: {
-            jobs: { endpoint: "https://jobs.internal.helix/?x=1", edgeToJobsRoot: ROOT_A },
+            jobs: {
+              endpoint: "https://jobs.internal.helix/?x=1",
+              edgeToJobsRoot: ROOT_A,
+              jobsToEdgeRoot: ROOT_C,
+            },
           },
         }),
       }),
@@ -938,6 +1051,8 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
     const document =
       '{"servers":{"jobs":{"endpoint":"https://jobs.internal.helix","edgeToJobsRoot":"' +
       ROOT_A +
+      '","jobsToEdgeRoot":"' +
+      ROOT_C +
       '"},"__proto__":{"polluted":true}}}';
     expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: document })).toThrow(/__proto__/);
   });
@@ -951,6 +1066,8 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
     const document =
       '{"servers":{"jobs":{"endpoint":"https://jobs.internal.helix","edgeToJobsRoot":"' +
       ROOT_A +
+      '","jobsToEdgeRoot":"' +
+      ROOT_C +
       '","__proto__":{"databaseUrl":"postgresql://helix_jobs@db/helix_jobs"}}}}';
     expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: document })).toThrow(/__proto__/);
   });
@@ -961,8 +1078,16 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
         ...ENV,
         EDGE_JOBS_CONFIG: JSON.stringify({
           servers: {
-            jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A },
-            other: { endpoint: "https://other.internal.helix", edgeToJobsRoot: ROOT_A },
+            jobs: {
+              endpoint: "https://jobs.internal.helix",
+              edgeToJobsRoot: ROOT_A,
+              jobsToEdgeRoot: ROOT_C,
+            },
+            other: {
+              endpoint: "https://other.internal.helix",
+              edgeToJobsRoot: ROOT_A,
+              jobsToEdgeRoot: ROOT_C,
+            },
           },
         }),
       }),
@@ -974,8 +1099,16 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
       ...ENV,
       EDGE_JOBS_CONFIG: JSON.stringify({
         servers: {
-          jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A },
-          other: { endpoint: "https://other.internal.helix", edgeToJobsRoot: ROOT_B },
+          jobs: {
+            endpoint: "https://jobs.internal.helix",
+            edgeToJobsRoot: ROOT_A,
+            jobsToEdgeRoot: ROOT_C,
+          },
+          other: {
+            endpoint: "https://other.internal.helix",
+            edgeToJobsRoot: ROOT_B,
+            jobsToEdgeRoot: ROOT_D,
+          },
         },
       }),
     });
@@ -987,7 +1120,13 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
 
   it("honors EDGE_JOBS_TIMEOUT_MS and refuses unusable values", () => {
     const doc = JSON.stringify({
-      servers: { jobs: { endpoint: "https://jobs.internal.helix", edgeToJobsRoot: ROOT_A } },
+      servers: {
+        jobs: {
+          endpoint: "https://jobs.internal.helix",
+          edgeToJobsRoot: ROOT_A,
+          jobsToEdgeRoot: ROOT_C,
+        },
+      },
     });
     expect(loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc }).jobs.timeoutMs).toBe(30_000);
     expect(

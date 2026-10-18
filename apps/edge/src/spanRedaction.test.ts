@@ -468,6 +468,7 @@ describe("span attributes never carry a credential", () => {
         egress: null,
         instructionKey: null,
         jobsForwarder: null,
+        jobsCallbackBurns: null,
         portal,
       });
     }
@@ -617,6 +618,7 @@ describe("span attributes never carry a credential", () => {
         egress: null,
         instructionKey: null,
         jobsForwarder: null,
+        jobsCallbackBurns: null,
         portal,
       });
 

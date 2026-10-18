@@ -17,6 +17,7 @@ import {
   INSTR_GATEWAY_CALLS,
   INSTR_GATEWAY_DURATION,
   INSTR_JOBS_BURN_SWEEPS,
+  INSTR_JOBS_CALLBACKS,
   INSTR_JOBS_SUBMISSIONS,
   INSTR_REGISTRY_LOAD_FAILURES,
   INSTR_REGISTRY_STALE_FOR_MS,
@@ -89,6 +90,14 @@ export interface EdgeInstruments {
    * is the request ledger's job, never this counter's.
    */
   jobsSubmissions: Counter;
+  /**
+   * `outcome` ∈ `JOBS_FETCH_CALLBACK_OUTCOMES` — the signed jobs→edge callback
+   * routes' answers (`gateway/jobsCallback.ts`), one point per presentation
+   * including the verification verdicts that never dispatch. The burn store's
+   * own sweep counter is `jobsBurnSweeps`; per-app attribution is the fetch
+   * ledger's job (the policy core writes it), never this counter's.
+   */
+  jobsCallbacks: Counter;
 }
 
 /**
@@ -157,6 +166,12 @@ export function instruments(): EdgeInstruments {
       description:
         "App-facing jobs submission route answers by outcome. Operational only — never " +
         "an accepted-job count (keyed replays and uncertain failures are all in here).",
+    }),
+    jobsCallbacks: meter.createCounter(INSTR_JOBS_CALLBACKS, {
+      description:
+        "Signed jobs→edge callback route answers by outcome, one point per presentation. " +
+        "Operational only — a run of replayed is a capture-and-replay attempt, a run of " +
+        "rejected a forged or misconfigured minter (the bounded reason rides the span).",
     }),
   };
   return cached;

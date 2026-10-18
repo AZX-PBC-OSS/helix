@@ -45,6 +45,7 @@ export const INSTR_JOBS_EXECUTIONS = "helix.jobs.executions";
 export const INSTR_JOBS_RECOVERIES = "helix.jobs.recoveries";
 export const INSTR_JOBS_CLEANUPS = "helix.jobs.cleanups";
 export const INSTR_JOBS_SUBMISSIONS = "helix.jobs.submissions";
+export const INSTR_JOBS_CALLBACKS = "helix.jobs.callbacks";
 
 /**
  * Attribute keys.
@@ -247,6 +248,16 @@ export const SPAN_JOBS_RESULT_DEV = "helix.jobs.result.dev";
 export const SPAN_JOBS_CANCEL_EDGE = "helix.jobs.cancel.edge";
 /** The dev gateway's cancel route (`DELETE /:slug/_api/jobs/:server/:jobId`). */
 export const SPAN_JOBS_CANCEL_DEV = "helix.jobs.cancel.dev";
+/**
+ * The jobs→edge fetch-callback routes — the receiver ends of the callback hop
+ * (ADR-0006): the production edge's `POST /internal/jobs/v1/fetch` and the dev
+ * gateway's same-path route. One root span each (the callback edge starts a new
+ * root — ADR-0009; jobs extracts only verified context on its side), named for
+ * the surface like the submission pair.
+ */
+export const SPAN_JOBS_FETCH_EDGE = "helix.jobs.fetch.edge";
+/** The dev gateway's callback route (`POST /internal/jobs/v1/fetch` on its own host). */
+export const SPAN_JOBS_FETCH_DEV = "helix.jobs.fetch.dev";
 export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
 export const SPAN_JOBS_RESULT = "helix.jobs.result";
 export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
@@ -301,6 +312,9 @@ export const ROUTE_JOBS_SNAPSHOT_DEV = "/:slug/_api/jobs/:server/:jobId";
 export const ROUTE_JOBS_CANCEL_DEV = ROUTE_JOBS_SNAPSHOT_DEV;
 export const ROUTE_JOBS_RESULT = "/_api/jobs/:server/:jobId/result";
 export const ROUTE_JOBS_RESULT_DEV = "/:slug/_api/jobs/:server/:jobId/result";
+/** The signed jobs→edge callback route, registered verbatim from the operation
+ * matrix (`JobsOperations.fetch.path`) on both receiver processes. */
+export const ROUTE_JOBS_FETCH = "/internal/jobs/v1/fetch";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
@@ -540,6 +554,61 @@ export const JOBS_SUBMISSION_OUTCOMES = [
   "rate_limited",
 ] as const;
 export type JobsSubmissionOutcome = (typeof JOBS_SUBMISSION_OUTCOMES)[number];
+
+/**
+ * How the edge's signed jobs→edge fetch-callback route answered — the final
+ * `helix.outcome` on the `helix.jobs.fetch.edge` / `.dev` spans and the
+ * dimension on `helix.jobs.callbacks`. Bounded by construction: each value is
+ * one early return of the receiver (`gateway/jobsCallback.ts`). Before the
+ * operation runs, the verification verdict is the outcome (the same words the
+ * jobs receiver's route spans carry); once the dispatch runs, its own outcome
+ * supersedes.
+ *
+ * - `disabled` — the callback is not wired (no configured servers, or the
+ *   fetch machinery/ledger/burn store is unconfigured): 503, fail closed.
+ * - `rejected` — instruction verification failed (401); the bounded reject
+ *   reason rides `helix.reason`, never a dimension.
+ * - `replayed` — verified but the nonce was already spent: 401 before any
+ *   effect (the burn caught the replay).
+ * - `unavailable` — the burn store could not answer: 503, denied without a
+ *   verdict (fail closed).
+ * - `wrong_tier` — verified but signed for the opposite environment tier
+ *   (403): the production edge and the dev gateway are separate nonce spaces
+ *   and separate registries, so neither ever serves the other's callbacks.
+ * - `payload_invalid` — the presented body was unreadable, or verified and
+ *   turned out not to be a `{url}` fetch input: 400.
+ * - `payload_too_large` — the presented body over the platform's input bound:
+ *   413, before verification.
+ * - `forbidden` — a fetch-policy denial that is not the delegated one
+ *   (unknown/archived app, stale lifecycle generation, origin not granted):
+ *   403 `outbound_forbidden`; the core's denial reason rides `helix.reason`.
+ * - `delegated_unattended` — the origin spends a user's delegated connection:
+ *   403 `delegated_unattended`, refused before minting with no keyless
+ *   fallback.
+ * - `quota_blocked` — the app's fetch budget is exhausted: 429
+ *   `outbound_quota_exceeded`.
+ * - `dispatched` — the upstream answered 2xx and its bytes streamed to jobs.
+ * - `upstream_refused` — the upstream answered non-2xx: the bounded
+ *   `upstream_error` refusal, never the upstream body.
+ * - `upstream_failed` — the forward failed after minting (transport, or the
+ *   caller's abort): the bounded `upstream_error` refusal.
+ */
+export const JOBS_FETCH_CALLBACK_OUTCOMES = [
+  "disabled",
+  "rejected",
+  "replayed",
+  "unavailable",
+  "wrong_tier",
+  "payload_invalid",
+  "payload_too_large",
+  "forbidden",
+  "delegated_unattended",
+  "quota_blocked",
+  "dispatched",
+  "upstream_refused",
+  "upstream_failed",
+] as const;
+export type JobsFetchCallbackOutcome = (typeof JOBS_FETCH_CALLBACK_OUTCOMES)[number];
 
 /**
  * How the edge's app-facing reference routes (poll / result / cancel) answered

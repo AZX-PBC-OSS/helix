@@ -20,13 +20,17 @@ import type { UsageStore } from "../gateway/usage.js";
 import type { AppDataStore } from "../gateway/data.js";
 import type { JobsForwarder } from "../jobs/forwarder.js";
 import { makeJobsSubmitHandler, makeJobsRecordHandler } from "../gateway/jobs.js";
+import { makeJobsFetchCallbackHandler, type JobsCallbackRuntime } from "../gateway/jobsCallback.js";
+import type { JobsCallbackBurnStore } from "../jobs/burns.js";
 import {
   ROUTE_JOBS_CANCEL_DEV,
+  ROUTE_JOBS_FETCH,
   ROUTE_JOBS_RESULT_DEV,
   ROUTE_JOBS_SNAPSHOT_DEV,
   ROUTE_JOBS_SUBMIT_DEV,
   ROUTE_OPENAI,
   SPAN_JOBS_CANCEL_DEV,
+  SPAN_JOBS_FETCH_DEV,
   SPAN_JOBS_RESULT_DEV,
   SPAN_JOBS_SNAPSHOT_DEV,
   SPAN_JOBS_SUBMIT_DEV,
@@ -100,6 +104,12 @@ export interface DevGatewayDeps {
    * fail-closed posture the edge's surface takes).
    */
   jobsForwarder: JobsForwarder | null;
+  /**
+   * The dev tier's jobs-callback nonce burn store (`jobs_callback_jti`, the
+   * `dev` RLS partition); the signed jobs→edge callback route burns through
+   * it. null = the callback refuses fail-closed even with servers configured.
+   */
+  jobsCallbackBurns: JobsCallbackBurnStore | null;
   /**
    * Portal client for the dev tier's consent consult; null — or an unset
    * internal mint key — leaves the
@@ -225,6 +235,35 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     { span: SPAN_JOBS_CANCEL_DEV, route: ROUTE_JOBS_CANCEL_DEV },
     "cancel",
   );
+  // The dev tier's callback receiver — the same handler factory, `dev` tier
+  // (matching the burn store's RLS pin above): the production edge's callbacks
+  // and this process's never share a nonce space, and each refuses the other's
+  // signed tier before any burn.
+  const jobsCallbackVerificationKeys = new Map(
+    Object.values(config.jobs.servers).map((s) => [s.server, s.jobsToEdgeKey]),
+  );
+  const jobsCallbackRuntime: JobsCallbackRuntime | null =
+    deps.egress &&
+    deps.usage &&
+    deps.instructionKey &&
+    deps.jobsCallbackBurns &&
+    jobsCallbackVerificationKeys.size > 0
+      ? {
+          env: "dev",
+          registry: deps.registry,
+          verificationKeys: jobsCallbackVerificationKeys,
+          burns: deps.jobsCallbackBurns,
+          egress: deps.egress,
+          usage: deps.usage,
+          instructionKey: deps.instructionKey,
+          // Single-process by construction, like the fetch denial throttle.
+          denialThrottle: new DenialThrottle(new InMemoryCounterStore()),
+          maxBodyBytes: config.fetch.maxBodyBytes,
+        }
+      : null;
+  const handleJobsFetchCallback = makeJobsFetchCallbackHandler(jobsCallbackRuntime, {
+    span: SPAN_JOBS_FETCH_DEV,
+  });
 
   // The dev tier's consent entry — the bearer POST that returns
   // the single-use popup URL. Same dev resolver seam as every other route
@@ -408,6 +447,21 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
         handler: (req, reply) => handler(req, reply, slugOf(req)),
       });
     }
+    doneRegister();
+  });
+
+  // The dev tier's callback receiver — the same fixed internal path (the dev
+  // callback URL is this process's own host, no `/:slug` prefix: the claims
+  // carry the app id, and the registry resolves it). Same raw-body parser
+  // scope: the instruction binds exact bytes.
+  void app.register((jobsCallbackScope, _opts, doneRegister) => {
+    jobsCallbackScope.removeAllContentTypeParsers();
+    jobsCallbackScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+    jobsCallbackScope.route({
+      method: "POST",
+      url: ROUTE_JOBS_FETCH,
+      handler: (req, reply) => handleJobsFetchCallback(req, reply),
+    });
     doneRegister();
   });
 

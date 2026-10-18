@@ -146,6 +146,10 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
     return this.#projection.getApp(slug);
   }
 
+  getAppById(appId: string): RegistryEntry | undefined {
+    return this.#projection.getAppById(appId);
+  }
+
   isLoaded(): boolean {
     return this.#projection.isLoaded();
   }

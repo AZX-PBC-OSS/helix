@@ -126,6 +126,7 @@ function build(devTokens: FakeDevTokenStore, store: AppDataStore = new FakeAppDa
     egress: null,
     instructionKey: null,
     jobsForwarder: null,
+    jobsCallbackBurns: null,
     portal: null,
   });
   return app;
@@ -178,6 +179,7 @@ describe("dev-gateway /health", () => {
       egress: null,
       instructionKey: null,
       jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
     const res = await app.inject({ url: "/health" });
@@ -197,6 +199,7 @@ describe("dev-gateway /health", () => {
       egress: null,
       instructionKey: null,
       jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
     await app.ready();
@@ -366,6 +369,7 @@ describe("dev-gateway CORS preflight", () => {
       egress: null,
       instructionKey: null,
       jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
 
@@ -496,6 +500,7 @@ describe("dev-gateway delegated fetch minting", () => {
       egress,
       instructionKey,
       jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
     return { app, egress, usage };

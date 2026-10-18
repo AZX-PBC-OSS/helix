@@ -318,6 +318,13 @@ function notify<T>(observer: (info: T) => void, info: T): void {
 export interface RegistryReader {
   /** undefined = unknown slug. */
   getApp(slug: string): RegistryEntry | undefined;
+  /**
+   * undefined = unknown app id. The app-id lookup the signed jobs callback
+   * needs: its claims carry the app's id (the attribution the job was accepted
+   * under), never a host or slug, and the dispatch must resolve the CURRENT
+   * entry — the same served copy `getApp` reads.
+   */
+  getAppById(appId: string): RegistryEntry | undefined;
   /** False until the first successful load — app hosts 503 until then. */
   isLoaded(): boolean;
 }
@@ -443,6 +450,7 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
   #querier: ProjectionQuerier;
   #sql: string;
   #map = new Map<string, RegistryEntry>();
+  #byId = new Map<string, RegistryEntry>();
   #loaded = false;
   #inFlight: Promise<void> | null = null;
   #dirty = false;
@@ -478,6 +486,10 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
 
   getApp(slug: string): RegistryEntry | undefined {
     return this.#map.get(slug);
+  }
+
+  getAppById(appId: string): RegistryEntry | undefined {
+    return this.#byId.get(appId);
   }
 
   isLoaded(): boolean {
@@ -539,10 +551,12 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
     try {
       const { rows } = await this.#querier.query(this.#sql);
       span.setAttribute(ATTR_REGISTRY_APPS, rows.length);
-      // Build fresh, swap atomically (single assignment — no torn reads).
+      // Build fresh, swap atomically: the two indexes are assigned inside one
+      // synchronous block, so no reader can observe half a load.
       const next = new Map<string, RegistryEntry>();
+      const nextById = new Map<string, RegistryEntry>();
       for (const row of rows) {
-        next.set(row.slug, {
+        const entry: RegistryEntry = {
           appId: row.id,
           slug: row.slug,
           archived: row.archived,
@@ -559,9 +573,12 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
           shim: parseShimCapability(row.capabilities),
           jobs: parseJobsCapability(row.capabilities),
           jobsGeneration: parseJobsGeneration(row.jobs_generation),
-        });
+        };
+        next.set(row.slug, entry);
+        nextById.set(entry.appId, entry);
       }
       this.#map = next;
+      this.#byId = nextById;
       this.#loaded = true;
       span.setAttribute(ATTR_OUTCOME, "ok");
       // Freshness bookkeeping: capture the pre-swap state before restamping, so

@@ -247,13 +247,14 @@ export interface GatewayConfig {
   portalUrl: string | null;
   /**
    * Background-jobs wiring (ADR-0008's custody matrix): the configured job
-   * servers this process forwards authorized operations to, each with the
-   * edge→jobs signing root. Loaded from `EDGE_JOBS_CONFIG` by
-   * {@link loadEdgeJobsConfig}; an absent variable is a fully disabled
-   * installation (empty map), never a boot failure — ordinary app hosting
-   * must not depend on jobs configuration. Both gateway processes (edge and
-   * dev-gateway) load the same document and forward with their own trusted
-   * environment tier.
+   * servers this process forwards authorized operations to — each with the
+   * edge→jobs signing root for those forwards and the jobs→edge verification
+   * root for the server's signed fetch callbacks. Loaded from
+   * `EDGE_JOBS_CONFIG` by {@link loadEdgeJobsConfig}; an absent variable is a
+   * fully disabled installation (empty map), never a boot failure — ordinary
+   * app hosting must not depend on jobs configuration. Both gateway processes
+   * (edge and dev-gateway) load the same document and forward with their own
+   * trusted environment tier.
    */
   jobs: EdgeJobsConfig;
   /**
@@ -277,11 +278,16 @@ export interface JobsGatewayServerConfig {
   /**
    * The derived edge→jobs HS256 mint key — HKDF over this server's root at
    * config-load time, so a malformed root is an explicit startup error rather
-   * than a first-request failure. Only this direction's key is held: the
-   * jobs→edge callback root and the portal→jobs root are other components'
+   * than a first-request failure. The portal→jobs root is other components'
    * custody and never parsed here.
    */
   edgeToJobsKey: Uint8Array;
+  /**
+   * The derived jobs→edge HS256 verification key for this server's signed fetch
+   * callbacks (ADR-0008's custody matrix puts both roots here). The callback
+   * receiver verifies with it; it authorizes nothing else.
+   */
+  jobsToEdgeKey: Uint8Array;
 }
 
 /** The edge's jobs forwarding configuration. */
@@ -307,16 +313,21 @@ const EdgeJobsServerEntrySchema = strictWireObject({
   edgeToJobsRoot: z.string().refine(isValidJobsRootSecret, {
     message: "a signing root must be the canonical base64 encoding of exactly 32 bytes",
   }),
+  jobsToEdgeRoot: z.string().refine(isValidJobsRootSecret, {
+    message: "a signing root must be the canonical base64 encoding of exactly 32 bytes",
+  }),
 });
 
 /**
  * The edge's permitted subset of the jobs deployment map, as one environment
  * document (`EDGE_JOBS_CONFIG`). Deliberately NOT the shared
  * `JobsDeploymentConfigSchema`: that document carries every server's database
- * URL and portal→jobs root, and the edge's custody is only the edge→jobs root
- * (ADR-0008) — parsing the subset with strict fields means handing this
- * process the full map fails the boot naming the leaked field, instead of
- * silently holding credentials it must never read.
+ * URL and portal→jobs root, and the edge's custody is exactly the two hop keys
+ * it uses — each server's edge→jobs mint root (this process forwards signed
+ * operations to the server) and jobs→edge verification root (it receives the
+ * server's signed fetch callbacks) per ADR-0008. Parsing the subset with
+ * strict fields means handing this process the full map fails the boot naming
+ * the leaked field, instead of silently holding credentials it must never read.
  */
 const EdgeJobsConfigDocumentSchema = strictWireObject({
   // The strict record, not a plain z.record: a `__proto__` key in the
@@ -355,6 +366,7 @@ export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
       server: serverId,
       endpoint: entry.endpoint.replace(/\/+$/, ""),
       edgeToJobsKey: deriveJobsInstructionKey(entry.edgeToJobsRoot, "edgeToJobs"),
+      jobsToEdgeKey: deriveJobsInstructionKey(entry.jobsToEdgeRoot, "jobsToEdge"),
     };
   }
   return {
@@ -368,22 +380,31 @@ export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
 }
 
 /**
- * The last parse that can see two servers' roots side by side: a root shared
- * across servers derives the same mint key for both, collapsing the custody
- * that keeps one server's authority off another (the shared deployment map
- * refuses the same shape — this holds it for the subset document too).
+ * The last parse that can see two roots side by side: roots shared across
+ * servers — in either direction — collapse the custody that keeps one server's
+ * authority off another (the shared deployment map refuses the same shape;
+ * this holds it for the subset document too). One map sees every root in the
+ * document, so a direction cross-over (a server's edgeToJobs root equal to
+ * another's jobsToEdge root) is refused by the same walk.
  */
-function assertDistinctRoots(servers: Record<string, { edgeToJobsRoot: string }>): void {
+function assertDistinctRoots(
+  servers: Record<string, { edgeToJobsRoot: string; jobsToEdgeRoot: string }>,
+): void {
   const seen = new Map<string, string>();
   for (const [serverId, entry] of Object.entries(servers)) {
-    const first = seen.get(entry.edgeToJobsRoot);
-    if (first !== undefined) {
-      throw new Error(
-        `EDGE_JOBS_CONFIG: the edgeToJobs root configured for "${serverId}" is the same ` +
-          `secret as "${first}"'s — each server holds an independently generated root`,
-      );
+    for (const [direction, root] of [
+      ["edgeToJobs", entry.edgeToJobsRoot],
+      ["jobsToEdge", entry.jobsToEdgeRoot],
+    ] as const) {
+      const first = seen.get(root);
+      if (first !== undefined) {
+        throw new Error(
+          `EDGE_JOBS_CONFIG: the ${direction} root configured for "${serverId}" is the same ` +
+            `secret as ${first}'s — each server holds an independently generated root per direction`,
+        );
+      }
+      seen.set(root, `${serverId}'s ${direction} root`);
     }
-    seen.set(entry.edgeToJobsRoot, serverId);
   }
 }
 
