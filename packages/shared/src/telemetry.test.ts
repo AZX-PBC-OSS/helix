@@ -81,6 +81,26 @@ describe("the telemetry vocabulary", () => {
     ]);
   });
 
+  it("keeps the delivery outcome vocabulary bounded, duplicate-free, and disjoint from the receiver's", () => {
+    // The sender's hop outcomes and the receiver's apply outcomes ride the
+    // same `helix.outcome` attribute on one trace (the delivery span and the
+    // lifecycle route span are its two ends) — a word that means both would
+    // make a sender's stale_ack and a receiver's stale confusable in every
+    // span search, so the two vocabularies must never share a value.
+    const delivery: string[] = [...telemetry.JOBS_LIFECYCLE_DELIVERY_OUTCOMES];
+    expect(delivery).toEqual([
+      "acknowledged",
+      "stale_ack",
+      "refused",
+      "unreachable",
+      "invalid_response",
+    ]);
+    expect(new Set(delivery).size).toBe(delivery.length);
+    for (const outcome of telemetry.JOBS_LIFECYCLE_OUTCOMES) {
+      expect(delivery.includes(outcome), outcome).toBe(false);
+    }
+  });
+
   it("orders the duration buckets ascending and covers past a slow LLM stream", () => {
     const buckets = [...telemetry.DURATION_BUCKETS_MS];
     expect(buckets).toEqual([...buckets].sort((a, b) => a - b));

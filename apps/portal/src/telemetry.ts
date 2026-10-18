@@ -113,3 +113,34 @@ export function inChildSpan<T>(
     }
   });
 }
+
+/**
+ * A fresh **root** consumer span around one unit of background work — the
+ * supervised loops' shape (the delivery sender, like the jobs service's
+ * execution/recovery spans). Background work has no inbound request context
+ * to continue: nothing is extracted, and `root: true` keeps a stray ambient
+ * context from choosing this trace's parentage (the portal is inject-only,
+ * ADR-0037 decision 7). Failed-and-ended like {@link withSpan}; the work's
+ * own disposition sets its outcome on the span.
+ */
+export function withConsumerSpan<T>(
+  name: string,
+  attributes: Attributes,
+  fn: (span: Span) => Promise<T>,
+): Promise<T> {
+  return tracer.startActiveSpan(
+    name,
+    { root: true, kind: SpanKind.CONSUMER, attributes },
+    async (span) => {
+      try {
+        return await fn(span);
+      } catch (err) {
+        span.recordException(err instanceof Error ? err : new Error(String(err)));
+        span.setStatus({ code: SpanStatusCode.ERROR });
+        throw err;
+      } finally {
+        span.end();
+      }
+    },
+  );
+}

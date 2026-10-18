@@ -134,6 +134,13 @@ export const ATTR_JOBS_ARCHIVED = "helix.jobs.archived";
  */
 export const ATTR_JOBS_LIFECYCLE_TARGETS = "helix.jobs.lifecycle.targets";
 /**
+ * Which configured jobs server a signal is about — a deployment-map server id
+ * (`JobServerIdSchema`: 1–63 lowercase letters/digits/hyphens). Bounded by the
+ * deployment map, so a span attribute and a health-check detail word; never a
+ * metric dimension the map's operator cannot name in advance.
+ */
+export const ATTR_JOBS_SERVER = "helix.jobs.server";
+/**
  * How many expired results one jobs cleanup pass removed from live storage —
  * bounded by the pass's own batch cap.
  */
@@ -286,6 +293,16 @@ export const SPAN_JOBS_CLEANUP = "helix.jobs.cleanup";
  * state, the next generation and the per-target intents together (ADR-0007).
  * The receiver's `helix.jobs.lifecycle` route span is the delivery's other end. */
 export const SPAN_JOBS_LIFECYCLE_OUTBOX = "helix.jobs.lifecycle.outbox";
+/**
+ * The portal sender's delivery of one pending lifecycle intent to one target
+ * — a root consumer span (background work has no inbound context to
+ * continue), one per delivery attempt; a retry is a fresh attempt and a fresh
+ * span. The receiver's `helix.jobs.lifecycle` route span is the same hop's
+ * other end. Carries the target server, the delivered app and generation, and
+ * the bounded `helix.outcome` — never the endpoint URL or the instruction
+ * token.
+ */
+export const SPAN_JOBS_LIFECYCLE_DELIVER = "helix.jobs.lifecycle.deliver";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -459,6 +476,38 @@ export type JobsBurnSweepOutcome = (typeof JOBS_BURN_SWEEP_OUTCOMES)[number];
  */
 export const JOBS_LIFECYCLE_OUTCOMES = ["applied", "stale", "invalid_body", "unavailable"] as const;
 export type JobsLifecycleOutcome = (typeof JOBS_LIFECYCLE_OUTCOMES)[number];
+
+/**
+ * How the portal sender's delivery of one pending lifecycle intent ended —
+ * the final `helix.outcome` on the `helix.jobs.lifecycle.deliver` span. One
+ * word per ending, disjoint from the receiver's {@link JOBS_LIFECYCLE_OUTCOMES}
+ * (whose words describe the APPLY, not the hop): a sender `stale_ack` and a
+ * receiver `stale` must never be confusable on one trace.
+ *
+ * - `acknowledged` — a validated 200 ack whose `appliedGeneration` covers the
+ *   delivered row; the row (and any older pending row for the same app and
+ *   server) is cleared. The acknowledgement means the intent is durable on
+ *   the target, never that cancellation has finished running (criterion 50).
+ * - `stale_ack` — a validated ack naming a generation OLDER than the row's:
+ *   evidence of a receiver that has not caught up or is not the one the map
+ *   addresses. Nothing is cleared — a stale acknowledgement can never clear
+ *   newer pending work; the row stays pending and ages into health.
+ * - `refused` — the receiver answered a validated jobs error response; the
+ *   bounded error code rides `helix.reason`. Retryable by the next pass.
+ * - `unreachable` — no answer: transport failure or the per-attempt bound
+ *   expired. The server's remaining rows skip the rest of the pass (one
+ *   failed attempt per unavailable server per pass); the next pass retries.
+ * - `invalid_response` — the receiver answered an unusable body or status:
+ *   a misbehaving or wrong receiver, never retried within the pass.
+ */
+export const JOBS_LIFECYCLE_DELIVERY_OUTCOMES = [
+  "acknowledged",
+  "stale_ack",
+  "refused",
+  "unreachable",
+  "invalid_response",
+] as const;
+export type JobsLifecycleDeliveryOutcome = (typeof JOBS_LIFECYCLE_DELIVERY_OUTCOMES)[number];
 
 /**
  * How the jobs service decided one submission — the final `helix.outcome` on

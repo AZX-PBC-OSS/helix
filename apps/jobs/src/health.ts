@@ -4,6 +4,8 @@ import {
   JOBS_DATABASE_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
+  lastPassAgeSuffix,
+  passFreshness,
   type HealthCheck,
   type JobsCapacityLimits,
 } from "@azx-pbc/shared";
@@ -202,46 +204,6 @@ export function jobsSweeperCheck(
         lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
       };
   }
-}
-
-/**
- * The freshness skeleton THREE loop-graded checks share — one grading of a
- * supervised pass loop's supervision state (is it running; has a pass ever
- * completed; is the last successful pass fresh), rendered by each check in
- * its own wording. The parameter is structural — the three fields the
- * grading reads — so the recovery sweeper's and the cleanup loop's
- * different snapshots grade through this one function and cannot drift into
- * different staleness semantics; a boundary correction here is all three
- * checks' correction, and no leg can pass on a private copy.
- */
-type PassFreshness =
-  | { kind: "not_started" }
-  | { kind: "no_pass"; lastPassSeconds: number | null }
-  | { kind: "stale"; sinceSeconds: number }
-  | { kind: "fresh" };
-
-function passFreshness(
-  snapshot: { started: boolean; lastPassAt: string | null; lastOkPassAt: string | null },
-  staleAfterMs: number,
-  nowMs: number,
-): PassFreshness {
-  if (!snapshot.started) return { kind: "not_started" };
-  if (snapshot.lastOkPassAt === null) {
-    return {
-      kind: "no_pass",
-      lastPassSeconds: snapshot.lastPassAt
-        ? Math.round((nowMs - Date.parse(snapshot.lastPassAt)) / 1000)
-        : null,
-    };
-  }
-  const sinceMs = nowMs - Date.parse(snapshot.lastOkPassAt);
-  if (sinceMs > staleAfterMs) return { kind: "stale", sinceSeconds: Math.round(sinceMs / 1000) };
-  return { kind: "fresh" };
-}
-
-/** The distinction the last pass's own instant buys: a loop that never ran at all and one that runs but cannot complete a pass read differently. */
-function lastPassAgeSuffix(lastPassSeconds: number | null): string {
-  return lastPassSeconds === null ? "" : ` — its last pass was ${lastPassSeconds}s ago`;
 }
 
 /**

@@ -85,7 +85,7 @@ The system is **three deployable containers plus managed storage**, split along 
 
 ### App boot and the `/health` contract
 
-Every service splits `buildApp()` (pure, no listen) from `server.ts`, so tests build the app and inject requests rather than binding a port. The `/health` endpoint validates its own response through `HealthStatusSchema` so the contract is identical across services. That contract is a three-state roll-up (`ok`/`degraded`/`error`) plus an optional generic `checks[]` array, not a liveness boolean — the edge reports its registry projection's freshness there (ADR-0025). **It always answers HTTP 200**, in every state: the body carries the degradation, because a non-200 would let a liveness probe restart a replica that is serving correctly from a stale copy. Portal and egress report liveness only (no `checks`).
+Every service splits `buildApp()` (pure, no listen) from `server.ts`, so tests build the app and inject requests rather than binding a port. The `/health` endpoint validates its own response through `HealthStatusSchema` so the contract is identical across services. That contract is a three-state roll-up (`ok`/`degraded`/`error`) plus an optional generic `checks[]` array, not a liveness boolean — the edge reports its registry projection's freshness there (ADR-0025). **It always answers HTTP 200**, in every state: the body carries the degradation, because a non-200 would let a liveness probe restart a replica that is serving correctly from a stale copy. Portal and egress report liveness only by default — the portal adds a `jobs_lifecycle_delivery` check when jobs is configured (ADR-0009).
 
 ## Conventions
 
