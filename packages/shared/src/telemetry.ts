@@ -520,6 +520,9 @@ export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
  *   (an unreadable request): 400, before any comparison.
  * - `payload_too_large` — input over the 64-KiB bound: 413, before anything
  *   was forwarded.
+ * - `rate_limited` — the submission throttle refused: a per-app/environment
+ *   or the deployment-wide fixed window was exhausted (429 `rate_limited`).
+ *   The attempt still counted — windows count attempts, they never refund.
  */
 export const JOBS_SUBMISSION_OUTCOMES = [
   "accepted",
@@ -534,6 +537,7 @@ export const JOBS_SUBMISSION_OUTCOMES = [
   "key_invalid",
   "payload_invalid",
   "payload_too_large",
+  "rate_limited",
 ] as const;
 export type JobsSubmissionOutcome = (typeof JOBS_SUBMISSION_OUTCOMES)[number];
 

@@ -18,6 +18,7 @@ import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { LoginThrottle } from "./auth/loginThrottle.js";
 import { PgCounterStore } from "./gateway/counterStore.js";
+import { JobsSubmissionThrottle } from "./gateway/jobsThrottle.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
 import { PgVisitStore } from "./serving/visits.js";
 import { PgJobsCallbackBurnStore } from "./jobs/burns.js";
@@ -180,6 +181,11 @@ const counterStore = new PgCounterStore(config.databaseUrl, {
 });
 const anonRateLimiter = new IpRateLimiter(config.anonRateLimit, counterStore);
 const loginThrottle = new LoginThrottle(counterStore);
+// The jobs submission throttle buckets (design §4) ride the same shared PG
+// counter store — namespaced keys, one store, so the per-app/environment and
+// deployment-wide windows hold across the horizontally-scaled edge fleet, and
+// the one sweep below GCs these rows too.
+const jobsSubmissionThrottle = new JobsSubmissionThrottle(counterStore);
 
 // The jobs-callback nonce burn store (background-jobs-plane design §3): this
 // edge's replay memory for signed jobs→edge callback instructions, in its own
@@ -272,6 +278,7 @@ const app = buildApp({
   egress,
   instructionKey,
   jobsForwarder,
+  jobsSubmissionThrottle,
   portal,
   cspReports,
   visits,
@@ -293,9 +300,10 @@ const sweeper = sessions
     })
   : null;
 // GC elapsed rate_counters rows so the table can't grow under a flood of
-// distinct source IPs. Covers BOTH the anon limiter and the login throttle
-// (shared store), so it runs regardless of whether the anon limiter is enabled —
-// the login throttle always is. `unref` so it never holds the process open.
+// distinct source IPs. Covers the anon limiter, the login throttle and the
+// jobs submission buckets (shared store), so it runs regardless of whether
+// the anon limiter is enabled — the login throttle always is. `unref` so it
+// never holds the process open.
 const counterSweepMs = config.anonRateLimit.windowMs > 0 ? config.anonRateLimit.windowMs : 60_000;
 const counterSweep = setInterval(() => {
   void counterStore

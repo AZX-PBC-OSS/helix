@@ -15,6 +15,8 @@ import { buildDevGateway } from "../devGateway/app.js";
 import { hashDevToken } from "@azx-pbc/shared/devToken";
 import type { DevTokenStore } from "../devGateway/devTokenStore.js";
 import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
+import type { UsageStore } from "../gateway/usage.js";
+import type { JobsSubmissionThrottle } from "../gateway/jobsThrottle.js";
 import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "./config.js";
 import {
   FakeBlobReader,
@@ -139,19 +141,28 @@ export interface JobsHarnessOpts {
   appSlug?: string;
   archived?: boolean;
   loaded?: boolean;
+  /** The gateway request ledger; null (default) = submissions are not recorded. */
+  usage?: UsageStore | null;
+  /**
+   * The submission throttle buckets; omitted, the app falls back to the
+   * in-memory store over the platform defaults. Injected to share one
+   * throttle across builds.
+   */
+  jobsSubmissionThrottle?: JobsSubmissionThrottle | null;
 }
 
 export interface JobsHarness {
   app: FastifyInstance;
   forwarder: FakeJobsForwarder;
   sessions: FakeSessionStore;
+  usage: UsageStore | null;
 }
 
 /** The edge build with any forwarder (the fake in the decision suites, the real one in the join tests). */
 export function buildJobsEdgeApp(
   forwarder: JobsForwarder,
   opts: JobsHarnessOpts = {},
-): { app: FastifyInstance; sessions: FakeSessionStore } {
+): { app: FastifyInstance; sessions: FakeSessionStore; usage: UsageStore | null } {
   const sessions = new FakeSessionStore();
   const app = buildApp({
     config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
@@ -173,8 +184,10 @@ export function buildJobsEdgeApp(
     sessions,
     oidc: new FakeOidcClient(),
     jobsForwarder: forwarder,
+    usage: opts.usage ?? null,
+    jobsSubmissionThrottle: opts.jobsSubmissionThrottle ?? null,
   });
-  return { app, sessions };
+  return { app, sessions, usage: opts.usage ?? null };
 }
 
 export function buildJobsEdge(
@@ -185,7 +198,7 @@ export function buildJobsEdge(
 }
 
 /** The disabled build: no forwarding seam wired — the app alone answers. */
-export function buildDisabledJobsEdge(): JobsHarness {
+export function buildDisabledJobsEdge(opts: JobsHarnessOpts = {}): JobsHarness {
   const sessions = new FakeSessionStore();
   const app = buildApp({
     config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
@@ -202,9 +215,11 @@ export function buildDisabledJobsEdge(): JobsHarness {
     sessions,
     oidc: new FakeOidcClient(),
     jobsForwarder: null,
+    usage: opts.usage ?? null,
+    jobsSubmissionThrottle: opts.jobsSubmissionThrottle ?? null,
   });
   // The forwarder field is never consulted on this build; the type wants one.
-  return { app, forwarder: new FakeJobsForwarder(), sessions };
+  return { app, forwarder: new FakeJobsForwarder(), sessions, usage: opts.usage ?? null };
 }
 
 export async function seedJobsSession(

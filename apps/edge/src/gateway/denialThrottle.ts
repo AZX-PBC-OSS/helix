@@ -17,6 +17,13 @@ export interface DenialThrottleOptions {
   max?: number;
   /** Window length in ms; the bucket resets after it elapses. */
   windowMs?: number;
+  /**
+   * The key namespace inside the shared counter store. Distinct ledgers'
+   * denial budgets must not share a window — a flood on one surface would
+   * otherwise blind the other's audit rows. Defaults to the fetch-allowlist
+   * prefix the class was built for.
+   */
+  keyPrefix?: string;
 }
 
 /** How many suppressed attempts between magnitude summaries. */
@@ -37,11 +44,13 @@ export interface DenialDecision {
 export class DenialThrottle {
   readonly #max: number;
   readonly #windowMs: number;
+  readonly #keyPrefix: string;
   readonly #store: CounterStore;
 
   constructor(store: CounterStore, opts: DenialThrottleOptions = {}) {
     this.#max = opts.max ?? 20;
     this.#windowMs = opts.windowMs ?? 60 * 1000;
+    this.#keyPrefix = opts.keyPrefix ?? "denial:";
     this.#store = store;
   }
 
@@ -52,7 +61,7 @@ export class DenialThrottle {
    * `caller.env`, so a dev-token loop must not consume the prod app's budget.
    */
   async admit(appId: string, env: string): Promise<DenialDecision> {
-    const count = await this.#store.bump(`denial:${env}:${appId}`, this.#windowMs);
+    const count = await this.#store.bump(`${this.#keyPrefix}${env}:${appId}`, this.#windowMs);
     if (count <= this.#max) return { meter: true };
     const suppressed = count - this.#max;
     return suppressed === 1 || suppressed % SUMMARY_EVERY === 0

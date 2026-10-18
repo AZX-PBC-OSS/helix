@@ -2,10 +2,13 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { request as undiciRequest } from "undici";
 import type { FastifyInstance } from "fastify";
-import { jobRequestError } from "@azx-pbc/shared";
+import { jobRequestError, JOBS_CAPACITY_DEFAULTS } from "@azx-pbc/shared";
 import {
+  INSTR_GATEWAY_CALLS,
+  INSTR_GATEWAY_DURATION,
   INSTR_JOBS_SUBMISSIONS,
   JOBS_SUBMISSION_OUTCOMES,
+  ROUTE_JOBS_SUBMIT,
   SPAN_JOBS_SUBMIT_EDGE,
   type JobsSubmissionOutcome,
 } from "@azx-pbc/shared/telemetry";
@@ -25,6 +28,8 @@ import {
   seedJobsSession as seedSession,
   type JobsHarness,
 } from "../test/jobsGateway.js";
+import { FakeUsageStore } from "../test/fakes.js";
+import type { UsageStore } from "./usage.js";
 import { until, withServer } from "../test/socket.js";
 
 /**
@@ -83,7 +88,11 @@ afterAll(async () => {
 
 /** The shared builders, wrapped so this file's afterEach closes every app. */
 function buildJobsEdge(
-  opts: { forwarder?: FakeJobsForwarder; visibilityMode?: "internal" | "public" } = {},
+  opts: {
+    forwarder?: FakeJobsForwarder;
+    visibilityMode?: "internal" | "public";
+    usage?: UsageStore | null;
+  } = {},
 ): JobsHarness {
   const harness = buildJobsEdgeHarness(opts);
   openApps.push(harness.app);
@@ -334,6 +343,159 @@ describe("the submission route's outcome telemetry", () => {
       expect(dump, c.word).not.toContain(`PLANTED-KEY-${c.word}`);
       expect(dump, c.word).not.toContain(`PLANTED-BODY-${c.word}`);
     }
+  });
+
+  it("an exhausted window lands rate_limited on the counter and the span", async () => {
+    // Its own build and its own metrics window (afterEach resets the
+    // recording): the exhaustion must be this test's own doing, and the
+    // window-filling submissions' `accepted` points must not leak into the
+    // sweep's per-word deltas above.
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    const before = await recording.metrics();
+    for (let i = 0; i <= JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv; i += 1) {
+      await submit(harness, SUBMIT_URL, { token, payload: '{"url":"https://api.vendor.test/"}' });
+    }
+    const delta = submissionsDelta(before, await recording.metrics());
+    expect(delta.get("accepted")).toBe(JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv);
+    expect(delta.get("rate_limited")).toBe(1);
+    const span = recording
+      .spans()
+      .filter((s) => s.name === SPAN_JOBS_SUBMIT_EDGE)
+      .at(-1)!;
+    expect(span.attributes["helix.outcome"]).toBe("rate_limited");
+    // The throttle branch adds no attribute of its own: the same bounded set
+    // as the other post-gate answers — route pattern, never the URL, and no
+    // attribute the flood's requests could steer.
+    expect(span.attributes["http.route"]).toBe(ROUTE_JOBS_SUBMIT);
+    expect(span.attributes["url.path"]).toBeUndefined();
+    expect(span.attributes["url.full"]).toBeUndefined();
+  });
+
+  it("meters the jobs capability on the gateway-calls counter even where no ledger is wired", async () => {
+    // The default harness carries usage=null: the operational counter is the
+    // one record of these calls where no ledger exists, so it must fire beside
+    // the (absent) row write, never inside it. Only the measured round trips
+    // reach the duration histogram — a refusal dialled nothing. Deltas only:
+    // the provider's aggregates are cumulative across the file's tests.
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    const before = await recording.metrics();
+    for (let i = 0; i <= JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv; i += 1) {
+      await submit(harness, SUBMIT_URL, { token, payload: '{"url":"https://api.vendor.test/"}' });
+    }
+    const after = await recording.metrics();
+
+    const jobsCalls = (points: RecordedMetric[]) =>
+      points.filter(
+        (p) => p.name === INSTR_GATEWAY_CALLS && p.attributes["helix.capability"] === "jobs",
+      );
+    const byOutcome = (points: RecordedMetric[]): Map<string, number> => {
+      const base = new Map<string, number>();
+      for (const p of points) {
+        const word = String(p.attributes["helix.outcome"]);
+        base.set(word, (base.get(word) ?? 0) + p.value);
+      }
+      return base;
+    };
+    const delta = (afterPoints: RecordedMetric[], beforePoints: RecordedMetric[]) => {
+      const beforeMap = byOutcome(beforePoints);
+      const delta = new Map<string, number>();
+      for (const [word, value] of byOutcome(afterPoints)) {
+        delta.set(word, value - (beforeMap.get(word) ?? 0));
+      }
+      return delta;
+    };
+
+    const callDelta = delta(jobsCalls(after), jobsCalls(before));
+    // Direct `get`s, not a loop over the observed keys: a meter that never
+    // fires leaves the delta empty, and a loop over it would assert nothing.
+    expect(callDelta.get("ok")).toBe(JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv);
+    expect(callDelta.get("quota_blocked")).toBe(1);
+    // Nothing else moved — and the moved-word set itself is asserted, so this
+    // pair of words is required to have appeared at all.
+    const moved = [...callDelta.entries()]
+      .filter(([, n]) => n !== 0)
+      .map(([word]) => word)
+      .sort();
+    expect(moved).toEqual(["ok", "quota_blocked"]);
+
+    // The refusals measured no round trip: the histogram's quota_blocked count
+    // did not move; the accepted ones' did.
+    const durations = (points: RecordedMetric[]) =>
+      points.filter(
+        (p) => p.name === INSTR_GATEWAY_DURATION && p.attributes["helix.capability"] === "jobs",
+      );
+    const durationDelta = delta(durations(after), durations(before));
+    expect(durationDelta.get("ok")).toBe(JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv);
+    const movedDurations = [...durationDelta.entries()]
+      .filter(([, n]) => n !== 0)
+      .map(([word]) => word)
+      .sort();
+    expect(movedDurations).toEqual(["ok"]);
+  });
+
+  it("a refusal flood stays counted on the metrics while its rows and log lines stay bounded", async () => {
+    // The two bounds must not blind the counter: past the denial budget the
+    // ledger row is dropped, but `helix.gateway.calls` still counts every
+    // refusal, and the log carries one magnitude summary for the flood — not
+    // one line per dropped row.
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const DENIAL_MAX = 20; // the DenialThrottle default the route composes
+    const REFUSALS = DENIAL_MAX + 10;
+
+    logLines.length = 0;
+    for (let i = 0; i < JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv; i += 1) {
+      await submit(harness, SUBMIT_URL, { token, payload: '{"url":"https://api.vendor.test/"}' });
+    }
+    const before = await recording.metrics();
+    for (let i = 0; i < REFUSALS; i += 1) {
+      const res = await submit(harness, SUBMIT_URL, {
+        token,
+        payload: '{"url":"https://api.vendor.test/PLANTED-BODY-VALUE"}',
+        headers: { "idempotency-key": "PLANTED-RETRY-KEY" },
+      });
+      expect(res.status).toBe(429);
+    }
+    const after = await recording.metrics();
+
+    // Every refusal metered — the divergence from the row count below is the
+    // "not gated on the denial budget" half of the contract. The counter is
+    // cumulative, so this test's refusals are the before/after delta.
+    const quotaBlocked = (points: RecordedMetric[]) =>
+      points
+        .filter(
+          (p) =>
+            p.name === INSTR_GATEWAY_CALLS &&
+            p.attributes["helix.capability"] === "jobs" &&
+            p.attributes["helix.outcome"] === "quota_blocked",
+        )
+        .reduce((n, p) => n + p.value, 0);
+    expect(quotaBlocked(after) - quotaBlocked(before)).toBe(REFUSALS);
+
+    // The rows stopped at the budget; the counter did not.
+    expect(usage.records.filter((r) => r.outcome === "quota_blocked")).toHaveLength(DENIAL_MAX);
+
+    // One magnitude summary, on the first suppressed attempt: the bounded app
+    // id and env, the attempt count — never the input or the retry key.
+    const events = logLines.filter(
+      (line) => line.event === "edge.jobs_submit.refusal_ledger_suppressed",
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      level: 40,
+      appId: APP_ID,
+      env: "prod",
+      // The denial budget counts refusals only — the accepted submissions in
+      // this window never touched it — so the first suppressed attempt is the
+      // (max+1)th refusal.
+      attempts: DENIAL_MAX + 1,
+    });
+    const dump = JSON.stringify(logLines);
+    expect(dump).not.toContain("PLANTED-RETRY-KEY");
+    expect(dump).not.toContain("PLANTED-BODY-VALUE");
   });
 
   it("the two uncertain answers stay distinguishable in the evidence while identical on the wire", async () => {

@@ -1,12 +1,26 @@
 import { connect } from "node:net";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { request as undiciRequest } from "undici";
 import type { FastifyInstance } from "fastify";
 import { SESSION_COOKIE } from "../auth/cookies.js";
-import { jobRequestError, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
+import { jobRequestError, JOBS_CAPACITY_DEFAULTS, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
 import { HttpJobsForwarder } from "../jobs/forwarder.js";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
+import { JobsSubmissionThrottle } from "./jobsThrottle.js";
+import { InMemoryCounterStore, type CounterStore } from "./counterStore.js";
+import { buildApp } from "../app.js";
+import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
 import { FakeJobsServiceReceiver } from "../test/jobsReceiver.js";
+import {
+  FakeBlobReader,
+  FakeOidcClient,
+  FakeRegistry,
+  FakeSessionStore,
+  FakeUsageStore,
+  registryEntry,
+} from "../test/fakes.js";
+import { testAuthConfig, testEdgeConfig } from "../test/config.js";
 import { until, withServer } from "../test/socket.js";
 import {
   buildDevJobsEdge,
@@ -77,6 +91,28 @@ async function submit(
 
 const DEV_BEARER = "dev-token-plant";
 const DEV_ORIGIN = "https://myapp.lovable.app";
+
+/** A second app in the registry, for the deployment-aggregate route test. */
+const APP_B_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+/** `seedJobsSession` pins the harness app's id; the multi-app tests need one per appId. */
+async function seedSessionFor(
+  sessions: FakeSessionStore,
+  appId: string,
+  oid: string,
+): Promise<string> {
+  const id = randomUUID();
+  await sessions.createPending({
+    id,
+    appId,
+    user: { oid, displayName: oid, name: null, email: null, kind: "user", groups: [] },
+    refreshDueAt: new Date(Date.now() + 60_000),
+    expiresAt: new Date(Date.now() + 3_600_000),
+  });
+  const token = newSessionToken();
+  await sessions.redeem(id, appId, hashSessionToken(token));
+  return token;
+}
 
 function devSubmit(
   app: FastifyInstance,
@@ -588,6 +624,556 @@ describe("the route joined to the REAL forwarder (no fake in between)", () => {
       expect(res.json.message).toBe("The internal request is not authenticated.");
     }
     await receiver.stop();
+  });
+});
+
+describe("the submission buckets and the recorded requests", () => {
+  /** The per-app/env window's allowance, as the platform defaults set it. */
+  const APP_WINDOW = JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv;
+
+  it("an exhausted window refuses submission with 429 rate_limited, forwarding nothing", async () => {
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < APP_WINDOW; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(202);
+    }
+    const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(res.status).toBe(429);
+    expect(isJobsError(res.json, "rate_limited")).toBe(true);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(harness.forwarder.submitSpecs).toHaveLength(APP_WINDOW);
+  });
+
+  it("both windows span the configured servers — another prefix adds no allowance", async () => {
+    const harness = buildJobsEdge({
+      forwarder: new FakeJobsForwarder("jobs", "other"),
+      jobs: { types: ["jobs:fetch", "other:fetch"] },
+    });
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < APP_WINDOW; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(202);
+    }
+    // The bucket key carries no server: the "other" prefix's first submission
+    // is already the window's (N+1)th attempt for this app and environment.
+    const res = await submit(harness, "/_api/jobs/other/types/fetch", { token, payload: "{}" });
+    expect(res.status).toBe(429);
+    expect(isJobsError(res.json, "rate_limited")).toBe(true);
+  });
+
+  it("invalid, refused and uncertain attempts are charged, like replays — no refund", async () => {
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    const acceptedVerdict = harness.forwarder.submitVerdict;
+    // Four refusals that never mint an instruction, each still charged: an
+    // unknown server (the bump precedes server resolution), an invalid key,
+    // and an uncertain ending.
+    const unknown = await submit(harness, "/_api/jobs/nosuch/types/fetch", {
+      token,
+      payload: "{}",
+    });
+    expect(unknown.status).toBe(400);
+    const badKey = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload: "{}",
+      headers: { "idempotency-key": "" },
+    });
+    expect(badKey.status).toBe(400);
+    harness.forwarder.submitVerdict = { kind: "unreachable", error: new Error("no answer") };
+    const uncertain = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload: "{}",
+    });
+    expect(uncertain.status).toBe(503);
+    harness.forwarder.submitVerdict = acceptedVerdict;
+    for (let i = 0; i < APP_WINDOW - 3; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(202);
+    }
+    const exhausted = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload: "{}",
+    });
+    expect(exhausted.status).toBe(429);
+    expect(isJobsError(exhausted.json, "rate_limited")).toBe(true);
+  });
+
+  it("a keyed replay consumes allowance like any other attempt", async () => {
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < APP_WINDOW; i += 1) {
+      // The same key and bytes each time: every one is a recorded request, and
+      // every one is an attempt.
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+        token,
+        payload: '{"url":"https://api.vendor.test/v1"}',
+        headers: { "idempotency-key": "same-key" },
+      });
+      expect(res.status).toBe(202);
+    }
+    const res = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload: '{"url":"https://api.vendor.test/v1"}',
+      headers: { "idempotency-key": "same-key" },
+    });
+    expect(res.status).toBe(429);
+  });
+
+  it("status/result/cancel retain their ordinary controls — never the submission buckets", async () => {
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < APP_WINDOW; i += 1) {
+      await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    }
+    const poll = await harness.app.inject({
+      method: "GET",
+      url: "/_api/jobs/jobs/job-123",
+      headers: { host: HOST.host, cookie: `${SESSION_COOKIE}=${token}` },
+    });
+    expect(poll.statusCode).toBe(200);
+    const cancel = await harness.app.inject({
+      method: "DELETE",
+      url: "/_api/jobs/jobs/job-123",
+      headers: { host: HOST.host, cookie: `${SESSION_COOKIE}=${token}`, origin: ORIGIN },
+    });
+    expect(cancel.statusCode).toBe(202);
+  });
+
+  it("shared-password refusals are not charged — they are not authenticated jobs principals", async () => {
+    const harness = buildJobsEdge();
+    // A shared-password visitor resolves authenticated-but-ineligible: the
+    // jobs authorization check refuses 403, and the attempt never reaches the
+    // buckets — the caller the platform does not attribute jobs to buys no
+    // window (and drains none).
+    const pwToken = await seedSession(harness.sessions, "pw-visitor-oid", "password");
+    for (let i = 0; i < APP_WINDOW; i += 1) {
+      const anon = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+        token: pwToken,
+        payload: "{}",
+      });
+      expect(anon.status).toBe(403);
+    }
+    // The window is still empty: the full allowance is there for the
+    // authenticated principal jobs is for.
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < APP_WINDOW; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(202);
+    }
+  });
+
+  it("a disabled attempt is neither charged nor recorded", async () => {
+    // One throttle shared by BOTH builds, keyed on the same app and env: if
+    // the disabled 503 consumed anything, the enabled build's window would be
+    // short by one.
+    const sharedThrottle = new JobsSubmissionThrottle(new InMemoryCounterStore());
+    const disabled = buildDisabledJobsEdge({ jobsSubmissionThrottle: sharedThrottle });
+    const token = await seedSession(disabled.sessions, "alice");
+    const gone = await submit(disabled, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(gone.status).toBe(503);
+
+    const harness = buildJobsEdge({ jobsSubmissionThrottle: sharedThrottle });
+    const token2 = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < APP_WINDOW; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+        token: token2,
+        payload: "{}",
+      });
+      expect(res.status).toBe(202);
+    }
+  });
+
+  it("records each counted attempt once — acceptance, replay, and refusals with their catalogue code", async () => {
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const payload = '{"url":"https://api.vendor.test/v1"}';
+    await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload,
+      headers: { "idempotency-key": "k1" },
+    });
+    await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload,
+      headers: { "idempotency-key": "k1" },
+    });
+    const conflict = jobRequestError("idempotency_conflict", { status: "queued", error: null });
+    harness.forwarder.submitVerdict = { kind: "refused", status: 409, error: conflict };
+    await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload });
+
+    expect(usage.records).toHaveLength(3);
+    for (const row of usage.records) {
+      expect(row).toMatchObject({
+        appId: APP_ID,
+        env: "prod",
+        userOid: "alice",
+        userKind: "user",
+        capability: "jobs",
+        model: "jobs:fetch",
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+    }
+    // The replays are recorded REQUESTS: a second `ok`, never a unique-job claim.
+    expect(usage.records[0]).toMatchObject({ outcome: "ok", statusCode: 202, errorDetail: null });
+    expect(usage.records[1]).toMatchObject({ outcome: "ok", statusCode: 202 });
+    expect(usage.records[2]).toMatchObject({
+      outcome: "conflict",
+      statusCode: 409,
+      errorDetail: "idempotency_conflict",
+    });
+    // The retry key never rides the row.
+    expect(JSON.stringify(usage.records)).not.toContain("k1");
+  });
+
+  it("maps the server's refusals onto the ledger's own outcome vocabulary", async () => {
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const cases: {
+      status: number;
+      code: "forbidden" | "jobs_capacity_exceeded" | "payload_invalid" | "jobs_unavailable";
+      outcome: string;
+    }[] = [
+      { status: 403, code: "forbidden", outcome: "forbidden" },
+      { status: 429, code: "jobs_capacity_exceeded", outcome: "quota_blocked" },
+      { status: 400, code: "payload_invalid", outcome: "refusal" },
+      { status: 503, code: "jobs_unavailable", outcome: "error" },
+    ];
+    for (const c of cases) {
+      harness.forwarder.submitVerdict = {
+        kind: "refused",
+        status: c.status,
+        error: jobRequestError(c.code),
+      };
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(c.status);
+    }
+    expect(usage.records.map((r) => r.outcome)).toEqual(cases.map((c) => c.outcome));
+    expect(usage.records.map((r) => r.statusCode)).toEqual(cases.map((c) => c.status));
+    expect(usage.records.map((r) => r.errorDetail)).toEqual(cases.map((c) => c.code));
+  });
+
+  it("an uncertain ending records a request failure — never proof about the job", async () => {
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    harness.forwarder.submitVerdict = { kind: "unreachable", error: new Error("no answer") };
+    await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(usage.records[0]).toMatchObject({
+      outcome: "error",
+      statusCode: 503,
+      errorDetail: "unreachable",
+    });
+    // The row measured a round trip; a duration was carried (any non-negative one).
+    expect(usage.records[0]?.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("a ledger write failure never changes acceptance", async () => {
+    const usage = new FakeUsageStore();
+    usage.record = async () => {
+      throw new Error("the ledger is down");
+    };
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const res = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload: '{"url":"https://api.vendor.test/v1"}',
+    });
+    // The acceptance is forwarded unchanged — the best-effort write is
+    // nobody's gate.
+    expect(res.status).toBe(202);
+    expect(res.json).toEqual({ server: "jobs", jobId: "job-123", status: "queued" });
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("the throttle refusals' rows are bounded — a flood cannot fill the ledger", async () => {
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    // Drain the window, then keep hammering: every 429 after the first
+    // DENIAL_MAX refuses writes nothing. The first in-window rows plus the
+    // denial budget's rows are the whole flood's audit trail.
+    const DENIAL_MAX = 20; // the DenialThrottle default the route composes
+    for (let i = 0; i < APP_WINDOW + DENIAL_MAX + 25; i += 1) {
+      await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    }
+    const refused = usage.records.filter((r) => r.outcome === "quota_blocked");
+    expect(refused).toHaveLength(DENIAL_MAX);
+    for (const row of refused) {
+      expect(row).toMatchObject({
+        statusCode: 429,
+        errorDetail: "rate_limited",
+        model: "jobs:fetch",
+      });
+    }
+    // The in-window rows are the acceptance-era ones: one row per counted attempt.
+    expect(usage.records).toHaveLength(APP_WINDOW + DENIAL_MAX);
+  });
+
+  it("records nothing when no ledger is wired, and nothing for a disabled attempt", async () => {
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(harness.usage).toBeNull();
+
+    const usage = new FakeUsageStore();
+    const disabled = buildDisabledJobsEdge({ usage });
+    const disabledToken = await seedSession(disabled.sessions, "alice");
+    await submit(disabled, "/_api/jobs/jobs/types/fetch", { token: disabledToken, payload: "{}" });
+    expect(usage.records).toEqual([]);
+  });
+
+  it("the reference operations are not ledger rows — submissions only", async () => {
+    // ADR-0004's semantics are submission-specific; per-poll rows would flood
+    // an append-only table the design never budgets for. The poll, result read
+    // and cancellation keep their spans and ordinary request controls — and
+    // write nothing, in their success and failure endings alike, even with the
+    // ledger wired.
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(usage.records).toHaveLength(1);
+
+    const poll = await harness.app.inject({
+      method: "GET",
+      url: "/_api/jobs/jobs/job-123",
+      headers: { host: HOST.host, cookie: `${SESSION_COOKIE}=${token}` },
+    });
+    expect(poll.statusCode).toBe(200);
+    const result = await harness.app.inject({
+      method: "GET",
+      url: "/_api/jobs/jobs/job-123/result",
+      headers: { host: HOST.host, cookie: `${SESSION_COOKIE}=${token}` },
+    });
+    expect(result.statusCode).toBe(200);
+    const cancel = await harness.app.inject({
+      method: "DELETE",
+      url: "/_api/jobs/jobs/job-123",
+      headers: { host: HOST.host, cookie: `${SESSION_COOKIE}=${token}`, origin: ORIGIN },
+    });
+    expect(cancel.statusCode).toBe(202);
+    expect(usage.records).toHaveLength(1);
+
+    // The failed observation writes nothing either — an uncertain ending is
+    // not a submission attempt.
+    harness.forwarder.snapshotVerdict = { kind: "unreachable", error: new Error("no answer") };
+    const failedPoll = await harness.app.inject({
+      method: "GET",
+      url: "/_api/jobs/jobs/job-123",
+      headers: { host: HOST.host, cookie: `${SESSION_COOKIE}=${token}` },
+    });
+    expect(failedPoll.statusCode).toBe(503);
+    expect(usage.records).toHaveLength(1);
+  });
+
+  it("the local refusals record their rows in the shared vocabulary too", async () => {
+    // The forwarded refusals' mapping is pinned above; these are the refusals
+    // the edge answers before any forward exists — same ledger row shape, same
+    // vocabulary, the requested `server:type` in the model column (bounded,
+    // caller-chosen: the column's established trust level for app-controlled
+    // content).
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const cases: {
+      url: string;
+      headers?: Record<string, string>;
+      status: number;
+      outcome: string;
+      errorDetail: string;
+      model: string;
+    }[] = [
+      {
+        // The bump precedes server resolution: the row carries what the caller
+        // asked for, valid or not.
+        url: "/_api/jobs/nosuch/types/fetch",
+        status: 400,
+        outcome: "refusal",
+        errorDetail: "job_server_unknown",
+        model: "nosuch:fetch",
+      },
+      {
+        url: "/_api/jobs/jobs/types/fetch",
+        headers: { "idempotency-key": "" },
+        status: 400,
+        outcome: "refusal",
+        errorDetail: "idempotency_key_invalid",
+        model: "jobs:fetch",
+      },
+      {
+        url: "/_api/jobs/jobs/types/Fetch%2Fx",
+        status: 403,
+        outcome: "forbidden",
+        errorDetail: "forbidden",
+        model: "jobs:Fetch/x",
+      },
+      {
+        url: "/_api/jobs/jobs/types/fetch",
+        headers: { "content-length": String(65_537) },
+        status: 413,
+        outcome: "refusal",
+        errorDetail: "payload_too_large",
+        model: "jobs:fetch",
+      },
+    ];
+    for (const c of cases) {
+      const res = await submit(harness, c.url, { token, payload: "{}", headers: c.headers });
+      expect(res.status, c.errorDetail).toBe(c.status);
+    }
+    expect(usage.records.map((r) => [r.outcome, r.statusCode, r.errorDetail, r.model])).toEqual(
+      cases.map((c) => [c.outcome, c.status, c.errorDetail, c.model]),
+    );
+  });
+
+  it("a second app is refused by the deployment window at the route — the aggregate is shared", async () => {
+    // The route's whole contribution to the deployment aggregate is the two
+    // values it hands `consume` (`entry.appId`, `caller.env`); the bucket
+    // arithmetic for it is unit-pinned, but only a second ROUTE-level app
+    // proves the aggregate is really deployment-wide — a route that charged
+    // the deployment bucket per app (or stopped charging it at all) passes
+    // every single-app test.
+    const sharedThrottle = new JobsSubmissionThrottle(new InMemoryCounterStore(), {
+      ...JOBS_CAPACITY_DEFAULTS,
+      submissionAttemptsPerAppEnv: 10,
+      submissionAttemptsDeployment: 3,
+    });
+    const sessions = new FakeSessionStore();
+    const forwarder = new FakeJobsForwarder("jobs");
+    const app = buildApp({
+      config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
+      registry: new FakeRegistry([
+        registryEntry({
+          appId: APP_ID,
+          slug: "demo",
+          blobPrefix: "apps/a/1/",
+          visibilityMode: "internal",
+          jobs: { types: ["jobs:fetch"] },
+        }),
+        registryEntry({
+          appId: APP_B_ID,
+          slug: "demo2",
+          blobPrefix: "apps/b/1/",
+          visibilityMode: "internal",
+          jobs: { types: ["jobs:fetch"] },
+        }),
+      ]),
+      blob: new FakeBlobReader(),
+      sessions,
+      oidc: new FakeOidcClient(),
+      jobsForwarder: forwarder,
+      jobsSubmissionThrottle: sharedThrottle,
+    });
+    const tokenA = await seedSessionFor(sessions, APP_ID, "alice");
+    for (let i = 0; i < 3; i += 1) {
+      const res = await submit({ app, sessions }, "/_api/jobs/jobs/types/fetch", {
+        token: tokenA,
+        payload: "{}",
+      });
+      expect(res.status).toBe(202);
+    }
+    // app-b's own window is empty; only the aggregate app-a filled refuses it.
+    const tokenB = await seedSessionFor(sessions, APP_B_ID, "bob");
+    const res = await submit({ app, sessions }, "/_api/jobs/jobs/types/fetch", {
+      token: tokenB,
+      payload: "{}",
+      headers: { host: "demo2.local.helix.azxlabs.io" },
+      origin: "https://demo2.local.helix.azxlabs.io:8080",
+    });
+    expect(res.status).toBe(429);
+    expect(isJobsError(res.json, "rate_limited")).toBe(true);
+    // The refusal forwarded nothing: the three forwards are all app-a's.
+    expect(forwarder.submitSpecs).toHaveLength(3);
+    for (const spec of forwarder.submitSpecs) {
+      expect(spec.identity.appId).toBe(APP_ID);
+    }
+  });
+
+  it("a counter-store failure at the buckets fails closed — the forward never happens", async () => {
+    // The gate cannot complete when the counter store is down: the request
+    // must be refused (fail closed), never admitted past a gate that did not
+    // answer — and nothing is minted or recorded on the way out.
+    const failingStore: CounterStore = {
+      bump: async () => {
+        throw new Error("the counter store is down");
+      },
+      reset: async () => {},
+      sweep: async () => {},
+      close: async () => {},
+    };
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({
+      usage,
+      jobsSubmissionThrottle: new JobsSubmissionThrottle(failingStore),
+    });
+    const token = await seedSession(harness.sessions, "alice");
+    const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(res.status).toBe(500);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
+    expect(usage.records).toHaveLength(0);
+  });
+
+  it("a partial bucket failure fails closed and the charge it made stands", async () => {
+    // The two windows are two store statements: the second can fail after the
+    // first charged. The request must still refuse with nothing forwarded, and
+    // whichever charge landed is not refunded — the next attempt finds a
+    // window spent. Both limits are 1, so the 429 lands whichever window the
+    // failed attempt charged (and a rollback would answer 202 instead).
+    const inner = new InMemoryCounterStore();
+    let bumps = 0;
+    const partiallyFailingStore: CounterStore = {
+      bump: (key, windowMs) => {
+        bumps += 1;
+        if (bumps === 2) return Promise.reject(new Error("the counter store is down"));
+        return inner.bump(key, windowMs);
+      },
+      reset: (key) => inner.reset(key),
+      sweep: () => inner.sweep(),
+      close: () => inner.close(),
+    };
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({
+      usage,
+      jobsSubmissionThrottle: new JobsSubmissionThrottle(partiallyFailingStore, {
+        ...JOBS_CAPACITY_DEFAULTS,
+        submissionAttemptsPerAppEnv: 1,
+        submissionAttemptsDeployment: 1,
+      }),
+    });
+    const token = await seedSession(harness.sessions, "alice");
+    const first = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(first.status).toBe(500);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
+    expect(usage.records).toHaveLength(0);
+    const second = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(second.status).toBe(429);
+    expect(isJobsError(second.json, "rate_limited")).toBe(true);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
+  });
+
+  it("the window is exact under concurrent submissions — the decision rides the post-increment count", async () => {
+    // A check-then-act refactor (read the count, then decide, then increment)
+    // admits past the window only when attempts overlap; the atomic bump
+    // makes exactly the window's worth of accepts land however the requests
+    // interleave.
+    const harness = buildJobsEdge();
+    const token = await seedSession(harness.sessions, "alice");
+    const results = await Promise.all(
+      Array.from({ length: APP_WINDOW + 7 }, () =>
+        submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" }),
+      ),
+    );
+    const accepted = results.filter((r) => r.status === 202);
+    const limited = results.filter((r) => r.status === 429);
+    expect(accepted).toHaveLength(APP_WINDOW);
+    expect(limited).toHaveLength(7);
+    for (const r of limited) {
+      expect(isJobsError(r.json, "rate_limited")).toBe(true);
+    }
+    expect(harness.forwarder.submitSpecs).toHaveLength(APP_WINDOW);
   });
 });
 

@@ -12,6 +12,7 @@ import { makeOpenAiModelsHandler } from "../gateway/openaiModels.js";
 import { makeDataHandlers } from "../gateway/data-handler.js";
 import { makeFetchHandler } from "../gateway/fetch.js";
 import { DenialThrottle } from "../gateway/denialThrottle.js";
+import { JobsSubmissionThrottle } from "../gateway/jobsThrottle.js";
 import { InMemoryCounterStore } from "../gateway/counterStore.js";
 import type { LlmProvider } from "../gateway/provider.js";
 import type { EgressProvider } from "../gateway/egressProvider.js";
@@ -190,11 +191,20 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
   // dev resolver seams, so a dev submission carries `env: 'dev'` and the dev
   // principal, and never the production tier's. The reference operations
   // (poll, result, cancellation) share the runtime and the forwarding seam.
+  // The throttle buckets and the refusal-denial budget run on the in-memory
+  // store — single-process by construction, like the fetch denial throttle
+  // below — and the ledger is the same `UsageStore` the dev tier's other
+  // capabilities write.
   const jobsRuntime = {
     registry: deps.registry,
     resolveCaller,
     checkOrigin,
     forwarder: deps.jobsForwarder,
+    submissionThrottle: new JobsSubmissionThrottle(new InMemoryCounterStore()),
+    denialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
+      keyPrefix: "jobs-denial:",
+    }),
+    usage: deps.usage,
   };
   const handleJobsSubmit = makeJobsSubmitHandler(jobsRuntime, {
     span: SPAN_JOBS_SUBMIT_DEV,

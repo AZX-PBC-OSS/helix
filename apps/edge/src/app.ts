@@ -37,6 +37,7 @@ import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
 import { makeJobsSubmitHandler, makeJobsRecordHandler } from "./gateway/jobs.js";
 import { DenialThrottle } from "./gateway/denialThrottle.js";
+import { JobsSubmissionThrottle } from "./gateway/jobsThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
 import { makeConsentStartHandler } from "./routing/consentStart.js";
@@ -107,6 +108,13 @@ export interface EdgeDeps {
    * is fully disabled and the routes answer 503 `jobs_disabled`.
    */
   jobsForwarder?: JobsForwarder | null;
+  /**
+   * The submission throttle buckets over the SHARED counter store
+   * (server.ts injects the PG-backed one so the limit holds across the edge
+   * fleet); omitted, the fallback in-memory store keeps single-process dev
+   * and tests working — per-replica, like every other fallback here.
+   */
+  jobsSubmissionThrottle?: JobsSubmissionThrottle | null;
   /**
    * Portal client for the auth-host `/connections/*` reverse proxy; null = the
    * surface 503s fail-closed.
@@ -240,6 +248,15 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // ledger write amplification, it is not a security budget, so a per-replica
   // count is fine and a DB round-trip on the abusive path would be self-defeating.
   const denialThrottle = new DenialThrottle(fallbackCounters);
+  // The jobs refusal rows' own denial budget — a distinct key namespace, so a
+  // fetch-allowlist flood cannot spend this ledger's denial window (or vice
+  // versa). In-memory for the same reason as the fetch one above.
+  const jobsDenialThrottle = new DenialThrottle(fallbackCounters, { keyPrefix: "jobs-denial:" });
+  // The submission throttle buckets (design §4): server.ts injects the
+  // PG-backed one (fleet-wide limits); the fallback in-memory store keeps
+  // single-process dev / tests working, like every other fallback here.
+  const jobsSubmissionThrottle =
+    deps.jobsSubmissionThrottle ?? new JobsSubmissionThrottle(fallbackCounters);
   const recordVisit = deps.visits
     ? makeVisitRecorder({
         store: deps.visits,
@@ -339,6 +356,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           resolveCaller,
           checkOrigin,
           forwarder: deps.jobsForwarder ?? null,
+          submissionThrottle: jobsSubmissionThrottle,
+          denialThrottle: jobsDenialThrottle,
+          usage: deps.usage ?? null,
         }
       : null;
   const handleJobsSubmit = jobsRuntime

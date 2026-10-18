@@ -9,6 +9,7 @@ import {
   isValidJobsLocalType,
   isValidJobsRetryKey,
   qualifiedTypeMatchesServer,
+  type GatewayOutcome,
 } from "@azx-pbc/shared";
 import type { JobOwnerKind } from "@azx-pbc/shared";
 import {
@@ -23,9 +24,12 @@ import {
 } from "@azx-pbc/shared/telemetry";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 import { resolveServingEntry } from "../auth/routes/appHost.js";
-import { type Caller, type CallerResolver } from "../auth/gate.js";
+import { meterIdentity, type Caller, type CallerResolver } from "../auth/gate.js";
 import type { OriginCheck } from "../auth/validate.js";
 import { instruments, spanRoute } from "../telemetry.js";
+import { meterGatewayCall, type GatewayCallRecord, type UsageStore } from "./usage.js";
+import type { DenialThrottle } from "./denialThrottle.js";
+import type { JobsSubmissionThrottle } from "./jobsThrottle.js";
 import { readBoundedBody } from "../jobs/boundedBody.js";
 import type { JobsForwarder, JobsRecordSpec } from "../jobs/forwarder.js";
 
@@ -78,6 +82,23 @@ import type { JobsForwarder, JobsRecordSpec } from "../jobs/forwarder.js";
  * server's retained-key comparison and be answered 409 even when invalid for
  * new work, and validation-before-acceptance is the jobs service's own gate —
  * forwarding unchanged bytes is the submission route's whole job.
+ *
+ * The submission buckets and the request ledger (design §4, ADR-0003/0004)
+ * are the submission route's own: every authenticated attempt that passes the
+ * gates — replays, invalid input, refusals and uncertain endings included —
+ * consumes the per-app/environment and deployment-wide fixed windows before
+ * any later decision, with no refund, and both buckets span every configured
+ * server (their keys carry no server or type, so another prefix adds no
+ * allowance). An exhausted window answers 429 `rate_limited`. Each counted
+ * attempt is one recorded request in the gateway ledger (capability `jobs`,
+ * the qualified type in the model field, the existing outcome vocabulary) —
+ * an attempt counter that must never be read as an accepted-job count, since
+ * a 202 can be a replay and an uncertain ending may have accepted work. The
+ * write is best-effort and never awaited: a ledger failure cannot change
+ * acceptance, and the throttle refusals' rows are capped per (app, env) so a
+ * flood cannot turn into unbounded persistent audit writes. The reference
+ * operations are not charged to these buckets and are not ledger rows — they
+ * keep their ordinary request controls and their own spans.
  */
 
 export interface JobsGatewayRuntime {
@@ -91,6 +112,27 @@ export interface JobsGatewayRuntime {
    * (fail-closed, like every other capability's unconfigured seam).
    */
   forwarder: JobsForwarder | null;
+  /**
+   * The submission throttle buckets (design §4): every authenticated attempt
+   * that passes the gates consumes the per-app/environment and the
+   * deployment-wide windows — both spanning every configured server — before
+   * any later decision, and an exhausted window answers 429 `rate_limited`.
+   * Built by the composition (app.ts) from the shared counter primitive; a
+   * composition that wires jobs always wires this.
+   */
+  submissionThrottle: JobsSubmissionThrottle;
+  /**
+   * Caps the throttle-refusal ledger rows per (app, env) — the one write on
+   * this route no other gate bounds, since a refused attempt consumes no
+   * window the caller could run out of. null ⇒ uncapped (tests).
+   */
+  denialThrottle: DenialThrottle | null;
+  /**
+   * The gateway request ledger (ADR-0004): each counted submission attempt is
+   * one recorded request row, best-effort and never awaited — a ledger write
+   * failure cannot change acceptance or delay a reply. null ⇒ not recorded.
+   */
+  usage: UsageStore | null;
 }
 
 /** Which serving surface a handler is wired into — span name and route constant. */
@@ -187,6 +229,23 @@ function abortOnClientGone(reply: FastifyReply): AbortSignal {
   return abort.signal;
 }
 
+/**
+ * Map a forwarded submission refusal's HTTP status onto the ledger outcome —
+ * the existing `GatewayOutcome` vocabulary restated at the jobs consumer
+ * (ADR-0004: no new outcomes). The 409 has its own label (`conflict`); the
+ * principal refusals are `forbidden`; the quota-shaped refusals (the
+ * receiver's capacity/rate answers, like the edge's own throttle below) are
+ * `quota_blocked`; a 5xx is an `error` — an uncertain ending, never proof the
+ * job was not accepted; every other 4xx is a policy `refusal`.
+ */
+function submissionLedgerOutcome(status: number): GatewayOutcome {
+  if (status === 409) return "conflict";
+  if (status === 403) return "forbidden";
+  if (status === 429) return "quota_blocked";
+  if (status >= 500) return "error";
+  return "refusal";
+}
+
 export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurface) {
   async function handleJobsSubmit(
     req: FastifyRequest,
@@ -202,25 +261,123 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
     const gated = await passJobsGates(rt, req, reply, slug, setOutcome, true);
     if (!gated) return;
     const { entry, caller, ownerKind, ownerOid } = gated;
+    const identity = meterIdentity(caller);
 
     // The requested operation, from the route. A server id that is not a
     // server id cannot be configured (the same 400 an unknown one answers
     // with); a type that is not a type is one no grant can ever have covered.
+    // The raw `server:type` pair is what the ledger's model field records for
+    // every counted attempt — the caller's own request, bounded by the
+    // ledger's column cap, valid or not.
     const params = req.params as { server?: string; type?: string };
     const server = params.server ?? "";
+    const requestedType = `${server}:${params.type ?? ""}`;
     if (!rt.forwarder) {
       setOutcome("disabled");
       sendJobsError(reply, 503, jobRequestError("jobs_disabled"));
       return;
     }
+
+    // The ledger row for one counted attempt (ADR-0004): capability `jobs`,
+    // the requested qualified type in the model field, the existing outcome
+    // vocabulary, and a bounded catalogue word — never input, a retry key, a
+    // URL or exception text — in `errorDetail`. Measured round-trip time is
+    // carried only where a round trip happened.
+    const gatewayCall = (
+      outcome: GatewayOutcome,
+      statusCode: number,
+      errorDetail: string | null,
+      durationMs?: number,
+    ): GatewayCallRecord => ({
+      appId: entry.appId,
+      env: caller.env,
+      ...identity,
+      capability: "jobs",
+      model: requestedType,
+      inputTokens: 0,
+      outputTokens: 0,
+      outcome,
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      statusCode,
+      errorDetail,
+    });
+    const recordRow = (row: GatewayCallRecord): void => {
+      if (!rt.usage) return;
+      void rt.usage.record(row).catch((err: unknown) =>
+        req.log.warn(
+          {
+            err,
+            event: "gateway.usage_record_failed",
+            appId: entry.appId,
+            capability: "jobs",
+            outcome: row.outcome,
+          },
+          "gateway usage record failed",
+        ),
+      );
+    };
+    const record = (
+      outcome: GatewayOutcome,
+      statusCode: number,
+      errorDetail: string | null,
+      durationMs?: number,
+    ): void => {
+      // Beside the ledger write, never inside it: a dropped row must not
+      // blind the operational counter (ADR-0037 decision 9's shape).
+      meterGatewayCall({
+        appId: entry.appId,
+        capability: "jobs",
+        outcome,
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      });
+      recordRow(gatewayCall(outcome, statusCode, errorDetail, durationMs));
+    };
+
+    // The submission buckets (design §4): every authenticated attempt that
+    // reaches here is charged — before the server resolution, the key and
+    // body checks, and the forward — and the charge stands whatever the
+    // outcome. An exhausted window refuses here, before any instruction
+    // exists; there is no refund and no midnight settlement.
+    if (!(await rt.submissionThrottle.consume(entry.appId, caller.env))) {
+      setOutcome("rate_limited");
+      // The refused attempt's ledger row is the one write on this route no
+      // bucket bounds — a flood consumes no window it could run out of — so
+      // it is metered per (app, env) like the fetch allowlist denial: the
+      // first N rows per window carry the audit signal, the rest are dropped
+      // with a magnitude summary on the log. The metric is NOT gated on the
+      // throttle's decision; only the row is.
+      const decision = rt.denialThrottle
+        ? await rt.denialThrottle.admit(entry.appId, caller.env)
+        : { meter: true as const, suppressedAt: undefined };
+      if (decision.suppressedAt !== undefined) {
+        req.log.warn(
+          {
+            event: "edge.jobs_submit.refusal_ledger_suppressed",
+            appId: entry.appId,
+            env: caller.env,
+            attempts: decision.suppressedAt,
+          },
+          "jobs throttle-refusal metering suppressed — this app is over its denial budget for the window",
+        );
+      }
+      meterGatewayCall({ appId: entry.appId, capability: "jobs", outcome: "quota_blocked" });
+      if (decision.meter) {
+        recordRow(gatewayCall("quota_blocked", 429, "rate_limited"));
+      }
+      sendJobsError(reply, 429, jobRequestError("rate_limited"));
+      return;
+    }
+
     if (!rt.forwarder.has(server)) {
       setOutcome("server_unknown");
+      record("refusal", 400, "job_server_unknown");
       sendJobsError(reply, 400, jobRequestError("job_server_unknown"));
       return;
     }
     const localType = params.type ?? "";
     if (!isValidJobsLocalType(localType)) {
       setOutcome("forbidden");
+      record("forbidden", 403, "forbidden");
       sendJobsError(reply, 403, jobRequestError("forbidden"));
       return;
     }
@@ -234,6 +391,7 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
     );
     if (!allowedTypes.includes(qualifiedType)) {
       setOutcome("forbidden");
+      record("forbidden", 403, "forbidden");
       sendJobsError(reply, 403, jobRequestError("forbidden"));
       return;
     }
@@ -251,12 +409,14 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
     const rawKey = req.headers[IDEMPOTENCY_KEY_HEADER];
     if (Array.isArray(rawKey)) {
       setOutcome("key_invalid");
+      record("refusal", 400, "idempotency_key_invalid");
       sendJobsError(reply, 400, jobRequestError("idempotency_key_invalid"));
       return;
     }
     const idempotencyKey = typeof rawKey === "string" ? rawKey : null;
     if (idempotencyKey !== null && !isValidJobsRetryKey(idempotencyKey)) {
       setOutcome("key_invalid");
+      record("refusal", 400, "idempotency_key_invalid");
       sendJobsError(reply, 400, jobRequestError("idempotency_key_invalid"));
       return;
     }
@@ -268,6 +428,7 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
     const declared = Number(req.headers["content-length"]);
     if (Number.isFinite(declared) && declared > JOBS_MAX_INPUT_BYTES) {
       setOutcome("payload_too_large");
+      record("refusal", 413, "payload_too_large");
       sendJobsError(reply, 413, jobRequestError("payload_too_large"));
       return;
     }
@@ -276,11 +437,13 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
       // The body errored before it ended — unreadable, refused before any
       // comparison. The caller is usually already gone; the reply is a formality.
       setOutcome("payload_invalid");
+      record("refusal", 400, "payload_invalid");
       sendJobsError(reply, 400, jobRequestError("payload_invalid"));
       return;
     }
     if (bounded.over) {
       setOutcome("payload_too_large");
+      record("refusal", 413, "payload_too_large");
       sendJobsError(reply, 413, jobRequestError("payload_too_large"));
       return;
     }
@@ -288,6 +451,7 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
     // Mint and forward — one instruction, exact bytes, bounded wait. Trace
     // context rides the forward (inject-only); the jobs service mints its own
     // request id, so no correlation header of ours is read over there.
+    const startedAt = performance.now();
     const forward = await rt.forwarder.submit({
       server,
       identity: {
@@ -303,6 +467,7 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
       body: bounded.bytes,
       signal: abortOnClientGone(reply),
     });
+    const forwardMs = Math.round(performance.now() - startedAt);
 
     switch (forward.kind) {
       case "accepted": {
@@ -310,8 +475,11 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
         // reference is the server it asked for and the job id the server
         // chose. The accepted job id rides the span — the join between this
         // submission's trace and the snapshot the app polls next (the same
-        // evidence the receiver's route spans carry).
+        // evidence the receiver's route spans carry). The ledger row is the
+        // recorded REQUEST — a keyed replay records the same `ok`, never a
+        // unique-job claim.
         setOutcome("accepted");
+        record("ok", forward.status, null, forwardMs);
         trace.getActiveSpan()?.setAttributes({ [ATTR_JOBS_JOB_ID]: forward.accepted.jobId });
         reply
           .status(forward.status)
@@ -322,8 +490,15 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
       }
       case "refused": {
         // The server's own fixed, sanitized error response — validated against
-        // the protocol's error schema and forwarded with its status.
+        // the protocol's error schema and forwarded with its status. The
+        // catalogue code rides the ledger row's bounded `errorDetail`.
         setOutcome("server_refused");
+        record(
+          submissionLedgerOutcome(forward.status),
+          forward.status,
+          forward.error.code,
+          forwardMs,
+        );
         sendJobsError(reply, forward.status, forward.error);
         return;
       }
@@ -333,6 +508,9 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
           "the jobs server did not answer a forwarded submission — acceptance is uncertain",
         );
         setOutcome("unreachable");
+        // An uncertain ending records as a request failure, never as proof
+        // the work was or was not accepted.
+        record("error", 503, "unreachable", forwardMs);
         sendJobsError(reply, 503, jobRequestError("jobs_unavailable"));
         return;
       }
@@ -346,6 +524,7 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
           "the jobs server answered an unusable submission response — acceptance is uncertain",
         );
         setOutcome("invalid_response");
+        record("error", 503, "invalid_response", forwardMs);
         sendJobsError(reply, 503, jobRequestError("jobs_unavailable"));
         return;
       }
