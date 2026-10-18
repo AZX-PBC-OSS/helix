@@ -273,9 +273,9 @@ on — the attempt's retry decision reads the runner row's own policy.
   the dispatch refuses with the terminal platform error.
 - **The handler registry.** Registration requires an installed execution
   policy — a synthetic or non-catalogue type cannot register, and a second
-  registration of one type fails loudly. The production registrations (the
-  outbound fetch handler, the development fixtures) are their own tickets'
-  work.
+  registration of one type fails loudly. Production registers the outbound
+  fetch handler (below); the development fixtures are their own ticket's
+  work and are never registered in production.
 - **Telemetry.** One root consumer span per attempt (`helix.jobs.execute`)
   carries the app, the qualified type, the job's public id and the attempt
   number; its outcome is `JOBS_EXECUTE_OUTCOMES` and a failure's code rides
@@ -288,6 +288,58 @@ on — the attempt's retry decision reads the runner row's own policy.
   record with the timeout outcome in the same transaction that decided it —
   recovery never authorizes execution after the deadline. The write is
   `terminatePastDeadline`, shared with the recovery sweeper.
+
+## The outbound fetch handler (`src/fetchJob.ts`)
+
+The platform-authored work for the one installed production type
+(`jobs:fetch`): one governed GET, then the complete upstream JSON value. The
+handler is composed once per process with this server's jobs→edge minting key
+and the two signed callback destinations, and registered for the installed
+type only — no caller input selects it.
+
+- **The dispatch, not the fetch.** The outbound call is made by the edge's
+  signed jobs→edge callback (`POST /internal/jobs/v1/fetch`, the receiver the
+  callback ticket owns), which resolves the CURRENT registry entry, fences
+  the signed lifecycle generation, checks the origin allowlist and the
+  delegated prohibition, charges the app's fetch budget, mints the egress
+  instruction and streams the upstream bytes back. The handler mints the
+  instruction from the job's immutable record identity (the attempt context's
+  record — server, app, environment, principal kind, owner, qualified type,
+  the job's public id and its admitted generation), binds the exact
+  `{url}` body bytes by digest, and selects the destination by the job's
+  signed environment tier — never by input, never with a fallback between
+  tiers. No redirect is followed (the signed contract binds one resource),
+  and the whole dispatch is bounded at the platform's 30-second outbound
+  timeout alongside the attempt's own abort signal (a cancellation or a
+  claim expiry) — both stop the call, and the abort propagates back through
+  the edge's stream to the egress forward.
+- **The interpretation is terminal, never retried.** The type has one
+  execution attempt and the handler makes one dispatch: a refusal, an
+  upstream failure, an unusable answer or a timeout is the job's distinct
+  terminal reason, with no partial output ever returned. The callback's
+  bounded error envelope maps onto the job's reasons — `outbound_forbidden`,
+  `delegated_unattended` and `outbound_quota_exceeded` pass through; the
+  edge's `upstream_error` (the upstream's non-2xx or a failed forward) is the
+  job's `upstream_error`; everything the callback's own machinery answers
+  (unauthorized, jobs_disabled, jobs_unavailable, body refusals) is the job's
+  `platform_error`. A 200 body is read bounded on the STREAM — the cap stops
+  the response the moment it passes the 64-KiB result allowance
+  (`result_too_large`, the excess bytes never read, the stream's abort
+  propagating to the egress forward) — then parsed as a complete JSON value
+  (`result_invalid` when it is not; JSON `null` is a result, never absence).
+- **Progress is the one unit.** Nothing is reported until a valid complete
+  JSON result is in hand, and the report (`{step: 1, of: 1}`) is the last
+  thing before the value is returned — a poll never sees the unit completed
+  without the result that completes it.
+- **Telemetry.** The dispatch runs in its own client child span
+  (`helix.jobs.fetch.dispatch`) beside the attempt's `helix.jobs.execute`
+  root, and `helix.jobs.fetch.dispatches` counts the outcomes
+  (`JOBS_FETCH_DISPATCH_OUTCOMES`); the callback's error code and the abort's
+  classification ride `helix.reason`. The grading is the execute span's
+  contract: designed answers (refusals, the upstream's failure, the result
+  refusals, the timeout, the cancellation) stay UNSET; the callback seam
+  failing or answering off-protocol grades ERROR. Never the target URL, the
+  callback base, the instruction token, the input bytes or the owner oid.
 
 ## Execution fairness (`src/policy.ts`, `src/execution.ts`)
 
@@ -560,10 +612,13 @@ verified and later dies degrades the same way.
   `error`/`degraded`, never ok.
 - **Invalid configuration is an explicit startup error.** `loadJobsConfig`
   (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID`,
-  `JOBS_DATABASE_URL` or either receiver signing root
-  (`JOBS_EDGE_TO_JOBS_SECRET`, `JOBS_PORTAL_TO_JOBS_SECRET`) before anything
-  listens; the roots derive to their direction keys at boot, so a malformed
-  one stops the process, not the first instruction.
+  `JOBS_DATABASE_URL`, any of the server's three signing roots
+  (`JOBS_EDGE_TO_JOBS_SECRET` and `JOBS_PORTAL_TO_JOBS_SECRET` for the two
+  receiving directions, `JOBS_JOBS_TO_EDGE_SECRET` for the fetch callbacks it
+  mints), or either callback destination (`JOBS_EDGE_PROD_URL` /
+  `JOBS_EDGE_DEV_URL`) before anything listens; the roots derive to their
+  direction keys at boot, so a malformed one stops the process, not the first
+  instruction.
 - **Shutdown releases what startup acquired.** The `onClose` hook stops the
   recovery sweeper first (its runner-row reads ride the runner's instance),
   then the cancellation store (its runner drive rides the same instance),
@@ -595,14 +650,16 @@ event carries `phase` ∈ {`idle`, `checked-out`}. Bare `pool.connect()` is
 banned for this service by `eslint.config.mjs`; `src/pool.ts` holds the one
 sanctioned checkout.
 
-Development (the two roots are any independently generated base64 32-byte
+Development (the three roots are any independently generated base64 32-byte
 secrets — `openssl rand -base64 32` — and the local IdP/edge tooling may
-already provision them):
+already provision them; the callback destinations are the edge's internal
+bases for the two tiers):
 
 ```
 JOBS_SERVER_ID=jobs \
 JOBS_DATABASE_URL=postgresql://helix_jobs:…@db:5432/helix_jobs \
-JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… \
+JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… JOBS_JOBS_TO_EDGE_SECRET=… \
+JOBS_EDGE_PROD_URL=https://… JOBS_EDGE_DEV_URL=https://… \
 [JOBS_LIMITS='{"unfinishedPerAppEnv":20}'] \
   pnpm dev:jobs
 ```
@@ -612,8 +669,9 @@ The listener serves `/health` and the five signed internal operation routes
 delivery (the app-lifecycle authority above), the submit route serves the
 acceptance transaction (above), the cancel route serves the owner-cancellation
 seam (above), the snapshot and result routes serve the owner-scoped
-observation reads (above), and the worker executes accepted work (the
-execution seam above); an unmatched
+observation reads (above), and the worker executes accepted work — the
+execution seam above, with the outbound fetch handler dispatching its
+governed GET through the edge's signed callback; an unmatched
 request answers 503 `jobs_unavailable` while the store is unusable, 404 on a
 ready service.
 

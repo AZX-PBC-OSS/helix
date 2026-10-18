@@ -2,6 +2,7 @@ import {
   JobServerIdSchema,
   JobsDatabaseUrlSchema,
   JobsCapacityOverridesSchema,
+  JobsInternalUrlSchema,
   resolveJobsCapacityLimits,
   type JobsCapacityLimits,
 } from "@azx-pbc/shared";
@@ -14,19 +15,21 @@ import { z } from "zod";
  * handlers never read the environment).
  *
  * This owns the configuration the service itself reads: its server identity,
- * its private store, and the two signing roots this receiver verifies
- * instructions with — the edge→jobs root for the four job operations and the
- * portal→jobs root for lifecycle delivery, named by
- * {@link JobsSigningDomains}' own `secretEnvVar` keys so the deployment wiring
- * and this loader cannot drift. The keys are derived here, at boot, so a
- * malformed root is an explicit startup error rather than a first-request
- * failure. The jobs→edge root (this service's minting half, for its fetch
- * callbacks) has no reader until the worker tickets consume it and is
- * deliberately not parsed here.
+ * its private store, and all three signing roots of this server — the
+ * edge→jobs root for the four job operations and the portal→jobs root for
+ * lifecycle delivery, named by {@link JobsSigningDomains}' own `secretEnvVar`
+ * keys so the deployment wiring and this loader cannot drift, plus the
+ * jobs→edge root this service MINTS its fetch callbacks with. The keys are
+ * derived here, at boot, so a malformed root is an explicit startup error
+ * rather than a first-request failure.
  *
- * Every failure here is an explicit startup error (design §8: "Parse-invalid
- * config and missing keys are boot errors") — a service that cannot say which
- * configuration it runs under must not boot into a half-known state.
+ * The two callback destinations are resolved at boot too (`JOBS_EDGE_PROD_URL`
+ * / `JOBS_EDGE_DEV_URL`, ADR-0008): the executing handler selects between them
+ * by the job's signed environment tier, never by user input, with no fallback
+ * between them. Every failure here is an explicit startup error (design §8:
+ * "Parse-invalid config and missing keys are boot errors") — a service that
+ * cannot say which configuration it runs under must not boot into a
+ * half-known state.
  */
 
 /** The jobs service's runtime configuration. */
@@ -45,6 +48,18 @@ export interface JobsServiceConfig {
   edgeToJobsKey: Uint8Array;
   /** The derived portal→jobs verification key (HKDF over this server's portal root). */
   portalToJobsKey: Uint8Array;
+  /** The derived jobs→edge minting key (HKDF over this server's callback root). */
+  jobsToEdgeKey: Uint8Array;
+  /**
+   * The edge's fetch-callback base for `prod` jobs — selected by the job's
+   * signed tier, never by input (`JOBS_EDGE_PROD_URL`).
+   */
+  edgeProdCallbackUrl: string;
+  /**
+   * The edge's fetch-callback base for `dev` jobs; no fallback to the other
+   * destination when one is unavailable (`JOBS_EDGE_DEV_URL`).
+   */
+  edgeDevCallbackUrl: string;
   /**
    * The resolved capacity limits this service enforces with new enqueue —
    * the shared platform defaults with this deployment's `JOBS_LIMITS`
@@ -84,18 +99,40 @@ function requirePositiveMs(raw: string | undefined, fallback: number, name: stri
  * key — `deriveJobsInstructionKey`'s message already does, and derivation
  * here (not at first use) is what keeps a bad root from booting.
  */
-function requireReceiverKey(
+function requireSigningKey(
   env: NodeJS.ProcessEnv,
-  direction: "edgeToJobs" | "portalToJobs",
+  direction: "edgeToJobs" | "portalToJobs" | "jobsToEdge",
 ): Uint8Array {
   const secretEnvVar = JobsSigningDomains[direction].secretEnvVar;
   const raw = env[secretEnvVar];
   if (raw === undefined || raw.trim() === "") {
     throw new Error(
-      `${secretEnvVar} is required — this server's ${direction} signing root, which its instructions must verify against`,
+      `${secretEnvVar} is required — this server's ${direction} signing root, which its instructions must ${direction === "jobsToEdge" ? "be minted from" : "verify against"}`,
     );
   }
   return deriveJobsInstructionKey(raw, direction);
+}
+
+/**
+ * Require one internal callback destination: present, an absolute http(s) URL
+ * with no credentials, query string or fragment (the shared
+ * {@link JobsInternalUrlSchema}), trailing slashes stripped so appending the
+ * operation's route cannot produce a doubled one.
+ */
+function requireCallbackUrl(env: NodeJS.ProcessEnv, key: string, tier: string): string {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(
+      `${key} is required — the edge's fetch-callback destination for ${tier} jobs, selected by the job's signed tier, never by input`,
+    );
+  }
+  const verdict = JobsInternalUrlSchema.safeParse(raw.trim());
+  if (!verdict.success) {
+    throw new Error(
+      `${key} must be an internal http(s) base URL — ${z.prettifyError(verdict.error)}`,
+    );
+  }
+  return verdict.data.replace(/\/+$/, "");
 }
 
 /**
@@ -135,9 +172,10 @@ function loadCapacityLimits(env: NodeJS.ProcessEnv): JobsCapacityLimits {
 /**
  * Resolve the boot configuration from the environment. Throws — with the key
  * named — on a missing credential, a value that cannot describe a valid
- * server identity or store, or a signing root that cannot derive a key. The
- * caller decides what a throw means (the production boot lets it crash the
- * process: fail at startup, never at the first request).
+ * server identity or store, a signing root that cannot derive a key, or a
+ * callback destination that is not an internal base URL. The caller decides
+ * what a throw means (the production boot lets it crash the process: fail at
+ * startup, never at the first request).
  */
 export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServiceConfig {
   const serverId = env.JOBS_SERVER_ID;
@@ -170,8 +208,11 @@ export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServic
       DEFAULT_JOBS_STATEMENT_TIMEOUT_MS,
       "JOBS_STATEMENT_TIMEOUT_MS",
     ),
-    edgeToJobsKey: requireReceiverKey(env, "edgeToJobs"),
-    portalToJobsKey: requireReceiverKey(env, "portalToJobs"),
+    edgeToJobsKey: requireSigningKey(env, "edgeToJobs"),
+    portalToJobsKey: requireSigningKey(env, "portalToJobs"),
+    jobsToEdgeKey: requireSigningKey(env, "jobsToEdge"),
+    edgeProdCallbackUrl: requireCallbackUrl(env, "JOBS_EDGE_PROD_URL", "prod"),
+    edgeDevCallbackUrl: requireCallbackUrl(env, "JOBS_EDGE_DEV_URL", "dev"),
     limits: loadCapacityLimits(env),
   };
 }

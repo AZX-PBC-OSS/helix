@@ -312,6 +312,24 @@ describe("JobsServerEntrySchema", () => {
     }
   });
 
+  it("an unparseable destination is refused by safeParse, never thrown out of it", () => {
+    // zod runs every check in the chain even after its own URL check fails,
+    // so a refine that parsed the raw value would throw out of `safeParse`
+    // — a schema contract violation (parse refusals are verdicts, not
+    // exceptions), and a boot error message that names nothing.
+    for (const bad of ["not a url", "", "http://"]) {
+      let verdict: ReturnType<typeof JobsServerEntrySchema.safeParse> | null = null;
+      let threw: unknown = null;
+      try {
+        verdict = JobsServerEntrySchema.safeParse(servingEntry({ endpoint: bad }));
+      } catch (error) {
+        threw = error;
+      }
+      expect(threw, `endpoint=${JSON.stringify(bad)}`).toBeNull();
+      expect(verdict?.success, `endpoint=${JSON.stringify(bad)}`).toBe(false);
+    }
+  });
+
   it("the private database is Postgres", () => {
     expect(
       JobsServerEntrySchema.safeParse(

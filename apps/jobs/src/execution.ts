@@ -5,7 +5,9 @@ import type { Pool, PoolClient } from "pg";
 import {
   JOBS_MAX_RESULT_BYTES,
   JOB_TERMINAL_STATUSES,
+  EnvSchema,
   JobErrorCodeSchema,
+  JobOwnerKindSchema,
   JobProgressSchema,
   JobStatusSchema,
   jobError,
@@ -92,6 +94,14 @@ export interface JobsExecutionContext {
   input: unknown;
   /** Which attempt this execution is — 1 for the first, +1 per retry. */
   attempt: number;
+  /**
+   * The job's record identity, as the start gate read it: the immutable
+   * attribution (server, app, environment, principal kind, owner, qualified
+   * type), the job's public id and its admitted lifecycle generation. A
+   * trusted handler mints its outbound authority from here — never from the
+   * input, which is the only app-supplied part of the context.
+   */
+  record: JobsAttemptRecord;
   /**
    * Aborts when the attempt can no longer land its outcome: the runner claim
    * was cancelled or expired (the dependency aborts the per-job signal when
@@ -224,13 +234,24 @@ export function serializeBoundedResult(value: unknown): unknown {
   return JSON.parse(text) as unknown;
 }
 
-/** The wrapper-record fields an attempt's projection needs, as read from the store. */
+/**
+ * The wrapper-record fields an attempt's projection needs, as read from the
+ * store — including the job's immutable attribution, which the platform
+ * handlers consume as their own execution authority (the outbound fetch
+ * handler mints its callback instruction from it). The fields are the
+ * record's stored columns, projected verbatim: no default owner, environment
+ * or generation exists to invent.
+ */
 export interface JobsAttemptRecord {
   server: string;
   jobId: string;
   type: string;
   appId: string;
-  env: string;
+  env: "prod" | "dev";
+  ownerKind: "user" | "dev";
+  ownerOid: string;
+  /** The lifecycle generation the job was admitted under (decimal string). */
+  generation: string;
 }
 
 /**
@@ -336,8 +357,31 @@ interface RecordRow {
   env: string;
   status: string;
   generation: string;
+  owner_kind: string;
+  owner_oid: string;
   cancellation_requested: boolean;
   created_at: Date;
+}
+
+/**
+ * The attempt record projected from a stored row — one spelling for every
+ * verdict that hands the record to the handler or names it in evidence. The
+ * stored enum columns are parsed against their wire schemas (the same
+ * discipline the public status and error readers keep): a stored value the
+ * contract does not carry is a defect answered by a throw, never a
+ * malformed attribution handed to a handler.
+ */
+function attemptRecordOf(row: RecordRow): JobsAttemptRecord {
+  return {
+    server: row.server,
+    jobId: row.job_id,
+    type: row.type,
+    appId: row.app_id,
+    env: EnvSchema.parse(row.env),
+    ownerKind: JobOwnerKindSchema.parse(row.owner_kind),
+    ownerOid: row.owner_oid,
+    generation: row.generation,
+  };
 }
 
 /**
@@ -402,7 +446,7 @@ export class JobsExecutionStore {
       try {
         const found = await client.query<RecordRow>(
           `SELECT server, job_id, type, app_id, env, status, generation,
-                  cancellation_requested, created_at
+                  owner_kind, owner_oid, cancellation_requested, created_at
              FROM ${JOBS_JOB_RECORD_QUALIFIED}
             WHERE runner_job_id = $1`,
           [runnerJobId],
@@ -444,16 +488,7 @@ export class JobsExecutionStore {
           const terminated = await terminatePastDeadline(client, row.server, row.job_id);
           await client.query("COMMIT");
           return terminated === 1
-            ? {
-                verdict: "deadline_exceeded",
-                record: {
-                  server: row.server,
-                  jobId: row.job_id,
-                  type: row.type,
-                  appId: row.app_id,
-                  env: row.env,
-                },
-              }
+            ? { verdict: "deadline_exceeded", record: attemptRecordOf(row) }
             : { verdict: "terminal_fenced" };
         }
 
@@ -469,16 +504,7 @@ export class JobsExecutionStore {
           const cancelled = await projectCancellation(client, row.server, row.job_id);
           await client.query("COMMIT");
           return cancelled === 1
-            ? {
-                verdict: "cancelled",
-                record: {
-                  server: row.server,
-                  jobId: row.job_id,
-                  type: row.type,
-                  appId: row.app_id,
-                  env: row.env,
-                },
-              }
+            ? { verdict: "cancelled", record: attemptRecordOf(row) }
             : { verdict: "terminal_fenced" };
         }
 
@@ -531,33 +557,14 @@ export class JobsExecutionStore {
             const cancelled = await projectCancellation(client, row.server, row.job_id);
             await client.query("COMMIT");
             return cancelled === 1
-              ? {
-                  verdict: "cancelled",
-                  record: {
-                    server: row.server,
-                    jobId: row.job_id,
-                    type: row.type,
-                    appId: row.app_id,
-                    env: row.env,
-                  },
-                }
+              ? { verdict: "cancelled", record: attemptRecordOf(row) }
               : { verdict: "terminal_fenced" };
           }
           await client.query("ROLLBACK");
           return { verdict: "terminal_fenced" };
         }
         await client.query("COMMIT");
-        return {
-          verdict: "started",
-          record: {
-            server: row.server,
-            jobId: row.job_id,
-            type: row.type,
-            appId: row.app_id,
-            env: row.env,
-          },
-          attempt,
-        };
+        return { verdict: "started", record: attemptRecordOf(row), attempt };
       } catch (error) {
         await client.query("ROLLBACK").catch(() => {});
         throw error;
@@ -1020,6 +1027,7 @@ export class JobsExecution {
     const raw = await handler({
       input: parsed.data,
       attempt,
+      record,
       signal: job.signal,
       report: (progress) => this.store.reportProgress(record, attempt, progress),
     });

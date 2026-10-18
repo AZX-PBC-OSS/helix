@@ -265,7 +265,15 @@ function refineInstalledTypes(
  */
 export const JobsInternalUrlSchema = z.url({ protocol: /^https?$/ }).refine(
   (url) => {
-    const parsed = new URL(url);
+    // The base z.url check refuses an unparseable string, but zod runs every
+    // check in the chain even after one fails — this refine must answer
+    // false rather than let its own `new URL` throw out of `safeParse`.
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
     return (
       parsed.username === "" && parsed.password === "" && !url.includes("?") && !url.includes("#")
     );

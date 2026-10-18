@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { installGracefulShutdown, resolveServicePort } from "@azx-pbc/shared/lifecycle";
+import { JOBS_FETCH_QUALIFIED_TYPE } from "@azx-pbc/shared";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { JobsAcceptanceStore } from "./acceptance.js";
@@ -9,6 +10,7 @@ import { JobsCleanup } from "./cleanup.js";
 import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
 import { JobsExecution, JobsHandlerRegistry } from "./execution.js";
+import { makeFetchJobHandler } from "./fetchJob.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
 import { JobsLifecycleStore } from "./lifecycle.js";
 import { JobsObservationStore } from "./observation.js";
@@ -101,11 +103,23 @@ const lifecycle = new JobsLifecycleStore({
 });
 
 // The handler registry — the dispatch's repertoire. Production registers the
-// platform-authored types only; the outbound fetch handler's registration and
-// the development fixtures' are their own tickets' work, so until one lands a
-// dispatched job is answered with the terminal platform error (the refusal is
-// the honest answer, and its evidence is the execution span's outcome).
+// one installed production type: the outbound fetch handler, with this
+// server's minting key and the two signed callback destinations (selected by
+// the job's signed environment tier at dispatch time). The development
+// fixtures' registration is their own ticket's work — production never
+// registers a synthetic type, and a dispatched job with no handler is
+// answered with the terminal platform error.
 const handlers = new JobsHandlerRegistry();
+handlers.register(
+  JOBS_FETCH_QUALIFIED_TYPE,
+  makeFetchJobHandler({
+    serverId: config.serverId,
+    prodCallbackUrl: config.edgeProdCallbackUrl,
+    devCallbackUrl: config.edgeDevCallbackUrl,
+    jobsToEdgeKey: config.jobsToEdgeKey,
+    log: lateLog,
+  }),
+);
 
 // The execution seam — the worker registration and the attempt projection
 // (progress, outcomes, results) into the wrapper record. Its pool serves the

@@ -14,12 +14,16 @@ import { DEFAULT_JOBS_STATEMENT_TIMEOUT_MS, loadJobsConfig } from "./config.js";
 
 const ROOT_EDGE = "uFEfLTTVeHJK0+P/dQEWv8ccOyFrkZw7InR0I52V4/0=";
 const ROOT_PORTAL = "jUwQKa33JNljh0jULeithrh3JOL8dUmxPJknzGCjQBA=";
+const ROOT_CALLBACK = "gDZ5bWRVuYC58CVmc4rXPjvCzEtuoQZ4Hn0v2UXPUaU=";
 
 const VALID = {
   JOBS_SERVER_ID: "jobs",
   JOBS_DATABASE_URL: "postgresql://helix_jobs:pw@db:5432/helix_jobs",
   JOBS_EDGE_TO_JOBS_SECRET: ROOT_EDGE,
   JOBS_PORTAL_TO_JOBS_SECRET: ROOT_PORTAL,
+  JOBS_JOBS_TO_EDGE_SECRET: ROOT_CALLBACK,
+  JOBS_EDGE_PROD_URL: "https://edge.internal.helix",
+  JOBS_EDGE_DEV_URL: "https://edge.dev.internal.helix/",
 };
 
 describe("loadJobsConfig", () => {
@@ -32,6 +36,16 @@ describe("loadJobsConfig", () => {
     // HKDF over each root, domain-separated.
     expect(config.edgeToJobsKey).toEqual(deriveJobsInstructionKey(ROOT_EDGE, "edgeToJobs"));
     expect(config.portalToJobsKey).toEqual(deriveJobsInstructionKey(ROOT_PORTAL, "portalToJobs"));
+    // The minting half derives like its receivers — one root per direction.
+    expect(config.jobsToEdgeKey).toEqual(deriveJobsInstructionKey(ROOT_CALLBACK, "jobsToEdge"));
+  });
+
+  test("the callback destinations resolve by tier, trailing slashes stripped", () => {
+    // The stripped form is what the dispatch appends the operation's route
+    // to — a doubled slash would be a different resource than the signed one.
+    const config = loadJobsConfig({ ...VALID });
+    expect(config.edgeProdCallbackUrl).toBe("https://edge.internal.helix");
+    expect(config.edgeDevCallbackUrl).toBe("https://edge.dev.internal.helix");
   });
 
   test("the statement-timeout override is honored when positive", () => {
@@ -78,8 +92,12 @@ describe("loadJobsConfig", () => {
     );
   });
 
-  test("a missing signing root fails with its env key named, for each receiving direction", () => {
-    for (const key of ["JOBS_EDGE_TO_JOBS_SECRET", "JOBS_PORTAL_TO_JOBS_SECRET"] as const) {
+  test("a missing signing root fails with its env key named, for each direction", () => {
+    for (const key of [
+      "JOBS_EDGE_TO_JOBS_SECRET",
+      "JOBS_PORTAL_TO_JOBS_SECRET",
+      "JOBS_JOBS_TO_EDGE_SECRET",
+    ] as const) {
       const rest = { ...VALID } as Record<string, string>;
       delete rest[key];
       expect(() => loadJobsConfig(rest), key).toThrow(new RegExp(`${key} is required`));
@@ -88,13 +106,35 @@ describe("loadJobsConfig", () => {
 
   test("a signing root that is not a base64 32-byte secret fails at boot, with the key named", () => {
     // A root that derives nothing usable must stop the boot, not wait for a
-    // first instruction to fail verification.
+    // first instruction to fail verification — minting and receiving alike.
     expect(() => loadJobsConfig({ ...VALID, JOBS_EDGE_TO_JOBS_SECRET: "too-short" })).toThrow(
       /JOBS_EDGE_TO_JOBS_SECRET must be a base64-encoded 32-byte root secret/,
     );
     expect(() => loadJobsConfig({ ...VALID, JOBS_PORTAL_TO_JOBS_SECRET: "not base64!!!" })).toThrow(
       /JOBS_PORTAL_TO_JOBS_SECRET must be a base64-encoded 32-byte root secret/,
     );
+    expect(() => loadJobsConfig({ ...VALID, JOBS_JOBS_TO_EDGE_SECRET: "too-short" })).toThrow(
+      /JOBS_JOBS_TO_EDGE_SECRET must be a base64-encoded 32-byte root secret/,
+    );
+  });
+
+  test("a missing callback destination fails with its env key named, for each tier", () => {
+    for (const key of ["JOBS_EDGE_PROD_URL", "JOBS_EDGE_DEV_URL"] as const) {
+      const rest = { ...VALID } as Record<string, string>;
+      delete rest[key];
+      expect(() => loadJobsConfig(rest), key).toThrow(new RegExp(`${key} is required`));
+    }
+  });
+
+  test("a callback destination that is not an internal base URL fails at boot", () => {
+    for (const bad of ["not a url", "ftp://edge.internal", "https://edge.internal?query=1"]) {
+      expect(() => loadJobsConfig({ ...VALID, JOBS_EDGE_PROD_URL: bad }), bad).toThrow(
+        /JOBS_EDGE_PROD_URL/,
+      );
+    }
+    expect(() =>
+      loadJobsConfig({ ...VALID, JOBS_EDGE_DEV_URL: "https://user:pw@edge.internal" }),
+    ).toThrow(/JOBS_EDGE_DEV_URL/);
   });
 
   test("a non-positive or non-finite statement timeout is a boot error, not a silent no-op", () => {
@@ -114,12 +154,15 @@ describe("loadJobsConfig", () => {
     expect(config.serverId).toBe("jobs");
   });
 
-  test("the jobs→edge minting root is not parsed — the receiver requires its two verification roots only", () => {
-    // The minting half for this service's own callbacks has no reader until
-    // the worker tickets consume it; requiring it would fail the boot on a
-    // credential nothing reads. Even a garbage value must not stop the boot.
-    const config = loadJobsConfig({ ...VALID, JOBS_JOBS_TO_EDGE_SECRET: "not a root" });
-    expect(config.serverId).toBe("jobs");
+  test("the three direction keys derive apart — no two directions share a key", () => {
+    // The custody rule at the derived end: the HKDF info strings separate the
+    // domains, so one root's compromise cannot redeem itself in another
+    // direction — and the loader hands each seam exactly its own key.
+    const config = loadJobsConfig({ ...VALID });
+    const keys = [config.edgeToJobsKey, config.portalToJobsKey, config.jobsToEdgeKey].map((k) =>
+      Buffer.from(k).toString("hex"),
+    );
+    expect(new Set(keys).size).toBe(3);
   });
 
   test("capacity limits default to the shared platform defaults", () => {

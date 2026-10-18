@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
@@ -31,6 +31,17 @@ import {
   jobsRuntimeBossOptions,
 } from "./policy.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
+import { buildApp as buildEdgeApp } from "../../edge/src/app.js";
+import {
+  FakeBlobReader,
+  FakeOidcClient,
+  FakeRegistry,
+  FakeSessionStore,
+  FakeUsageStore,
+  registryEntry,
+} from "../../edge/src/test/fakes.js";
+import { testAuthConfig, testEdgeConfig } from "../../edge/src/test/config.js";
+import { FakeBurnStore, FakeEgress } from "../../edge/src/gateway/jobsCallbackFixtures.js";
 
 /**
  * The production composition, as a real process: `src/server.ts` booted with
@@ -120,10 +131,16 @@ function childEnv(
     NODE_ENV: "test",
     JOBS_SERVER_ID: "jobs",
     JOBS_DATABASE_URL: dsn,
-    // The receiver roots the instruction legs verify against — the corpus's
-    // own public roots for the `jobs` server (test data, never deployed).
+    // The receiver roots the instruction legs verify against, and the minting
+    // root the fetch handler dispatches with — the corpus's own public roots
+    // for the `jobs` server (test data, never deployed). The callback
+    // destinations are the legs' own business: legs that execute work point
+    // them wherever that leg's premise needs.
     JOBS_EDGE_TO_JOBS_SECRET: vectorRoot("edge-to-jobs.jobs"),
     JOBS_PORTAL_TO_JOBS_SECRET: vectorRoot("portal-to-jobs.jobs"),
+    JOBS_JOBS_TO_EDGE_SECRET: vectorRoot("jobs-to-edge.jobs"),
+    JOBS_EDGE_PROD_URL: `http://127.0.0.1:${DEAD_PORT}`,
+    JOBS_EDGE_DEV_URL: `http://127.0.0.1:${DEAD_PORT}`,
     JOBS_PORT: String(port),
     SHUTDOWN_GRACE_MS: "2500",
     ...extra,
@@ -326,7 +343,8 @@ describe("the production boot path", () => {
     expect(`${badId.stderr}${badId.stdout}`).toContain("JOBS_SERVER_ID");
 
     // The receiver roots are credentials too: a boot without one is explicit,
-    // not a service that fails its first instruction.
+    // not a service that fails its first instruction. The minting root is the
+    // fetch handler's own — the third direction this service holds.
     const missingRoot = spawnSync("node", ["--import", "tsx", "src/server.ts"], {
       cwd: PACKAGE_DIR,
       env: {
@@ -341,6 +359,45 @@ describe("the production boot path", () => {
     });
     expect(missingRoot.status).not.toBe(0);
     expect(`${missingRoot.stderr}${missingRoot.stdout}`).toContain("JOBS_EDGE_TO_JOBS_SECRET");
+
+    const missingMintRoot = spawnSync("node", ["--import", "tsx", "src/server.ts"], {
+      cwd: PACKAGE_DIR,
+      env: {
+        ...baseEnv(),
+        NODE_ENV: "test",
+        JOBS_SERVER_ID: "jobs",
+        JOBS_DATABASE_URL: RUNTIME_DSN,
+        JOBS_EDGE_TO_JOBS_SECRET: vectorRoot("edge-to-jobs.jobs"),
+        JOBS_PORTAL_TO_JOBS_SECRET: vectorRoot("portal-to-jobs.jobs"),
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    expect(missingMintRoot.status).not.toBe(0);
+    expect(`${missingMintRoot.stderr}${missingMintRoot.stdout}`).toContain(
+      "JOBS_JOBS_TO_EDGE_SECRET",
+    );
+
+    // And the callback destinations — the dispatch selects between them by
+    // the job's signed tier, so a boot without one cannot serve executing
+    // work honestly.
+    const missingCallback = spawnSync("node", ["--import", "tsx", "src/server.ts"], {
+      cwd: PACKAGE_DIR,
+      env: {
+        ...baseEnv(),
+        NODE_ENV: "test",
+        JOBS_SERVER_ID: "jobs",
+        JOBS_DATABASE_URL: RUNTIME_DSN,
+        JOBS_EDGE_TO_JOBS_SECRET: vectorRoot("edge-to-jobs.jobs"),
+        JOBS_PORTAL_TO_JOBS_SECRET: vectorRoot("portal-to-jobs.jobs"),
+        JOBS_JOBS_TO_EDGE_SECRET: vectorRoot("jobs-to-edge.jobs"),
+        JOBS_EDGE_PROD_URL: `http://127.0.0.1:${DEAD_PORT}`,
+      },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    expect(missingCallback.status).not.toBe(0);
+    expect(`${missingCallback.stderr}${missingCallback.stdout}`).toContain("JOBS_EDGE_DEV_URL");
   });
 
   test(
@@ -829,18 +886,18 @@ describe("signed instructions through the running process", () => {
   );
 
   test(
-    "accepted work executes through the running process — the worker claims it, and a type with no registered handler terminates with the platform error",
+    "accepted work executes through the running process — the worker claims it and the installed fetch handler dispatches its governed call",
     slow,
     async () => {
-      // The production composition registers its worker on the same pg-boss
-      // instance the enqueue runs on, so an accepted job is executed (or
-      // refused at the dispatch) independently of any client — criterion 22's
-      // "independent of the initiating connection", here in the honest
-      // current state: no production handler is registered yet, so the
-      // dispatched job terminates with the fixed platform error, projected
-      // into the wrapper record. The leg proves the whole chain — the
-      // worker's start gate, the attempt projection and the terminal write —
-      // through the real process, real store and real role split.
+      // The production composition registers the outbound fetch handler on
+      // the same pg-boss instance the enqueue runs on; this leg pins the
+      // no-answer arm of that dispatch end to end — the worker's start gate,
+      // the terminal projection, one attempt, no retry, no partial result —
+      // against a dead callback destination. The record state alone cannot
+      // distinguish it from a registry miss (both settle
+      // failed/platform_error); the live-receiver leg below proves the
+      // registration itself: only the registered handler's verified dispatch
+      // can land a success there.
       const port = await reservePort();
       await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
       const child = await bootServer(port, childEnv(RUNTIME_DSN, port));
@@ -959,6 +1016,169 @@ describe("signed instructions through the running process", () => {
       } finally {
         const exit = await stopServer(child);
         expect(exit.exitCode).toBe(0);
+      }
+    },
+  );
+
+  test(
+    "a granted fetch job succeeds end to end — the child's registered handler dispatches through a live signed receiver and the result is stored",
+    slow,
+    async () => {
+      // The positive proof of the registration the dead-port leg cannot see:
+      // with a live receiver on the child's prod destination, only the
+      // registered handler — minting with the same root the receiver
+      // verifies, aimed at the configured destination — can carry an
+      // accepted job to `succeeded` with its result stored. A deleted
+      // registration, a drifted minting key or a miswired destination never
+      // produces the success: every such world settles the record
+      // failed/platform_error, which the `eventually` below refuses.
+      const receiverPort = await reservePort();
+      const executionApp = randomUUID();
+      const egress = new FakeEgress();
+      const receiver = buildEdgeApp({
+        config: testEdgeConfig({
+          auth: testAuthConfig(),
+          allowUnauthenticated: false,
+          fetch: {
+            egressUrl: "http://egress.internal",
+            instructionSecret: randomBytes(32),
+            timeoutMs: 30_000,
+            maxBodyBytes: 10 * 1024 * 1024,
+          },
+          jobs: {
+            servers: {
+              jobs: {
+                server: "jobs",
+                endpoint: "https://jobs.internal.helix",
+                edgeToJobsKey: new Uint8Array(32).fill(1),
+                jobsToEdgeKey: deriveJobsInstructionKey(
+                  vectorRoot("jobs-to-edge.jobs"),
+                  "jobsToEdge",
+                ),
+              },
+            },
+            timeoutMs: 30_000,
+          },
+        }),
+        registry: new FakeRegistry([
+          registryEntry({
+            appId: executionApp,
+            slug: "demo",
+            blobPrefix: "apps/a/1/",
+            visibilityMode: "internal",
+            fetch: {
+              connections: new Map([["https://example.com", { kind: "keyless" }]]),
+              requestsPerDay: null,
+              shim: false,
+            },
+            jobsGeneration: "1",
+          }),
+        ]),
+        blob: new FakeBlobReader(),
+        sessions: new FakeSessionStore(),
+        oidc: new FakeOidcClient(),
+        egress,
+        usage: new FakeUsageStore(),
+        instructionKey: randomBytes(32),
+        jobsCallbackBurns: new FakeBurnStore(),
+      });
+      await receiver.listen({ port: receiverPort, host: "127.0.0.1" });
+      const port = await reservePort();
+      await migrateJobsStorage(MIGRATE_DSN); // idempotent on the shared scratch store
+      const child = await bootServer(
+        port,
+        childEnv(RUNTIME_DSN, port, { JOBS_EDGE_PROD_URL: `http://127.0.0.1:${receiverPort}` }),
+      );
+      try {
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 30_000);
+
+        // The generation both ends fence against: delivered to the child's
+        // lifecycle gate, registered on the receiver's entry.
+        const delivery = '{"generation":"1","archived":false}';
+        const delivered = await fetch(
+          `http://127.0.0.1:${port}/internal/jobs/v1/lifecycle/${executionApp}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [INSTRUCTION_HEADER]: await mintJobsInstruction(
+                {
+                  operation: "lifecycle",
+                  server: "jobs",
+                  appId: executionApp,
+                  body: new TextEncoder().encode(delivery),
+                  iatS: Math.floor(Date.now() / 1000) - 1,
+                },
+                deriveJobsInstructionKey(vectorRoot("portal-to-jobs.jobs"), "portalToJobs"),
+              ),
+            },
+            body: delivery,
+          },
+        );
+        expect(delivered.status).toBe(200);
+
+        const deadline = Date.now() + 60_000;
+        let accepted: { status: number; body: unknown } | null = null;
+        while (Date.now() < deadline) {
+          accepted = await submitFor(
+            port,
+            await mintSubmitFor(executionApp, "e2e-success-leg"),
+            "e2e-success-leg",
+          );
+          if (accepted.status !== 503) break;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        expect(accepted?.status, JSON.stringify(accepted)).toBe(202);
+        const jobId = (accepted!.body as { jobId: string }).jobId;
+
+        // The success: only a dispatched job can reach it — the record lands
+        // `succeeded` with the (faked) egress's answer as the stored result.
+        const reader = new Pool({ connectionString: urlFor(SCRATCH_DB), max: 1 });
+        try {
+          await eventually(async () => {
+            const { rows } = await reader.query<{ status: string }>(
+              `SELECT status FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+              [jobId],
+            );
+            return rows[0]?.status === "succeeded";
+          }, 60_000);
+          const { rows } = await reader.query<{
+            status: string;
+            error_code: string | null;
+            attempt: number | null;
+            result: string | null;
+          }>(
+            `SELECT status, error_code, attempt, result FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1`,
+            [jobId],
+          );
+          const record = rows[0];
+          if (!record) throw new Error(`no record row for job ${jobId}`);
+          expect(record.status).toBe("succeeded");
+          expect(record.error_code).toBeNull();
+          expect(record.attempt).toBe(1);
+          expect(JSON.parse(record.result ?? "")).toEqual({ ok: true });
+          const runnerState = await reader.query<{ state: string }>(
+            `SELECT state FROM ${JOBS_PGBOSS_SCHEMA}.job
+               WHERE id::text IN (SELECT runner_job_id FROM ${JOBS_JOB_RECORD_QUALIFIED} WHERE job_id = $1)`,
+            [jobId],
+          );
+          expect(runnerState.rows[0]?.state).toBe("completed");
+        } finally {
+          await reader.end();
+        }
+        // The governed GET reached the (faked) egress through the real
+        // receiver: one call, the GET the type is, the admitted target.
+        expect(egress.calls).toHaveLength(1);
+        expect(egress.calls[0]!.method).toBe("GET");
+        expect(egress.calls[0]!.target).toBe("https://example.com/data.json");
+      } finally {
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+        receiver.server.closeAllConnections();
+        await receiver.close();
       }
     },
   );

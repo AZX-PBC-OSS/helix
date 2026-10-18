@@ -46,6 +46,7 @@ export const INSTR_JOBS_RECOVERIES = "helix.jobs.recoveries";
 export const INSTR_JOBS_CLEANUPS = "helix.jobs.cleanups";
 export const INSTR_JOBS_SUBMISSIONS = "helix.jobs.submissions";
 export const INSTR_JOBS_CALLBACKS = "helix.jobs.callbacks";
+export const INSTR_JOBS_FETCH_DISPATCHES = "helix.jobs.fetch.dispatches";
 
 /**
  * Attribute keys.
@@ -258,6 +259,14 @@ export const SPAN_JOBS_CANCEL_DEV = "helix.jobs.cancel.dev";
 export const SPAN_JOBS_FETCH_EDGE = "helix.jobs.fetch.edge";
 /** The dev gateway's callback route (`POST /internal/jobs/v1/fetch` on its own host). */
 export const SPAN_JOBS_FETCH_DEV = "helix.jobs.fetch.dev";
+/**
+ * The jobs worker's dispatch of its production fetch job's one governed GET —
+ * the mint→answer hop to the edge's signed callback (ADR-0006), a child of the
+ * attempt's own `helix.jobs.execute` span. The callback edge starts a new root
+ * (ADR-0009), so the trace shows the hop's jobs-side duration and outcome; the
+ * edge's own span carries the policy core's evidence for the same call.
+ */
+export const SPAN_JOBS_FETCH_DISPATCH = "helix.jobs.fetch.dispatch";
 export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
 export const SPAN_JOBS_RESULT = "helix.jobs.result";
 export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
@@ -609,6 +618,53 @@ export const JOBS_FETCH_CALLBACK_OUTCOMES = [
   "upstream_failed",
 ] as const;
 export type JobsFetchCallbackOutcome = (typeof JOBS_FETCH_CALLBACK_OUTCOMES)[number];
+
+/**
+ * How the jobs service's outbound fetch handler saw its dispatch of one job's
+ * governed GET — the final `helix.outcome` on the `helix.jobs.fetch.dispatch`
+ * span and the dimension on `helix.jobs.fetch.dispatches`. Bounded by
+ * construction: each value is one early return of the dispatch
+ * (`apps/jobs/src/fetchJob.ts`). The edge receiver's own vocabulary
+ * ({@link JOBS_FETCH_CALLBACK_OUTCOMES}) is deliberately NOT reused — that one
+ * describes what the receiver answered, including the verification verdicts
+ * jobs never sees; this one describes what the dispatching side saw.
+ *
+ * - `dispatched` — the edge answered 200 and the complete body arrived within
+ *   the platform's bounds. Whether those bytes are a valid JSON result is the
+ *   result interpretation's answer, carried by the attempt's own failure
+ *   reason when it fails.
+ * - `refused` — the edge answered a bounded jobs error before any upstream
+ *   dispatch (policy refusal, delegated prohibition, budget): the error code
+ *   rides `helix.reason`, never a dimension.
+ * - `upstream_error` — the edge answered its bounded upstream-failure refusal
+ *   (the upstream non-2xx, or a failed forward — the edge answers both the
+ *   same and keeps them distinguishable on its own span).
+ * - `unreachable` — no answer: a transport failure on the jobs→edge hop, the
+ *   dispatch's own bound expired, or the attempt was aborted. The job's
+ *   terminal classification (timeout, cancelled, platform error) rides
+ *   `helix.reason`.
+ * - `callback_unavailable` — the edge answered a bounded error that is its
+ *   own machinery failing (unwired, unauthorized, unable to decide): a
+ *   platform failure, never the upstream's.
+ * - `invalid_response` — the edge answered something the callback contract
+ *   does not define (an unparsable or non-protocol failure body): answered
+ *   as a platform failure, never guessed at.
+ * - `result_invalid` / `result_too_large` — the edge streamed a 200 body that
+ *   is not a complete JSON value, or one that passed the platform's result
+ *   allowance (the stream stopped at the cap): the job's terminal reasons,
+ *   visible here because the hop itself delivered the bytes.
+ */
+export const JOBS_FETCH_DISPATCH_OUTCOMES = [
+  "dispatched",
+  "refused",
+  "upstream_error",
+  "unreachable",
+  "callback_unavailable",
+  "invalid_response",
+  "result_invalid",
+  "result_too_large",
+] as const;
+export type JobsFetchDispatchOutcome = (typeof JOBS_FETCH_DISPATCH_OUTCOMES)[number];
 
 /**
  * How the edge's app-facing reference routes (poll / result / cancel) answered

@@ -41,6 +41,9 @@ const CONFIG = loadJobsConfig({
   JOBS_DATABASE_URL: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
   JOBS_EDGE_TO_JOBS_SECRET: "uFEfLTTVeHJK0+P/dQEWv8ccOyFrkZw7InR0I52V4/0=",
   JOBS_PORTAL_TO_JOBS_SECRET: "jUwQKa33JNljh0jULeithrh3JOL8dUmxPJknzGCjQBA=",
+  JOBS_JOBS_TO_EDGE_SECRET: "gDZ5bWRVuYC58CVmc4rXPjvCzEtuoQZ4Hn0v2UXPUaU=",
+  JOBS_EDGE_PROD_URL: "https://edge.internal.helix",
+  JOBS_EDGE_DEV_URL: "https://edge.dev.internal.helix",
 });
 
 const COMPATIBLE: JobsStorageCompatibility = { kind: "compatible", schemaVersion: 45 };

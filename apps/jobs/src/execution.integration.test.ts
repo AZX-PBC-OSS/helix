@@ -18,6 +18,7 @@ import {
   JobsExecutionError,
   JobsExecutionStore,
   JobsHandlerRegistry,
+  type JobsExecutionContext,
   type JobsHandler,
 } from "./execution.js";
 import { migrateJobsStorage } from "./migrate.js";
@@ -248,6 +249,43 @@ describe("the execution seam", () => {
       expect(storedResult(row)).toEqual({ answer: 42 });
       expect(row.error_code).toBeNull();
       expect((await runnerRow(result.jobId)).state).toBe("completed");
+    },
+  );
+
+  test(
+    "the handler's context carries the record's full immutable attribution, as the store holds it",
+    { timeout: 120_000 },
+    async () => {
+      const appId = anApp();
+      await deliverGeneration(appId, "1", false);
+      const result = await admit(appId, new TextEncoder().encode(TEST_BODY));
+      if (result.outcome !== "accepted")
+        throw new Error(`the admission refused: ${result.outcome}`);
+      // The record is the only authority a trusted handler can mint its
+      // outbound instructions from — never the input, the one app-supplied
+      // part of the context. The seam must hand over the store row's whole
+      // attribution, not a subset of the columns it happens to select.
+      let seen: JobsExecutionContext["record"] | null = null;
+      currentHandler = async (context) => {
+        seen = context.record;
+        return { answer: 1 };
+      };
+      await withWorker(() =>
+        waitFor("the job to succeed", async () => {
+          const row = await recordRow(result.jobId);
+          return row.status === "succeeded";
+        }),
+      );
+      expect(seen).toEqual({
+        server: "jobs",
+        jobId: result.jobId,
+        type: "jobs:fetch",
+        appId,
+        env: "prod",
+        ownerKind: "user",
+        ownerOid: TEST_IDENTITY.ownerOid,
+        generation: "1",
+      });
     },
   );
 
@@ -1388,5 +1426,31 @@ describe("the begin's attempt fence", () => {
     expect(row.attempt).toBe(2);
     expect(row.progress).toEqual({ step: 1, of: 1, label: "live attempt" });
     expect(row.error_code).toBeNull();
+  });
+
+  test("a stored enum the wire contract does not carry is refused — never a malformed attribution handed out", async () => {
+    // The attempt record is parsed against the wire enums at the one
+    // projection every verdict shares: storage drift in an enum column must
+    // throw, never reach a handler as a plausible-looking attribution (the
+    // trusted handler mints its outbound authority from these fields).
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const jobId = await seedRunnerJobWithRecord(boss, direct, {
+      appId,
+      data: { url: "https://example.com/data.json" },
+    });
+    const runnerJobId = String((await runnerRow(jobId)).id);
+
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET owner_kind = 'service' WHERE runner_job_id = $1`,
+      [runnerJobId],
+    );
+    await expect(store.beginAttempt(runnerJobId, 1)).rejects.toThrow();
+
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED} SET env = 'staging' WHERE runner_job_id = $1`,
+      [runnerJobId],
+    );
+    await expect(store.beginAttempt(runnerJobId, 2)).rejects.toThrow();
   });
 });

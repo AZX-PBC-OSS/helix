@@ -15,14 +15,17 @@ import {
   INSTR_JOBS_BURN_SWEEPS,
   INSTR_JOBS_CLEANUPS,
   INSTR_JOBS_EXECUTIONS,
+  INSTR_JOBS_FETCH_DISPATCHES,
   INSTR_JOBS_INSTRUCTIONS,
   INSTR_JOBS_RECOVERIES,
   INSTR_JOBS_STORAGE_PROBES,
   SPAN_JOBS_CLEANUP,
   SPAN_JOBS_EXECUTE,
+  SPAN_JOBS_FETCH_DISPATCH,
   SPAN_JOBS_RECOVER,
   type JobsCleanupOutcome,
   type JobsExecuteOutcome,
+  type JobsFetchDispatchOutcome,
   type JobsInstructionOutcome,
   type JobsRecoverOutcome,
 } from "@azx-pbc/shared/telemetry";
@@ -63,6 +66,8 @@ export interface JobsInstruments {
   recoveries: Counter;
   /** `outcome` ∈ `JOBS_CLEANUP_OUTCOMES` — the cleanup loop's physical-retention passes. */
   cleanups: Counter;
+  /** `outcome` ∈ `JOBS_FETCH_DISPATCH_OUTCOMES` — the fetch handler's governed-GET dispatches. */
+  fetchDispatches: Counter;
 }
 
 /**
@@ -133,6 +138,17 @@ export function instruments(): JobsInstruments {
         "then grows past its removal bound until the jobs_cleanup health " +
         "check's overdue evidence clears.",
     }),
+    fetchDispatches: meter.createCounter(INSTR_JOBS_FETCH_DISPATCHES, {
+      description:
+        "The outbound fetch handler's governed-GET dispatches to the edge's " +
+        "signed callback, by outcome. A run of refused is current policy, " +
+        "budget or delegated-binding refusals (the edge's error code rides " +
+        "the span's helix.reason); a run of unreachable is the callback not " +
+        "answering or the outbound bound expiring; a run of " +
+        "callback_unavailable or invalid_response is the callback seam " +
+        "failing or drifting. The dispatch is never retried — one attempt " +
+        "is the type's own policy.",
+    }),
   };
   return cached;
 }
@@ -175,6 +191,17 @@ export function countRecovery(outcome: JobsRecoverOutcome): void {
  */
 export function countCleanup(outcome: JobsCleanupOutcome): void {
   instruments().cleanups.add(1, { [ATTR_OUTCOME]: outcome });
+}
+
+/**
+ * Count one fetch dispatch — the outbound fetch handler's governed GET to the
+ * edge's signed callback. The outcome is the bounded vocabulary
+ * (`JOBS_FETCH_DISPATCH_OUTCOMES`); the callback's own error code and the
+ * abort's classification ride the dispatch span's `helix.reason`, never a
+ * dimension here.
+ */
+export function countFetchDispatch(outcome: JobsFetchDispatchOutcome): void {
+  instruments().fetchDispatches.add(1, { [ATTR_OUTCOME]: outcome });
 }
 
 /**
@@ -274,6 +301,30 @@ export function withRecoverySpan<T>(fn: (span: Span) => Promise<T>): Promise<T> 
  */
 export function withCleanupSpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
   return withRootConsumerSpan(SPAN_JOBS_CLEANUP, fn);
+}
+
+/**
+ * Run one fetch dispatch inside a fresh **client** child span — the outbound
+ * fetch handler's governed-GET hop to the edge's signed callback (ADR-0006),
+ * a child of the attempt's own `helix.jobs.execute` root span (the attempt's
+ * context is the verified one; nothing is extracted from the hop's answer).
+ * The dispatch's own outcome and reason are the span's evidence; this
+ * wrapper only ends it. The callback edge starts a new root (ADR-0009), so
+ * this span is the jobs side of the hop's story, never an assertion about
+ * the receiver's.
+ */
+export function withFetchDispatchSpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
+  return tracer.startActiveSpan(
+    SPAN_JOBS_FETCH_DISPATCH,
+    { kind: SpanKind.CLIENT },
+    async (span) => {
+      try {
+        return await fn(span);
+      } finally {
+        span.end();
+      }
+    },
+  );
 }
 
 /** The shared mechanism behind both background-work spans: a fresh root consumer span, ended when the work settles. */

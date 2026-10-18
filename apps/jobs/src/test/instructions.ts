@@ -19,6 +19,7 @@ import {
   type JobsSubmitClaims,
 } from "@azx-pbc/shared/jobsSigning";
 import {
+  JobsOperations,
   deriveJobsInstructionKey,
   mintJobsInstruction,
   type JobsInstructionMintSpec,
@@ -56,17 +57,19 @@ import { JobsStorage } from "../storage.js";
 /** A whole-second instant in the tests' window — the clock the tests set and mint against. */
 export const TEST_IAT = 1_800_000_000;
 
-/** Fixed 32-byte test roots for the two receiving directions — test data, never deployed. */
+/** Fixed 32-byte test roots for the three signing directions — test data, never deployed. */
 const TEST_ROOTS = {
   edgeToJobs: "uFEfLTTVeHJK0+P/dQEWv8ccOyFrkZw7InR0I52V4/0=",
   portalToJobs: "jUwQKa33JNljh0jULeithrh3JOL8dUmxPJknzGCjQBA=",
-  /** A third root for wrong-key cases. */
+  jobsToEdge: "1Rd4fAqPTnr9rMBoUaNpau5Bh4Xc3Gh8E0jWxFhO0Sg=",
+  /** A fourth root for wrong-key cases. */
   other: "gDZ5bWRVuYC58CVmc4rXPjvCzEtuoQZ4Hn0v2UXPUaU=",
 } as const;
 
 export const TEST_KEYS = {
   edgeToJobs: deriveJobsInstructionKey(TEST_ROOTS.edgeToJobs, "edgeToJobs"),
   portalToJobs: deriveJobsInstructionKey(TEST_ROOTS.portalToJobs, "portalToJobs"),
+  jobsToEdge: deriveJobsInstructionKey(TEST_ROOTS.jobsToEdge, "jobsToEdge"),
   /** A validly derived key that is neither receiver's — forged-instruction legs. */
   other: deriveJobsInstructionKey(TEST_ROOTS.other, "edgeToJobs"),
 } as const;
@@ -343,11 +346,12 @@ export async function appWithLifecycle(
 
 /** Mint one contract-valid instruction through the production mint path. */
 export async function mint(spec: JobsInstructionMintSpec, key?: Uint8Array): Promise<string> {
-  const direction = spec.operation === "lifecycle" ? "portalToJobs" : "edgeToJobs";
-  return mintJobsInstruction(
-    spec,
-    key ?? (direction === "edgeToJobs" ? TEST_KEYS.edgeToJobs : TEST_KEYS.portalToJobs),
-  );
+  // The direction comes from the operation matrix — the edge→jobs and
+  // jobs→edge directions both mint from this file's fixtures, so a fixed
+  // two-way guess would silently mint a fetch instruction with the wrong
+  // family's key.
+  const direction = JobsOperations[spec.operation].direction;
+  return mintJobsInstruction(spec, key ?? TEST_KEYS[direction]);
 }
 
 /** The instruction header for a minted token, plus the retry-key header when the submission carried one. */

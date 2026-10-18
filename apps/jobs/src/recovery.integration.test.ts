@@ -1142,7 +1142,16 @@ describe("the recovery writes against a live attempt", () => {
             return { verdict: "found", state: "active", output: null };
           }
           const failed = await liveStore.failAttempt(
-            { server: "jobs", jobId, type: "jobs:fetch", appId, env: "prod" },
+            {
+              server: "jobs",
+              jobId,
+              type: "jobs:fetch",
+              appId,
+              env: "prod",
+              ownerKind: "user",
+              ownerOid: TEST_IDENTITY.ownerOid,
+              generation: "1",
+            },
             1,
             "upstream_error",
             true,
@@ -1203,7 +1212,16 @@ describe("the recovery writes against a live attempt", () => {
       // attempt number: the requeue put the record to queued, so the report
       // must be refused and the lost attempt's attribution stays.
       const verdict = await liveStore.reportProgress(
-        { server: "jobs", jobId, type: "jobs:fetch", appId, env: "prod" },
+        {
+          server: "jobs",
+          jobId,
+          type: "jobs:fetch",
+          appId,
+          env: "prod",
+          ownerKind: "user",
+          ownerOid: TEST_IDENTITY.ownerOid,
+          generation: "1",
+        },
         1,
         { step: 9, of: 9, label: "lapsed report" },
       );
