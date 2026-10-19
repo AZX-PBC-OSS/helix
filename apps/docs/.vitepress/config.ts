@@ -62,6 +62,7 @@ export default defineConfig({
             { text: "App manifest", link: "/apps/manifest" },
             { text: "The /_api gateway", link: "/apps/gateway" },
             { text: "The helix CLI", link: "/apps/cli" },
+            { text: "Deploy from GitHub", link: "/apps/deploy-from-github" },
           ],
         },
       ],

@@ -9,6 +9,7 @@ import {
   ProviderDeleteResponseSchema,
   ProviderImportResponseSchema,
   ProviderMetadataSchema,
+  RepoBindingSchema,
   CONFIRM_INVALIDATION_FIELD,
   SecretMetadataSchema,
   SessionRevokeResultSchema,
@@ -29,6 +30,7 @@ import {
   type ProviderImportResponse,
   type ProviderMetadata,
   type ProviderUpdateRequest,
+  type SetRepoBindingRequest,
   type SecretMetadata,
   type SessionRevokeResult,
   type UpdateAppRequest,
@@ -419,6 +421,36 @@ export function useDeleteCollectionItem() {
 
 function invalidateDevTokens(queryClient: ReturnType<typeof useQueryClient>, slug: string) {
   void queryClient.invalidateQueries({ queryKey: ["apps", slug, "devTokens"] });
+}
+
+/* ---------------------------------------------------------------------------
+ * Repo binding (ADR-0051): which GitHub repo and branch may deploy previews.
+ * Owner-gated on the server.
+ * ------------------------------------------------------------------------- */
+
+function invalidateRepoBinding(queryClient: ReturnType<typeof useQueryClient>, slug: string) {
+  void queryClient.invalidateQueries({ queryKey: ["apps", slug, "repo-binding"] });
+}
+
+export function useSetRepoBinding() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, binding }: { slug: string; binding: SetRepoBindingRequest }) =>
+      fetchJson(RepoBindingSchema, `/api/v1/apps/${encodeURIComponent(slug)}/repo-binding`, {
+        method: "PUT",
+        body: binding,
+      }),
+    onSuccess: (_res, { slug }) => invalidateRepoBinding(queryClient, slug),
+  });
+}
+
+export function useDeleteRepoBinding() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug }: { slug: string }) =>
+      requestVoid(`/api/v1/apps/${encodeURIComponent(slug)}/repo-binding`, { method: "DELETE" }),
+    onSuccess: (_res, { slug }) => invalidateRepoBinding(queryClient, slug),
+  });
 }
 
 /** Mint a dev token → the plaintext is returned once (never again). */

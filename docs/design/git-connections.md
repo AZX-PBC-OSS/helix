@@ -1,6 +1,7 @@
 # Git connections (deploy-from-repo)
 
-**Status: design, not built.** The crawl rung is decided (ADR 0051, Accepted). The deploy path today is upload-only (`helix deploy`
+**Status: crawl rung built (ADR 0051, Accepted and amended); run rung deferred.**
+Current behavior is in [`../features/repo-deploys.md`](../features/repo-deploys.md). The deploy path today is upload-only (`helix deploy`
 zips a build dir, or the portal takes a multipart zip; architecture §5). This doc
 covers the missing rung: **connect a git repo and branch, and a push lands a
 preview version.**
@@ -87,7 +88,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: npm ci && npm run build
-      - run: npx @azx-pbc/helix-cli deploy --portal https://portal.example.com
+      - run: npx --yes @azx-pbc/helix-cli deploy # slug and portalUrl from helix.json
 ```
 
 Helix ships this as a starter workflow, a `helix` command that writes it into the
@@ -119,7 +120,7 @@ author push ─▶ GitHub Actions                           GitHub's infrastruct
                        ▼
                existing deploy path                      no shortcut
                • spoolUpload → validate.ts (zip-slip, symlink, MIME, bomb)
-               • csp-lint advisory • manifest approval write-gate
+               • csp-lint advisory
                • copy bytes to Blob • land as `preview` with provenance
                • a person promotes (architecture §5.1)
 ```
@@ -197,8 +198,8 @@ is limited to a preview behind the promote gate.
 When `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are set
 and `HELIX_TOKEN` is not, `helix deploy` requests an ID token with `audience` set
 to the portal origin (from `GET /api/v1/config`) and uploads to the CI route. An
-explicit `HELIX_TOKEN` still takes the normal route, so existing CI setups keep
-working.
+explicit `HELIX_TOKEN` still takes the signed-in route. `helix ci init` writes the
+workflow and `helix.json` and creates the binding.
 
 ### 2.8 Schema sketch (portal-owned, as always)
 
@@ -211,9 +212,10 @@ working.
   [0018](../adr/0018-deploy-model-immutable-versions.md) immutability and makes
   "which commit and run produced this version" answerable in the portal.
 
-Binding changes and CI deploys write `audit_events` rows. A token that is
-GitHub-signed but fails the binding check also writes one. A token that fails
-signature verification does not, so unauthenticated noise cannot fill the table.
+Binding changes and CI deploys write `audit_events` rows. So does a refusal of
+the bound repo's own token. A refusal anyone could cause, with a token from
+another repo or against an app with no binding, does not, because any GitHub
+user can mint a validly signed token for this portal (ADR-0051 Amendment 1).
 
 ### 2.9 Telemetry
 
