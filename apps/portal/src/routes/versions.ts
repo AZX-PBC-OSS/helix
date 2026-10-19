@@ -1,9 +1,14 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { type DeployReport, DeployReportSchema, RollbackRequestSchema } from "@azx-pbc/shared";
 import { toApp, toVersion } from "../db/mappers.js";
 import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
-import { deployBundle, spoolUpload } from "../deploy/upload.js";
+import {
+  deployBundle,
+  spoolUpload,
+  type DeployResult,
+  type VersionSourceInput,
+} from "../deploy/upload.js";
 import { diagnoseBundle } from "../deploy/diagnose.js";
 import { setLiveVersion } from "../deploy/pointer.js";
 
@@ -21,52 +26,12 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
       }
       rejectArchived(appRow);
 
-      const data = await req.file();
-      if (!data) {
-        throw new AppError("bundle_invalid", "request has no bundle file");
-      }
-      if (data.fieldname !== "bundle") {
-        throw new AppError(
-          "bundle_invalid",
-          `unexpected field "${data.fieldname}", expected "bundle"`,
-        );
-      }
-
-      // Optional salvage provenance (ADR-0038), sent as a `report` field ahead of
-      // the file. Client-asserted and unverifiable: parse-or-ignore, never a
-      // deploy failure. `req.file()` exposes fields that preceded the file.
-      const deployReport = readDeployReport(req, data.fields);
-
-      const spooled = await spoolUpload(data.file);
-      try {
-        const { version, warnings } = await deployBundle({
-          prisma: app.prisma,
-          blobStore: app.blobStore,
-          appId: appRow.id,
-          actor: actor.sub,
-          zipPath: spooled.zipPath,
-          deployReport,
-        });
-        reply.status(201).send({ version: toVersion(version), warnings });
-      } catch (err) {
-        // Advisory only (ADR-0038 §9): add a whole-archive layout diagnosis to a
-        // first-offender rejection. Never changes what is accepted or rejected —
-        // and never hides the original reason (ADR-0038 #3): a symlink / zip-slip /
-        // compression-bomb / size rejection must stay visible and auditable, so
-        // the diagnosis is *appended*, with the true reason kept in details.
-        if (err instanceof AppError && err.code === "bundle_invalid") {
-          const diag = await diagnoseBundle(spooled.zipPath);
-          if (diag) {
-            throw new AppError("bundle_invalid", `${err.message} — ${diag.message}`, {
-              reason: err.message,
-              ...(diag.details as Record<string, unknown>),
-            });
-          }
-        }
-        throw err;
-      } finally {
-        await spooled.cleanup();
-      }
+      const { version, warnings } = await deployUploadedBundle(app, req, {
+        appId: appRow.id,
+        actor: actor.sub,
+        acceptReport: true,
+      });
+      reply.status(201).send({ version: toVersion(version), warnings });
     },
   );
 
@@ -174,6 +139,67 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
   );
 }
 
+/**
+ * Read the multipart `bundle` and run it through the deploy path. Shared by the
+ * signed-in upload route and the CI route (ADR-0051), so the two cannot drift:
+ * same field rules, same validation, same diagnosis on a rejection.
+ */
+export async function deployUploadedBundle(
+  app: FastifyInstance,
+  req: FastifyRequest,
+  opts: {
+    appId: string;
+    actor: string;
+    /** Read the optional salvage `report` field (the SPA sends it; CI does not). */
+    acceptReport: boolean;
+    source?: VersionSourceInput;
+  },
+): Promise<DeployResult> {
+  const data = await req.file();
+  if (!data) {
+    throw new AppError("bundle_invalid", "request has no bundle file");
+  }
+  if (data.fieldname !== "bundle") {
+    throw new AppError("bundle_invalid", `unexpected field "${data.fieldname}", expected "bundle"`);
+  }
+
+  // Optional salvage provenance (ADR-0038), sent as a `report` field ahead of
+  // the file. Client-asserted and unverifiable: parse-or-ignore, never a
+  // deploy failure. `req.file()` exposes fields that preceded the file.
+  const deployReport = opts.acceptReport ? readDeployReport(req, data.fields) : undefined;
+
+  const spooled = await spoolUpload(data.file);
+  try {
+    return await deployBundle({
+      prisma: app.prisma,
+      blobStore: app.blobStore,
+      appId: opts.appId,
+      actor: opts.actor,
+      zipPath: spooled.zipPath,
+      deployReport,
+      source: opts.source,
+    });
+  } catch (err) {
+    // Advisory only (ADR-0038 §9): add a whole-archive layout diagnosis to a
+    // first-offender rejection. Never changes what is accepted or rejected —
+    // and never hides the original reason (ADR-0038 #3): a symlink / zip-slip /
+    // compression-bomb / size rejection must stay visible and auditable, so
+    // the diagnosis is *appended*, with the true reason kept in details.
+    if (err instanceof AppError && err.code === "bundle_invalid") {
+      const diag = await diagnoseBundle(spooled.zipPath);
+      if (diag) {
+        throw new AppError("bundle_invalid", `${err.message} — ${diag.message}`, {
+          reason: err.message,
+          ...(diag.details as Record<string, unknown>),
+        });
+      }
+    }
+    throw err;
+  } finally {
+    await spooled.cleanup();
+  }
+}
+
 /** Max bytes of the `report` field we'll parse — a report is well under 8 KB. */
 const MAX_REPORT_BYTES = 8192;
 
@@ -208,7 +234,7 @@ function readDeployReport(
 }
 
 /** Archived apps are frozen: no uploads or pointer moves until unarchived. */
-function rejectArchived(appRow: { slug: string; archivedAt: Date | null }): void {
+export function rejectArchived(appRow: { slug: string; archivedAt: Date | null }): void {
   if (appRow.archivedAt) {
     throw new AppError("conflict", `app "${appRow.slug}" is archived; unarchive it first`);
   }

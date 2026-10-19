@@ -46,5 +46,20 @@ export const DeploymentConfigResponseSchema = z.object({
    */
   deployMaxFileMb: z.number().positive().optional(),
   deployMaxBundleMb: z.number().positive().optional(),
+  /**
+   * Repo-backed deploys (ADR-0051). `audience` is the exact `aud` the CI route
+   * accepts, so `helix deploy` in GitHub Actions requests its token for this
+   * value rather than for whatever URL it was pointed at. `serverUrl` is the
+   * GitHub web origin for commit and run links. Optional only to tolerate a
+   * portal that predates the feature; when `enabled` is false the CI route and
+   * the binding routes answer 404 and clients hide the surface.
+   */
+  repoDeploy: z
+    .object({
+      enabled: z.boolean(),
+      audience: z.url(),
+      serverUrl: z.url(),
+    })
+    .optional(),
 });
 export type DeploymentConfigResponse = z.infer<typeof DeploymentConfigResponseSchema>;

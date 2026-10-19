@@ -158,6 +158,26 @@ describe("helix_edge least-privilege grants", () => {
       await pool.end();
     }
   });
+
+  /**
+   * Repo bindings (ADR-0051) decide who may deploy an app from CI. The edge
+   * serves apps and never deploys them, so it has no grant on the table: an
+   * edge RCE can neither read which repos are bound nor rebind one.
+   */
+  it("has no grant at all on repo_bindings", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const pool = new Pool({ connectionString: edgeUrl(), max: 1 });
+    try {
+      await expect(pool.query("SELECT count(*) FROM repo_bindings")).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query(`UPDATE repo_bindings SET "repositoryId" = NULL`)).rejects.toThrow(
+        /permission denied/i,
+      );
+    } finally {
+      await pool.end();
+    }
+  });
 });
 
 /** The egress role's URL, derived from the owner test URL by swapping creds. */

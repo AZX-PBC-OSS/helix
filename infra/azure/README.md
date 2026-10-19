@@ -428,6 +428,14 @@ deploy route is the one portal route that accepts a non-Entra credential (a
 GitHub Actions OIDC token), and it can only create a preview of the app bound to
 that repo.
 
+Two params control that route. `repoDeployEnabled` (default `true`) turns it
+off: the CI route and the repo-binding routes answer 404, and the portal SPA
+hides the Repository tab. `githubOidcIssuer` is the issuer the route trusts;
+change it only for a GitHub Enterprise Cloud tenant with a customized issuer.
+The token audience is not configurable here: it is always
+`https://portal.<appsDomain>`, and the portal derives it from `APP_PUBLIC_BASE`
+(`PORTAL_PUBLIC_ORIGIN` overrides it for a portal served on another hostname).
+
 ## Deployment topology handed to the portal SPA
 
 The portal SPA is a **prebuilt bundle baked into the portal image**, so it cannot

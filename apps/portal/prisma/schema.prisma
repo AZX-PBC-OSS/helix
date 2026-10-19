@@ -97,6 +97,8 @@ model App {
   grantedSecrets     AppSecretGrant[]
   /// Dev-mode tokens for developing this app against its env=dev partition (§4).
   devTokens          AppDevToken[]
+  /// The GitHub repo whose CI may upload previews of this app (ADR-0051).
+  repoBinding        RepoBinding?
   /// Per-app capability manifest (architecture §6.3) — what the gateway grants
   /// and enforces. JSON matches @azx-pbc/shared `CapabilitiesSchema`; the edge
   /// reads it through the registry projection. Defaults to the baseline (no
@@ -120,19 +122,34 @@ model App {
 /// An immutable deploy. Assets live in Blob under `blobPrefix`
 /// (`apps/<appId>/<number>/`). `number` is per-app monotonic, 1-based.
 model Version {
-  id            String        @id @default(uuid()) @db.Uuid
-  appId         String        @db.Uuid
-  app           App           @relation("AppVersions", fields: [appId], references: [id], onDelete: Cascade)
-  number        Int
-  blobPrefix    String
-  status        VersionStatus @default(preview)
-  createdAt     DateTime      @default(now())
+  id                 String        @id @default(uuid()) @db.Uuid
+  appId              String        @db.Uuid
+  app                App           @relation("AppVersions", fields: [appId], references: [id], onDelete: Cascade)
+  number             Int
+  blobPrefix         String
+  status             VersionStatus @default(preview)
+  createdAt          DateTime      @default(now())
   // Client-asserted salvage provenance (ADR-0038): what the portal SPA did to the
   // upload before sending it. Never verified, never read for policy/serving — it
   // only explains why this version's file list looks the way it does.
-  deployReport  Json?
+  deployReport       Json?
+  // Verified CI provenance (ADR-0051), copied from the GitHub Actions token that
+  // uploaded this version. All null on non-CI uploads. `sourceRepoFullName` is
+  // the name at deploy time, for display; identity is `sourceRepositoryId`.
+  sourceProvider     String?
+  sourceRepositoryId String?
+  sourceRepoFullName String?
+  sourceRef          String?
+  sourceCommitSha    String?
+  sourceWorkflowRef  String?
+  sourceRunId        String?
+  sourceRunAttempt   Int?
+  /// The GitHub login that triggered the run. Display and audit only.
+  sourceActor        String?
+  /// The token's `jti`. Unique, so one token produces at most one version.
+  sourceTokenJti     String?       @unique
   // Back-relation for the live pointer (the app, if any, currently serving this).
-  currentForApp App?          @relation("CurrentVersion")
+  currentForApp      App?          @relation("CurrentVersion")
 
   @@unique([appId, number])
   @@index([appId, status])
@@ -588,31 +605,31 @@ model AppSecretGrant {
 /// carry a bare `providerId` column, no FK (the `GatewayCall`→`App` precedent:
 /// the referencing rows outlive the referenced one by design).
 model ConnectionProvider {
-  id                  String   @id @default(uuid()) @db.Uuid
+  id                   String   @id @default(uuid()) @db.Uuid
   /// Env-unique stable reference (`@@unique([ref, env])`); immutable after create.
-  ref                 String
+  ref                  String
   /// `PROVIDER_KINDS` in @azx-pbc/shared — `rest-delegated` only at first commit.
-  kind                String
-  displayName         String
-  authorizeEndpoint   String
-  tokenEndpoint       String
+  kind                 String
+  displayName          String
+  authorizeEndpoint    String
+  tokenEndpoint        String
   /// RFC 6749 §3.3 scope tokens requested at authorize time (may be empty).
-  requestedScopes     Json
+  requestedScopes      Json
   /// Canonical API destinations (`scheme://host[:port]`) the binding may call.
-  apiOrigins          Json
+  apiOrigins           Json
   /// @azx-pbc/shared TokenPlacement — how the user's delegated token is
   /// presented outbound (`header-bearer` or a named `header`).
-  tokenPlacement      Json
+  tokenPlacement       Json
   /// Partition tier (dev-mode §5.1): 'prod' | 'dev'. Client credentials are
   /// per-tier (criterion 5); the env-literal RLS policy + env CHECK pin the row.
-  env                 String   @default("prod")
-  clientIdMaterial    String
+  env                  String   @default("prod")
+  clientIdMaterial     String
   clientSecretMaterial String
   /// ADR-0004 — bumped on every sensitive mutation and delete; consumers
   /// stamp it at consent/approval filing and compare it at resolution.
-  revision            Int      @default(1)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  revision             Int      @default(1)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   @@unique([ref, env])
   @@map("connection_providers")
@@ -759,4 +776,31 @@ model AppDevToken {
 
   @@index([appId])
   @@map("app_dev_token")
+}
+
+/// An app's GitHub binding (ADR-0051): a GitHub Actions job on `repoFullName`
+/// and `branch` may upload preview versions with its OIDC token. One per app.
+/// The numeric ids are null until the first accepted token pins them; after
+/// that they are the identity and the name is display only. Portal-only: the
+/// edge, egress and dev roles have no grant on this table.
+model RepoBinding {
+  id                String    @id @default(uuid()) @db.Uuid
+  appId             String    @unique @db.Uuid
+  app               App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+  provider          String    @default("github")
+  repoFullName      String
+  branch            String
+  repositoryId      String?
+  repositoryOwnerId String?
+  pinnedAt          DateTime?
+  /// Optional: the exact `job_workflow_ref` a token must carry.
+  workflowRef       String?
+  /// Optional: the GitHub environment a token must come from.
+  environment       String?
+  /// The owner's `actor.oid` (ADR-0048) at creation.
+  createdBy         String
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@map("repo_bindings")
 }

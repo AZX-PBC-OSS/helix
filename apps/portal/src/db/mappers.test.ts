@@ -498,6 +498,20 @@ describe("row mappers validate against the shared schema", () => {
     expect(platform.capabilityMix[0]?.costUsd).toBeCloseTo(EXPECTED_COST, 9);
   });
 
+  /** A non-CI version: every provenance column null. */
+  const NO_SOURCE = {
+    sourceProvider: null,
+    sourceRepositoryId: null,
+    sourceRepoFullName: null,
+    sourceRef: null,
+    sourceCommitSha: null,
+    sourceWorkflowRef: null,
+    sourceRunId: null,
+    sourceRunAttempt: null,
+    sourceActor: null,
+    sourceTokenJti: null,
+  } as const;
+
   it("maps a versions row to a wire Version", () => {
     const row: VersionRow = {
       id: VERSION_ID,
@@ -507,6 +521,7 @@ describe("row mappers validate against the shared schema", () => {
       status: "preview",
       createdAt: NOW,
       deployReport: null,
+      ...NO_SOURCE,
     };
     expect(toVersion(row)).toEqual({
       id: VERSION_ID,
@@ -518,6 +533,39 @@ describe("row mappers validate against the shared schema", () => {
     });
   });
 
+  it("carries CI provenance through, and omits a partial set", () => {
+    const row: VersionRow = {
+      id: VERSION_ID,
+      appId: APP_ID,
+      number: 1,
+      blobPrefix: blobPrefixFor(APP_ID, 1),
+      status: "preview",
+      createdAt: NOW,
+      deployReport: null,
+      sourceProvider: "github",
+      sourceRepositoryId: "123",
+      sourceRepoFullName: "octo/app",
+      sourceRef: "refs/heads/main",
+      sourceCommitSha: "a".repeat(40),
+      sourceWorkflowRef: "octo/app/.github/workflows/helix-deploy.yml@refs/heads/main",
+      sourceRunId: "999",
+      sourceRunAttempt: 2,
+      sourceActor: "octocat",
+      sourceTokenJti: "jti-1",
+    };
+    expect(toVersion(row).source).toEqual({
+      provider: "github",
+      repositoryId: "123",
+      repoFullName: "octo/app",
+      ref: "refs/heads/main",
+      commitSha: "a".repeat(40),
+      workflowRef: "octo/app/.github/workflows/helix-deploy.yml@refs/heads/main",
+      runId: "999",
+      runAttempt: 2,
+    });
+    expect(toVersion({ ...row, sourceRunId: null }).source).toBeUndefined();
+  });
+
   it("carries a valid stored deploy report through, and drops a malformed one", () => {
     const base: VersionRow = {
       id: VERSION_ID,
@@ -527,6 +575,7 @@ describe("row mappers validate against the shared schema", () => {
       status: "preview",
       createdAt: NOW,
       deployReport: null,
+      ...NO_SOURCE,
     };
     const report = {
       plannerVersion: 1,

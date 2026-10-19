@@ -47,6 +47,31 @@ export async function spoolUpload(file: Readable): Promise<SpooledUpload> {
   };
 }
 
+/**
+ * Verified CI provenance (ADR-0051), from the GitHub Actions token that
+ * authenticated the upload. Written onto the version row; `tokenJti` is unique
+ * there, which is what makes a token single-use.
+ */
+export interface VersionSourceInput {
+  provider: "github";
+  repositoryId: string;
+  repoFullName: string;
+  ref: string;
+  commitSha: string;
+  workflowRef: string;
+  runId: string;
+  runAttempt: number;
+  actor: string;
+  tokenJti: string;
+}
+
+/** The token's `jti` already produced a version (ADR-0051 decision 8). */
+export function replayedTokenError(): AppError {
+  return new AppError("conflict", "this token has already deployed a version", {
+    reason: "replayed",
+  });
+}
+
 export interface DeployResult {
   version: VersionRow;
   warnings: CspWarning[];
@@ -66,8 +91,10 @@ export async function deployBundle(opts: {
   zipPath: string;
   /** Client-asserted salvage provenance (ADR-0038); stored as-is, never trusted. */
   deployReport?: DeployReport;
+  /** Verified CI provenance (ADR-0051); absent on non-CI uploads. */
+  source?: VersionSourceInput;
 }): Promise<DeployResult> {
-  const { prisma, blobStore, appId, actor, zipPath, deployReport } = opts;
+  const { prisma, blobStore, appId, actor, zipPath, deployReport, source } = opts;
 
   return tracer.startActiveSpan(
     SPAN_DEPLOY_BUNDLE,
@@ -96,9 +123,13 @@ export async function deployBundle(opts: {
    * in the parent's duration, which reads as unexplained overhead and is worse
    * than a span nobody looks at.
    *
-   * No metric here — the portal's throughput is low enough that a counter would
-   * answer nothing a span search does not, which is why decision 8's table
-   * gives it none.
+   * No metric here — the deploy rate is low enough that a counter would answer
+   * nothing a span search does not. The CI route's authentication decisions are
+   * counted separately (`helix.deploy.repo_requests`, ADR-0051).
+   *
+   * Allocation precedes the blob upload, so a bundle that fails validation never
+   * writes a version row and never spends a CI token's `jti`. A failure after
+   * allocation does spend it; a re-run of the job gets a fresh token.
    */
   async function runDeploy(parentSpan: Span): Promise<DeployResult> {
     const { entries, warnings } = await inChildSpan(SPAN_DEPLOY_VALIDATE, () =>
@@ -110,7 +141,7 @@ export async function deployBundle(opts: {
     });
 
     const version = await inChildSpan(SPAN_DEPLOY_ALLOCATE, () =>
-      allocateVersion(prisma, appId, deployReport),
+      allocateVersion(prisma, appId, deployReport, source),
     );
     await inChildSpan(SPAN_DEPLOY_UPLOAD, () =>
       uploadEntries(zipPath, blobStore, version.blobPrefix),
@@ -127,6 +158,18 @@ export async function deployBundle(opts: {
             fileCount: entries.length,
             warningCount: warnings.length,
             ...(deployReport ? { salvageOutcome: deployReport.outcome } : {}),
+            ...(source
+              ? {
+                  source: {
+                    provider: source.provider,
+                    repositoryId: source.repositoryId,
+                    sha: source.commitSha,
+                    runId: source.runId,
+                    runAttempt: source.runAttempt,
+                    githubActor: source.actor,
+                  },
+                }
+              : {}),
           },
         },
       }),
@@ -153,12 +196,16 @@ function inChildSpan<T>(name: string, fn: () => Promise<T>): Promise<T> {
 
 /**
  * Allocate the next per-app version number. The `@@unique([appId, number])`
- * constraint backstops concurrent deploys; a losing insert retries.
+ * constraint backstops concurrent deploys; a losing insert retries. The unique
+ * `sourceTokenJti` backstops two concurrent requests with the same CI token,
+ * which the route's replay pre-check cannot see; that loser is refused, not
+ * retried.
  */
 async function allocateVersion(
   prisma: PrismaClient,
   appId: string,
   deployReport?: DeployReport,
+  source?: VersionSourceInput,
 ): Promise<VersionRow> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const max = await prisma.version.aggregate({ where: { appId }, _max: { number: true } });
@@ -171,9 +218,24 @@ async function allocateVersion(
           blobPrefix: blobPrefixFor(appId, number),
           status: "preview",
           deployReport: deployReport ?? undefined,
+          ...(source
+            ? {
+                sourceProvider: source.provider,
+                sourceRepositoryId: source.repositoryId,
+                sourceRepoFullName: source.repoFullName,
+                sourceRef: source.ref,
+                sourceCommitSha: source.commitSha,
+                sourceWorkflowRef: source.workflowRef,
+                sourceRunId: source.runId,
+                sourceRunAttempt: source.runAttempt,
+                sourceActor: source.actor,
+                sourceTokenJti: source.tokenJti,
+              }
+            : {}),
         },
       });
     } catch (err) {
+      if (source && isUniqueViolation(err, "sourceTokenJti")) throw replayedTokenError();
       if (isUniqueViolation(err, "number")) continue;
       throw err;
     }

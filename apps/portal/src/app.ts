@@ -24,6 +24,8 @@ import { devTokenRoutes } from "./routes/devTokens.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { cspRoutes } from "./routes/csp.js";
 import { versionRoutes } from "./routes/versions.js";
+import { ciVersionRoutes, type CiVersionRoutesOptions } from "./routes/ciVersions.js";
+import { repoBindingRoutes } from "./routes/repoBinding.js";
 import { usageRoutes } from "./routes/usage.js";
 import { visitorRoutes } from "./routes/visitors.js";
 import { sessionRoutes } from "./routes/sessions.js";
@@ -63,6 +65,8 @@ export interface BuildAppOptions {
   directory?: DirectoryProvider;
   /** Inject the visitor geo resolver (tests). Defaults build from the env. */
   geo?: GeoResolver;
+  /** Inject the GitHub Actions key resolver for the CI deploy route (tests). */
+  repoDeploy?: CiVersionRoutesOptions;
   /**
    * Built-SPA directory; null forces the stopgap dashboard (tests),
    * undefined auto-detects ($PORTAL_WEB_DIST or apps/portal-web/dist).
@@ -118,6 +122,10 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(approvalRoutes);
   app.register(cspRoutes);
   app.register(versionRoutes);
+  // Repo-backed deploys (ADR-0051): the binding, and the one route that accepts
+  // a GitHub Actions token.
+  app.register(repoBindingRoutes);
+  app.register(ciVersionRoutes, opts.repoDeploy ?? {});
   app.register(usageRoutes);
   app.register(visitorRoutes);
   app.register(sessionRoutes);
