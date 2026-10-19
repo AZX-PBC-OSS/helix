@@ -19,6 +19,7 @@ async function seedApp(
     userOid?: string;
     capability?: string;
     model?: string;
+    env?: string;
     inputTokens?: number;
     outputTokens?: number;
     /** Frozen as-charged cost in micro-USD — what the edge would have written. */
@@ -43,6 +44,7 @@ async function seedApp(
         appId: id,
         userOid: c.userOid ?? "user-1",
         capability: c.capability ?? "llm",
+        env: c.env ?? "prod",
         model: c.model ?? "claude-opus-4-8",
         inputTokens: c.inputTokens ?? 0,
         outputTokens: c.outputTokens ?? 0,
@@ -229,6 +231,26 @@ describe("GET /api/v1/gateway/audit", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().rows[0]).toMatchObject({ outcome: "conflict" });
+  });
+
+  it("carries a jobs submission's environment tier and qualified type on the wire", async () => {
+    // The portal views label these rows as recorded submission requests with
+    // their environment (ADR-0004); the tier is the recorded partition the edge
+    // wrote, never a request choice — so the wire must not drop it.
+    const { slug } = await seedApp([
+      { capability: "jobs", model: "jobs:fetch", env: "dev", outcome: "ok" },
+      { capability: "jobs", model: "jobs:fetch", outcome: "error" },
+    ]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/gateway/audit?app=${slug}`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().rows as Array<{ capability: string; env: string; model: string }>;
+    // Newest-first: the error row was inserted last, so it comes back first.
+    expect(rows[0]).toMatchObject({ capability: "jobs", env: "prod", model: "jobs:fetch" });
+    expect(rows[1]).toMatchObject({ capability: "jobs", env: "dev", model: "jobs:fetch" });
   });
 
   it("treats an empty outcome param as no filter, not as a bad one", async () => {

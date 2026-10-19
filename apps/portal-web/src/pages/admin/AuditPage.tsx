@@ -71,7 +71,7 @@ export function AuditPage() {
     <PageHead
       eyebrow="Admin"
       title="Gateway Audit Log"
-      sub="Gateway calls: app, user, capability, target, outcome. Expand a row for the failure reason, request line and token/cost accounting; query strings are not recorded."
+      sub="Gateway calls: app, user, capability, target, outcome. Expand a row for the failure reason, the request line and, where the capability carries them, token/cost accounting; query strings are not recorded."
     />
   );
 
@@ -82,8 +82,9 @@ export function AuditPage() {
     // colleague types their name, and the id they would otherwise have to paste
     // is precisely the thing this screen no longer makes them read. The error
     // text and request line match too, even though they render only in the
-    // expanded detail — filter finds, expand reveals.
-    return `${r.slug ?? ""}${r.userOid}${r.userName ?? ""}${r.userEmail ?? ""}${r.capability}${r.model}${r.method ?? ""}${r.path ?? ""}${r.errorDetail ?? ""}${r.stopReason ?? ""}`
+    // expanded detail — filter finds, expand reveals. `env` matches because a
+    // jobs row's tier is one of its display fields.
+    return `${r.slug ?? ""}${r.userOid}${r.userName ?? ""}${r.userEmail ?? ""}${r.capability}${r.env}${r.model}${r.method ?? ""}${r.path ?? ""}${r.errorDetail ?? ""}${r.stopReason ?? ""}`
       .toLowerCase()
       .includes(q.toLowerCase());
   });
@@ -92,8 +93,18 @@ export function AuditPage() {
   // Everything that did not deliver. Stated as "not ok" rather than a hand-kept
   // list of failure outcomes, so a newly added outcome can't silently fall out
   // of the count the way it would from an `=== "error" || …` chain.
-  const failed = rows.filter((r) => r.outcome !== "ok");
-  const breakdown = failureBreakdown(rows);
+  //
+  // Jobs rows stay out of this stat entirely: "not delivered" is exactly the
+  // claim the ledger must not make about them — a failed submission request may
+  // still have accepted work (ADR-0004). They aggregate under their own
+  // request-level card below.
+  const failed = rows.filter((r) => r.outcome !== "ok" && r.capability !== "jobs");
+  const breakdown = failureBreakdown(failed);
+  // The recorded jobs requests in view — the aggregate design.md names "Recorded
+  // jobs submission requests". Counted attempts: a 202 can be a replay, records
+  // may be absent after failures, and refusal floods are suppressed at the
+  // write, so the number claims neither unique jobs nor execution outcomes.
+  const jobsRequests = rows.filter((r) => r.capability === "jobs");
 
   return (
     <div className="az-stagger">
@@ -143,6 +154,16 @@ export function AuditPage() {
             sub={failed.length > 0 ? breakdown : undefined}
           />
         </Card>
+        {jobsRequests.length > 0 && (
+          <Card p="14px 18px">
+            <Stat
+              label="Recorded jobs submission requests"
+              value={jobsRequests.length}
+              icon="bolt"
+              sub="Attempts shown, not unique jobs or execution outcomes"
+            />
+          </Card>
+        )}
       </SimpleGrid>
 
       {audit.isPending ? (

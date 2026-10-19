@@ -341,6 +341,7 @@ describe("row mappers validate against the shared schema", () => {
       userEmail: "alice@azx.dev",
       userKind: "user",
       capability: "llm",
+      env: "prod",
       model: "claude-opus-4-8",
       inputTokens: "1200",
       outputTokens: 800n,
@@ -365,6 +366,7 @@ describe("row mappers validate against the shared schema", () => {
       userName: "Alice Anders",
       userEmail: "alice@azx.dev",
       userKind: "user",
+      env: "prod",
       model: "claude-opus-4-8",
       inputTokens: 1200,
       outputTokens: 800,
@@ -389,6 +391,7 @@ describe("row mappers validate against the shared schema", () => {
       userEmail: null,
       userKind: "user",
       capability: "fetch",
+      env: "prod",
       // For `fetch`, `model` is the target origin and the path is its own column.
       // A `forbidden` row's origin cleared no allowlist, which is why the usage
       // rollup excludes that outcome rather than admitting it as a group key.
@@ -427,6 +430,7 @@ describe("row mappers validate against the shared schema", () => {
       userEmail: null,
       userKind: "user",
       capability: "llm",
+      env: "dev",
       model: "claude-opus-4-8",
       inputTokens: 0,
       outputTokens: 0,

@@ -109,7 +109,13 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
     platform admin" is wrong advice under a tier that refuses admins too. The SPA branches on
     `canSearchDirectory` from `/api/v1/me`, so it never issues a search it would only be refused;
     that field is **tri-state**, and an unanswered `/me` renders no search box *and no claim*
-    rather than asserting a policy it cannot know. The app-scoped **Secrets** card
+    rather than asserting a policy it cannot know. The archive/restore dialogs state the jobs
+    consequences beside the serving/browser-data explanation: archiving also requests cancellation
+    of queued and running jobs in both environments — delivered asynchronously, external effects
+    already sent irreversible, unarchiving revives nothing — and restoring says new jobs become
+    available only once the lifecycle change reaches the relevant jobs service, with previously
+    cancelled jobs never resuming. The archive success feedback acknowledges the archive and the
+    cancellation request, not completed cancellation. The app-scoped **Secrets** card
     (`SecretsCard`) lives under _Capabilities_, next to the origins it is bound to.
   - **Dev mode** — registers the foreign origins a dev token may be used from and mints the scoped
     bearer for the `env=dev` partition (`DevModeTab`; the token is shown once). Says so plainly
@@ -123,7 +129,7 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
     `onSettled`, so the queue refetches on conflict too and the row shows the decision that landed.
     Withdraw exists on the API (the requester's verb) but has no UI yet.
   - **Audit Log** (`/admin/audit`) — `GET /api/v1/gateway/audit` over `gateway_calls`. The table is the
-    scan row — time, app, user, capability, model/target, outcome — and each row's chevron opens the
+    scan row — time, app, user, capability, model/target/job type, outcome — and each row's chevron opens the
     call's full record as an unframed continuation of the row itself (the open row and its detail
     share one darker band; rows open independently, so two failures can sit side by side):
     `errorDetail` in full (the upstream/
@@ -141,6 +147,16 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
     prefix convention. This is the same identity-vs-display split as the owner cells: **never
     compare what the column renders** — see [llm-gateway.md](./llm-gateway.md#metering) for why
     `userOid` alone identifies nobody.
+
+    Jobs rows read as **recorded submission requests**, never job outcomes (ADR-0004): a 202
+    labels "Successful submission request" (it may be a replay), the model/target cell carries the
+    bounded qualified type with the environment tier beside it (`jobs:fetch · dev`), and the
+    expanded record explains the request-level reading — a failed or lost response does not prove
+    no job was created; if the response was lost, retry using the original key and input — and
+    omits the token/cost accounting a submission does not carry. Jobs rows stay out of the "Not
+    delivered" stat entirely; when any are shown, a separate "Recorded jobs submission requests"
+    stat counts the attempts shown, not unique jobs or execution outcomes. No payload, result,
+    retry key or full target URL ever renders in these views.
   - **Platform** (`/admin/platform`) — system metering off `GET /api/v1/gateway/usage`.
   - **Secrets** (`/admin/secrets`) — global connection secrets, full CRUD + per-app grants off
     `GET /api/v1/secrets` (see [secrets-and-connections.md](./secrets-and-connections.md)).

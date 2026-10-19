@@ -359,6 +359,7 @@ export interface GatewayCallRow {
   userEmail: string | null;
   userKind: string | null;
   capability: string;
+  env: string;
   model: string;
   inputTokens: SqlNum;
   outputTokens: SqlNum;
@@ -390,6 +391,7 @@ export function toGatewayCall(row: GatewayCallRow): GatewayCall {
     userEmail: row.userEmail,
     userKind: row.userKind,
     capability: row.capability,
+    env: row.env,
     model: row.model,
     inputTokens,
     outputTokens,
