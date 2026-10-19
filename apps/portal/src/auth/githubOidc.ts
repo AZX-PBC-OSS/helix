@@ -31,13 +31,16 @@ const GithubClaimsSchema = z.object({
   sha: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
   event_name: z.string().min(1).max(64),
   workflow_ref: z.string().min(1).max(512),
-  job_workflow_ref: z.string().min(1).max(512),
+  // GitHub documents this as "for jobs using a reusable workflow". Absent, the
+  // job's own workflow is the one that ran, so `workflow_ref` stands in.
+  job_workflow_ref: z.string().min(1).max(512).optional(),
   environment: z.string().min(1).max(255).optional(),
   run_id: NumericId,
   run_attempt: NumericId,
   actor: z.string().min(1).max(64),
 });
-export type GithubClaims = z.infer<typeof GithubClaimsSchema>;
+/** The verified claims, with `job_workflow_ref` always set (see the schema). */
+export type GithubClaims = z.infer<typeof GithubClaimsSchema> & { job_workflow_ref: string };
 
 export type GithubVerifyResult =
   | { ok: true; claims: GithubClaims }
@@ -85,7 +88,11 @@ export function createGithubOidcVerifier(opts: GithubOidcVerifierOptions): Githu
       if (payload.aud !== opts.audience) return { ok: false, outcome: "bad_audience" };
       const parsed = GithubClaimsSchema.safeParse(payload);
       if (!parsed.success) return { ok: false, outcome: "bad_token" };
-      return { ok: true, claims: parsed.data };
+      const claims = parsed.data;
+      return {
+        ok: true,
+        claims: { ...claims, job_workflow_ref: claims.job_workflow_ref ?? claims.workflow_ref },
+      };
     },
   };
 }

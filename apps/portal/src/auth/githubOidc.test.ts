@@ -42,6 +42,14 @@ describe("createGithubOidcVerifier", () => {
     }
   });
 
+  it("falls back to workflow_ref when a token has no job_workflow_ref", async () => {
+    const result = await verifier.verify(
+      await gh.mint({ claims: { job_workflow_ref: undefined } }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.claims.job_workflow_ref).toBe(result.claims.workflow_ref);
+  });
+
   it("refuses an http issuer at construction", () => {
     expect(() =>
       createGithubOidcVerifier({ issuer: "http://token.example", audience: AUDIENCE }),

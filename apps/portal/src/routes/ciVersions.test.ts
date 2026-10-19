@@ -133,10 +133,22 @@ describe("POST /api/v1/apps/:slug/ci/versions — accepted", () => {
   });
 
   it("keeps deploying after a rename once pinned, and stops after a transfer", async () => {
-    const { slug } = await createApp();
+    const { slug, appId } = await createApp();
     expect((await ciUpload(slug, await gh.mint())).statusCode).toBe(201);
     const renamed = await gh.mint({ claims: { repository: "octo-org/renamed" } });
-    expect((await ciUpload(slug, renamed)).statusCode).toBe(201);
+    const afterRename = await ciUpload(slug, renamed);
+    expect(afterRename.statusCode).toBe(201);
+    // Provenance carries the name at deploy time, so commit links follow the
+    // rename; the audit actor stays the binding's name.
+    const { version } = afterRename.json();
+    expect(version.source.repoFullName).toBe("octo-org/renamed");
+    const uploads = await t.prisma.auditEvent.findMany({
+      where: { appId, action: "version.upload" },
+    });
+    expect(uploads.map((a) => a.actor)).toEqual([
+      "github:octo-org/octo-app",
+      "github:octo-org/octo-app",
+    ]);
     const transferred = await gh.mint({ claims: { repository_owner_id: "3003" } });
     expect((await ciUpload(slug, transferred)).statusCode).toBe(403);
   });
@@ -269,10 +281,46 @@ describe("POST /api/v1/apps/:slug/ci/versions — refusals", () => {
     },
   );
 
-  it("refuses an archived app after authenticating", async () => {
+  it("refuses an archived app after authenticating, without pinning its binding", async () => {
     const { slug, appId } = await createApp();
     await t.prisma.app.update({ where: { id: appId }, data: { archivedAt: new Date() } });
     expect((await ciUpload(slug, await gh.mint())).statusCode).toBe(409);
+    const binding = await t.prisma.repoBinding.findUniqueOrThrow({ where: { appId } });
+    expect(binding.repositoryId).toBeNull();
+  });
+
+  it("refuses a replayed token without re-pinning a binding the owner reset", async () => {
+    const { slug, appId } = await createApp();
+    const token = await gh.mint();
+    expect((await ciUpload(slug, token)).statusCode).toBe(201);
+    // Moving the binding away and back clears the pins.
+    for (const repoFullName of ["octo-org/other", "octo-org/octo-app"]) {
+      await t.app.inject({
+        method: "PUT",
+        url: `/api/v1/apps/${slug}/repo-binding`,
+        headers: authHeader(),
+        payload: { repoFullName, branch: "main" },
+      });
+    }
+    expect((await ciUpload(slug, token)).statusCode).toBe(409);
+    const binding = await t.prisma.repoBinding.findUniqueOrThrow({ where: { appId } });
+    expect(binding.repositoryId).toBeNull();
+  });
+
+  it("pins a workflow by workflow_ref when the token has no job_workflow_ref", async () => {
+    const workflowRef = "octo-org/octo-app/.github/workflows/helix-deploy.yml@refs/heads/main";
+    const { slug } = await createApp({ workflowRef });
+    const plain = await gh.mint({ claims: { job_workflow_ref: undefined } });
+    expect((await ciUpload(slug, plain)).statusCode).toBe(201);
+    const other = await gh.mint({
+      claims: {
+        job_workflow_ref: undefined,
+        workflow_ref: "octo-org/octo-app/.github/workflows/other.yml@refs/heads/main",
+      },
+    });
+    const refused = await ciUpload(slug, other);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error.details).toEqual({ reason: "workflow_mismatch" });
   });
 
   it("404s when the operator turned the feature off", async () => {

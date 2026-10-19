@@ -50,13 +50,20 @@ The handler authenticates before it reads the multipart body
    `ref = refs/heads/<branch>`; `event_name` ∈ {`push`, `workflow_dispatch`};
    the optional `job_workflow_ref` (exact) and `environment` (case-insensitive)
    pins.
-3. **Pin** on the first accepted token: a conditional update on an unpinned row
-   with the same name, then a re-read and re-check.
-4. **Replay.** `versions.sourceTokenJti` is unique. The route checks it first,
+3. **Replay.** `versions.sourceTokenJti` is unique. The route checks it first,
    and the unique index refuses the loser of two concurrent requests.
-5. **Deploy.** The shared `deployUploadedBundle` helper (`routes/versions.ts`)
+4. **Archived.** An archived app is refused with 409 before anything is written.
+5. **Pin** on the first accepted token: a conditional update on an unpinned row
+   with the same name, then a re-read and re-check. Nothing is pinned for a
+   refused, replayed or archived request.
+6. **Deploy.** The shared `deployUploadedBundle` helper (`routes/versions.ts`)
    runs `validate.ts`, the CSP lint and the Blob upload. The salvage `report`
-   field is not read. The version records `source*` provenance from the token.
+   field is not read. The version records `source*` provenance from the token,
+   including the repository's name at deploy time, so links follow a rename.
+
+GitHub documents `job_workflow_ref` as present for reusable-workflow jobs. When
+a token has none, `workflow_ref` stands in for it, for the workflow pin and for
+provenance.
 
 A bundle that fails validation never allocates a version, so it doesn't spend
 the token. A failure after allocation does; a re-run job mints a new token.

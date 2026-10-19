@@ -13,6 +13,7 @@ import { AppError } from "../plugins/errors.js";
 import {
   auditBoundDenial,
   authenticateRepoDeploy,
+  pinBinding,
   RepoDeployDenied,
 } from "../plugins/repoDeployAuth.js";
 import { instruments, withSpan } from "../telemetry.js";
@@ -72,15 +73,14 @@ export async function ciVersionRoutes(
             outcome = "accepted";
             span.setAttributes({ [ATTR_APP_ID]: appId, [ATTR_OUTCOME]: outcome });
 
-            const appRow = await app.prisma.app.findUniqueOrThrow({
-              where: { id: principal.appId },
-            });
-            rejectArchived(appRow);
+            // An archived app is frozen: refuse before pinning anything on it.
+            rejectArchived({ slug: principal.slug, archivedAt: principal.archivedAt });
+            if (principal.pinNeeded) await pinBinding(req, principal);
 
             const { claims } = principal;
             const { version, warnings } = await deployUploadedBundle(app, req, {
               appId: principal.appId,
-              actor: `github:${principal.repoFullName}`,
+              actor: `github:${principal.bindingName}`,
               acceptReport: false,
               source: {
                 provider: "github",
@@ -100,7 +100,13 @@ export async function ciVersionRoutes(
               if (isReplay(err)) {
                 outcome = "replayed";
                 span.setAttribute(ATTR_OUTCOME, outcome);
-                await auditBoundDenial(req, principal.appId, null, claims, "replayed");
+                await auditBoundDenial(
+                  req,
+                  principal.appId,
+                  { repoFullName: principal.bindingName },
+                  claims,
+                  "replayed",
+                );
               }
               throw err;
             });
