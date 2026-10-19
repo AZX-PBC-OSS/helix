@@ -241,7 +241,9 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
                   <CopyBtn value={DEPLOY_CMD} label="Copy" />
                 </Group>
                 <Text size="xs" c="dark.3">
-                  <Code>helix deploy --promote</Code> does both in one step.
+                  <Code>helix deploy --promote</Code> does both in one step. To deploy a preview on
+                  every push from GitHub, run <Code>helix ci init</Code> in the repo; the workflow
+                  needs no secret.
                 </Text>
               </Stack>
             </Tabs.Panel>

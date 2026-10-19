@@ -3,12 +3,17 @@ import {
   ApiErrorSchema,
   AppSchema,
   AuthConfigResponseSchema,
+  DeploymentConfigResponseSchema,
   PortalMeResponseSchema,
+  RepoBindingSchema,
   UploadVersionResponseSchema,
   VersionSchema,
   type App,
   type AuthConfigResponse,
+  type DeploymentConfigResponse,
   type PortalMeResponse,
+  type RepoBinding,
+  type SetRepoBindingRequest,
   type UploadVersionResponse,
   type Version,
   type Visibility,
@@ -18,11 +23,21 @@ import type { TokenProvider } from "./auth/session.js";
 /** A CLI-level error carrying the portal's error code when available. */
 export class CliError extends Error {
   readonly code?: string;
-  constructor(message: string, code?: string) {
+  /** The portal envelope's `details`, when it sent one. */
+  readonly details?: unknown;
+  constructor(message: string, code?: string, details?: unknown) {
     super(message);
     this.name = "CliError";
     this.code = code;
+    this.details = details;
   }
+}
+
+/** The `reason` a portal error carried in its details, if any. */
+export function errorReason(err: unknown): string | undefined {
+  if (!(err instanceof CliError)) return undefined;
+  const reason = (err.details as { reason?: unknown } | undefined)?.reason;
+  return typeof reason === "string" ? reason : undefined;
 }
 
 export interface CreateAppInput {
@@ -63,6 +78,38 @@ export class PortalClient {
   /** Public IdP discovery info — how `helix login` finds the issuer. */
   getAuthConfig(): Promise<AuthConfigResponse> {
     return this.#json(AuthConfigResponseSchema, "GET", "/api/v1/auth/config", {});
+  }
+
+  /** Public deployment topology (`GET /api/v1/config`), incl. the CI token audience. */
+  getDeploymentConfig(): Promise<DeploymentConfigResponse> {
+    return this.#json(DeploymentConfigResponseSchema, "GET", "/api/v1/config", {});
+  }
+
+  /** The app's GitHub binding (ADR-0051), or null when it has none. */
+  async getRepoBinding(slug: string): Promise<RepoBinding | null> {
+    try {
+      return await this.#json(RepoBindingSchema, "GET", `/api/v1/apps/${enc(slug)}/repo-binding`, {
+        auth: true,
+      });
+    } catch (err) {
+      if (errorReason(err) === "no_binding") return null;
+      throw err;
+    }
+  }
+
+  putRepoBinding(slug: string, body: SetRepoBindingRequest): Promise<RepoBinding> {
+    return this.#json(RepoBindingSchema, "PUT", `/api/v1/apps/${enc(slug)}/repo-binding`, {
+      auth: true,
+      body,
+    });
+  }
+
+  async deleteRepoBinding(slug: string): Promise<void> {
+    const res = await fetch(this.#url(`/api/v1/apps/${enc(slug)}/repo-binding`), {
+      method: "DELETE",
+      headers: await this.#authHeaders(true),
+    });
+    if (!res.ok) await this.#parse(z.unknown(), res);
   }
 
   /** The authenticated actor, per the portal — powers `helix whoami`. */
@@ -116,6 +163,25 @@ export class PortalClient {
     return this.#parse(UploadVersionResponseSchema, res);
   }
 
+  /**
+   * Upload from GitHub Actions to the CI route (ADR-0051), authenticated by the
+   * job's GitHub OIDC token rather than a Helix sign-in.
+   */
+  async uploadCiVersion(
+    slug: string,
+    zip: Buffer,
+    githubToken: string,
+  ): Promise<UploadVersionResponse> {
+    const form = new FormData();
+    form.append("bundle", new Blob([new Uint8Array(zip)]), "bundle.zip");
+    const res = await fetch(this.#url(`/api/v1/apps/${enc(slug)}/ci/versions`), {
+      method: "POST",
+      headers: { authorization: `Bearer ${githubToken}` },
+      body: form,
+    });
+    return this.#parse(UploadVersionResponseSchema, res);
+  }
+
   #url(path: string): string {
     return `${this.#baseUrl}${path}`;
   }
@@ -150,7 +216,10 @@ export class PortalClient {
     const data: unknown = text ? JSON.parse(text) : undefined;
     if (!res.ok) {
       const parsed = ApiErrorSchema.safeParse(data);
-      if (parsed.success) throw new CliError(parsed.data.error.message, parsed.data.error.code);
+      if (parsed.success) {
+        const { message, code, details } = parsed.data.error;
+        throw new CliError(message, code, details);
+      }
       throw new CliError(`request failed (HTTP ${res.status})`);
     }
     return schema.parse(data);
@@ -164,7 +233,10 @@ export class PortalClient {
     if (!res.ok) {
       const data: unknown = body ? safeJsonParse(body) : undefined;
       const parsed = ApiErrorSchema.safeParse(data);
-      if (parsed.success) throw new CliError(parsed.data.error.message, parsed.data.error.code);
+      if (parsed.success) {
+        const { message, code, details } = parsed.data.error;
+        throw new CliError(message, code, details);
+      }
       throw new CliError(`request failed (HTTP ${res.status})`);
     }
     return body;

@@ -37,7 +37,7 @@ interface HelixConfigFile {
  * still read so an app directory that predates the rename keeps deploying;
  * `helix.json` wins when both are present.
  */
-const CONFIG_FILENAMES = ["helix.json", "azx.json"] as const;
+export const CONFIG_FILENAMES = ["helix.json", "azx.json"] as const;
 
 async function readConfigFile(cwd: string): Promise<HelixConfigFile> {
   for (const name of CONFIG_FILENAMES) {

@@ -26,8 +26,9 @@ token is refreshed silently and is bound to the portal it was issued for.
 
 To skip the prompt in a local script, set `HELIX_TOKEN` to a token instead.
 Don't store a Helix token as a CI secret: it expires and can't be refreshed
-there. Deploying from GitHub Actions is planned through repo connections, which
-use the workflow's own GitHub token instead of a stored one.
+there. To deploy from GitHub Actions, connect the repo with `helix ci init`;
+the workflow authenticates with its own GitHub token. See
+[Deploy from GitHub](./deploy-from-github).
 
 ## Creating and deploying an app
 
@@ -36,7 +37,8 @@ helix create --display-name "My app"
 helix deploy
 ```
 
-`create` registers the app and writes `helix.json`. `deploy` zips the build
+`create` registers the app; put its slug in `helix.json` (or pass `--slug`) for
+the other commands. `deploy` zips the build
 output (default `dist/`), uploads it as a **preview version**, and
 `--promote` makes it live. Deployed versions are immutable — rolling back is
 pointing the live version at an older number, never overwriting:

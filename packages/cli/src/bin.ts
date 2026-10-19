@@ -16,6 +16,7 @@ import {
   whoamiCommand,
 } from "./commands.js";
 import { makeTokenProvider } from "./auth/session.js";
+import { ciInitCommand, ciRemoveCommand, ciShowCommand } from "./ci/commands.js";
 import { resolveConfig } from "./config.js";
 
 const USAGE = `helix — Helix deploy CLI
@@ -30,9 +31,13 @@ Usage:
   helix promote  <number>
   helix rollback [number]
   helix skill    [--path <file>]   # write this deployment's agent skill to disk
+  helix ci init  [--repo <owner/name>] [--branch <b>] [--reusable] [--force]
+                                   # connect the app to its GitHub repo and write the workflow
+  helix ci show | helix ci remove
 
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
 Env:  HELIX_PORTAL_URL, HELIX_TOKEN (static token — skips login; local scripts).
+      In GitHub Actions, deploy uses the job's OIDC token (permissions: id-token: write).
 Config file: helix.json { slug, portalUrl, dir, description }
 Visibility: internal | group:<id>[,<id>...] | password | public
 `;
@@ -83,6 +88,24 @@ async function main(): Promise<void> {
         visibility: values.visibility,
       });
       break;
+    case "ci": {
+      const sub = positionals[1];
+      if (sub === "init") {
+        await ciInitCommand(client, config, {
+          repo: values.repo,
+          branch: values.branch,
+          reusable: values.reusable,
+          force: values.force,
+        });
+      } else if (sub === "show") {
+        await ciShowCommand(client, config);
+      } else if (sub === "remove") {
+        await ciRemoveCommand(client, config);
+      } else {
+        throw new CliError("usage: helix ci init | show | remove");
+      }
+      break;
+    }
     case "versions":
       await versionsCommand(client, config);
       break;

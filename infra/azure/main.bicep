@@ -390,6 +390,12 @@ param wildcardTlsBound bool = false
 @description('Expose the portal on the public LB at portal.<appsDomain>, gated by Entra OIDC (portal audience + platform-admin App Role). Default true (ADR-0051 decision 11): the portal is the control plane, the helix CLI target and the CI deploy target for repo-backed apps, so an install is not usable unless people and GitHub runners can reach it. Set false only to reach the portal over a private network path instead; per-app authz is enforced by ownsApp (ADR-0007, issue #9 closed), and identity/device posture is the perimeter (Conditional Access), not network location. When true, portal.<appsDomain> gets its own custom-domain binding on the wildcard cert (runtime-bound by the certbot job, declared in-template once wildcardTlsBound=true — ADR-0044). See README "Portal access".')
 param portalExternal bool = true
 
+@description('Accept repo-backed deploys (ADR-0051): a GitHub Actions job on an app\'s bound repo and branch uploads a preview with its own OIDC token, on POST /api/v1/apps/:slug/ci/versions. Default true. false makes that route and the repo-binding routes answer 404 and hides the Repository tab in the portal SPA. The route needs the portal reachable from the runner (portalExternal, or a privately networked runner).')
+param repoDeployEnabled bool = true
+
+@description('The GitHub Actions OIDC issuer the CI deploy route trusts (ADR-0051 decision 4). The default is GitHub.com\'s. Change it only for a GitHub Enterprise Cloud tenant with a customized issuer (https://token.actions.githubusercontent.com/<enterprise>). The token audience is not a param: it is always https://portal.<appsDomain>, the hostname this template binds.')
+param githubOidcIssuer string = 'https://token.actions.githubusercontent.com'
+
 @description('Permit `public` (anonymous) apps on this install. Sets the matched pair EDGE_ALLOW_PUBLIC_APPS + PORTAL_ALLOW_PUBLIC_APPS — one param because the two planes MUST agree: the portal gates setting the visibility and the edge gates serving it, so a split leaves apps the portal accepts but the edge 403s. Default false (deny — the app-level default too). Review ADR-0010 (anonymous shared writes) before enabling.')
 param allowPublicApps bool = false
 
@@ -1323,6 +1329,10 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
       // 'True', which reads as false.
       { name: 'PORTAL_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
       { name: 'PORTAL_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
+      // Repo-backed deploys (ADR-0051). Lowercase literals for the same reason as
+      // the visibility pair; the portal refuses any other value at boot.
+      { name: 'PORTAL_REPO_DEPLOY_ENABLED', value: repoDeployEnabled ? 'true' : 'false' }
+      { name: 'PORTAL_GITHUB_OIDC_ISSUER', value: githubOidcIssuer }
       // Servable-model policy (ADR-0047) — semantics on the llmModel* params.
       // The portal parses an empty/whitespace string as "unset", which is what
       // makes the foundryModels auto-derivation skippable by an explicit list.

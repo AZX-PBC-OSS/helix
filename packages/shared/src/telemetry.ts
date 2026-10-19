@@ -38,6 +38,8 @@ export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
 export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
 export const INSTR_APP_VISITS = "helix.app.visits";
+/** CI deploy route decisions, by {@link REPO_DEPLOY_OUTCOMES} (ADR-0051). */
+export const INSTR_DEPLOY_REPO_REQUESTS = "helix.deploy.repo_requests";
 
 /**
  * Attribute keys.
@@ -135,6 +137,8 @@ export const SPAN_DEPLOY_VALIDATE = "helix.deploy.validate";
 export const SPAN_DEPLOY_ALLOCATE = "helix.deploy.allocate";
 export const SPAN_DEPLOY_UPLOAD = "helix.deploy.upload";
 export const SPAN_DEPLOY_RECORD = "helix.deploy.record";
+/** The CI deploy route (ADR-0051); wraps `helix.deploy.bundle` when accepted. */
+export const SPAN_DEPLOY_REPO = "helix.deploy.repo";
 export const SPAN_CONSENT_CONSULT = "helix.consent.consult";
 export const SPAN_CONSENT_CANCEL = "helix.consent.cancel";
 export const SPAN_CONSENT_CLAIM = "helix.consent.claim";
@@ -600,3 +604,34 @@ export function capTargetPath(pathname: string): string {
 export const DURATION_BUCKETS_MS = [
   0, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000,
 ] as const;
+
+/**
+ * Why the CI deploy route (`POST /api/v1/apps/:slug/ci/versions`, ADR-0051)
+ * answered as it did — the `helix.outcome` values on the `helix.deploy.repo`
+ * span and the `helix.deploy.repo_requests` counter. `accepted` means the token
+ * and binding checks passed; whether the bundle then validated is the
+ * `helix.deploy.bundle` span's job. The repo name, the GitHub actor and the
+ * token never appear as a value.
+ *
+ * - `bad_token` — not a GitHub-signed token for the configured issuer, expired,
+ *   or missing a required claim.
+ * - `bad_audience` — signed by GitHub, but not for this portal.
+ * - `no_binding` — the app has no binding, or does not exist.
+ * - `repo_mismatch` — the token's repository is not the bound one.
+ * - `ref_mismatch`, `event_rejected`, `workflow_mismatch`,
+ *   `environment_mismatch` — the bound repo, but outside the binding's limits.
+ * - `replayed` — the token's `jti` already produced a version.
+ */
+export const REPO_DEPLOY_OUTCOMES = [
+  "accepted",
+  "bad_token",
+  "bad_audience",
+  "no_binding",
+  "repo_mismatch",
+  "ref_mismatch",
+  "event_rejected",
+  "workflow_mismatch",
+  "environment_mismatch",
+  "replayed",
+] as const;
+export type RepoDeployOutcome = (typeof REPO_DEPLOY_OUTCOMES)[number];

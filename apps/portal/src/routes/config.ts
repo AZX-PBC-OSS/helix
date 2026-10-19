@@ -4,6 +4,7 @@ import {
   resolveAppPublicBase,
   resolveDevApiBase,
   resolvePlatformMonthlyUsdCap,
+  resolveRepoDeployConfig,
 } from "../deployment.js";
 import { resolveMaxFileBytes, resolveMaxTotalBytes } from "../deploy/limits.js";
 
@@ -23,6 +24,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/v1/config", async () => {
     const devApiBase = resolveDevApiBase();
     const cap = resolvePlatformMonthlyUsdCap();
+    const repoDeploy = resolveRepoDeployConfig();
     // Optional fields are omitted, not nulled: absent means "not enabled on this
     // deployment", and the client hides that surface rather than guessing.
     return DeploymentConfigResponseSchema.parse({
@@ -34,6 +36,13 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       // baking in the defaults and going stale the first time one is retuned.
       deployMaxFileMb: resolveMaxFileBytes() / MB,
       deployMaxBundleMb: resolveMaxTotalBytes() / MB,
+      // The issuer is left out: it is a server-side trust setting, and nothing
+      // a client does depends on it.
+      repoDeploy: {
+        enabled: repoDeploy.enabled,
+        audience: repoDeploy.audience,
+        serverUrl: repoDeploy.serverUrl,
+      },
     });
   });
 }

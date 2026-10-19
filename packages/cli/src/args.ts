@@ -12,6 +12,10 @@ const options = {
   description: { type: "string" },
   visibility: { type: "string" },
   path: { type: "string" },
+  repo: { type: "string" },
+  branch: { type: "string" },
+  reusable: { type: "boolean" },
+  force: { type: "boolean" },
   help: { type: "boolean" },
 } as const;
 

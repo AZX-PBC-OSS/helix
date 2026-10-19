@@ -39,7 +39,10 @@ export function createTestPrisma(): PrismaClient {
  * multi-statement work actually rolls back. `close()` disposes it either way.
  */
 export function buildTestApp(
-  opts: Pick<BuildAppOptions, "auth" | "spaDist" | "secretStore" | "directory" | "geo"> & {
+  opts: Pick<
+    BuildAppOptions,
+    "auth" | "spaDist" | "secretStore" | "directory" | "geo" | "repoDeploy"
+  > & {
     prisma?: PrismaClient;
   } = {},
 ): TestApp {

@@ -570,6 +570,13 @@ tab.)
 `helix deploy --promote` does the last two steps in one. Deploys always land as
 **preview** first — promotion is deliberately separate, and versions are immutable.
 
+To deploy from GitHub instead, run `helix ci init` (signed in, from the app's
+directory in the repo). It connects the app to the repo and current branch, and
+writes `helix.json` and `.github/workflows/helix-deploy.yml`; commit both. Each
+push to that branch then lands a preview. The workflow authenticates with the
+job's own GitHub token (`permissions: id-token: write`), so never add a Helix
+token to the repo's secrets.
+
 Install the CLI from npm (needs Node 24+):
 
 ```bash

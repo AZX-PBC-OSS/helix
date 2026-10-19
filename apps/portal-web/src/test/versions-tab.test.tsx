@@ -115,4 +115,51 @@ describe("VersionsTab", () => {
     // One badge — the re-rooted row; the canonical row shows nothing.
     expect(screen.getAllByText("salvaged")).toHaveLength(1);
   });
+
+  it("links a CI version to its commit and run on the configured GitHub", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) =>
+        String(input).endsWith("/api/v1/config")
+          ? Promise.resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({
+                appPublicBase: "https://apps.example.com",
+                repoDeploy: {
+                  enabled: true,
+                  audience: "https://portal.apps.example.com",
+                  serverUrl: "https://github.com",
+                },
+              }),
+            })
+          : new Promise(() => {}),
+      ),
+    );
+    const ci: Version = {
+      ...version(3, "preview", "33333333-3333-4333-8333-333333333333"),
+      source: {
+        provider: "github",
+        repoFullName: "octo-org/octo-app",
+        repositoryId: "1001",
+        ref: "refs/heads/main",
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        workflowRef: "octo-org/octo-app/.github/workflows/helix-deploy.yml@refs/heads/main",
+        runId: "777",
+        runAttempt: 2,
+      },
+    };
+    renderWithProviders(
+      <AuthProvider>
+        <VersionsTab app={app} versions={[ci]} />
+      </AuthProvider>,
+    );
+    const commit = await screen.findByRole("link", { name: "0123456" });
+    expect(commit.getAttribute("href")).toBe(
+      "https://github.com/octo-org/octo-app/commit/0123456789abcdef0123456789abcdef01234567",
+    );
+    expect(screen.getByRole("link", { name: "run #777 (attempt 2)" }).getAttribute("href")).toBe(
+      "https://github.com/octo-org/octo-app/actions/runs/777/attempts/2",
+    );
+  });
 });

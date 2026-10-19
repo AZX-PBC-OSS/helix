@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { jwtVerify, type JWTVerifyGetKey } from "jose";
+import { lazyIssuerJwks } from "./jwks.js";
 
 /**
  * Portal API authentication (M3): stateless Bearer-token verification. The
@@ -160,31 +161,10 @@ export function createOidcVerifier(opts: OidcVerifierOptions): TokenVerifier {
       "PORTAL_OIDC_ISSUER must be https (or set PORTAL_OIDC_ALLOW_INSECURE=true in dev)",
     );
   }
-  let getKey: JWTVerifyGetKey | null = opts.getKey ?? null;
-
-  async function resolveKey(): Promise<JWTVerifyGetKey> {
-    if (getKey) return getKey;
-    // Discover jwks_uri once; a failure here leaves getKey unset so the next
-    // request retries (the IdP may simply not be up yet in dev).
-    const res = await fetch(`${opts.issuer}/.well-known/openid-configuration`);
-    if (!res.ok) throw new Error(`OIDC discovery failed: ${res.status}`);
-    const doc = (await res.json()) as { issuer?: string; jwks_uri?: string };
-    // The discovery document feeds the trust chain: its issuer must be the
-    // one we were configured for, and the JWKS it points at must be https
-    // (a same-https issuer redirecting key fetches to http is an attack).
-    if (doc.issuer !== opts.issuer) {
-      throw new Error(
-        `OIDC discovery issuer mismatch: expected ${opts.issuer}, got ${doc.issuer ?? "none"}`,
-      );
-    }
-    if (!doc.jwks_uri) throw new Error("OIDC discovery document has no jwks_uri");
-    const jwksUrl = new URL(doc.jwks_uri);
-    if (jwksUrl.protocol !== "https:" && !opts.allowInsecure) {
-      throw new Error(`OIDC discovery returned a non-https jwks_uri: ${doc.jwks_uri}`);
-    }
-    getKey = createRemoteJWKSet(jwksUrl);
-    return getKey;
-  }
+  const resolveKey = lazyIssuerJwks(opts.issuer, {
+    allowInsecure: opts.allowInsecure,
+    getKey: opts.getKey,
+  });
 
   // One refusal line per verifier instance (review finding 5): the condition
   // is static issuer misconfiguration, not a per-caller event — a token

@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Box, Button, Group, Table, Text, Tooltip } from "@mantine/core";
-import type { App, DeployReport, Version } from "@azx-pbc/shared";
+import { Anchor, Box, Button, Group, Table, Text, Tooltip } from "@mantine/core";
+import type { App, DeployReport, Version, VersionSource } from "@azx-pbc/shared";
 import { usePromoteVersion, useRollback } from "../../api/mutations";
 import { useAuth } from "../../auth/AuthProvider";
 import { ScrollFade } from "../../components/ScrollFade";
 import { Hint, ToneBadge, type Tone } from "../../components/primitives";
 import { timeAgo } from "../../lib/format";
+import { useDeployment } from "../../lib/deployment";
 import { ConfirmDialog } from "../../modals/ConfirmDialog";
 
 const STATUS_TONE: Record<Version["status"], Tone> = {
@@ -22,6 +23,7 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
   const promote = usePromoteVersion();
   const rollback = useRollback();
   const [pending, setPending] = useState<PendingAction>(null);
+  const { githubServerUrl } = useDeployment();
 
   const liveNumber = versions.find((v) => v.id === app.currentVersionId)?.number;
 
@@ -106,6 +108,7 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
                           </ToneBadge>
                         )}
                         <SalvageBadge report={v.deployReport} />
+                        {v.source && <SourceBadge source={v.source} serverUrl={githubServerUrl} />}
                       </Group>
                     </Table.Td>
                     <Table.Td>
@@ -191,6 +194,53 @@ export function VersionsTab({ app, versions }: { app: App; versions: Version[] }
  * version's file list, never load-bearing — so a `canonical` (untouched) deploy
  * shows nothing.
  */
+/**
+ * Where a CI deploy came from (ADR-0051): the commit, linked, and the run. The
+ * values come from the verified GitHub token, not from the uploader, so unlike
+ * the salvage badge this is provenance the portal can vouch for.
+ */
+function SourceBadge({ source, serverUrl }: { source: VersionSource; serverUrl: string | null }) {
+  const short = source.commitSha.slice(0, 7);
+  const repoUrl = serverUrl ? `${serverUrl}/${source.repoFullName}` : null;
+  const runLabel = `run #${source.runId}${source.runAttempt > 1 ? ` (attempt ${source.runAttempt})` : ""}`;
+  return (
+    <Tooltip
+      label={`${source.repoFullName} · ${source.ref.replace(/^refs\/heads\//, "")} · ${runLabel}`}
+      withArrow
+      multiline
+      maw={320}
+    >
+      <Group gap={6} wrap="nowrap" component="span">
+        {repoUrl ? (
+          <>
+            <Anchor
+              href={`${repoUrl}/commit/${source.commitSha}`}
+              target="_blank"
+              rel="noreferrer"
+              className="az-mono"
+              fz={11}
+            >
+              {short}
+            </Anchor>
+            <Anchor
+              href={`${repoUrl}/actions/runs/${source.runId}/attempts/${source.runAttempt}`}
+              target="_blank"
+              rel="noreferrer"
+              fz={11}
+            >
+              {runLabel}
+            </Anchor>
+          </>
+        ) : (
+          <Text component="span" className="az-mono" fz={11} c="dark.2">
+            {short} · {runLabel}
+          </Text>
+        )}
+      </Group>
+    </Tooltip>
+  );
+}
+
 function SalvageBadge({ report }: { report?: DeployReport }) {
   if (!report || report.outcome === "canonical") return null;
   const dropped = Object.values(report.drops).reduce((n, c) => n + c, 0);

@@ -25,6 +25,7 @@ See [the tour](../../TOUR.md) for the security boundaries and repository map.
 | [connection-providers.md](./connection-providers.md) | OAuth connection providers: the admin catalog, import/export, My Connections | `apps/portal`, `apps/egress` |
 | [dev-mode.md](./dev-mode.md) | Develop an app against an isolated `env=dev` tier via the dev-gateway | `apps/edge`, `apps/portal` |
 | [registry-and-deploys.md](./registry-and-deploys.md) | App CRUD, version lifecycle, zip upload, promote/rollback, archive | `apps/portal` |
+| [repo-deploys.md](./repo-deploys.md) | Repo-backed apps: a GitHub Actions job uploads previews with its own OIDC token | `apps/portal`, `packages/cli`, `apps/portal-web` |
 | [capabilities-and-manifests.md](./capabilities-and-manifests.md) | The per-app manifest the gateway enforces | `packages/shared`, `apps/portal` |
 | [cli.md](./cli.md) | The `helix` CLI: deploy + OIDC device-flow login | `packages/cli` |
 | [portal-web.md](./portal-web.md) | The React/Mantine portal SPA | `apps/portal-web` |

@@ -56,6 +56,7 @@ terminates untrusted traffic (decision 4).
 | `helix.registry.load` | the projection reload |
 | `helix.providers.reconcile` | the egress provider-cache reconcile |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
+| `helix.deploy.repo` | the portal's CI deploy route, `POST /api/v1/apps/:slug/ci/versions` (ADR-0051); wraps `helix.deploy.bundle` when the token is accepted. Carries `helix.app_id` (once the slug resolves) and `helix.outcome` ∈ `REPO_DEPLOY_OUTCOMES`. A refusal is not an error status; never the repo name, the GitHub actor or the token |
 | `helix.consent.consult` / `.cancel` / `.claim` / `.sweep` / `.redeem` / `.callback` / `.status` | the portal's consent-flow state machine: the internal consult + cancel + connection-status routes, the callback's claim probe, the expiry sweep, the dev journey's nonce redemption, the vendor redirect's completion state machine, and the read-only status decision (ADR-0031 as amended) |
 | `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route — My Connections' metadata-only list |
 | `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
@@ -198,6 +199,7 @@ looked up:
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
 | `helix.app.visits` | counter | `appId`, `outcome` (`recorded` / `failed` / `dropped` / `deduplicated`; the fire-and-forget `app_visits` write, ADR-0050. Alert on a sustained `failed` or `dropped` rate. The owner's numbers come from the table, never this counter) |
 | `helix.consent.operations` | counter | `operation`, `outcome` (ADR-0031 as amended; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
+| `helix.deploy.repo_requests` | counter | `outcome`, `appId` when the slug resolved (ADR-0051; one per CI deploy decision. A burst of `repo_mismatch` is someone probing with tokens from other repos; a run of `event_rejected` or `ref_mismatch` on one app is a misconfigured workflow. Refusals also log `event: "repo_deploy.denied"` at `warn` with the same reason) |
 
 `appId` is a dimension; **`userOid` never is** — unbounded and personal data, it
 belongs in the ledger under the basis ADR-0021 reasoned about, not in a retained

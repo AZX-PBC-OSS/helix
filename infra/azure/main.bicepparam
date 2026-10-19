@@ -70,6 +70,13 @@ param wildcardTlsBound = false
 // private network path. See README "Portal access".
 param portalExternal = true
 
+// Repo-backed deploys (ADR-0051): GitHub Actions jobs on a bound repo upload
+// previews with their own OIDC token. Needs the portal reachable from the
+// runner. The issuer changes only for a GitHub Enterprise Cloud tenant with a
+// customized issuer. See README "Portal access".
+param repoDeployEnabled = true
+param githubOidcIssuer = 'https://token.actions.githubusercontent.com'
+
 // App visibility policy. Each sets a MATCHED PAIR of app env vars (edge serves,
 // portal authors) — deliberately one knob per mode so the two planes cannot
 // disagree. Both default false, matching the app-level default: an install

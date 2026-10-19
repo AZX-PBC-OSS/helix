@@ -240,7 +240,34 @@ export function toVersion(row: VersionRow): Version {
     // Client-asserted (ADR-0038) and unverifiable, so a malformed stored blob is
     // dropped rather than allowed to break the whole version response.
     deployReport: DeployReportSchema.safeParse(row.deployReport).data,
+    source: toVersionSource(row),
   });
+}
+
+/** CI provenance (ADR-0051), present only when the row was written by the CI route. */
+function toVersionSource(row: VersionRow): Version["source"] {
+  if (
+    row.sourceProvider !== "github" ||
+    row.sourceRepositoryId === null ||
+    row.sourceRepoFullName === null ||
+    row.sourceRef === null ||
+    row.sourceCommitSha === null ||
+    row.sourceWorkflowRef === null ||
+    row.sourceRunId === null ||
+    row.sourceRunAttempt === null
+  ) {
+    return undefined;
+  }
+  return {
+    provider: "github",
+    repositoryId: row.sourceRepositoryId,
+    repoFullName: row.sourceRepoFullName,
+    ref: row.sourceRef,
+    commitSha: row.sourceCommitSha,
+    workflowRef: row.sourceWorkflowRef,
+    runId: row.sourceRunId,
+    runAttempt: row.sourceRunAttempt,
+  };
 }
 
 /** Blob key prefix for a version's assets: `apps/<appId>/<number>/`. */

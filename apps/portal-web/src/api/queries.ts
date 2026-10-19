@@ -22,6 +22,7 @@ import {
   ProviderImpactSchema,
   ProviderListResponseSchema,
   ProviderMetadataSchema,
+  RepoBindingSchema,
   SecretMetadataSchema,
   SessionListResponseSchema,
   UsageSummarySchema,
@@ -32,7 +33,7 @@ import {
   type UsageRange,
   type VisitorRange,
 } from "@azx-pbc/shared";
-import { fetchJson, fetchText } from "./client";
+import { fetchJson, fetchText, PortalApiError } from "./client";
 
 /** An app's connection secrets — metadata only (the value is never returned). */
 export const appSecretsQuery = (slug: string) =>
@@ -51,6 +52,27 @@ export const devTokensQuery = (slug: string) =>
         z.array(DevTokenMetadataSchema),
         `/api/v1/apps/${encodeURIComponent(slug)}/dev-tokens`,
       ),
+  });
+
+/**
+ * An app's GitHub binding (ADR-0051), or null when it has none. Owner-gated on
+ * the server, so a non-owner gets a 403 the caller renders.
+ */
+export const repoBindingQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["apps", slug, "repo-binding"],
+    queryFn: async () => {
+      try {
+        return await fetchJson(
+          RepoBindingSchema,
+          `/api/v1/apps/${encodeURIComponent(slug)}/repo-binding`,
+        );
+      } catch (err) {
+        const reason = (err as PortalApiError).details as { reason?: unknown } | undefined;
+        if (err instanceof PortalApiError && reason?.reason === "no_binding") return null;
+        throw err;
+      }
+    },
   });
 
 /** Global connection secrets (admin) — metadata + the apps each is granted to. */
