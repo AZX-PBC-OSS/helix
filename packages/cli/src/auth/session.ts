@@ -4,7 +4,7 @@ import { defaultTokenPath, readTokens, writeTokens, type StoredTokens } from "./
 
 /**
  * Token acquisition for every authenticated CLI call. Precedence:
- * `HELIX_TOKEN`/`--token` (static — the dev-token/CI path) wins outright;
+ * `HELIX_TOKEN`/`--token` (static — the dev-token/scripts path) wins outright;
  * otherwise the cache entry bound to this portal's origin (and the issuer it
  * advertises), silently refreshed when within a minute of expiry.
  * `undefined` means "not logged in" — the caller turns that into a friendly

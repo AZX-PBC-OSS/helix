@@ -241,9 +241,7 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
                   <CopyBtn value={DEPLOY_CMD} label="Copy" />
                 </Group>
                 <Text size="xs" c="dark.3">
-                  <Code>helix deploy --promote</Code> does both in one step. For CI, set{" "}
-                  <Code>HELIX_TOKEN</Code> and <Code>HELIX_PORTAL_URL</Code> instead of running{" "}
-                  <Code>helix login</Code>.
+                  <Code>helix deploy --promote</Code> does both in one step.
                 </Text>
               </Stack>
             </Tabs.Panel>

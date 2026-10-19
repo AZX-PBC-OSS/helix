@@ -104,3 +104,5 @@ IP-allowlisting / bastions are deliberately avoided as they don't fit a remote
 team. Pre-auth surface is the small Fastify/OIDC endpoint behind ACA ingress.
 This is sound for a single trusted org (ADR-0023); revisit the pre-auth exposure
 and add owner/editor/viewer RBAC before any multi-tenant / untrusted-owner use.
+
+**Amendment (2026-10-19, ADR [0051](0051-repo-backed-apps-ci-push-github-oidc.md) decision 11).** `portalExternal` now defaults to **true**. Every deployment already exposed the portal, and repo-backed deploys need GitHub's runners to reach it. The perimeter described above is unchanged: Entra sign-in and Conditional Access for people, `ownsApp` for per-app authz. The one addition is the CI deploy route, which accepts a GitHub Actions OIDC token and can only create a preview of the app bound to that repo. `false` remains available for an install that reaches its portal over a private network path.

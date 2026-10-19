@@ -399,13 +399,15 @@ scripts.
 
 ## Portal access (`portalExternal`, [ADR-0007](../../docs/adr/0007-portal-authz-v0.md))
 
-The **edge** (app-serving) is public; the **portal** (control plane + `azx-cli`
-target) is **internal ingress by default** — which means nobody can actually
-deploy or manage anything until you make it reachable. Under
+The **edge** (app-serving) is public, and so is the **portal** (control plane,
+`helix` CLI target, and the CI deploy target for repo-backed apps,
+[ADR-0051](../../docs/adr/0051-repo-backed-apps-ci-push-github-oidc.md)) by
+default. Under
 [ADR-0028](../../docs/adr/0028-deployment-model-customer-deployed.md) the customer
-runs it themselves, so this can't be left as an out-of-band operator chore.
+runs it themselves, and nobody can deploy or manage anything until it is
+reachable.
 
-`portalExternal=true` serves the portal at `portal.<appsDomain>` on the public LB,
+`portalExternal=true` (the default) serves the portal at `portal.<appsDomain>` on the public LB,
 **gated by Entra OIDC** (portal audience + the `platform-admin` App Role), with
 per-app authz enforced by `ownsApp` (ADR-0007, issue #9 closed). When set,
 `portal.<appsDomain>` gets its own custom-domain binding on the wildcard cert —
@@ -416,10 +418,15 @@ IP-allowlists or a bastion, which don't fit a remote team. A specific
 `portal.<appsDomain>` hostname on the portal app takes precedence over the edge
 wildcard in the shared environment.
 
-Default is **false** (internal, secure-by-default); flip it per install. For a
-zero-public-exposure posture instead, keep it internal and reach it via a VNet
-path (VPN / Tailscale / Front Door + Private Link) — but that's friction a
-customer-run, remote-team install usually doesn't want.
+Default is **true** (ADR-0051 decision 11; it was `false` before 2026-10-19,
+and every install flipped it). For a zero-public-exposure posture instead, set
+`portalExternal=false` and reach the portal via a VNet path (VPN / Tailscale /
+Front Door + Private Link). That is friction a customer-run, remote-team install
+usually doesn't want, and repo-backed deploys from GitHub-hosted runners stop
+working: they then need a self-hosted or privately networked runner. The CI
+deploy route is the one portal route that accepts a non-Entra credential (a
+GitHub Actions OIDC token), and it can only create a preview of the app bound to
+that repo.
 
 ## Deployment topology handed to the portal SPA
 

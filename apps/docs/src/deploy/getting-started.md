@@ -160,10 +160,10 @@ Copy `main.bootstrap.bicepparam` and set, at minimum:
   `azxCliClientId`, `azxWebClientId`. (The edge OIDC **certificate pair** is a
   secret — it is part of step 3's exports, not this file.)
 - `acmeEmail` — required for the wildcard certificate.
-- `portalExternal: true` — unless you plan to reach the portal over a private
-  network path, nothing is deployable without it. The portal is
-  internal-by-default; this flag puts it on the public load balancer, gated by
-  Entra sign-in.
+- `portalExternal` — leave it at its default, `true`, which puts the portal on
+  the public load balancer, gated by Entra sign-in. Set `false` only if you will
+  reach the portal over a private network path; nothing is deployable unless
+  people can reach it.
 
 The [configuration reference](/deploy/configuration) lists every parameter and
 what it does.

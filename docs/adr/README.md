@@ -44,7 +44,7 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0027](0027-blob-auth-managed-identity.md) | Blob authentication: managed identity, not the storage account key | Accepted |
 | [0028](0028-deployment-model-customer-deployed.md) | Deployment model: single-tenant, customer-deployed into the customer's cloud | Accepted |
 | [0029](0029-platform-secret-delivery.md) | Platform secret delivery: deployment-injected env vars, not ACA Key Vault references | Accepted |
-| [0030](0030-repo-backed-apps-pull-attested-artifacts.md) | Repo-backed apps: pull CI-built attested artifacts (no hosted build) | Proposed |
+| [0030](0030-repo-backed-apps-pull-attested-artifacts.md) | Repo-backed apps: pull CI-built attested artifacts (no hosted build) | Superseded (by 0051) |
 | [0031](0031-connection-providers-delegated-auth.md) | Connection providers: MCP-first delegated auth, tenant-key as fallback | Proposed |
 | [0032](0032-cli-naming-and-distribution.md) | CLI naming (`helix`) and distribution (public npm, bundled) | Accepted |
 | [0033](0033-openai-compatible-gateway-surface.md) | OpenAI-compatible gateway surface and multi-provider routing | Accepted |
@@ -65,3 +65,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0048](0048-canonical-principal-oid.md) | Canonical principal identifier: the Entra `oid` claim, captured at source in both planes | Accepted |
 | [0049](0049-warden-optional-inference-backend.md) | Warden as an optional inference backend (phase 1 light upstream proposed; phase 2 deep integration deferred) | Proposed |
 | [0050](0050-hosted-app-visitor-analytics.md) | Visitor analytics for hosted apps (visits, unique visitors, approximate location) | Accepted |
+| [0051](0051-repo-backed-apps-ci-push-github-oidc.md) | Repo-backed apps: CI pushes the bundle, authenticated by GitHub Actions OIDC | Accepted (not yet built) |

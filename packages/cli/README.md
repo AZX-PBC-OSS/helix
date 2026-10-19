@@ -91,9 +91,11 @@ agent reads it off disk.
 Two paths, in precedence order:
 
 1. **Static token** — `HELIX_TOKEN` / `--token`. Sends the value as a bearer
-   token verbatim. This is the CI/scripts path, and also how the portal's
-   dev-token stub keeps working (`HELIX_TOKEN=$PORTAL_DEV_TOKEN`). It is never
-   accepted by a production portal.
+   token verbatim. This is the local scripts path, and also how the portal's
+   dev-token stub keeps working (`HELIX_TOKEN=$PORTAL_DEV_TOKEN`). The dev token
+   is never accepted by a production portal. A stored token is not a supported
+   way to deploy from CI; repo-backed deploys use the workflow's GitHub Actions
+   OIDC token instead (ADR-0051).
 2. **`helix login`** — the OIDC device flow. The CLI asks the portal
    (`GET /api/v1/auth/config`) which issuer to use (the local dev IdP on
    `:3002` in dev; Entra later), prints a verification URL + code, and polls

@@ -1,309 +1,268 @@
 # Git connections (deploy-from-repo)
 
-**Status: design, not built.** The deploy path today is upload-only (`helix deploy`
+**Status: design, not built.** The crawl rung is decided (ADR 0051, Accepted). The deploy path today is upload-only (`helix deploy`
 zips a build dir, or the portal takes a multipart zip; architecture §5). This doc
-proposes the missing rung: **connect a git repo, and a push lands a preview
-version.**
+covers the missing rung: **connect a git repo and branch, and a push lands a
+preview version.**
 
-There are **two rungs**, and the order flipped in 2026-07:
+There are two rungs:
 
 | Rung | Model | Who builds | Record |
 | --- | --- | --- | --- |
-| **Crawl** (§2) | Helix **pulls** a CI-built, attested artifact | the author's CI | ADR [0030](../adr/0030-repo-backed-apps-pull-attested-artifacts.md) |
+| **Crawl** (§2) | The author's CI builds and **pushes** the bundle, authenticated by its GitHub Actions OIDC token | the author's CI | ADR [0051](../adr/0051-repo-backed-apps-ci-push-github-oidc.md) |
 | **Run** (§3) | Helix clones and **builds** the repo | Helix | ADR [0026](../adr/0026-hosted-build-isolation-prerequisites.md) — deferred |
 
-This document originally described only the "run" rung. That design is preserved
-in §3, intact and still correct, because it remains the answer for authors who
-have no CI (§4). But it is **no longer the next thing to build** — §2 is, and it
-gets to production without Helix ever executing app code.
+§2 is the next thing to build. §3 is kept because it is still the answer for
+authors who have no CI (§4).
 
-## 1. Why the order flipped
+**History.** This doc first described only the run rung. In 2026-07, ADR
+[0030](../adr/0030-repo-backed-apps-pull-attested-artifacts.md) replaced it as the
+next step with a pull model: CI published an attested OCI artifact to GHCR, and
+Helix polled for it. In 2026-10, ADR
+[0051](../adr/0051-repo-backed-apps-ci-push-github-oidc.md) replaced the pull
+model with a push, once it was clear that every deployment exposes the portal.
+ADR 0030 keeps the pull design for reference.
 
-The "run" rung's whole difficulty is that **a git build is the first place Helix
-runs untrusted code server-side.** Everything the platform hosts today is
-untrusted (architecture §1), but a hosted app is static assets + browser JS + the
-`/_api/*` gateway — none of the *app's* code executes on our infrastructure. A
-build is categorically different: `npm install` runs dependency `postinstall`
-scripts and the build script runs arbitrary code, **on our compute, with whatever
-it can reach.** Building vibe-coded apps is remote code execution by design. §3
-models that as a fourth untrusted execution zone and wires it accordingly; ADR
-[0026](../adr/0026-hosted-build-isolation-prerequisites.md) gates it behind four
-non-negotiable launch requirements.
+## 1. Why the author's CI builds
 
-The reframing that makes almost all of that unnecessary: **the author's CI
-already builds the app.** GitHub Actions runs the build, on GitHub's ephemeral
-runners, in GitHub's blast radius, and can publish the result to a GitHub-native
-artifact store. Helix does not need to run the build to consume the output — it
-needs to *fetch* it, *verify where it came from*, and hand it to the deploy path
-that already exists.
+**A git build is the first place Helix would run untrusted code server-side.**
+Everything the platform hosts is untrusted (architecture §1), but a hosted app is
+static assets, browser JS and the `/_api/*` gateway. None of the app's code runs
+on our infrastructure. A build is different: `npm install` runs dependency
+`postinstall` scripts and the build script runs arbitrary code, on our compute,
+with whatever it can reach. §3 models that as a fourth untrusted execution zone,
+and ADR [0026](../adr/0026-hosted-build-isolation-prerequisites.md) gates it
+behind four launch requirements.
 
-Three properties follow, and they are the whole argument:
+**The author's CI already builds the app.** GitHub Actions runs the build on
+GitHub's ephemeral runners, inside GitHub's blast radius. Helix only needs to
+receive the output, know where it came from, and hand it to the deploy path that
+already exists.
 
-1. **Helix only ever reads.** The author's CI never calls Helix. Nobody asks
-   Helix to perform a privileged action on their say-so, so no authority is
-   delegated, so **there is no inbound authentication problem to solve.** This is
-   the source of nearly all the saving — it is not merely "a smaller build
-   service."
-2. **Provenance gets stronger, not weaker.** A Helix-run builder can only ever
-   *self*-attest; compromise it and it forges its own provenance.
-   `actions/attest-build-provenance` produces a **Sigstore-signed** attestation
-   whose certificate is issued by Fulcio against the workflow's OIDC identity —
-   a *third-party* claim about origin, bound to the bytes, that a compromised app
-   repo cannot forge.
-3. **The dangerous threat class never arrives.** A Shai-Hulud-class `postinstall`
-   payload is the threat hosted builds would *introduce*; §2 never introduces it.
-   A chalk/debug-class payload bundled *into the served JS* already threatens the
-   platform today via any author-built bundle, and its defense is unchanged: CSP
-   + the gateway (ADR [0009](../adr/0009-relaxed-csp.md)/[0014](../adr/0014-same-origin-api-gateway.md)).
-   The two must not be conflated.
+**GitHub Actions can prove where a request came from.** A job with
+`permissions: id-token: write` can request a short-lived JWT signed by GitHub,
+with an audience the job chooses. Its claims name the repository (by numeric ID),
+the branch, the commit, the triggering event, the workflow and the run. The
+portal already verifies bearer JWTs against an issuer's JWKS (ADR
+[0024](../adr/0024-portal-cli-bearer-jwt-jwks.md)), so accepting this token is one
+more issuer, not a new trust model.
+
+The result:
+
+- **Helix runs no build.** A Shai-Hulud-class `postinstall` payload never reaches
+  platform infrastructure. A chalk/debug-class payload bundled *into the served
+  JS* is a different threat; it already applies to any author-built bundle, and
+  its defense is unchanged: CSP and the gateway (ADR
+  [0009](../adr/0009-relaxed-csp.md)/[0014](../adr/0014-same-origin-api-gateway.md)).
+- **No stored credential anywhere.** The author keeps no Helix token in repo
+  secrets, and Helix keeps no GitHub credential. Private repos need nothing extra,
+  because the runner already has the source.
+- **Deploys are as fast as the upload.** Nothing polls.
 
 ---
 
-## 2. Crawl — pull a CI-built attested artifact
+## 2. Crawl — CI pushes, authenticated by GitHub Actions OIDC
 
-**Record: ADR [0030](../adr/0030-repo-backed-apps-pull-attested-artifacts.md).**
-Helix runs no build, clones no repository, and executes no app code or dependency
-script — ever.
+**Record: ADR [0051](../adr/0051-repo-backed-apps-ci-push-github-oidc.md).** The
+ADR is the source of truth; this section explains how the pieces fit.
 
 ### 2.1 What the author does
 
-Once, in their repo:
+Once, in the portal: connect the app to `owner/repo` and a branch.
+
+Once, in the repo:
 
 ```yaml
-# .github/workflows/deploy.yml
+# .github/workflows/helix-deploy.yml
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
-  packages: write
-  id-token: write      # for the attestation, not for talking to Helix
-  attestations: write
-steps:
-  - run: npm ci && npm run build
-  - uses: oras-project/setup-oras@v1
-  - run: oras push ghcr.io/${{ github.repository }}/helix-app:main ./dist
-  - uses: actions/attest-build-provenance@v1
-    with: { subject-name: ghcr.io/${{ github.repository }}/helix-app, ... }
-  - run: curl -fsS -X POST https://portal.example/poke/my-app || true   # optional
+  id-token: write # lets the job request a GitHub-signed token for Helix
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci && npm run build
+      - run: npx @azx-pbc/helix-cli deploy --portal https://portal.example.com
 ```
 
-Helix ships this as a starter workflow (and an `helix` command that writes it), so
-the author's job is a copy-paste. **Note the poke is `|| true`** — it is a hint,
-never a dependency (§2.4).
+Helix ships this as a starter workflow, a `helix` command that writes it into the
+repo, and a reusable workflow the author can call in a few lines. There is no
+secret to add to the repo: storing a `HELIX_TOKEN` in CI secrets is not a
+supported path (ADR-0051 decision 12). Owners who want
+a tighter gate can pin the reusable workflow (§2.5).
 
-### 2.2 What Helix does
+### 2.2 What happens on a push
 
 ```
-author push ─▶ GitHub Actions              GitHub's infrastructure, GitHub's blast radius
+author push ─▶ GitHub Actions                           GitHub's infrastructure
                • npm ci && build
-               • oras push  → GHCR
-               • attest-build-provenance → Sigstore-signed provenance
+               • helix deploy
+                   - requests an OIDC token, aud = portal origin
+                   - POST /api/v1/apps/:slug/ci/versions
+                     Authorization: Bearer <GitHub OIDC token>
                        │
                        ▼
-               GHCR  ghcr.io/owner/repo/helix-app@sha256:…     transport, not the serving store
+               helix-portal                              control plane
+               authenticateRepoDeploy (before reading the body)
+               • verify signature against GitHub's JWKS; iss, aud, exp
+               • load the app's binding
+               • repository_id + repository_owner_id match the binding
+               • ref = refs/heads/<branch>; event_name ∈ {push, workflow_dispatch}
+               • optional: job_workflow_ref, environment
+               • jti not already used
                        │
-      poll (floor) ────┤  or  poke (latency optimization)
                        ▼
-               helix-portal drain worker                          control plane
-               • resolve tag → digest (manifest only, ~hundreds of bytes)
-               • unchanged? stop.  ← bounds amplification to ~1
-               • pull layer by digest
-               • verify attestation: repository_id == binding, ref, event_name
-                       │
-                       ▼
-               existing deploy path                             no shortcut
-               • validate.ts (zip-slip, symlink, MIME, bomb)
+               existing deploy path                      no shortcut
+               • spoolUpload → validate.ts (zip-slip, symlink, MIME, bomb)
                • csp-lint advisory • manifest approval write-gate
-               • copy bytes to Blob • land as `preview`
-               • human promotes (architecture §5.1)
+               • copy bytes to Blob • land as `preview` with provenance
+               • a person promotes (architecture §5.1)
 ```
 
-**The artifact store is transport, not the serving store.** Bytes are copied into
-Helix's own Blob at intake, as today. A GHCR outage or a deleted package delays a
-*deploy*; it never takes a live app down.
+### 2.3 The binding
 
-### 2.3 The binding is portal-side app config
+The binding is portal-side app config: repository `owner/name`, branch, and two
+optional constraints (§2.5). Creating or changing it requires `authenticate` +
+`ownsApp`, like any other app setting.
 
-The owner types the repo/package into app settings, gated by the existing
-`ownsApp` authz (`apps/portal/src/plugins/auth.ts`). **There is no
-ownership-proof ceremony**, and it would not buy anything:
+**There is no step to prove you own the repo.** A binding grants deploy rights
+*into* the binder's own app. Pointing your app at someone else's repo lets their
+pushes land previews of your app, which hurts nobody but you. Pointing someone
+else's app at your repo requires write access to their app, which `ownsApp`
+denies.
 
-- Binding *someone else's public* repo is harmless — it is `curl` with extra
-  steps, granting no access the binder did not already have.
-- Binding *your* repo to *my* app requires portal write access to your app, which
-  `ownsApp` already denies.
-- For *private* repos the confused-deputy risk is real (Helix's credential
-  out-ranks the binder's), and the control is GitHub's **installation scope**
-  (§2.6) — authorization inherited, not adjudicated.
+**The numeric repository ID is the identity, pinned on first use.** Repos can be
+renamed or transferred, and a freed-up `owner/name` can be claimed by someone
+else, so the name is not a safe long-term identifier. The first token that
+verifies and whose `repository` claim matches the configured name pins
+`repository_id` and `repository_owner_id` on the binding. After that, both IDs
+must match and the name is display only. Requiring the owner ID means a repo
+transferred to another account stops deploying until the app owner rebinds it.
+Pinning from the token means the portal never calls the GitHub API, which for a
+private repo would need a credential.
 
-**The one thing bind time must do is resolve the repo name to its immutable
-numeric `repository_id`** and store that. Repos are renamable and a freed-up
-`owner/name` can be reclaimed by a third party, so the name string is not a safe
-long-term identifier — and that ID is what the attestation check compares against
-(§2.5).
+### 2.4 Verification
 
-### 2.4 Trigger: polling is the floor, poke is an optimization
+Each rule closes a specific hole:
 
-**Polling must be sufficient on its own.** Under ADR
-[0028](../adr/0028-deployment-model-customer-deployed.md) the portal is
-internal-ingress by default (`infra/azure/main.bicep:147`, `portalExternal =
-false`) and Entra-gated when exposed (`infra/azure/README.md:145`) — a meaningful
-fraction of deployments can receive **no** inbound call from GitHub at all. Build
-for that case and everything else is gravy.
+| Rule | Why |
+| --- | --- |
+| `iss` = configured issuer (default `https://token.actions.githubusercontent.com`) | Only GitHub-signed tokens. Configurable for GitHub Enterprise Cloud's customized issuer and, later, GitHub Enterprise Server. |
+| Signature against the issuer's JWKS; `exp`/`nbf`/`iat` valid | Standard JWT verification, same clock-skew allowance as the existing OIDC verifier. |
+| `aud` = this deployment's portal origin, exactly | A token minted for another service can't be replayed here. GitHub's default audience (`https://github.com/<owner>`) is refused. |
+| `repository_id`, `repository_owner_id` = the binding's pinned values | Only the bound repo, and not after a rename, reclaim or transfer. |
+| `ref_type` = `branch`, `ref` = `refs/heads/<branch>` | Only the tracked branch. A `pull_request` token carries `refs/pull/<n>/merge` and fails here. |
+| `event_name` ∈ {`push`, `workflow_dispatch`} | `pull_request_target`, `workflow_run` and `issue_comment` run with the base branch's `ref` on behalf of someone who may not have push access. An allowlist keeps new event types out by default. |
+| `jti` not already recorded on a version | A captured token can't produce a second version. A deploy that fails validation doesn't consume it, so a retry within the token's lifetime works. |
 
-**`POST /poke/:slug`** — no auth, no payload, no authority; a pure "wake up and
-check" hint. This is *preferred over a GitHub webhook precisely because it
-carries nothing*: an HMAC webhook costs a shared secret per repo (storage,
-rotation, config UX) and delivers a payload you must then treat as trusted input.
-The poke has neither, and forging it is meaningless — everything the deploy
-depends on is fetched and verified by Helix independently.
+### 2.5 Optional constraints
 
-Design notes:
+Without these, anyone who can push to the bound branch can deploy a preview. That
+is the boundary `helix deploy` with a stored token already has. Owners can narrow
+it:
 
-- **Coalesce; do not rate-limit-reject.** A poke sets a dirty flag (`checkDueAt`
-  on the binding row); a worker drains dirty bindings at most once per interval.
-  10,000 pokes and 1 poke then do **identical work** — hammering is free rather
-  than merely bounded, and the flag is replica-safe because it is a DB column.
-  Where a hard limiter is also wanted, use the `CounterStore` / `rate_counters`
-  primitive from the ADR [0011](../adr/0011-in-memory-rate-limiting.md)
-  resolution (atomic cross-replica upsert), never an in-memory map.
-- **Manifest-first.** Resolve the OCI manifest before pulling any layer, so one
-  cheap inbound request cannot trigger an expensive outbound download.
-- **Return `202` unconditionally.** Slugs are already public as subdomains (ADR
-  [0019](../adr/0019-subdomain-per-app-isolation.md)), so enumeration is a
-  non-concern — but there is no reason to leak existence either.
+- **Workflow pin.** `job_workflow_ref` must equal a given value, such as the
+  Helix reusable workflow at a tag. Stops a different workflow on the same branch
+  from deploying.
+- **Environment.** `environment` must equal a given name. GitHub's environment
+  protection rules (required reviewers, wait timers, branch restrictions) then
+  apply before the job can get a token at all.
 
-Because the poke carries no authority, it is the *one* control-plane route that
-could plausibly be exposed publicly even where the rest of the portal
-deliberately is not. That is an open question (§2.9), not a blocker — polling is
-the floor.
+### 2.6 What a GitHub token can do
 
-### 2.5 Verification, and the mistake to avoid
+**Exactly one thing: create a preview version of the bound app.** The GitHub
+verifier is not part of the shared verifier chain behind `authenticate`. If it
+were, a GitHub-signed token would pass every route that only checks sign-in. One
+route, `POST /api/v1/apps/:slug/ci/versions`, uses its own preHandler,
+`authenticateRepoDeploy`, which yields a workload principal (repo ID, ref, sha,
+run ID, GitHub `actor` login) rather than an `Actor`. A GitHub token cannot
+promote, roll back, edit the binding, change access or capabilities, or mint dev
+tokens.
 
-Checking that "a valid attestation exists" is **not enough.** Anyone able to
-write the package could publish bytes carrying an *honest* attestation from a
-different repository, and a sloppy verifier waves it through. The verifier must:
+The preHandler runs before the handler reads the multipart body, so a refused
+request never spools an upload.
 
-1. assert the attestation's **`repository_id` equals the binding's stored ID**
-   (§2.3) — this is what that ID is for;
-2. constrain **`ref`** to the tracked branch;
-3. reject **`event_name`** of `pull_request` / `pull_request_target` — the
-   fork-poisoning guard;
-4. record the resolved **digest** on the version; tags are lookup only, never
-   identity.
+The route sits outside the Entra perimeter: Conditional Access governs Entra
+sign-ins, and a GitHub token never passes through Entra. The controls on this
+route are GitHub's (branch protection, rulesets, environments), and its authority
+is limited to a preview behind the promote gate.
 
-**GitHub Actions OIDC is not part of this path.** In a pull model the CI never
-talks to Helix, so there is no live token to present. The workflow's OIDC
-identity still reaches Helix — *embedded in the Sigstore attestation*, bound to
-the bytes and verifiable offline, which is the stronger form of the same claim.
-(OIDC remains worth adopting on the **separate direct-upload path**, where
-`helix deploy` from CI today carries a long-lived portal token in repo secrets;
-that is ADR [0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) verifier-chain work,
-not this feature.)
+### 2.7 CLI
 
-**The trust boundary, stated plainly:** provenance proves origin, not safety.
-Whoever can publish to the bound package can land a **preview** of the bound app.
-That set is approximately whoever has push access to the repo — *exactly* the
-boundary already accepted for `helix deploy`, so it is not a regression. The human
-promote gate (architecture §5.1) is what stands between a preview and traffic.
+When `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are set
+and `HELIX_TOKEN` is not, `helix deploy` requests an ID token with `audience` set
+to the portal origin (from `GET /api/v1/config`) and uploads to the CI route. An
+explicit `HELIX_TOKEN` still takes the normal route, so existing CI setups keep
+working.
 
-### 2.6 Private repos: the GitHub App
+### 2.8 Schema sketch (portal-owned, as always)
 
-**The public path needs no credential at all.** When private repos or packages
-are in scope:
+- **`repo_bindings`** — `(appId unique, provider, repoFullName, branch,
+  repositoryId?, repositoryOwnerId?, workflowRef?, environment?, createdBy,
+  createdAt, updatedAt)`. The two IDs are null until the first deploy pins them.
+- **`Version`** gains its source: `sourceProvider`, `sourceRepositoryId`,
+  `sourceRef`, `sourceCommitSha`, `sourceWorkflowRef`, `sourceRunId`,
+  `sourceRunAttempt`, and `sourceTokenJti` (unique). This preserves ADR
+  [0018](../adr/0018-deploy-model-immutable-versions.md) immutability and makes
+  "which commit and run produced this version" answerable in the portal.
 
-- The credential of record is a **GitHub App private key** in the existing
-  `SecretStore` seam (ADR [0006](../adr/0006-secret-custody-seam.md)) — not a
-  PAT, not a deploy key. Installation access tokens are ~1 h, repo-scoped and
-  centrally revocable, and can be scoped *below* the installation grant via the
-  `repositories` / `permissions` body on
-  `POST /app/installations/{id}/access_tokens`.
-- **Confused-deputy control comes from GitHub's installation scope**, not a
-  Helix-side proof: the token simply cannot read repos the customer did not
-  install the app on. Bind-time validation ("we can't see that repo — is the app
-  installed?") is UX, not a security control.
-- **Under ADR [0028](../adr/0028-deployment-model-customer-deployed.md), each
-  customer deployment registers its own App.** One Helix-owned App would require
-  shipping its private key into every customer deployment, letting each
-  customer's Helix mint tokens for every other customer's installation —
-  disqualifying. Onboarding uses the **GitHub App Manifest flow**
-  (`github.com/settings/apps/new?manifest=…`), which exists for exactly this
-  self-hosted case: the customer confirms once and GitHub returns the generated
-  private key, webhook secret and client credentials in a single exchange,
-  straight into `SecretStore`.
-- Handle `installation.deleted` / `installation_repositories` so revoked bindings
-  fail loudly rather than silently.
+Binding changes and CI deploys write `audit_events` rows. A token that is
+GitHub-signed but fails the binding check also writes one. A token that fails
+signature verification does not, so unauthenticated noise cannot fill the table.
 
-> **Unverified, and load-bearing.** Whether a *third-party* App's installation
-> token authenticates to **GHCR for private container packages** is not settled.
-> The mechanism is not categorically impossible — Actions' `GITHUB_TOKEN` *is* an
-> installation token and works against GHCR — but private package access has
-> historically been governed by per-package access lists rather than repo
-> permissions. **Verify empirically before building phase 3.** If it does not
-> work cleanly, the fallback is **GitHub Releases** as the private-path backend,
-> where installation tokens definitely work. This is the strongest argument for
-> keeping Releases first-class rather than going GHCR-only.
+### 2.9 Telemetry
 
-### 2.7 Schema sketch (portal-owned, as always)
+The CI route gets a root span `helix.deploy.repo` (wrapping the existing
+`helix.deploy.bundle`) and a counter `helix.deploy.repo_requests` with a bounded
+`outcome`: `accepted` or one of the denial reasons. Refusals also log at `warn`
+with `event: "repo_deploy.denied"`. The token, the GitHub `actor` login and the
+repo name are never attributes or dimensions. See ADR
+[0051](../adr/0051-repo-backed-apps-ci-push-github-oidc.md) Consequences.
 
-- **`git_bindings`** — `(appId, provider, repositoryId, repoFullName,
-  artifactRef, trackedRef, checkDueAt, lastSeenDigest, lastCheckedAt,
-  lastError?)`. `repositoryId` is the immutable numeric ID and is the field the
-  attestation is checked against; `repoFullName` is display only. The GitHub App
-  private key is **not** here — it is one platform-level secret in `SecretStore`.
-- **`Version`** gains the provenance it landed with: `sourceDigest`,
-  `sourceCommitSha`, `sourceRepositoryId`. Preserves ADR
-  [0018](../adr/0018-deploy-model-immutable-versions.md) immutability; makes
-  "where did this bundle come from" answerable in the portal.
-
-Each transition writes an `audit_events` row (`binding.check`, `binding.pull`,
-`binding.reject`, …) like every other mutation.
-
-### 2.8 Threat model (abridged — see ADR [0030](../adr/0030-repo-backed-apps-pull-attested-artifacts.md) for the full table)
+### 2.10 Threat model (abridged — see ADR [0051](../adr/0051-repo-backed-apps-ci-push-github-oidc.md) for the full table)
 
 | Threat | Mitigation |
 | --- | --- |
 | Malicious dependency `postinstall` runs on platform infra | Structurally impossible — Helix runs no build |
-| Bytes attested from a repo the attacker controls | Attestation `repository_id` must equal the binding's stored ID (§2.5) |
-| Repo renamed / `owner/name` reclaimed by a third party | Binding stores the immutable numeric ID, not the name (§2.3) |
-| Tag moved to a malicious image | Digest resolved, pinned and recorded; tag is lookup only (§2.5) |
-| Fork / PR workflow publishes an artifact | Attestation `ref` + `event_name` constrained (§2.5) |
-| Poke used to DoS or amplify | Coalesce-to-dirty-flag + manifest-first check (§2.4) |
-| Poke used to inject a deploy | Carries no authority or payload; Helix verifies everything itself (§2.4) |
-| Confused deputy on a private repo | GitHub App installation scope (§2.6) |
-| Cross-customer token minting | Per-deployment App via the Manifest flow (§2.6) |
-| Malicious artifact reaches live traffic | Lands as `preview`; human promote (architecture §5.1) |
+| Token for another service replayed to Helix | Exact `aud` match; default audience refused (§2.4) |
+| Valid token from a repo the attacker controls | `repository_id` + `repository_owner_id` must match (§2.3) |
+| Repo renamed, reclaimed or transferred | IDs pinned on first use; owner ID check (§2.3) |
+| Fork / PR workflow deploys | `ref` check and `event_name` allowlist (§2.4) |
+| Another workflow on the branch deploys | Optional workflow pin (§2.5) |
+| GitHub token used on other portal routes | Not in the `authenticate` chain; one route only (§2.6) |
+| Captured token replayed | Unique `jti` per version (§2.4) |
+| Unauthenticated uploads | Refused before the body is read (§2.6) |
+| Malicious bundle reaches live traffic | Lands as `preview`; a person promotes |
 | Payload bundled into served JS (chalk/debug class) | **Unchanged, out of scope** — CSP + gateway |
 
-**Honest limits.** For private repos the portal (or a mechanism-zone fetcher)
-holds a path to the App key and briefly a plaintext installation token — that is
-exposure, not its absence, though materially milder than §3's case because no
-untrusted code runs next to it. And a malicious dependency in the author's build
-can steal the author's own CI credentials on GitHub's runner; that risk lives
-with the author, who already owns it, and Helix's exposure is bounded to a
-*preview* of that one app behind the promote gate.
+**Limits.** A malicious dependency in the author's build can steal the author's
+own CI credentials on GitHub's runner, and can tamper with the bundle before it is
+uploaded. That risk sits with the author, who already owns it. Helix's exposure is
+a preview of that one app, behind the promote gate.
 
-### 2.9 Phasing and open questions
+### 2.11 Requirements, phasing and open questions
 
-1. **Public repos, public packages, poll-only.** Binding + ID resolution, drain
-   worker, OCI pull by digest, attestation verify, hand to the existing deploy
-   API. No credential anywhere.
-2. **`POST /poke/:slug`.** Dirty flag + coalescing drain.
-3. **Private repos/packages.** GitHub App via the Manifest flow, `SecretStore`,
-   installation tokens, `installation.*` webhooks. *Gated on the GHCR question
-   in §2.6.*
-4. **Portal UX.** Connect-repo in `apps/portal-web`, binding history,
-   last-checked / last-digest, manual "check now."
-5. **Later.** GitLab / Bitbucket / Azure DevOps (all have comparable OIDC +
-   registry stories); monorepo fan-out; PR preview environments.
+**Reachability.** The runner must reach the portal. `portalExternal` defaults to
+`true`, so GitHub-hosted runners work out of the box; an install that sets it to
+`false` needs a self-hosted or privately networked runner.
 
-Open: the GHCR/installation-token question (§2.6); whether unattested artifacts
-are rejected outright or allowed behind an approval-gated per-binding opt-out;
-how `/poke/:slug` is exposed when the portal is internal or Entra-gated (a
-carved-out unauthenticated path is preferred — the route is provably inert —
-but *nothing is blocked*, since polling is the floor); whether Releases is
-first-class or fallback; and where the drain worker lives (it holds the App key
-path in phase 3, the mechanism-zone argument that made `helix-egress` its own
-deployable — but it runs no untrusted code, which was the reason that actually
-mattered).
+1. **Verifier, binding and route,** with the adversarial tests.
+2. **CLI and workflows:** token exchange in `helix deploy`, starter workflow,
+   reusable workflow.
+3. **Portal UX:** connect-repo on the app's settings, pinned identity, optional
+   pins, per-version commit and run links.
+4. **Later:** GitLab CI, Azure Pipelines and Bitbucket Pipelines (all issue OIDC
+   tokens with repo and branch claims), GitHub Enterprise Server, several branches
+   per app, PR preview environments.
+
+Settled at acceptance (ADR-0051, 2026-10-19): no auto-promote, so CI deploys
+always land as a preview; one binding per app; `portalExternal` defaults to
+`true`; and a stored `HELIX_TOKEN` is not a supported way to deploy from CI.
 
 ---
 
@@ -434,44 +393,49 @@ breaks; whether to require a committed lockfile and pin the toolchain image; and
 per-app plus platform-wide build concurrency caps so a push storm cannot fan out
 unbounded paid containers.
 
+
 ---
 
-## 4. What crawl deliberately does not solve
+## 4. What crawl does not solve
 
-§2 is cheaper and safer on every axis but one, and the gap is worth naming
-because it is the reason §3 survives: **§2 assumes the author has working CI.**
+§2 is cheaper and safer than §3 on every axis but one, and that one is why §3 is
+kept: **§2 assumes the author has working CI.**
 
-The platform's target user is a vibe-coder. "Add a GitHub Actions workflow that
-builds, pushes an OCI artifact with ORAS, and attests it" is a real ask of
-someone whose mental model stops at "I made an app." Mitigations, in order of
-how much they help:
+The platform's target user is often a vibe-coder. Adding a GitHub Actions
+workflow is a real ask of someone whose mental model stops at "I made an app."
+Mitigations, in order of how much they help:
 
-- **Ship the workflow.** A starter file plus an `helix` command that writes it into
-  the repo turns this into a copy-paste. Most of the gap closes here.
-- **A reusable workflow** (`azxlabs/deploy@v1`) the author calls in five lines,
-  so upgrades to the build/attest steps do not require every repo to change.
+- **Ship the workflow.** A starter file, plus a `helix` command that writes it
+  into the repo, makes this a copy-paste. The workflow holds no secret, so there
+  is nothing to configure in the repo's settings.
+- **A reusable workflow** the author calls in a few lines, so changes to the
+  build and deploy steps don't require every repo to change.
 - Neither helps an author with **no GitHub repo at all**, or an agent-generated
-  app that never touches GitHub. That is the genuine residual, and it is the
-  scenario §3 exists for.
+  app that never touches GitHub. That is the remaining gap, and it is what §3
+  exists for.
 
-Also out of scope for both rungs, as before:
+Also out of scope for both rungs:
 
-- **Letting *running* apps read private repos at runtime** — that is a
-  fetch-proxy connection (`fetch-proxy.md`), not this.
+- **Letting *running* apps read private repos at runtime.** That is a fetch-proxy
+  connection (`fetch-proxy.md`), not this.
 - **Monorepo multi-app fan-out**, build matrices, caching layers.
-- **PR preview environments** — needs ephemeral subdomains.
+- **PR preview environments.** They need ephemeral subdomains.
 
 ## 5. Related
 
-- ADR [0030](../adr/0030-repo-backed-apps-pull-attested-artifacts.md) — the crawl
+- ADR [0051](../adr/0051-repo-backed-apps-ci-push-github-oidc.md) — the crawl
   rung's decision record (full threat table, decisions, open questions).
+- ADR [0030](../adr/0030-repo-backed-apps-pull-attested-artifacts.md) — the
+  superseded pull model, kept as a record.
 - ADR [0026](../adr/0026-hosted-build-isolation-prerequisites.md) — the run
   rung's launch gates.
+- ADR [0024](../adr/0024-portal-cli-bearer-jwt-jwks.md) — the portal's bearer JWT
+  verification that the GitHub verifier sits beside.
 - ADR [0018](../adr/0018-deploy-model-immutable-versions.md) /
   `docs/features/registry-and-deploys.md` — the preview-then-promote gate both
   rungs rejoin.
 - ADR [0028](../adr/0028-deployment-model-customer-deployed.md) — customer-deployed,
-  which drives the per-deployment GitHub App and the reachability floor.
-- `docs/design/secrets-and-connections.md` — the `SecretStore` custody seam.
-- `docs/design/fetch-proxy.md` — the policy/mechanism split both rungs borrow.
+  which makes portal reachability a per-install setting.
+- `docs/design/secrets-and-connections.md` — the `SecretStore` custody seam (§3).
+- `docs/design/fetch-proxy.md` — the policy/mechanism split §3 borrows.
 - architecture §3 (three planes), §5.1 (deploy), §10 (threat model).

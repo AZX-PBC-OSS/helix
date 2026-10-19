@@ -24,7 +24,10 @@ This runs the OIDC device flow: it prints a URL and a code, you approve in a
 browser, and the CLI caches the token at `~/.config/helix/tokens.json`. The
 token is refreshed silently and is bound to the portal it was issued for.
 
-For CI and scripts, set `HELIX_TOKEN` to a token instead — nothing prompts.
+To skip the prompt in a local script, set `HELIX_TOKEN` to a token instead.
+Don't store a Helix token as a CI secret: it expires and can't be refreshed
+there. Deploying from GitHub Actions is planned through repo connections, which
+use the workflow's own GitHub token instead of a stored one.
 
 ## Creating and deploying an app
 

@@ -576,8 +576,6 @@ Install the CLI from npm (needs Node 24+):
 npm i -g @azx-pbc/helix-cli          # puts `helix` on your PATH
 ```
 
-For CI, set `HELIX_TOKEN` and `HELIX_PORTAL_URL` instead of running `helix login`.
-
 **Upload limits:** {{MAX_FILE_MB}} MB per file, {{MAX_BUNDLE_MB}} MB per bundle,
 5 000 entries, 200:1 compression ratio. Only static asset types are accepted; symlinks and paths that
 escape the archive root are rejected. The upload also runs a **non-blocking CSP

@@ -32,7 +32,7 @@ Usage:
   helix skill    [--path <file>]   # write this deployment's agent skill to disk
 
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
-Env:  HELIX_PORTAL_URL, HELIX_TOKEN (static token — skips login; CI/scripts).
+Env:  HELIX_PORTAL_URL, HELIX_TOKEN (static token — skips login; local scripts).
 Config file: helix.json { slug, portalUrl, dir, description }
 Visibility: internal | group:<id>[,<id>...] | password | public
 `;

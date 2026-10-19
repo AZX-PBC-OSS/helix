@@ -387,8 +387,8 @@ param acmeServer string = 'https://acme-staging-v02.api.letsencrypt.org/director
 @description('Declare the wildcard TLS custom-domain bindings in-template (ADR-0044), referencing the cert in the ACA environment store by its deterministic name. TRUE only after the certbot bootstrap has run — a cert must exist before a hostname can bind, the one ordering a declarative template cannot express, and this flag bridges it: a gated apply on an install with no cert fails LOUDLY at the app PUT (invalid certificate reference) rather than silently. While false, applies keep the pre-ADR-0044 semantics: customDomains is omitted from the ingress entirely and any runtime-made binding is stripped (README "Known deploy gotchas"). Leave false for a fresh install\'s apps-phase apply, flip it after the first certbot job run, and never look back. Set it LITERALLY in the params file — do not source it from an env var: readEnvironmentVariable renders a set-but-blank variable as \'\' = false, and the blank direction is the silent-wipe one.')
 param wildcardTlsBound bool = false
 
-@description('Expose the portal on the public LB at portal.<appsDomain>, gated by Entra OIDC (portal audience + platform-admin App Role). Default false (internal ingress — secure by default). The portal is the control plane + the azx-cli target, so a customer-run install (ADR-0028) generally needs it reachable; per-app authz is enforced by ownsApp (ADR-0007, issue #9 closed), and identity/device posture is the perimeter (Conditional Access), not network location. When true, portal.<appsDomain> gets its own custom-domain binding on the wildcard cert (runtime-bound by the certbot job, declared in-template once wildcardTlsBound=true — ADR-0044). See README "Portal access".')
-param portalExternal bool = false
+@description('Expose the portal on the public LB at portal.<appsDomain>, gated by Entra OIDC (portal audience + platform-admin App Role). Default true (ADR-0051 decision 11): the portal is the control plane, the helix CLI target and the CI deploy target for repo-backed apps, so an install is not usable unless people and GitHub runners can reach it. Set false only to reach the portal over a private network path instead; per-app authz is enforced by ownsApp (ADR-0007, issue #9 closed), and identity/device posture is the perimeter (Conditional Access), not network location. When true, portal.<appsDomain> gets its own custom-domain binding on the wildcard cert (runtime-bound by the certbot job, declared in-template once wildcardTlsBound=true — ADR-0044). See README "Portal access".')
+param portalExternal bool = true
 
 @description('Permit `public` (anonymous) apps on this install. Sets the matched pair EDGE_ALLOW_PUBLIC_APPS + PORTAL_ALLOW_PUBLIC_APPS — one param because the two planes MUST agree: the portal gates setting the visibility and the edge gates serving it, so a split leaves apps the portal accepts but the edge 403s. Default false (deny — the app-level default too). Review ADR-0010 (anonymous shared writes) before enabling.')
 param allowPublicApps bool = false
@@ -1262,7 +1262,7 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     userAssignedIdentityId: identity.outputs.portalIdentityId
     image: '${imageRegistry}/helix-portal:${imageTag}'
     targetPort: 3001
-    external: portalExternal // internal by default; portalExternal exposes it on the public LB (Entra-gated)
+    external: portalExternal // public LB by default (Entra-gated, ADR-0051); false keeps it internal
     // portal.<appsDomain> rides the wildcard cert but needs its own binding
     // (a custom-domain binding is per container app). Declared, not
     // runtime-bound, once the bootstrap has run (ADR-0044).

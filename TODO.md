@@ -158,6 +158,12 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
       and approval-note recovery separately from background jobs. These were removed from
       jobs scope on 2026-10-07; no replacement UX or implementation is approved.
 
+## Repo-backed apps (ADR-0051, Accepted)
+
+- [ ] **Phase 1: the GitHub OIDC verifier, `repo_bindings`, and `POST /api/v1/apps/:slug/ci/versions`.** The verifier stays out of the shared `authenticate` chain and is used only by the CI route's own preHandler, which runs before the multipart body is read. IDs are pinned on first use, `jti` is unique per version, and the route gets the `helix.deploy.repo` span and `helix.deploy.repo_requests` counter. The adversarial suite ships with it: wrong issuer or audience, GitHub's default audience, another repo's valid token, a transferred repo, each rejected `event_name`, a `pull_request` ref, a replayed `jti`, a GitHub token on every `authenticate`-only route, and no body read on refusal. — ADR-0051 decisions 3–8
+- [ ] **Phase 2: `helix deploy` token exchange plus the starter and reusable workflows.** Detect `ACTIONS_ID_TOKEN_REQUEST_URL`, request a token with the portal origin as `audience`, and leave an explicit `HELIX_TOKEN` on the normal route. — ADR-0051 decision 9
+- [ ] **Phase 3: connect-repo UX in `apps/portal-web`.** Binding form, the pinned repo identity, the optional workflow and environment pins, and per-version commit and run links. — ADR-0051 phasing
+
 ## Deferred / v2
 
 - [ ] **Stale-form concurrency on the policy write paths (`If-Match` / client-supplied `policyVersion`).** `apps.policyVersion` is CAS'd **server-internally** — the app row is read inside the transaction and the write CASes on the version read there, so two genuinely concurrent writers cannot lose each other and the loser gets a 409. What that deliberately does not cover is an owner whose Capabilities tab has been open for an hour: their PUT is a full replace computed from a pre-image the server never sees, so it still blind-overwrites whatever landed meanwhile. Closing it means the client sending the version it read (body field or `If-Match`) and threading it through the SPA forms and the `helix` CLI, plus deciding optional-for-compat vs required. Chosen against for now because it changes the request shape on four routes to harden a case with no data-integrity failure — the last writer's intent is at least fully expressed. — docs/design/approvals.md §5, issue #24 follow-up (2026-08-14)

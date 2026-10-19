@@ -1,6 +1,6 @@
 # 0030. Repo-backed apps: pull CI-built attested artifacts (no hosted build)
 
-**Status:** Proposed (2026-07-27)
+**Status:** Superseded (2026-10-19) by ADR [0051](0051-repo-backed-apps-ci-push-github-oidc.md) — CI pushes the bundle, authenticated by GitHub Actions OIDC. See Resolution below. _(Proposed 2026-07-27; never implemented.)_
 **Related:** ADR [0026](0026-hosted-build-isolation-prerequisites.md) (hosted-build isolation prerequisites — the alternative this displaces), [0018](0018-deploy-model-immutable-versions.md) (upload-only, immutable versions — the path this rejoins), [0020](0020-static-only-apps-v1.md) (static-only apps), [0028](0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — the constraint that shapes credentials and reachability), [0006](0006-secret-custody-seam.md) (`SecretStore`), [0024](0024-portal-cli-bearer-jwt-jwks.md) (bearer JWT / JWKS verifier chain), [0011](0011-in-memory-rate-limiting.md) (superseded — the `CounterStore` / `rate_counters` primitive this reuses). **Design:** `docs/design/git-connections.md` (predates this ADR; its §4 build-sandbox mechanics are displaced — see Consequences).
 
 ## Context
@@ -98,3 +98,9 @@ Ship **repo-backed apps as pull-only over a CI-published, attested artifact**. H
 ## Provenance
 
 Design conversation, 2026-07-27. Three corrections landed against the initial framing and are recorded here because each removed machinery: (1) bind-time ownership proof is redundant — authorization is inherited from portal `ownsApp` and GitHub's installation scope, and the only thing bind time must do is resolve an immutable repo ID; (2) an unauthenticated poke beats an HMAC webhook *because* it carries no authority, and coalescing beats rate-limiting; (3) Actions OIDC has no role in a pull model — the workflow identity arrives inside the Sigstore attestation, which is the stronger form of the claim. The GHCR/installation-token question is flagged as unverified rather than assumed.
+
+## Resolution (2026-10-19)
+
+Superseded by ADR [0051](0051-repo-backed-apps-ci-push-github-oidc.md) before any of it was built. This ADR chose pull because the portal might be unreachable from GitHub (decision 5). In practice every deployment sets `portalExternal = true`, because the platform is not usable without a reachable portal. Once the portal is reachable, a push authenticated by the workflow's GitHub Actions OIDC token does the same job without GHCR, Sigstore verification, polling, the poke route, or a GitHub App for private repos, and the GHCR private-package question no longer needs an answer.
+
+These parts carry over to ADR 0051 unchanged: no hosted build (decision 1), the numeric `repository_id` as the identity (decision 4), no ownership ceremony for the binding (decision 4), the `ref` and `event_name` checks (decision 7), and every deploy landing as a preview through the existing pipeline (decision 8). The record above stays as the reasoning for the pull model, in case a deployment that cannot accept inbound traffic ever needs it.

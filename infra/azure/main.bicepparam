@@ -63,12 +63,12 @@ param acmeServer = readEnvironmentVariable('HELIX_ACME_SERVER', 'https://acme-st
 // (= false), and the blank direction is the silent-wipe one.
 param wildcardTlsBound = false
 
-// Portal access. false = internal ingress (secure default). true = expose the
-// control plane at portal.<appsDomain> on the public LB, gated by Entra OIDC
-// (per-app authz via ownsApp, ADR-0007). A customer-run install (ADR-0028)
-// generally needs this — the portal is the control plane + azx-cli target. See
-// README "Portal access".
-param portalExternal = false
+// Portal access. true (the default) = the control plane at portal.<appsDomain>
+// on the public LB, gated by Entra OIDC (per-app authz via ownsApp, ADR-0007).
+// The helix CLI and repo-backed CI deploys (ADR-0051) both need to reach it.
+// false = internal ingress, for an install that reaches the portal over a
+// private network path. See README "Portal access".
+param portalExternal = true
 
 // App visibility policy. Each sets a MATCHED PAIR of app env vars (edge serves,
 // portal authors) — deliberately one knob per mode so the two planes cannot

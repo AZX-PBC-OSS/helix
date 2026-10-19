@@ -50,9 +50,10 @@ calls live in `packages/cli/src/client.ts`.
 
 Two paths, in precedence order:
 
-1. **Static token** — `HELIX_TOKEN` / `--token` is sent as a bearer token verbatim. The CI/scripts
-   path; also how the portal's dev-token stub keeps working (`HELIX_TOKEN=$PORTAL_DEV_TOKEN`). Never
-   accepted by a production portal.
+1. **Static token** — `HELIX_TOKEN` / `--token` is sent as a bearer token verbatim. The local scripts
+   path; also how the portal's dev-token stub keeps working (`HELIX_TOKEN=$PORTAL_DEV_TOKEN`), which a
+   production portal never accepts. Not a supported way to deploy from CI: repo-backed deploys use
+   the workflow's GitHub Actions OIDC token (ADR-0051).
 2. **`helix login`** — the **OIDC device flow** (RFC 8628, `deviceFlow.ts` over `openid-client`).
    The CLI asks the portal `GET /api/v1/auth/config` which issuer/client to use, prints a
    verification URL + code, and polls while you approve in a browser.
@@ -82,7 +83,7 @@ rationale in [ADR-0032](../adr/0032-cli-naming-and-distribution.md).
 
 - **Per-app, not a monolithic dashboard tool** — `helix` reads the app's own `helix.json` from the
   cwd, like `git`/`vercel`, so the deploy command is the same from any app directory.
-- **Static token vs interactive login, in that precedence** — `HELIX_TOKEN` keeps CI and scripts
+- **Static token vs interactive login, in that precedence** — `HELIX_TOKEN` keeps local scripts
   zero-prompt and lets the portal's dev-token stub keep working; everyone else uses the device flow.
   Either way the portal verifies the bearer statelessly over JWKS.
 - **Token cache bound by portal origin + issuer** — a cached token can't be replayed against a
