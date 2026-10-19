@@ -6,8 +6,8 @@
 # can pin this workflow on the binding, so only it can deploy:
 #   AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1
 #
-# Source of truth: integrations/helix-actions in the Helix repo, mirrored to the
-# public AZX-PBC-OSS/helix-actions repo and tagged there.
+# Source of truth: integrations/helix-actions in AZX-PBC-OSS/helix, mirrored to
+# the public AZX-PBC-OSS/helix-actions repo and tagged there (see SYNC.md).
 name: Deploy to Helix
 
 on:

@@ -1,0 +1,16 @@
+# Lints this repository's workflows with actionlint on every push and PR.
+name: Lint
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint
+        run: bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
+      - name: Run actionlint
+        run: ./actionlint -color
