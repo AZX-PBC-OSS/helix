@@ -59,7 +59,8 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
     rhythm is the Versions tab's own table.
   - **Versions** — history with promote/rollback (the live version lifecycle).
   - **Capabilities** — a manifest editor against `GET`/`PUT /api/v1/apps/:slug/manifest` (LLM
-    models + budget, data flags/lists, external origins, fetch-proxy origins, MCP grants — see
+    models + budget, data flags/lists, external origins, fetch-proxy origins, MCP grants, offline
+    scope, background jobs — see
     [capabilities-and-manifests.md](./capabilities-and-manifests.md)).
   - **Usage** — opens with a **Visitors** section for the owner or an admin (visits, unique
     visitors, approximate location off `GET /api/v1/apps/:slug/visitors`; see

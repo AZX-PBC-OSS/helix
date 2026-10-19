@@ -110,6 +110,20 @@ describe("DeltaList chips", () => {
     expect(screen.getByText("cfg[-v2]")).toBeDefined();
     expect(screen.queryByText("HIGH RISK")).toBeNull();
   });
+
+  it("renders a jobs type delta with its qualified type", () => {
+    render([
+      { path: "jobs.types[+jobs:fetch]", to: "jobs:fetch", risk: "low" },
+      { path: "jobs.types[-jobs:legacy]", from: "jobs:legacy" },
+    ]);
+    // The shared deltaHelp resolves both membership directions to the
+    // background-jobs entry (never the unknown-path fallback), and the chips
+    // carry the full qualified type.
+    expect(screen.getAllByText("Background jobs").length).toBe(2);
+    expect(screen.getByText("jobs:fetch")).toBeDefined();
+    expect(screen.getByText("jobs:legacy")).toBeDefined();
+    expect(screen.getByText("ROUTINE")).toBeDefined();
+  });
 });
 
 describe("DeltaList tooltip", () => {

@@ -233,9 +233,13 @@ a "pending approval" banner on app detail. See [portal-web.md](./portal-web.md).
   catalogue-aware validation refuses *new* grants of types no serving server installs. The edge
   registry projection carries the effective grant and the app's jobs lifecycle generation on both
   serving surfaces (production and dev), refreshed by the existing LISTEN/NOTIFY loop; a malformed
-  stored grant projects to "no grant" (deny). Still not built: the jobs plane itself is not
-  assembled yet, the edge does not yet enforce the grant on submissions, and the SPA's capability
-  editor has no jobs card yet (`docs/design/background-jobs-plane.md`).
+  stored grant projects to "no grant" (deny). The capability editor's Background jobs card selects
+  advertised types, keeps saved types the deployment no longer offers visible and removable, and
+  offers Retry when discovery fails. The edge **does** enforce the grant on submission: a job
+  request whose qualified type the app's projected grant does not name is refused 403 `forbidden`
+  before anything is forwarded, on both serving surfaces (production and dev gateway).
+  Still not built: the jobs plane itself is not assembled yet — no runner executes accepted work
+  and the local/deployment wiring is its own tickets (`docs/design/background-jobs-plane.md`).
 - **Per-delta partial approval** — v1 approves/denies the whole submission bundle; splitting a
   request is a deliberate future refinement (`docs/design/approvals.md` §9).
 - **Approval notifications** — the queue is pull-based for v1; no push when a request is filed or
