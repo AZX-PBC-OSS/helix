@@ -18,6 +18,54 @@ upload.
 A CI deploy is always a preview. It goes live only when someone promotes it, in
 the portal or with `helix promote`.
 
+## How it stays secure without a shared secret
+
+A stored deploy key is a password: anyone who copies it can use it, from
+anywhere, until someone notices and rotates it. Helix doesn't use one. A deploy
+is accepted because GitHub vouches for the job that sent it.
+
+1. **The job asks GitHub for an identity token.** A workflow with
+   `permissions: id-token: write` can request a short-lived token from GitHub's
+   OIDC provider. GitHub signs it, and it states facts GitHub observed about the
+   run: which repository, branch, event, and workflow it came from. The job
+   can't change those facts, because changing them would break GitHub's
+   signature.
+2. **The token is addressed to your portal.** The CLI asks for a token whose
+   audience is your portal's own URL. Helix refuses tokens addressed to anything
+   else, so a token minted for another service can't be used here.
+3. **Helix checks the signature and the facts.** The portal verifies the token
+   against GitHub's published signing keys. Then it compares the token's facts
+   with the connection you set up: the right repository, the right branch, and
+   an allowed trigger. The rules are in [What can deploy](#what-can-deploy).
+4. **The token is spent on one upload.** A token produces at most one version
+   and expires shortly after it is issued, so a copy captured from a log is of
+   little use.
+
+That avoids the usual problems with a stored credential:
+
+- **There is nothing to leak or rotate.** Helix stores no secret for this, and
+  you add none to the repository. Each run gets a fresh token, and the token
+  expires on its own.
+- **It only works from your repository.** A token is valid only when GitHub says
+  it came from the connected repository and branch. Helix records the
+  repository's numeric GitHub ids on the first deploy, so a different repository
+  that later takes the same name is refused.
+- **It can do one thing.** A GitHub token is accepted on exactly one route:
+  uploading a version to an app connected to that repository and branch. It
+  can't promote, roll back, or change any app's settings or access.
+- **A person still decides what goes live.** CI deploys always land as previews,
+  and there is no setting to send them straight to live.
+- **Your build can't mint tokens.** In the workflow `helix ci init` writes, the
+  job that installs and builds your code has no permission to request a token.
+  Only the separate deploy job, which runs just the Helix CLI, can request one.
+  A malicious dependency can't take the deploy credential, because its job never
+  has one.
+
+What you still own is who can trigger a deploy. By default, anyone who can push
+to the connected branch can deploy a preview. That is the same boundary a stored
+deploy key would have. Branch protection, and the
+[optional limits](#optional-limits) below, narrow it further.
+
 ## Connect a repository
 
 You need to own the app, have the `helix` CLI signed in to your portal, and run
