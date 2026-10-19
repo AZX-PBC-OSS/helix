@@ -111,6 +111,25 @@ describe("RepositoryTab", () => {
     expect(writes).toEqual([["PUT", { repoFullName: "octo-org/octo-app", branch: "main" }]]);
   });
 
+  it("lets an environment name contain a space and sends trimmed values", async () => {
+    const writes: unknown[] = [];
+    stubApi(NO_BINDING, (method, body) => {
+      writes.push(body);
+      return { status: 200, body: BINDING };
+    });
+    render();
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("Repository"), " octo-org/octo-app ");
+    await user.click(screen.getByRole("button", { name: /optional limits/ }));
+    const env = screen.getByLabelText("Only this environment");
+    await user.type(env, "Prod env ");
+    expect((env as HTMLInputElement).value).toBe("Prod env ");
+    await user.click(screen.getByRole("button", { name: "Connect" }));
+    expect(writes).toEqual([
+      { repoFullName: "octo-org/octo-app", branch: "main", environment: "Prod env" },
+    ]);
+  });
+
   it("flags an invalid repository and keeps Connect disabled", async () => {
     stubApi(NO_BINDING);
     render();

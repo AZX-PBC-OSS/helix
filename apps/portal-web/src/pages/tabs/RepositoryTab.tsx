@@ -128,31 +128,42 @@ function RepositoryCard({ app, binding }: { app: App; binding: RepoBinding | nul
   const [advanced, setAdvanced] = useState(Boolean(binding?.workflowRef || binding?.environment));
   const [disconnecting, setDisconnecting] = useState(false);
 
+  // The inputs hold what was typed; validation and the request use the
+  // trimmed values, so an environment name like "Prod env" can be typed.
+  const clean: Draft = {
+    repoFullName: draft.repoFullName.trim(),
+    branch: draft.branch.trim(),
+    workflowRef: draft.workflowRef.trim(),
+    environment: draft.environment.trim(),
+  };
   const errors = {
-    repoFullName: fieldError(RepoFullNameSchema, draft.repoFullName),
-    branch: fieldError(BranchNameSchema, draft.branch),
-    workflowRef: fieldError(WorkflowRefSchema, draft.workflowRef),
-    environment: fieldError(EnvironmentNameSchema, draft.environment),
+    repoFullName: fieldError(RepoFullNameSchema, clean.repoFullName),
+    branch: fieldError(BranchNameSchema, clean.branch),
+    workflowRef: fieldError(WorkflowRefSchema, clean.workflowRef),
+    environment: fieldError(EnvironmentNameSchema, clean.environment),
   };
   const valid =
-    draft.repoFullName !== "" && draft.branch !== "" && Object.values(errors).every((e) => !e);
+    clean.repoFullName !== "" && clean.branch !== "" && Object.values(errors).every((e) => !e);
   const repoChanges =
     binding !== null &&
     binding.repositoryId !== undefined &&
-    draft.repoFullName.toLowerCase() !== binding.repoFullName.toLowerCase();
+    clean.repoFullName.toLowerCase() !== binding.repoFullName.toLowerCase();
 
   function submit() {
     const body: SetRepoBindingRequest = {
-      repoFullName: draft.repoFullName,
-      branch: draft.branch,
-      ...(draft.workflowRef ? { workflowRef: draft.workflowRef } : {}),
-      ...(draft.environment ? { environment: draft.environment } : {}),
+      repoFullName: clean.repoFullName,
+      branch: clean.branch,
+      ...(clean.workflowRef ? { workflowRef: clean.workflowRef } : {}),
+      ...(clean.environment ? { environment: clean.environment } : {}),
     };
     save.mutate({ slug: app.slug, binding: body }, { onSuccess: () => setEditing(false) });
   }
 
-  const set = (k: keyof Draft) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setDraft((d) => ({ ...d, [k]: e.currentTarget.value.trim() }));
+  // Read the value now: the updater runs after React has cleared currentTarget.
+  const set = (k: keyof Draft) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.currentTarget.value;
+    setDraft((d) => ({ ...d, [k]: value }));
+  };
 
   return (
     <Card>
@@ -286,17 +297,19 @@ function RepositoryCard({ app, binding }: { app: App; binding: RepoBinding | nul
       <Eyebrow mb={4}>Workflow</Eyebrow>
       <Text size="xs" c="dark.2" mb={6} lh={1.5}>
         From the app&apos;s directory, <Code>helix ci init</Code> connects the repo and writes a
-        workflow tailored to its build. Or add this as{" "}
-        <Code>.github/workflows/helix-deploy.yml</Code>, with a <Code>helix.json</Code> naming the
-        app&apos;s slug and this portal:
+        workflow tailored to its build, with the build kept apart from the job that can request a
+        token. For an npm app at the repository root with a <Code>package-lock.json</Code>, the
+        minimum is this as <Code>.github/workflows/helix-deploy.yml</Code>, plus a{" "}
+        <Code>helix.json</Code> naming the app&apos;s slug and this portal. For anything else, run{" "}
+        <Code>helix ci init</Code>.
       </Text>
       <Box pos="relative">
         <Code block className="az-mono" fz={11.5}>
-          {starterWorkflow(binding?.branch ?? (draft.branch || "main"))}
+          {starterWorkflow(binding?.branch ?? (clean.branch || "main"))}
         </Code>
         <Box pos="absolute" top={6} right={6}>
           <CopyBtn
-            value={starterWorkflow(binding?.branch ?? (draft.branch || "main"))}
+            value={starterWorkflow(binding?.branch ?? (clean.branch || "main"))}
             label="Copy"
           />
         </Box>
