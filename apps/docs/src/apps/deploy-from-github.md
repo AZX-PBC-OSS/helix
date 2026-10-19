@@ -22,19 +22,27 @@ this from the app's directory in a clone of the repository:
 helix ci init
 ```
 
-It reads the repository from your `origin` remote and the branch you're on, or
-takes `--repo owner/name` and `--branch <name>`. Then it:
+It reads the repository from your `origin` remote and uses the repository's
+default branch, or takes `--repo owner/name` and `--branch <name>`. Then it:
 
 1. connects the app to that repository and branch,
 2. writes `helix.json` with the app's slug and the portal URL, and
 3. writes `.github/workflows/helix-deploy.yml`, set up for your package manager
    and build script.
 
+The workflow has two jobs. `build` installs and builds your app without
+permission to request a token. `deploy` takes the build output and runs only
+the Helix CLI, which is the one step that requests a token. Your code and your
+dependencies' install scripts never run where they could mint one.
+
+Running `helix ci init` again keeps any limits you set on the Repository tab.
+
 Commit both files and push. The workflow's next run deploys a preview.
 
 You can also connect a repository on the app's **Repository** tab in the portal
-and write the workflow yourself. It needs these permissions and a `helix deploy`
-step:
+and write the workflow yourself. The smallest one, for an npm app at the
+repository root with a `package-lock.json`, needs these permissions and a
+`helix deploy` step:
 
 ```yaml
 on:
@@ -55,6 +63,11 @@ jobs:
       - run: npm ci && npm run build
       - run: npx --yes @azx-pbc/helix-cli deploy
 ```
+
+This single job runs your build in the same job that can request a token, so
+it doesn't get the protection described above. For anything else, such as pnpm
+or yarn, an app in a subdirectory, or a workflow you want to pin, use
+`helix ci init`.
 
 `helix deploy` notices it is running in GitHub Actions, asks GitHub for a token
 meant for your portal, and uploads with it. It reads the slug and portal URL
@@ -87,7 +100,10 @@ On the Repository tab, under **optional limits**:
 
 - **Only this workflow.** The exact workflow a deploy must come from, as GitHub
   reports it: `owner/repo/.github/workflows/helix-deploy.yml@refs/heads/main`.
-  Another workflow on the same branch can then no longer deploy.
+  Another workflow on the same branch can then no longer deploy. The pin is only
+  as strong as the pinned workflow: it holds when, like the workflows
+  `helix ci init` writes, that workflow keeps the token out of the job that runs
+  your build.
 - **Only this environment.** A GitHub environment the deploy job must run in.
   The environment's protection rules, such as required reviewers or a wait
   timer, then gate every deploy. Add `environment: <name>` to the job.

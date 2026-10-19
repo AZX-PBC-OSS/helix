@@ -1,9 +1,13 @@
 # Helix reusable deploy workflow (ADR-0051).
 #
-# Builds the calling repo's app and uploads it to Helix as a preview, using the
-# job's own GitHub OIDC token. The caller needs `permissions: id-token: write`
-# and an app connected to the repo (`helix ci init --reusable`). An app owner
-# can pin this workflow on the binding, so only it can deploy:
+# Builds the calling repo's app and uploads it to Helix as a preview, using a
+# GitHub OIDC token. The caller grants `contents: read` and `id-token: write`
+# and has an app connected to the repo (`helix ci init --reusable`).
+#
+# Two jobs, so a workflow pin means what it says. `build` runs the repo's own
+# code (install scripts, the build) without `id-token`, so nothing it runs can
+# mint a deploy token. `deploy` holds `id-token: write` and runs only the Helix
+# CLI on the built output. An app owner pins it on the binding as:
 #   AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1
 #
 # Source of truth: integrations/helix-actions in AZX-PBC-OSS/helix, mirrored to
@@ -17,6 +21,10 @@ on:
         description: npm, pnpm or yarn
         type: string
         default: npm
+      pnpm-version:
+        description: The pnpm version; empty reads packageManager from the app's package.json
+        type: string
+        default: ""
       node-version:
         type: string
         default: "24"
@@ -33,23 +41,26 @@ on:
         type: string
         default: latest
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - uses: actions/checkout@v4
-      - if: inputs.package-manager == 'pnpm'
+      - if: inputs.package-manager == 'pnpm' && inputs.pnpm-version != ''
         uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm-version }}
+      - if: inputs.package-manager == 'pnpm' && inputs.pnpm-version == ''
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ${{ inputs.working-directory }}/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
@@ -69,7 +80,36 @@ jobs:
           PM: ${{ inputs.package-manager }}
           SCRIPT: ${{ inputs.build-script }}
         run: '"$PM" run "$SCRIPT"'
+      - name: Find the build output
+        id: output
+        run: |
+          if [ -f helix.json ]; then cfg=helix.json; elif [ -f azx.json ]; then cfg=azx.json; else echo "::error::no helix.json in this directory"; exit 1; fi
+          echo "config=$cfg" >> "$GITHUB_OUTPUT"
+          echo "dir=$(node -p "require('./' + process.argv[1]).dir || 'dist'" "$cfg")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helix-bundle
+          path: |
+            ${{ inputs.working-directory }}/${{ steps.output.outputs.config }}
+            ${{ inputs.working-directory }}/${{ steps.output.outputs.dir }}
+          include-hidden-files: true
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: helix-bundle
+          path: ${{ inputs.working-directory }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
       - name: Deploy
+        working-directory: ${{ inputs.working-directory }}
         env:
           CLI_VERSION: ${{ inputs.cli-version }}
         run: npx --yes "@azx-pbc/helix-cli@$CLI_VERSION" deploy

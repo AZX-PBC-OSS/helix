@@ -3,8 +3,8 @@
 A reusable GitHub Actions workflow that builds an app and deploys it to
 [Helix](https://github.com/AZX-PBC-OSS/helix) as a **preview** version.
 
-The job authenticates with its own short-lived GitHub OIDC token, so the repo
-needs no secret. Helix accepts the upload only from the repository and branch
+The deploy job authenticates with its own short-lived GitHub OIDC token, so the
+repo needs no secret. Helix accepts the upload only from the repository and branch
 the app is connected to, and a preview goes live only when someone promotes it.
 The design and threat model are in
 [ADR-0051](https://github.com/AZX-PBC-OSS/helix/blob/main/docs/adr/0051-repo-backed-apps-ci-push-github-oidc.md).
@@ -17,8 +17,9 @@ From the app's directory in your repo, signed in to your Helix portal:
 npx @azx-pbc/helix-cli ci init --reusable
 ```
 
-That connects the app to the repo and current branch, pins the connection to
-this workflow, and writes `helix.json` and a caller like this one. Commit both.
+That connects the app to the repo and its default branch, pins the connection
+to this workflow, and writes `helix.json` and a caller like this one. Commit
+both.
 
 ```yaml
 # .github/workflows/helix-deploy.yml
@@ -27,12 +28,13 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 jobs:
   deploy:
     uses: AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@v1
+    permissions:
+      contents: read
+      id-token: write
     with:
       package-manager: npm
       working-directory: "."
@@ -48,14 +50,22 @@ jobs:
 | Input               | Default  | Meaning                                                                          |
 | ------------------- | -------- | -------------------------------------------------------------------------------- |
 | `package-manager`   | `npm`    | `npm`, `pnpm` or `yarn`                                                          |
+| `pnpm-version`      | empty    | The pnpm version. Empty reads `packageManager` from the app's `package.json`     |
 | `node-version`      | `24`     | Passed to `actions/setup-node`                                                   |
 | `working-directory` | `.`      | The app directory, relative to the repo root. It must hold `helix.json`          |
 | `build-script`      | `build`  | The `package.json` script that builds the app. Empty deploys the directory as-is |
 | `cli-version`       | `latest` | The `@azx-pbc/helix-cli` version that runs `helix deploy`. Pin it                |
 
-The caller must grant `id-token: write`. The job asks GitHub for a token whose
-audience is your portal and uploads with it. It never stores or prints a
-credential.
+The caller grants `contents: read` and `id-token: write`. The workflow splits
+them across two jobs:
+
+- **`build`** checks out the repo, installs and builds with `contents: read`
+  only, and uploads `helix.json` plus the build output as an artifact.
+- **`deploy`** has `id-token: write` and no checkout. It downloads the artifact
+  and runs only `helix deploy` at `cli-version`, which asks GitHub for a token
+  whose audience is your portal and uploads with it.
+
+Nothing stores or prints a credential.
 
 ## Pinning
 
@@ -67,7 +77,12 @@ workflow** with the value:
 AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1
 ```
 
-A deploy from any other workflow on the branch is then refused.
+A deploy from any other workflow on the branch is then refused. Because the
+repo's own code and its dependencies run only in the `build` job, which can't
+request a token, they can't produce a deploy that passes the pin either. What
+they can still do is change what gets built; that is the same trust you give
+any CI build, and every version lands as a preview for someone to review and
+promote.
 
 ## Versions
 

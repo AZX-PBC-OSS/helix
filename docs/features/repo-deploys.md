@@ -107,8 +107,14 @@ at. Resolvers live in `apps/portal/src/deployment.ts` and are checked at boot.
   and refuses `--promote`. `helix ci init | show | remove` manage the binding;
   `init` also writes `helix.json` and the workflow. See
   [cli.md](./cli.md).
-- **Reusable workflow**, source in `integrations/helix-actions/`, to be
-  published as `AZX-PBC-OSS/helix-actions` (mirroring is manual; see `TODO.md`).
+- **Generated and reusable workflows** are two jobs: `build` runs the repo's
+  install and build with `contents: read` only and uploads `helix.json` plus
+  the output; `deploy` has `id-token: write`, no checkout, and runs only the
+  pinned CLI. Repo and dependency code therefore can't mint a token, which is
+  what makes a `job_workflow_ref` pin meaningful. A hand-written single-job
+  workflow doesn't get that property. The reusable workflow's source is
+  `integrations/helix-actions/`, mirrored to `AZX-PBC-OSS/helix-actions`
+  (manual; see `SYNC.md` there and `TODO.md`).
 - **Portal SPA.** The **Repository** tab (`apps/portal-web/src/pages/tabs/RepositoryTab.tsx`)
   edits the binding and shows the pin state. The Versions tab links a CI
   version's commit and run.
