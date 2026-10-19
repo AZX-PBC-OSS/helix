@@ -50,10 +50,13 @@ calls live in `packages/cli/src/client.ts`.
 In GitHub Actions, with no static token and with `ACTIONS_ID_TOKEN_REQUEST_URL`/`_TOKEN` set,
 `deploy` requests a GitHub OIDC token for `repoDeploy.audience` from `GET /api/v1/config` and
 uploads to the CI route instead (`auth/githubActions.ts`, ADR-0051). `--promote` is refused on that
-path. `ci init` (`ci/commands.ts`) binds the app through `PUT /api/v1/apps/:slug/repo-binding`
-before writing anything, then writes `helix.json` and `.github/workflows/helix-deploy.yml` (a
+path, and so is a plain-`http` portal other than `localhost`. `ci init` (`ci/commands.ts`) defaults the
+branch to `origin/HEAD`, reads the existing binding so a re-run keeps its environment and workflow
+limits (replacing a workflow pin needs `--force`), and binds the app through
+`PUT /api/v1/apps/:slug/repo-binding` before writing anything, then writes `helix.json` and `.github/workflows/helix-deploy.yml` (a
 starter, or a caller of the reusable workflow in `integrations/helix-actions/` with `--reusable`,
-which also pins the binding to it). Generated workflows pin `@azx-pbc/helix-cli` to the CLI version
+which also pins the binding to it). Starter workflows are two jobs: `build` without `id-token`,
+and `deploy`, which runs only the CLI on the uploaded artifact. Generated workflows pin `@azx-pbc/helix-cli` to the CLI version
 that wrote them; `scripts/build.mjs` stamps it in.
 
 ### Auth (M3 — `packages/cli/src/auth/`)

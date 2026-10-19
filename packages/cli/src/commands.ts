@@ -117,6 +117,11 @@ export async function deployCommand(
         "to the workflow (see `helix ci init`)",
     );
   }
+  if (github && !isSafePortalUrl(config.portalUrl)) {
+    throw new CliError(
+      `won't send a GitHub token over plain http (${config.portalUrl}); use the portal's https URL`,
+    );
+  }
   if (github && opts.promote) {
     throw new CliError(
       "CI deploys land as a preview; promote it in the portal or with `helix promote <n>`",
@@ -167,6 +172,15 @@ export async function deployCommand(
   } else {
     console.log(`\nNot live yet — promote with: helix promote ${version.number}`);
   }
+}
+
+/** https, or plain http only to this machine (a local portal in dev). */
+function isSafePortalUrl(url: string): boolean {
+  const { protocol, hostname } = new URL(url);
+  return (
+    protocol === "https:" ||
+    (protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(hostname))
+  );
 }
 
 export async function versionsCommand(client: PortalClient, config: ResolvedConfig): Promise<void> {

@@ -85,16 +85,25 @@ agent reads it off disk.
 ### Deploying from GitHub Actions
 
 `helix ci init`, run signed in from the app's directory in its repo checkout,
-connects the app to the repo and branch (from `origin` and the current branch,
-or `--repo`/`--branch`). It then writes `.github/workflows/helix-deploy.yml`
-and `helix.json` (`slug`, `portalUrl`, `dir`). Commit both. Each push to the
-branch then lands a preview (ADR-0051).
+connects the app to the repo and branch. The repo comes from `origin`; the
+branch is the remote's default branch. `--repo` and `--branch` override either.
+It then writes `.github/workflows/helix-deploy.yml` and merges `slug`,
+`portalUrl` and `dir` into `helix.json`, or into a legacy `azx.json` if that's
+the file in use. Commit both. Each push to the branch then lands a preview
+(ADR-0051). Re-running it keeps any environment or workflow limit set on the
+Repository tab, and refuses to replace a workflow pin unless you pass `--force`.
+
+The generated workflow has two jobs. `build` installs and builds with no
+`id-token` permission. `deploy` downloads the output and runs only the pinned
+CLI. Code from the repo or its dependencies never runs where it could mint a
+deploy token.
 
 The workflow needs no secret. Inside GitHub Actions, when `HELIX_TOKEN` is not
 set and the job has `permissions: id-token: write`, `helix deploy` asks GitHub
 for an OIDC token whose audience is the portal (read from `GET /api/v1/config`)
 and uploads to `POST /api/v1/apps/:slug/ci/versions`. CI deploys always land as
-a preview, so `--promote` is refused there.
+a preview, so `--promote` is refused there. It refuses to send the token to a
+plain-`http` portal other than one on `localhost`.
 
 `--reusable` writes a caller of the public reusable workflow
 (`AZX-PBC-OSS/helix-actions`, source in `integrations/helix-actions/`) instead

@@ -4,7 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { RepoBinding } from "@azx-pbc/shared";
 import { CliError, type PortalClient } from "../client.js";
-import type { ResolvedConfig } from "../config.js";
+import { CONFIG_FILENAMES, type ResolvedConfig } from "../config.js";
 import { CLI_VERSION } from "../version.js";
 import { parseGithubRemote } from "./remote.js";
 import {
@@ -69,7 +69,7 @@ export async function ciInitCommand(
       `couldn't read a ${githubHost} repo from the origin remote; pass --repo owner/name`,
     );
   }
-  const branch = opts.branch ?? (await git(["rev-parse", "--abbrev-ref", "HEAD"], cwd));
+  const branch = opts.branch ?? (await defaultBranch(git, cwd));
   if (!branch || branch === "HEAD") {
     throw new CliError("couldn't tell which branch to deploy from; pass --branch <name>");
   }
@@ -84,20 +84,39 @@ export async function ciInitCommand(
   const render = opts.reusable ? renderReusableWorkflow : renderStarterWorkflow;
   const workflow = render({ branch, workingDirectory, plan, cliVersion: CLI_VERSION });
 
+  // `PUT` replaces the whole binding, so limits the owner set elsewhere (the
+  // Repository tab) would silently disappear. Keep them, and refuse to drop one
+  // without --force.
+  const existing = await client.getRepoBinding(slug);
+  const workflowRef = opts.reusable ? REUSABLE_WORKFLOW_REF : existing?.workflowRef;
+  const environment = existing?.environment;
+  if (existing?.workflowRef && workflowRef !== existing.workflowRef && !opts.force) {
+    throw new CliError(
+      `the binding pins deploys to workflow ${existing.workflowRef}; --reusable would replace ` +
+        "that pin. Pass --force to replace it.",
+    );
+  }
+
   // The binding first: if the owner check refuses, nothing is written to disk.
   const binding = await client.putRepoBinding(slug, {
     repoFullName: repo,
     branch,
-    ...(opts.reusable ? { workflowRef: REUSABLE_WORKFLOW_REF } : {}),
+    ...(workflowRef ? { workflowRef } : {}),
+    ...(environment ? { environment } : {}),
   });
 
-  await writeHelixJson(cwd, { slug, portalUrl: config.portalUrl, dir: config.dir });
+  const configFile = await writeHelixJson(cwd, {
+    slug,
+    portalUrl: config.portalUrl,
+    dir: config.dir,
+  });
   await mkdir(path.dirname(workflowPath), { recursive: true });
   await writeFile(workflowPath, workflow, "utf8");
 
-  log(`Connected "${slug}" to ${repo} (branch ${branch}).`);
+  log(`Connected "${slug}" to ${repo}.`);
+  log(`Branch: ${branch}${opts.branch ? "" : " (use --branch to change)"}`);
   printBinding(binding, log);
-  log(`Wrote ${path.relative(cwd, workflowPath) || WORKFLOW_FILE} and helix.json.`);
+  log(`Wrote ${path.relative(cwd, workflowPath) || WORKFLOW_FILE} and ${configFile}.`);
   if (isLocalPortal(config.portalUrl)) {
     log(`warning: helix.json points CI at ${config.portalUrl}, which a GitHub runner can't reach.`);
   }
@@ -148,6 +167,20 @@ async function originUrl(git: GitRunner, cwd: string): Promise<string> {
   }
 }
 
+/**
+ * The branch pushes deploy from: the remote's default branch, which is what a
+ * team deploys, rather than the feature branch `ci init` is often run on.
+ */
+async function defaultBranch(git: GitRunner, cwd: string): Promise<string> {
+  try {
+    const remoteHead = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
+    if (remoteHead.startsWith("origin/")) return remoteHead.slice("origin/".length);
+  } catch {
+    // No remote HEAD recorded (e.g. a repo that was never cloned); fall through.
+  }
+  return git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+}
+
 async function fileExists(file: string): Promise<boolean> {
   try {
     await readFile(file);
@@ -157,19 +190,31 @@ async function fileExists(file: string): Promise<boolean> {
   }
 }
 
-/** Merge the CI-relevant keys into helix.json, keeping whatever else it holds. */
+/**
+ * Merge the CI-relevant keys into the config file the CLI already reads
+ * (`helix.json`, or a legacy `azx.json`), keeping whatever else it holds.
+ * Creating a `helix.json` next to an `azx.json` would hide the older file's
+ * other keys. Returns the file's name.
+ */
 async function writeHelixJson(
   cwd: string,
   values: { slug: string; portalUrl: string; dir: string },
-): Promise<void> {
-  const file = path.join(cwd, "helix.json");
-  let existing: Record<string, unknown> = {};
-  try {
-    existing = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+): Promise<string> {
+  for (const name of CONFIG_FILENAMES) {
+    const file = path.join(cwd, name);
+    let existing: Record<string, unknown>;
+    try {
+      existing = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw err;
+    }
+    await writeFile(file, `${JSON.stringify({ ...existing, ...values }, null, 2)}\n`, "utf8");
+    return name;
   }
-  await writeFile(file, `${JSON.stringify({ ...existing, ...values }, null, 2)}\n`, "utf8");
+  const name = CONFIG_FILENAMES[0];
+  await writeFile(path.join(cwd, name), `${JSON.stringify(values, null, 2)}\n`, "utf8");
+  return name;
 }
 
 function isLocalPortal(url: string): boolean {

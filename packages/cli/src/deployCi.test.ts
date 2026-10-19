@@ -110,6 +110,18 @@ describe("helix deploy route selection", () => {
     expect(calls).toEqual([]);
   });
 
+  it("won't send a GitHub token to a plain-http portal off this machine", async () => {
+    await expect(
+      deployCommand(
+        new PortalClient("http://portal.example.com"),
+        config({ portalUrl: "http://portal.example.com" }),
+        {},
+        ACTIONS_ENV,
+      ),
+    ).rejects.toThrow(/plain http/);
+    expect(calls).toEqual([]);
+  });
+
   it("points a foreign-repo refusal at the binding", async () => {
     vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
       const url = String(input);

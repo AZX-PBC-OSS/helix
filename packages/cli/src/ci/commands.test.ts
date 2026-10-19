@@ -23,12 +23,26 @@ const BINDING = {
 };
 
 /** Answers the config and binding routes; records every request. */
-function stubPortal(opts: { config?: unknown; putStatus?: number } = {}) {
+function stubPortal(opts: { config?: unknown; putStatus?: number; existing?: unknown } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
     calls.push({ url, init: init ?? {} });
     if (url.endsWith("/api/v1/config")) return Response.json(opts.config ?? CONFIG);
+    if (url.endsWith("/repo-binding") && (init?.method ?? "GET") === "GET") {
+      return opts.existing
+        ? Response.json(opts.existing)
+        : Response.json(
+            {
+              error: {
+                code: "not_found",
+                message: "this app has no repo binding",
+                details: { reason: "no_binding" },
+              },
+            },
+            { status: 404 },
+          );
+    }
     if (init?.method === "PUT" && (opts.putStatus ?? 200) !== 200) {
       return Response.json(
         { error: { code: "forbidden", message: "you do not own this app" } },
@@ -40,7 +54,7 @@ function stubPortal(opts: { config?: unknown; putStatus?: number } = {}) {
   return calls;
 }
 
-async function checkout(sub = "") {
+async function checkout(sub = "", opts: { remoteHead?: string } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "helix-ci-init-"));
   const cwd = path.join(root, sub);
   await mkdir(cwd, { recursive: true });
@@ -48,6 +62,10 @@ async function checkout(sub = "") {
   await writeFile(path.join(root, "package-lock.json"), "{}");
   const git: GitRunner = async (args) => {
     if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return root;
+    if (args[0] === "symbolic-ref") {
+      if (opts.remoteHead) return opts.remoteHead;
+      throw new Error("no origin/HEAD");
+    }
     if (args[0] === "rev-parse") return "main";
     if (args[0] === "remote") return "git@github.com:octo-org/octo-app.git";
     throw new Error(`unexpected git ${args.join(" ")}`);
@@ -152,6 +170,74 @@ describe("helix ci init", () => {
     await expect(
       ciInitCommand(client(), config(), {}, { cwd, git: gitlab, log: quiet }),
     ).rejects.toThrow(/--repo/);
+  });
+});
+
+describe("helix ci init — keeping what the owner set", () => {
+  const putBody = (calls: { init: RequestInit }[]) =>
+    JSON.parse(String(calls.find((c) => c.init.method === "PUT")!.init.body)) as Record<
+      string,
+      unknown
+    >;
+
+  it("defaults to the remote's default branch, not the checked-out one", async () => {
+    const calls = stubPortal();
+    const { cwd, git } = await checkout("", { remoteHead: "origin/trunk" });
+    const lines: string[] = [];
+    await ciInitCommand(client(), config(), {}, { cwd, git, log: (l) => lines.push(l) });
+    expect(putBody(calls).branch).toBe("trunk");
+    expect(lines).toContain("Branch: trunk (use --branch to change)");
+  });
+
+  it("keeps an environment limit and a workflow pin set elsewhere", async () => {
+    const existing = {
+      ...BINDING,
+      environment: "production",
+      workflowRef: "octo-org/octo-app/.github/workflows/helix-deploy.yml@refs/heads/main",
+    };
+    const calls = stubPortal({ existing });
+    const { cwd, git } = await checkout();
+    await ciInitCommand(client(), config(), {}, { cwd, git, log: quiet });
+    expect(putBody(calls)).toMatchObject({
+      environment: "production",
+      workflowRef: existing.workflowRef,
+    });
+  });
+
+  it("refuses to replace a workflow pin with --reusable unless forced", async () => {
+    const existing = {
+      ...BINDING,
+      workflowRef: "octo-org/octo-app/.github/workflows/x.yml@refs/heads/main",
+    };
+    stubPortal({ existing });
+    const { cwd, git } = await checkout();
+    await expect(
+      ciInitCommand(client(), config(), { reusable: true }, { cwd, git, log: quiet }),
+    ).rejects.toThrow(/--force/);
+
+    vi.restoreAllMocks();
+    const calls = stubPortal({ existing });
+    await ciInitCommand(
+      client(),
+      config(),
+      { reusable: true, force: true },
+      { cwd, git, log: quiet },
+    );
+    expect(putBody(calls).workflowRef).toBe(
+      "AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1",
+    );
+  });
+
+  it("merges into an existing azx.json instead of hiding it behind a new helix.json", async () => {
+    stubPortal();
+    const { cwd, git } = await checkout();
+    await writeFile(path.join(cwd, "azx.json"), '{"description":"legacy"}');
+    await ciInitCommand(client(), config(), {}, { cwd, git, log: quiet });
+    expect(JSON.parse(await readFile(path.join(cwd, "azx.json"), "utf8"))).toMatchObject({
+      description: "legacy",
+      slug: "demo",
+    });
+    await expect(readFile(path.join(cwd, "helix.json"))).rejects.toThrow();
   });
 });
 
