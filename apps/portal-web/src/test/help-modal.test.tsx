@@ -9,12 +9,6 @@ import { HelpModal } from "../modals/HelpModal";
 import { HelpProvider } from "../modals/HelpContext";
 import { renderSkill } from "@azx-pbc/deploy-skill";
 import skillTemplate from "@azx-pbc/deploy-skill/SKILL.md?raw";
-import {
-  BASELINE_BYTES_PER_DAY,
-  BASELINE_DOLLARS_PER_DAY,
-  BASELINE_FETCH_REQUESTS_PER_DAY,
-  BASELINE_WRITES_PER_DAY,
-} from "@azx-pbc/shared";
 
 /**
  * The onboarding modal is the one place the platform explains itself, and what
@@ -27,8 +21,7 @@ import {
  * So the modal's hosts still come from `useDeployment()` (`/api/v1/config`), but
  * the skill body comes from the stubbed `/api/v1/skill` below — rendered here
  * with the real template + renderer so the "no placeholders" assertion stays
- * meaningful. The server's rendering (servable models, real caps) is covered by
- * the portal route test.
+ * meaningful. The server's rendering is covered by the portal route test.
  */
 
 const AUTH_CONFIG = {
@@ -38,24 +31,11 @@ const AUTH_CONFIG = {
 };
 
 /** Render the skill as the portal would, for a given deployment shape. */
-function renderSkillFor(opts: {
-  appsHost: string;
-  devApiBase: string | null;
-  maxFileMb: number;
-  maxBundleMb: number;
-  models?: string[];
-}): string {
+function renderSkillFor(opts: { appsHost: string; devApiBase: string | null }): string {
   return renderSkill(skillTemplate, {
     portalOrigin: window.location.origin,
     appsHost: opts.appsHost,
     devApiBase: opts.devApiBase,
-    llmModels: opts.models ?? ["claude-haiku-4-5"],
-    maxFileMb: opts.maxFileMb,
-    maxBundleMb: opts.maxBundleMb,
-    baselineDollarsPerDay: BASELINE_DOLLARS_PER_DAY,
-    baselineWritesPerDay: BASELINE_WRITES_PER_DAY,
-    baselineBytesPerDay: BASELINE_BYTES_PER_DAY,
-    baselineFetchRequestsPerDay: BASELINE_FETCH_REQUESTS_PER_DAY,
   });
 }
 
@@ -71,8 +51,6 @@ function stubApi(
   skill: string | Promise<never> = renderSkillFor({
     appsHost: "apps.example.com",
     devApiBase: null,
-    maxFileMb: 50,
-    maxBundleMb: 250,
   }),
 ): void {
   vi.stubGlobal(
@@ -173,7 +151,7 @@ describe("HelpModal", () => {
     expect(await screen.findByText(/dev gateway isn't enabled on this deployment/i)).toBeDefined();
     // No invented host, and the CLI half is what's offered instead.
     expect(screen.queryByText(/dev-api\./)).toBeNull();
-    expect(screen.getByText(/npm i -g @azx-pbc\/helix-cli/)).toBeDefined();
+    expect(screen.getByText(/npx -y @azx-pbc\/helix-cli@latest <command>/)).toBeDefined();
   });
 
   it("prints a helix.json pointing at this portal, before the commands that need it", async () => {
@@ -189,7 +167,7 @@ describe("HelpModal", () => {
     expect(config.textContent).toContain(`"slug": "my-app"`);
 
     // And it has to come first: `helix create` reads the slug out of the file.
-    const commands = screen.getByText(/helix create --display-name/);
+    const commands = screen.getByText(/helix-cli@latest create --display-name/);
     expect(
       config.compareDocumentPosition(commands) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
@@ -197,17 +175,12 @@ describe("HelpModal", () => {
 
   it("downloads the skill the server rendered, with no placeholders left", async () => {
     setToken("t");
-    // The skill body comes from /api/v1/skill; the caps/models below are what
-    // the portal would have baked in for this deployment.
+    // The skill body comes from /api/v1/skill, rendered for this deployment.
     stubApi(
       { appPublicBase: "https://apps.example.com", devApiBase: "https://dev-api.apps.example.com" },
       renderSkillFor({
         appsHost: "apps.example.com",
         devApiBase: "https://dev-api.apps.example.com",
-        // Deliberately not the defaults (50/250): proves the caps in the offered
-        // skill are this deployment's, not a constant in the bundle.
-        maxFileMb: 80,
-        maxBundleMb: 400,
       }),
     );
 
@@ -229,9 +202,7 @@ describe("HelpModal", () => {
     expect(text).not.toContain("{{");
     expect(text).toContain("https://<slug>.apps.example.com");
     expect(text).toContain("https://dev-api.apps.example.com/<slug>");
-    expect(text).toContain("claude-haiku-4-5");
-    expect(text).toContain("80 MB per file");
-    expect(text).toContain("400 MB per bundle");
+    expect(text).toContain("npx -y @azx-pbc/helix-cli@latest capabilities");
   });
 
   it("holds the skill back until the skill endpoint resolves", async () => {

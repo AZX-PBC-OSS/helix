@@ -66,3 +66,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0049](0049-warden-optional-inference-backend.md) | Warden as an optional inference backend (phase 1 light upstream proposed; phase 2 deep integration deferred) | Proposed |
 | [0050](0050-hosted-app-visitor-analytics.md) | Visitor analytics for hosted apps (visits, unique visitors, approximate location) | Accepted |
 | [0051](0051-repo-backed-apps-ci-push-github-oidc.md) | Repo-backed apps: CI pushes the bundle, authenticated by GitHub Actions OIDC | Accepted (not yet built) |
+| [0052](0052-evergreen-agent-skill-and-npx-cli.md) | Evergreen agent skill, docs-first reference, and the npx CLI | Accepted |

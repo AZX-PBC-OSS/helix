@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { DeploymentConfigResponseSchema } from "@azx-pbc/shared";
+import { DeploymentConfigResponseSchema, MIN_CLI_VERSION } from "@azx-pbc/shared";
 import {
   resolveAppPublicBase,
   resolveDevApiBase,
@@ -32,8 +32,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       ...(devApiBase ? { devApiBase: devApiBase.origin } : {}),
       ...(cap !== null ? { platformMonthlyUsdCap: cap } : {}),
       // Always present — the deploy caps are enforced unconditionally, so the SPA
-      // states this deployment's real numbers in the agent skill rather than
-      // baking in the defaults and going stale the first time one is retuned.
+      // states this deployment's real numbers rather than baking in the defaults.
       deployMaxFileMb: resolveMaxFileBytes() / MB,
       deployMaxBundleMb: resolveMaxTotalBytes() / MB,
       // The issuer is left out: it is a server-side trust setting, and nothing
@@ -43,6 +42,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
         audience: repoDeploy.audience,
         serverUrl: repoDeploy.serverUrl,
       },
+      cli: { minVersion: MIN_CLI_VERSION },
     });
   });
 }

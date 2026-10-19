@@ -349,42 +349,23 @@ describe("GET /api/v1/skill", () => {
     expect(body).toContain("localhost");
   });
 
-  it("states the approval baselines", async () => {
+  // The skill carries topology only (ADR-0052); live values come from
+  // `helix capabilities`, so a downloaded copy can't go stale.
+  it("points at `helix capabilities` instead of stating models or budgets", async () => {
     const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-    expect(res.body).toContain(`$${BASELINE_DOLLARS_PER_DAY}/day of LLM`);
-    expect(res.body).toContain(`${BASELINE_WRITES_PER_DAY} writes/day`);
+    expect(res.body).toContain("npx -y @azx-pbc/helix-cli@latest capabilities");
+    expect(res.body).not.toContain(`$${BASELINE_DOLLARS_PER_DAY}/day`);
+    expect(res.body).not.toContain("claude-haiku-4-5");
   });
 
-  // Ties the catalogue's servable list to the skill: with only `anthropic`
-  // seeded, the skill's model line lists claude models and withholds gpt-*.
-  it("renders the servable models, not the curated superset", async () => {
-    await cleanupSeeded();
-    await seedSecret({ scope: "platform", name: "anthropic" });
-    try {
+  it("includes the dev gateway only when it is deployed", async () => {
+    await withEnv({ DEV_API_PUBLIC_BASE: "https://dev-api.example.com" }, async () => {
       const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-      const line = res.body
-        .split("\n")
-        .find((l) => l.includes("Models this platform prices and will serve"));
-      expect(line).toBeDefined();
-      expect(line).toContain("claude-haiku-4-5");
-      expect(line).not.toContain("gpt-4o");
-    } finally {
-      await cleanupSeeded();
-    }
-  });
-
-  // Same tie for the operator-declared path (ADR-0047): the skill an agent
-  // reads must not name a model this deployment withholds.
-  it("renders the operator-declared allowlist, with no secrets seeded", async () => {
-    await cleanupSeeded();
-    await withEnv({ PORTAL_LLM_MODEL_ALLOWLIST: "claude-opus-4-8" }, async () => {
+      expect(res.body).toContain("https://dev-api.example.com/<slug>");
+    });
+    await withEnv({ DEV_API_PUBLIC_BASE: undefined }, async () => {
       const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-      const line = res.body
-        .split("\n")
-        .find((l) => l.includes("Models this platform prices and will serve"));
-      expect(line).toBeDefined();
-      expect(line).toContain("claude-opus-4-8");
-      expect(line).not.toContain("gpt-4o");
+      expect(res.body).not.toContain("dev-gateway.md");
     });
   });
 });

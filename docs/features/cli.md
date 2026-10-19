@@ -37,6 +37,8 @@ helix create   [--display-name <name>] [--description <text>] [--visibility <v>]
 helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a preview; --promote flips it live
 helix versions | promote <number> | rollback [number]
 helix ci init [--repo <owner/name>] [--branch <b>] [--reusable] [--force] | ci show | ci remove
+helix capabilities [--json]                                  # the deployment catalogue, formatted (packages/cli/src/capabilities.ts)
+helix skill    [--path <file>]                               # write this deployment's agent skill
 ```
 
 `create` resolves the description from the flag or `helix.json` (flag wins) and
@@ -82,7 +84,12 @@ an ephemeral dev-idp (see [dev-idp.md](./dev-idp.md)).
 
 ### Distribution (`.github/workflows/release-cli.yml`)
 
-Published to public npm as `@azx-pbc/helix-cli` — `npm i -g @azx-pbc/helix-cli`, Node 24+.
+Published to public npm as `@azx-pbc/helix-cli`; Node 22.12+. App authors and agents run it as
+`npx -y @azx-pbc/helix-cli@latest <command>` (ADR-0052), so nobody has to install or update it.
+`npm i -g @azx-pbc/helix-cli` remains for people who prefer a global install. Every command except
+`logout` reads the public `GET /api/v1/config` first and warns (never fails) when the CLI is older
+than the portal's `cli.minVersion` (`MIN_CLI_VERSION` in `@azx-pbc/shared`). A 404 for a missing
+route is reported as "this portal is probably older than this CLI".
 Releases are cut by a **`cli-v*`** tag (not `v*`, which is the platform's version and drives the
 image builds), and published from CI by **npm trusted publishing** (OIDC, `id-token: write`) with
 provenance — there is no `NPM_TOKEN` in the repo. The workflow packs with `pnpm` (the only client

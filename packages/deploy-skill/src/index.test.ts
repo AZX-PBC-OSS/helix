@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { renderSkill, renderSkillGeneric, SKILL_FILENAME, type SkillVars } from "./index.js";
+import { renderSkill, SKILL_FILENAME, type SkillVars } from "./index.js";
 
 /** The shipped template, so these assertions bind to the real document. */
 const TEMPLATE = readFileSync(new URL(`../${SKILL_FILENAME}`, import.meta.url), "utf8");
@@ -9,14 +9,10 @@ const VARS: SkillVars = {
   portalOrigin: "https://portal.example.com",
   appsHost: "apps.example.com",
   devApiBase: "https://dev-api.example.com",
-  llmModels: ["claude-haiku-4-5", "claude-sonnet-4-6"],
-  maxFileMb: 50,
-  maxBundleMb: 250,
-  baselineDollarsPerDay: 50,
-  baselineWritesPerDay: 10_000,
-  baselineBytesPerDay: 50_000_000,
-  baselineFetchRequestsPerDay: 10_000,
 };
+
+const NPX = "npx -y @azx-pbc/helix-cli@latest";
+const DOCS = "https://azx-pbc-oss.github.io/helix/";
 
 describe("renderSkill", () => {
   it("substitutes every placeholder in the shipped template", () => {
@@ -24,20 +20,13 @@ describe("renderSkill", () => {
 
     expect(out).toContain("https://portal.example.com");
     expect(out).toContain("https://<slug>.apps.example.com");
-    expect(out).toContain("claude-haiku-4-5, claude-sonnet-4-6");
-    expect(out).toContain("$50/day of LLM");
-    expect(out).toContain("10000 writes/day");
-    expect(out).toContain("50000000 bytes/day");
-    expect(out).toContain("10000 proxied");
   });
 
   /**
    * The guard that matters: a `{{TOKEN}}` added to SKILL.md without a matching
-   * SkillVars field would otherwise reach an agent verbatim. Covers both render
-   * modes (ADR-0036 decision 1) so a new placeholder fails the suite until both
-   * maps are wired.
+   * SkillVars field would otherwise reach an agent verbatim.
    */
-  it("leaves no unresolved placeholder behind (instance render)", () => {
+  it("leaves no unresolved placeholder behind", () => {
     expect(renderSkill(TEMPLATE, VARS)).not.toContain("{{");
     expect(renderSkill(TEMPLATE, { ...VARS, devApiBase: null })).not.toContain("{{");
   });
@@ -52,36 +41,35 @@ describe("renderSkill", () => {
     expect(renderSkill(TEMPLATE, { ...VARS, devApiBase: null })).not.toContain("<!--");
   });
 
-  it("keeps the dev-gateway section when a dev gateway is deployed", () => {
+  it("keeps the dev-gateway lines when a dev gateway is deployed", () => {
     const out = renderSkill(TEMPLATE, VARS);
 
     expect(out).toContain("https://dev-api.example.com/<slug>");
-    expect(out).toContain("Developing before you deploy");
+    expect(out).toContain(`${DOCS}apps/dev-gateway.md`);
     expect(out).not.toContain("IF:DEV_API");
   });
 
-  it("drops the dev-gateway section entirely when there is none", () => {
+  it("drops the dev-gateway lines entirely when there is none", () => {
     const out = renderSkill(TEMPLATE, { ...VARS, devApiBase: null });
 
-    expect(out).not.toContain("Developing before you deploy");
     expect(out).not.toContain("dev-api");
+    expect(out).not.toContain("dev-gateway.md");
     expect(out).not.toContain("IF:DEV_API");
     // The rest of the document survives.
-    expect(out).toContain("The capability manifest");
-    expect(out).toContain("helix deploy");
+    expect(out).toContain("Rules you must not break");
+    expect(out).toContain(`${NPX} deploy`);
   });
 
   /**
    * The CLI cannot discover its portal — it defaults to `http://localhost:3001`,
    * so a `helix.json` handed to an agent without `portalUrl` produces a login
-   * that fails to connect and does not say why. The template is the only document
-   * in the repo that has always got this right; this is what keeps it that way.
+   * that fails to connect and does not say why.
    */
   it("gives the helix.json a portalUrl, ahead of the commands that resolve it", () => {
     const out = renderSkill(TEMPLATE, VARS);
 
     expect(out).toContain(`"portalUrl": "https://portal.example.com"`);
-    expect(out.indexOf("portalUrl")).toBeLessThan(out.indexOf("helix login"));
+    expect(out.indexOf("portalUrl")).toBeLessThan(out.indexOf(`${NPX} login`));
   });
 
   it("passes through an unknown token rather than blanking it", () => {
@@ -98,45 +86,55 @@ describe("renderSkill", () => {
   });
 });
 
-describe("renderSkillGeneric", () => {
+/**
+ * A downloaded skill must stay correct without being re-downloaded (ADR-0052).
+ * These pin the properties that make that true: the CLI runs from npx at its
+ * latest version, live values come from `capabilities`, details come from the
+ * docs, and the file stays small enough that nobody turns it back into a
+ * reference.
+ */
+describe("the skill stays evergreen", () => {
+  const out = renderSkill(TEMPLATE, VARS);
+
+  it("runs the CLI through npx at the latest version, never a global install", () => {
+    expect(out).toContain(NPX);
+    expect(out).not.toContain("npm i -g");
+    expect(out).not.toContain("npm install -g");
+    // Every CLI invocation in a code block goes through npx.
+    const bare = out.split("\n").filter((line) => /^\s*helix\s/.test(line));
+    expect(bare).toEqual([]);
+  });
+
+  it("sends the agent to `capabilities` for live values and to the docs for detail", () => {
+    expect(out).toContain(`${NPX} capabilities`);
+    expect(out).toContain(`${DOCS}apps/quickstart.md`);
+    expect(out).toContain(`${DOCS}llms-full.txt`);
+  });
+
+  it("states no per-release or per-deployment values", () => {
+    // Model ids, budgets, and caps belong to `capabilities`.
+    expect(out).not.toMatch(/claude-[a-z]+-\d/);
+    expect(out).not.toMatch(/\d+ MB per (file|bundle)/);
+    expect(out).not.toMatch(/\$\d+\/day/);
+  });
+
   /**
-   * The generic rendering is what the public docs site consumes. It must resolve
-   * every placeholder too — a `{{TOKEN}}` left in the published docs is a broken
-   * reference, and the "both maps wired" rule is what keeps the two renderers in
-   * lockstep (ADR-0036 decision 1).
+   * Downloaded skills link to these pages by URL and are never re-fetched, so
+   * renaming or removing one breaks every copy in the field. Each link must
+   * name a page the docs site builds.
    */
-  it("leaves no unresolved placeholder in the shipped template", () => {
-    expect(renderSkillGeneric(TEMPLATE)).not.toContain("{{");
+  it("links only to docs pages that exist", () => {
+    const pages = [...out.matchAll(/azx-pbc-oss\.github\.io\/helix\/(apps\/[a-z-]+)\.md/g)].map(
+      (m) => m[1]!,
+    );
+    expect(pages.length).toBeGreaterThan(0);
+    for (const page of pages) {
+      const src = new URL(`../../../apps/docs/src/${page}.md`, import.meta.url);
+      expect(existsSync(src), `${page}.md is linked from SKILL.md`).toBe(true);
+    }
   });
 
-  it("consumes every conditional marker in the shipped template", () => {
-    expect(renderSkillGeneric(TEMPLATE)).not.toContain("<!--");
-  });
-
-  it("points every placeholder at the catalogue rather than stating a value", () => {
-    const out = renderSkillGeneric(TEMPLATE);
-
-    expect(out).toContain("GET /api/v1/capabilities");
-    // No instance value leaks into the generic rendering.
-    expect(out).not.toContain("portal.example.com");
-    expect(out).not.toContain("apps.example.com");
-    expect(out).not.toContain("dev-api.example.com");
-  });
-
-  /**
-   * The dev-gateway section is kept (not stripped) in the generic rendering, so
-   * a reader of the public docs sees that the capability exists and how it works,
-   * with the prose substitution carrying the "if deployed here" note.
-   */
-  it("keeps the dev-gateway section with a deployment-dependent note", () => {
-    const out = renderSkillGeneric(TEMPLATE);
-
-    expect(out).toContain("Developing before you deploy");
-    expect(out).toContain("dev gateway is deployed here");
-    expect(out).not.toContain("IF:DEV_API");
-  });
-
-  it("passes through an unknown token rather than blanking it", () => {
-    expect(renderSkillGeneric("keep {{NOT_A_VAR}} intact")).toBe("keep {{NOT_A_VAR}} intact");
+  it("stays short", () => {
+    expect(TEMPLATE.split("\n").length).toBeLessThan(200);
   });
 });

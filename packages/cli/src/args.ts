@@ -16,6 +16,7 @@ const options = {
   branch: { type: "string" },
   reusable: { type: "boolean" },
   force: { type: "boolean" },
+  json: { type: "boolean" },
   help: { type: "boolean" },
 } as const;
 

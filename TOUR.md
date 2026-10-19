@@ -84,7 +84,7 @@ packages/
   directory/    # Entra group search and name resolution for the portal
   telemetry/    # OpenTelemetry setup and test helpers
   cli/          # Published helix CLI
-  deploy-skill/ # Agent instructions for building and deploying apps
+  deploy-skill/ # Short agent skill: rules, deployment addresses, links to apps/docs
 examples/       # Deployable reference apps; built dist/ files are committed
 docs/           # Contributor docs: architecture, decisions, designs, features, runbooks
 infra/azure/    # Bicep deployment definitions

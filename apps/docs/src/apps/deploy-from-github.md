@@ -1,3 +1,8 @@
+---
+title: Deploy from GitHub
+description: "Connect an app to a GitHub repository so every push lands a preview, authenticated by the job's own GitHub OIDC token — no secret to store."
+---
+
 # Deploy from GitHub
 
 Connect an app to a GitHub repository and branch, and every push to that branch
@@ -61,8 +66,12 @@ jobs:
         with:
           node-version: 24
       - run: npm ci && npm run build
-      - run: npx --yes @azx-pbc/helix-cli deploy
+      - run: npx --yes @azx-pbc/helix-cli@latest deploy
 ```
+
+`@latest` runs the newest CLI on every build. For deploys you can reproduce,
+pin a version (`@azx-pbc/helix-cli@<version>`) and update it when you choose to.
+`helix ci init` writes the pin for you.
 
 This single job runs your build in the same job that can request a token, so
 it doesn't get the protection described above. For anything else, such as pnpm

@@ -19,6 +19,7 @@ import {
   type Visibility,
 } from "@azx-pbc/shared";
 import type { TokenProvider } from "./auth/session.js";
+import { CLI_VERSION } from "./version.js";
 
 /** A CLI-level error carrying the portal's error code when available. */
 export class CliError extends Error {
@@ -54,6 +55,7 @@ const VersionListSchema = z.array(VersionSchema);
 export class PortalClient {
   readonly #baseUrl: string;
   readonly #tokenProvider?: TokenProvider;
+  #deploymentConfig?: Promise<DeploymentConfigResponse>;
 
   /** `token` may be a static string (dev token) or an async provider (OIDC). */
   constructor(baseUrl: string, token?: string | TokenProvider) {
@@ -80,9 +82,22 @@ export class PortalClient {
     return this.#json(AuthConfigResponseSchema, "GET", "/api/v1/auth/config", {});
   }
 
-  /** Public deployment topology (`GET /api/v1/config`), incl. the CI token audience. */
+  /**
+   * Public deployment topology (`GET /api/v1/config`), incl. the CI token
+   * audience and the CLI version floor. Fetched once per client: the
+   * compatibility check and the command that follows it share one request.
+   */
   getDeploymentConfig(): Promise<DeploymentConfigResponse> {
-    return this.#json(DeploymentConfigResponseSchema, "GET", "/api/v1/config", {});
+    this.#deploymentConfig ??= this.#json(
+      DeploymentConfigResponseSchema,
+      "GET",
+      "/api/v1/config",
+      {},
+    ).catch((err: unknown) => {
+      this.#deploymentConfig = undefined;
+      throw err;
+    });
+    return this.#deploymentConfig;
   }
 
   /** The app's GitHub binding (ADR-0051), or null when it has none. */
@@ -119,12 +134,20 @@ export class PortalClient {
 
   /**
    * The deployment-rendered agent skill (`GET /api/v1/skill`, ADR-0036) —
-   * `text/markdown`, already substituted with this deployment's hosts, servable
-   * models, and approval baselines. Authed like every other `/api/v1` read.
-   * Powers `helix skill`.
+   * `text/markdown`, with this deployment's hosts filled in. Authed like every
+   * other `/api/v1` read. Powers `helix skill`.
    */
   getSkill(): Promise<string> {
     return this.#text("/api/v1/skill", { auth: true });
+  }
+
+  /**
+   * The deployment capability catalogue (`GET /api/v1/capabilities`), unparsed.
+   * `helix capabilities` validates it when formatting, and falls back to the raw
+   * JSON when a portal of a different version sends a shape this CLI doesn't know.
+   */
+  getCapabilities(): Promise<unknown> {
+    return this.#json(z.unknown(), "GET", "/api/v1/capabilities", { auth: true });
   }
 
   listVersions(slug: string): Promise<Version[]> {
@@ -215,12 +238,7 @@ export class PortalClient {
     const text = await res.text();
     const data: unknown = text ? JSON.parse(text) : undefined;
     if (!res.ok) {
-      const parsed = ApiErrorSchema.safeParse(data);
-      if (parsed.success) {
-        const { message, code, details } = parsed.data.error;
-        throw new CliError(message, code, details);
-      }
-      throw new CliError(`request failed (HTTP ${res.status})`);
+      throw errorFromResponse(res.status, data);
     }
     return schema.parse(data);
   }
@@ -232,15 +250,30 @@ export class PortalClient {
     const body = await res.text();
     if (!res.ok) {
       const data: unknown = body ? safeJsonParse(body) : undefined;
-      const parsed = ApiErrorSchema.safeParse(data);
-      if (parsed.success) {
-        const { message, code, details } = parsed.data.error;
-        throw new CliError(message, code, details);
-      }
-      throw new CliError(`request failed (HTTP ${res.status})`);
+      throw errorFromResponse(res.status, data);
     }
     return body;
   }
+}
+
+/**
+ * Map a failed response onto a CliError. A 404 for a missing *route* (the
+ * portal's not-found handler says `route … not found`, unlike "app not found")
+ * almost always means the portal is older than this CLI, so it says so.
+ */
+function errorFromResponse(status: number, data: unknown): CliError {
+  const parsed = ApiErrorSchema.safeParse(data);
+  if (!parsed.success) return new CliError(`request failed (HTTP ${status})`);
+  const { message, code, details } = parsed.data.error;
+  if (status === 404 && code === "not_found" && message.startsWith("route ")) {
+    return new CliError(
+      `${message}. This portal is probably older than this CLI (${CLI_VERSION}); ` +
+        "ask your operator to update Helix, or run an older @azx-pbc/helix-cli",
+      code,
+      details,
+    );
+  }
+  return new CliError(message, code, details);
 }
 
 function enc(segment: string): string {

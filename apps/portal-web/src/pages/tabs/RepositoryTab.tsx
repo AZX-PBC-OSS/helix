@@ -73,7 +73,8 @@ jobs:
         with:
           node-version: 24
       - run: npm ci && npm run build
-      - run: npx --yes @azx-pbc/helix-cli deploy
+      # \`helix ci init\` pins the exact CLI version instead, for reproducible deploys.
+      - run: npx --yes @azx-pbc/helix-cli@latest deploy
 `;
 }
 
@@ -296,12 +297,12 @@ function RepositoryCard({ app, binding }: { app: App; binding: RepoBinding | nul
 
       <Eyebrow mb={4}>Workflow</Eyebrow>
       <Text size="xs" c="dark.2" mb={6} lh={1.5}>
-        From the app&apos;s directory, <Code>helix ci init</Code> connects the repo and writes a
-        workflow tailored to its build, with the build kept apart from the job that can request a
-        token. For an npm app at the repository root with a <Code>package-lock.json</Code>, the
-        minimum is this as <Code>.github/workflows/helix-deploy.yml</Code>, plus a{" "}
-        <Code>helix.json</Code> naming the app&apos;s slug and this portal. For anything else, run{" "}
-        <Code>helix ci init</Code>.
+        From the app&apos;s directory, <Code>npx -y @azx-pbc/helix-cli@latest ci init</Code>{" "}
+        connects the repo and writes a workflow tailored to its build, with the build kept apart
+        from the job that can request a token. For an npm app at the repository root with a{" "}
+        <Code>package-lock.json</Code>, the minimum is this as{" "}
+        <Code>.github/workflows/helix-deploy.yml</Code>, plus a <Code>helix.json</Code> naming the
+        app&apos;s slug and this portal. For anything else, run <Code>helix ci init</Code>.
       </Text>
       <Box pos="relative">
         <Code block className="az-mono" fz={11.5}>

@@ -182,7 +182,7 @@ jobs:
             echo "### Published \`@azx-pbc/helix-cli@$VERSION\`"
             echo
             echo "- https://www.npmjs.com/package/@azx-pbc/helix-cli/v/$VERSION"
-            echo "- \`npm i -g @azx-pbc/helix-cli\`"
+            echo "- \`npx -y @azx-pbc/helix-cli@$VERSION <command>\` (or \`@latest\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

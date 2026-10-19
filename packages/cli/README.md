@@ -66,6 +66,7 @@ helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a version
 helix versions                                               # list versions
 helix promote  <number>                                      # make a version live
 helix rollback [number]                                      # revert the live pointer
+helix capabilities [--json]                                  # what this deployment offers
 helix skill    [--path <file>]                               # write this deployment's agent skill to disk
 helix ci init  [--repo <owner/name>] [--branch <b>] [--reusable] [--force]   # deploy from GitHub Actions
 helix ci show | helix ci remove                              # the app's repo binding
@@ -75,12 +76,38 @@ helix ci show | helix ci remove                              # the app's repo bi
 same step (architecture §5.1). `visibility` is `internal | group:<id>[,<id>…] | password
 | public`.
 
-`helix skill` fetches this deployment's rendered agent skill (`GET /api/v1/skill`,
-ADR-0036) — the same document the portal's **How to develop** modal hands out, with
-this deployment's hosts, servable models, and approval baselines already substituted
-in. It needs no app slug or `helix.json`, only a portal URL and a token. Defaults to
-`./SKILL.md`; `--path .claude/skills/helix/SKILL.md` drops it where a Claude Code
-agent reads it off disk.
+`helix capabilities` prints the deployment capability catalogue
+(`GET /api/v1/capabilities`, ADR-0036) in readable form:
+
+- servable models;
+- approval baselines;
+- named connections and OAuth providers;
+- visibility modes;
+- deploy caps;
+- the dev gateway;
+- which requests queue for an admin.
+
+`--json` prints the raw catalogue. If the portal sends a shape this CLI can't
+format, it prints the JSON instead of failing.
+
+`helix skill` fetches this deployment's rendered agent skill (`GET /api/v1/skill`).
+It is the same document the portal's **How to develop** modal hands out: this
+deployment's hosts, plus pointers to `helix capabilities` and the public docs.
+
+Neither command needs an app slug or `helix.json`, only a portal URL and a token.
+`helix skill` writes `./SKILL.md` by default; `--path .claude/skills/helix/SKILL.md`
+puts it where a Claude Code agent reads it from disk.
+
+### Compatibility with the portal
+
+Every command except `logout` first reads the public `GET /api/v1/config`. If
+the portal states a `cli.minVersion` newer than this CLI, the CLI prints a
+warning to stderr suggesting `@latest`. The warning never fails the command.
+
+A 404 from a missing _route_ (the portal's not-found handler, as opposed to "app
+not found") means the portal is older than the CLI, and the error says so. The
+floor is `MIN_CLI_VERSION` in `@azx-pbc/shared`. Bump it by hand when the portal
+removes or changes something an older CLI relies on (ADR-0052).
 
 ### Deploying from GitHub Actions
 
@@ -138,14 +165,28 @@ Two paths, in precedence order:
 
 ## Running it
 
-### Installed from npm
+### From npm
+
+App authors and agents run it with `npx`, so it is always the current release
+and there is nothing to keep updated (ADR-0052):
 
 ```bash
-npm i -g @azx-pbc/helix-cli
 cd my-app
-export HELIX_TOKEN="…"
+npx -y @azx-pbc/helix-cli@latest deploy --promote
+```
+
+Write `@latest` explicitly, because a bare package name lets `npx` reuse a copy
+it cached earlier. `-y` skips the install prompt.
+
+To install it once instead:
+
+```bash
+npm i -g @azx-pbc/helix-cli          # update with: npm i -g @azx-pbc/helix-cli@latest
 helix deploy --promote
 ```
+
+CI workflows pin an exact version; `helix ci init` writes the one it was run
+with.
 
 Needs **Node 22.12+** (or 24+). The engines range and the bundle's esbuild
 target move together (see `scripts/build.mjs`), so the declared floor is real:

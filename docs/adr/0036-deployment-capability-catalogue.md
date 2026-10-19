@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted. Decisions 1–6 and the `helix skill` CLI command landed; decision 7
-(the public docs site) is deferred — `renderSkillGeneric()` is in place for it,
-the site build itself is not. "Deferred" is a decision, not a proposal.
+Accepted. Decisions 2–5 and the `helix skill` CLI command landed. Decision 7
+(the public docs site) landed as `apps/docs`. **Decisions 1 and 6 are superseded
+by [ADR-0052](0052-evergreen-agent-skill-and-npx-cli.md)**; see the Amendment at
+the end.
 
 ## Implementation (v1 scoping)
 
@@ -205,3 +206,24 @@ instance serve its own half.
   [ADR-0031](0031-connection-providers-delegated-auth.md)'s delegated-auth providers,
   and the public docs site (decision 7). Each is additive behind the same endpoint
   or behind `renderSkillGeneric()`.
+
+## Amendment (2026-10-19): one template, two render modes is withdrawn
+
+[ADR-0052](0052-evergreen-agent-skill-and-npx-cli.md) makes the skill evergreen,
+which reverses two decisions here:
+
+- **Decision 1 is superseded.** The public docs (`apps/docs/src/apps/`) are now
+  hand-written and are the reference for app authors. `SKILL.md` is no longer
+  their source. `renderSkillGeneric()` and `apps/docs/scripts/render-skill.ts`
+  are deleted. The skill keeps one render mode, `renderSkill()`, with three
+  topology placeholders.
+- **Decision 6 is withdrawn.** The baselines, servable models, and deploy caps
+  are no longer template vars. A value substituted into a downloaded file is
+  stale after the next operator change. The skill now points agents at
+  `helix capabilities`, which reads this endpoint live. The catalogue is still
+  the single source; the skill no longer copies it.
+
+Decision 7 landed as written: the site states no instance values and points
+readers at `helix capabilities`. The catalogue's approval payload now has a
+platform-side consumer, `helix capabilities`, which renders the elevation
+triggers and baselines as text.

@@ -5,7 +5,6 @@ import {
   Button,
   Card,
   Center,
-  Code,
   Group,
   Loader,
   SegmentedControl,
@@ -57,9 +56,8 @@ function AgentHandoff() {
         <Box style={{ minWidth: 260, flex: 1 }}>
           <Eyebrow mb={4}>Building with an AI agent?</Eyebrow>
           <Text size="sm" c="dark.2" lh={1.5}>
-            Hand it this deployment&apos;s instructions — the capability manifest, the{" "}
-            <Code>/_api/*</Code> gateway, the CSP to build within, and the deploy flow, with real
-            hostnames already filled in.
+            Hand it this deployment&apos;s instructions — the rules it must not break, the addresses
+            it needs, and where to look up the rest. Set it up once; it stays current.
           </Text>
         </Box>
         <Group gap={8} wrap="nowrap">
@@ -67,7 +65,7 @@ function AgentHandoff() {
               pixels above, and two filled CTAs in the same hue read as one choice
               made twice. Handing over the skill is the accent family's job — the
               same hue this card is tinted with. */}
-          {/* Disabled, never a half-rendered skill, until GET /api/v1/config lands. */}
+          {/* Disabled, never a half-rendered skill, until GET /api/v1/skill lands. */}
           {skill ? (
             <CopyBtn
               value={skill}

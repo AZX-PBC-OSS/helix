@@ -5,6 +5,7 @@ import { SKILL_FILENAME } from "@azx-pbc/deploy-skill";
 import { CliError, errorReason, PortalClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { zipDirectory } from "./zip.js";
+import { renderCapabilities } from "./capabilities.js";
 import { runDeviceLogin } from "./auth/deviceFlow.js";
 import { deleteTokens, writeTokens } from "./auth/tokenStore.js";
 import { githubTokenSource, requestGithubIdToken } from "./auth/githubActions.js";
@@ -278,4 +279,17 @@ export async function skillCommand(
   const outPath = resolve(opts.path ?? SKILL_FILENAME);
   await writeFile(outPath, skill, "utf8");
   console.log(`Wrote skill to ${outPath}`);
+}
+
+/**
+ * `helix capabilities` — print what this deployment offers (`GET
+ * /api/v1/capabilities`): servable models, approval baselines, connections,
+ * providers, visibility modes, deploy limits and the dev gateway. Instance-wide,
+ * like `helix skill`; `--json` prints the catalogue unformatted.
+ */
+export async function capabilitiesCommand(
+  client: PortalClient,
+  opts: { json?: boolean },
+): Promise<void> {
+  console.log(renderCapabilities(await client.getCapabilities(), opts));
 }

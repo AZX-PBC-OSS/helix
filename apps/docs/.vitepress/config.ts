@@ -3,8 +3,9 @@ import llmstxt from "vitepress-plugin-llms";
 
 // The public docs site, published to GitHub Pages as a project page:
 // https://azx-pbc-oss.github.io/helix/ — hence the base. Content lives in
-// src/; apps/src/apps/quickstart.md is generated at build time from
-// packages/deploy-skill/SKILL.md (scripts/render-skill.ts), per ADR-0036.
+// src/. The agent skill (packages/deploy-skill) links to the /apps/ pages'
+// .md twins by URL, so renaming or removing one of those pages breaks every
+// skill already downloaded (ADR-0052).
 //
 // The llmstxt plugin generates the llmstxt.org v2 artifacts into dist/ at
 // build time — llms.txt (an index structured from the sidebar), llms-full.txt
@@ -61,8 +62,12 @@ export default defineConfig({
             { text: "Quickstart", link: "/apps/quickstart" },
             { text: "App manifest", link: "/apps/manifest" },
             { text: "The /_api gateway", link: "/apps/gateway" },
+            { text: "Serving rules and CSP", link: "/apps/serving-and-csp" },
+            { text: "Connected accounts", link: "/apps/connected-accounts" },
+            { text: "Error codes", link: "/apps/errors" },
             { text: "The helix CLI", link: "/apps/cli" },
             { text: "Deploy from GitHub", link: "/apps/deploy-from-github" },
+            { text: "The dev gateway", link: "/apps/dev-gateway" },
           ],
         },
       ],

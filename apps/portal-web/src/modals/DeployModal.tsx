@@ -36,7 +36,7 @@ export function DeployModal({
   // copies it may have no `helix.json` yet, and the CLI would otherwise fall back
   // to its `http://localhost:3001` default. Harmless where the file does set it —
   // flags win over the file, with the same value.
-  const cliCmd = `helix deploy --slug ${slug} --portal-url ${portalOrigin()}`;
+  const cliCmd = `npx -y @azx-pbc/helix-cli@latest deploy --slug ${slug} --portal-url ${portalOrigin()}`;
 
   return (
     <Modal

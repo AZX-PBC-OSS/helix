@@ -65,8 +65,8 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
   const portal = portalOrigin();
   const helixJson = helixJsonFor(portal);
 
-  // Null until GET /api/v1/config lands — the buttons stay disabled rather than
-  // handing an agent a skill with a placeholder host or size cap still in it.
+  // Null until GET /api/v1/skill lands — the buttons stay disabled rather than
+  // handing an agent a skill with a placeholder host still in it.
   const skill = useRenderedSkill();
 
   return (
@@ -102,10 +102,11 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
         >
           <Eyebrow mb={6}>Building with an AI agent?</Eyebrow>
           <Text size="sm" c="dark.2" lh={1.55} mb={12}>
-            Hand it these instructions first. They cover the manifest, the gateway API, the CSP you
-            have to build within, and the deploy flow — with this deployment&apos;s real hostnames
-            already filled in. Save as <Code>.claude/skills/helix/{SKILL_FILENAME}</Code>, or just
-            paste it into the chat.
+            Hand it these instructions first. They carry the rules it must not break and this
+            deployment&apos;s addresses, and point it at the public docs and at{" "}
+            <Code>helix capabilities</Code> for everything else — so you set this up once and it
+            stays current. Save as <Code>.claude/skills/helix/{SKILL_FILENAME}</Code>, or paste it
+            into the chat.
           </Text>
           <Group gap={8}>
             {skill ? (
@@ -216,10 +217,11 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
             <Tabs.Panel value="cli" pt="md">
               <Stack gap={12}>
                 <Text size="sm" c="dark.2" lh={1.6}>
-                  The <Code>helix</Code> CLI deploys any build directory. Install it with npm (needs
-                  Node 24+):
+                  The <Code>helix</Code> CLI deploys any build directory. Run it with{" "}
+                  <Code>npx</Code> so it is always the latest version — there is nothing to install
+                  or update (needs Node 22.12+):
                 </Text>
-                <CliBlock>{INSTALL_CMD}</CliBlock>
+                <CliBlock>{NPX_CMD}</CliBlock>
                 <Text size="sm" c="dark.2" lh={1.6}>
                   Then put a <Code>helix.json</Code> in your app directory. <Code>portalUrl</Code>{" "}
                   is what points <Code>helix</Code> at this portal — leave it out and every command
@@ -241,9 +243,10 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
                   <CopyBtn value={DEPLOY_CMD} label="Copy" />
                 </Group>
                 <Text size="xs" c="dark.3">
-                  <Code>helix deploy --promote</Code> does both in one step. To deploy a preview on
-                  every push from GitHub, run <Code>helix ci init</Code> in the repo; the workflow
-                  needs no secret.
+                  <Code>deploy --promote</Code> does both in one step. To deploy a preview on every
+                  push from GitHub, run <Code>ci init</Code> in the repo; the workflow needs no
+                  secret. To install <Code>helix</Code> globally instead, use{" "}
+                  <Code>npm i -g @azx-pbc/helix-cli</Code> and keep it updated yourself.
                 </Text>
               </Stack>
             </Tabs.Panel>
@@ -281,12 +284,14 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
 }
 
 /**
- * Published to public npm from CI with provenance (ADR-0032), so the install is
- * the one-liner it should be. Node 24+ — the bundle is emitted at that target.
- * `npm i -g git+…` still cannot resolve this package (workspace `catalog:`
- * specifiers, no prepack step), so don't "helpfully" offer that as a fallback.
+ * Published to public npm from CI with provenance (ADR-0032). `npx` with an
+ * explicit `@latest` (ADR-0052): a bare package name lets npx reuse whatever
+ * copy it cached, and `-y` skips the install prompt an agent can't answer.
+ * `npm i -g git+…` cannot resolve this package (workspace `catalog:`
+ * specifiers, no prepack step), so don't offer that as a fallback.
  */
-const INSTALL_CMD = `npm i -g @azx-pbc/helix-cli`;
+const NPX = "npx -y @azx-pbc/helix-cli@latest";
+const NPX_CMD = `${NPX} <command>`;
 
 /**
  * `portalUrl` is not optional here, and it comes first in the tab for a reason:
@@ -299,7 +304,7 @@ const INSTALL_CMD = `npm i -g @azx-pbc/helix-cli`;
 const helixJsonFor = (portal: string) =>
   JSON.stringify({ slug: "my-app", dir: "dist", portalUrl: portal }, null, 2);
 
-const DEPLOY_CMD = `helix login
-helix create --display-name "My App"
-helix deploy
-helix promote <n>`;
+const DEPLOY_CMD = `${NPX} login
+${NPX} create --display-name "My App"
+${NPX} deploy
+${NPX} promote <n>`;
