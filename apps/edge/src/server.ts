@@ -23,6 +23,7 @@ import { PgCspReportStore } from "./serving/cspReport.js";
 import { PgVisitStore } from "./serving/visits.js";
 import { PgJobsCallbackBurnStore } from "./jobs/burns.js";
 import { HttpJobsForwarder, type JobsForwarder } from "./jobs/forwarder.js";
+import { JobsReachability, probeJobsHealth } from "./jobs/reachability.js";
 import type { PoolClientErrorPhase } from "./db/pool.js";
 
 /**
@@ -226,6 +227,27 @@ const jobsForwarder: JobsForwarder | null =
       })
     : null;
 
+// The jobs reachability observation (ADR-0009): a bounded probe loop over the
+// same configured servers, on its own cadence and independent of user
+// requests — `/health`'s `jobs_reachability` check grades its snapshot. Only
+// configured with the forwarder: a fully disabled install adds no jobs
+// dependency to the health body. Same late-bound logger as the registry.
+const jobsReachability =
+  jobsForwarder === null
+    ? null
+    : new JobsReachability({
+        servers: Object.values(config.jobs.servers).map(({ server, endpoint }) => ({
+          server,
+          endpoint,
+        })),
+        probe: probeJobsHealth,
+        log: {
+          info: (obj, msg) => logRef.current.info(obj, msg),
+          warn: (obj, msg) => logRef.current.warn(obj, msg),
+          error: (obj, msg) => logRef.current.error(obj, msg),
+        },
+      });
+
 // The auth-host `/connections/*` reverse proxy: the
 // consent surface is portal-rendered but auth-host-terminated, so the edge
 // forwards it over the internal PortalProvider seam, authorized per call by a
@@ -278,6 +300,7 @@ const app = buildApp({
   egress,
   instructionKey,
   jobsForwarder,
+  jobsReachability: jobsReachability ? () => jobsReachability.snapshot() : null,
   jobsSubmissionThrottle,
   jobsCallbackBurns,
   portal,
@@ -315,6 +338,7 @@ counterSweep.unref();
 app.addHook("onClose", async () => {
   sweeper?.stop();
   clearInterval(counterSweep);
+  await jobsReachability?.stop();
   await jobsCallbackBurns.stop();
   oidc?.stop();
   await registry.stop();
@@ -348,6 +372,7 @@ try {
   await registry.start();
   await oidc?.start();
   jobsCallbackBurns.start();
+  jobsReachability?.start();
   await app.listen({ port, host });
   app.log.info(
     {
@@ -372,8 +397,9 @@ try {
 } catch (err) {
   app.log.error(err);
   // The listener never came up — the failed-partial-initialization exit.
-  // Release what boot acquired (the burn store's pool and sweep timer) here,
-  // not only on the shutdown path; stop() is safe twice.
+  // Release what boot acquired (the probe loop's timer, the burn store's pool
+  // and sweep timer) here, not only on the shutdown path; stop() is safe twice.
+  await jobsReachability?.stop();
   await jobsCallbackBurns.stop();
   process.exit(1);
 }

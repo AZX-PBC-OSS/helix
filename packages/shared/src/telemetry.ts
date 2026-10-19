@@ -39,6 +39,7 @@ export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
 export const INSTR_APP_VISITS = "helix.app.visits";
 export const INSTR_JOBS_STORAGE_PROBES = "helix.jobs.storage.probes";
+export const INSTR_JOBS_REACHABILITY_PROBES = "helix.jobs.reachability.probes";
 export const INSTR_JOBS_INSTRUCTIONS = "helix.jobs.instructions";
 export const INSTR_JOBS_BURN_SWEEPS = "helix.jobs.burn.sweeps";
 export const INSTR_JOBS_EXECUTIONS = "helix.jobs.executions";
@@ -430,6 +431,35 @@ export type ProvidersReconcileOutcome = (typeof PROVIDERS_RECONCILE_OUTCOMES)[nu
  */
 export const JOBS_STORAGE_PROBE_OUTCOMES = ["ok", "unavailable"] as const;
 export type JobsStorageProbeOutcome = (typeof JOBS_STORAGE_PROBE_OUTCOMES)[number];
+
+/**
+ * How one configured jobs server answered the edge's reachability probe — the
+ * `helix.outcome` dimension on `helix.jobs.reachability.probes`, one point per
+ * server per pass. An attempt counter, like
+ * {@link JOBS_STORAGE_PROBE_OUTCOMES}: the *distinguishable* story (which
+ * server, since when, and what it reported when last reachable) is carried by
+ * the `jobs_reachability` health check's body and the edge's transition log
+ * events; this counter's job is the rate a body-aware alert keys on. The
+ * words are the forwarding seam's own endings for the same hop class:
+ *
+ * - `reachable` — a bounded answer whose body parses as the shared health
+ *   contract; the server is up and identifying itself.
+ * - `unreachable` — no answer within the probe's bound: transport failure or
+ *   the timeout expired.
+ * - `invalid_response` — an answer that is not the jobs service answering
+ *   the shared health contract: a redirect (never followed), a wrong status,
+ *   a body past the hop's response allowance, an unparseable body, or a
+ *   valid contract body naming ANOTHER helix service in its `service` field.
+ *   The endpoint is alive and answering, just not as the jobs service the
+ *   deployment map names — distinguishable from a dead endpoint, which is
+ *   `unreachable`'s word.
+ */
+export const JOBS_REACHABILITY_PROBE_OUTCOMES = [
+  "reachable",
+  "unreachable",
+  "invalid_response",
+] as const;
+export type JobsReachabilityProbeOutcome = (typeof JOBS_REACHABILITY_PROBE_OUTCOMES)[number];
 
 /**
  * How a signed internal instruction was received — the `helix.outcome` values

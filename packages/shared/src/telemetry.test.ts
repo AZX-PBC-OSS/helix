@@ -101,6 +101,23 @@ describe("the telemetry vocabulary", () => {
     }
   });
 
+  it("keeps the reachability probe outcome vocabulary bounded and duplicate-free", () => {
+    // The edge's probe counter's dimension — the forwarding seam's own endings
+    // for the reachability hop, shared deliberately with the delivery
+    // vocabulary (different instruments, so no confusability above). The
+    // closed set is what a body-aware alert groups on: a fourth word here is
+    // a vocabulary the health body never emits, and a dropped one orphans a
+    // dashboard's series.
+    expect([...telemetry.JOBS_REACHABILITY_PROBE_OUTCOMES]).toEqual([
+      "reachable",
+      "unreachable",
+      "invalid_response",
+    ]);
+    expect(new Set(telemetry.JOBS_REACHABILITY_PROBE_OUTCOMES).size).toBe(
+      telemetry.JOBS_REACHABILITY_PROBE_OUTCOMES.length,
+    );
+  });
+
   it("orders the duration buckets ascending and covers past a slow LLM stream", () => {
     const buckets = [...telemetry.DURATION_BUCKETS_MS];
     expect(buckets).toEqual([...buckets].sort((a, b) => a - b));

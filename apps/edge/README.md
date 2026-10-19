@@ -108,7 +108,9 @@ Two rules:
 
 `GET /health` on platform/auth hosts returns the shared `HealthStatusSchema` — and on app hosts it
 is just an asset path (an app may ship its own `/health` file). Beyond liveness it reports two
-sub-checks: the registry projection's freshness (ADR-0025) and the trust-proxy walk (ADR-0011):
+sub-checks, plus a third when jobs servers are configured (`EDGE_JOBS_CONFIG` non-empty): the
+registry projection's freshness (ADR-0025), the trust-proxy walk (ADR-0011), and the jobs
+servers' reachability (ADR-0009):
 
 ```json
 {
@@ -163,6 +165,31 @@ every per-IP bucket (anon limiter, login throttle, audit hash) has collapsed to 
 Requests without the header never count — probes, `containerapp exec` and local dev satisfy
 `req.ip === peer` correctly, so a quiet install stays green. The same gauge
 (`helix.edge.trust_proxy.unresolved`) feeds the alert rule in `infra/azure/modules/alerts.bicep`.
+
+The **`jobs_reachability`** sub-check (`src/jobs/reachability.ts`, ADR-0009) exists only when jobs
+servers are configured — a fully disabled install reports no jobs dependency at all. A supervised
+probe loop `GET`s each configured server's `/health` every 30 s (10 s per-probe bound), on its own
+cadence and independent of user requests; the check grades the last snapshot, never a live probe:
+
+| State      | When                                                                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `error`    | the probe loop is not running, has completed no pass, a server never answered its first probe, or **every** configured server is unreachable |
+| `degraded` | the last pass is stale (> 3× the cadence), or some — not all — configured servers are unreachable                                            |
+| `ok`       | every configured server answered the health contract within the bound                                                                        |
+
+Unreachable means "no answer within the bound" or "answered, but not as the jobs service" —
+the detail names each down server, its bounded reason, how long it has been down, and when
+it last answered (or that it never has — a server down since boot reads differently from
+one that died); jobs operations those servers cannot answer are already answering the
+retryable 503 inward. The probe's counter (`helix.jobs.reachability.probes`) splits the
+second class further — a redirect, a wrong status, an oversized body, or a valid health
+body naming ANOTHER helix service (the `service` field is the discriminator: a one-digit
+port typo pointing the probe at a sibling process must not read as a reachable jobs
+server) — is `invalid_response`, not `unreachable`. What a reachable server reported about
+its own state rides the detail as evidence (`jobs reports error`) — the server's own
+`/health` body stays authoritative for its storage/worker/cleanup state; this check speaks
+only for reachability. Probe answers are counted on `helix.jobs.reachability.probes`,
+transitions on the `edge.jobs_reachability.*` log events.
 
 > **`/health` answers 200 in every state, deliberately.** The body carries the degradation, never
 > the status code. If you add a Container Apps liveness probe, do **not** point it at `/health`

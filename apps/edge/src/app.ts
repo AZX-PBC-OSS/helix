@@ -59,6 +59,7 @@ import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
 import type { JobsForwarder } from "./jobs/forwarder.js";
+import { jobsReachabilityCheck, type JobsReachabilitySnapshot } from "./jobs/reachability.js";
 import {
   ROUTE_JOBS_CANCEL,
   ROUTE_JOBS_FETCH,
@@ -112,6 +113,14 @@ export interface EdgeDeps {
    * is fully disabled and the routes answer 503 `jobs_disabled`.
    */
   jobsForwarder?: JobsForwarder | null;
+  /**
+   * The jobs reachability observation, read per request — `/health`'s
+   * `jobs_reachability` check grades the probe loop's snapshot, never a live
+   * probe. null (no configured servers — fully disabled jobs) leaves the
+   * check out of the body entirely: a disabled install carries no jobs
+   * dependency (criterion 8).
+   */
+  jobsReachability?: (() => JobsReachabilitySnapshot) | null;
   /**
    * The jobs-callback nonce burn store (the `jobs_callback_jti` table, this
    * process's `prod` tier); the signed jobs→edge callback route burns
@@ -564,6 +573,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       const checks = [
         registryFreshnessCheck(deps.registry.freshness(), config.reconcileIntervalMs),
         trustProxyCheck(trustProxyObserver.snapshot()),
+        // Composed only when jobs servers are configured — a fully disabled
+        // install reports no jobs dependency at all (criterion 8).
+        ...(deps.jobsReachability ? [jobsReachabilityCheck(deps.jobsReachability())] : []),
       ];
       reply.header("cache-control", "no-store"); // a degraded body must not be cached
       return HealthStatusSchema.parse({

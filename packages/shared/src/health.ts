@@ -51,6 +51,18 @@ export const HealthStatusSchema = z.object({
 });
 export type HealthStatus = z.infer<typeof HealthStatusSchema>;
 
+/**
+ * The name the jobs service stamps in its `/health` body's `service` field —
+ * the value `apps/jobs/src/serviceName.ts` exports as its own `SERVICE_NAME`
+ * and stamps in the OTel resource attribute, the boot log line and this
+ * field. Defined here because it has a second consumer that must never
+ * disagree with the first: the edge's reachability probe verifies the body it
+ * received was answered by the jobs service and not by some other helix
+ * process sharing the same wire contract — a misrouted endpoint must never
+ * read as a reachable jobs server.
+ */
+export const JOBS_SERVICE_NAME = "helix-jobs";
+
 const STATE_RANK: Record<HealthState, number> = { ok: 0, degraded: 1, error: 2 };
 
 /** Roll sub-checks up into the top-level `status`: the worst state wins. */

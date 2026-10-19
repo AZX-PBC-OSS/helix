@@ -18,6 +18,7 @@ import {
   INSTR_GATEWAY_DURATION,
   INSTR_JOBS_BURN_SWEEPS,
   INSTR_JOBS_CALLBACKS,
+  INSTR_JOBS_REACHABILITY_PROBES,
   INSTR_JOBS_SUBMISSIONS,
   INSTR_REGISTRY_LOAD_FAILURES,
   INSTR_REGISTRY_STALE_FOR_MS,
@@ -98,6 +99,15 @@ export interface EdgeInstruments {
    * ledger's job (the policy core writes it), never this counter's.
    */
   jobsCallbacks: Counter;
+  /**
+   * `outcome` ∈ `JOBS_REACHABILITY_PROBE_OUTCOMES` — the edge's bounded
+   * jobs-reachability probe (`jobs/reachability.ts`), one point per configured
+   * server per pass, independent of user requests. The *reason* and the
+   * per-server story ride the `jobs_reachability` health check's body and the
+   * `edge.jobs_reachability.*` transition events; this counter's job is the
+   * rate a body-aware alert keys on.
+   */
+  jobsReachabilityProbes: Counter;
 }
 
 /**
@@ -172,6 +182,13 @@ export function instruments(): EdgeInstruments {
         "Signed jobs→edge callback route answers by outcome, one point per presentation. " +
         "Operational only — a run of replayed is a capture-and-replay attempt, a run of " +
         "rejected a forged or misconfigured minter (the bounded reason rides the span).",
+    }),
+    jobsReachabilityProbes: meter.createCounter(INSTR_JOBS_REACHABILITY_PROBES, {
+      description:
+        "Configured jobs servers' /health probe answers by outcome, one point per server " +
+        "per pass. Operational only — a run of unreachable with no reachable is a jobs " +
+        "server this edge cannot forward to, and the reason rides the jobs_reachability " +
+        "check's body, never a dimension here.",
     }),
   };
   return cached;

@@ -19,6 +19,7 @@ import type { EgressProvider } from "../gateway/egressProvider.js";
 import type { UsageStore } from "../gateway/usage.js";
 import type { AppDataStore } from "../gateway/data.js";
 import type { JobsForwarder } from "../jobs/forwarder.js";
+import { jobsReachabilityCheck, type JobsReachabilitySnapshot } from "../jobs/reachability.js";
 import { makeJobsSubmitHandler, makeJobsRecordHandler } from "../gateway/jobs.js";
 import { makeJobsFetchCallbackHandler, type JobsCallbackRuntime } from "../gateway/jobsCallback.js";
 import type { JobsCallbackBurnStore } from "../jobs/burns.js";
@@ -104,6 +105,13 @@ export interface DevGatewayDeps {
    * fail-closed posture the edge's surface takes).
    */
   jobsForwarder: JobsForwarder | null;
+  /**
+   * The jobs reachability observation, read per request — `/health`'s
+   * `jobs_reachability` check grades the probe loop's snapshot, never a live
+   * probe. Optional (absent = fully disabled jobs, no jobs dependency in the
+   * body), the same posture the edge's own health takes.
+   */
+  jobsReachability?: (() => JobsReachabilitySnapshot) | null;
   /**
    * The dev tier's jobs-callback nonce burn store (`jobs_callback_jti`, the
    * `dev` RLS partition); the signed jobs→edge callback route burns through
@@ -315,6 +323,9 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       const checks = [
         registryFreshnessCheck(deps.registry.freshness(), deps.config.reconcileIntervalMs),
         trustProxyCheck(trustProxyObserver.snapshot()),
+        // Composed only when jobs servers are configured — a fully disabled
+        // install reports no jobs dependency at all (criterion 8).
+        ...(deps.jobsReachability ? [jobsReachabilityCheck(deps.jobsReachability())] : []),
       ];
       reply.header("cache-control", "no-store");
       return HealthStatusSchema.parse({

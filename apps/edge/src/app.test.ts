@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { HealthCheck } from "@azx-pbc/shared";
+import { JOBS_REACHABILITY_CHECK } from "@azx-pbc/shared";
 import { buildApp } from "./app.js";
 import type { EdgeConfig } from "./config.js";
 import { FakeBlobReader, FakeRegistry, registryEntry } from "./test/fakes.js";
@@ -121,6 +122,78 @@ describe("platform hosts", () => {
   it("404s everything else", async () => {
     const res = await edge.app.inject({ url: "/whatever", headers: { host: "localhost:8080" } });
     expect(res.statusCode).toBe(404);
+  });
+
+  it("carries the jobs_reachability check when the observation is wired, and not when jobs is disabled (ADR-0009)", async () => {
+    // The getter stands in for the probe loop's snapshot (its state machine is
+    // reachability.test.ts's subject); this leg pins the composition — the
+    // check is appended when the dep is provided and rolls up into the
+    // status. The disabled-build half of the claim (criterion 8: no dep, no
+    // jobs check at all) is pinned explicitly by the integration suite's
+    // disabled leg and the boot legs, whose bodies assert absence; the
+    // default build above's own assertions cover only the two checks it
+    // carries.
+    const observed = (state: "reachable" | "unreachable") => ({
+      started: true,
+      passes: 2,
+      lastPassAt: new Date().toISOString(),
+      lastOkPassAt: new Date().toISOString(),
+      servers: [
+        {
+          server: "jobs",
+          state,
+          reported: state === "reachable" ? ("ok" as const) : null,
+          lastReachableAt: state === "reachable" ? new Date().toISOString() : null,
+          unreachableSince: state === "unreachable" ? new Date().toISOString() : null,
+          reason: state === "unreachable" ? ("no_answer" as const) : null,
+        },
+      ],
+    });
+    let snapshot = observed("reachable");
+    const wired = buildApp({
+      config: testConfig({
+        jobs: {
+          servers: {
+            jobs: {
+              server: "jobs",
+              endpoint: "http://jobs.internal:3003",
+              edgeToJobsKey: new Uint8Array(32).fill(1),
+              jobsToEdgeKey: new Uint8Array(32).fill(2),
+            },
+          },
+          timeoutMs: 30_000,
+        },
+      }),
+      registry: new FakeRegistry([
+        registryEntry({ appId: APP_ID, slug: "demo", blobPrefix: PREFIX }),
+      ]),
+      blob: new FakeBlobReader(),
+      jobsReachability: () => snapshot,
+    });
+    try {
+      await wired.ready();
+      const ok = await wired.inject({ url: "/health", headers: { host: "localhost:8080" } });
+      const okBody = ok.json<{ status: string; checks?: HealthCheck[] }>();
+      expect(okBody.checks?.map((c) => c.name)).toEqual([
+        "registry-projection",
+        "trust-proxy",
+        JOBS_REACHABILITY_CHECK,
+      ]);
+      expect(okBody.status).toBe("ok");
+
+      snapshot = observed("unreachable");
+      const down = await wired.inject({ url: "/health", headers: { host: "localhost:8080" } });
+      const downBody = down.json<{ status: string; checks?: HealthCheck[] }>();
+      const check = downBody.checks?.find((c) => c.name === JOBS_REACHABILITY_CHECK);
+      // One configured server, unreachable — the whole configured plane is
+      // refusing this edge, so the check (and the roll-up) read error.
+      expect(check?.status).toBe("error");
+      expect(downBody.status).toBe("error");
+      // Still the always-200 contract.
+      expect(down.statusCode).toBe(200);
+    } finally {
+      await wired.close();
+    }
   });
 });
 
