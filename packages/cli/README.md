@@ -67,6 +67,8 @@ helix versions                                               # list versions
 helix promote  <number>                                      # make a version live
 helix rollback [number]                                      # revert the live pointer
 helix skill    [--path <file>]                               # write this deployment's agent skill to disk
+helix ci init  [--repo <owner/name>] [--branch <b>] [--reusable] [--force]   # deploy from GitHub Actions
+helix ci show | helix ci remove                              # the app's repo binding
 ```
 
 `deploy` uploads the bundle as a **preview**; `--promote` flips it live in the
@@ -79,6 +81,27 @@ this deployment's hosts, servable models, and approval baselines already substit
 in. It needs no app slug or `helix.json`, only a portal URL and a token. Defaults to
 `./SKILL.md`; `--path .claude/skills/helix/SKILL.md` drops it where a Claude Code
 agent reads it off disk.
+
+### Deploying from GitHub Actions
+
+`helix ci init`, run signed in from the app's directory in its repo checkout,
+connects the app to the repo and branch (from `origin` and the current branch,
+or `--repo`/`--branch`). It then writes `.github/workflows/helix-deploy.yml`
+and `helix.json` (`slug`, `portalUrl`, `dir`). Commit both. Each push to the
+branch then lands a preview (ADR-0051).
+
+The workflow needs no secret. Inside GitHub Actions, when `HELIX_TOKEN` is not
+set and the job has `permissions: id-token: write`, `helix deploy` asks GitHub
+for an OIDC token whose audience is the portal (read from `GET /api/v1/config`)
+and uploads to `POST /api/v1/apps/:slug/ci/versions`. CI deploys always land as
+a preview, so `--promote` is refused there.
+
+`--reusable` writes a caller of the public reusable workflow
+(`AZX-PBC-OSS/helix-actions`, source in `integrations/helix-actions/`) instead
+of a self-contained one. It also pins the binding to that workflow, so no other
+workflow on the branch can deploy. `helix ci show` prints the binding,
+including the repo ids pinned by the first deploy. `helix ci remove` disconnects
+the app.
 
 > **Breaking in 0.2.0:** the `private` visibility mode was renamed to `internal`.
 > It never checked _which_ user signed in, only that someone had. Passing the old

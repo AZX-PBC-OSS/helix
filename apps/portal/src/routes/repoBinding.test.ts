@@ -58,7 +58,9 @@ const del = (slug: string, token = TEST_TOKEN) =>
 describe("repo binding routes", () => {
   it("creates, reads and audits a binding", async () => {
     const { slug, appId } = await createApp();
-    expect((await get(slug)).statusCode).toBe(404);
+    const missing = await get(slug);
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().error.details).toEqual({ reason: "no_binding" });
     const res = await put(slug, { repoFullName: "octo-org/octo-app", branch: "main" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({

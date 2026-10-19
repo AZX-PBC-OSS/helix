@@ -13,13 +13,15 @@
  * The three real npm deps stay external so they install from the registry —
  * bundling archiver's transitive tree buys nothing and risks plenty.
  */
-import { chmod, rm } from "node:fs/promises";
+import { chmod, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outfile = path.join(pkgDir, "dist", "helix.js");
+
+const { version } = JSON.parse(await readFile(path.join(pkgDir, "package.json"), "utf8"));
 
 await rm(path.join(pkgDir, "dist"), { recursive: true, force: true });
 
@@ -40,6 +42,8 @@ await build({
   // node, with no tsx anywhere on PATH.
   banner: { js: "#!/usr/bin/env node" },
   external: ["archiver", "openid-client", "zod"],
+  // `helix ci init` pins the workflows it writes to the CLI that wrote them.
+  define: { __HELIX_CLI_VERSION__: JSON.stringify(version) },
   logLevel: "info",
 });
 

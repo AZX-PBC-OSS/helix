@@ -1,0 +1,75 @@
+# Helix reusable deploy workflow (ADR-0051).
+#
+# Builds the calling repo's app and uploads it to Helix as a preview, using the
+# job's own GitHub OIDC token. The caller needs `permissions: id-token: write`
+# and an app connected to the repo (`helix ci init --reusable`). An app owner
+# can pin this workflow on the binding, so only it can deploy:
+#   AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1
+#
+# Source of truth: integrations/helix-actions in the Helix repo, mirrored to the
+# public AZX-PBC-OSS/helix-actions repo and tagged there.
+name: Deploy to Helix
+
+on:
+  workflow_call:
+    inputs:
+      package-manager:
+        description: npm, pnpm or yarn
+        type: string
+        default: npm
+      node-version:
+        type: string
+        default: "24"
+      working-directory:
+        description: The app directory, relative to the repo root
+        type: string
+        default: "."
+      build-script:
+        description: The package.json script that builds the app; empty deploys the directory as-is
+        type: string
+        default: build
+      cli-version:
+        description: The @azx-pbc/helix-cli version to deploy with
+        type: string
+        default: latest
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: inputs.package-manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Install
+        env:
+          PM: ${{ inputs.package-manager }}
+        run: |
+          case "$PM" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --frozen-lockfile ;;
+            npm) if [ -f package-lock.json ]; then npm ci; else npm install; fi ;;
+            *) echo "::error::unknown package-manager: $PM"; exit 1 ;;
+          esac
+      - name: Build
+        if: inputs.build-script != ''
+        env:
+          PM: ${{ inputs.package-manager }}
+          SCRIPT: ${{ inputs.build-script }}
+        run: '"$PM" run "$SCRIPT"'
+      - name: Deploy
+        env:
+          CLI_VERSION: ${{ inputs.cli-version }}
+        run: npx --yes "@azx-pbc/helix-cli@$CLI_VERSION" deploy

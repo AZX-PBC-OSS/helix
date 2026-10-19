@@ -52,7 +52,10 @@ export async function repoBindingRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const appRow = await findApp(req.params.slug);
       const row = await app.prisma.repoBinding.findUnique({ where: { appId: appRow.id } });
-      if (!row) throw new AppError("not_found", "this app has no repo binding");
+      // `details.reason` tells "no binding" apart from "no such app" or a
+      // disabled feature, all of which are also 404s.
+      if (!row)
+        throw new AppError("not_found", "this app has no repo binding", { reason: "no_binding" });
       return toBinding(row);
     },
   );
