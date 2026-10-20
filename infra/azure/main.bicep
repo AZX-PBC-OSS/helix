@@ -11,8 +11,10 @@
 //   - the public DNS zone for the apps domain
 //
 // Two-phase deploy (see README): apply once with deployApps=false to build the
-// infra, ensure the three app images are published to GHCR (CI does this), then
-// apply with deployApps=true to roll out the apps.
+// infra, ensure the images are published to GHCR (CI builds edge / portal /
+// egress / certbot; the jobs image is pushed manually until the image workflow
+// carries it — see README step 3), then apply with deployApps=true to roll
+// out the apps.
 
 targetScope = 'resourceGroup'
 
@@ -116,6 +118,18 @@ param egressDbPassword string = ''
 @secure()
 @description('Password for the helix_dev runtime role (dev-gateway). BOOTSTRAP ONLY — ignored when edgeDevDatabaseUrl is set. Only needed when deployDevGateway=true.')
 param devDbPassword string = ''
+@secure()
+@description('helix_jobs DSN (assembled). Steady state: az.getSecret from kv-platform. Empty = compose from jobsDbPassword (bootstrap). Only consumed when deployJobs=true.')
+param jobsDatabaseUrl string = ''
+@secure()
+@description('Password for the helix_jobs runtime role. BOOTSTRAP ONLY — ignored when jobsDatabaseUrl is set. Only needed when deployJobs=true.')
+param jobsDbPassword string = ''
+@secure()
+@description('helix_jobs_migrate DSN (assembled) — the jobs migration identity, read at run time by the jobs migrate job. Steady state: az.getSecret from kv-platform. Empty = compose from jobsMigrateDbPassword (bootstrap). Only consumed when deployJobs=true.')
+param jobsMigrateDatabaseUrl string = ''
+@secure()
+@description('Password for the helix_jobs_migrate migration identity. BOOTSTRAP ONLY — ignored when jobsMigrateDatabaseUrl is set. Only needed when deployJobs=true. Never installed in a runtime image (background-jobs design §8).')
+param jobsMigrateDbPassword string = ''
 
 // Symmetric platform secrets (base64, >= 32 bytes). Generate with
 // `openssl rand -base64 48`.
@@ -279,8 +293,9 @@ param foundryResourceGroupName string = ''
 param egressManagedIdentityConnections string = ''
 
 // Image references (phase 2). Repo names are fixed; registry + tag are parameterized.
-// The three app images are built and published by this repo's CI to GHCR
-// (docker/metadata-action lowercases the owner). Override imageRegistry for a fork.
+// CI publishes edge / portal / egress / certbot to GHCR (docker/metadata-action
+// lowercases the owner); the helix-jobs image is pushed manually until the image
+// workflow carries it (see README step 3). Override imageRegistry for a fork.
 @description('Registry + owner holding the GHCR-built images, e.g. ghcr.io/azx-pbc-oss.')
 param imageRegistry string = 'ghcr.io/azx-pbc-oss'
 
@@ -292,6 +307,9 @@ param deployApps bool = false
 
 @description('Opt-in dev-gateway (dev-mode design §3): the cross-origin dev surface on dev-api.<appsDomain>, run as helix_dev. Off by default — enabling it needs the helix_dev role + password (README step 4) and the pre-deploy riders in docs/features/dev-mode.md. Only takes effect together with deployApps=true.')
 param deployDevGateway bool = false
+
+@description('Deploy the background-jobs plane (ADR-0045): its private database provisioning is unconditional (an apply must never be able to delete the jobs store — a re-enabled jobs plane reuses its retained records), and this flag gates the jobs DEPENDENCIES: the kv-platform DSN secrets and the <namePrefix>-jobs-migrate job here, and the jobs container app + the edge/portal jobs wiring (README "Background jobs"). Flip it off only to park the feature; the retained store stays.')
+param deployJobs bool = true
 
 @description('Deploy the OpenTelemetry collector + Application Insights (ADR-0037). Off leaves every service exporting nowhere — `startTelemetry` returns its inert handle — which is the platform\'s documented default state and exactly how it ran before this existed.')
 param deployTelemetry bool = true
@@ -691,6 +709,39 @@ var devDbConn = deployDevGateway
       ? edgeDevDatabaseUrl
       : 'postgresql://helix_dev:${devDbPassword}@${pgFqdn}:5432/helix?sslmode=require')
   : ''
+// The jobs plane's two DSNs — the `helix_jobs` runtime role's and the
+// `helix_jobs_migrate` migration identity's, against the jobs database the
+// postgres module declares (the same name sql/01-roles.sql hardens). Written
+// to kv-platform only when deployJobs is set. The migration DSN's reader is
+// the jobs migrate job; the runtime DSN's intended reader is the jobs
+// container app (the service's deployment wiring) — and neither ever reaches
+// another container.
+//
+// The fail() guard is the safe default the platform DSNs predate (their
+// empty-password composition is a documented bootstrap hazard instead): an
+// existing install upgrades this template while in steady state — both jobs
+// params unset — and would otherwise silently write an unauthenticatable
+// empty-password DSN into the vault. The first jobs-enabled apply composes
+// from the bootstrap passwords (or --parameters); steady state sources the
+// vault copies via az.getSecret() in the bicepparam.
+var jobsDbConn = deployJobs
+  ? (!empty(jobsDatabaseUrl)
+      ? jobsDatabaseUrl
+      : empty(jobsDbPassword)
+          ? fail(
+              'deployJobs=true needs the two jobs DSNs, and neither jobsDatabaseUrl nor jobsDbPassword is set — composing one with an empty password would write an unauthenticatable DSN into kv-platform. Bootstrap the secrets once with HELIX_JOBS_DB_PASSWORD / HELIX_JOBS_MIGRATE_DB_PASSWORD (main.bootstrap.bicepparam, or --parameters on this apply), then source them steady-state via az.getSecret() in main.bicepparam.'
+            )
+          : 'postgresql://helix_jobs:${jobsDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=require')
+  : ''
+var jobsMigrateDbConn = deployJobs
+  ? (!empty(jobsMigrateDatabaseUrl)
+      ? jobsMigrateDatabaseUrl
+      : empty(jobsMigrateDbPassword)
+          ? fail(
+              'deployJobs=true needs the two jobs DSNs, and neither jobsMigrateDatabaseUrl nor jobsMigrateDbPassword is set — composing one with an empty password would write an unauthenticatable DSN into kv-platform. Bootstrap the secrets once with HELIX_JOBS_DB_PASSWORD / HELIX_JOBS_MIGRATE_DB_PASSWORD (main.bootstrap.bicepparam, or --parameters on this apply), then source them steady-state via az.getSecret() in main.bicepparam.'
+            )
+          : 'postgresql://helix_jobs_migrate:${jobsMigrateDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=require')
+  : ''
 
 module platformSecrets 'modules/kv-secrets.bicep' = {
   name: 'platform-secrets'
@@ -707,6 +758,8 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     edgeOidcPrivateKey: edgeOidcPrivateKey
     edgeOidcCertificate: edgeOidcCertificate
     edgeDevDatabaseUrl: devDbConn
+    jobsDatabaseUrl: jobsDbConn
+    jobsMigrateDatabaseUrl: jobsMigrateDbConn
     postgresAdminPassword: postgresAdminPassword
   }
   dependsOn: [
@@ -1538,6 +1591,30 @@ module migrateJob 'modules/migrate-job.bicep' = if (deployApps) {
   ]
 }
 
+// The jobs database's own migration job (background-jobs design §8) — the
+// separately executed path that owns the jobs store's schema and policy,
+// running the helix-jobs image under the migration identity's DSN. Manual,
+// like the platform's: it never runs on its own. Gated on deployJobs so a
+// fully-disabled install omits it (and the two DSN secrets) entirely; the
+// jobs database itself is NOT gated — an apply can never delete the store.
+// The migration DSN lives in kv-platform only when this gate is on, so the
+// job depends on platformSecrets the same way the platform's job does.
+module jobsMigrateJob 'modules/jobs-migrate-job.bicep' = if (deployApps && deployJobs) {
+  name: 'jobs-migrate-job'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    acaEnvId: appsEnv.outputs.environmentId
+    platformVaultName: keyvault.outputs.platformVaultName
+    platformVaultUri: keyvault.outputs.platformVaultUri
+    image: '${imageRegistry}/helix-jobs:${imageTag}'
+  }
+  dependsOn: [
+    // The DSN must be in the vault before the job could successfully run.
+    platformSecrets
+  ]
+}
+
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
@@ -1545,6 +1622,7 @@ module migrateJob 'modules/migrate-job.bicep' = if (deployApps) {
 output appsEnvStaticIp string = appsEnv.outputs.staticIp
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output migrateJobName string = migrateJob.?outputs.jobName ?? ''
+output jobsMigrateJobName string = jobsMigrateJob.?outputs.jobName ?? ''
 output connectionsVaultUri string = connectionsVaultUri
 output delegatedVaultUri string = delegatedVaultUri
 output dnsNameServers array = dns.outputs.nameServers

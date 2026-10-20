@@ -389,7 +389,13 @@ describe("the runtime dependency closure is closed", () => {
           found.push({ file: rel, root });
       }
     };
-    for (const root of roots) walk(root, `${root}/src`);
+    for (const root of roots) {
+      walk(root, `${root}/src`);
+      // The jobs image runs a SECOND loadable entry — the azure migration job's
+      // `node --import tsx scripts/migrate-azure.ts` (jobs-migrate-job.bicep) —
+      // so its scripts/ sources are runtime surface the closure must cover too.
+      if (root === "apps/jobs") walk(root, "apps/jobs/scripts");
+    }
     // src/test/ is test infrastructure — imported by the *.test.ts files the
     // image excludes — so it is not production surface.
     return found.filter(({ file }) => !roots.some((root) => file.startsWith(`${root}/src/test/`)));

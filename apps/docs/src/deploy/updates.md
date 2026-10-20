@@ -48,6 +48,11 @@ pushes them to `ghcr.io/<owner>`:
 | `helix-egress` | `<namePrefix>-egress` |
 | `helix-certbot` | `<namePrefix>-certbot` job |
 
+The jobs image (`helix-jobs`) — which the `<namePrefix>-jobs-migrate` job
+runs — is **not published by CI yet**. Build and push it manually once per
+release (the commands are in the infra README's step 3), or the jobs
+migration's pull fails at its documented step.
+
 Each build is tagged four ways: `sha-<short>`, the branch name, `latest` (on
 the default branch), and the semver for a `v*` tag.
 
@@ -61,15 +66,20 @@ TAG=$(crane ls ghcr.io/<owner>/helix-edge | grep '^sha-' | tail -1)
 TAG=sha-$(git rev-parse --short=7 HEAD)
 ```
 
-Before rolling, confirm all four tags exist — a partially-published build is
+Before rolling, confirm all five tags exist — a partially-published build is
 the normal result of a CI run that failed in the `images` matrix:
 
 ```bash
-for img in edge portal egress certbot; do
+for img in edge portal egress certbot jobs; do
   docker manifest inspect "ghcr.io/<owner>/helix-$img:$TAG" >/dev/null \
     && echo "ok   $img" || echo "MISSING $img"
 done
 ```
+
+(`helix-jobs` reporting MISSING here is the manual-publish note above, not a
+CI failure — push it and re-check. An install parked with `deployJobs=false`
+creates neither the jobs migrate job nor the need for that image; the jobs
+line is noise there.)
 
 ## If you build a release pipeline
 
@@ -136,6 +146,15 @@ Two things that look like reasons to skip it, and are not:
 - **Running it when nothing is pending is free.** `prisma migrate deploy` is a
   no-op with nothing to apply, so it doubles as a cheap proof that the
   credential path still works.
+
+**On an install with the jobs plane enabled, the `<namePrefix>-jobs-migrate`
+job runs the same routine** for the jobs store's own schema — same shape
+(`job update` to the new tag, `job start`, read the execution), its own
+credential and identity, and the same "run before the apps" rule. The two
+migrate jobs own different databases, so their order doesn't matter. Its
+image is the one CI does not publish yet — the manual push and the pre-flight
+check above are what keep this step pullable. See
+[Database & migrations](/deploy/database#the-jobs-database).
 
 ### 2. Roll the apps
 
@@ -292,7 +311,7 @@ pass:
 
 ```bash
 az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
-  --parameters postgresAdminPassword="$NEW_PASSWORD"
+  --parameters postgresAdminPassword="<new-password>"
 ```
 
 A role password (`helix_edge` &c.) rotates the other way around: change it in

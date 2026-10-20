@@ -27,7 +27,8 @@ param azxCliClientId = readEnvironmentVariable('HELIX_AZX_CLI_CLIENT_ID', '')
 param azxWebClientId = readEnvironmentVariable('HELIX_AZX_WEB_CLIENT_ID', '')
 
 // Phase gate. Leave false for the first apply (infra only), flip to true once the
-// three images are published to GHCR by CI (see README step 3).
+// images are published to GHCR (CI builds edge / portal / egress / certbot; push
+// helix-jobs manually — see README step 3).
 param deployApps = false
 // GHCR registry + owner for the CI-built images. Override for a fork.
 param imageRegistry = readEnvironmentVariable('HELIX_IMAGE_REGISTRY', 'ghcr.io/azx-pbc-oss')
@@ -151,6 +152,12 @@ param egressDatabaseUrl = az.getSecret('00000000-0000-0000-0000-000000000000', '
 // edge-dev-database-url only when the dev surface deploys, so on a stock
 // install this getSecret would fail the deployment at param evaluation:
 // param edgeDevDatabaseUrl = az.getSecret('…', 'rg-…', '…-kvp', 'edge-dev-database-url')
+// Only on a deployJobs=true install, same rule — the two jobs DSN secrets are
+// written by the first deployJobs=true apply (bootstrap them from the
+// HELIX_JOBS_* passwords on that apply), and the steady-state lines come
+// after:
+// param jobsDatabaseUrl = az.getSecret('…', 'rg-…', '…-kvp', 'jobs-database-url')
+// param jobsMigrateDatabaseUrl = az.getSecret('…', 'rg-…', '…-kvp', 'jobs-migrate-database-url')
 param edgeAuthSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-auth-secret')
 param portalSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'portal-secret')
 param instructionSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'helix-instruction-secret')

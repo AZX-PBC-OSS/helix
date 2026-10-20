@@ -7,10 +7,12 @@
     "dev": "node ../../scripts/free-port.mjs ${JOBS_PORT:-3003} && tsx watch src/server.ts",
     "start": "node --import tsx src/server.ts",
     "db:migrate": "node --import tsx src/migrate.ts",
+    "db:migrate:azure": "node --import tsx scripts/migrate-azure.ts",
     "typecheck": "tsc"
   },
   "dependencies": {
     "@azx-pbc/shared": "workspace:*",
+    "@azx-pbc/secret-store": "workspace:*",
     "@azx-pbc/telemetry": "workspace:*",
     "@opentelemetry/api": "catalog:",
     "fastify": "catalog:",

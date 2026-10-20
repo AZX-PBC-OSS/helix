@@ -41,7 +41,8 @@ param azxCliClientId = readEnvironmentVariable('HELIX_AZX_CLI_CLIENT_ID', '')
 param azxWebClientId = readEnvironmentVariable('HELIX_AZX_WEB_CLIENT_ID', '')
 
 // Phase gate. Leave false for the first apply (infra only), flip to true once the
-// three images are published to GHCR by CI (see README step 3).
+// images are published to GHCR (CI builds edge / portal / egress / certbot; push
+// helix-jobs manually — see README step 3).
 param deployApps = false
 // GHCR registry + owner for the CI-built images. Override for a fork.
 param imageRegistry = readEnvironmentVariable('HELIX_IMAGE_REGISTRY', 'ghcr.io/azx-pbc-oss')
@@ -154,6 +155,11 @@ param edgeDbPassword = readEnvironmentVariable('HELIX_EDGE_DB_PASSWORD', '')
 param egressDbPassword = readEnvironmentVariable('HELIX_EGRESS_DB_PASSWORD', '')
 // helix_dev runtime role — only consumed when deployDevGateway=true.
 param devDbPassword = readEnvironmentVariable('HELIX_DEV_DB_PASSWORD', '')
+// The jobs plane's two identities — the runtime role, and the separate
+// migration identity, which is never installed in a runtime image
+// (background-jobs design §8). Only consumed when deployJobs=true.
+param jobsDbPassword = readEnvironmentVariable('HELIX_JOBS_DB_PASSWORD', '')
+param jobsMigrateDbPassword = readEnvironmentVariable('HELIX_JOBS_MIGRATE_DB_PASSWORD', '')
 param edgeAuthSecret = readEnvironmentVariable('HELIX_EDGE_AUTH_SECRET', '')
 param portalSecret = readEnvironmentVariable('HELIX_PORTAL_SECRET', '')
 param instructionSecret = readEnvironmentVariable('HELIX_INSTRUCTION_SECRET', '')

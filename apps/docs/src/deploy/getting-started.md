@@ -283,14 +283,19 @@ az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam \
   --parameters deployApps=true
 ```
 
-Images come from `ghcr.io/azx-pbc-oss` (edge, portal, egress). CI publishes
-them on every push to the main branch and on `v*` tags. The three GHCR packages
-must be **public** for the default anonymous pull to work — the repo being
-public does not make its packages public; flip each one under
-*Package settings → Change visibility*. To keep them private instead, pass a
-`registries` credential to the container apps (see the infra README).
+Images come from `ghcr.io/azx-pbc-oss`. CI publishes four of them on every
+push to the main branch and on `v*` tags: edge, portal, egress, and certbot.
+The **jobs image (`helix-jobs`) is not published by CI yet** — the jobs
+migrate job created by this apply pulls it — so build and push it manually
+once per release (the commands are in the [infra
+README](https://github.com/AZX-PBC-OSS/helix/blob/main/infra/azure/README.md)'s
+step 3). The GHCR packages must be **public** for the default anonymous pull
+to work — the repo being public does not make its packages public; flip each
+one under *Package settings → Change visibility*. To keep them private
+instead, pass a `registries` credential to the container apps (see the infra
+README).
 
-This pass also creates the `<namePrefix>-migrate` job used next. The apps boot
+This pass also creates the two migrate jobs used in step 6. The apps boot
 before the schema exists: they answer `/health` but fail real requests until
 step 6 lands. That is expected on a fresh install — nothing has been delegated
 in DNS yet, so nothing external can reach them.
@@ -310,25 +315,34 @@ nothing else has to change hands.
 
 ## Step 6: Run the first migration
 
-The `<namePrefix>-migrate` job runs the portal image inside the VNet and reads
-the Postgres admin password from Key Vault with its own managed identity — no
-credential passes through your shell. Pin it to the tag being deployed, start
-it, and then read the result:
+Two migration jobs were created by the apps apply: `<namePrefix>-migrate`
+(the platform schema, running the portal image) and — with the jobs plane
+enabled, which is the default — `<namePrefix>-jobs-migrate` (the jobs store's
+own schema and queue policy, running the helix-jobs image). Both read their
+credentials from Key Vault with their own managed identities — no credential
+passes through your shell. Pin each to the tag being deployed, start it, and
+then read the result. One prerequisite: **`helix-jobs` is the one image CI
+does not publish yet** — push it manually per step 5 first, or this job's
+pull fails:
 
 ```bash
 az containerapp job update -g <rg> -n <namePrefix>-migrate \
   --image ghcr.io/azx-pbc-oss/helix-portal:<tag>
 az containerapp job start  -g <rg> -n <namePrefix>-migrate
 
-# a job that starts is not a job that succeeded — check the execution
+az containerapp job update -g <rg> -n <namePrefix>-jobs-migrate \
+  --image ghcr.io/azx-pbc-oss/helix-jobs:<tag>
+az containerapp job start  -g <rg> -n <namePrefix>-jobs-migrate
+
+# a job that starts is not a job that succeeded — check each execution
 az containerapp job execution list -g <rg> -n <namePrefix>-migrate \
   --query "[0].{name:name,status:properties.status,start:properties.startTime}"
 ```
 
-Expect `Succeeded`. On `Failed`, the Prisma output in the job's logs is the
+Expect `Succeeded`. On `Failed`, the migration output in the job's logs is the
 explanation — see [reading the migrate job's
-output](/deploy/database#reading-the-migrate-jobs-output). Once it succeeds,
-every app that was waiting on the schema comes up on its own.
+output](/deploy/database#reading-the-migrate-jobs-output). Once they succeed,
+every app that was waiting on a schema comes up on its own.
 
 Migrations are forward-only and run before the apps on every later update too —
 that routine is in [Deploying updates](/deploy/updates).

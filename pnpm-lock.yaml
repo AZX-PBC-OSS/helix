@@ -481,6 +481,9 @@ importers:
 
   apps/jobs:
     dependencies:
+      '@azx-pbc/secret-store':
+        specifier: workspace:*
+        version: link:../../packages/secret-store
       '@azx-pbc/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -43,6 +43,12 @@ param edgeOidcCertificate string
 @secure()
 @description('EDGE_DEV_DATABASE_URL (helix_dev DSN, dev-gateway). Empty = skip — the surface is opt-in and off unless deployDevGateway is set.')
 param edgeDevDatabaseUrl string = ''
+@secure()
+@description('JOBS_DATABASE_URL (helix_jobs runtime DSN). Empty = skip — written only on a deployJobs=true install; its only intended reader is the jobs container app (the service deployment wiring).')
+param jobsDatabaseUrl string = ''
+@secure()
+@description('JOBS_MIGRATE_DATABASE_URL (helix_jobs_migrate DSN). Empty = skip — written only on a deployJobs=true install; the jobs migration job is its only reader.')
+param jobsMigrateDatabaseUrl string = ''
 
 // The one secret here that is NOT consumed by a running app. It is stored so the
 // migration job can fetch it with its managed identity at run time, which is what
@@ -82,12 +88,22 @@ resource secretResources 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [
   }
 ]
 
-// The dev-gateway DSN is written only when the opt-in surface is deployed, so a
-// stock deploy never lands an (empty) helix_dev secret in kv-platform.
-resource devDatabaseSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(edgeDevDatabaseUrl)) {
-  parent: vault
-  name: 'edge-dev-database-url'
-  properties: {
-    value: edgeDevDatabaseUrl
-  }
+// The optional DSNs, written only when non-empty: the dev-gateway DSN exists
+// only where the opt-in surface deploys, and the two jobs DSNs only where
+// deployJobs is set — a stock deploy never lands an (empty) secret in
+// kv-platform for a plane it does not run.
+var optionalSecrets = {
+  'edge-dev-database-url': edgeDevDatabaseUrl
+  'jobs-database-url': jobsDatabaseUrl
+  'jobs-migrate-database-url': jobsMigrateDatabaseUrl
 }
+
+resource optionalSecretResources 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [
+  for item in filter(items(optionalSecrets), e => !empty(e.value)): {
+    parent: vault
+    name: item.key
+    properties: {
+      value: item.value
+    }
+  }
+]

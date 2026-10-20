@@ -4,7 +4,7 @@
 --
 -- Creates the least-privilege runtime roles beside the `helixadmin`
 -- object owner. This is data-plane, NOT infrastructure: postgres.bicep
--- provisions the server + `helix` DB only, and these roles + their table GRANTs
+-- provisions the server + both databases, and these roles + their table GRANTs
 -- come from role SQL + Prisma `db:deploy`, run post-deploy as the admin (see the
 -- infra README, step 4). Run this from inside the VNet, connected as the
 -- admin, BEFORE `db:deploy` — the migration GRANTs are guarded by an
@@ -84,11 +84,11 @@ GRANT USAGE   ON SCHEMA public  TO helix_portal, helix_edge, helix_egress, helix
 
 -- The jobs database, created if this install predates the jobs plane (new
 -- databases inherit template1's PUBLIC CONNECT, revoked below). CREATE
--- DATABASE cannot run inside a DO block, hence \gexec. Until the deployment
--- definitions land their own `helix_jobs` databases resource, this
--- create-if-missing is the only declarant; provisioning-parity.test.ts holds
--- the two names together, so the resource cannot arrive under a different
--- name than the one hardened here.
+-- DATABASE cannot run inside a DO block, hence \gexec. The deployment
+-- definitions declare the same database as a flexibleServers/databases
+-- resource (postgres.bicep) — whichever lands first, the other is a no-op,
+-- and provisioning-parity.test.ts holds the two names together, so the
+-- resource cannot arrive under a different name than the one hardened here.
 SELECT 'CREATE DATABASE ' || quote_ident(:'jobs_db')
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'jobs_db') \gexec
 
