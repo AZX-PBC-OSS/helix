@@ -204,6 +204,11 @@ export HELIX_JOBS_MIGRATE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' |
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
 export HELIX_INSTRUCTION_SECRET=$(openssl rand -base64 48)
+# The jobs service's three signing roots, one per direction: exactly 32 bytes
+# each, generated separately (the deploy refuses a repeated or malformed root).
+export HELIX_JOBS_EDGE_TO_JOBS_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_JOBS_TO_EDGE_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_PORTAL_TO_JOBS_ROOT=$(openssl rand -base64 32)
 export HELIX_EDGE_OIDC_PRIVATE_KEY=$(base64 -w0 edge-key.pem)
 export HELIX_EDGE_OIDC_CERTIFICATE=$(base64 -w0 edge-cert.pem)
 export HELIX_EDGE_OIDC_CLIENT_ID=<helix-edge client id>
@@ -222,9 +227,8 @@ over the control plane (the API resolves the Key Vault references), and the
 Postgres admin password is also in the platform vault as
 `postgres-admin-password` — but recovery needs a healthy install, so capture
 stays the primary path. (The values held in no container: `HELIX_DEV_DB_PASSWORD`
-on an install with the dev surface off, and the two `HELIX_JOBS_*` passwords
-until the jobs service ships — the migration identity's password never reaches
-a runtime image at all. Set a fresh one with `ALTER ROLE <role>` rather than
+on an install with the dev surface off, and the jobs migration identity's
+password, which never reaches a runtime image at all. Set a fresh one with `ALTER ROLE <role>` rather than
 hunting the original.)
 
 ::: tip Preview first
@@ -260,9 +264,9 @@ RG=<rg> PREFIX=<namePrefix> infra/azure/scripts/create-roles.sh
 It reads the same `HELIX_*` variables you exported in step 3 — set all seven,
 including `HELIX_DEV_DB_PASSWORD` and the two `HELIX_JOBS_*` passwords. The
 `helix_dev` role is created even when the dev gateway stays off, and the jobs
-identities even before the jobs service ships: the extra roles are harmless
-without their apps, and adding them later means re-running migrations to pick
-up their grants.
+identities even on an install that parks the jobs plane (`deployJobs=false`):
+the extra roles are harmless without their apps, and adding them later means
+re-running migrations to pick up their grants.
 
 The job deletes itself when the script finishes — it carries the admin password
 as a job secret, so it must not be left lying around (if the cleanup itself
@@ -285,8 +289,8 @@ az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam \
 
 Images come from `ghcr.io/azx-pbc-oss`. CI publishes four of them on every
 push to the main branch and on `v*` tags: edge, portal, egress, and certbot.
-The **jobs image (`helix-jobs`) is not published by CI yet** — the jobs
-migrate job created by this apply pulls it — so build and push it manually
+The **jobs image (`helix-jobs`) is not published by CI yet** — the jobs app
+and the jobs migrate job created by this apply pull it — so build and push it manually
 once per release (the commands are in the [infra
 README](https://github.com/AZX-PBC-OSS/helix/blob/main/infra/azure/README.md)'s
 step 3). The GHCR packages must be **public** for the default anonymous pull
@@ -308,7 +312,9 @@ with your own (they are literals by design — and keep every line: a parameter
 left unset falls back to composing a database DSN from an *empty* password,
 which the apply would then write into the vault). On a `deployDevGateway=true`
 install, also uncomment the `edgeDevDatabaseUrl` line — that secret exists only
-where the dev surface deploys. The vault was created with
+where the dev surface deploys. With the jobs plane on (the default), uncomment
+the five jobs lines too — the two jobs DSNs and the three signing roots; the
+apply refuses to run without them. The vault was created with
 `enabledForTemplateDeployment`, and your deploy principal needs
 `Microsoft.KeyVault/vaults/deploy/action` (Owner/Contributor include it) —
 nothing else has to change hands.

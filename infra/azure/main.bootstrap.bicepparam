@@ -160,6 +160,11 @@ param devDbPassword = readEnvironmentVariable('HELIX_DEV_DB_PASSWORD', '')
 // (background-jobs design §8). Only consumed when deployJobs=true.
 param jobsDbPassword = readEnvironmentVariable('HELIX_JOBS_DB_PASSWORD', '')
 param jobsMigrateDbPassword = readEnvironmentVariable('HELIX_JOBS_MIGRATE_DB_PASSWORD', '')
+// The jobs server's three directional signing roots — independently generated
+// (`openssl rand -base64 32` each); only consumed when deployJobs=true.
+param jobsEdgeToJobsRoot = readEnvironmentVariable('HELIX_JOBS_EDGE_TO_JOBS_ROOT', '')
+param jobsJobsToEdgeRoot = readEnvironmentVariable('HELIX_JOBS_JOBS_TO_EDGE_ROOT', '')
+param jobsPortalToJobsRoot = readEnvironmentVariable('HELIX_JOBS_PORTAL_TO_JOBS_ROOT', '')
 param edgeAuthSecret = readEnvironmentVariable('HELIX_EDGE_AUTH_SECRET', '')
 param portalSecret = readEnvironmentVariable('HELIX_PORTAL_SECRET', '')
 param instructionSecret = readEnvironmentVariable('HELIX_INSTRUCTION_SECRET', '')

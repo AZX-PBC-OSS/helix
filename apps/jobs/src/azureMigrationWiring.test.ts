@@ -160,8 +160,11 @@ describe("main.bicep wires the jobs DSNs and the job", () => {
     // kv-secrets filters empties, so the composition's false arm is what
     // keeps a deployJobs=false install's vault free of jobs DSNs.
     for (const varName of ["jobsDbConn", "jobsMigrateDbConn"]) {
+      // A line-start comment may sit between the composition and the next
+      // declaration; the capture must stop at it too, or the trailing-`''`
+      // check below reads the comment's last line instead of the false arm.
       const block = MAIN.match(
-        new RegExp(`var ${varName} = [\\s\\S]*?(?=\\n(?:var|module|resource|output)\\b)`),
+        new RegExp(`var ${varName} = [\\s\\S]*?(?=\\n(?:var|module|resource|output)\\b|\\n//)`),
       );
       expect(block, `main.bicep must define ${varName}`).not.toBeNull();
       expect(block![0]).toMatch(new RegExp(`^var ${varName} = deployJobs\\s*\\?`));
@@ -228,10 +231,12 @@ describe("main.bicep wires the jobs DSNs and the job", () => {
 describe("no runtime container receives a jobs database credential", () => {
   /**
    * ADR-0008's custody matrix: the jobs runtime DSN belongs to the jobs
-   * container app, the migration DSN to the jobs migrate job. The edge, the
-   * portal, the egress service and the dev-gateway never appear with either
-   * — neither as a Key Vault reference nor as an env var — and neither DSN
-   * secret name ever reaches a `containerapp.bicep` call's env.
+   * container app — its ONE container reader, which receives it as the inline
+   * `jobsServer.databaseUrl` secret — and the migration DSN to the jobs
+   * migrate job. The edge, the portal, the egress service and the dev-gateway
+   * never appear with either — neither as a Key Vault reference nor as an env
+   * var — and the migration DSN secret name never reaches a
+   * `containerapp.bicep` call at all.
    */
   it("no containerapp module call references a jobs DSN secret", () => {
     const appCalls = [
@@ -240,10 +245,40 @@ describe("no runtime container receives a jobs database credential", () => {
       ),
     ];
     expect(appCalls.length, "main.bicep must still declare the container apps").toBeGreaterThan(0);
+    const callNames = appCalls.map((call) => call[1]!);
+    expect(callNames, "the jobsApp exemption below must actually cover a declared call").toContain(
+      "jobsApp",
+    );
     for (const call of appCalls) {
+      const name = call[1]!;
+      if (name === "jobsApp") {
+        // The runtime DSN's one container reader. It receives the composed DSN
+        // only as the inline jobsServer.databaseUrl secret — never the
+        // migration credential, never a composed DSN or bootstrap password as
+        // a literal value, never an inline DSN.
+        expect(
+          call[0],
+          `the ${name} container app must not receive the jobs migration DSN secret`,
+        ).not.toMatch(new RegExp(MIGRATE_DSN_SECRET));
+        for (const varName of JOBS_CREDENTIAL_VARS) {
+          expect(
+            call[0],
+            `the ${name} container app must not receive the jobs credential variable ${varName}`,
+          ).not.toContain(varName);
+        }
+        expect(
+          call[0],
+          `the ${name} container app must not inline a jobs database DSN`,
+        ).not.toContain("postgresql://helix_jobs");
+        expect(
+          call[0],
+          `the ${name} container app must receive the runtime DSN only as the inline jobsServer.databaseUrl secret`,
+        ).toContain("'jobs-database-url': { value: jobsServer.databaseUrl }");
+        continue;
+      }
       expect(
         call[0],
-        `the ${call[1]} container app must not receive a jobs database credential`,
+        `the ${name} container app must not receive a jobs database credential`,
       ).not.toMatch(new RegExp(RUNTIME_DSN_SECRET));
       expect(call[0]).not.toMatch(new RegExp(MIGRATE_DSN_SECRET));
       // The evasion vector the secret names cannot see: the composed DSN or a
@@ -252,7 +287,7 @@ describe("no runtime container receives a jobs database credential", () => {
       for (const varName of JOBS_CREDENTIAL_VARS) {
         expect(
           call[0],
-          `the ${call[1]} container app must not receive the jobs credential variable ${varName}`,
+          `the ${name} container app must not receive the jobs credential variable ${varName}`,
         ).not.toContain(varName);
       }
       // …and the third vector: the DSN composed INLINE in the call (bypassing
@@ -260,8 +295,19 @@ describe("no runtime container receives a jobs database credential", () => {
       // name — the names 01-roles.sql owns.
       expect(
         call[0],
-        `the ${call[1]} container app must not inline a jobs database DSN`,
+        `the ${name} container app must not inline a jobs database DSN`,
       ).not.toContain("postgresql://helix_jobs");
+      // The deployment map holds the runtime DSN (jobsServer.databaseUrl), so
+      // a non-jobs app reading the map would carry the credential. Word
+      // boundaries: edgeJobsConfig / portalJobsConfig / portalJobsCatalogue
+      // legitimately appear in the gateway and portal calls and share no word
+      // with these.
+      for (const varName of ["jobsServer", "jobsServers", "jobsServerConfig"]) {
+        expect(
+          call[0],
+          `the ${name} container app must not receive the jobs map variable ${varName}`,
+        ).not.toMatch(new RegExp(`\\b${varName}\\b`));
+      }
     }
   });
 

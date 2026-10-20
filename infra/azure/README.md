@@ -12,14 +12,14 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 
 ## What it provisions
 
-| Layer    | Resources                                                                                                                                                                                  |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                                                                |
-| Data     | Postgres Flexible Server (private): the platform `helix` database + the jobs plane's private `helix_jobs` database; Storage (blob, private)                                                |
-| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private                                       |
-| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`); the two migrate jobs get one deploy-scoped identity each   |
-| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) and the default-on jobs plane's migrate job (`deployJobs`) |
-| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                                                                                 |
+| Layer    | Resources                                                                                                                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                                                                                  |
+| Data     | Postgres Flexible Server (private): the platform `helix` database + the jobs plane's private `helix_jobs` database; Storage (blob, private)                                                                  |
+| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private                                                         |
+| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`); the two migrate jobs get one deploy-scoped identity each                     |
+| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) and the default-on jobs plane's container app and migrate job (`deployJobs`) |
+| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                                                                                                   |
 
 ### The security shape, in one diagram
 
@@ -428,10 +428,9 @@ customer-run, remote-team install usually doesn't want.
 The background-jobs plane keeps the same database isolation as everywhere else
 (background-jobs design §8): its own private database on the platform's Postgres
 server, two identities that never cross the boundary, and migrations that run
-separately from the service. On by default; the jobs container app and the
-edge/portal jobs wiring are the deployment tickets' remaining halves, so
-flipping `deployJobs` today gates what exists: the DSN secrets in kv-platform
-and the jobs migrate job.
+separately from the service. On by default; `deployJobs` gates the jobs
+container app, the edge / dev-gateway / portal jobs wiring, the jobs secrets in
+kv-platform and the jobs migrate job.
 
 - **The database (`helix_jobs`) is declared unconditionally** — `deployJobs`
   gates the plane's _dependencies_, never the store. An apply can therefore
@@ -455,6 +454,69 @@ and the jobs migrate job.
   command. That command refuses a runtime DSN (it needs CREATE on the
   database) and verifies every grant it makes by re-reading the store, so the
   migration identity's authority is the whole of its confinement.
+- **The `<namePrefix>-jobs` container app** runs the helix-jobs image in the
+  **apps** environment with **internal ingress**: the edge, the dev-gateway and
+  the portal reach it at `https://<namePrefix>-jobs.internal.<env-domain>`,
+  and nothing reaches it from the public load balancer. This is the
+  apps environment's network posture, not a jobs-only sandbox — the jobs
+  service inherits the apps subnet's outbound allowances (background-jobs
+  design §8; application fetches still go through the edge and egress).
+  It runs with **no managed identity**: it holds no Azure credential and no Key
+  Vault access, so every secret it needs is an inline container-app secret
+  composed by the template. One replica (`min = max = 1`); a Single-revision
+  rollout overlaps old and new for at most two worker processes. Startup,
+  liveness and readiness probes hit `/health`, which answers 200 in every
+  state — they catch a process that stopped answering, and a degraded store is
+  read from the body, never by restarting the replica.
+- **Each service gets only its own credentials** (one server map in
+  `main.bicep`, projected per consumer):
+
+  | Service              | Jobs configuration it receives                                                                                            |
+  | -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+  | jobs                 | `JOBS_SERVER_ID`, its runtime DSN, its three signing roots, the prod and dev callback bases                               |
+  | edge, dev-gateway    | `EDGE_JOBS_CONFIG` — the jobs endpoint, the edge→jobs and jobs→edge roots                                                 |
+  | portal               | `PORTAL_JOBS_CONFIG` — the jobs endpoint and the portal→jobs root; `PORTAL_JOBS_CATALOGUE` — serving state and types only |
+  | egress, migrate jobs | nothing from the server map                                                                                               |
+
+  The edge and the portal never receive a jobs database credential, and the
+  portal never receives an edge hop root. `apps/jobs/src/azureServiceWiring.test.ts`
+  holds the template to this table and boots each service's real config
+  loader on the documents the template builds.
+
+- **Three signing roots**, one per direction (`edge→jobs`, `jobs→edge`,
+  `portal→jobs`), each 32 random bytes in standard base64
+  (`openssl rand -base64 32`, generated separately). The apply refuses a
+  missing, malformed or repeated root. They land in kv-platform as
+  `jobs-edge-to-jobs-root`, `jobs-jobs-to-edge-root` and
+  `jobs-portal-to-jobs-root` — the steady-state source the commented
+  `az.getSecret()` lines in `main.bicepparam` read back — and reach the
+  services only through the template. Rotating a root is a template apply with
+  the new value: the services holding it roll together.
+- **Callbacks stay in their tier.** Prod jobs call back to the edge's
+  environment FQDN, dev jobs to the dev-gateway's. With the dev surface off,
+  the dev callback still names the dev-gateway's host — which then answers
+  nothing — so a dev-tier callback fails instead of reaching the production
+  plane.
+- **The endpoint is computed.** The edge and the portal are configured with
+  the jobs app's internal FQDN computed from its name (taking the jobs app's
+  own output would be a dependency cycle with its callbacks). After an apply,
+  the `jobsEndpoint` output must equal `https://` + the `jobsFqdn` output; the
+  edge's `jobs_reachability` health check reports a mismatch as unreachable.
+- **Serving, retiring, disabled.** `jobsServerState` is `serving` by default.
+  `retiring` withdraws `jobs:fetch` from new-grant discovery in the portal while
+  keeping the service, its routing and every credential in place, so retained
+  jobs stay readable and cancellable. It does not yet close intake for apps
+  that already hold the grant. `deployJobs=false` removes the jobs container
+  app and every jobs key from the edge, dev-gateway and portal — ordinary
+  hosting then has no jobs dependency — and leaves the database and its
+  retained records in place. Only disable after the retained records are gone;
+  re-enabling reuses the same store.
+- **Known limitation: vault-wide reads.** kv-platform grants the edge, portal,
+  egress and dev-gateway identities Key Vault Secrets User on the whole vault
+  (`modules/rbac.bicep`), so those identities can read the jobs roots and DSNs
+  stored there, as they can every other platform secret. The configuration the
+  template delivers respects the table above; the vault grant does not
+  enforce it.
 
 #### The jobs upgrade procedure (existing install)
 
@@ -462,14 +524,17 @@ and the jobs migrate job.
    idempotent: it creates what is missing (including the jobs identities and
    the jobs database on an install that predates them) and re-applies the
    current ACL posture without touching passwords or data.
-2. **Template apply** — the `helix_jobs` databases resource, the DSN secrets
-   and the jobs migrate job land on the first `deployJobs=true` apply. The
-   first such apply must compose the two DSNs from the bootstrap passwords
-   (`HELIX_JOBS_DB_PASSWORD` / `HELIX_JOBS_MIGRATE_DB_PASSWORD`, via
-   `main.bootstrap.bicepparam` or `--parameters`): the template refuses an
-   apply that would write an empty-password DSN instead of silently doing it.
-   From the next apply on, source both from the vault in `main.bicepparam`
-   (the two commented `az.getSecret()` lines).
+2. **Template apply** — the `helix_jobs` databases resource, the jobs
+   secrets, the jobs migrate job, the jobs container app and the edge /
+   portal jobs wiring land on the first `deployJobs=true` apply. The first
+   such apply must compose the two DSNs from the bootstrap passwords
+   (`HELIX_JOBS_DB_PASSWORD` / `HELIX_JOBS_MIGRATE_DB_PASSWORD`) and take the
+   three signing roots from `HELIX_JOBS_EDGE_TO_JOBS_ROOT` /
+   `HELIX_JOBS_JOBS_TO_EDGE_ROOT` / `HELIX_JOBS_PORTAL_TO_JOBS_ROOT`, via
+   `main.bootstrap.bicepparam` or `--parameters`: the template refuses an
+   apply that would write an empty-password DSN or a missing root instead of
+   silently doing it. From the next apply on, source all five from the vault
+   in `main.bicepparam` (the commented jobs `az.getSecret()` lines).
 3. **Jobs migration** — run the jobs migrate job, exactly like the platform's
    (update the image, start, read the execution). The two stores are
    independent (different databases, different identities), so the order of
@@ -698,6 +763,11 @@ export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d
 export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')     # helix_dev role — create it now even if deployDevGateway stays false (see step 4)
 export HELIX_JOBS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')        # helix_jobs runtime role (role + jobs database created in step 4)
 export HELIX_JOBS_MIGRATE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=') # helix_jobs_migrate — the jobs migration identity, never installed in a runtime image
+# The jobs server's three signing roots: exactly 32 bytes each, standard base64,
+# one independent value per direction.
+export HELIX_JOBS_EDGE_TO_JOBS_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_JOBS_TO_EDGE_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_PORTAL_TO_JOBS_ROOT=$(openssl rand -base64 32)
 # Signing secrets are base64-DECODED by the apps — standard base64 here.
 # A base64url value makes the edge crash on boot.
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
@@ -732,9 +802,9 @@ ghcr.io/azx-pbc-oss/helix-certbot:<tag>
 ```
 
 The **fifth image the deployment pulls — `helix-jobs` — is not in CI's matrix
-yet**, so nothing publishes it: the `<namePrefix>-jobs-migrate` job (created
-with `deployJobs` at its default) runs it, and an unpublished tag fails the
-job at image pull. Build and push it manually once per release (the snippet
+yet**, so nothing publishes it: the `<namePrefix>-jobs` app and the
+`<namePrefix>-jobs-migrate` job (created with `deployJobs` at its default) run
+it, and an unpublished tag fails both at image pull. Build and push it manually once per release (the snippet
 below) until the image workflow carries it.
 
 Tags produced per push: the branch name, the commit SHA (`sha-<short>`), the

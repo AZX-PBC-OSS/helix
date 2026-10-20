@@ -84,6 +84,8 @@ catches a wrongly-off flag before it does damage.
 | `deployApps` | `false` | The two-phase switch: `false` deploys infrastructure only, `true` adds the container apps |
 | `deployFirewall` | `true` | The Azure Firewall that enforces the egress-only network zone. **Keep on for production** — it is the primary outbound control. `false` saves ~$920/month and is for dev/test installs only |
 | `deployDevGateway` | `false` | The opt-in cross-origin dev surface (`dev-api.<appsDomain>`) for building apps locally against a deployed platform |
+| `deployJobs` | `true` | The background-jobs service (internal ingress in the apps environment) and its wiring into the edge, dev gateway and portal. `false` removes the service and every jobs setting from the other apps; the jobs database and its records stay |
+| `jobsServerState` | `serving` | `retiring` withdraws the jobs types from new grants while keeping the service, its routing and its credentials, so existing jobs stay readable and cancellable. It does not yet stop apps that already hold the grant from submitting |
 | `portalExternal` | `false` | Puts the portal on the public load balancer at `portal.<appsDomain>`, gated by Entra sign-in. Without it (or a private network path), nobody can reach the portal |
 | `allowPublicApps` | `false` | Permits `public` (anonymous) app visibility on this install |
 | `allowPasswordApps` | `false` | Permits `password` (shared-passphrase) app visibility |

@@ -48,10 +48,10 @@ pushes them to `ghcr.io/<owner>`:
 | `helix-egress` | `<namePrefix>-egress` |
 | `helix-certbot` | `<namePrefix>-certbot` job |
 
-The jobs image (`helix-jobs`) — which the `<namePrefix>-jobs-migrate` job
-runs — is **not published by CI yet**. Build and push it manually once per
-release (the commands are in the infra README's step 3), or the jobs
-migration's pull fails at its documented step.
+The jobs image (`helix-jobs`) — which the `<namePrefix>-jobs` app and the
+`<namePrefix>-jobs-migrate` job run — is **not published by CI yet**. Build
+and push it manually once per release (the commands are in the infra README's
+step 3), or both pulls fail.
 
 Each build is tagged four ways: `sha-<short>`, the branch name, `latest` (on
 the default branch), and the semver for a `v*` tag.
@@ -78,8 +78,8 @@ done
 
 (`helix-jobs` reporting MISSING here is the manual-publish note above, not a
 CI failure — push it and re-check. An install parked with `deployJobs=false`
-creates neither the jobs migrate job nor the need for that image; the jobs
-line is noise there.)
+creates neither the jobs app, the jobs migrate job nor the need for that
+image; the jobs line is noise there.)
 
 ## If you build a release pipeline
 
@@ -167,6 +167,10 @@ done
 # if the dev gateway is deployed — it runs the edge image
 az containerapp update -g <rg> -n <namePrefix>-dev-gateway \
   --image "ghcr.io/<owner>/helix-edge:$TAG"
+
+# if the jobs plane is enabled (the default) — after its migrate job succeeded
+az containerapp update -g <rg> -n <namePrefix>-jobs \
+  --image "ghcr.io/<owner>/helix-jobs:$TAG"
 ```
 
 The certbot job is rolled the same way, with `job update`. It is a scheduled
@@ -336,6 +340,14 @@ them:
   planes fails every attested edge→egress call for the duration. Write the
   vault, then force a new revision on **both** apps back-to-back so the window
   is seconds, not half an hour.
+- **The jobs service's secrets are not vault references.** The jobs app has no
+  managed identity, so its database DSN and its three signing roots — and the
+  jobs documents the edge, dev gateway and portal hold — are written into the
+  apps by the template. Writing the vault alone changes nothing that is
+  running: rotate a jobs root or the `helix_jobs` password with a full apply
+  that carries the new value (`--parameters jobsEdgeToJobsRoot=…`, or the
+  rebuilt `jobsDatabaseUrl`), which rolls every app that holds it in the same
+  pass and updates the vault copy the next apply reads.
 
 ## When you do need a full apply
 

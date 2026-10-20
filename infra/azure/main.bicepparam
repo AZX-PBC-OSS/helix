@@ -38,6 +38,7 @@ param imageTag = readEnvironmentVariable('HELIX_IMAGE_TAG', 'latest')
 // (with deployApps) to stand up dev-api.<appsDomain>. Needs devDbPassword + the
 // helix_dev role (README step 4) and the pre-deploy riders in the feature doc.
 param deployDevGateway = false
+// param jobsServerState = 'serving'   // 'retiring' withdraws the jobs types from new grants (README "Background jobs")
 
 // Egress firewall (ADR-0001/0005). true = deploy the Azure Firewall that enforces
 // the egress-only network zone (the PRIMARY SSRF/egress control). Secure default.
@@ -152,12 +153,16 @@ param egressDatabaseUrl = az.getSecret('00000000-0000-0000-0000-000000000000', '
 // edge-dev-database-url only when the dev surface deploys, so on a stock
 // install this getSecret would fail the deployment at param evaluation:
 // param edgeDevDatabaseUrl = az.getSecret('…', 'rg-…', '…-kvp', 'edge-dev-database-url')
-// Only on a deployJobs=true install, same rule — the two jobs DSN secrets are
-// written by the first deployJobs=true apply (bootstrap them from the
-// HELIX_JOBS_* passwords on that apply), and the steady-state lines come
-// after:
+// Only on a deployJobs=true install, same rule — the two jobs DSN secrets and
+// the jobs server's three signing roots are written by the first
+// deployJobs=true apply (bootstrap the passwords from the HELIX_JOBS_* env vars
+// and the roots from the HELIX_JOBS_*_ROOT ones on that apply), and the
+// steady-state lines come after:
 // param jobsDatabaseUrl = az.getSecret('…', 'rg-…', '…-kvp', 'jobs-database-url')
 // param jobsMigrateDatabaseUrl = az.getSecret('…', 'rg-…', '…-kvp', 'jobs-migrate-database-url')
+// param jobsEdgeToJobsRoot = az.getSecret('…', 'rg-…', '…-kvp', 'jobs-edge-to-jobs-root')
+// param jobsJobsToEdgeRoot = az.getSecret('…', 'rg-…', '…-kvp', 'jobs-jobs-to-edge-root')
+// param jobsPortalToJobsRoot = az.getSecret('…', 'rg-…', '…-kvp', 'jobs-portal-to-jobs-root')
 param edgeAuthSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'edge-auth-secret')
 param portalSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'portal-secret')
 param instructionSecret = az.getSecret('00000000-0000-0000-0000-000000000000', 'rg-helix-prod', 'helix-prod-kvp', 'helix-instruction-secret')
