@@ -654,7 +654,7 @@ export HELIX_AZX_WEB_CLIENT_ID=<helix-portal client id (GUID)>
 az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam
 ```
 
-### 3. Build + publish the three images
+### 3. Build + publish the images
 
 CI builds and publishes all three images to **GHCR** on pushes to the default
 branch and on `v*` tags (`.github/workflows/ci.yml`):
@@ -686,7 +686,8 @@ REG=ghcr.io/azx-pbc-oss
 docker build -f apps/edge/Dockerfile   -t $REG/helix-edge:$TAG   .
 docker build -f apps/portal/Dockerfile -t $REG/helix-portal:$TAG .
 docker build -f apps/egress/Dockerfile -t $REG/helix-egress:$TAG .
-docker push $REG/helix-edge:$TAG && docker push $REG/helix-portal:$TAG && docker push $REG/helix-egress:$TAG
+docker build -f apps/jobs/Dockerfile   -t $REG/helix-jobs:$TAG   .
+docker push $REG/helix-edge:$TAG && docker push $REG/helix-portal:$TAG && docker push $REG/helix-egress:$TAG && docker push $REG/helix-jobs:$TAG
 ```
 
 ### 4. Create the Postgres runtime roles

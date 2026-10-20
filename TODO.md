@@ -145,6 +145,7 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
       Execution limits are local with documented rolling overlap. Include telemetry,
       deployment isolation and the production failure matrix; synthetic work stays
       in development/test. This remains planned, not shipped code.
+- [ ] **The three sibling app images' `pnpm` CMD swallows SIGTERM — the graceful-shutdown drain never runs in the container.** Found by the jobs image's artifact verification (2026-10-20): `pnpm --filter <pkg> start` as pid 1 (pnpm 11.5.3) stays alive and the `node --import tsx src/server.ts` grandchild keeps serving after SIGTERM, so the runtime SIGKILLs at its 30-second window instead of the drain's 10. The boot suites' shutdown evidence spawned node directly and never saw the wrapper. Fix is the jobs image's shape (`apps/jobs/Dockerfile`): `WORKDIR` at the package, `CMD ["node", "--import", "tsx", "src/server.ts"]` — plus re-running the built-image shutdown check per app. — decision-log.md 2026-10-20
 - [ ] Lock the tested pg-boss 12.37.0 baseline through the pnpm catalog; review any
       upgrade against adapter tests. Use the [PoC comparison](docs/reviews/jobs-runner-poc-2026-10-08.md)
       as evidence, not a production-ready implementation. Test multi-server routing,
