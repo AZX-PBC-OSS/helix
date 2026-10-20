@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { installGracefulShutdown, resolveServicePort } from "@azx-pbc/shared/lifecycle";
+import {
+  developerLocalOverridesSkipped,
+  installGracefulShutdown,
+  resolveServicePort,
+} from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { sweepExpiredConsentAttempts } from "./connections/consent.js";
@@ -21,6 +25,12 @@ import { HttpLifecycleDelivery } from "./jobs/deliveryHttp.js";
  * is a no-op. Mirrors the edge loader (`apps/edge/src/server.ts`).
  */
 function loadDotEnvLocal(): void {
+  // A resolved stack boots with the stack env authoritative: the
+  // developer-local override file is the dev-stack convention, and a resolved
+  // stack obeying it would boot cross-wired — silently pointing this
+  // service's credentials at the developer's own (the isolation the port
+  // offset exists to provide). One home for the flag and its spellings.
+  if (developerLocalOverridesSkipped(process.env)) return;
   let text: string;
   try {
     text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");

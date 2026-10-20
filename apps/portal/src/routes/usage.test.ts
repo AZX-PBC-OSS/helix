@@ -38,7 +38,7 @@ async function seedApp(
     payload: { slug, displayName: "Usage Test" },
   });
   const id = created.json().id as string;
-  for (const c of calls) {
+  for (const [index, c] of calls.entries()) {
     await t.prisma.gatewayCall.create({
       data: {
         appId: id,
@@ -52,6 +52,16 @@ async function seedApp(
         outcome: c.outcome ?? "ok",
         path: c.path ?? null,
         method: c.method ?? null,
+        // Strictly increasing, one second apart. The rows default to client
+        // `now()` timestamps at millisecond precision, and two creates routinely
+        // land in the same millisecond — where the audit page's uuid tie-break
+        // is not insertion-monotonic, so every newest-first assertion under this
+        // helper was racy. The ordering the reads pin is stated here, the same
+        // way `ownedApp` states its own. Residual: a run starting within the
+        // backdate window of an hour or midnight boundary can split the
+        // bucket/today assertions — ~0.1% versus the ~40% tie-break flake this
+        // replaces.
+        createdAt: new Date(Date.now() - (calls.length - 1 - index) * 1000),
       },
     });
   }

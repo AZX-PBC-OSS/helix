@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_SHUTDOWN_GRACE_MS,
+  developerLocalOverridesSkipped,
   installGracefulShutdown,
   resolveServicePort,
   resolveShutdownGraceMs,
@@ -242,5 +243,27 @@ describe("resolveServicePort", () => {
     expect(resolveServicePort({ A: " 8080 " }, ["A"], 3000)).toBe(8080);
     expect(resolveServicePort({ A: "0x1F90" }, ["A"], 3000)).toBe(8080);
     expect(resolveServicePort({ A: "65535" }, ["A"], 3000)).toBe(65535);
+  });
+});
+
+describe("developerLocalOverridesSkipped", () => {
+  it("skips the developer-local override file under the stack tooling's spellings", () => {
+    // The stack tooling emits "1" (scripts/stack-env.mjs, the smoke driver);
+    // "true" is the accepted human spelling. One home for the flag and its
+    // vocabulary: the guard is copied into five composition roots, and a
+    // vocabulary drift between copies would split resolved stacks across two
+    // credential sets.
+    for (const value of ["1", "true"]) {
+      expect(developerLocalOverridesSkipped({ HELIX_STACK_ENV: value })).toBe(true);
+    }
+  });
+
+  it("keeps the dev-stack override convention for unset, blank and opt-out values", () => {
+    // Offset 0 emits nothing — the developer's .env.local files are the
+    // configuration there, values winning over the inherited environment.
+    for (const value of [undefined, "", "  ", "0", "false", "yes"]) {
+      expect(developerLocalOverridesSkipped({ HELIX_STACK_ENV: value })).toBe(false);
+    }
+    expect(developerLocalOverridesSkipped({})).toBe(false);
   });
 });

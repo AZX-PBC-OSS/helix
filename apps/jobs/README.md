@@ -675,10 +675,27 @@ event carries `phase` ∈ {`idle`, `checked-out`}. Bare `pool.connect()` is
 banned for this service by `eslint.config.mjs`; `src/pool.ts` holds the one
 sanctioned checkout.
 
-Development (the three roots are any independently generated base64 32-byte
-secrets — `openssl rand -base64 32` — and the local IdP/edge tooling may
-already provision them; the callback destinations are the edge's internal
-bases for the two tiers):
+The ordinary local stack resolves the jobs plane for you: an offset stack's
+`node scripts/stack-env.mjs --env` mints this whole env set (plus the edge's
+`EDGE_JOBS_CONFIG`, the portal's `PORTAL_JOBS_CONFIG`/`PORTAL_JOBS_CATALOGUE`,
+and the stack's private `helix_jobs_<suffix>` database — `scripts/ensure-db.mjs`
+provisions and migrates it through the migration identity), so
+`env $(node scripts/stack-env.mjs --env --offset 1000) pnpm dev:jobs` joins the
+run-helix composition with every credential already agreed. A resolved stack
+also sets `HELIX_STACK_ENV`, under which the services skip their
+`.env.local` files — the stack env is authoritative, and a second stack
+obeying the developer's files would boot cross-wired into their credentials.
+On the shared dev stack (offset 0) the developer's own settings are
+authoritative — this manual form, typically via `apps/jobs/.env.local`; without
+them the rest of the stack runs fully disabled. A `JOBS_DATABASE_URL` override
+on an offset stack must name a database on the SAME Postgres server as
+`DATABASE_URL` — the prep provisions through that connection — and it must not
+name a jobs-store database (`helix_jobs`, `helix_jobs_<suffix>`), which both
+the resolver and the prep refuse. The three roots are any independently
+generated base64 32-byte secrets — `openssl rand -base64 32`; the callback
+destinations are the edge's bases for the two tiers (the edge process for
+`prod` instructions, the dev-gateway process for `dev` — each on a
+platform-class host, never an app host):
 
 ```
 JOBS_SERVER_ID=jobs \

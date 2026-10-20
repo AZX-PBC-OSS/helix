@@ -39,6 +39,25 @@ export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 const SIGNALS = ["SIGTERM", "SIGINT"] as const;
 
 /**
+ * Whether this service was booted as part of a resolved stack, under which
+ * the STACK env is authoritative: the composition root must SKIP its
+ * developer-local override file (.env.local). `scripts/stack-env.mjs` and the
+ * smoke driver set `HELIX_STACK_ENV=1` for every resolved (non-zero-offset)
+ * stack — a second stack obeying the developer's files would boot cross-wired
+ * into their own credentials, the isolation the port offset exists to provide.
+ * The dev stack (offset 0, which emits nothing) keeps the documented override
+ * convention: values win over the inherited environment.
+ *
+ * One home for the flag's name and its accepted spellings: the guard is
+ * copied into five composition roots, and a vocabulary drift between copies
+ * would make some services skip the file and others obey it — resolved stacks
+ * split across two credential sets.
+ */
+export function developerLocalOverridesSkipped(env: NodeJS.ProcessEnv): boolean {
+  return env.HELIX_STACK_ENV === "1" || env.HELIX_STACK_ENV === "true";
+}
+
+/**
  * Resolve a service's TCP port from the environment: the first listed key
  * that is **set** wins, else the fallback.
  *

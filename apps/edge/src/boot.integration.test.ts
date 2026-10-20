@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -74,6 +74,10 @@ function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
     if (key.startsWith("EDGE_") || key === "PORT" || key === "HOST") continue;
     if (key === "NODE_ENV" || key === "SHUTDOWN_GRACE_MS") continue;
     if (key.startsWith("OTEL_EXPORTER_OTLP") || key === "OTEL_SDK_DISABLED") continue;
+    // The stack-authoritative flag: the legs construct it deliberately (the
+    // resolved-stack leg sets it, the other legs need its absence), so an
+    // ambient value must not decide between them.
+    if (key === "HELIX_STACK_ENV") continue;
     env[key] = value;
   }
   return { ...env, NODE_ENV: "test", ...extra };
@@ -434,6 +438,112 @@ describe("the edge's boot path serves the jobs_reachability check", () => {
       }
     },
   );
+
+  test(
+    "a resolved stack (HELIX_STACK_ENV) boots with the stack env authoritative — the file does not win",
+    // Boot (90s) + ok (60s) + stop (10s).
+    { timeout: 150_000 },
+    async () => {
+      const prior = existsSync(ENV_LOCAL) ? readFileSync(ENV_LOCAL, "utf8") : null;
+      const port = await reservePort();
+      let child: ChildProcess | undefined;
+      try {
+        // The override file the developer convention lets WIN: a dead store,
+        // so an edge that obeys it can never reach health. With the stack
+        // flag set (what scripts/stack-env.mjs and the smoke driver boot a
+        // resolved stack with), the file must be ignored whole — a resolved
+        // stack obeying it would boot cross-wired into the developer's own
+        // credentials and exit green. The observable flip: the service
+        // reaches health against the ENV's store (the migrated test store),
+        // not the file's dead one.
+        writeFileSync(ENV_LOCAL, "EDGE_DATABASE_URL=postgresql://helix:dotenv@127.0.0.1:1/none\n");
+        child = await bootServer(
+          "src/server.ts",
+          port,
+          childEnv({
+            EDGE_DATABASE_URL: TEST_DATABASE_URL,
+            EDGE_PORT: String(port),
+            EDGE_TLS_CERT_FILE: path.join(certDir!, "cert.pem"),
+            EDGE_TLS_KEY_FILE: path.join(certDir!, "key.pem"),
+            HELIX_STACK_ENV: "1",
+            SHUTDOWN_GRACE_MS: "2500",
+          }),
+        );
+        await eventually(async () => {
+          const res = await getHealth(port);
+          return res.statusCode === 200 && HealthStatusSchema.parse(res.body).status === "ok";
+        }, 60_000);
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+        child = undefined;
+      } finally {
+        if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        if (prior === null) rmSync(ENV_LOCAL, { force: true });
+        else writeFileSync(ENV_LOCAL, prior);
+      }
+    },
+  );
+
+  test(
+    "without the stack flag the developer-local file wins — the dev stack's override convention",
+    // Refusal (20s): the planted file's bogus cert path refuses the boot.
+    { timeout: 30_000 },
+    async () => {
+      const prior = existsSync(ENV_LOCAL) ? readFileSync(ENV_LOCAL, "utf8") : null;
+      const port = await reservePort();
+      const output: string[] = [];
+      try {
+        // The flag-absent side of the skip the resolved-stack leg above pins:
+        // the file that leg plants must be ignored under the flag is, without
+        // it, the developer's documented override (loadDotEnvLocal's own
+        // contract: its values WIN over the inherited environment). The
+        // observable: the file's bogus TLS cert path wins over the ENV's real
+        // mkcert pair and the HTTPS-only edge refuses to boot naming the
+        // bogus path. A boot that never refused would mean the file did not
+        // win — the dev stack's convention silently broken, the regression
+        // the unconditional-skip drift would produce with every flag-set leg
+        // still green.
+        writeFileSync(ENV_LOCAL, "EDGE_TLS_CERT_FILE=/nonexistent/dev-stack-override.pem\n");
+        const child = spawn("node", ["--import", "tsx", "src/server.ts"], {
+          cwd: PACKAGE_DIR,
+          env: childEnv({
+            EDGE_DATABASE_URL: TEST_DATABASE_URL,
+            EDGE_PORT: String(port),
+            EDGE_TLS_CERT_FILE: path.join(certDir!, "cert.pem"),
+            EDGE_TLS_KEY_FILE: path.join(certDir!, "key.pem"),
+            SHUTDOWN_GRACE_MS: "2500",
+          }),
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child.stdout?.on("data", (chunk: string) => output.push(chunk));
+        child.stderr?.on("data", (chunk: string) => output.push(chunk));
+
+        let exited: number | null = null;
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+          if (child.exitCode !== null) {
+            exited = child.exitCode;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        if (exited !== null) {
+          // The file won: the boot refusal names the file's bogus value.
+          expect(output.join("")).toContain("/nonexistent/dev-stack-override.pem");
+          expect(exited).not.toBe(0);
+          return;
+        }
+        child.kill("SIGKILL");
+        expect(
+          false,
+          `the planted file must win the boot — child output: ${output.join("").slice(-2_000) || "<none>"}`,
+        ).toBe(true);
+      } finally {
+        if (prior === null) rmSync(ENV_LOCAL, { force: true });
+        else writeFileSync(ENV_LOCAL, prior);
+      }
+    },
+  );
 });
 
 describe("the dev-gateway's boot path serves the jobs_reachability check", () => {
@@ -521,6 +631,102 @@ describe("the dev-gateway's boot path serves the jobs_reachability check", () =>
         expect(exit.elapsedMs).toBeLessThan(2_000);
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }
+    },
+  );
+
+  test(
+    "a resolved stack (HELIX_STACK_ENV) boots with the stack env authoritative — the file does not win",
+    // Boot (90s) + ok (60s) + stop (10s).
+    { timeout: 150_000 },
+    async () => {
+      const prior = existsSync(ENV_LOCAL) ? readFileSync(ENV_LOCAL, "utf8") : null;
+      const port = await reservePort();
+      let child: ChildProcess | undefined;
+      try {
+        // The same planted file as the edge's leg, at this entry point's own
+        // key: the dev-gateway's loader hard-requires its own DSN, so the
+        // file's dead store would make it degrade forever — the flip is the
+        // body reaching ok against the ENV's store, the second copy of the
+        // stack-authoritative skip pinned through its real entry point.
+        writeFileSync(
+          ENV_LOCAL,
+          "EDGE_DEV_DATABASE_URL=postgresql://dotenv:dotenv@127.0.0.1:1/none\n",
+        );
+        child = await bootServer(
+          "src/devGateway/server.ts",
+          port,
+          childEnv({
+            EDGE_DEV_DATABASE_URL: urlAs(TEST_DATABASE_URL, "helix_dev"),
+            EDGE_ALLOW_DEV_MODE: "true",
+            EDGE_DEV_GATEWAY_PORT: String(port),
+            EDGE_TLS_CERT_FILE: path.join(certDir!, "cert.pem"),
+            EDGE_TLS_KEY_FILE: path.join(certDir!, "key.pem"),
+            HELIX_STACK_ENV: "1",
+            SHUTDOWN_GRACE_MS: "2500",
+          }),
+        );
+        await eventually(async () => {
+          const res = await getHealth(port);
+          return res.statusCode === 200 && HealthStatusSchema.parse(res.body).status === "ok";
+        }, 60_000);
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+        child = undefined;
+      } finally {
+        if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        if (prior === null) rmSync(ENV_LOCAL, { force: true });
+        else writeFileSync(ENV_LOCAL, prior);
+      }
+    },
+  );
+
+  test(
+    "without the stack flag the developer-local file wins — the dev-stack override convention",
+    // Boot (90s) + degrade (bounded): the same planted file, flag absent —
+    // the file's dead store WINS (the dev-gateway degrades forever on it), the
+    // documented dev-stack convention the consolidation must not drift away.
+    { timeout: 150_000 },
+    async () => {
+      const prior = existsSync(ENV_LOCAL) ? readFileSync(ENV_LOCAL, "utf8") : null;
+      const port = await reservePort();
+      let child: ChildProcess | undefined;
+      try {
+        writeFileSync(
+          ENV_LOCAL,
+          "EDGE_DEV_DATABASE_URL=postgresql://dotenv:dotenv@127.0.0.1:1/none\n",
+        );
+        child = await bootServer(
+          "src/devGateway/server.ts",
+          port,
+          childEnv({
+            EDGE_DEV_DATABASE_URL: urlAs(TEST_DATABASE_URL, "helix_dev"),
+            EDGE_ALLOW_DEV_MODE: "true",
+            EDGE_DEV_GATEWAY_PORT: String(port),
+            EDGE_TLS_CERT_FILE: path.join(certDir!, "cert.pem"),
+            EDGE_TLS_KEY_FILE: path.join(certDir!, "key.pem"),
+            SHUTDOWN_GRACE_MS: "2500",
+          }),
+        );
+        await eventually(async () => {
+          const res = await getHealth(port);
+          if (res.statusCode !== 200) return false;
+          const body = HealthStatusSchema.parse(res.body);
+          // The file's dead store won: the dev-gateway boots and its registry
+          // projection never loads — the override convention, observable.
+          return (
+            body.status === "error" &&
+            body.checks?.some((c) => c.name === "registry-projection" && c.status === "error") ===
+              true
+          );
+        }, 60_000);
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+        child = undefined;
+      } finally {
+        if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        if (prior === null) rmSync(ENV_LOCAL, { force: true });
+        else writeFileSync(ENV_LOCAL, prior);
       }
     },
   );

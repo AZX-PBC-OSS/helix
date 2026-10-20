@@ -117,6 +117,10 @@ function baseEnv(): NodeJS.ProcessEnv {
     if (key.startsWith("JOBS_") || key === "PORT" || key === "HOST") continue;
     if (key === "NODE_ENV" || key === "SHUTDOWN_GRACE_MS") continue;
     if (key.startsWith("OTEL_EXPORTER_OTLP") || key === "OTEL_SDK_DISABLED") continue;
+    // The stack-authoritative flag: the legs construct it deliberately (the
+    // resolved-stack leg sets it, the override leg needs its absence), so an
+    // ambient value must not decide between them.
+    if (key === "HELIX_STACK_ENV") continue;
     env[key] = value;
   }
   return env;
@@ -498,6 +502,45 @@ describe("the production boot path", () => {
           const body = await pollHealth(port, 10_000);
           return body.checks?.[0]?.detail?.includes("did not answer") === true;
         }, 30_000);
+        const exit = await stopServer(child);
+        expect(exit.exitCode).toBe(0);
+        child = undefined;
+      } finally {
+        if (child && child.exitCode === null) child.kill("SIGKILL");
+        if (prior === null) rmSync(envLocalPath, { force: true });
+        else writeFileSync(envLocalPath, prior);
+      }
+    },
+  );
+
+  test(
+    "a resolved stack (HELIX_STACK_ENV) boots with the stack env authoritative — the file does not win",
+    { timeout: 90_000 },
+    async () => {
+      const envLocalPath = fileURLToPath(new URL("../.env.local", import.meta.url));
+      const prior = existsSync(envLocalPath) ? readFileSync(envLocalPath, "utf8") : null;
+      const port = await reservePort();
+      let child: ChildProcess | undefined;
+      try {
+        // The same planted file as the leg above, with the stack tooling's
+        // flag set: scripts/stack-env.mjs and the smoke driver boot a resolved
+        // stack with the STACK env authoritative, so the developer-local
+        // override file must NOT win — a resolved stack obeying it would boot
+        // cross-wired into the developer's own store and exit green. The
+        // observable flip: the service reaches health against the ENV's store,
+        // not the file's dead one. The store is migrated IN-LEG (idempotent —
+        // the sibling legs' shape): the leg must hold when run by name, not
+        // only in suite order after another leg's migration.
+        await migrateJobsStorage(MIGRATE_DSN);
+        writeFileSync(
+          envLocalPath,
+          `JOBS_DATABASE_URL=postgresql://helix_jobs:dotenv@127.0.0.1:${DEAD_PORT}/none\n`,
+        );
+        child = await bootServer(port, childEnv(RUNTIME_DSN, port, { HELIX_STACK_ENV: "1" }));
+        await eventually(async () => {
+          const body = await pollHealth(port, 10_000);
+          return HealthStatusSchema.parse(body).status === "ok";
+        }, 60_000);
         const exit = await stopServer(child);
         expect(exit.exitCode).toBe(0);
         child = undefined;
