@@ -10,10 +10,12 @@ import {
   ATTR_APP_ID,
   ATTR_JOBS_ARCHIVED,
   ATTR_JOBS_GENERATION,
+  ATTR_JOBS_LIFECYCLE_SYNC_ENQUEUED,
   ATTR_JOBS_SERVER,
   ATTR_OUTCOME,
   ATTR_REASON,
   SPAN_JOBS_LIFECYCLE_DELIVER,
+  SPAN_JOBS_LIFECYCLE_SYNC,
   type JobsLifecycleDeliveryOutcome,
 } from "@azx-pbc/shared/telemetry";
 
@@ -33,6 +35,17 @@ import { withConsumerSpan } from "../telemetry.js";
  * intent is durable on the target, never that cancellation has finished
  * running (the receiver applies before it acknowledges; the cancellation
  * recovery that consumes the applied state is the jobs service's own loop).
+ *
+ * Every pass OPENS with a per-target synchronization step: it enqueues the
+ * current lifecycle state of every existing app — archived apps included —
+ * that the outbox holds no intent for, so enabling jobs on an existing
+ * installation (or re-enabling a server, or catching up a transition written
+ * by a portal replica whose config did not list the target) delivers the
+ * apps' current state instead of leaving them undeliverable forever. Only
+ * the CURRENT generation is enqueued — delivering it closes every older
+ * generation at the receiver. Durable outbox rows make an interrupted
+ * synchronization resume after a restart, and the backlog evidence makes the
+ * outstanding work visible.
  *
  * The independence the per-target rows buy is delivered here: the pass
  * attempts every configured target's rows on every pass, one attempt per row,
@@ -121,6 +134,17 @@ export interface JobsDeliveryBacklogEntry {
   oldestPendingAt: string | null;
 }
 
+/** One configured target's synchronization state, as the snapshot reports it. */
+export interface JobsDeliveryTargetSync {
+  server: string;
+  /** True when the last successful pass ended with no pending intent for this target. */
+  synchronized: boolean;
+  /** Wall-clock ISO instant of the last successful pass that ended synchronized; null if none since start. */
+  synchronizedAt: string | null;
+  /** App lifecycle states the synchronization step enqueued for this target, cumulatively since start. */
+  enqueued: number;
+}
+
 /** The sender's supervision state, as `/health` reports it. */
 export interface JobsDeliverySnapshot {
   /** The loop has been started (its first pass may not have completed yet). */
@@ -137,9 +161,17 @@ export interface JobsDeliverySnapshot {
   failedDeliveries: number;
   /**
    * The last pass's per-server backlog measurement — null before the first
-   * pass measures. Taken at pass start: the same pass may clear some of it.
+   * pass measures. Taken after the synchronization step and before
+   * deliveries: the same pass may clear some of it.
    */
   backlog: JobsDeliveryBacklogEntry[] | null;
+  /**
+   * Per configured target: whether, at the end of the last successful pass,
+   * every app's current lifecycle state had been acknowledged by that target
+   * (synchronization found nothing missing and no intent was pending).
+   * Null before the first successful pass.
+   */
+  synchronization: JobsDeliveryTargetSync[] | null;
 }
 
 /** Steady delivery cadence — how long a lifecycle change can wait between attempts. */
@@ -232,6 +264,14 @@ export class JobsLifecycleDelivery {
   private inFlight: Promise<void> | null = null;
   private stopped = false;
 
+  /** Per-target synchronization reading, kept across successful passes. */
+  private readonly syncState = new Map<
+    string,
+    { synchronized: boolean; synchronizedAt: string | null }
+  >();
+  /** Per-target enqueued totals, counted as each step commits (a pass that fails later still enqueued them). */
+  private readonly enqueuedTotals = new Map<string, number>();
+
   private current: JobsDeliverySnapshot = {
     started: false,
     passes: 0,
@@ -240,6 +280,7 @@ export class JobsLifecycleDelivery {
     delivered: 0,
     failedDeliveries: 0,
     backlog: null,
+    synchronization: null,
   };
 
   constructor(options: JobsLifecycleDeliveryOptions) {
@@ -296,6 +337,7 @@ export class JobsLifecycleDelivery {
     return {
       ...this.current,
       backlog: this.current.backlog?.map((entry) => ({ ...entry })) ?? null,
+      synchronization: this.current.synchronization?.map((entry) => ({ ...entry })) ?? null,
     };
   }
 
@@ -343,16 +385,19 @@ export class JobsLifecycleDelivery {
   }
 
   /**
-   * One bounded pass: measure the backlog, then attempt each configured
-   * target's pending intents oldest-first, each server out of its OWN batch
-   * window. The per-server window is the fairness the delivery contract
-   * hangs on (criterion 50: one unavailable server neither acknowledges nor
-   * blocks another's delivery) — a global take across servers would let one
-   * dead server's full backlog occupy every pass's window forever, and the
-   * healthy targets' rows would never be attempted. The measurement happens
-   * first so the evidence is the state the pass worked from; individual
-   * delivery failures are accounted per attempt and never abort the scan of
-   * the other servers; a database failure fails the pass as a whole.
+   * One bounded pass: synchronize every configured target against the apps'
+   * current lifecycle state, measure the backlog, then attempt each
+   * configured target's pending intents oldest-first, each server out of its
+   * OWN batch window. The per-server window is the fairness the delivery
+   * contract hangs on (criterion 50: one unavailable server neither
+   * acknowledges nor blocks another's delivery) — a global take across
+   * servers would let one dead server's full backlog occupy every pass's
+   * window forever, and the healthy targets' rows would never be attempted.
+   * The measurement happens after the synchronization step and before the
+   * deliveries, so the evidence includes what synchronization just enqueued;
+   * individual delivery failures are accounted per attempt and never abort
+   * the scan of the other servers; a database failure fails the pass as a
+   * whole.
    */
   private async passOnce(): Promise<void> {
     if (this.stopped) return;
@@ -370,6 +415,14 @@ export class JobsLifecycleDelivery {
       this.recordPass(false, startedAt, delivered, failures);
     };
     try {
+      // Synchronization first: every pass reconciles each configured target
+      // against the apps' current lifecycle state, so an app that predates
+      // the target's configuration (or changed while a replica's config
+      // lacked it) is enqueued by the next pass rather than never.
+      for (const [server] of this.targets) {
+        const enqueued = await this.synchronizeTarget(server);
+        this.enqueuedTotals.set(server, (this.enqueuedTotals.get(server) ?? 0) + enqueued);
+      }
       const backlog = await this.measureBacklog();
       // A server-level ending (unreachable, off-protocol, the receiver's own
       // unavailability) ends THAT server's attempts for the pass — one failed
@@ -435,8 +488,9 @@ export class JobsLifecycleDelivery {
           );
         }
       }
+      const synchronization = await this.measureSynchronization();
       recorded = true;
-      this.recordPass(true, startedAt, delivered, failures, backlog);
+      this.recordPass(true, startedAt, delivered, failures, backlog, synchronization);
     } catch (error) {
       recordFailure();
       this.log.error(
@@ -444,6 +498,95 @@ export class JobsLifecycleDelivery {
         "the lifecycle delivery pass could not run — pending intents stay pending until a later pass",
       );
     }
+  }
+
+  /**
+   * The per-target reconciliation inside every pass: enqueue the CURRENT
+   * lifecycle state of every app the outbox holds no intent for, for this
+   * one server.
+   *
+   * Facts the shape relies on:
+   *
+   * - `jobsGeneration` and `archivedAt` are written together by every
+   *   transition, so one row read is a consistent `{generation, archived}`
+   *   pair; every transition opens a new generation, so a generation maps
+   *   to exactly one state.
+   * - Only the current generation is enqueued: delivering generation G
+   *   closes every older generation at the receiver (the watermark), so
+   *   older missed transitions need no rows.
+   * - `ON CONFLICT DO NOTHING` + the primary key make concurrent passes
+   *   (two portal replicas) and a racing transition that writes the same
+   *   `(app, generation, server)` harmless: a transition that commits after
+   *   the scan's snapshot writes its own row (if its replica lists the
+   *   target) or is picked up by the next pass.
+   * - Archived apps are included on purpose — their archived state must
+   *   reach the server so retained work under older generations is
+   *   cancelled and nothing reopens.
+   *
+   * The server id travels as a query parameter (the tagged template's
+   * placeholder), never string-concatenated SQL.
+   */
+  private synchronizeTarget(server: string): Promise<number> {
+    return withConsumerSpan(
+      SPAN_JOBS_LIFECYCLE_SYNC,
+      { [ATTR_JOBS_SERVER]: server },
+      async (span) => {
+        const count = await this.prisma.$executeRaw`
+        INSERT INTO "jobs_lifecycle_outbox" ("appId", "generation", "server", "archived")
+        SELECT a."id", a."jobsGeneration", ${server}, a."archivedAt" IS NOT NULL
+          FROM "apps" a
+         WHERE NOT EXISTS (
+                 SELECT 1 FROM "jobs_lifecycle_outbox" o
+                  WHERE o."appId" = a."id" AND o."generation" = a."jobsGeneration" AND o."server" = ${server})
+        ON CONFLICT DO NOTHING`;
+        span.setAttributes({ [ATTR_JOBS_LIFECYCLE_SYNC_ENQUEUED]: count });
+        if (count > 0) {
+          this.log.info(
+            { event: "jobs.delivery.sync_enqueued", server, enqueued: count },
+            "app lifecycle states this target had no delivery intent for were enqueued — initial synchronization, re-enablement, or a transition written without this target",
+          );
+        }
+        return count;
+      },
+    );
+  }
+
+  /**
+   * The end-of-pass synchronization reading: per configured target, whether
+   * zero pending intents remain (nothing missing, nothing undelivered).
+   * `synchronizedAt` persists across the instance's passes; a failed pass
+   * never reaches here, so the previous reading stands.
+   */
+  private async measureSynchronization(): Promise<JobsDeliveryTargetSync[]> {
+    const groups = await this.prisma.jobsLifecycleOutbox.groupBy({
+      by: ["server"],
+      where: { deliveredAt: null },
+      _count: { _all: true },
+    });
+    const pendingByServer = new Map(groups.map((group) => [group.server, group._count._all]));
+    const now = new Date().toISOString();
+    return [...this.targets.keys()].map((server) => {
+      const previous = this.syncState.get(server);
+      const synchronized = (pendingByServer.get(server) ?? 0) === 0;
+      // The instant is the last successful pass that ended synchronized, so
+      // it refreshes on every synchronized pass; the log fires only on the
+      // transition from not-synchronized (or no previous reading).
+      const synchronizedAt = synchronized ? now : (previous?.synchronizedAt ?? null);
+      if (synchronized && !previous?.synchronized) {
+        this.log.info(
+          { event: "jobs.delivery.synchronized", server },
+          "every app's current lifecycle state is acknowledged by this target — its submissions are judged against delivered state",
+        );
+      }
+      const entry: JobsDeliveryTargetSync = {
+        server,
+        synchronized,
+        synchronizedAt,
+        enqueued: this.enqueuedTotals.get(server) ?? 0,
+      };
+      this.syncState.set(server, { synchronized, synchronizedAt });
+      return entry;
+    });
   }
 
   /**
@@ -599,6 +742,7 @@ export class JobsLifecycleDelivery {
     delivered: number,
     failures: number,
     backlog?: JobsDeliveryBacklogEntry[],
+    synchronization?: JobsDeliveryTargetSync[],
   ): void {
     const now = new Date().toISOString();
     // `started` is start()'s and stop()'s to set, never a pass's: a pass
@@ -611,6 +755,7 @@ export class JobsLifecycleDelivery {
       delivered: this.current.delivered + delivered,
       failedDeliveries: this.current.failedDeliveries + failures,
       ...(backlog !== undefined ? { backlog } : {}),
+      ...(synchronization !== undefined ? { synchronization } : {}),
     };
     if (ok && (delivered > 0 || failures > 0)) {
       this.log.info(
@@ -629,7 +774,11 @@ export class JobsLifecycleDelivery {
  * never-passed sender errors, a stale one degrades), the check carries the
  * backlog evidence the acceptance contract binds: pending work older than 60
  * seconds degrades (criterion 52), with the outstanding count and oldest age
- * — per server — in the metrics and detail an operator reads. The
+ * — per server — in the metrics and detail an operator reads. It also
+ * carries the per-target synchronization reading: a fresh pass with a target
+ * whose lifecycle states are not all acknowledged yet stays ok (young
+ * delivery) with that target named, and a pass that somehow carries no
+ * synchronization reading errors rather than assume healthy. The
  * acknowledgement that clears a row means the intent is durable on its
  * target, never that cancellation has finished, so a degraded reading here is
  * about DELIVERY, and the jobs service's own checks speak for the recovery.
@@ -683,6 +832,16 @@ export function jobsLifecycleDeliveryCheck(
           detail: "the delivery pass carried no backlog measurement",
         };
       }
+      const synchronization = snapshot.synchronization;
+      if (synchronization === null) {
+        // Same posture: a fresh pass always reads synchronization — a null
+        // here must never pass as healthy.
+        return {
+          ...base,
+          status: "error",
+          detail: "the delivery pass carried no synchronization reading",
+        };
+      }
       const outstanding = backlog.reduce((total, entry) => total + entry.outstanding, 0);
       const oldestPendingAt = backlog
         .map((entry) => entry.oldestPendingAt)
@@ -698,6 +857,8 @@ export function jobsLifecycleDeliveryCheck(
         ...base.metrics,
         outstanding,
         oldestSeconds,
+        targets: synchronization.length,
+        synchronizedTargets: synchronization.filter((target) => target.synchronized).length,
       };
       if (oldestAgeMs > overdueAfterMs) {
         // The per-server breakdown is the detail's evidence: which target is
@@ -716,6 +877,27 @@ export function jobsLifecycleDeliveryCheck(
           status: "degraded",
           metrics,
           detail: `lifecycle delivery is overdue: ${perServer} — delivery retries until the targets acknowledge`,
+          lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+        };
+      }
+      // Not overdue, but a target whose current lifecycle states are not all
+      // acknowledged yet is still ok (delivery is young) — with the
+      // unsynchronized targets named, since a server admits an app's new
+      // jobs only after that app's lifecycle state is acknowledged there.
+      const unsynchronized = synchronization.filter((target) => !target.synchronized);
+      if (unsynchronized.length > 0) {
+        const perServer = unsynchronized
+          .map((target) => {
+            const pending =
+              backlog.find((entry) => entry.server === target.server)?.outstanding ?? 0;
+            return `${target.server}: ${pending} pending`;
+          })
+          .join(", ");
+        return {
+          name: JOBS_LIFECYCLE_DELIVERY_CHECK,
+          status: "ok",
+          metrics,
+          detail: `lifecycle synchronization in progress — ${perServer}; a server admits an app's new jobs only after that app's lifecycle state is acknowledged`,
           lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
         };
       }

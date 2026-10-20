@@ -510,7 +510,8 @@ kv-platform and the jobs migrate job.
   app and every jobs key from the edge, dev-gateway and portal — ordinary
   hosting then has no jobs dependency — and leaves the database and its
   retained records in place. Only disable after the retained records are gone;
-  re-enabling reuses the same store.
+  re-enabling reuses the same store, and the portal resynchronizes every app's
+  current lifecycle state to it (step 5 of the upgrade procedure below).
 - **Known limitation: vault-wide reads.** kv-platform grants the edge, portal,
   egress and dev-gateway identities Key Vault Secrets User on the whole vault
   (`modules/rbac.bicep`), so those identities can read the jobs roots and DSNs
@@ -548,6 +549,18 @@ kv-platform and the jobs migrate job.
    runtime privileges and reports any mismatch through `/health` — it never
    migrates and never writes. An image rolled back past the forward-only
    schema therefore degrades loudly instead of corrupting anything.
+5. **Wait for lifecycle synchronization.** On its first passes after the
+   roll, the portal's lifecycle sender enqueues and delivers the current
+   lifecycle state of every existing app, archived apps included, to the jobs
+   server. Until an app's state is acknowledged, that app's job submissions
+   get a retryable `503 jobs_unavailable`; nothing is admitted on unknown
+   state. Watch the portal's `jobs_lifecycle_delivery` check in `/health`:
+   enablement has finished when `synchronizedTargets` equals `targets` and the
+   check has no detail (the `jobs.delivery.synchronized` log line marks the
+   moment). While it is unfinished, the detail names each server and its
+   pending count, and pending work older than 60 s reads `degraded`. An
+   interrupted synchronization resumes from the portal's outbox on the next
+   pass or the next portal start, against the same jobs store.
 
 ## Deployment topology handed to the portal SPA
 

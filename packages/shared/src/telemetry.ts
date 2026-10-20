@@ -142,6 +142,12 @@ export const ATTR_JOBS_LIFECYCLE_TARGETS = "helix.jobs.lifecycle.targets";
  */
 export const ATTR_JOBS_LIFECYCLE_STAMPED = "helix.jobs.lifecycle.stamped";
 /**
+ * How many app lifecycle states the portal sender's per-target
+ * synchronization step enqueued for that target — bounded by the `apps`
+ * table. Never an app id; the count is the only identity the step records.
+ */
+export const ATTR_JOBS_LIFECYCLE_SYNC_ENQUEUED = "helix.jobs.lifecycle.sync.enqueued";
+/**
  * Which configured jobs server a signal is about — a deployment-map server id
  * (`JobServerIdSchema`: 1–63 lowercase letters/digits/hyphens). Bounded by the
  * deployment map, so a span attribute and a health-check detail word; never a
@@ -311,6 +317,15 @@ export const SPAN_JOBS_LIFECYCLE_OUTBOX = "helix.jobs.lifecycle.outbox";
  * token.
  */
 export const SPAN_JOBS_LIFECYCLE_DELIVER = "helix.jobs.lifecycle.deliver";
+/**
+ * The portal sender's per-target synchronization step — one root consumer
+ * span per configured target per pass. It enqueues every app's current
+ * lifecycle state the outbox holds no delivery intent for (initial
+ * enablement, re-enablement, or a transition written by a portal replica
+ * whose config did not list the target). Carries the target server and the
+ * enqueued count — never an app id, endpoint or token.
+ */
+export const SPAN_JOBS_LIFECYCLE_SYNC = "helix.jobs.lifecycle.sync";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —

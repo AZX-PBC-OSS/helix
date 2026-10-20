@@ -11,6 +11,7 @@ import {
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import { createPrismaClient, type PrismaClient } from "../db/client.js";
 import { buildTestApp } from "../test/harness.js";
+import { createScratchPortalDatabase } from "../test/scratchPortalDatabase.js";
 import type { PortalJobsDeliveryTarget } from "../deployment.js";
 import {
   ackCoversGeneration,
@@ -33,9 +34,15 @@ import {
  * transport is the one true boundary: a stand-in over the same verdicts,
  * capturing what it was handed. The production transport's mint/verify/classify
  * contract is `deliveryHttp.test.ts`'s, over a real socket.
+ *
+ * These passes run against their OWN scratch database: every pass's
+ * synchronization step reads the whole `apps` table and enqueues outbox rows
+ * for every app it finds, so a shared test database would have this suite's
+ * passes writing rows under other suites' apps.
  */
 
-const DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgresql://helix:helix@db:5432/helix_test";
+let scratchUrl: string;
+let dropScratch: (() => Promise<void>) | null = null;
 
 /** A quiet sink — the sender's log lines are noise to these tests. */
 const quietLog = {
@@ -74,11 +81,15 @@ class FakeTransport {
 let prisma: PrismaClient;
 
 beforeAll(async () => {
-  prisma = createPrismaClient(DATABASE_URL);
-});
+  const scratch = await createScratchPortalDatabase("helix_portal_delivery");
+  scratchUrl = scratch.url;
+  dropScratch = scratch.drop;
+  prisma = createPrismaClient(scratchUrl);
+}, 120_000);
 
 afterAll(async () => {
   await prisma.$disconnect();
+  await dropScratch?.();
 });
 
 /**
@@ -626,7 +637,7 @@ describe("the supervision state", () => {
         if (errorReports === 1) throw new Error("the reporting sink is down");
       },
     };
-    const broken = createPrismaClient(DATABASE_URL).$extends({
+    const broken = createPrismaClient(scratchUrl).$extends({
       query: {
         jobsLifecycleOutbox: {
           $allOperations() {
@@ -726,7 +737,7 @@ describe("a pass whose own failure reporting throws", () => {
   let broken: PrismaClient;
 
   beforeAll(() => {
-    base = createPrismaClient(DATABASE_URL);
+    base = createPrismaClient(scratchUrl);
     broken = base.$extends({
       query: {
         jobsLifecycleOutbox: {
@@ -838,7 +849,7 @@ describe("backlog evidence", () => {
     // the harness's gated-write pattern — a query extension that throws on
     // the outbox model — because a disconnected Prisma client would just
     // reconnect on the next query.
-    const broken = createPrismaClient(DATABASE_URL).$extends({
+    const broken = createPrismaClient(scratchUrl).$extends({
       query: {
         jobsLifecycleOutbox: {
           $allOperations() {
@@ -871,7 +882,7 @@ describe("backlog evidence", () => {
     // failing client is the harness's gated-write pattern, throwing on the
     // SECOND batch query only (server-b's), so server-a's deliveries run.
     let findManyCalls = 0;
-    const flaky = createPrismaClient(DATABASE_URL).$extends({
+    const flaky = createPrismaClient(scratchUrl).$extends({
       query: {
         jobsLifecycleOutbox: {
           async $allOperations({ operation, args, query }) {
@@ -1034,6 +1045,7 @@ describe("jobsLifecycleDeliveryCheck (the health grading)", () => {
     delivered: 0,
     failedDeliveries: 0,
     backlog: [],
+    synchronization: [],
     ...over,
   });
   const NOW = Date.now();
@@ -1149,6 +1161,73 @@ describe("jobsLifecycleDeliveryCheck (the health grading)", () => {
     expect(check.status).toBe("error");
     expect(check.detail).toMatch(/no backlog measurement/);
   });
+
+  it("a fresh loop whose pass carried no synchronization reading refuses the healthy reading", () => {
+    const check = jobsLifecycleDeliveryCheck(baseSnapshot({ synchronization: null }), {
+      nowMs: NOW,
+    });
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/no synchronization reading/);
+  });
+
+  it("every target synchronized reads ok without a detail, with the target counts as metrics", () => {
+    const check = jobsLifecycleDeliveryCheck(
+      baseSnapshot({
+        synchronization: [
+          {
+            server: "delivery-spec",
+            synchronized: true,
+            synchronizedAt: new Date(NOW).toISOString(),
+            enqueued: 3,
+          },
+          {
+            server: "delivery-spec2",
+            synchronized: true,
+            synchronizedAt: new Date(NOW).toISOString(),
+            enqueued: 0,
+          },
+        ],
+      }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("ok");
+    expect(check.detail).toBeUndefined();
+    expect(check.metrics?.targets).toBe(2);
+    expect(check.metrics?.synchronizedTargets).toBe(2);
+  });
+
+  it("an unsynchronized target that is not overdue stays ok, naming the target and its pending count", () => {
+    const check = jobsLifecycleDeliveryCheck(
+      baseSnapshot({
+        backlog: [
+          {
+            server: "delivery-spec",
+            outstanding: 3,
+            oldestPendingAt: new Date(NOW - 2_000).toISOString(),
+          },
+        ],
+        synchronization: [
+          { server: "delivery-spec", synchronized: false, synchronizedAt: null, enqueued: 3 },
+          {
+            server: "delivery-spec2",
+            synchronized: true,
+            synchronizedAt: new Date(NOW).toISOString(),
+            enqueued: 0,
+          },
+        ],
+      }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("ok");
+    expect(check.detail).toMatch(
+      /lifecycle synchronization in progress — delivery-spec: 3 pending/,
+    );
+    expect(check.detail).toMatch(
+      /a server admits an app's new jobs only after that app's lifecycle state is acknowledged/,
+    );
+    expect(check.metrics?.targets).toBe(2);
+    expect(check.metrics?.synchronizedTargets).toBe(1);
+  });
 });
 
 describe("lifecycleUpdateBytes", () => {
@@ -1197,6 +1276,9 @@ describe("/health wiring", () => {
           outstanding: 2,
           oldestPendingAt: new Date(Date.now() - JOBS_DELIVERY_OVERDUE_MS - 5_000).toISOString(),
         },
+      ],
+      synchronization: [
+        { server: "delivery-spec", synchronized: false, synchronizedAt: null, enqueued: 2 },
       ],
     };
     const t = buildTestApp({ jobsDelivery: () => snapshot });
