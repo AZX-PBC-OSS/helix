@@ -974,6 +974,15 @@ controls and replica races — never to bypass a route they could use instead.
 `stack.tlsCa` is the harness certificate, for a test that opens a raw TLS
 socket to the edge.
 
+The loopback JSON origin carries the outbound-fetch fault shapes too:
+`startJsonOrigin({ tls: mintLoopbackCert() })` serves the same controlled
+replies over HTTPS on 127.0.0.1 — egress trusts the certificate only when its
+`NODE_EXTRA_CA_CERTS` names it (`stack.setServiceEnv("egress", …)` and a
+restart). `respond(..., { headers })` adds reply headers (a `location` for a
+redirect), `serve(path, handler)` hands the raw exchange to the test for fault
+shapes no reply can express (resets, hangs, trickles, large streams), and
+`stack.isRunning(name)` is whether a service's process is alive.
+
 Runtime-recovery tests (`src/runtimeRecovery.integration.test.ts`) use a few
 more controls. `stack.setServiceEnv(name, overrides)` sets environment
 overrides for a service's next start (a `null` value removes the key; `null`

@@ -599,6 +599,18 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
           requestCapTripped = true;
         });
 
+    // The caller hanging up before the upstream answers aborts the upstream
+    // request. Without this, an upstream that never sends headers holds the
+    // pooled socket until the dispatcher's own timeouts, long after the edge
+    // (a cancelled or timed-out job, a closed browser) stopped waiting.
+    const callerGone = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableEnded) callerGone.abort();
+    });
+    // The caller may already have gone while the instruction and the secret
+    // were being resolved; that `close` fired before the listener above.
+    if (reply.raw.destroyed) callerGone.abort();
+
     try {
       // Dial the real origin: undici pools by origin (keep-alive), derives the
       // Host header and TLS SNI from it, and the connector rewrites the socket
@@ -608,6 +620,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         headers,
         body: requestBody,
         dispatcher,
+        signal: callerGone.signal,
       });
 
       // Response cap, fast-path: a truthful oversized content-length is rejected
@@ -693,6 +706,19 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     } catch (err) {
       if (requestCapTripped) {
         return fail(reply, 413, "too_large", "request body exceeds the size cap");
+      }
+      if (callerGone.signal.aborted) {
+        // Nobody is left to answer. 499 and the `caller_gone` outcome keep the
+        // span from reading as an upstream failure or a successful 200.
+        req.log.info(
+          { event: "egress.proxy.caller_gone", appId: instruction.appId, origin: target.origin },
+          "the caller closed the request before the upstream answered — the upstream request was aborted",
+        );
+        reply.header(OUTCOME_HEADER, "caller_gone");
+        reply.code(499);
+        reply.hijack();
+        reply.raw.destroy();
+        return;
       }
       // The connector throws SsrfBlockedError for a blocked/unresolvable host;
       // undici propagates it verbatim, so the old upfront-check semantics hold.

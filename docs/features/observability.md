@@ -107,7 +107,10 @@ looked up:
   it; the app-facing answer for every 403 word is the ledger's
   `connection_required`.
 - `helix.egress.proxy` spans' `helix.outcome` ∈ {`ok`, `upstream_throttled`,
-  `refusal`, `error`} — `upstream_throttled` is a proxied upstream `429`: the
+  `refusal`, `error`, `caller_gone`} — `caller_gone` is the caller (the edge)
+  closing the request before the upstream answered: egress aborts the upstream
+  request, records status 499 and `helix.client_disconnected`, and logs
+  `egress.proxy.caller_gone` at `info`. `upstream_throttled` is a proxied upstream `429`: the
   proxy worked, the vendor said slow down. Without the distinct label a real
   vendor throttle (an app pushing past its TPM) presented as a wall of `ok`
   spans, and anything keyed on outcome missed it entirely. The gateway LLM span

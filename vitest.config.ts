@@ -5,6 +5,12 @@ import { defineConfig } from "vitest/config";
 // carries the React plugin + setup files). https://vitest.dev/guide/projects
 export default defineConfig({
   test: {
+    // The real-stack integration suites each hold ~35 Postgres connections for
+    // their whole run, and the dev cluster allows 300. With one worker per core
+    // on a 14-core machine the local peak passed 300 and suites failed on
+    // "remaining connection slots are reserved"; ten workers peaked at 280 in
+    // the same wall time, because those suites, not CPU, bound the run.
+    maxWorkers: 10,
     projects: [
       {
         test: {

@@ -166,6 +166,8 @@ export interface RealStack {
   startExpectingExit(name: StackServiceName, timeoutMs: number): Promise<BootExit>;
   /** SIGKILLs a running service (no grace, no drain): models a process dying mid-request — in-flight requests get no reply. Restart it with start(). No-op if not running. */
   crash(name: StackServiceName): Promise<void>;
+  /** Whether the service's process is alive — a test's evidence that a fault did not kill it; `/health` answering is the complementary evidence. */
+  isRunning(name: StackServiceName): boolean;
   logTail(name: StackServiceName, lines?: number): string;
   close(): Promise<void>;
 }
@@ -232,10 +234,27 @@ export interface ControlledJsonOrigin {
   /** Next request(s) to `path` answer with this. Default for unknown paths: 404 JSON. */
   respond(
     path: string,
-    reply: { status?: number; json?: unknown; rawBody?: string; contentType?: string },
+    reply: {
+      status?: number;
+      json?: unknown;
+      rawBody?: string;
+      contentType?: string;
+      /** Extra headers written with the status (e.g. a `location` for a redirect). */
+      headers?: Record<string, string>;
+    },
   ): void;
   /** Hold responses to `path` until the returned release() is called (bounded by the caller). Resolves `arrived` when the first request is in. */
   hold(path: string): { arrived: Promise<void>; release(): void };
+  /**
+   * Hand every request to `path` (the next one and later ones) to `handler`,
+   * after the request is recorded in `requests` — the test owns the raw
+   * exchange: reset the socket, never answer, trickle bytes, stream a large
+   * body. A served path takes precedence over `respond`; `hold` still applies
+   * before it (a held path's queued answer calls the handler on release). The
+   * handler is responsible for its own errors: a throw destroys the response
+   * instead of crashing the test process.
+   */
+  serve(path: string, handler: (req: IncomingMessage, res: ServerResponse) => void): void;
   close(): Promise<void>;
 }
 
@@ -662,7 +681,16 @@ async function claimFreeOffset(env: NodeJS.ProcessEnv): Promise<number> {
   );
 }
 
-function mintTlsCert(baseDomain: string): { dir: string; certFile: string; keyFile: string } {
+/**
+ * One openssl self-signed pair in a fresh temp dir: the same flags for every
+ * harness certificate (`-days 2`, a critical CA basic constraint), with the
+ * subject and subjectAltName the caller chooses. The caller removes `dir`.
+ */
+function mintCert(
+  subj: string,
+  san: string,
+  label: string,
+): { dir: string; certFile: string; keyFile: string } {
   const dir = mkdtempSync(path.join(tmpdir(), "helix-realstack-tls-"));
   const certFile = path.join(dir, "cert.pem");
   const keyFile = path.join(dir, "key.pem");
@@ -681,9 +709,9 @@ function mintTlsCert(baseDomain: string): { dir: string; certFile: string; keyFi
       "-out",
       certFile,
       "-subj",
-      `/CN=${baseDomain}`,
+      subj,
       "-addext",
-      `subjectAltName=DNS:${baseDomain},DNS:*.${baseDomain}`,
+      san,
       "-addext",
       "basicConstraints=critical,CA:TRUE",
     ],
@@ -691,11 +719,38 @@ function mintTlsCert(baseDomain: string): { dir: string; certFile: string; keyFi
   );
   if (gen.status !== 0 || !existsSync(certFile)) {
     throw new Error(
-      `realStack: openssl could not mint the harness certificate: ` +
+      `realStack: openssl could not mint ${label}: ` +
         `${(gen.stderr || gen.stdout || "").slice(-1_000)}`,
     );
   }
   return { dir, certFile, keyFile };
+}
+
+function mintTlsCert(baseDomain: string): { dir: string; certFile: string; keyFile: string } {
+  return mintCert(
+    `/CN=${baseDomain}`,
+    `subjectAltName=DNS:${baseDomain},DNS:*.${baseDomain}`,
+    "the harness certificate",
+  );
+}
+
+/**
+ * A fresh self-signed certificate for the loopback IP literal 127.0.0.1, for
+ * serving HTTPS on 127.0.0.1 (`startJsonOrigin({ tls })`). Both PEMs are read
+ * back as strings. The caller removes `dir` when done.
+ */
+export function mintLoopbackCert(): { dir: string; cert: string; key: string; certFile: string } {
+  const minted = mintCert(
+    "/CN=127.0.0.1",
+    "subjectAltName=IP:127.0.0.1",
+    "the loopback certificate",
+  );
+  return {
+    dir: minted.dir,
+    cert: readFileSync(minted.certFile, "utf8"),
+    key: readFileSync(minted.keyFile, "utf8"),
+    certFile: minted.certFile,
+  };
 }
 
 // ── service lifecycle ────────────────────────────────────────────────────────
@@ -1254,11 +1309,15 @@ interface OriginReply {
   status: number;
   body: Buffer;
   contentType: string;
+  headers: Record<string, string>;
 }
 
-export async function startJsonOrigin(): Promise<ControlledJsonOrigin> {
+export async function startJsonOrigin(
+  options: { tls?: { cert: string | Buffer; key: string | Buffer } } = {},
+): Promise<ControlledJsonOrigin> {
   const requests: ControlledJsonOrigin["requests"] = [];
   const responses = new Map<string, OriginReply>();
+  const served = new Map<string, (req: IncomingMessage, res: ServerResponse) => void>();
   const holds = new Map<
     string,
     { state: "held" | "open"; queue: Array<() => void>; resolveArrived: () => void }
@@ -1271,11 +1330,28 @@ export async function startJsonOrigin(): Promise<ControlledJsonOrigin> {
       res.end(JSON.stringify({ error: "no_response_configured", path: pathname }));
       return;
     }
-    res.writeHead(configured.status, { "content-type": configured.contentType });
+    res.writeHead(configured.status, {
+      "content-type": configured.contentType,
+      ...configured.headers,
+    });
     res.end(configured.body);
   };
 
-  const server: Server = http.createServer((req, res) => {
+  // A served handler owns its errors: a throw destroys that response instead
+  // of crashing the test process.
+  const runServed = (
+    handler: (req: IncomingMessage, res: ServerResponse) => void,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): void => {
+    try {
+      handler(req, res);
+    } catch {
+      res.destroy();
+    }
+  };
+
+  const requestListener = (req: IncomingMessage, res: ServerResponse): void => {
     const raw = req.url ?? "/";
     const pathname = new URL(raw, "http://127.0.0.1").pathname;
     req.on("data", () => {});
@@ -1294,20 +1370,29 @@ export async function startJsonOrigin(): Promise<ControlledJsonOrigin> {
           // cancellation hangs this request's socket up — and writing into a
           // destroyed socket is noise the origin never needs to make.
           if (res.writableEnded || res.destroyed) return;
-          answer(res, pathname);
+          const handle = served.get(pathname);
+          if (handle !== undefined) runServed(handle, req, res);
+          else answer(res, pathname);
         });
         hold.resolveArrived();
         return;
       }
-      answer(res, pathname);
+      const handle = served.get(pathname);
+      if (handle !== undefined) runServed(handle, req, res);
+      else answer(res, pathname);
     });
-  });
+  };
+
+  const server: Server =
+    options.tls === undefined
+      ? http.createServer(requestListener)
+      : https.createServer({ cert: options.tls.cert, key: options.tls.key }, requestListener);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address === "string") {
     throw new Error("realStack: the JSON origin never bound a loopback port");
   }
-  const origin = `http://127.0.0.1:${address.port}`;
+  const origin = `${options.tls === undefined ? "http" : "https"}://127.0.0.1:${address.port}`;
 
   return {
     origin,
@@ -1321,7 +1406,11 @@ export async function startJsonOrigin(): Promise<ControlledJsonOrigin> {
         status: reply.status ?? 200,
         body,
         contentType: reply.contentType ?? "application/json",
+        headers: reply.headers ?? {},
       });
+    },
+    serve(path, handler) {
+      served.set(path, handler);
     },
     hold(path) {
       if (holds.get(path)?.state === "held") {
@@ -2242,6 +2331,11 @@ export async function startRealStack(
       await startService(stack, name);
     },
     crash: (name) => crashService(stack, name),
+    isRunning: (name) => {
+      const state = stack.services.get(name);
+      if (!state) throw new Error(`realStack: no such service: ${name}`);
+      return state.child !== null && !hasExited(state.child);
+    },
     logTail: (name, lines) => logTail(stack, name, lines),
     close: () => closeStack(stack),
   };
