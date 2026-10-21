@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 import { Client as PgClient } from "pg";
 import { AppSchema, type App, HealthStatusSchema, type HealthStatus } from "@azx-pbc/shared";
+import { buildJobsInternalResource } from "@azx-pbc/shared/jobsSigning";
 
 import { runAuthCodeFlow } from "../../../dev-idp/src/testing.js";
 import { WEB_CLIENT_ID } from "../../../dev-idp/src/fixtures.js";
@@ -61,11 +62,20 @@ export interface RealStack {
   readonly logDir: string;
   /** Owner DSN of this stack's platform database (helix role) — for teardown and for tests that must read a durable fact no route exposes; tests should prefer routes. */
   readonly platformOwnerDsn: string;
+  /** Owner DSN of this stack's jobs database (helix role) — for tests that must read (or, to stand in for an older platform version, rewrite) a durable fact no route exposes; tests should prefer routes. */
+  readonly jobsOwnerDsn: string;
+  /** The faultable edge→jobs relay, when the stack was started with `jobsLink: true`; otherwise null. */
+  readonly jobsLink: JobsLink | null;
   appOrigin(slug: string): string;
-  /** Raw HTTPS/HTTP request with exact headers (no implicit Sec-Fetch-*). */
+  /** Raw HTTPS/HTTP request with exact headers (no implicit Sec-Fetch-*); `signal` aborts the request. */
   request(
     url: string,
-    init?: { method?: string; headers?: Record<string, string>; body?: string | Buffer },
+    init?: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string | Buffer;
+      signal?: AbortSignal;
+    },
   ): Promise<HttpReply>;
   /** Portal API as a real dev-IdP user (authorization-code + PKCE through the real IdP). */
   portalAs(email: string): Promise<PortalClient>;
@@ -79,6 +89,8 @@ export interface RealStack {
   stop(name: StackServiceName): Promise<void>;
   start(name: StackServiceName): Promise<void>;
   restart(name: StackServiceName): Promise<void>;
+  /** SIGKILLs a running service (no grace, no drain): models a process dying mid-request — in-flight requests get no reply. Restart it with start(). No-op if not running. */
+  crash(name: StackServiceName): Promise<void>;
   logTail(name: StackServiceName, lines?: number): string;
   close(): Promise<void>;
 }
@@ -99,11 +111,11 @@ export interface AppSession {
   readonly cookie: string;
   /** Navigation: GET with Sec-Fetch-Mode: navigate, Sec-Fetch-Dest: document, Accept: text/html. */
   navigate(path?: string): Promise<HttpReply>;
-  /** Same-origin script request from the served page: sends Cookie, Origin: appOrigin, Sec-Fetch-Site: same-origin, Sec-Fetch-Mode: cors, SecFetch-Dest: empty. */
+  /** Same-origin script request from the served page: sends Cookie, Origin: appOrigin, Sec-Fetch-Site: same-origin, Sec-Fetch-Mode: cors, SecFetch-Dest: empty; `signal` aborts the request. */
   api(
     method: string,
     path: string,
-    init?: { headers?: Record<string, string>; body?: string },
+    init?: { headers?: Record<string, string>; body?: string; signal?: AbortSignal },
   ): Promise<HttpReply>;
 }
 
@@ -259,7 +271,9 @@ interface StackInternals {
   portalUrl: string;
   devGatewayOrigin: string;
   platformOwnerDsn: string;
+  jobsOwnerDsn: string;
   databaseNames: string[];
+  jobsLink: JobsLink | null;
   tlsCa: Buffer;
   tlsDir: string;
   request(url: string, init?: RawRequestInit): Promise<HttpReply>;
@@ -270,6 +284,7 @@ interface RawRequestInit {
   method?: string;
   headers?: Record<string, string>;
   body?: string | Buffer;
+  signal?: AbortSignal;
 }
 
 // ── raw HTTP with exact headers ──────────────────────────────────────────────
@@ -308,6 +323,7 @@ function rawRequest(tlsCa: Buffer, url: string, init: RawRequestInit = {}): Prom
       },
       // Bounded: a request that never answers is an error, never a hang.
       timeout: REQUEST_SOCKET_TIMEOUT_MS,
+      ...(init.signal !== undefined ? { signal: init.signal } : {}),
       ...(secure ? { servername: u.hostname, ca: tlsCa } : {}),
     };
     const onResponse = (res: IncomingMessage): void => {
@@ -565,6 +581,19 @@ async function stopService(stack: StackInternals, name: StackServiceName): Promi
   });
 }
 
+/** SIGKILL with no grace and no drain: the modeled death is a process dying mid-request. */
+async function crashService(stack: StackInternals, name: StackServiceName): Promise<void> {
+  const state = stack.services.get(name);
+  if (!state) throw new Error(`realStack: no such service: ${name}`);
+  const child = state.child;
+  if (!child || hasExited(child)) return;
+  child.kill("SIGKILL");
+  await new Promise<void>((resolve) => {
+    if (hasExited(child)) resolve();
+    else child.once("exit", () => resolve());
+  });
+}
+
 function readinessUrl(stack: StackInternals, name: StackServiceName): string {
   const { ports, baseDomain } = stack;
   switch (name) {
@@ -710,6 +739,7 @@ async function closeStack(stack: StackInternals): Promise<void> {
   for (const name of [...SERVICE_NAMES].reverse()) {
     await stopService(stack, name);
   }
+  if (stack.jobsLink !== null) await stack.jobsLink.close();
   rmSync(stack.tlsDir, { recursive: true, force: true });
   await dropStackDatabases(stack.platformOwnerDsn, stack.databaseNames);
 }
@@ -854,6 +884,7 @@ async function appSession(stack: StackInternals, slug: string, email: string): P
           ...init?.headers,
         },
         ...(init?.body === undefined ? {} : { body: init.body }),
+        ...(init?.signal === undefined ? {} : { signal: init.signal }),
       });
     },
   };
@@ -1060,6 +1091,278 @@ export async function startJsonOrigin(): Promise<ControlledJsonOrigin> {
   };
 }
 
+// ── the faultable edge→jobs link ─────────────────────────────────────────────
+
+export interface JobsLinkReply {
+  status: number;
+  body: string;
+}
+
+export interface JobsLinkInterception {
+  /** The jobs service's complete reply to the intercepted submission — proof it answered (and, for a 202, committed). */
+  readonly upstreamReply: Promise<JobsLinkReply>;
+  /** Resolves when the edge-side connection of the intercepted submission closed without receiving that reply. */
+  readonly downstreamClosed: Promise<void>;
+  /** For "hold": deliver the reply now if the edge is still waiting; a no-op otherwise, and for "drop". */
+  release(): void;
+}
+
+export interface JobsLink {
+  /** The relay's base URL, as the edge and dev gateway see it. */
+  readonly endpoint: string;
+  /** Every request the relay carried to jobs, in arrival order (method + path only). */
+  readonly forwarded: ReadonlyArray<{ method: string; path: string; at: number }>;
+  /**
+   * Intercept the NEXT submission (POST to the internal submit resource) the relay carries:
+   * forward it to jobs unchanged and read jobs' complete reply, then either
+   * "drop" — destroy the edge-side connection without writing any reply (a lost reply after commit), or
+   * "hold" — keep the reply until release() (a reply delayed past the caller's patience).
+   * Throws if an interception is already pending.
+   */
+  interceptNextSubmit(mode: "drop" | "hold"): JobsLinkInterception;
+  close(): Promise<void>;
+}
+
+interface PendingIntercept {
+  mode: "drop" | "hold";
+  res: ServerResponse | null;
+  headers: Record<string, string | string[] | undefined>;
+  resolveUpstream: (reply: JobsLinkReply) => void;
+  rejectUpstream: (error: Error) => void;
+  resolveDownstreamClosed: () => void;
+  released: boolean;
+  delivered: boolean;
+  reply: JobsLinkReply | null;
+}
+
+/**
+ * A test-only transport fault injector between the edge (and the dev gateway)
+ * and the real jobs service: an in-process relay the harness points
+ * `EDGE_JOBS_CONFIG` at instead of the jobs listener. The relay never alters
+ * the bytes it forwards — the signed instruction stays end-to-end between the
+ * real edge and the real jobs service — it only decides whether a forwarded
+ * reply is delivered, held, or lost.
+ */
+async function startJobsLink(upstreamBase: string): Promise<JobsLink> {
+  const submitResource = buildJobsInternalResource("submit");
+  const forwarded: Array<{ method: string; path: string; at: number }> = [];
+  let pending: PendingIntercept | null = null;
+
+  /** Deliver a held reply: only after release(), and only if the edge is still waiting. */
+  const deliverHeldReply = (intercept: PendingIntercept, res: ServerResponse): void => {
+    if (intercept.mode !== "hold" || !intercept.released) return;
+    if (intercept.reply === null || intercept.delivered) return;
+    if (res.destroyed || res.writableEnded) return;
+    intercept.delivered = true;
+    const headers: Record<string, string | string[] | undefined> = { ...intercept.headers };
+    // Framing headers describe the upstream's own write; the relay writes the
+    // buffered body itself.
+    delete headers["transfer-encoding"];
+    delete headers.connection;
+    delete headers["content-length"];
+    res.writeHead(intercept.reply.status, headers);
+    res.end(intercept.reply.body);
+  };
+
+  /**
+   * One proxied exchange: the buffered edge-side request forwarded to jobs,
+   * headers unchanged (the jobs service authenticates a signed instruction
+   * header, and the Host header is not part of the signature).
+   */
+  const carry = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: Buffer,
+    intercept: PendingIntercept | null,
+  ): void => {
+    const upReq = http.request(new URL(req.url ?? "/", upstreamBase), {
+      method: req.method,
+      headers: req.headers,
+    });
+    if (intercept !== null) intercept.res = res;
+    res.on("close", () => {
+      if (res.writableEnded) return;
+      if (intercept === null) {
+        // The edge gave up first: a pass-through stops upstream too. An
+        // intercepted submission never does — the point is to observe what
+        // jobs committed regardless of when the edge stops waiting.
+        upReq.destroy();
+        return;
+      }
+      intercept.resolveDownstreamClosed();
+    });
+    upReq.on("error", (error) => {
+      // The edge observes exactly what a direct connection to a dead jobs
+      // service observes — a transport failure, never a fabricated HTTP
+      // status.
+      req.socket.destroy();
+      if (intercept !== null) {
+        intercept.rejectUpstream(
+          new Error(
+            `realStack jobsLink: the upstream ${submitResource} request failed: ${error.message}`,
+          ),
+        );
+      }
+    });
+    upReq.on("response", (upRes: IncomingMessage) => {
+      if (intercept === null) {
+        res.writeHead(upRes.statusCode ?? 502, upRes.headers);
+        upRes.on("error", () => req.socket.destroy());
+        upRes.pipe(res);
+        return;
+      }
+      const replyChunks: Buffer[] = [];
+      intercept.headers = upRes.headers;
+      upRes.on("data", (c: Buffer) => replyChunks.push(c));
+      upRes.on("error", (error) => {
+        intercept.rejectUpstream(
+          new Error(
+            `realStack jobsLink: reading the upstream ${submitResource} reply failed: ${error.message}`,
+          ),
+        );
+      });
+      upRes.on("end", () => {
+        const reply: JobsLinkReply = {
+          status: upRes.statusCode ?? 0,
+          body: Buffer.concat(replyChunks).toString("utf8"),
+        };
+        intercept.reply = reply;
+        intercept.resolveUpstream(reply);
+        if (intercept.mode === "drop") {
+          // A lost reply after commit: no bytes reach the edge.
+          req.socket.destroy();
+          return;
+        }
+        deliverHeldReply(intercept, res);
+      });
+    });
+    upReq.end(body);
+  };
+
+  const server: Server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("error", () => {});
+    req.on("end", () => {
+      const method = req.method ?? "GET";
+      const path = req.url ?? "/";
+      forwarded.push({ method, path, at: Date.now() });
+      const pathname = new URL(path, "http://127.0.0.1").pathname;
+      const intercept =
+        pending !== null && method === "POST" && pathname === submitResource ? pending : null;
+      if (intercept !== null) pending = null;
+      carry(req, res, Buffer.concat(chunks), intercept);
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("realStack: the jobs link relay never bound a loopback port");
+  }
+
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    forwarded,
+    interceptNextSubmit(mode) {
+      if (pending !== null) {
+        throw new Error(
+          "realStack: a jobs-link interception is already pending — await or release it before intercepting the next submit",
+        );
+      }
+      let resolveUpstream!: (reply: JobsLinkReply) => void;
+      let rejectUpstream!: (error: Error) => void;
+      const upstreamReply = new Promise<JobsLinkReply>((resolve, reject) => {
+        resolveUpstream = resolve;
+        rejectUpstream = reject;
+      });
+      let resolveDownstreamClosed!: () => void;
+      const downstreamClosed = new Promise<void>((resolve) => {
+        resolveDownstreamClosed = resolve;
+      });
+      const intercept: PendingIntercept = {
+        mode,
+        res: null,
+        headers: {},
+        resolveUpstream,
+        rejectUpstream,
+        resolveDownstreamClosed,
+        released: false,
+        delivered: false,
+        reply: null,
+      };
+      pending = intercept;
+      return {
+        upstreamReply,
+        downstreamClosed,
+        release() {
+          // Delivering is a "hold" behavior only; "drop" never writes a reply.
+          if (mode === "drop" || intercept.released) return;
+          intercept.released = true;
+          if (intercept.res !== null) deliverHeldReply(intercept, intercept.res);
+        },
+      };
+    },
+    close() {
+      return new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      });
+    },
+  };
+}
+
+/**
+ * Start the relay and repoint every `EDGE_JOBS_CONFIG` server entry at it,
+ * keeping each entry's other fields (the per-direction signing roots). The
+ * portal's `PORTAL_JOBS_CONFIG` is untouched: only the edge and the dev
+ * gateway read the edge document, so lifecycle delivery stays direct.
+ */
+async function startJobsLinkRelay(serviceEnv: NodeJS.ProcessEnv): Promise<JobsLink> {
+  const raw = serviceEnv.EDGE_JOBS_CONFIG;
+  if (raw === undefined) {
+    throw new Error(
+      "realStack: jobsLink=true but the resolved stack env carries no EDGE_JOBS_CONFIG",
+    );
+  }
+  let document: { servers?: Record<string, { endpoint?: unknown }> };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    document = parsed as { servers?: Record<string, { endpoint?: unknown }> };
+  } catch (error) {
+    throw new Error(
+      `realStack: EDGE_JOBS_CONFIG is not JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  const entries = Object.entries(document.servers ?? {});
+  if (entries.length === 0) {
+    throw new Error("realStack: jobsLink=true but EDGE_JOBS_CONFIG has no configured servers");
+  }
+  const upstreams = new Set<string>();
+  for (const [id, entry] of entries) {
+    if (typeof entry?.endpoint !== "string") {
+      throw new Error(`realStack: EDGE_JOBS_CONFIG server "${id}" carries no endpoint`);
+    }
+    upstreams.add(entry.endpoint);
+  }
+  // One relay, one upstream: the entries the stack resolves all point at the
+  // same jobs listener.
+  if (upstreams.size !== 1) {
+    throw new Error(
+      `realStack: jobsLink forwards to one jobs endpoint, but EDGE_JOBS_CONFIG names ${upstreams.size}`,
+    );
+  }
+  const upstreamBase = [...upstreams][0] ?? "";
+  const link = await startJobsLink(upstreamBase);
+  const rewritten: Record<string, { endpoint: string }> = {};
+  for (const [id, entry] of entries) {
+    rewritten[id] = { ...entry, endpoint: link.endpoint };
+  }
+  serviceEnv.EDGE_JOBS_CONFIG = JSON.stringify({ servers: rewritten });
+  return link;
+}
+
 // ── zip (stored, hand-rolled) ────────────────────────────────────────────────
 
 /** Fixed valid DOS timestamp (1980-01-01) — the zip fields need *a* date, and reproducibility beats realism here. */
@@ -1144,7 +1447,7 @@ export function zipFiles(files: Record<string, string | Buffer>): Buffer {
 // ── the harness itself ───────────────────────────────────────────────────────
 
 export async function startRealStack(
-  options: { offset?: number; label?: string } = {},
+  options: { offset?: number; label?: string; jobsLink?: boolean } = {},
 ): Promise<RealStack> {
   const label = (options.label ?? "journey").replace(/[^a-z0-9-]/gi, "") || "journey";
 
@@ -1228,6 +1531,17 @@ export async function startRealStack(
   if (platformOwnerDsn === undefined || jobsDsn === undefined) {
     throw new Error("realStack: the resolved stack env carries no platform or jobs database DSN");
   }
+  // The platform owner's credentials against the jobs database: the owner DSN
+  // of the jobs store.
+  const jobsOwnerUrl = new URL(platformOwnerDsn);
+  jobsOwnerUrl.pathname = new URL(jobsDsn).pathname;
+  const jobsOwnerDsn = jobsOwnerUrl.toString();
+
+  // The faultable link must exist before any service spawns: the edge and the
+  // dev gateway read EDGE_JOBS_CONFIG once at boot, so this rewrite is the
+  // only chance to point them at the relay. Started last before the stack
+  // record, so every later failure reaches closeStack, which closes it.
+  const jobsLink = options.jobsLink === true ? await startJobsLinkRelay(serviceEnv) : null;
 
   const stack: StackInternals = {
     serviceEnv,
@@ -1238,10 +1552,12 @@ export async function startRealStack(
     portalUrl: `http://localhost:${ports.portal}`,
     devGatewayOrigin: `https://dev-api.${baseDomain}:${ports.devGateway}`,
     platformOwnerDsn,
+    jobsOwnerDsn,
     databaseNames: [
       new URL(platformOwnerDsn).pathname.replace(/^\//, ""),
       new URL(jobsDsn).pathname.replace(/^\//, ""),
     ],
+    jobsLink,
     tlsCa,
     tlsDir: tls.dir,
     request: (url, init) => rawRequest(tlsCa, url, init),
@@ -1286,6 +1602,8 @@ export async function startRealStack(
     devGatewayOrigin: stack.devGatewayOrigin,
     logDir,
     platformOwnerDsn,
+    jobsOwnerDsn,
+    jobsLink,
     appOrigin: (slug) => `https://${slug}.${baseDomain}:${ports.edge}`,
     request: stack.request,
     portalAs: (email) => portalAs(stack, email),
@@ -1309,6 +1627,7 @@ export async function startRealStack(
       await stopService(stack, name);
       await startService(stack, name);
     },
+    crash: (name) => crashService(stack, name),
     logTail: (name, lines) => logTail(stack, name, lines),
     close: () => closeStack(stack),
   };

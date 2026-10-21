@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { trace } from "@opentelemetry/api";
+import { discardBody } from "@azx-pbc/shared/bodyCap";
 import {
   FetchJobInputSchema,
   INSTRUCTION_HEADER,
@@ -401,7 +402,7 @@ export function makeJobsFetchCallbackHandler(
       // refusal). The body stream is destroyed, not left dangling: nothing
       // consumes it, and the socket must not wait for a reader that will
       // never come.
-      res.body.destroy();
+      discardBody(res.body);
       req.log.info(
         { event: "edge.jobs_callback.upstream_refused", appId: claims.appId, status: res.status },
         "the upstream answered the governed callback GET with a non-success status",

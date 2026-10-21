@@ -877,3 +877,18 @@ Two helpers keep the journey suites short (both used by
   wait until the edge actually serves the app host (the registry projection
   reloads on NOTIFY behind a debounce, so an immediate request would 404).
   Returns the created `App`; each step's failure throws naming the step.
+
+Fault injection lives in the harness only — no production code path exists for
+tests. `startRealStack({ jobsLink: true })` starts the edge's and dev
+gateway's jobs traffic through an in-process relay instead of straight to the
+jobs listener; the relay forwards bytes unchanged and exposes `stack.jobsLink`:
+`interceptNextSubmit("drop" | "hold")` reads the jobs service's complete reply
+to the NEXT submission and then either destroys the edge-side connection
+without writing it (`drop` — a lost reply after commit) or keeps it until
+`release()` (`hold` — a reply delayed past the caller's patience), and
+`forwarded` lists every request the relay carried, in arrival order.
+`stack.crash(name)` SIGKILLs a running service with no grace and no drain
+(restart it with `stack.start(name)`). `stack.jobsOwnerDsn` is the jobs
+database's owner DSN, for tests that must read a durable fact no route exposes;
+tests should prefer routes. `stack.request` and `session.api` accept a
+`signal` (`AbortSignal`) so a test can abandon an in-flight request.

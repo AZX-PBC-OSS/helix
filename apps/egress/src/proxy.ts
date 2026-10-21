@@ -22,7 +22,7 @@ import {
   TARGET_HEADER,
   parseHmacCredential,
 } from "@azx-pbc/shared";
-import { capBody } from "@azx-pbc/shared/bodyCap";
+import { capBody, discardBody } from "@azx-pbc/shared/bodyCap";
 import { hmacTimestampNow, renderHmacAuth, signTimestamp, substitute } from "./hmac.js";
 import { verifyInstruction } from "./instruction.js";
 import { RecipeDriftError, type SecretResolver } from "./secrets.js";
@@ -614,7 +614,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       // cleanly (before any body is committed) without draining the connection.
       const len = Number(upstream.headers["content-length"]);
       if (Number.isFinite(len) && len > deps.limits.maxBodyBytes) {
-        upstream.body.destroy();
+        discardBody(upstream.body);
         return fail(reply, 502, "upstream_error", "upstream response too large");
       }
 

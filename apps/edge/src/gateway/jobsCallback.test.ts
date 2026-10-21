@@ -730,6 +730,47 @@ describe("POST /internal/jobs/v1/fetch — the upstream answers", () => {
     await h.app.close();
   });
 
+  it("discards a real undici body on a non-2xx upstream without an unhandled stream error", async () => {
+    // undici's BodyReadable turns a destroy() before the body ended into a
+    // RequestAbortedError 'error' event; with no listener that error is
+    // uncaught and takes the whole edge process down.
+    const { createServer } = await import("node:http");
+    const origin = createServer((_req, res) => {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not here" }));
+    });
+    await new Promise<void>((resolve) => origin.listen(0, "127.0.0.1", resolve));
+    const address = origin.address();
+    if (address === null || typeof address === "string") throw new Error("origin never bound");
+    const upstream = await undiciRequest(`http://127.0.0.1:${address.port}/missing`);
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown): void => {
+      uncaught.push(err);
+    };
+    process.on("uncaughtException", onUncaught);
+    try {
+      const egress = new FakeEgress();
+      egress.responseBody = upstream.body;
+      egress.status = upstream.statusCode;
+      egress.outcome = "refusal";
+      const h = buildCallbackEdge({ egress });
+      const { token, body } = await mintCallbackInstruction();
+      const answer = await present(h.app, { token, body });
+
+      expect(answer.status).toBe(502);
+      expect(isJobsError(answer.json, "upstream_error")).toBe(true);
+      // undici defers the destroy callback by a macrotask for an unread body.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(upstream.body.destroyed).toBe(true);
+      expect(uncaught).toEqual([]);
+      await h.app.close();
+    } finally {
+      process.off("uncaughtException", onUncaught);
+      await new Promise<void>((resolve) => origin.close(() => resolve()));
+    }
+  });
+
   it("answers a bounded upstream_error for a failed forward — distinguishable in telemetry", async () => {
     const egress = new FakeEgress();
     egress.failure = new Error("dial failed");
