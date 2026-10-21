@@ -292,6 +292,12 @@ jobs:
           echo "Azurite did not become ready" >&2; docker logs azurite >&2; exit 1
 
       - name: Run checks (test)
+        # One vitest worker per vCPU of the standard 4-vCPU runner. The dev
+        # container's default of ten (vitest.config.ts) oversubscribed it: each
+        # real-stack suite drives several child services, and the starved
+        # workers pushed timing-bound tests past their limits.
+        env:
+          HELIX_TEST_MAX_WORKERS: "4"
         run: ./check-and-lint.sh test -- --shard=${{ matrix.shard }}
 
   browser-lane:

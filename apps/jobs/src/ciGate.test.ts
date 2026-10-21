@@ -231,6 +231,21 @@ describe("infrastructure validation stays in delivery", () => {
   });
 });
 
+describe("the test job sizes vitest's workers for its runner", () => {
+  // vitest.config.ts defaults to ten workers, sized for the dev container.
+  // On the standard 4-vCPU runner that oversubscribes the CPU and timing-bound
+  // tests fail for the host's reason, so the run step lowers the cap through
+  // the variable the config reads.
+  it("sets HELIX_TEST_MAX_WORKERS on the test run step, no higher than the runner's vCPUs", () => {
+    const testRun = steps(jobBlock("test")).find((step) => step.includes("./check-and-lint.sh"));
+    const workers = testRun?.match(/^ {10}HELIX_TEST_MAX_WORKERS: "(\d+)"$/m)?.[1];
+    expect(workers, "the test run step does not set HELIX_TEST_MAX_WORKERS").toBeDefined();
+    expect(Number(workers)).toBeGreaterThanOrEqual(1);
+    expect(Number(workers)).toBeLessThanOrEqual(4);
+    expect(readRepo("vitest.config.ts")).toContain("process.env.HELIX_TEST_MAX_WORKERS");
+  });
+});
+
 describe("every job has a bound", () => {
   // A hung suite or image build otherwise burns the 6h runner default. The
   // test job's bound must also stay above its slowest shard: the real-stack
