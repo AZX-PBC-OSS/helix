@@ -455,6 +455,18 @@ reaches it; the send site scopes every job to its signed identity's group
   rough figure). The pinned pg-boss version keeps no separate archive table;
   a terminal runner row stays in `job_common` until the cleanup loop deletes
   it with its record, and completion removes no row.
+- **The storage envelope.** `src/storageSizing.integration.test.ts`
+  measures the store's heap, TOAST and index bytes per job, split into the
+  record, the runner row and everything else, for small fetch-shaped jobs
+  and for jobs at both 64-KiB bounds, from acceptance through success,
+  `VACUUM`, cleanup and a refill. It publishes one `[jobs sizing]` record
+  per profile and asserts only what the storage contract promises: the rows
+  admission adds, that completion removes none, that cleanup removes both
+  rows of every job, and that bodies at the bounds are stored whole. The
+  observed figures, and the sizing projections drawn from them, are in the
+  public operator guide (`apps/docs/src/deploy/jobs.md`). They are not
+  directly comparable with the 3.3 KiB figure above, which came from 20
+  diagnostic jobs: at that count one 8 KiB page is 0.4 KiB per job.
 - **Rolling overlap is per process.** Each process enforces its own
   configured caps against the shared store. While a process with a lowered
   `unfinishedPerServer` refuses new work, the other process still admits

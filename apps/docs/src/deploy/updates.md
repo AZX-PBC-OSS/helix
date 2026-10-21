@@ -174,7 +174,11 @@ az containerapp update -g <rg> -n <namePrefix>-jobs \
 ```
 
 The certbot job is rolled the same way, with `job update`. It is a scheduled
-job, so a new image takes effect at its next run.
+job, so a new image takes effect at its next run. With the jobs plane and
+alerts on, so is `<namePrefix>-jobs-health-relay`, which runs the jobs image;
+keep it on the same tag as the jobs app. The jobs-specific procedures —
+enabling on an existing install, closing intake, retiring, re-enabling — are
+in [Operating background jobs](/deploy/jobs).
 
 ### 3. Confirm the new code is actually live
 

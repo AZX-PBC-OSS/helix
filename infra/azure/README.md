@@ -425,6 +425,12 @@ customer-run, remote-team install usually doesn't want.
 
 ## Background jobs (`deployJobs`, [ADR-0045](../../docs/adr/0045-app-triggered-durable-jobs-plane.md))
 
+The operator procedures for this plane — server states, temporary recovery,
+closing intake, retirement, re-enabling, health and alerts, and the measured
+capacity figures — are in the public docs'
+[Operating background jobs](../../apps/docs/src/deploy/jobs.md) page. This
+section is the reference for what the template provisions.
+
 The background-jobs plane keeps the same database isolation as everywhere else
 (background-jobs design §8): its own private database on the platform's Postgres
 server, two identities that never cross the boundary, and migrations that run

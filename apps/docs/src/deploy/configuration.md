@@ -224,7 +224,9 @@ Each value must be a positive whole number. An unknown key or a bad value
 stops the service at boot with the variable named. The edge counts its
 windows across all edge replicas. The dev gateway counts development
 submissions in each replica's own memory, so each replica allows the full
-limits and development traffic never uses up the production window.
+limits and development traffic never uses up the production window. What a
+change does to running work, and the measured figures to size against, are in
+[Operating background jobs](/deploy/jobs#tune-capacity-limits).
 
 The portal image also carries one setting for the app owner's Visitors view:
 

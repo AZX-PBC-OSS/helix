@@ -538,6 +538,11 @@ is in `infra/azure/README.md`. The edge's `jobs_reachability` check is not
 relayed; it is in the edge's public body, which the edge availability test
 reads.
 
+The operator procedures these alerts lead to — telling the portal's delivery
+backlog from the jobs service's cancellation backlog, cleanup and expiry,
+retirement and recovery — are in
+[Operating background jobs](../../apps/docs/src/deploy/jobs.md).
+
 Four more modules alert on signals this platform does **not** emit, which is the
 point of them — everything above goes quiet in exactly the failures that stop the
 process:

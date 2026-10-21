@@ -49,6 +49,7 @@ export default defineConfig({
             { text: "Database & migrations", link: "/deploy/database" },
             { text: "Azure AI Foundry", link: "/deploy/foundry" },
             { text: "Deploying updates", link: "/deploy/updates" },
+            { text: "Operating background jobs", link: "/deploy/jobs" },
             { text: "Configuration reference", link: "/deploy/configuration" },
             { text: "Local development", link: "/deploy/local-dev" },
           ],

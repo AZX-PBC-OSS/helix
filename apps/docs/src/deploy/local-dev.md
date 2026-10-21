@@ -20,6 +20,7 @@ Each runs as its own process, from its own command:
 | `pnpm dev:web` | portal SPA dev server (proxies to :3001) | 5173 |
 | `pnpm dev:idp` | local OIDC issuer standing in for Entra | 3002 |
 | `pnpm dev:egress` | helix-egress — the outbound fetch proxy | 8081 |
+| `pnpm dev:jobs` | helix-jobs — background jobs (needs its own settings, below) | 3003 |
 | `pnpm dev:docs` | this docs site | — |
 
 Locally, apps live on `https://<slug>.local.helix.azxlabs.io:8080` and sign-in
@@ -37,6 +38,43 @@ local redirect URIs to the app registrations
 (git-ignored) with the issuer and client values, and restart the edge. Details
 in [the runbook](https://github.com/AZX-PBC-OSS/helix/blob/main/docs/runbooks/entra-app-registration.md#local-testing-against-real-entra).
 Delete the file to go back to the local IdP.
+
+## Background jobs locally
+
+The jobs service needs its database, its server id and three signing roots
+that the edge and portal agree on. Without them the rest of the stack runs
+with jobs fully disabled: the jobs routes answer `503 jobs_disabled`.
+
+On the default stack, put the jobs settings in `apps/jobs/.env.local`. The
+variables, with an example, are in the
+[jobs service README](https://github.com/AZX-PBC-OSS/helix/blob/main/apps/jobs/README.md).
+For an isolated second stack, the stack resolver mints the whole jobs plane,
+and every terminal resolves the same roots:
+
+```bash
+env $(node scripts/stack-env.mjs --env --offset 1000) pnpm dev:jobs
+```
+
+Prefix the other services' commands the same way. A new stack's databases
+must exist first: `node scripts/ensure-db.mjs <owner-dsn> <jobs-dsn>`, with
+the `DATABASE_URL` and `JOBS_DATABASE_URL` values the resolver prints.
+
+To exercise progress, retries, failures and cancellation, add
+`HELIX_JOBS_DIAGNOSTICS=1` in front of `node scripts/stack-env.mjs`. The jobs
+service then installs the non-production `jobs:diagnostic` type and the
+portal offers it for grants. A production service refuses to start with it.
+
+There is no jobs administration UI locally either. Diagnose with:
+
+- the health body: `curl -s http://localhost:3003/health` on the default
+  stack (the `JOBS_PORT` the resolver printed on another one);
+- the service log, with `JOBS_LOG_LEVEL=debug` for more detail;
+- the jobs API as the job's owner, through the app host or the dev gateway;
+- the integration suites under `apps/jobs/src/`, which boot the real services.
+
+Each real-stack suite holds about 35 Postgres connections while it runs. The
+health checks, the procedures and the measured capacity figures are in
+[Operating background jobs](/deploy/jobs).
 
 ## Checks
 
