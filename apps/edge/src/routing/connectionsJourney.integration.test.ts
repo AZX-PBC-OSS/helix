@@ -241,6 +241,15 @@ async function waitForRegistry(slug: string): Promise<void> {
   );
 }
 
+/** Wait until the edge's live registry projection carries the app's bound fetch origin. */
+async function waitForFetchOrigin(slug: string, origin: string): Promise<void> {
+  await pollUntil(
+    async () => (liveRegistry.getApp(slug)?.fetch.connections.has(origin) === true ? true : null),
+    "the edge's registry projection carrying the bound fetch origin",
+    15_000,
+  );
+}
+
 /**
  * Arrange one journey fixture through the portal's REAL API: the app (+ a live
  * version), the provider row(s) in the requested tiers (client credentials
@@ -297,20 +306,6 @@ async function seedFixture(
     providerRevision = made.body.revision as number;
   }
 
-  // TEMP-DEBUG: time the cache wait
-  {
-    const t0 = Date.now();
-    await pollUntil(
-      async () =>
-        opts.envs.every((env) => providers.get(providerIds[env]!)?.revision === providerRevision)
-          ? true
-          : null,
-      "egress's provider cache catching up to the seeded providers",
-      15_000,
-    );
-    console.log(`TEMP-DEBUG cache wait took ${Date.now() - t0}ms`);
-  }
-
   // The manifest binding + its approval — the provider-stamped filing the
   // consult later re-checks.
   const put = await portalApi("PUT", `/api/v1/apps/${slug}/manifest`, "owner", {
@@ -358,14 +353,7 @@ async function seedFixture(
     "egress's provider cache catching up to the seeded providers",
     15_000,
   );
-  await pollUntil(
-    async () =>
-      liveRegistry.getApp(slug)?.fetch.connections.has(opts.vendorToUse.issuer) === true
-        ? true
-        : null,
-    "the edge's registry projection carrying the bound fetch origin",
-    15_000,
-  );
+  await waitForFetchOrigin(slug, opts.vendorToUse.issuer);
   return {
     slug,
     appId,
@@ -1200,7 +1188,11 @@ describe("two approved apps share one connection", () => {
       (await portalApi("POST", `/api/v1/approvals/${put.body.pending as string}/approve`, "admin"))
         .statusCode,
     ).toBe(200);
-    await waitForRegistry(bSlug);
+    // B's registry entry exists from its creation, before the approval lands,
+    // so waiting for the entry alone races the approval's NOTIFY: the
+    // delegated call below would answer the edge's allowlist 403. Wait for
+    // the projection to carry B's bound fetch origin, as seedFixture does.
+    await waitForFetchOrigin(bSlug, vendor.issuer);
 
     // B's start CANNOT reach the vendor: already-connected — no second
     // consent round-trip, no second connection.

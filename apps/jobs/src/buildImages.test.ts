@@ -81,17 +81,29 @@ function makeRoom(appsWithDockerfiles: string[]): string {
  */
 function makeToollessBin(): string {
   const bin = tempDir();
+  linkDirname(bin);
+  return bin;
+}
+
+function linkDirname(bin: string): void {
   const dirname = ["/usr/bin/dirname", "/bin/dirname"].find((p) => existsSync(p));
   if (dirname === undefined) {
     throw new Error("the suite's host has no dirname to run the script with");
   }
   symlinkSync(dirname, path.join(bin, "dirname"));
-  return bin;
 }
 
-/** A shim `docker` that records one line per invocation and exits with a chosen status. */
+/**
+ * A shim `docker` that records one line per invocation and exits with a
+ * chosen status, next to the same `dirname` the builder-less legs get. The
+ * script's `cd "$(dirname "$0")"` runs before anything else, so a PATH
+ * without dirname is not the operator's environment: bash 5.2 happens to
+ * treat the resulting `cd ""` as a no-op, while bash 5.3 (GitHub's Ubuntu
+ * 26.04 runners) refuses it and the script exits before docker is reached.
+ */
 function makeFakeDocker(exitCode: number): { bin: string; log: string } {
   const bin = tempDir();
+  linkDirname(bin);
   const log = path.join(tempDir(), "invocations.log");
   writeFileSync(
     path.join(bin, "docker"),
@@ -112,11 +124,15 @@ function runBuildImages(
   args: string[],
   env: Record<string, string> = {},
 ): SpawnSyncReturns<string> {
-  return spawnSync("/bin/bash", [path.join(room, "build-images.sh"), ...args], {
+  const run = spawnSync("/bin/bash", [path.join(room, "build-images.sh"), ...args], {
     cwd: room,
     encoding: "utf8",
     env: { PATH: bin, ...env },
   });
+  // A tool the controlled PATH lacks would fail the run for the harness's
+  // reason rather than the script's, so it fails the case on every bash.
+  expect(run.stderr).not.toMatch(/line \d+: [^:\n]+: command not found/);
+  return run;
 }
 
 describe("build-images.sh without a builder on the host", () => {

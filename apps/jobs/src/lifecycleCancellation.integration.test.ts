@@ -352,8 +352,10 @@ class StoreWatcher {
   private stopped = false;
   private firstError: unknown = undefined;
   private readonly loop: Promise<void>;
+  private readonly jobIds: () => string[];
 
   constructor(jobIds: () => string[]) {
+    this.jobIds = jobIds;
     this.loop = (async () => {
       while (!this.stopped) {
         await this.tick(jobIds());
@@ -399,9 +401,18 @@ class StoreWatcher {
     }
   }
 
+  /**
+   * Stop sampling, then take one last sample. Callers stop the watcher right
+   * after their own read saw the records settle, and that read can land
+   * between two ticks: a stop during the sleep would otherwise end the
+   * history on the pre-terminal sample, and the terminal assertions would
+   * report a convergence the store already made. The final sample is read
+   * after the caller's observation, so it always carries the settled state.
+   */
   async stop(): Promise<ReadonlyMap<string, StoreHistory>> {
     this.stopped = true;
     await this.loop;
+    await this.tick(this.jobIds());
     if (this.firstError !== undefined) {
       throw new Error("the store watcher's read failed", { cause: this.firstError });
     }

@@ -327,6 +327,9 @@ describe("the suite's own environment hygiene", () => {
 });
 
 describe("the production boot path", () => {
+  // Five serial `tsx` cold starts of the real entry point: about 1 s each in
+  // the dev container, about 25 s in all on a loaded CI runner, so the default
+  // 5 s test timeout cannot hold it. Each spawn keeps its own 60 s bound.
   test("invalid configuration is an explicit startup error, with the key named", () => {
     const run = spawnSync("node", ["--import", "tsx", "src/server.ts"], {
       cwd: PACKAGE_DIR,
@@ -407,7 +410,7 @@ describe("the production boot path", () => {
     });
     expect(missingCallback.status).not.toBe(0);
     expect(`${missingCallback.stderr}${missingCallback.stdout}`).toContain("JOBS_EDGE_DEV_URL");
-  });
+  }, 180_000);
 
   test(
     "with the store down the listener still serves, /health answers 200 with the outage, and the probes continue",

@@ -122,20 +122,29 @@ async function mint(body: Buffer): Promise<string> {
   );
 }
 
+/**
+ * A JSON body of exactly `bytes` bytes: the padding is ASCII, one byte per
+ * character, so it is sized in one step from the unpadded length. (Growing it
+ * a character at a time re-serializes a 64 KiB body tens of thousands of
+ * times, which alone outlasts the test timeout on a slow runner.)
+ */
+function bodyOfLength(bytes: number): Buffer {
+  const shape = (pad: number): Buffer =>
+    Buffer.from(JSON.stringify({ url: `https://api.github.com/${"a".repeat(pad)}` }), "utf8");
+  return shape(bytes - shape(0).length);
+}
+
 describe("the callback receiver's input bounds", () => {
   it("dispatches a body of exactly the input bound — the inclusive edge", async () => {
     // The admission contract admits a job input of exactly JOBS_MAX_INPUT_BYTES
     // bytes; the receiver reads with the same constant. If the read were
     // exclusive, or one byte tighter, the largest legal input could never
     // dispatch — the job retries a 413 forever.
-    let pad = 0;
-    const body = (): Buffer =>
-      Buffer.from(JSON.stringify({ url: `https://api.github.com/${"a".repeat(pad)}` }), "utf8");
-    while (body().length < JOBS_MAX_INPUT_BYTES) pad += 1;
-    expect(body().length).toBe(JOBS_MAX_INPUT_BYTES);
+    const payload = bodyOfLength(JOBS_MAX_INPUT_BYTES);
+    expect(payload.length).toBe(JOBS_MAX_INPUT_BYTES);
 
     const h = buildCallbackEdge();
-    const token = await mint(body());
+    const token = await mint(payload);
     const res = await h.app.inject({
       method: "POST",
       url: ROUTE_JOBS_FETCH,
@@ -143,9 +152,9 @@ describe("the callback receiver's input bounds", () => {
         ...PLATFORM_HOST,
         [INSTRUCTION_HEADER]: token,
         "content-type": "application/json",
-        "content-length": String(body().length),
+        "content-length": String(payload.length),
       },
-      body: body(),
+      body: payload,
     });
 
     expect(res.statusCode).toBe(200);
@@ -160,14 +169,11 @@ describe("the callback receiver's input bounds", () => {
     // burn in the gate order (nothing unverifiable may consume a nonce), so a
     // regression that reordered the gates — or moved the cap a byte — turns
     // this red either way.
-    let pad = 0;
-    const body = (): Buffer =>
-      Buffer.from(JSON.stringify({ url: `https://api.github.com/${"a".repeat(pad)}` }), "utf8");
-    while (body().length < JOBS_MAX_INPUT_BYTES + 1) pad += 1;
-    expect(body().length).toBe(JOBS_MAX_INPUT_BYTES + 1);
+    const payload = bodyOfLength(JOBS_MAX_INPUT_BYTES + 1);
+    expect(payload.length).toBe(JOBS_MAX_INPUT_BYTES + 1);
 
     const h = buildCallbackEdge();
-    const token = await mint(body());
+    const token = await mint(payload);
     const res = await h.app.inject({
       method: "POST",
       url: ROUTE_JOBS_FETCH,
@@ -175,9 +181,9 @@ describe("the callback receiver's input bounds", () => {
         ...PLATFORM_HOST,
         [INSTRUCTION_HEADER]: token,
         "content-type": "application/json",
-        "content-length": String(body().length),
+        "content-length": String(payload.length),
       },
-      body: body(),
+      body: payload,
     });
 
     expect(res.statusCode).toBe(413);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   ATTR_APP_ID,
   ATTR_JOBS_ARCHIVED,
@@ -655,16 +655,24 @@ describe("the supervision state", () => {
     });
 
     sender.start();
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Wait for the passes rather than for a fixed slice of wall clock: each
+    // pass opens the broken client's store, and on a loaded runner the first
+    // one alone can outlast any small fixed sleep. The 5 ms cadence is what is
+    // under test, so the bound only has to be generous, not tight.
+    await vi.waitFor(
+      () => {
+        // Pass 1 was the timer's own (no runPass call in this test), pass 2
+        // could only exist through the fault arm's reschedule after pass 1's
+        // rejection, pass 3+ through the success arm after failed passes.
+        expect(sender.snapshot().passes).toBeGreaterThanOrEqual(3);
+        // The first report threw; the loop's later passes still reported —
+        // the rejection ended neither the reporting nor the cadence.
+        expect(errorReports).toBeGreaterThanOrEqual(3);
+      },
+      { timeout: 15_000, interval: 5 },
+    );
     const snapshot = sender.snapshot();
     expect(snapshot.started).toBe(true);
-    // Pass 1 was the timer's own (no runPass call in this test), pass 2
-    // could only exist through the fault arm's reschedule after pass 1's
-    // rejection, pass 3+ through the success arm after failed passes.
-    expect(snapshot.passes).toBeGreaterThanOrEqual(3);
-    // The first report threw; the loop's later passes still reported — the
-    // rejection ended neither the reporting nor the cadence.
-    expect(errorReports).toBeGreaterThanOrEqual(3);
     expect(snapshot.lastOkPassAt).toBeNull();
 
     await sender.stop();
@@ -674,7 +682,7 @@ describe("the supervision state", () => {
     // Not one pass past the stop: the timer is gone and nothing rescheduled.
     expect(sender.snapshot().passes).toBe(stoppedAt.passes);
     await broken.$disconnect();
-  });
+  }, 30_000);
 
   it("the batch cap bounds one pass's attempts", async () => {
     const transport = new FakeTransport();
