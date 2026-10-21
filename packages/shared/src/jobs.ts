@@ -601,9 +601,34 @@ export type JobTypeCatalogueEntry = z.infer<typeof JobTypeCatalogueEntrySchema>;
  * development/test fixtures are deliberately absent: they have no production
  * grant and are rejected on production submission.
  */
-export const JOB_TYPE_CATALOGUE: readonly JobTypeCatalogueEntry[] = [
-  { id: JOBS_FETCH_QUALIFIED_TYPE, displayName: JOBS_FETCH_DISPLAY_NAME },
-];
+export const JOB_TYPE_CATALOGUE: readonly JobTypeCatalogueEntry[] = Object.freeze([
+  Object.freeze({ id: JOBS_FETCH_QUALIFIED_TYPE, displayName: JOBS_FETCH_DISPLAY_NAME }),
+]);
+
+// ── The non-production diagnostic type ───────────────────────────────────────
+
+/**
+ * The non-production diagnostic type. Never part of {@link JOB_TYPE_CATALOGUE}:
+ * a production parse never consults {@link JOB_TYPE_DIAGNOSTIC_CATALOGUE}, so
+ * a production deployment can neither advertise nor install the type.
+ */
+export const JOBS_DIAGNOSTIC_LOCAL_TYPE = "diagnostic";
+export const JOBS_DIAGNOSTIC_QUALIFIED_TYPE = `${JOBS_SERVER_NAME}:${JOBS_DIAGNOSTIC_LOCAL_TYPE}`;
+export const JOBS_DIAGNOSTIC_DISPLAY_NAME = "Diagnostic job (non-production)";
+
+/**
+ * The types a non-production deployment may additionally install. Production
+ * parses never consult this list; the input contract is deliberately NOT
+ * here — it is the jobs service's test-owned fixture, not a public contract.
+ */
+export const JOB_TYPE_DIAGNOSTIC_CATALOGUE: readonly JobTypeCatalogueEntry[] = Object.freeze([
+  Object.freeze({ id: JOBS_DIAGNOSTIC_QUALIFIED_TYPE, displayName: JOBS_DIAGNOSTIC_DISPLAY_NAME }),
+]);
+
+/** Exact-match test against the diagnostic catalogue (no prefix, case or whitespace leniency). */
+export function isDiagnosticJobType(type: string): boolean {
+  return type === JOBS_DIAGNOSTIC_QUALIFIED_TYPE;
+}
 
 // ── Input and result of the fetch type ───────────────────────────────────────
 

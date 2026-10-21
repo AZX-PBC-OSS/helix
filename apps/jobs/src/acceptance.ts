@@ -19,8 +19,8 @@ import {
   JOBS_INTAKE_QUALIFIED,
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_TYPE_POLICIES,
+  type JobsTypePolicies,
   jobsAppEnvGroupId,
-  jobTypePolicy,
   type JobsTypePolicy,
 } from "./policy.js";
 
@@ -101,7 +101,7 @@ export interface JobsAdmission {
 
 /** A job handed to the runner enqueue — the validated work, scoped to its trusted group. */
 export interface JobsRunnerJob {
-  /** The qualified type — selects the send-time execution policy. */
+  /** The qualified type — selects the execution-time policy. */
   type: string;
   /** The trusted app half of the fairness group. */
   appId: string;
@@ -109,6 +109,14 @@ export interface JobsRunnerJob {
   env: string;
   /** The validated input — the runner job's data. */
   input: object;
+  /**
+   * The send-time retry limit — from the SAME installed policy the admission
+   * decision resolved, so the enqueue cannot consult a second (possibly
+   * different) copy of the numbers.
+   */
+  retryLimit: number;
+  /** The send-time per-attempt claim bound, in seconds — from the same policy. */
+  expireInSeconds: number;
 }
 
 /**
@@ -126,17 +134,17 @@ export interface JobsEnqueuer {
  * The real enqueue adapter, over the runtime pg-boss instance's public
  * borrowed-transaction API: the runner's insert SQL executes on the caller's
  * transaction client through the {@link Db} seam, so the runner row shares
- * the acceptance transaction's fate. The send-time options are the type's
- * installed policy (never queue defaults — a silently weaker claim bound
- * would go unnoticed) and the trusted (appId, env) fairness group.
+ * the acceptance transaction's fate. The send-time options are the job's
+ * carried policy values — admission resolved them from the composition's
+ * installed policy set (never queue defaults — a silently weaker claim bound
+ * would go unnoticed) — and the trusted (appId, env) fairness group.
  */
 export function createPgbossEnqueuer(boss: PgBoss): JobsEnqueuer {
   return {
     async enqueue(withinTx, job) {
-      const { retryLimit, expireInSeconds } = jobTypePolicy(job.type);
       const runnerJobId = await boss.send(JOBS_QUEUE_NAME, job.input, {
-        retryLimit,
-        expireInSeconds,
+        retryLimit: job.retryLimit,
+        expireInSeconds: job.expireInSeconds,
         group: { id: jobsAppEnvGroupId(job.appId, job.env) },
         db: {
           executeSql: (text, values) => withinTx.query(text, values),
@@ -281,6 +289,12 @@ export interface JobsAcceptanceStoreOptions {
    * Required — a store that cannot say whether it admits work must not guess.
    */
   accepting: boolean;
+  /**
+   * The composition's installed policy set — the new-work validation's source.
+   * Defaults to the production set; a composition that installed the
+   * diagnostic type hands the same set its registry screened against.
+   */
+  typePolicies?: JobsTypePolicies;
   /** The runner enqueue borrowed into the transaction — the real adapter wraps the runtime pg-boss. */
   enqueuer: JobsEnqueuer;
   log: JobsAcceptanceLogger;
@@ -306,6 +320,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
   private readonly statementTimeoutMs: number;
   private readonly limits: JobsCapacityLimits;
   private readonly accepting: boolean;
+  private readonly typePolicies: JobsTypePolicies;
   private readonly enqueuer: JobsEnqueuer;
   private readonly log: JobsAcceptanceLogger;
 
@@ -317,6 +332,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     this.statementTimeoutMs = options.statementTimeoutMs;
     this.limits = options.limits;
     this.accepting = options.accepting;
+    this.typePolicies = options.typePolicies ?? JOBS_TYPE_POLICIES;
     this.enqueuer = options.enqueuer;
     this.log = options.log;
   }
@@ -418,7 +434,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     // New work: the type's installed policy and its input contract, before
     // the gates that close to it (design §4's ordering: key, then
     // validation, then intake). A refusal creates nothing.
-    const policy = (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy | undefined>)[claims.type];
+    const policy = (this.typePolicies as Record<string, JobsTypePolicy | undefined>)[claims.type];
     if (!policy) {
       throw new JobsAdmissionRefusal({ outcome: "type_unknown" });
     }
@@ -496,6 +512,10 @@ export class JobsAcceptanceStore implements JobsAdmission {
       appId: claims.appId,
       env: claims.env,
       input,
+      // The send-time options from the policy already resolved above — the
+      // enqueue consults no second copy of the numbers.
+      retryLimit: policy.retryLimit,
+      expireInSeconds: policy.expireInSeconds,
     });
     const inserted = await client.query(
       `INSERT INTO ${JOBS_JOB_RECORD_QUALIFIED}

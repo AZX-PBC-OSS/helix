@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { JOBS_FETCH_QUALIFIED_TYPE } from "@azx-pbc/shared";
+import {
+  JOBS_DIAGNOSTIC_DISPLAY_NAME,
+  JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
+  JOBS_FETCH_QUALIFIED_TYPE,
+} from "@azx-pbc/shared";
 import {
   appPublicHost,
   appPublicUrl,
   assertDeploymentConfig,
   assertDeliveryTargetsMatch,
   connectionsCallbackUrl,
+  resolveAdvertisedJobTypes,
   resolveAppPublicBase,
   resolveDevApiBase,
   resolveEgressBaseUrl,
@@ -219,6 +224,69 @@ describe("resolveJobsCatalogueServers", () => {
         PORTAL_JOBS_CATALOGUE: '{"servers":{}}',
       }),
     ).not.toThrow();
+  });
+
+  it("a non-production catalogue may install the diagnostic type; production never parses it", () => {
+    const source = JSON.stringify({
+      servers: {
+        jobs: {
+          state: "serving",
+          types: [JOBS_FETCH_QUALIFIED_TYPE, JOBS_DIAGNOSTIC_QUALIFIED_TYPE],
+        },
+      },
+    });
+    expect(
+      resolveJobsCatalogueServers({ NODE_ENV: "test", PORTAL_JOBS_CATALOGUE: source }),
+    ).toEqual({
+      servers: {
+        jobs: {
+          state: "serving",
+          types: [JOBS_FETCH_QUALIFIED_TYPE, JOBS_DIAGNOSTIC_QUALIFIED_TYPE],
+        },
+      },
+    });
+    expect(() =>
+      resolveJobsCatalogueServers({ NODE_ENV: "production", PORTAL_JOBS_CATALOGUE: source }),
+    ).toThrow(/PORTAL_JOBS_CATALOGUE/);
+  });
+});
+
+describe("resolveAdvertisedJobTypes", () => {
+  const DIAGNOSTIC_CATALOGUE = JSON.stringify({
+    servers: {
+      jobs: {
+        state: "serving",
+        types: [JOBS_FETCH_QUALIFIED_TYPE, JOBS_DIAGNOSTIC_QUALIFIED_TYPE],
+      },
+    },
+  });
+  const FETCH_CATALOGUE = JSON.stringify({
+    servers: { jobs: { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE] } },
+  });
+
+  it("advertises the diagnostic type with its display name only off a non-production stack", () => {
+    expect(
+      resolveAdvertisedJobTypes({ NODE_ENV: "test", PORTAL_JOBS_CATALOGUE: DIAGNOSTIC_CATALOGUE }),
+    ).toEqual([
+      { id: JOBS_FETCH_QUALIFIED_TYPE, displayName: "Outbound fetch job" },
+      { id: JOBS_DIAGNOSTIC_QUALIFIED_TYPE, displayName: JOBS_DIAGNOSTIC_DISPLAY_NAME },
+    ]);
+    // Same document on a production stack cannot even parse — the advertised
+    // set can never carry the type there.
+    expect(() =>
+      resolveAdvertisedJobTypes({
+        NODE_ENV: "production",
+        PORTAL_JOBS_CATALOGUE: DIAGNOSTIC_CATALOGUE,
+      }),
+    ).toThrow(/PORTAL_JOBS_CATALOGUE/);
+  });
+
+  it("advertises fetch only when the catalogue installs fetch only", () => {
+    expect(
+      resolveAdvertisedJobTypes({ NODE_ENV: "test", PORTAL_JOBS_CATALOGUE: FETCH_CATALOGUE }),
+    ).toEqual([{ id: JOBS_FETCH_QUALIFIED_TYPE, displayName: "Outbound fetch job" }]);
+    // The fully disabled installation advertises nothing.
+    expect(resolveAdvertisedJobTypes({ NODE_ENV: "test" })).toEqual([]);
   });
 });
 

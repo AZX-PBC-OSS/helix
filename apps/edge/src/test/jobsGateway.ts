@@ -149,6 +149,11 @@ export interface JobsHarnessOpts {
    * throttle across builds.
    */
   jobsSubmissionThrottle?: JobsSubmissionThrottle | null;
+  /**
+   * The production edge's diagnostic-type refusal (config-level, not registry
+   * level). Tests default to false — the non-production posture.
+   */
+  refuseDiagnosticTypes?: boolean;
 }
 
 export interface JobsHarness {
@@ -165,7 +170,15 @@ export function buildJobsEdgeApp(
 ): { app: FastifyInstance; sessions: FakeSessionStore; usage: UsageStore | null } {
   const sessions = new FakeSessionStore();
   const app = buildApp({
-    config: testEdgeConfig({ auth: testAuthConfig(), allowUnauthenticated: false }),
+    config: testEdgeConfig({
+      auth: testAuthConfig(),
+      allowUnauthenticated: false,
+      jobs: {
+        servers: {},
+        timeoutMs: 30_000,
+        refuseDiagnosticTypes: opts.refuseDiagnosticTypes ?? false,
+      },
+    }),
     registry: new FakeRegistry(
       [
         registryEntry({
@@ -272,16 +285,23 @@ export function fakeDevTokens(): DevTokenStore {
 
 export async function buildDevJobsEdge(
   jobsForwarder: JobsForwarder | null,
+  opts: { refuseDiagnosticTypes?: boolean; jobs?: { types: string[] } | null } = {},
 ): Promise<FastifyInstance> {
   return buildDevGateway({
-    config: testDevGatewayConfig(),
+    config: testDevGatewayConfig({
+      jobs: {
+        servers: {},
+        timeoutMs: 30_000,
+        refuseDiagnosticTypes: opts.refuseDiagnosticTypes ?? false,
+      },
+    }),
     registry: new FakeRegistry([
       registryEntry({
         appId: JOBS_DEV_APP_ID,
         slug: "myapp",
         blobPrefix: "apps/d/1/",
         visibilityMode: "internal",
-        jobs: { types: ["jobs:fetch"] },
+        jobs: opts.jobs === undefined ? { types: ["jobs:fetch"] } : opts.jobs,
       }),
     ]),
     devTokens: fakeDevTokens(),

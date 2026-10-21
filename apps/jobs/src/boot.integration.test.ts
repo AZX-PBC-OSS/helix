@@ -1114,6 +1114,7 @@ describe("signed instructions through the running process", () => {
               },
             },
             timeoutMs: 30_000,
+            refuseDiagnosticTypes: false,
           },
         }),
         registry: new FakeRegistry([

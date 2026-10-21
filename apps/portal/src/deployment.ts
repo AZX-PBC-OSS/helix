@@ -20,13 +20,16 @@ import { z } from "zod";
 
 import {
   CONNECTIONS_CALLBACK_PATH,
+  advertisedJobTypes,
   JobsCatalogueServersSchema,
   JobServerIdSchema,
   JobsInternalUrlSchema,
+  JobsNonProductionCatalogueServersSchema,
   isValidJobsRootSecret,
   RawInputKeyScreen,
   strictWireObject,
   strictWireRecord,
+  type JobTypeCatalogueEntry,
   type JobsCatalogueServers,
 } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
@@ -150,6 +153,12 @@ export function resolveEgressBaseUrl(env: NodeJS.ProcessEnv = process.env): URL 
  * installed-type addition check — derives from this document alone. Unset or
  * blank is a fully disabled installation (the empty map), the same convention
  * as `DEV_API_PUBLIC_BASE`'s absence.
+ *
+ * Production parses under the production catalogue schema only, so a catalogue
+ * naming a non-production type (`jobs:diagnostic`) fails this parse — and the
+ * boot through {@link assertDeploymentConfig}. A non-production stack parses
+ * under the catalogue schema that additionally accepts the diagnostic type,
+ * which is how an opted-in local stack advertises it.
  */
 export function resolveJobsCatalogueServers(
   env: NodeJS.ProcessEnv = process.env,
@@ -168,7 +177,10 @@ export function resolveJobsCatalogueServers(
   // Re-thrown as a plain error on purpose: a misconfigured deployment is a
   // platform failure (500), never a client validation (a raw ZodError would
   // answer the catalogue route 400).
-  const verdict = JobsCatalogueServersSchema.safeParse(parsed);
+  const verdict =
+    env.NODE_ENV === "production"
+      ? JobsCatalogueServersSchema.safeParse(parsed)
+      : JobsNonProductionCatalogueServersSchema.safeParse(parsed);
   if (!verdict.success) {
     throw new Error(
       `PORTAL_JOBS_CATALOGUE is not a valid jobs catalogue source: ${verdict.error.issues
@@ -177,6 +189,21 @@ export function resolveJobsCatalogueServers(
     );
   }
   return verdict.data;
+}
+
+/**
+ * The job types this deployment advertises (`GET /api/v1/capabilities` and the
+ * installed-type addition write-gate): the catalogue projection's installed
+ * types, with the diagnostic type advertised only by a non-production stack —
+ * one decision point, so the catalogue route and the write-gate cannot drift
+ * about which types are grantable.
+ */
+export function resolveAdvertisedJobTypes(
+  env: NodeJS.ProcessEnv = process.env,
+): JobTypeCatalogueEntry[] {
+  return advertisedJobTypes(resolveJobsCatalogueServers(env), {
+    diagnostics: env.NODE_ENV !== "production",
+  });
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   JOB_TYPE_CATALOGUE,
   JOBS_FETCH_QUALIFIED_TYPE,
   assertSatisfiableRunningPair,
+  type JobTypeCatalogueEntry,
   type JobsCapacityLimits,
 } from "@azx-pbc/shared";
 
@@ -223,10 +224,10 @@ export interface JobsTypePolicy {
 
 /**
  * The policy of every installed type, keyed by qualified type. Both
- * directions are screened at import — every key must be a production
- * catalogue type, and every catalogue type must carry a policy — so
- * production registration matches the catalogue in both directions and a
- * drift fails the process at boot, not at the first send.
+ * directions are screened at construction — every key must be a catalogue
+ * type of the screened catalogue, and every catalogue type must carry a
+ * policy — so installation matches the catalogue in both directions and a
+ * drift fails at boot, not at the first send.
  */
 export const JOBS_TYPE_POLICIES: Record<string, JobsTypePolicy> = Object.freeze(
   screenTypePolicies({
@@ -243,18 +244,29 @@ export const JOBS_TYPE_POLICIES: Record<string, JobsTypePolicy> = Object.freeze(
 );
 
 /**
+ * The installed-policy set a composition runs under: qualified type → policy.
+ * Production composes {@link JOBS_TYPE_POLICIES}; a non-production
+ * deployment that enabled diagnostics composes the
+ * `jobsInstalledTypePolicies` set (`src/diagnostics.ts`). Every consumer of a policy —
+ * registration, dispatch, admission, the start gate, the recovery sweeper —
+ * reads the ONE set its composition handed it, never a module global.
+ */
+export type JobsTypePolicies = Readonly<Record<string, JobsTypePolicy>>;
+
+/**
  * The catalogue↔policy exhaustiveness screen, both directions — applied to
- * the registry at import, and exported because its refusals are the
- * enforcement the module-state tests pin. Each policy is frozen in place as
- * well: the outer freeze stops keys being added or replaced, not writes
+ * the production registry at import, and exported because its refusals are
+ * the enforcement the module-state tests pin. Each policy is frozen in place
+ * as well: the outer freeze stops keys being added or replaced, not writes
  * through an inner object's reference. A policy whose absolute deadline is
  * below its own per-attempt claim bound is refused here too: the claim
  * machinery could otherwise run one attempt past the type's own deadline.
  */
 export function screenTypePolicies(
   policies: Record<string, JobsTypePolicy>,
+  catalogue: readonly JobTypeCatalogueEntry[] = JOB_TYPE_CATALOGUE,
 ): Record<string, JobsTypePolicy> {
-  const catalogueIds = new Set(JOB_TYPE_CATALOGUE.map((entry) => entry.id));
+  const catalogueIds = new Set(catalogue.map((entry) => entry.id));
   for (const id of Object.keys(policies)) {
     if (!catalogueIds.has(id)) {
       throw new Error(`an execution policy is installed for non-catalogue type "${id}"`);
@@ -283,12 +295,15 @@ export function screenTypePolicies(
  * 60-minute default for a record whose type has lost its installed policy
  * (registration drift is the dispatch's refusal, not the deadline's guess).
  * Read by the worker-start gate and the recovery sweeper, which must apply
- * the same bound.
+ * the same bound from the same set.
  */
-export function jobsAbsoluteDeadline(qualifiedType: string): number {
+export function jobsAbsoluteDeadline(
+  qualifiedType: string,
+  policies: JobsTypePolicies = JOBS_TYPE_POLICIES,
+): number {
   return (
-    (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy | undefined>)[qualifiedType]
-      ?.deadlineSeconds ?? JOBS_DEADLINE_SECONDS
+    (policies as Record<string, JobsTypePolicy | undefined>)[qualifiedType]?.deadlineSeconds ??
+    JOBS_DEADLINE_SECONDS
   );
 }
 
@@ -299,8 +314,11 @@ export function jobsAbsoluteDeadline(qualifiedType: string): number {
  * installed policy is not runnable work, and this is the boundary where that
  * refusal is unavoidable and loud.
  */
-export function jobTypePolicy(qualifiedType: string): JobsTypePolicy {
-  const policy = (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy | undefined>)[qualifiedType];
+export function jobTypePolicy(
+  qualifiedType: string,
+  policies: JobsTypePolicies = JOBS_TYPE_POLICIES,
+): JobsTypePolicy {
+  const policy = (policies as Record<string, JobsTypePolicy | undefined>)[qualifiedType];
   if (!policy) {
     throw new Error(`no execution policy is installed for job type "${qualifiedType}"`);
   }

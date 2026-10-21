@@ -5,6 +5,7 @@ import {
   JOBS_MAX_INPUT_BYTES,
   type JobRequestError,
   jobRequestError,
+  isDiagnosticJobType,
   isValidJobsJobId,
   isValidJobsLocalType,
   isValidJobsRetryKey,
@@ -108,6 +109,13 @@ export interface JobsGatewayRuntime {
   /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */
   checkOrigin: OriginCheck;
   /**
+   * True on a production process: the non-production diagnostic type is
+   * dropped from every forwarded grant, so a submission naming it answers the
+   * ordinary ungranted 403 and no record instruction ever binds it. The
+   * refusal rides the existing `forbidden` path exactly — no new outcome.
+   */
+  refuseDiagnosticTypes: boolean;
+  /**
    * The signed forwarding seam over the configured servers. null ⇒ no jobs
    * configuration on this process — every request answers 503 `jobs_disabled`
    * (fail-closed, like every other capability's unconfigured seam).
@@ -144,6 +152,20 @@ export interface JobsSurface {
 
 /** The reference operations a stored `{server, jobId}` routes: poll, result, cancel. */
 export type JobsRecordOperation = "snapshot" | "result" | "cancel";
+
+/**
+ * The grants bound into any instruction for `server`: the registry entry's
+ * types for that server, narrowed to the production catalogue when the
+ * process refuses the non-production diagnostic type (a production edge never
+ * mints a diagnostic submission — the filtered grant answers it with the
+ * ordinary ungranted 403 — and never binds the type into a record
+ * instruction's grants either).
+ */
+function forwardableTypes(rt: JobsGatewayRuntime, entry: RegistryEntry, server: string): string[] {
+  const granted = (entry.jobs?.types ?? []).filter((t) => qualifiedTypeMatchesServer(t, server));
+  if (!rt.refuseDiagnosticTypes) return granted;
+  return granted.filter((t) => !isDiagnosticJobType(t));
+}
 
 function sendJobsError(reply: FastifyReply, status: number, error: JobRequestError): void {
   reply
@@ -372,9 +394,7 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
     // The current grant for the qualified type — the edge's own type
     // permission (ADR-0003): a revoked grant denies new submissions before any
     // instruction exists. The instruction binds exactly this server's types.
-    const allowedTypes = (entry.jobs?.types ?? []).filter((t) =>
-      qualifiedTypeMatchesServer(t, server),
-    );
+    const allowedTypes = forwardableTypes(rt, entry, server);
     if (!allowedTypes.includes(qualifiedType)) {
       setOutcome("forbidden");
       record("forbidden", 403, "forbidden");
@@ -597,9 +617,7 @@ export function makeJobsRecordHandler(
     // denies the read as the receiver's own 403, never a local guess. The
     // addressed app and the validated reference ride the span from here —
     // the join a poll's trace offers the operator.
-    const allowedTypes = (entry.jobs?.types ?? []).filter((t) =>
-      qualifiedTypeMatchesServer(t, server),
-    );
+    const allowedTypes = forwardableTypes(rt, entry, server);
     trace.getActiveSpan()?.setAttributes({ [ATTR_APP_ID]: entry.appId, [ATTR_JOBS_JOB_ID]: jobId });
 
     const spec: JobsRecordSpec = {

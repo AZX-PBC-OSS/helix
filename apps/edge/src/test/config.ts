@@ -102,7 +102,8 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     portalUrl: null,
     // Jobs fully disabled by default (no configured servers); the jobs suites
     // override with a document under test (or inject a forwarder directly).
-    jobs: { servers: {}, timeoutMs: 30_000 },
+    // Refusing the diagnostic type is a production posture; tests default off.
+    jobs: { servers: {}, timeoutMs: 30_000, refuseDiagnosticTypes: false },
     ...overrides,
   };
 }
@@ -145,7 +146,7 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
     portalUrl: null,
     // Jobs fully disabled by default (no configured servers); the jobs suites
     // override with a document under test (or inject a forwarder directly).
-    jobs: { servers: {}, timeoutMs: 30_000 },
+    jobs: { servers: {}, timeoutMs: 30_000, refuseDiagnosticTypes: false },
     devGateway: {
       databaseUrl: "postgresql://helix_dev:unused@db/helix",
       allowDevMode: true,

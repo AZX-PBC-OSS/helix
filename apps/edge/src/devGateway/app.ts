@@ -223,6 +223,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       keyPrefix: "jobs-denial:",
     }),
     usage: deps.usage,
+    refuseDiagnosticTypes: config.jobs.refuseDiagnosticTypes,
   };
   const handleJobsSubmit = makeJobsSubmitHandler(jobsRuntime, {
     span: SPAN_JOBS_SUBMIT_DEV,

@@ -1,11 +1,14 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import {
+  JOB_TYPE_CATALOGUE,
   JobsDeploymentConfigSchema,
+  JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
+  JobsCatalogueServersSchema,
   JobsServerEntrySchema,
   advertisedJobTypes,
   jobsCatalogueServers,
@@ -848,6 +851,71 @@ describe("serving, retiring and the fully disabled deployment", () => {
     expect(MAIN).toContain("jobsEdgeToJobsRoot: deployJobs ? jobsRoots.edgeToJobs : ''");
     expect(MAIN).toContain("jobsJobsToEdgeRoot: deployJobs ? jobsRoots.jobsToEdge : ''");
     expect(MAIN).toContain("jobsPortalToJobsRoot: deployJobs ? jobsRoots.portalToJobs : ''");
+  });
+});
+
+describe("non-production diagnostics never reach Azure", () => {
+  /** Every .bicep / .bicepparam file under infra/azure, read whole. */
+  function bicepFiles(): Map<string, string> {
+    const root = path.join(REPO_ROOT, "infra/azure");
+    const files = new Map<string, string>();
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.name.endsWith(".bicep") || entry.name.endsWith(".bicepparam")) {
+          files.set(path.relative(REPO_ROOT, full), readFileSync(full, "utf8"));
+        }
+      }
+    };
+    walk(root);
+    expect(files.size).toBeGreaterThan(0);
+    return files;
+  }
+
+  it("no Bicep or bicepparam file names the diagnostics knob or the diagnostic type", () => {
+    // The Azure topology never carries the non-production knob: a template
+    // that set JOBS_DIAGNOSTICS (or listed jobs:diagnostic in a catalogue)
+    // would fail the production boot it deploys into, but the pin keeps the
+    // drift a test failure instead of a rollout's boot crash.
+    for (const [file, text] of bicepFiles()) {
+      for (const token of [
+        "JOBS_DIAGNOSTICS",
+        "HELIX_JOBS_DIAGNOSTICS",
+        JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
+      ]) {
+        expect(text, `${file} must not contain ${token}`).not.toContain(token);
+      }
+    }
+  });
+
+  it("every container app runs NODE_ENV=production", () => {
+    for (const name of ["edgeApp", "portalApp", "egressApp", "devGatewayApp", "jobsApp"]) {
+      const nodeEnv = envEntries(appCall(name)).find((e) => e.name === "NODE_ENV");
+      expect(nodeEnv, `the ${name} app must set NODE_ENV`).toBeDefined();
+      expect(nodeEnv!.value, `the ${name} app must run production`).toBe("'production'");
+    }
+  });
+
+  it("the evaluated catalogue projection advertises only production types and parses under the production schema", () => {
+    const doc = evaluateMap(projection("portalJobsCatalogue").fields, { jobs: FULL_ENTRY });
+    const parsed = JobsCatalogueServersSchema.safeParse(JSON.parse(doc));
+    expect(parsed.success, "the Azure catalogue must parse as the production schema").toBe(true);
+    const advertised = advertisedJobTypes(
+      resolveJobsCatalogueServers({ PORTAL_JOBS_CATALOGUE: doc }),
+    );
+    expect(advertised.map((e) => e.id)).toEqual(["jobs:fetch"]);
+    for (const id of advertised.map((e) => e.id)) {
+      expect(
+        JOB_TYPE_CATALOGUE.some((entry) => entry.id === id),
+        `${id} must be a production catalogue type`,
+      ).toBe(true);
+    }
+  });
+
+  it("the jobs image bakes NODE_ENV=production", () => {
+    expect(JOBS_DOCKERFILE).toMatch(/^ENV NODE_ENV=production$/m);
   });
 });
 

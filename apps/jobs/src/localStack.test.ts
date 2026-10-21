@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   JobsDeploymentConfigSchema,
+  JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
   advertisedJobTypes,
   jobsCatalogueServers,
 } from "@azx-pbc/shared";
@@ -511,6 +512,79 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
     // that makes the resolved env authoritative over the developer's
     // .env.local files rides on the disabled arm too.
     expect(disabled.HELIX_STACK_ENV).toBe("1");
+  });
+
+  describe("the HELIX_JOBS_DIAGNOSTICS knob", () => {
+    it("the default resolution carries no diagnostic anywhere", () => {
+      for (const [key, value] of Object.entries(minted)) {
+        expect(
+          `${key}=${value}`,
+          `the default resolution must not mention diagnostics at ${key}`,
+        ).not.toContain("diagnostic");
+      }
+      expect(minted.JOBS_DIAGNOSTICS).toBeUndefined();
+      expect(loadJobsConfig(minted).diagnostics).toBe(false);
+    });
+
+    it("opting in lists the type in the catalogue and turns the service knob on, changing nothing else", () => {
+      const optedIn = stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+        ...CHILD_ENV,
+        HELIX_JOBS_DIAGNOSTICS: "1",
+      });
+      const optCatalogue = resolveJobsCatalogueServers(optedIn);
+      expect(optCatalogue.servers.jobs?.types).toEqual([
+        "jobs:fetch",
+        JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
+      ]);
+      // The minted env carries no NODE_ENV, so the loaders read the
+      // non-production posture: the diagnostic entry is advertised.
+      expect(
+        advertisedJobTypes(optCatalogue, { diagnostics: true }).map((entry) => entry.id),
+      ).toContain(JOBS_DIAGNOSTIC_QUALIFIED_TYPE);
+      expect(loadJobsConfig(optedIn).diagnostics).toBe(true);
+      // The knob changes ONLY the catalogue's types and the jobs service's
+      // own knob: the edge and portal delivery documents are byte-identical.
+      expect(optedIn.EDGE_JOBS_CONFIG).toBe(minted.EDGE_JOBS_CONFIG);
+      expect(optedIn.PORTAL_JOBS_CONFIG).toBe(minted.PORTAL_JOBS_CONFIG);
+      expect(optedIn.JOBS_DIAGNOSTICS).toBe("true");
+      // And every other key is untouched by the opt-in.
+      for (const [key, value] of Object.entries(minted)) {
+        if (key === "PORTAL_JOBS_CATALOGUE") continue;
+        expect(optedIn[key], `${key} must not change with the opt-in`).toBe(value);
+      }
+    });
+
+    it("the opted-in env can never carry diagnostics into a production process", () => {
+      const optedIn = stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+        ...CHILD_ENV,
+        HELIX_JOBS_DIAGNOSTICS: "true",
+      });
+      expect(() => loadJobsConfig({ ...optedIn, NODE_ENV: "production" })).toThrow(
+        /JOBS_DIAGNOSTICS cannot be enabled in production/,
+      );
+      expect(() => assertDeploymentConfig({ ...optedIn, NODE_ENV: "production" })).toThrow(
+        /PORTAL_JOBS_CATALOGUE is not a valid jobs catalogue source/,
+      );
+    });
+
+    it("a typo'd value fails the resolution naming the value, and a disabled jobs plane emits nothing", () => {
+      expect(() =>
+        stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+          ...CHILD_ENV,
+          HELIX_JOBS_DIAGNOSTICS: "yes",
+        }),
+      ).toThrow(/HELIX_JOBS_DIAGNOSTICS must be 1\/true or 0\/false — got "yes"/);
+      // The knob is validated even where it can emit nothing.
+      const disabledJobs = stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+        ...CHILD_ENV,
+        HELIX_JOBS_ENABLED: "0",
+        HELIX_JOBS_DIAGNOSTICS: "1",
+      });
+      for (const key of JOBS_KEYS) {
+        expect(disabledJobs[key]).toBeUndefined();
+      }
+      expect(disabledJobs.JOBS_DIAGNOSTICS).toBeUndefined();
+    });
   });
   it("the developer stack (offset 0) is left exactly as configured", () => {
     const dev = stackEnv(["--env", "--offset", "0"]);

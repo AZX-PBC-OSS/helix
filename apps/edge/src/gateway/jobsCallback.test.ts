@@ -125,6 +125,7 @@ function buildCallbackEdge(
             : {}),
         },
         timeoutMs: 30_000,
+        refuseDiagnosticTypes: false,
       },
     }),
     registry: new FakeRegistry([
@@ -645,6 +646,7 @@ describe("POST /internal/jobs/v1/fetch — instructions that cannot dispatch", (
             },
           },
           timeoutMs: 30_000,
+          refuseDiagnosticTypes: false,
         },
       }),
       registry: new FakeRegistry([
@@ -879,6 +881,7 @@ function buildDevCallbackEdge(): CallbackHarness & { devKey: Uint8Array } {
           },
         },
         timeoutMs: 30_000,
+        refuseDiagnosticTypes: false,
       },
     }),
     registry: new FakeRegistry([

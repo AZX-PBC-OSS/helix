@@ -8,7 +8,6 @@ import {
   parseFetchOriginKey,
   touchedAreas,
   unavailableJobTypeAdds,
-  advertisedJobTypes,
   type Capabilities,
   type Delta,
   type ManifestUpdateResult,
@@ -24,7 +23,7 @@ import { capabilitiesFromRow, toManifest } from "../db/mappers.js";
 import { manifestWithBindings, providerBindingStatuses } from "../connections/bindings.js";
 import { AppError } from "../plugins/errors.js";
 import { casPolicyWrite } from "../policy/policyWrite.js";
-import { resolveJobsCatalogueServers } from "../deployment.js";
+import { resolveAdvertisedJobTypes } from "../deployment.js";
 
 /**
  * Shared approvals plumbing (docs/design/approvals.md §2). The write-gate routes
@@ -307,7 +306,7 @@ async function restampStaleBindings(
 export function assertNoUnavailableJobTypeAdds(effective: unknown, requested: unknown): void {
   const eff = CapabilitiesSchema.parse(effective ?? {});
   const req = CapabilitiesSchema.parse(requested ?? {});
-  const advertised = advertisedJobTypes(resolveJobsCatalogueServers()).map((entry) => entry.id);
+  const advertised = resolveAdvertisedJobTypes().map((entry) => entry.id);
   const violations = unavailableJobTypeAdds({
     effectiveTypes: eff.jobs?.types ?? [],
     requestedTypes: req.jobs?.types ?? [],

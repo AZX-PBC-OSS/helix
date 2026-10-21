@@ -120,6 +120,7 @@ function callbackJobsConfig() {
       },
     },
     timeoutMs: 30_000,
+    refuseDiagnosticTypes: false,
   };
 }
 

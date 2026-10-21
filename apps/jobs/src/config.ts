@@ -73,6 +73,12 @@ export interface JobsServiceConfig {
    * change them.
    */
   limits: JobsCapacityLimits;
+  /**
+   * Whether the non-production diagnostic job type is installed
+   * (`JOBS_DIAGNOSTICS`). Off unless the env says exactly `true`, and
+   * refused outright in production.
+   */
+  diagnostics: boolean;
 }
 
 /**
@@ -160,6 +166,29 @@ function requireAccepting(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * The diagnostics knob: off unless unset-and-blank says exactly `true`
+ * (trimmed) — the same exactness as {@link requireAccepting}, since a typo
+ * must never silently install a job type. `true` is refused outright in
+ * production: the diagnostic type is non-production only, fail closed.
+ */
+function requireDiagnostics(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.JOBS_DIAGNOSTICS;
+  const value = raw?.trim();
+  if (value === undefined || value === "" || value === "false") return false;
+  if (value === "true") {
+    if (env.NODE_ENV === "production") {
+      throw new Error(
+        "JOBS_DIAGNOSTICS cannot be enabled in production — the diagnostic job type is non-production only",
+      );
+    }
+    return true;
+  }
+  throw new Error(
+    `JOBS_DIAGNOSTICS must be exactly "true" or "false" when set (got ${JSON.stringify(raw)})`,
+  );
+}
+
+/**
  * Resolve the capacity limits this service enforces: the shared platform
  * defaults, with this deployment's optional `JOBS_LIMITS` override (the JSON
  * form of the shared override schema — the same fields a deployment map's
@@ -240,5 +269,6 @@ export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServic
     edgeProdCallbackUrl: requireCallbackUrl(env, "JOBS_EDGE_PROD_URL", "prod"),
     edgeDevCallbackUrl: requireCallbackUrl(env, "JOBS_EDGE_DEV_URL", "dev"),
     limits: loadCapacityLimits(env),
+    diagnostics: requireDiagnostics(env),
   };
 }

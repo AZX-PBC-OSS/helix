@@ -104,6 +104,7 @@ function buildEdge(
           },
         },
         timeoutMs: 30_000,
+        refuseDiagnosticTypes: false,
       },
     }),
     registry: new FakeRegistry([

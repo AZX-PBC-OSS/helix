@@ -4,7 +4,7 @@ import {
   installGracefulShutdown,
   resolveServicePort,
 } from "@azx-pbc/shared/lifecycle";
-import { JOBS_FETCH_QUALIFIED_TYPE } from "@azx-pbc/shared";
+import { JOBS_DIAGNOSTIC_QUALIFIED_TYPE, JOBS_FETCH_QUALIFIED_TYPE } from "@azx-pbc/shared";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { JobsAcceptanceStore } from "./acceptance.js";
@@ -12,6 +12,7 @@ import { JobsInstructionBurns } from "./burns.js";
 import { JobsCancellationStore } from "./cancellation.js";
 import { JobsCleanup } from "./cleanup.js";
 import { loadJobsConfig } from "./config.js";
+import { jobsInstalledTypePolicies, makeDiagnosticJobHandler } from "./diagnostics.js";
 import { describeDsn } from "./dsn.js";
 import { JobsExecution, JobsHandlerRegistry } from "./execution.js";
 import { makeFetchJobHandler } from "./fetchJob.js";
@@ -113,14 +114,20 @@ const lifecycle = new JobsLifecycleStore({
   log: lateLog,
 });
 
-// The handler registry — the dispatch's repertoire. Production registers the
-// one installed production type: the outbound fetch handler, with this
-// server's minting key and the two signed callback destinations (selected by
-// the job's signed environment tier at dispatch time). The development
-// fixtures' registration is their own ticket's work — production never
-// registers a synthetic type, and a dispatched job with no handler is
+// The installed policy set — the composition's one registry of execution
+// policies, read by registration, dispatch, admission, the start gate and
+// the recovery sweeper alike. Production installs the outbound fetch type
+// only; when `JOBS_DIAGNOSTICS` is on (impossible in production — the config
+// loader refuses it), the non-production diagnostic type joins the set and
+// its handler is registered below.
+const typePolicies = jobsInstalledTypePolicies({ diagnostics: config.diagnostics });
+
+// The handler registry — the dispatch's repertoire, screened against the
+// installed policy set. The fetch handler gets this server's minting key and
+// the two signed callback destinations (selected by the job's signed
+// environment tier at dispatch time); a dispatched job with no handler is
 // answered with the terminal platform error.
-const handlers = new JobsHandlerRegistry();
+const handlers = new JobsHandlerRegistry(typePolicies);
 handlers.register(
   JOBS_FETCH_QUALIFIED_TYPE,
   makeFetchJobHandler({
@@ -131,6 +138,9 @@ handlers.register(
     log: lateLog,
   }),
 );
+if (config.diagnostics) {
+  handlers.register(JOBS_DIAGNOSTIC_QUALIFIED_TYPE, makeDiagnosticJobHandler());
+}
 
 // The execution seam — the worker registration and the attempt projection
 // (progress, outcomes, results) into the wrapper record. Its pool serves the
@@ -167,6 +177,7 @@ const recovery = new JobsRecovery({
   statementTimeoutMs: config.statementTimeoutMs,
   readRunnerJob: (runnerJobId) => runner.jobState(runnerJobId),
   cancelRunnerJob: (runnerJobId) => runner.cancelJob(runnerJobId),
+  typePolicies,
   log: lateLog,
 });
 
@@ -204,6 +215,7 @@ const admission = new JobsAcceptanceStore({
   statementTimeoutMs: config.statementTimeoutMs,
   limits: config.limits,
   accepting: config.accepting,
+  typePolicies,
   enqueuer: runner.enqueuer,
   log: lateLog,
 });
@@ -250,6 +262,13 @@ const app = buildApp({
   capacityLimits: config.limits,
 });
 logRef.current = app.log;
+
+if (config.diagnostics) {
+  app.log.warn(
+    { event: "jobs.diagnostics.enabled", type: JOBS_DIAGNOSTIC_QUALIFIED_TYPE },
+    "the non-production diagnostic job type is registered",
+  );
+}
 
 // The health-first boot contract: the listener comes up before the store is
 // usable, `/health` reports the store's state honestly while the bounded
@@ -304,6 +323,7 @@ try {
       port,
       serverId: config.serverId,
       accepting: config.accepting,
+      diagnostics: config.diagnostics,
       store: describeDsn(config.databaseUrl),
       telemetry: telemetry.enabled,
     },

@@ -787,6 +787,38 @@ governed GET through the edge's signed callback; an unmatched
 request answers 503 `jobs_unavailable` while the store is unusable, 404 on a
 ready service.
 
+## Diagnostic jobs (`src/diagnostics.ts`)
+
+The `jobs:diagnostic` type is a test-owned fixture for non-production stacks:
+its handler walks a bounded number of steps through the real execution paths,
+so a local or test stack can exercise deterministic progress, retry
+exhaustion, worker interruption, cancellation, and fenced late completion
+through the real routes. It is non-production only and off by default.
+
+How it is switched on, and why production cannot:
+
+- On a resolved stack, `HELIX_JOBS_DIAGNOSTICS=1` makes `scripts/stack-env.mjs`
+  give the jobs service `JOBS_DIAGNOSTICS=true` and list the type in
+  `PORTAL_JOBS_CATALOGUE`, so the portal advertises it, an owner can grant it,
+  and the edge forwards granted submissions. The default resolution emits
+  neither.
+- The jobs service registers the handler and its policy only when
+  `JOBS_DIAGNOSTICS=true`, and refuses to boot with that value when
+  `NODE_ENV=production`. Without it, a submission naming the type is refused
+  as an unknown type (403 `forbidden`).
+- A production portal (`NODE_ENV=production`) refuses a catalogue that lists
+  the type at boot, so it can never advertise or grant it. A production edge
+  drops the type from every forwarded grant, so a submission naming it gets
+  the ordinary 403. Every image and every Azure container app sets
+  `NODE_ENV=production`.
+
+The input is test-owned: `steps` (1–20), `stepDelayMs` (0–1000 whole ms),
+`failAtStep`, and `ignoreAbort`; the result is `{completedSteps, attempt}`.
+The policy is the platform shape — 3 attempts, a 60 s claim, a 300 s deadline
+— and the last failed attempt of a retry-permitting type ends
+`attempts_exhausted`. Worker interruption is exercised by stopping the
+process; the type has no process controls of any kind.
+
 ## Development
 
 ```

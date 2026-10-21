@@ -73,6 +73,7 @@ function buildCallbackEdge() {
           },
         },
         timeoutMs: 30_000,
+        refuseDiagnosticTypes: false,
       },
     }),
     registry: new FakeRegistry([

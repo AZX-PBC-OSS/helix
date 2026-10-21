@@ -162,6 +162,37 @@ describe("loadJobsConfig", () => {
     expect(loadJobsConfig({ ...VALID, JOBS_ACCEPTING: "  true  " }).accepting).toBe(true);
   });
 
+  test("JOBS_DIAGNOSTICS is off by default, and exactly true (trimmed) turns it on outside production", () => {
+    expect(loadJobsConfig({ ...VALID }).diagnostics).toBe(false);
+    expect(loadJobsConfig({ ...VALID, JOBS_DIAGNOSTICS: "" }).diagnostics).toBe(false);
+    expect(loadJobsConfig({ ...VALID, JOBS_DIAGNOSTICS: "   " }).diagnostics).toBe(false);
+    expect(loadJobsConfig({ ...VALID, JOBS_DIAGNOSTICS: "false" }).diagnostics).toBe(false);
+    expect(loadJobsConfig({ ...VALID, JOBS_DIAGNOSTICS: "true" }).diagnostics).toBe(true);
+    expect(loadJobsConfig({ ...VALID, JOBS_DIAGNOSTICS: "  true  " }).diagnostics).toBe(true);
+  });
+
+  test("a misspelled JOBS_DIAGNOSTICS is a boot error naming the key and the value", () => {
+    // No loose spelling: `1`, `TRUE` and `yes` are refusals — a typo must
+    // never read as an enabled diagnostic type.
+    for (const bad of ["1", "TRUE", "yes", "False", "on"]) {
+      expect(
+        () => loadJobsConfig({ ...VALID, JOBS_DIAGNOSTICS: bad }),
+        JSON.stringify(bad),
+      ).toThrow(/JOBS_DIAGNOSTICS/);
+    }
+    expect(() => loadJobsConfig({ ...VALID, JOBS_DIAGNOSTICS: "1" })).toThrow(/\(got "1"\)/);
+  });
+
+  test("JOBS_DIAGNOSTICS cannot be enabled in production", () => {
+    expect(() =>
+      loadJobsConfig({ ...VALID, NODE_ENV: "production", JOBS_DIAGNOSTICS: "true" }),
+    ).toThrow(/JOBS_DIAGNOSTICS.*production/s);
+    // The same value outside production boots with the type installed.
+    expect(
+      loadJobsConfig({ ...VALID, NODE_ENV: "development", JOBS_DIAGNOSTICS: "true" }).diagnostics,
+    ).toBe(true);
+  });
+
   test("a missing, blank or misspelled JOBS_ACCEPTING is a boot error naming the key", () => {
     // No default and no loose spelling: `1`, `yes` and `TRUE` are refusals —
     // a deployment that cannot say whether it admits work must not boot into

@@ -355,6 +355,23 @@ describe("GET /api/v1/capabilities", () => {
       });
     });
 
+    it("advertises the diagnostic type on a non-production stack that listed it", async () => {
+      await withEnv(
+        {
+          PORTAL_JOBS_CATALOGUE:
+            '{"servers":{"jobs":{"state":"serving","types":["jobs:fetch","jobs:diagnostic"]}}}',
+        },
+        async () => {
+          expect((await catalogue()).jobs).toEqual({
+            types: [
+              { id: "jobs:fetch", displayName: "Outbound fetch job" },
+              { id: "jobs:diagnostic", displayName: "Diagnostic job (non-production)" },
+            ],
+          });
+        },
+      );
+    });
+
     it("withdraws a retiring type while the block survives (an empty list)", async () => {
       await withEnv(
         {

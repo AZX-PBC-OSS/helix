@@ -54,7 +54,7 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
     },
     internalSecret: null,
     portalUrl: null,
-    jobs: { servers: {}, timeoutMs: 30_000 },
+    jobs: { servers: {}, timeoutMs: 30_000, refuseDiagnosticTypes: false },
     ...overrides,
   };
 }
@@ -162,6 +162,7 @@ describe("platform hosts", () => {
             },
           },
           timeoutMs: 30_000,
+          refuseDiagnosticTypes: false,
         },
       }),
       registry: new FakeRegistry([

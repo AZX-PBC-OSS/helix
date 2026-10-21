@@ -379,6 +379,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           submissionThrottle: jobsSubmissionThrottle,
           denialThrottle: jobsDenialThrottle,
           usage: deps.usage ?? null,
+          refuseDiagnosticTypes: config.jobs.refuseDiagnosticTypes,
         }
       : null;
   const handleJobsSubmit = jobsRuntime

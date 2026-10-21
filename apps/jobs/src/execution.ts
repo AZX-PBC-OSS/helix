@@ -32,6 +32,8 @@ import { createJobsPool, withJobsClient } from "./pool.js";
 import {
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_QUEUE_NAME,
+  JOBS_TYPE_POLICIES,
+  type JobsTypePolicies,
   jobTypePolicy,
   jobsAbsoluteDeadline,
   jobsWorkOptions,
@@ -184,17 +186,30 @@ export class JobsStoreUnavailable extends Error {
 
 /**
  * The handler registry — the seam the production type registrations compose
- * (the outbound fetch handler, the development fixtures). Registration
- * requires an installed execution policy: a type the policy registry does not
- * carry — any synthetic name, any non-catalogue type — cannot register, and a
- * second registration of one type is a composition defect that fails loudly
- * instead of silently replacing.
+ * (the outbound fetch handler, the non-production diagnostic type). The
+ * constructor takes the composition's installed policy set, and registration
+ * requires the type to carry a policy in THAT set: a type the composition
+ * does not install — any synthetic name, any type the catalogue of its own
+ * policy set refuses — cannot register, and a second registration of one
+ * type is a composition defect that fails loudly instead of silently
+ * replacing. The set itself is exposed read-only, so the dispatch and the
+ * start gate read the same policies the registrations were screened against.
  */
 export class JobsHandlerRegistry {
   readonly #handlers = new Map<string, JobsHandler>();
+  readonly #policies: JobsTypePolicies;
+
+  constructor(policies: JobsTypePolicies = JOBS_TYPE_POLICIES) {
+    this.#policies = policies;
+  }
+
+  /** The installed policy set this registry screened its registrations against. */
+  get policies(): JobsTypePolicies {
+    return this.#policies;
+  }
 
   register(qualifiedType: string, handler: JobsHandler): this {
-    jobTypePolicy(qualifiedType);
+    jobTypePolicy(qualifiedType, this.#policies);
     if (this.#handlers.has(qualifiedType)) {
       throw new Error(`a handler is already registered for job type "${qualifiedType}"`);
     }
@@ -274,6 +289,13 @@ export interface JobsExecutionStoreOptions {
   databaseUrl: string;
   /** Per-query ceiling, applied as both the pool's statement and connect timeout. */
   statementTimeoutMs: number;
+  /**
+   * The composition's installed policy set — the start gate's absolute-
+   * deadline source. Defaults to the production set; a composition that
+   * installed the diagnostic type hands the same set its registry screened
+   * registrations against.
+   */
+  typePolicies?: JobsTypePolicies;
   log: JobsExecutionLogger;
 }
 
@@ -393,6 +415,7 @@ function attemptRecordOf(row: RecordRow): JobsAttemptRecord {
 export class JobsExecutionStore {
   private readonly databaseUrl: string;
   private readonly statementTimeoutMs: number;
+  private readonly typePolicies: JobsTypePolicies;
   private readonly log: JobsExecutionLogger;
 
   private pool: Pool | null = null;
@@ -401,6 +424,7 @@ export class JobsExecutionStore {
   constructor(options: JobsExecutionStoreOptions) {
     this.databaseUrl = options.databaseUrl;
     this.statementTimeoutMs = options.statementTimeoutMs;
+    this.typePolicies = options.typePolicies ?? JOBS_TYPE_POLICIES;
     this.log = options.log;
   }
 
@@ -484,7 +508,7 @@ export class JobsExecutionStore {
         // the sweeper's next pass, and the claim settles through the runner's
         // own retry policy (spec criterion 24: recovery never authorizes
         // execution after the deadline).
-        if (deadlinePassed(row.created_at, jobsAbsoluteDeadline(row.type))) {
+        if (deadlinePassed(row.created_at, jobsAbsoluteDeadline(row.type, this.typePolicies))) {
           const terminated = await terminatePastDeadline(client, row.server, row.job_id);
           await client.query("COMMIT");
           return terminated === 1
@@ -722,12 +746,17 @@ export class JobsExecution {
   private readonly log: JobsExecutionLogger;
 
   constructor(options: JobsExecutionOptions) {
+    this.handlers = options.handlers;
     this.store = new JobsExecutionStore({
       databaseUrl: options.databaseUrl,
       statementTimeoutMs: options.statementTimeoutMs,
+      // The start gate judges deadlines from the SAME set the dispatch reads —
+      // the registry's installed policies, so a composition with the
+      // diagnostic type installed closes work on its policy, not the
+      // production one.
+      typePolicies: options.handlers.policies,
       log: options.log,
     });
-    this.handlers = options.handlers;
     this.limits = options.limits;
     this.log = options.log;
   }
@@ -1005,7 +1034,7 @@ export class JobsExecution {
     // skew that removed the policy refuses here, loudly.
     let policy;
     try {
-      policy = jobTypePolicy(record.type);
+      policy = jobTypePolicy(record.type, this.handlers.policies);
     } catch (error) {
       throw new JobsExecutionError("platform_error", { cause: error });
     }
@@ -1122,6 +1151,14 @@ export class JobsExecution {
     code: JobErrorCode,
     span: Span,
   ): Promise<void> {
+    // The wrapper's code for a failed attempt that ENDS the job of a type
+    // that permitted retries is the exhausted-retries reason — the attempt's
+    // own code stays on the runner row (`boss.fail` below), and while a
+    // retry remains the wrapper carries the attempt's code, as always.
+    // Types with no retries (retryLimit 0) project their own code.
+    const retrying = job.retryCount < job.retryLimit;
+    const projectedCode: JobErrorCode =
+      !retrying && job.retryLimit > 0 ? "attempts_exhausted" : code;
     try {
       // Why the structural type: `CommandResponse`'s declaration is empty —
       // see the settlement note in `execute` above.
@@ -1141,7 +1178,7 @@ export class JobsExecution {
           "the claim was already settled elsewhere — the failure was not projected",
         );
         span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
-        span.setAttribute(ATTR_REASON, code);
+        span.setAttribute(ATTR_REASON, projectedCode);
         countExecution("terminal_fenced");
         return;
       }
@@ -1162,12 +1199,7 @@ export class JobsExecution {
       return;
     }
     try {
-      const projected = await this.store.failAttempt(
-        record,
-        attempt,
-        code,
-        job.retryCount < job.retryLimit,
-      );
+      const projected = await this.store.failAttempt(record, attempt, projectedCode, retrying);
       if (projected === "fenced") {
         this.log.warn(
           {
@@ -1179,12 +1211,12 @@ export class JobsExecution {
           "a competing terminal outcome won the race — the attempt's failure was not projected",
         );
         span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
-        span.setAttribute(ATTR_REASON, code);
+        span.setAttribute(ATTR_REASON, projectedCode);
         countExecution("terminal_fenced");
         return;
       }
       span.setAttribute(ATTR_OUTCOME, "failed" satisfies JobsExecuteOutcome);
-      span.setAttribute(ATTR_REASON, code);
+      span.setAttribute(ATTR_REASON, projectedCode);
       countExecution("failed");
     } catch (error) {
       this.log.error(

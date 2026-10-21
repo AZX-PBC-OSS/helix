@@ -102,6 +102,7 @@ function receiverJobsConfig(server: string, keyId: string) {
       },
     },
     timeoutMs: 30_000,
+    refuseDiagnosticTypes: false,
   };
 }
 

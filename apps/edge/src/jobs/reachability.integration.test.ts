@@ -106,6 +106,7 @@ function edgeConfig(jobsEndpoint: string | null): EdgeConfig {
           }
         : {},
       timeoutMs: 30_000,
+      refuseDiagnosticTypes: false,
     },
   });
 }

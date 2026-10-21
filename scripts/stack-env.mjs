@@ -14,6 +14,8 @@
 // stack fully disabled — no jobs key is emitted anywhere. HELIX_JOBS_STATE
 // (serving|retiring) and HELIX_JOBS_ACCEPTING (1/true|0/false) set the server's
 // state and intake; a retiring server always has closed intake.
+// HELIX_JOBS_DIAGNOSTICS=1|true opts a non-production stack into the diagnostic
+// job type; off by default.
 //
 // Usage:
 //   node scripts/stack-env.mjs --ports
@@ -52,6 +54,8 @@ const DEFAULT_BASE_DOMAIN = "local.helix.azxlabs.io";
 const JOBS_SERVER_ID = "jobs";
 /** Its one installed production type. */
 const JOBS_TYPE = "jobs:fetch";
+/** The non-production diagnostic type, installed only on an opted-in stack. */
+const JOBS_DIAGNOSTIC_TYPE = "jobs:diagnostic";
 
 /**
  * A dev signing root: deterministic per stack suffix and direction, so
@@ -73,6 +77,20 @@ function jobsEnabled(env) {
   if (value === "1" || value === "true") return true;
   if (value === "0" || value === "false") return false;
   throw new Error(`HELIX_JOBS_ENABLED must be 1/true or 0/false — got ${JSON.stringify(raw)}`);
+}
+
+/**
+ * HELIX_JOBS_DIAGNOSTICS: unset/blank/0/false ⇒ off (the default); 1/true ⇒
+ * on. Validated even where it can emit nothing — a typo must refuse the
+ * resolution, never read as "off".
+ */
+function jobsDiagnosticsEnabled(env) {
+  const raw = env.HELIX_JOBS_DIAGNOSTICS;
+  if (raw === undefined || raw.trim() === "") return false;
+  const value = raw.trim().toLowerCase();
+  if (value === "1" || value === "true") return true;
+  if (value === "0" || value === "false") return false;
+  throw new Error(`HELIX_JOBS_DIAGNOSTICS must be 1/true or 0/false — got ${JSON.stringify(raw)}`);
 }
 
 /**
@@ -125,6 +143,9 @@ function jobsServerPosture(env) {
  * @returns {{ enabled: boolean, env: Record<string, string> }}
  */
 function resolveJobsPlane({ offset, suffix, baseDomain, ports, env }) {
+  // The diagnostics knob is validated even when it emits nothing (a disabled
+  // jobs plane, a zero offset): the same loud-typo posture as jobsEnabled.
+  const diagnostics = jobsDiagnosticsEnabled(env);
   if (offset === 0 || !jobsEnabled(env)) return { enabled: false, env: {} };
   const posture = jobsServerPosture(env);
 
@@ -198,14 +219,23 @@ function resolveJobsPlane({ offset, suffix, baseDomain, ports, env }) {
       // nothing else (the derivation `jobsCatalogueServers` owns in
       // @azx-pbc/shared; the contract test pins this document to it). The
       // edge and portal documents above do not change with the state: a
-      // retiring server keeps its routing and its lifecycle delivery.
+      // retiring server keeps its routing and its lifecycle delivery. The
+      // diagnostic type rides only on the opted-in, non-production stack.
       PORTAL_JOBS_CATALOGUE: JSON.stringify({
-        servers: { [JOBS_SERVER_ID]: { state: posture.state, types: [JOBS_TYPE] } },
+        servers: {
+          [JOBS_SERVER_ID]: {
+            state: posture.state,
+            types: diagnostics ? [JOBS_TYPE, JOBS_DIAGNOSTIC_TYPE] : [JOBS_TYPE],
+          },
+        },
       }),
       // The jobs service's own env: its identity, its private store, and its
       // three direction roots — the only place all three exist together.
       JOBS_SERVER_ID: JOBS_SERVER_ID,
       JOBS_ACCEPTING: String(posture.accepting),
+      // Present only when the stack opted in: the jobs service's own knob,
+      // refused outright by a production boot (config.ts).
+      ...(diagnostics ? { JOBS_DIAGNOSTICS: "true" } : {}),
       ...(runtimeDsn ? { JOBS_DATABASE_URL: runtimeDsn } : {}),
       JOBS_EDGE_TO_JOBS_SECRET: roots.edgeToJobs,
       JOBS_PORTAL_TO_JOBS_SECRET: roots.portalToJobs,

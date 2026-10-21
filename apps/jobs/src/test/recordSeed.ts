@@ -30,6 +30,8 @@ export async function seedRunnerJobWithRecord(
     env?: "prod" | "dev";
     /** The lifecycle generation the record is admitted under (the current one by default). */
     generation?: string;
+    /** The qualified type the record and runner row carry — a leg installing another type names it here. */
+    type?: string;
   },
 ): Promise<string> {
   const env = options.env ?? "prod";
@@ -55,7 +57,7 @@ export async function seedRunnerJobWithRecord(
       env,
       "user",
       TEST_IDENTITY.ownerOid,
-      "jobs:fetch",
+      options.type ?? "jobs:fetch",
       options.generation ?? "1",
       sha256BodyDigest(new TextEncoder().encode(JSON.stringify(options.data))),
       new Date().toISOString(),

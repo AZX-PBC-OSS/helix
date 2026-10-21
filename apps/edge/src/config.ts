@@ -300,6 +300,13 @@ export interface EdgeJobsConfig {
    * Acceptance is uncertain past it (the client's keyed retry recovers).
    */
   timeoutMs: number;
+  /**
+   * True when this process runs in production: the diagnostic job type is
+   * filtered out of every grant the edge forwards, so a production edge can
+   * neither mint a diagnostic submission nor bind the type into a record
+   * instruction's grants — the non-production type never crosses this plane.
+   */
+  refuseDiagnosticTypes: boolean;
 }
 
 // The entry is a `strictWireObject`, not a bare z.strictObject: zod's strict
@@ -346,9 +353,10 @@ const EdgeJobsConfigDocumentSchema = strictWireObject({
  * this parse keeps the same rule locally (see {@link assertDistinctRoots}).
  */
 export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
+  const refuseDiagnosticTypes = env.NODE_ENV === "production";
   const raw = env.EDGE_JOBS_CONFIG;
   if (raw === undefined || raw.trim() === "") {
-    return { servers: {}, timeoutMs: DEFAULT_JOBS_FORWARD_TIMEOUT_MS };
+    return { servers: {}, timeoutMs: DEFAULT_JOBS_FORWARD_TIMEOUT_MS, refuseDiagnosticTypes };
   }
   let document: unknown;
   try {
@@ -376,6 +384,7 @@ export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
       DEFAULT_JOBS_FORWARD_TIMEOUT_MS,
       "EDGE_JOBS_TIMEOUT_MS",
     ),
+    refuseDiagnosticTypes,
   };
 }
 

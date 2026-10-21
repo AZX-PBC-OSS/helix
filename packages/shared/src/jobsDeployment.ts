@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   JOB_TYPE_CATALOGUE,
+  JOB_TYPE_DIAGNOSTIC_CATALOGUE,
   type JobTypeCatalogueEntry,
   JobServerIdSchema,
   isValidJobsRootSecret,
@@ -205,18 +206,19 @@ export function resolveJobsCapacityLimits(overrides?: JobsCapacityOverrides): Jo
  * entry's superRefine and the credential-free projection's record walk run
  * this one implementation, so the two parses cannot drift: each installed
  * type is qualified for the server that installs it (the full entry's own
- * `server` field, the projection's map key) and is a production catalogue
- * type (configuration cannot install a type no platform code implements),
- * and the list is a set. Issues land relative to `basePath`, so each caller's
- * schema reports them where its own shape reads. Total over partial shapes:
- * a type list that already failed its field parse is rejected by that field,
- * and the refinement adds nothing for it.
+ * `server` field, the projection's map key) and is a catalogue type of the
+ * given catalogue (configuration cannot install a type no platform code
+ * implements), and the list is a set. Issues land relative to `basePath`, so
+ * each caller's schema reports them where its own shape reads. Total over
+ * partial shapes: a type list that already failed its field parse is rejected
+ * by that field, and the refinement adds nothing for it.
  */
 function refineInstalledTypes(
   ctx: z.RefinementCtx,
   server: string,
   types: unknown,
   basePath: (string | number)[],
+  catalogue: readonly JobTypeCatalogueEntry[],
 ): void {
   if (!Array.isArray(types)) return;
   types.forEach((type, index) => {
@@ -229,7 +231,7 @@ function refineInstalledTypes(
       });
       return;
     }
-    if (!JOB_TYPE_CATALOGUE.some((known) => known.id === type)) {
+    if (!catalogue.some((known) => known.id === type)) {
       ctx.addIssue({
         code: "custom",
         path: [...basePath, index],
@@ -335,7 +337,7 @@ export const JobsServerEntrySchema = strictWireObject({
   ) {
     return;
   }
-  refineInstalledTypes(ctx, entry.server, entry.types, ["types"]);
+  refineInstalledTypes(ctx, entry.server, entry.types, ["types"], JOB_TYPE_CATALOGUE);
   // The roots' custody is an entry-local property: one root per direction,
   // never shared — including within the entry the consumer that validates
   // one server's entry standalone (a jobs service loading its own three
@@ -461,6 +463,31 @@ const JobsCatalogueServerSchema = strictWireObject({
 });
 
 /**
+ * The catalogue-projection schema for one catalogue, production and
+ * non-production built here from one factory so the two cannot drift: the
+ * only difference is the installed-type list each accepts
+ * ({@link JOB_TYPE_CATALOGUE} alone, or it plus
+ * {@link JOB_TYPE_DIAGNOSTIC_CATALOGUE}).
+ */
+function catalogueServersSchema(catalogue: readonly JobTypeCatalogueEntry[]) {
+  return RawInputKeyScreen.pipe(
+    z.strictObject({
+      /** The configured servers, keyed by server id. */
+      servers: strictWireRecord(JobServerIdSchema, JobsCatalogueServerSchema),
+    }),
+  ).superRefine((document, ctx) => {
+    // zod runs checks against the partial output of an already-failing parse;
+    // these comparisons only refine a structurally complete document.
+    const servers = document.servers;
+    if (typeof servers !== "object" || servers === null) return;
+    for (const [serverId, entry] of Object.entries(servers)) {
+      if (typeof entry !== "object" || entry === null) continue;
+      refineInstalledTypes(ctx, serverId, entry.types, ["servers", serverId, "types"], catalogue);
+    }
+  });
+}
+
+/**
  * The deployment map's public half — the whole static server map reduced to
  * the facts public discovery is derived from: which servers are configured,
  * their serving/retiring state, and the types each has installed. **No
@@ -473,22 +500,21 @@ const JobsCatalogueServerSchema = strictWireObject({
  * catalogue producer and capability write-gate read it from their own
  * environment ({@link jobsCatalogueServers} derives it from a full
  * configuration, so one deployment source produces both documents).
+ * Production-only: the diagnostic type is refused here.
  */
-export const JobsCatalogueServersSchema = RawInputKeyScreen.pipe(
-  z.strictObject({
-    /** The configured servers, keyed by server id. */
-    servers: strictWireRecord(JobServerIdSchema, JobsCatalogueServerSchema),
-  }),
-).superRefine((document, ctx) => {
-  // zod runs checks against the partial output of an already-failing parse;
-  // these comparisons only refine a structurally complete document.
-  const servers = document.servers;
-  if (typeof servers !== "object" || servers === null) return;
-  for (const [serverId, entry] of Object.entries(servers)) {
-    if (typeof entry !== "object" || entry === null) continue;
-    refineInstalledTypes(ctx, serverId, entry.types, ["servers", serverId, "types"]);
-  }
-});
+export const JobsCatalogueServersSchema = catalogueServersSchema(JOB_TYPE_CATALOGUE);
+
+/**
+ * The same projection whose installed types may additionally come from
+ * {@link JOB_TYPE_DIAGNOSTIC_CATALOGUE} — for a non-production deployment
+ * that installed the diagnostic type. The type is identical to
+ * {@link JobsCatalogueServersSchema}'s; production never parses with this
+ * schema, so the diagnostic type stays unrepresentable there.
+ */
+export const JobsNonProductionCatalogueServersSchema = catalogueServersSchema([
+  ...JOB_TYPE_CATALOGUE,
+  ...JOB_TYPE_DIAGNOSTIC_CATALOGUE,
+]);
 export type JobsCatalogueServers = z.infer<typeof JobsCatalogueServersSchema>;
 
 /**
@@ -510,21 +536,33 @@ export function jobsCatalogueServers(config: JobsDeploymentConfig): JobsCatalogu
 /**
  * The types the public capability catalogue advertises for this deployment:
  * the installed types of every serving entry, with the display names owned by
- * the production catalogue. Retiring types are withdrawn from discovery (their
- * saved grants survive), and a fully disabled installation advertises nothing
- * at all. The output is the entire public surface — qualified ids and display
+ * the catalogue. Retiring types are withdrawn from discovery (their saved
+ * grants survive), and a fully disabled installation advertises nothing at
+ * all. The output is the entire public surface — qualified ids and display
  * names, never an endpoint, database URL or root.
+ *
+ * With `diagnostics: true` the display names resolve from the production
+ * catalogue plus {@link JOB_TYPE_DIAGNOSTIC_CATALOGUE} — for the
+ * non-production deployment that installed the diagnostic type. Omitted or
+ * false, the behaviour is exactly the production one: any non-production
+ * type throws.
  */
-export function advertisedJobTypes(servers: JobsCatalogueServers): JobTypeCatalogueEntry[] {
+export function advertisedJobTypes(
+  servers: JobsCatalogueServers,
+  options?: { diagnostics?: boolean },
+): JobTypeCatalogueEntry[] {
+  const catalogue = options?.diagnostics
+    ? [...JOB_TYPE_CATALOGUE, ...JOB_TYPE_DIAGNOSTIC_CATALOGUE]
+    : JOB_TYPE_CATALOGUE;
   const advertised: JobTypeCatalogueEntry[] = [];
   for (const entry of Object.values(servers.servers)) {
     if (entry.state !== "serving") continue;
     for (const typeId of entry.types) {
-      const known = JOB_TYPE_CATALOGUE.find((catalogueEntry) => catalogueEntry.id === typeId);
+      const known = catalogue.find((catalogueEntry) => catalogueEntry.id === typeId);
       // Unreachable behind a schema-validated map: the parse refuses an
-      // installed type outside the production catalogue. A hand-built map
-      // that bypassed it fails loudly here instead of advertising a name with
-      // no implementation.
+      // installed type outside the catalogue. A hand-built map that bypassed
+      // it fails loudly here instead of advertising a name with no
+      // implementation.
       if (!known) {
         throw new Error(`the installed type ${typeId} is not in the production catalogue`);
       }

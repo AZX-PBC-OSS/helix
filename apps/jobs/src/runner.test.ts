@@ -51,6 +51,8 @@ describe("the supervised runner", () => {
           appId: "app",
           env: "prod",
           input: {},
+          retryLimit: 0,
+          expireInSeconds: 300,
         }),
       ).rejects.toThrow(/not started/);
       // Let the loop's own cadence run at least two attempts before the stop.
@@ -129,6 +131,8 @@ describe("the supervised runner", () => {
         appId: "app",
         env: "prod",
         input: {},
+        retryLimit: 0,
+        expireInSeconds: 300,
       }),
     ).rejects.toThrow(/not started/);
   });

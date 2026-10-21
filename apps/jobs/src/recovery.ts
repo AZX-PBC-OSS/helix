@@ -20,7 +20,12 @@ import {
 } from "./execution.js";
 import { measureClosedGenerationBacklog, stampClosedGenerationCancellations } from "./lifecycle.js";
 import { createJobsPool } from "./pool.js";
-import { JOBS_JOB_RECORD_QUALIFIED, jobsAbsoluteDeadline } from "./policy.js";
+import {
+  JOBS_JOB_RECORD_QUALIFIED,
+  JOBS_TYPE_POLICIES,
+  type JobsTypePolicies,
+  jobsAbsoluteDeadline,
+} from "./policy.js";
 import { countRecovery, withRecoverySpan } from "./telemetry.js";
 
 /**
@@ -293,6 +298,12 @@ export interface JobsRecoveryOptions {
   intervalMs?: number;
   /** The largest number of records one pass considers — the bound that keeps a pass bounded. */
   batch?: number;
+  /**
+   * The composition's installed policy set — the deadline arm's source.
+   * Defaults to the production set; a composition that installed the
+   * diagnostic type hands the same set its registry screened against.
+   */
+  typePolicies?: JobsTypePolicies;
   log: JobsRecoveryLogger;
 }
 
@@ -343,6 +354,7 @@ export class JobsRecovery {
   private readonly cancelRunnerJob: RunnerJobCanceller;
   private readonly intervalMs: number;
   private readonly batch: number;
+  private readonly typePolicies: JobsTypePolicies;
   private readonly log: JobsRecoveryLogger;
 
   private pool: Pool | null = null;
@@ -366,6 +378,7 @@ export class JobsRecovery {
     this.cancelRunnerJob = options.cancelRunnerJob;
     this.intervalMs = options.intervalMs ?? RECOVERY_INTERVAL_MS;
     this.batch = options.batch ?? RECOVERY_BATCH;
+    this.typePolicies = options.typePolicies ?? JOBS_TYPE_POLICIES;
     this.log = options.log;
   }
 
@@ -537,7 +550,7 @@ export class JobsRecovery {
         if (status !== "queued" && status !== "running") continue;
         const pastDeadline = deadlinePassed(
           candidate.created_at,
-          jobsAbsoluteDeadline(candidate.type),
+          jobsAbsoluteDeadline(candidate.type, this.typePolicies),
         );
         let row: AnsweredRunnerJobLookup | null = null;
         if (!pastDeadline) {

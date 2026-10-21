@@ -98,6 +98,8 @@ describe("the supervised runner's convergence", () => {
         appId: randomUUID(),
         env: "prod",
         input: { url: "https://example.com/data.json" },
+        retryLimit: 0,
+        expireInSeconds: 300,
       }),
     ).rejects.toThrow(/not started/);
 
@@ -118,6 +120,8 @@ describe("the supervised runner's convergence", () => {
         appId: randomUUID(),
         env: "prod",
         input: { url: "https://example.com/data.json" },
+        retryLimit: 0,
+        expireInSeconds: 300,
       });
       expect(runnerJobId).toBeTruthy();
       const inside = await client.query<{ n: number }>(
@@ -162,6 +166,8 @@ describe("the supervised runner's convergence", () => {
           appId: randomUUID(),
           env: "prod",
           input: { url: "https://example.com/data.json" },
+          retryLimit: 0,
+          expireInSeconds: 300,
         });
         await writer.query("COMMIT");
       } finally {
@@ -443,6 +449,8 @@ describe("the runner's worker registration", () => {
           appId: randomUUID(),
           env: "prod",
           input: { url: "https://example.com/data.json" },
+          retryLimit: 0,
+          expireInSeconds: 300,
         });
         await client.query("COMMIT");
       } finally {
