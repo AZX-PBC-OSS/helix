@@ -1447,7 +1447,7 @@ export function zipFiles(files: Record<string, string | Buffer>): Buffer {
 // ── the harness itself ───────────────────────────────────────────────────────
 
 export async function startRealStack(
-  options: { offset?: number; label?: string; jobsLink?: boolean } = {},
+  options: { offset?: number; label?: string; jobsLink?: boolean; diagnostics?: boolean } = {},
 ): Promise<RealStack> {
   const label = (options.label ?? "journey").replace(/[^a-z0-9-]/gi, "") || "journey";
 
@@ -1471,7 +1471,14 @@ export async function startRealStack(
   // [a-z0-9] only: the suffix becomes a database name suffix AND a blob
   // container name (`app-bundles-<suffix>`, which forbids `_`).
   const suffix = `journey${randomBytes(4).toString("hex")}`;
-  const stackEnv = runStackEnvScript(offset, suffix, baseEnv);
+  // The ambient HELIX_JOBS_* keys were scrubbed above, so the diagnostic type
+  // is present only when this stack opts in, through the same resolution knob
+  // a developer uses.
+  const stackEnv = runStackEnvScript(
+    offset,
+    suffix,
+    options.diagnostics === true ? { ...baseEnv, HELIX_JOBS_DIAGNOSTICS: "1" } : baseEnv,
+  );
 
   if (stackEnv.JOBS_PORT === undefined) {
     throw new Error(

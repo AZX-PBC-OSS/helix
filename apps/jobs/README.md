@@ -878,6 +878,15 @@ Two helpers keep the journey suites short (both used by
   reloads on NOTIFY behind a debounce, so an immediate request would 404).
   Returns the created `App`; each step's failure throws naming the step.
 
+`startRealStack({ diagnostics: true })` resolves the stack with
+`HELIX_JOBS_DIAGNOSTICS=1`, the same knob a developer uses, so the jobs service
+installs the `jobs:diagnostic` type and the portal advertises it for an owner
+to grant (see [Diagnostic jobs](#diagnostic-jobs-srcdiagnosticsts)). Without
+it, the harness scrubs every ambient `HELIX_JOBS_*` key and the stack carries
+no diagnostic type. `src/lifecycleCancellation.integration.test.ts` uses it for
+owner cancellation, crash recovery, deadlines and portal archive/unarchive
+through the real services.
+
 Fault injection lives in the harness only — no production code path exists for
 tests. `startRealStack({ jobsLink: true })` starts the edge's and dev
 gateway's jobs traffic through an in-process relay instead of straight to the
