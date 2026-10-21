@@ -37,6 +37,7 @@ import {
   MemoryCancellation,
   MemoryLifecycle,
   MemoryObservation,
+  appliedIntake,
   runningCleanup,
 } from "./test/instructions.js";
 
@@ -145,6 +146,7 @@ function receiverFor(server: string, operation: JobsOperationName, keyId: string
       lifecycle: { outstanding: 0, oldestPendingAt: null },
     }),
     cleanup: runningCleanup,
+    intake: appliedIntake,
     capacityLimits: resolveJobsCapacityLimits(),
   });
   const receiver: Receiver = { app, storage, clock, burns, lifecycle };

@@ -101,6 +101,7 @@ beforeAll(async () => {
     databaseUrl: RUNTIME_DSN,
     statementTimeoutMs: 10_000,
     limits: LIMITS,
+    accepting: true,
     enqueuer: createPgbossEnqueuer(boss),
     log: LOG,
   });

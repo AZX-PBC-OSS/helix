@@ -22,6 +22,7 @@ import {
   SPAN_JOBS_CLEANUP,
   SPAN_JOBS_EXECUTE,
   SPAN_JOBS_FETCH_DISPATCH,
+  SPAN_JOBS_INTAKE,
   SPAN_JOBS_RECOVER,
   type JobsCleanupOutcome,
   type JobsExecuteOutcome,
@@ -31,6 +32,7 @@ import {
 } from "@azx-pbc/shared/telemetry";
 import type { FastifyReply } from "fastify";
 
+import type { JobsIntakeApplyOutcome } from "./intake.js";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -301,6 +303,33 @@ export function withRecoverySpan<T>(fn: (span: Span) => Promise<T>): Promise<T> 
  */
 export function withCleanupSpan<T>(fn: (span: Span) => Promise<T>): Promise<T> {
   return withRootConsumerSpan(SPAN_JOBS_CLEANUP, fn);
+}
+
+/**
+ * Run one intake apply inside a fresh **root** consumer span — the same
+ * wrapper shape as the cleanup pass's (background work, nothing extracted).
+ * The apply's own exit grades the span: `unavailable` and `refused` are its
+ * failure exits and mark it ERROR; `opened`/`closed` are the designed
+ * answers and stay UNSET.
+ */
+export function withIntakeSpan(
+  fn: (span: Span) => Promise<JobsIntakeApplyOutcome>,
+): Promise<JobsIntakeApplyOutcome> {
+  return tracer.startActiveSpan(
+    SPAN_JOBS_INTAKE,
+    { root: true, kind: SpanKind.CONSUMER },
+    async (span) => {
+      try {
+        const outcome = await fn(span);
+        if (outcome.kind === "unavailable" || outcome.kind === "refused") {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+        }
+        return outcome;
+      } finally {
+        span.end();
+      }
+    },
+  );
 }
 
 /**

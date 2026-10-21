@@ -15,6 +15,7 @@ import { loadJobsConfig } from "./config.js";
 import { describeDsn } from "./dsn.js";
 import { JobsExecution, JobsHandlerRegistry } from "./execution.js";
 import { makeFetchJobHandler } from "./fetchJob.js";
+import { JobsIntake } from "./intake.js";
 import { createJobsInstructionAuth } from "./instructionAuth.js";
 import { JobsLifecycleStore } from "./lifecycle.js";
 import { JobsObservationStore } from "./observation.js";
@@ -180,13 +181,29 @@ const cancellation = new JobsCancellationStore({
   log: lateLog,
 });
 
+// The intake applier — the configured intake posture made durable: one
+// apply at boot (retried while the store is down) that closes or opens new
+// work under the same admission lock the enqueues take, so no in-flight
+// enqueue is retroactively refused. Its snapshot is the jobs_intake health
+// check's input.
+const intake = new JobsIntake({
+  databaseUrl: config.databaseUrl,
+  statementTimeoutMs: config.statementTimeoutMs,
+  serverId: config.serverId,
+  accepting: config.accepting,
+  log: lateLog,
+});
+
 // The acceptance store — the durable retry identity, the capacity limits'
 // enforcement and the transaction that commits the wrapper record with the
-// runner's enqueue (ADR-0003).
+// runner's enqueue (ADR-0003). Its new-work decisions honor both this
+// process's configured posture and the durable intake row the applier above
+// writes.
 const admission = new JobsAcceptanceStore({
   databaseUrl: config.databaseUrl,
   statementTimeoutMs: config.statementTimeoutMs,
   limits: config.limits,
+  accepting: config.accepting,
   enqueuer: runner.enqueuer,
   log: lateLog,
 });
@@ -229,6 +246,7 @@ const app = buildApp({
   worker: () => runner.snapshot,
   recovery: () => recovery.snapshot(),
   cleanup: () => cleanup.snapshot(),
+  intake: () => intake.snapshot(),
   capacityLimits: config.limits,
 });
 logRef.current = app.log;
@@ -238,17 +256,19 @@ logRef.current = app.log;
 // retries continue, and shutdown releases what startup acquired — the
 // recovery sweeper's pool and timer, the cancellation store's pool, the
 // cleanup loop's pool and timer, the observation store's pool, the runner
-// instance and its retry timer, the execution store's pool, the acceptance
-// store's pool, the lifecycle pool, the sweep timer and pool, the probes'
-// timer and pool, then the telemetry flush (ADR-0009). The sweeper, the
-// cancellation store and the cleanup loop release before the runner: all
-// three drive runner operations through the runner's instance.
+// instance and its retry timer, the execution store's pool, the intake
+// applier's pool and timer, the acceptance store's pool, the lifecycle pool,
+// the sweep timer and pool, the probes' timer and pool, then the telemetry
+// flush (ADR-0009). The sweeper, the cancellation store and the cleanup loop
+// release before the runner: all three drive runner operations through the
+// runner's instance.
 app.addHook("onClose", async () => {
   await recovery.stop();
   await cancellation.stop();
   await cleanup.stop();
   await runner.stop();
   await execution.stop();
+  await intake.stop();
   await admission.stop();
   await observation.stop();
   await lifecycle.stop();
@@ -273,6 +293,7 @@ try {
   recovery.start();
   cancellation.start();
   cleanup.start();
+  intake.start();
   admission.start();
   observation.start();
   await app.listen({ port, host });
@@ -282,6 +303,7 @@ try {
       service: SERVICE_NAME,
       port,
       serverId: config.serverId,
+      accepting: config.accepting,
       store: describeDsn(config.databaseUrl),
       telemetry: telemetry.enabled,
     },
@@ -292,14 +314,15 @@ try {
   // The listener never came up — the failed-partial-initialization exit.
   // storage.start(), burns.start(), lifecycle.start(), execution.start(),
   // runner.start(), recovery.start(), cancellation.start(), cleanup.start(),
-  // admission.start() and observation.start() have already acquired their
-  // resources; release them here, not only on the shutdown path, bounded by
-  // each pool's own connect timeout.
+  // intake.start(), admission.start() and observation.start() have already
+  // acquired their resources; release them here, not only on the shutdown
+  // path, bounded by each pool's own connect timeout.
   await recovery.stop();
   await cancellation.stop();
   await cleanup.stop();
   await runner.stop();
   await execution.stop();
+  await intake.stop();
   await admission.stop();
   await observation.stop();
   await lifecycle.stop();

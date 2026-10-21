@@ -164,6 +164,12 @@ export const ATTR_JOBS_CLEANUP_RESULTS_REMOVED = "helix.jobs.cleanup.results_rem
  * retired — bounded by the pass's own batch cap.
  */
 export const ATTR_JOBS_CLEANUP_RECORDS_RETIRED = "helix.jobs.cleanup.records_retired";
+/**
+ * Whether one jobs intake apply changed the store's durable accepting state
+ * (`true` only when the row's previous state differed from the configured
+ * one). Bounded boolean; the state itself rides {@link ATTR_OUTCOME}.
+ */
+export const ATTR_JOBS_INTAKE_CHANGED = "helix.jobs.intake.changed";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
 /**
@@ -303,6 +309,12 @@ export const SPAN_JOBS_RECOVER = "helix.jobs.recover";
  * one per pass (the loop's cadence, not per row). Its removed-count
  * attributes are the pass's own batch-bounded evidence. */
 export const SPAN_JOBS_CLEANUP = "helix.jobs.cleanup";
+/** The jobs service's intake apply — a root consumer span, one per apply
+ * attempt (boot-time work, no inbound request context to continue). It
+ * applies the process's configured `accepting` state to the durable intake
+ * row under the admission lock; its bounded evidence is the configured
+ * server id, the outcome and the changed flag. */
+export const SPAN_JOBS_INTAKE = "helix.jobs.intake";
 /** The portal's lifecycle outbox write — the transaction that commits app
  * state, the next generation and the per-target intents together (ADR-0007).
  * The receiver's `helix.jobs.lifecycle` route span is the delivery's other end. */
@@ -581,6 +593,12 @@ export type JobsLifecycleDeliveryOutcome = (typeof JOBS_LIFECYCLE_DELIVERY_OUTCO
  *   no installed policy for (403 `forbidden`); no job, no key claim.
  * - `closed` — the app's lifecycle generation is applied and archived, or
  *   older than the applied one: new work refused 403, final.
+ * - `intake_closed` — new work refused because this server's intake is
+ *   closed — by this process's configuration or the durable intake row
+ *   (`JOBS_ACCEPTING`/the `jobs.intake` row). Answered 503 `jobs_disabled`:
+ *   a closed intake may reopen on the same store, and a client's earlier
+ *   uncertain submission is still recovered by retrying its key. Retained-key
+ *   recovery is decided before it and unaffected; no job, no key claim.
  * - `unseen` — the claimed generation is newer than anything the portal has
  *   delivered (or the app is not known here): retryable 503 until the
  *   control-plane delivery opens it (ADR-0007).
@@ -604,6 +622,7 @@ export const JOBS_SUBMIT_OUTCOMES = [
   "invalid_input",
   "type_unknown",
   "closed",
+  "intake_closed",
   "unseen",
   "capacity_exceeded",
   "not_found",
@@ -996,6 +1015,24 @@ export type JobsRecoverOutcome = (typeof JOBS_RECOVER_OUTCOMES)[number];
  */
 export const JOBS_CLEANUP_OUTCOMES = ["ok", "failed"] as const;
 export type JobsCleanupOutcome = (typeof JOBS_CLEANUP_OUTCOMES)[number];
+
+/**
+ * How one jobs intake apply ended — the final `helix.outcome` on the
+ * `helix.jobs.intake` span. Bounded by construction: each value is one exit
+ * of the apply transaction.
+ *
+ * - `opened` — the configured `accepting: true` is applied to the durable
+ *   intake row (whether or not the row already said so).
+ * - `closed` — the configured `accepting: false` is applied: new work is
+ *   refused from this point, on every replica, once the transaction commits.
+ * - `refused` — the store is bound to another server's namespace (its intake
+ *   row's `server`, or any job record's): nothing was written. An operator
+ *   must repoint the configuration or the store; the apply never retries.
+ * - `unavailable` — the store could not answer; nothing was written and the
+ *   apply retries on its capped backoff.
+ */
+export const JOBS_INTAKE_OUTCOMES = ["opened", "closed", "refused", "unavailable"] as const;
+export type JobsIntakeOutcome = (typeof JOBS_INTAKE_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

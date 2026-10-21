@@ -105,6 +105,7 @@ beforeAll(async () => {
     databaseUrl: RUNTIME_DSN,
     statementTimeoutMs: 10_000,
     limits: LIMITS,
+    accepting: true,
     // The real borrowed-connection enqueue over this suite's own started
     // pg-boss — the same adapter production composes.
     enqueuer: createPgbossEnqueuer(boss),

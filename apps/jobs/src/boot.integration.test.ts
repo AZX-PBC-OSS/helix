@@ -123,6 +123,9 @@ function baseEnv(): NodeJS.ProcessEnv {
     if (key === "HELIX_STACK_ENV") continue;
     env[key] = value;
   }
+  // The intake posture is a required knob: every child boots with an explicit
+  // one (a leg that needs the missing-flag refusal overrides or deletes it).
+  env.JOBS_ACCEPTING = "true";
   return env;
 }
 

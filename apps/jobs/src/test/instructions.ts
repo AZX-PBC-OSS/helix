@@ -29,6 +29,7 @@ import type { FastifyInstance } from "fastify";
 import type { JobsAdmission, JobsAdmissionRequest, JobsAdmissionResult } from "../acceptance.js";
 import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "../cancellation.js";
 import type { JobsCleanupSnapshot } from "../cleanup.js";
+import type { JobsIntakeSnapshot } from "../intake.js";
 import type {
   JobsObservation,
   JobsObservationRequest,
@@ -281,6 +282,21 @@ export function runningCleanup(): JobsCleanupSnapshot {
 }
 
 /**
+ * The supervision state of a serving intake applier: the configured posture
+ * (open) durably applied, with the drain evidence unused while open.
+ */
+export function appliedIntake(over: Partial<JobsIntakeSnapshot> = {}): JobsIntakeSnapshot {
+  return {
+    configuredAccepting: true,
+    phase: "applied",
+    boundServer: null,
+    appliedAt: new Date().toISOString(),
+    lastAttemptAt: new Date().toISOString(),
+    ...over,
+  };
+}
+
+/**
  * A built app with a ready store, the receiver seam, and nothing else wired.
  * The lifecycle, admission, cancellation and observation seams ride along as
  * in-memory doubles — the lifecycle route's accepted path against the REAL
@@ -317,6 +333,7 @@ export async function appWithLifecycle(
   cancellation: JobsCancellation = new MemoryCancellation(),
   observation: JobsObservation = new MemoryObservation(),
   cleanup: () => JobsCleanupSnapshot = runningCleanup,
+  intake: () => JobsIntakeSnapshot = () => appliedIntake(),
 ): Promise<{
   app: FastifyInstance;
   storage: JobsStorage;
@@ -330,9 +347,10 @@ export async function appWithLifecycle(
     cancellation,
     observation,
     // The route suites exercise the receiver's routes, not the worker, the
-    // sweeper or the cleanup loop; the supervision states they report are the
-    // registered composition's, with the sweeper's last pass fresh and the
-    // cleanup loop's evidence fresh and clear.
+    // sweeper, the cleanup loop or the intake applier; the supervision states
+    // they report are the registered composition's, with the sweeper's last
+    // pass fresh, the cleanup loop's evidence fresh and clear, and the
+    // configured intake applied open.
     worker: () => ({ started: true, workerRegistered: true }),
     recovery: () => ({
       started: true,
@@ -343,6 +361,7 @@ export async function appWithLifecycle(
       lifecycle: { outstanding: 0, oldestPendingAt: null },
     }),
     cleanup,
+    intake,
     capacityLimits: resolveJobsCapacityLimits(),
   });
   return { app, storage };

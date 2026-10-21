@@ -131,14 +131,10 @@ after a committed completion reads `terminal` and changes nothing.
 Submission is decided in ONE transaction against the service's private store
 (ADR-0003, design §4), in the adopted order, each precedence load-bearing:
 
-1. The app's lifecycle row is locked `FOR UPDATE` (`lifecycleEligibilityInTx`,
-   the serialization boundary from `src/lifecycle.ts`) — held to the
-   transaction's end, so a lifecycle apply cannot land between the decision
-   and its effect and same-app admissions cannot interleave.
-2. The **retained-key comparison** — the scoped retry key
+1. The **retained-key comparison** — the scoped retry key
    (`server/appId/env/ownerKind/ownerOid/type/key`, unique-constrained) is
    looked up and its stored digest compared against the exact input bytes,
-   BEFORE new-input validation and BEFORE the eligibility verdict is applied:
+   BEFORE new-input validation and BEFORE any gate that closes to new work:
    identical bytes recover the original job (202 with its CURRENT public
    status — the read horizons' projection, so a replay after result expiry
    returns the original job as `expired`) even
@@ -147,26 +143,34 @@ Submission is decided in ONE transaction against the service's private store
    they are invalid for new work. A record past its public record horizon is
    unreadable: the identical replay answers the unknown-job 404 without
    creating work while the row is still physically retained, and the
-   changed-bytes conflict still stands. Neither answer creates work or
-   consumes a slot.
-3. New-work validation — the type's installed policy (a type this server has
+   changed-bytes conflict still stands. Neither answer creates work, consumes
+   a slot or takes the admission lock.
+2. New-work validation — the type's installed policy (a type this server has
    no policy for is refused 403) and its input contract (refused 400
    `payload_invalid`), creating no job and no key claim.
-4. The eligibility verdict — `closed` refuses new work finally (403);
-   `unseen` waits for the portal's delivery (retryable 503), never auto-opening
-   a generation.
-5. The **capacity comparison** — new work is admitted only inside one
-   server-wide, transaction-scoped admission lock (design §4: "a local
-   admission lock and bounded indexed counts"), against the unfinished and
-   retained occupancy of both the app/environment and the whole server, under
-   the resolved capacity limits (below). Full or lowered capacity answers 429
+3. The server-wide, transaction-scoped **admission lock** (design §4: "a
+   local admission lock and bounded indexed counts"), held to the
+   transaction's end. Everything below is judged under it, and the intake
+   apply (below) takes the same lock.
+4. The **intake check** — this process's `JOBS_ACCEPTING` AND the durable
+   intake row must both admit, and the row must not be bound to another
+   server. A closed intake answers 503 `jobs_disabled` (see "Intake closure
+   and retirement").
+5. The eligibility verdict — the app's lifecycle row is locked `FOR UPDATE`
+   (`lifecycleEligibilityInTx`, from `src/lifecycle.ts`), so a lifecycle
+   apply cannot land between the decision and its effect. `closed` refuses
+   new work finally (403); `unseen` waits for the portal's delivery
+   (retryable 503), never auto-opening a generation.
+6. The **capacity comparison** against the unfinished and retained occupancy
+   of both the app/environment and the whole server, under the resolved
+   capacity limits (below). Full or lowered capacity answers 429
    `jobs_capacity_exceeded` and evicts nothing; the occupancy counts are
    bounded indexed counts on `jobs.job_record` (the
    `idx_job_record_server_app_env_status` index). Because only admissions
    consume capacity — completion and physical cleanup only free it — the
    counts the lock guards cannot move in the unsafe direction between the
    check and the insert.
-6. The runner enqueue over the **borrowed connection** (pg-boss's public
+7. The runner enqueue over the **borrowed connection** (pg-boss's public
    `db.executeSql` adapter — the runner row joins the transaction), then the
    wrapper record insert into `jobs.job_record`: the immutable attribution,
    the admitted generation, the status projection (`queued` at admission),
@@ -180,6 +184,48 @@ the protocol's retryable 503 — a timeout is uncertainty, never proof of
 nonacceptance; the same keyed POST recovers the committed job. The send-time
 options are the type's installed policy (attempts, claim bound) and the
 trusted `(appId, env)` fairness group (`jobsAppEnvGroupId`).
+
+## Intake closure and retirement (`src/intake.ts`)
+
+`JOBS_ACCEPTING` (required, exactly `true` or `false`) is this server's
+intake posture. At boot, `JobsIntake` writes it to the store's singleton
+`jobs.intake` row in one transaction that takes the admission lock, so the
+apply waits for every admission currently holding the lock, on any replica,
+to commit. From that commit on, every admission on every replica reads the
+new state. Closing intake therefore never refuses work that was already
+being enqueued, and no replica admits new work after the closure lands. A
+store that does not answer is retried on a capped backoff (1 s doubling to
+30 s).
+
+A new submission is admitted only while both this process's flag and the
+durable row say open. A closed intake answers 503 `jobs_disabled`. It is
+503, not 403, because the same store can reopen. Everything else keeps
+working while intake is closed: retained-key recovery and its 409 conflict,
+snapshot, result and cancellation reads, lifecycle delivery, execution of
+accepted work, recovery and cleanup.
+
+The apply is also the repointing guard. A store whose intake row is bound
+to another server id, or that holds job records of another server, is
+refused. Nothing is written, the `jobs_intake` check reports `error`, and
+the `jobs.intake.refused` event names both ids. Rebinding a namespace to a
+store that holds another server's references needs an operator decision and
+a restart, never an automatic rebind.
+
+The `jobs_intake` health check grades the state:
+
+| State                                   | Status     | Detail                                                                |
+| --------------------------------------- | ---------- | --------------------------------------------------------------------- |
+| Not yet applied                         | `degraded` | When configured closed, other replicas may still admit new work       |
+| Refused (foreign store)                 | `error`    | Names the bound server                                                |
+| Applied, open                           | `ok`       | —                                                                     |
+| Applied, closed, fresh cleanup evidence | `ok`       | `unfinishedServer` / `retainedServer` metrics and the remaining drain |
+| Applied, closed, no fresh evidence      | `degraded` | Drain progress unknown                                                |
+
+Retirement completes only when a closed server reports zero unfinished and
+zero retained jobs. Until then keep its configuration, routes, credentials
+and store. A temporary shutdown is not retirement: restart against the same
+store and the retained keys recover their original jobs. The migration seeds
+the row open with no bound server and never reopens a closed row on a re-run.
 
 ## Capacity limits (`src/acceptance.ts`, `src/config.ts`)
 
@@ -580,7 +626,9 @@ DSN's shape), installs or migrates the pg-boss schema, creates the platform
 queue with the policy above, converges policy drift that pg-boss can update
 (failing on drift fixed at queue creation), creates the instruction burn
 store (schema `jobs`, table `instruction_burns`, its `burn_until` index), the
-app-lifecycle store (table `app_lifecycle`) and the job-record store (table
+app-lifecycle store (table `app_lifecycle`), the intake store (table
+`intake`, one row seeded open and unbound, runtime SELECT/UPDATE only) and
+the job-record store (table
 `job_record`, the retry namespace's unique constraint, the public-status
 check, the execution projection's columns — attempt, progress, error_code,
 result — the durable owner-cancellation intent column
@@ -605,12 +653,13 @@ migration identity, after the schema they depend on exists.
 `checkJobsStorageCompatibility(pool)` answers, read-only, whether the
 runtime may rely on its store: schema installed at the pinned dependency's
 version, the queue carrying the platform's effective policy, the instruction
-burn store, the app-lifecycle store and the job-record store present with its
+burn store, the app-lifecycle store, the intake store and the job-record store present with its
 execution columns, the cancellation-intent column, the pending-cancellation
 instant column, and the terminal-instant column, and the
 runtime identity holding its DML. The verdict union (`compatible`,
 `unreachable`, `schema_missing`, `schema_version`, `queue_missing`,
-`queue_policy`, `burn_missing`, `lifecycle_missing`, `record_missing`,
+`queue_policy`, `burn_missing`, `lifecycle_missing`, `intake_missing`,
+`record_missing`,
 `record_schema`, `runtime_privileges`) is what the
 storage supervisor and health reporting consume; the expected schema version
 is read from the installed pg-boss package, so a catalog bump moves the
@@ -637,7 +686,7 @@ verified and later dies degrades the same way.
   sweep cadences, is `error`/`degraded`, never ok.
 - **Invalid configuration is an explicit startup error.** `loadJobsConfig`
   (`src/config.ts`) refuses a missing or malformed `JOBS_SERVER_ID`,
-  `JOBS_DATABASE_URL`, any of the server's three signing roots
+  `JOBS_DATABASE_URL`, `JOBS_ACCEPTING`, any of the server's three signing roots
   (`JOBS_EDGE_TO_JOBS_SECRET` and `JOBS_PORTAL_TO_JOBS_SECRET` for the two
   receiving directions, `JOBS_JOBS_TO_EDGE_SECRET` for the fetch callbacks it
   mints), or either callback destination (`JOBS_EDGE_PROD_URL` /
@@ -698,7 +747,7 @@ destinations are the edge's bases for the two tiers (the edge process for
 platform-class host, never an app host):
 
 ```
-JOBS_SERVER_ID=jobs \
+JOBS_SERVER_ID=jobs JOBS_ACCEPTING=true \
 JOBS_DATABASE_URL=postgresql://helix_jobs:…@db:5432/helix_jobs \
 JOBS_EDGE_TO_JOBS_SECRET=… JOBS_PORTAL_TO_JOBS_SECRET=… JOBS_JOBS_TO_EDGE_SECRET=… \
 JOBS_EDGE_PROD_URL=https://… JOBS_EDGE_DEV_URL=https://… \

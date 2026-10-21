@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_INTAKE_QUALIFIED,
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
@@ -38,6 +39,7 @@ export type JobsStorageCompatibility =
   | { kind: "queue_policy"; diffs: readonly JobsQueuePolicyDiff[] }
   | { kind: "burn_missing" }
   | { kind: "lifecycle_missing" }
+  | { kind: "intake_missing" }
   | { kind: "record_missing" }
   | { kind: "record_schema"; problems: readonly string[] }
   | { kind: "runtime_privileges"; missing: readonly string[] };
@@ -198,6 +200,10 @@ async function missingRuntimePrivileges(client: PoolClient): Promise<string[]> {
       name: `${privilege} on ${JOBS_APP_LIFECYCLE_QUALIFIED}`,
       sql: `SELECT has_table_privilege(current_user, '${JOBS_APP_LIFECYCLE_QUALIFIED}', '${privilege}') AS ok`,
     })),
+    ...(["SELECT", "UPDATE"] as const).map((privilege) => ({
+      name: `${privilege} on ${JOBS_INTAKE_QUALIFIED}`,
+      sql: `SELECT has_table_privilege(current_user, '${JOBS_INTAKE_QUALIFIED}', '${privilege}') AS ok`,
+    })),
     ...(["SELECT", "INSERT", "UPDATE", "DELETE"] as const).map((privilege) => ({
       name: `${privilege} on ${JOBS_JOB_RECORD_QUALIFIED}`,
       sql: `SELECT has_table_privilege(current_user, '${JOBS_JOB_RECORD_QUALIFIED}', '${privilege}') AS ok`,
@@ -307,6 +313,26 @@ async function readVerdict(client: PoolClient): Promise<JobsStorageCompatibility
   }
   if (!lifecyclePresent) {
     return { kind: "lifecycle_missing" };
+  }
+
+  // The intake store is the durable admission gate: without it no admission
+  // can be answered (the gate fails closed), so its absence is its own
+  // verdict — the same remedy (the migration command) as the other stores',
+  // a different reason.
+  let intakePresent: boolean;
+  try {
+    const found = await client.query<{ found: string | null }>(
+      `SELECT to_regclass($1)::text AS found`,
+      [JOBS_INTAKE_QUALIFIED],
+    );
+    intakePresent = found.rows[0]?.found != null;
+  } catch (error) {
+    return sqlState(error) === INSUFFICIENT_PRIVILEGE
+      ? { kind: "runtime_privileges", missing: ["SELECT on the intake store's catalog entry"] }
+      : unreachable(error);
+  }
+  if (!intakePresent) {
+    return { kind: "intake_missing" };
   }
 
   // The job-record store is acceptance itself: without it no submission can

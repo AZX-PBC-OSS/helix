@@ -15,6 +15,7 @@ import type { JobsSnapshotVerdict } from "./observation.js";
 import {
   appWithLifecycle,
   appWithReceiver,
+  appliedIntake,
   cancelSpec,
   instructionHeaders,
   makeReceiver,
@@ -46,6 +47,10 @@ const JSON_HEADERS = { "content-type": "application/json" };
 const UNAVAILABLE_BODY = {
   code: "jobs_unavailable",
   message: JobErrorMessages.jobs_unavailable,
+};
+const DISABLED_BODY = {
+  code: "jobs_disabled",
+  message: JobErrorMessages.jobs_disabled,
 };
 const UNAUTHORIZED_BODY = {
   code: "unauthorized",
@@ -135,6 +140,15 @@ describe("the signed operation routes", () => {
           outcome: { outcome: "unseen" },
           status: 503,
           body: UNAVAILABLE_BODY,
+        },
+        {
+          // A definitive refusal of new work on a closed intake — 503 (the
+          // intake may reopen on the same store; the client's keyed retry
+          // recovers an uncertain earlier submission), never a fabricated
+          // busy answer.
+          outcome: { outcome: "intake_closed" },
+          status: 503,
+          body: DISABLED_BODY,
         },
         {
           outcome: { outcome: "capacity_exceeded" },
@@ -1085,6 +1099,7 @@ describe("the signed operation routes", () => {
         lifecycle: { outstanding: 0, oldestPendingAt: null },
       }),
       cleanup: runningCleanup,
+      intake: appliedIntake,
       capacityLimits: resolveJobsCapacityLimits(),
     });
     try {

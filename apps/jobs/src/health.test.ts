@@ -5,6 +5,7 @@ import {
   JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
+  JOBS_INTAKE_CHECK,
   JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
@@ -13,10 +14,12 @@ import {
 
 import { JOBS_CLEANUP_STALE_AFTER_MS, type JobsCleanupSnapshot } from "./cleanup.js";
 import type { JobsStorageCompatibility } from "./compat.js";
+import type { JobsIntakeSnapshot } from "./intake.js";
 import {
   jobsCapacityCheck,
   jobsCleanupCheck,
   jobsDatabaseCheck,
+  jobsIntakeCheck,
   jobsLifecycleRecoveryCheck,
   jobsSweeperCheck,
   jobsWorkerCheck,
@@ -683,5 +686,158 @@ describe("jobsCapacityCheck", () => {
     const check = jobsCapacityCheck(measured(0, { evidence: null }), LIMITS, { nowMs: NOW });
     expect(check.status).toBe("error");
     expect(check.detail).toMatch(/carried no measurement/);
+  });
+});
+
+describe("jobsIntakeCheck", () => {
+  const NOW = Date.parse("2026-10-16T08:00:00.000Z");
+
+  function intake(overrides: Partial<JobsIntakeSnapshot>): JobsIntakeSnapshot {
+    return {
+      configuredAccepting: true,
+      phase: "applied",
+      boundServer: null,
+      appliedAt: new Date(NOW - 1_000).toISOString(),
+      lastAttemptAt: new Date(NOW - 1_000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  function cleaned(overrides: Partial<JobsCleanupSnapshot> = {}): JobsCleanupSnapshot {
+    return {
+      started: true,
+      passes: 2,
+      lastPassAt: new Date(NOW - 1_000).toISOString(),
+      lastOkPassAt: new Date(NOW - 1_000).toISOString(),
+      resultsRemoved: 0,
+      recordsRetired: 0,
+      evidence: {
+        retainedServer: 0,
+        unfinishedServer: 0,
+        overdueResults: 0,
+        overdueRecords: 0,
+      },
+      ...overrides,
+    };
+  }
+
+  test("a state not yet applied degrades — with the closed posture naming the window other replicas still admit through", () => {
+    for (const phase of ["not_started", "pending"] as const) {
+      const open = jobsIntakeCheck(intake({ phase, configuredAccepting: true }), cleaned(), {
+        nowMs: NOW,
+      });
+      expect(HealthCheckSchema.parse(open), phase).toBeTruthy();
+      expect(open.name, phase).toBe(JOBS_INTAKE_CHECK);
+      expect(open.status, phase).toBe("degraded");
+      expect(open.detail, phase).toMatch(/has not been applied to the store yet/);
+      expect(open.detail, phase).not.toMatch(/other replicas/);
+
+      const closed = jobsIntakeCheck(intake({ phase, configuredAccepting: false }), cleaned(), {
+        nowMs: NOW,
+      });
+      expect(closed.status, phase).toBe("degraded");
+      expect(closed.detail, phase).toMatch(/other replicas may still admit new work until it is/);
+    }
+  });
+
+  test("a refused store is an error naming the namespace it is bound to", () => {
+    const check = jobsIntakeCheck(
+      intake({ phase: "refused", configuredAccepting: true, boundServer: "jobs" }),
+      cleaned(),
+      { nowMs: NOW },
+    );
+    expect(HealthCheckSchema.parse(check)).toBeTruthy();
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/bound to the "jobs" server namespace/);
+    expect(check.detail).toMatch(/repoint/);
+  });
+
+  test("applied and configured open is ok with no detail", () => {
+    const check = jobsIntakeCheck(intake({}), cleaned(), { nowMs: NOW });
+    expect(check.status).toBe("ok");
+    expect(check.detail).toBeUndefined();
+  });
+
+  test("applied and closed degrades on stale drain evidence — a closed intake must not claim a drain it cannot see", () => {
+    const check = jobsIntakeCheck(
+      intake({ configuredAccepting: false }),
+      cleaned({ lastOkPassAt: new Date(NOW - 10 * 60_000).toISOString() }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("degraded");
+    expect(check.detail).toMatch(
+      /drain progress is unknown — its last successful pass was 600s ago/,
+    );
+    expect(check.lastSuccessAt).toBe(new Date(NOW - 10 * 60_000).toISOString());
+  });
+
+  test("applied and closed degrades when the measuring loop is down or has never passed", () => {
+    const notRunning = jobsIntakeCheck(
+      intake({ configuredAccepting: false }),
+      cleaned({ started: false, passes: 0, lastPassAt: null, lastOkPassAt: null, evidence: null }),
+      { nowMs: NOW },
+    );
+    expect(notRunning.status).toBe("degraded");
+    expect(notRunning.detail).toMatch(/drain progress is unknown.*not running/s);
+
+    const neverPassed = jobsIntakeCheck(
+      intake({ configuredAccepting: false }),
+      cleaned({ lastOkPassAt: null, evidence: null }),
+      { nowMs: NOW },
+    );
+    expect(neverPassed.status).toBe("degraded");
+    expect(neverPassed.detail).toMatch(/drain progress is unknown.*no successful pass/s);
+  });
+
+  test("applied and closed reads ok with the drain counts once the measurement is fresh", () => {
+    const draining = jobsIntakeCheck(
+      intake({ configuredAccepting: false }),
+      cleaned({
+        evidence: { retainedServer: 5, unfinishedServer: 3, overdueResults: 0, overdueRecords: 0 },
+      }),
+      { nowMs: NOW },
+    );
+    expect(HealthCheckSchema.parse(draining)).toBeTruthy();
+    expect(draining.status).toBe("ok");
+    expect(draining.metrics).toEqual({ unfinishedServer: 3, retainedServer: 5 });
+    expect(draining.detail).toMatch(/3 unfinished and 5 retained jobs remain/);
+    expect(draining.detail).toMatch(/retirement is complete only when both reach zero/);
+    expect(draining.lastSuccessAt).toBe(new Date(NOW - 1_000).toISOString());
+
+    const drained = jobsIntakeCheck(intake({ configuredAccepting: false }), cleaned(), {
+      nowMs: NOW,
+    });
+    expect(drained.status).toBe("ok");
+    expect(drained.metrics).toEqual({ unfinishedServer: 0, retainedServer: 0 });
+    expect(drained.detail).toMatch(/intake is closed and drained/);
+  });
+
+  test("a fresh pass that carried no measurement is refused, never read as healthy", () => {
+    // The same fail-closed pin the capacity check carries: a fresh pass
+    // always measures, so a refactor that ever produces this shape must read
+    // as error, not as an assumed drained store.
+    const check = jobsIntakeCheck(
+      intake({ configuredAccepting: false }),
+      cleaned({ evidence: null }),
+      { nowMs: NOW },
+    );
+    expect(check.status).toBe("error");
+    expect(check.detail).toMatch(/carried no measurement/);
+  });
+
+  test("the drain evidence's staleness bound is the cleanup cadence's own multiple, overridable for the leg", () => {
+    const snapshot = cleaned({ lastOkPassAt: new Date(NOW - 30_000).toISOString() });
+    expect(
+      jobsIntakeCheck(intake({ configuredAccepting: false }), snapshot, { nowMs: NOW }).status,
+    ).toBe("ok");
+    expect(
+      jobsIntakeCheck(intake({ configuredAccepting: false }), snapshot, {
+        nowMs: NOW,
+        staleAfterMs: 20_000,
+      }).status,
+    ).toBe("degraded");
+    // The default is derived from the cleanup cadence constant, like the
+    // capacity check's.
+    expect(JOBS_CLEANUP_STALE_AFTER_MS).toBe(3 * 60_000);
   });
 });

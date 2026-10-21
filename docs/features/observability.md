@@ -70,6 +70,7 @@ terminates untrusted traffic (decision 4).
 | `helix.jobs.fetch.dispatch` | the outbound fetch handler's dispatch of its one governed GET — the mint→answer hop to the edge's signed callback (ADR-0006), a client child span of the attempt's own `helix.jobs.execute` root. Carries the same bounded identity as the execute span; the final `helix.outcome` is `JOBS_FETCH_DISPATCH_OUTCOMES` (see below) and the callback's own error code / the abort's classification ride `helix.reason`. The target URL, the callback base and the instruction token never appear on it |
 | `helix.jobs.recover` | the jobs recovery sweeper's disposition of one interrupted job — a root consumer span, one per job a pass dispositioned (never for consistent work the pass passes through); carries the same bounded identity as the execute span. Its final `helix.outcome` is `JOBS_RECOVER_OUTCOMES` (see below) |
 | `helix.jobs.cleanup` | the jobs cleanup loop's physical-retention pass — a root consumer span, one per pass (the loop's cadence, never per row). Its final `helix.outcome` is `JOBS_CLEANUP_OUTCOMES` (`ok` / `failed`), and the pass's batch-bounded removal counts ride `helix.jobs.cleanup.results_removed` / `helix.jobs.cleanup.records_retired`; the lag and saturation measurements the pass took are graded by the `jobs_cleanup` / `jobs_capacity` health checks, not carried here |
+| `helix.jobs.intake` | the jobs service's intake apply — a root consumer span, one per attempt to make the configured `JOBS_ACCEPTING` posture durable on the store under the admission lock (boot, then capped-backoff retries while the store does not answer). Its final `helix.outcome` is `JOBS_INTAKE_OUTCOMES` (`opened` / `closed` / `refused` / `unavailable`; the last two grade ERROR), with `helix.jobs.server` and, on an applied posture, `helix.jobs.intake.changed`. `refused` is the repointing guard: the store is bound to, or holds records of, another server. The resulting state and a closed server's drain progress are graded by the `jobs_intake` health check |
 | `helix.connections.mine` | the portal's `GET /api/v1/connections/mine` route — My Connections' metadata-only list |
 | `helix.connections.disconnect` | the portal's `DELETE /api/v1/connections/mine/:id` route — the one-transaction disconnect; carries `helix.outcome` ∈ {`disconnected`, `already_removed`}, `helix.provider_ref`, `helix.env`, and the killed-attempt count (`helix.attempts_killed`) — never the caller's identity |
 
@@ -223,7 +224,9 @@ looked up:
   `jobs.admission.capacity_refused` log event, never a dimension here),
   `not_found` (an identical-bytes replay of a job whose public record access
   has expired — the 404 an unknown job answers with, no work created while
-  the row is still retained), and
+  the row is still retained), `intake_closed` (new work refused because this
+  server's intake is closed by its own configuration or by the durable intake
+  row — 503 `jobs_disabled`; retained-key recovery is decided before it), and
   `unavailable` (the acceptance store could not decide) — beside
   `helix.app_id` and `helix.jobs.generation` (pinned by the same suite's
   submit scan). The cancellation's is `JOBS_CANCEL_OUTCOMES`: `requested`

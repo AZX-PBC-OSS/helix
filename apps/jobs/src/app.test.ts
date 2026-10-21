@@ -5,6 +5,7 @@ import {
   JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
+  JOBS_INTAKE_CHECK,
   JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
@@ -16,6 +17,7 @@ import { buildApp } from "./app.js";
 import type { JobsCleanupSnapshot } from "./cleanup.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
+import type { JobsIntakeSnapshot } from "./intake.js";
 import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import { JobsStorage } from "./storage.js";
@@ -40,6 +42,7 @@ import {
 const CONFIG = loadJobsConfig({
   JOBS_SERVER_ID: "jobs",
   JOBS_DATABASE_URL: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
+  JOBS_ACCEPTING: "true",
   JOBS_EDGE_TO_JOBS_SECRET: "uFEfLTTVeHJK0+P/dQEWv8ccOyFrkZw7InR0I52V4/0=",
   JOBS_PORTAL_TO_JOBS_SECRET: "jUwQKa33JNljh0jULeithrh3JOL8dUmxPJknzGCjQBA=",
   JOBS_JOBS_TO_EDGE_SECRET: "gDZ5bWRVuYC58CVmc4rXPjvCzEtuoQZ4Hn0v2UXPUaU=",
@@ -74,6 +77,7 @@ async function depsWith(
   worker: JobsRunnerSnapshot = RUNNING_WORKER,
   recovery: () => JobsRecoverySnapshot = () => RUNNING_RECOVERY(),
   cleanup: () => JobsCleanupSnapshot = runningCleanup,
+  intake: () => JobsIntakeSnapshot = RUNNING_INTAKE,
 ) {
   return {
     storage,
@@ -85,6 +89,7 @@ async function depsWith(
     worker: () => worker,
     recovery,
     cleanup,
+    intake,
     capacityLimits: resolveJobsCapacityLimits(),
   };
 }
@@ -100,6 +105,15 @@ const RUNNING_RECOVERY = (): JobsRecoverySnapshot => ({
   lastOkPassAt: new Date().toISOString(),
   reconciled: 0,
   lifecycle: { outstanding: 0, oldestPendingAt: null },
+});
+
+/** The supervision state of a serving composition: the configured intake applied open. */
+const RUNNING_INTAKE = (): JobsIntakeSnapshot => ({
+  configuredAccepting: true,
+  phase: "applied",
+  boundServer: null,
+  appliedAt: new Date().toISOString(),
+  lastAttemptAt: new Date().toISOString(),
 });
 
 describe("GET /health", () => {
@@ -147,6 +161,7 @@ describe("GET /health", () => {
         metrics: { passes: 1, resultsRemoved: 0, recordsRetired: 0 },
         lastSuccessAt: expect.any(String),
       },
+      { name: JOBS_INTAKE_CHECK, status: "ok" },
     ]);
     await app.close();
     await storage.stop();

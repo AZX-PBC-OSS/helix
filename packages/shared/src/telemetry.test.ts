@@ -118,6 +118,22 @@ describe("the telemetry vocabulary", () => {
     );
   });
 
+  it("keeps the intake apply's outcome vocabulary bounded and duplicate-free", () => {
+    // The jobs service's intake applier's own endings on the
+    // `helix.jobs.intake` span: opened/closed are the designed answers,
+    // refused and unavailable are the failure exits the span grades ERROR
+    // on. A word outside the set is a vocabulary no alert can group on.
+    expect([...telemetry.JOBS_INTAKE_OUTCOMES]).toEqual([
+      "opened",
+      "closed",
+      "refused",
+      "unavailable",
+    ]);
+    expect(new Set(telemetry.JOBS_INTAKE_OUTCOMES).size).toBe(
+      telemetry.JOBS_INTAKE_OUTCOMES.length,
+    );
+  });
+
   it("orders the duration buckets ascending and covers past a slow LLM stream", () => {
     const buckets = [...telemetry.DURATION_BUCKETS_MS];
     expect(buckets).toEqual([...buckets].sort((a, b) => a - b));

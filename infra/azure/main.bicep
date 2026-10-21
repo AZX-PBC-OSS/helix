@@ -322,9 +322,12 @@ param deployDevGateway bool = false
 @description('Deploy the background-jobs plane (ADR-0045): its private database provisioning is unconditional (an apply must never be able to delete the jobs store — a re-enabled jobs plane reuses its retained records), and this flag gates the jobs container app, the edge / dev-gateway / portal jobs wiring, and the kv-platform jobs DSN secrets + the jobs server\'s three signing roots + the <namePrefix>-jobs-migrate job (README "Background jobs"). Flip it off only to park the feature; the retained store stays.')
 param deployJobs bool = true
 
-@description('The `jobs` server\'s serving state (background-jobs design §8). `serving` advertises its types for new grants; `retiring` withdraws them from new-grant discovery while keeping every route, credential and the service itself, so retained jobs stay readable, cancellable and cleaned up. Fully disabling the plane (deployJobs=false) is the step after retirement completes, never a substitute for it.')
+@description('The `jobs` server\'s serving state (background-jobs design §8). `serving` advertises its types for new grants; `retiring` withdraws them from new-grant discovery and closes intake (new submissions are refused 503 jobs_disabled) while keeping every route, credential and the service itself, so retained jobs stay readable, cancellable, recoverable by their retry keys and cleaned up. Fully disabling the plane (deployJobs=false) is the step after retirement completes, never a substitute for it.')
 @allowed(['serving', 'retiring'])
 param jobsServerState string = 'serving'
+
+@description('Whether the `jobs` server admits new submissions (JOBS_ACCEPTING). Closing intake while serving drains an active installation without withdrawing its types; a retiring server never admits new work, so this is forced closed when jobsServerState is retiring. Retained-key recovery, reads, cancellation, lifecycle delivery and cleanup continue either way.')
+param jobsIntakeOpen bool = true
 
 @description('Deploy the OpenTelemetry collector + Application Insights (ADR-0037). Off leaves every service exporting nowhere — `startTelemetry` returns its inert handle — which is the platform\'s documented default state and exactly how it ran before this existed.')
 param deployTelemetry bool = true
@@ -1634,7 +1637,7 @@ var jobsServerConfig = {
   server: 'jobs'
   endpoint: jobsEndpoint
   state: jobsServerState
-  accepting: jobsServerState == 'serving'
+  accepting: jobsServerState == 'serving' && jobsIntakeOpen
   types: ['jobs:fetch']
   databaseUrl: jobsDbConn
   roots: jobsRoots
@@ -1748,6 +1751,7 @@ module jobsApp 'modules/containerapp.bicep' = if (deployApps && deployJobs) {
       { name: 'JOBS_PORT', value: '3003' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'JOBS_SERVER_ID', value: 'jobs' }
+      { name: 'JOBS_ACCEPTING', value: string(jobsServerConfig.accepting) }
       { name: 'JOBS_EDGE_PROD_URL', value: jobsServer.edgeProdCallbackUrl }
       { name: 'JOBS_EDGE_DEV_URL', value: jobsServer.edgeDevCallbackUrl }
       { name: 'JOBS_DATABASE_URL', secretRef: 'jobs-database-url' }

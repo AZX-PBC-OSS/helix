@@ -79,6 +79,7 @@ function storeOptions(
     databaseUrl: RUNTIME_DSN,
     statementTimeoutMs: 10_000,
     limits,
+    accepting: true,
     enqueuer,
     log: LOG,
   };
@@ -518,6 +519,7 @@ describe("the acceptance transaction", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: {
         enqueue: async (withinTx, job) => {
           // The loser's own runner row first — the one that must roll back.
@@ -576,6 +578,7 @@ describe("the acceptance transaction", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: {
         enqueue: async (withinTx, job) => {
           const runnerJobId = await createPgbossEnqueuer(boss).enqueue(withinTx, job);
@@ -629,6 +632,7 @@ describe("the acceptance transaction", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: {
         enqueue: async (withinTx, job) => {
           await createPgbossEnqueuer(boss).enqueue(withinTx, job);
@@ -688,6 +692,7 @@ describe("the acceptance transaction", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: {
         enqueue: async (withinTx, job) => {
           if (!killed) {
@@ -854,6 +859,7 @@ describe("the acceptance transaction", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: createPgbossEnqueuer(boss),
       log: LOG,
     };
@@ -900,6 +906,7 @@ describe("the acceptance transaction", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: {
         enqueue: async (withinTx, job) => {
           entered?.();
@@ -1673,6 +1680,7 @@ describe("capacity admission", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: {
         enqueue: async (withinTx, job) => {
           entered?.();
@@ -1686,6 +1694,7 @@ describe("capacity admission", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 1_500,
       limits: LIMITS,
+      accepting: true,
       enqueuer: createPgbossEnqueuer(boss),
       log: LOG,
     });
@@ -1761,6 +1770,7 @@ describe("capacity admission", () => {
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
       limits: LIMITS,
+      accepting: true,
       enqueuer: {
         enqueue: async (withinTx, job) => {
           entered?.();

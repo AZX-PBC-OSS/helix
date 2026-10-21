@@ -3,11 +3,11 @@
  * health producers report and body-aware alert rules key on.
  *
  * **Each service reports only its owned checks, never all of them**: the jobs
- * service owns storage, worker, sweeper, capacity, cleanup and lifecycle
- * recovery; the edge owns the bounded reachability probe; the portal owns
- * lifecycle delivery. A name absent from a body means that service does not
- * hold that dependency — it is never read as healthy, because the shared rule
- * is that missing or stale evidence never reports `ok`.
+ * service owns storage, worker, sweeper, capacity, cleanup, intake and
+ * lifecycle recovery; the edge owns the bounded reachability probe; the
+ * portal owns lifecycle delivery. A name absent from a body means that service
+ * does not hold that dependency — it is never read as healthy, because the
+ * shared rule is that missing or stale evidence never reports `ok`.
  */
 
 /** The jobs service's store: reachable, at the pinned schema, carrying the platform queue policy. */
@@ -26,6 +26,8 @@ export const JOBS_LIFECYCLE_DELIVERY_CHECK = "jobs_lifecycle_delivery";
 export const JOBS_LIFECYCLE_RECOVERY_CHECK = "jobs_lifecycle_recovery";
 /** The jobs service's cleanup loop lag (overdue record/result cleanup degrades). */
 export const JOBS_CLEANUP_CHECK = "jobs_cleanup";
+/** The jobs service's intake: the configured accepting state applied durably, and the closed intake's drain progress. */
+export const JOBS_INTAKE_CHECK = "jobs_intake";
 
 /**
  * Every check name in the vocabulary, as a bounded set — the inventory an
@@ -41,5 +43,6 @@ export const JOBS_HEALTH_CHECK_NAMES = [
   JOBS_LIFECYCLE_DELIVERY_CHECK,
   JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_CLEANUP_CHECK,
+  JOBS_INTAKE_CHECK,
 ] as const;
 export type JobsHealthCheckName = (typeof JOBS_HEALTH_CHECK_NAMES)[number];

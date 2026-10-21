@@ -64,6 +64,16 @@ export const JOBS_APP_LIFECYCLE_QUALIFIED = `${JOBS_SCHEMA}.app_lifecycle`;
 export const JOBS_JOB_RECORD_QUALIFIED = `${JOBS_SCHEMA}.job_record`;
 
 /**
+ * The intake store — the service's durable admission gate: one singleton row
+ * carrying whether this store accepts new work and which server id it is
+ * bound to. Admissions read it under the admission lock (so an apply
+ * serializes with every in-flight enqueue transaction) and the intake apply
+ * writes it under the same lock; the row always exists (the migration seeds
+ * it open), so the runtime takes no INSERT or DELETE on it.
+ */
+export const JOBS_INTAKE_QUALIFIED = `${JOBS_SCHEMA}.intake`;
+
+/**
  * The jobs-owned qualified table names are interpolated into SQL statements —
  * assert the bare-identifier invariant once, at the definition, so the
  * interpolation can never become a second input path (the same screen the
@@ -73,6 +83,7 @@ for (const table of [
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
   JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_JOB_RECORD_QUALIFIED,
+  JOBS_INTAKE_QUALIFIED,
 ]) {
   if (!/^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/.test(table)) {
     throw new Error(

@@ -652,6 +652,7 @@ describe("instruction telemetry", () => {
         { canned: { outcome: "invalid_input" } },
         { canned: { outcome: "type_unknown" } },
         { canned: { outcome: "closed" } },
+        { canned: { outcome: "intake_closed" } },
         { canned: { outcome: "unseen" } },
         { canned: { outcome: "capacity_exceeded" } },
       ] as const;
@@ -670,12 +671,12 @@ describe("instruction telemetry", () => {
       expect(spans.map((s) => s.attributes[ATTR_OUTCOME])).toEqual(expectOutcomes);
       // The 202s and the fixed 4xx refusals are the route working as
       // designed — UNSET spans. Every 5xx answer grades ERROR by the uniform
-      // rule, and two of this vocabulary's exits answer 503: the unseen wait
-      // (a misconfigured edge submitting before the portal's delivery — a
-      // run of these is visible) and the acceptance store failing to decide.
-      // The 429 capacity refusal is an ordinary busy answer — UNSET with the
-      // rest.
-      expect(spans.map((s) => s.status.code)).toEqual([0, 0, 0, 0, 0, 0, 2, 0, 2]);
+      // rule, and three of this vocabulary's exits answer 503: the unseen
+      // wait (a misconfigured edge submitting before the portal's delivery —
+      // a run of these is visible), the closed-intake refusal, and the
+      // acceptance store failing to decide. The 429 capacity refusal is an
+      // ordinary busy answer — UNSET with the rest.
+      expect(spans.map((s) => s.status.code)).toEqual([0, 0, 0, 0, 0, 0, 2, 2, 0, 2]);
     } finally {
       await app.close();
       await storage.stop();

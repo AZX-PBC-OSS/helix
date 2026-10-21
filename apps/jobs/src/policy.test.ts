@@ -13,6 +13,7 @@ import {
   JOBS_FETCH_DEADLINE_SECONDS,
   JOBS_HEARTBEAT_SECONDS,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_INTAKE_QUALIFIED,
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_PGBOSS_SCHEMA,
   JOBS_QUEUE_NAME,
@@ -295,6 +296,15 @@ describe("the runner's pg-boss constructor policy", () => {
     // load guard as the other stores'.
     expect(JOBS_SCHEMA).toBe("jobs");
     expect(JOBS_JOB_RECORD_QUALIFIED).toBe("jobs.job_record");
+  });
+
+  test("the intake table's qualified name is the jobs schema's own — the identifier the gate, the apply and the migration interpolate", () => {
+    // The intake table's name rides into the admission gate's read, the
+    // applier's transaction, the compat probes and the migration's DDL by
+    // interpolation — one rename must move them together, under the same
+    // bare-identifier load guard as the other stores'.
+    expect(JOBS_SCHEMA).toBe("jobs");
+    expect(JOBS_INTAKE_QUALIFIED).toBe("jobs.intake");
   });
 
   test("every installed type's policy carries the input contract admission validates new work against", () => {

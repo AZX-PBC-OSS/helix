@@ -2,7 +2,11 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { JobsDeploymentConfigSchema, jobsCatalogueServers } from "@azx-pbc/shared";
+import {
+  JobsDeploymentConfigSchema,
+  advertisedJobTypes,
+  jobsCatalogueServers,
+} from "@azx-pbc/shared";
 
 import { loadEdgeJobsConfig } from "../../edge/src/config.js";
 import {
@@ -67,6 +71,7 @@ const JOBS_KEYS = [
   "JOBS_PORT",
   "JOBS_DATABASE_URL",
   "JOBS_SERVER_ID",
+  "JOBS_ACCEPTING",
   "JOBS_EDGE_TO_JOBS_SECRET",
   "JOBS_PORTAL_TO_JOBS_SECRET",
   "JOBS_JOBS_TO_EDGE_SECRET",
@@ -110,6 +115,7 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
     // three roots, both callback destinations.
     const jobs = loadJobsConfig(minted);
     expect(jobs.serverId).toBe("jobs");
+    expect(jobs.accepting).toBe(true);
     expect(new URL(jobs.databaseUrl).pathname).toBe(`/helix_jobs_${SUFFIX}`);
     expect(jobs.edgeProdCallbackUrl).toBe(`https://${BASE_DOMAIN}:${8080 + OFFSET}`);
     expect(jobs.edgeDevCallbackUrl).toBe(`https://${BASE_DOMAIN}:${8082 + OFFSET}`);
@@ -189,8 +195,8 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
         jobs: {
           server: "jobs",
           endpoint: edgeDoc.servers.jobs?.endpoint,
-          state: "serving",
-          accepting: true,
+          state: catalogueDoc.servers.jobs?.state,
+          accepting: minted.JOBS_ACCEPTING === "true",
           types: ["jobs:fetch"],
           databaseUrl: minted.JOBS_DATABASE_URL,
           edgeProdCallbackUrl: minted.JOBS_EDGE_PROD_URL,
@@ -236,6 +242,71 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
         HELIX_JOBS_ENABLED: "maybe",
       }),
     ).toThrow(/HELIX_JOBS_ENABLED must be 1\/true or 0\/false — got "maybe"/);
+  });
+
+  it("a retiring stack withdraws the catalogue and closes intake, keeping routing and delivery", () => {
+    const retiring = stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+      ...CHILD_ENV,
+      HELIX_JOBS_STATE: "retiring",
+    });
+    const catalogue = resolveJobsCatalogueServers(retiring);
+    expect(catalogue.servers.jobs?.state).toBe("retiring");
+    expect(advertisedJobTypes(catalogue)).toEqual([]);
+    expect(retiring.JOBS_ACCEPTING).toBe("false");
+    expect(loadJobsConfig(retiring).accepting).toBe(false);
+    // Routing and lifecycle delivery are untouched by retirement.
+    expect(retiring.EDGE_JOBS_CONFIG).toBe(minted.EDGE_JOBS_CONFIG);
+    expect(retiring.PORTAL_JOBS_CONFIG).toBe(minted.PORTAL_JOBS_CONFIG);
+    expect(() => assertDeploymentConfig(retiring)).not.toThrow();
+    // The full map the documents project from is a valid retiring entry.
+    expect(
+      JobsDeploymentConfigSchema.safeParse({
+        servers: {
+          jobs: {
+            server: "jobs",
+            endpoint: edgeDoc.servers.jobs?.endpoint,
+            state: "retiring",
+            accepting: false,
+            types: ["jobs:fetch"],
+            databaseUrl: retiring.JOBS_DATABASE_URL,
+            edgeProdCallbackUrl: retiring.JOBS_EDGE_PROD_URL,
+            edgeDevCallbackUrl: retiring.JOBS_EDGE_DEV_URL,
+            roots: {
+              edgeToJobs: retiring.JOBS_EDGE_TO_JOBS_SECRET,
+              jobsToEdge: retiring.JOBS_JOBS_TO_EDGE_SECRET,
+              portalToJobs: retiring.JOBS_PORTAL_TO_JOBS_SECRET,
+            },
+          },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("a serving stack can close intake without withdrawing its types", () => {
+    const closed = stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+      ...CHILD_ENV,
+      HELIX_JOBS_ACCEPTING: "0",
+    });
+    expect(resolveJobsCatalogueServers(closed).servers.jobs?.state).toBe("serving");
+    expect(closed.JOBS_ACCEPTING).toBe("false");
+    expect(loadJobsConfig(closed).accepting).toBe(false);
+  });
+
+  it("refuses an open intake on a retiring stack and typo'd intake knobs", () => {
+    const run = (extra: NodeJS.ProcessEnv) => () =>
+      stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+        ...CHILD_ENV,
+        ...extra,
+      });
+    expect(run({ HELIX_JOBS_STATE: "retiring", HELIX_JOBS_ACCEPTING: "1" })).toThrow(
+      /HELIX_JOBS_ACCEPTING cannot be true for a retiring server/,
+    );
+    expect(run({ HELIX_JOBS_STATE: "retired" })).toThrow(
+      /HELIX_JOBS_STATE must be serving or retiring — got "retired"/,
+    );
+    expect(run({ HELIX_JOBS_ACCEPTING: "yes" })).toThrow(
+      /HELIX_JOBS_ACCEPTING must be 1\/true or 0\/false — got "yes"/,
+    );
   });
 
   it("the documented HELIX_JOBS_ENABLED spellings resolve on and off", () => {

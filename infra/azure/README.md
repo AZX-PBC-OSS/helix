@@ -502,16 +502,27 @@ kv-platform and the jobs migrate job.
   own output would be a dependency cycle with its callbacks). After an apply,
   the `jobsEndpoint` output must equal `https://` + the `jobsFqdn` output; the
   edge's `jobs_reachability` health check reports a mismatch as unreachable.
-- **Serving, retiring, disabled.** `jobsServerState` is `serving` by default.
-  `retiring` withdraws `jobs:fetch` from new-grant discovery in the portal while
-  keeping the service, its routing and every credential in place, so retained
-  jobs stay readable and cancellable. It does not yet close intake for apps
-  that already hold the grant. `deployJobs=false` removes the jobs container
-  app and every jobs key from the edge, dev-gateway and portal — ordinary
-  hosting then has no jobs dependency — and leaves the database and its
-  retained records in place. Only disable after the retained records are gone;
-  re-enabling reuses the same store, and the portal resynchronizes every app's
-  current lifecycle state to it (step 5 of the upgrade procedure below).
+- **Serving, closed, retiring, disabled.** `jobsServerState` is `serving` by
+  default. `jobsIntakeOpen=false` keeps a serving server advertised but closes
+  its intake: the jobs service gets `JOBS_ACCEPTING=false` and refuses new
+  submissions with 503 `jobs_disabled`. `retiring` withdraws `jobs:fetch` from
+  new-grant discovery in the portal and always closes intake, whatever
+  `jobsIntakeOpen` says. Saved grants stay. In both cases the service, its
+  routing and every credential stay in place, so retained-key recovery, reads,
+  cancellation, lifecycle delivery and cleanup keep working. The closure is
+  durable in the jobs store and serialized with in-flight enqueues: once the
+  new revision's apply lands, no replica of either revision admits new work.
+- **Retirement completes from the health body.** Watch the jobs service's
+  `jobs_intake` check. It reports the remaining `unfinishedServer` and
+  `retainedServer` counts, and `intake is closed and drained` when both are
+  zero. Only then set `deployJobs=false`. That removes the jobs container app
+  and every jobs key from the edge, dev-gateway and portal — ordinary hosting
+  then has no jobs dependency — and leaves the database and any records in
+  place. A temporary shutdown is not retirement: re-enabling reuses the same
+  store, its retained keys recover their original jobs, and the portal
+  resynchronizes every app's current lifecycle state to it (step 5 of the
+  upgrade procedure below). The jobs service refuses a store bound to a
+  different server id (`jobs_intake` reports `error`).
 - **Known limitation: vault-wide reads.** kv-platform grants the edge, portal,
   egress and dev-gateway identities Key Vault Secrets User on the whole vault
   (`modules/rbac.bicep`), so those identities can read the jobs roots and DSNs

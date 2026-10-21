@@ -39,6 +39,12 @@ export interface JobsServiceConfig {
   /** This server's private store (`JOBS_DATABASE_URL`) — no other component holds it. */
   databaseUrl: string;
   /**
+   * The intake posture this instance applies durably to its store at boot
+   * (`JOBS_ACCEPTING`): `true` admits new work, `false` closes intake. Both
+   * the config and the durable row must say open before work is admitted.
+   */
+  accepting: boolean;
+  /**
    * Per-query `statement_timeout` for the service's pool
    * (`JOBS_STATEMENT_TIMEOUT_MS`; default {@link DEFAULT_JOBS_STATEMENT_TIMEOUT_MS}).
    * The same pool-exhaustion guard the edge's and egress's pools carry.
@@ -136,6 +142,24 @@ function requireCallbackUrl(env: NodeJS.ProcessEnv, key: string, tier: string): 
 }
 
 /**
+ * Require the intake posture: exactly `true` or `false` (trimmed). There is
+ * no default and no looser spelling (`1`, `yes`, `TRUE`) on purpose — a
+ * deployment that cannot say whether it admits work must not boot into a
+ * half-known intake state, and a typo must never silently read as open.
+ */
+function requireAccepting(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.JOBS_ACCEPTING;
+  const value = raw?.trim();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(
+    `JOBS_ACCEPTING is required and must be exactly "true" or "false" — the intake ` +
+      `posture this instance applies durably to its store at boot` +
+      (raw === undefined || value === "" ? "" : ` (got ${JSON.stringify(raw)})`),
+  );
+}
+
+/**
  * Resolve the capacity limits this service enforces: the shared platform
  * defaults, with this deployment's optional `JOBS_LIMITS` override (the JSON
  * form of the shared override schema — the same fields a deployment map's
@@ -172,8 +196,9 @@ function loadCapacityLimits(env: NodeJS.ProcessEnv): JobsCapacityLimits {
 /**
  * Resolve the boot configuration from the environment. Throws — with the key
  * named — on a missing credential, a value that cannot describe a valid
- * server identity or store, a signing root that cannot derive a key, or a
- * callback destination that is not an internal base URL. The caller decides
+ * server identity or store, a signing root that cannot derive a key, an
+ * intake posture that is not exactly `true`/`false`, or a callback
+ * destination that is not an internal base URL. The caller decides
  * what a throw means (the production boot lets it crash the process: fail at
  * startup, never at the first request).
  */
@@ -203,6 +228,7 @@ export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServic
   return {
     serverId: parsedServerId.data,
     databaseUrl: parsedDatabaseUrl.data,
+    accepting: requireAccepting(env),
     statementTimeoutMs: requirePositiveMs(
       env.JOBS_STATEMENT_TIMEOUT_MS,
       DEFAULT_JOBS_STATEMENT_TIMEOUT_MS,

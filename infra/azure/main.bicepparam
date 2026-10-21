@@ -38,7 +38,8 @@ param imageTag = readEnvironmentVariable('HELIX_IMAGE_TAG', 'latest')
 // (with deployApps) to stand up dev-api.<appsDomain>. Needs devDbPassword + the
 // helix_dev role (README step 4) and the pre-deploy riders in the feature doc.
 param deployDevGateway = false
-// param jobsServerState = 'serving'   // 'retiring' withdraws the jobs types from new grants (README "Background jobs")
+// param jobsServerState = 'serving'   // 'retiring' withdraws the jobs types from new grants and closes intake (README "Background jobs")
+// param jobsIntakeOpen = true          // false closes intake on a serving server (README "Background jobs")
 
 // Egress firewall (ADR-0001/0005). true = deploy the Azure Firewall that enforces
 // the egress-only network zone (the PRIMARY SSRF/egress control). Secure default.

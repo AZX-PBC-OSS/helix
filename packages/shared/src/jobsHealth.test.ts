@@ -5,6 +5,7 @@ import {
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
   JOBS_HEALTH_CHECK_NAMES,
+  JOBS_INTAKE_CHECK,
   JOBS_LIFECYCLE_DELIVERY_CHECK,
   JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_REACHABILITY_CHECK,
@@ -13,7 +14,7 @@ import {
 } from "./jobsHealth.js";
 
 describe("the jobs health-check vocabulary", () => {
-  it("carries the eight ADR-0009 names, spelled exactly as the architecture fixes them", () => {
+  it("carries the nine ADR-0009 names, spelled exactly as the architecture fixes them", () => {
     expect(JOBS_HEALTH_CHECK_NAMES).toEqual([
       "jobs_database",
       "jobs_worker",
@@ -23,6 +24,7 @@ describe("the jobs health-check vocabulary", () => {
       "jobs_lifecycle_delivery",
       "jobs_lifecycle_recovery",
       "jobs_cleanup",
+      "jobs_intake",
     ]);
   });
 
@@ -36,6 +38,7 @@ describe("the jobs health-check vocabulary", () => {
       JOBS_LIFECYCLE_DELIVERY_CHECK,
       JOBS_LIFECYCLE_RECOVERY_CHECK,
       JOBS_CLEANUP_CHECK,
+      JOBS_INTAKE_CHECK,
     ];
     for (const name of names) {
       expect((JOBS_HEALTH_CHECK_NAMES as readonly string[]).includes(name)).toBe(true);

@@ -53,10 +53,12 @@ import type { Span } from "@opentelemetry/api";
 import type { JobsAdmission, JobsAdmissionResult } from "./acceptance.js";
 import type { JobsCancelRequest, JobsCancelVerdict, JobsCancellation } from "./cancellation.js";
 import type { JobsCleanupSnapshot } from "./cleanup.js";
+import type { JobsIntakeSnapshot } from "./intake.js";
 import {
   jobsCapacityCheck,
   jobsCleanupCheck,
   jobsDatabaseCheck,
+  jobsIntakeCheck,
   jobsLifecycleRecoveryCheck,
   jobsSweeperCheck,
   jobsWorkerCheck,
@@ -122,6 +124,13 @@ export interface JobsDeps {
    * live probe.
    */
   cleanup: () => JobsCleanupSnapshot;
+  /**
+   * The intake applier's supervision state, read per request — `/health`'s
+   * `jobs_intake` check grades whether the configured intake posture is
+   * durably applied (and, closed, the drain progress the cleanup loop's
+   * measurement carries), never a live probe.
+   */
+  intake: () => JobsIntakeSnapshot;
   /**
    * The resolved capacity limits this deployment enforces — the
    * `jobs_capacity` check grades server-wide retained saturation against
@@ -220,6 +229,11 @@ const SUBMIT_REFUSALS: Record<
   type_unknown: { status: 403, code: "forbidden" },
   closed: { status: 403, code: "forbidden" },
   unseen: { status: 503, code: "jobs_unavailable" },
+  // A definitive refusal of new work — but 503, not 403: a closed intake may
+  // reopen on the same store, and a client's earlier uncertain submission is
+  // still recovered by retrying its key (the retained-key comparison decided
+  // before this).
+  intake_closed: { status: 503, code: "jobs_disabled" },
   // An ordinary busy refusal — the worker is fine; the caller backs off and
   // retries (spec criterion 55: capacity refusal alone never marks anything
   // unhealthy, and this 4xx keeps the span UNSET with it).
@@ -699,6 +713,7 @@ export function buildApp(deps: JobsDeps): FastifyInstance {
         jobsCapacityCheck(deps.cleanup(), deps.capacityLimits),
         jobsLifecycleRecoveryCheck(deps.recovery()),
         jobsCleanupCheck(deps.cleanup()),
+        jobsIntakeCheck(deps.intake(), deps.cleanup()),
       ];
       reply.header("cache-control", "no-store"); // a degraded body must not be cached
       return HealthStatusSchema.parse({

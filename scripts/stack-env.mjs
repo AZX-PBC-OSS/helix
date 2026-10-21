@@ -11,7 +11,9 @@
 // service's own env). The map is minted here so every consumer's configuration
 // comes from one source and cannot disagree; each consumer's boot parse still
 // refuses anything outside its custody. HELIX_JOBS_ENABLED=0|false resolves the
-// stack fully disabled — no jobs key is emitted anywhere.
+// stack fully disabled — no jobs key is emitted anywhere. HELIX_JOBS_STATE
+// (serving|retiring) and HELIX_JOBS_ACCEPTING (1/true|0/false) set the server's
+// state and intake; a retiring server always has closed intake.
 //
 // Usage:
 //   node scripts/stack-env.mjs --ports
@@ -74,6 +76,43 @@ function jobsEnabled(env) {
 }
 
 /**
+ * HELIX_JOBS_STATE and HELIX_JOBS_ACCEPTING: the server's state (unset ⇒
+ * serving) and its intake (unset ⇒ open while serving, closed while
+ * retiring). A retiring server never admits new work, so an explicit open
+ * intake on one is refused rather than silently ignored; typos fail loudly.
+ */
+function jobsServerPosture(env) {
+  const rawState = env.HELIX_JOBS_STATE;
+  let state = "serving";
+  if (rawState !== undefined && rawState.trim() !== "") {
+    state = rawState.trim().toLowerCase();
+    if (state !== "serving" && state !== "retiring") {
+      throw new Error(
+        `HELIX_JOBS_STATE must be serving or retiring — got ${JSON.stringify(rawState)}`,
+      );
+    }
+  }
+  const rawAccepting = env.HELIX_JOBS_ACCEPTING;
+  let accepting = state === "serving";
+  if (rawAccepting !== undefined && rawAccepting.trim() !== "") {
+    const value = rawAccepting.trim().toLowerCase();
+    if (value === "1" || value === "true") accepting = true;
+    else if (value === "0" || value === "false") accepting = false;
+    else {
+      throw new Error(
+        `HELIX_JOBS_ACCEPTING must be 1/true or 0/false — got ${JSON.stringify(rawAccepting)}`,
+      );
+    }
+    if (accepting && state === "retiring") {
+      throw new Error(
+        "HELIX_JOBS_ACCEPTING cannot be true for a retiring server — retirement never admits new work",
+      );
+    }
+  }
+  return { state, accepting };
+}
+
+/**
  * Resolve the jobs plane for a non-zero-offset stack: the service's listen
  * port and private DSN, plus each consumer's permitted subset of one local
  * deployment map. The runtime DSN keeps the developer's own `JOBS_DATABASE_URL`
@@ -87,6 +126,7 @@ function jobsEnabled(env) {
  */
 function resolveJobsPlane({ offset, suffix, baseDomain, ports, env }) {
   if (offset === 0 || !jobsEnabled(env)) return { enabled: false, env: {} };
+  const posture = jobsServerPosture(env);
 
   // Two DSN sources with two different degradations. The operator's explicit
   // `JOBS_DATABASE_URL` is a choice: set-but-unparseable refuses the resolution
@@ -156,13 +196,16 @@ function resolveJobsPlane({ offset, suffix, baseDomain, ports, env }) {
       }),
       // The credential-free catalogue projection: state + installed types,
       // nothing else (the derivation `jobsCatalogueServers` owns in
-      // @azx-pbc/shared; the contract test pins this document to it).
+      // @azx-pbc/shared; the contract test pins this document to it). The
+      // edge and portal documents above do not change with the state: a
+      // retiring server keeps its routing and its lifecycle delivery.
       PORTAL_JOBS_CATALOGUE: JSON.stringify({
-        servers: { [JOBS_SERVER_ID]: { state: "serving", types: [JOBS_TYPE] } },
+        servers: { [JOBS_SERVER_ID]: { state: posture.state, types: [JOBS_TYPE] } },
       }),
       // The jobs service's own env: its identity, its private store, and its
       // three direction roots — the only place all three exist together.
       JOBS_SERVER_ID: JOBS_SERVER_ID,
+      JOBS_ACCEPTING: String(posture.accepting),
       ...(runtimeDsn ? { JOBS_DATABASE_URL: runtimeDsn } : {}),
       JOBS_EDGE_TO_JOBS_SECRET: roots.edgeToJobs,
       JOBS_PORTAL_TO_JOBS_SECRET: roots.portalToJobs,

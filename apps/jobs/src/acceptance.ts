@@ -16,6 +16,7 @@ import { storedExecutionError } from "./execution.js";
 import { projectedPublicStatus, recordHorizonPassed } from "./observation.js";
 import {
   JOBS_QUEUE_NAME,
+  JOBS_INTAKE_QUALIFIED,
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_TYPE_POLICIES,
   jobsAppEnvGroupId,
@@ -34,26 +35,31 @@ import {
  * The order inside the transaction is the adopted contract's, and each
  * precedence is load-bearing:
  *
- * 1. the app's lifecycle row is locked `FOR UPDATE` (the lifecycle
- *    authority's serialization boundary, `lifecycleEligibilityInTx`) — the
- *    lock is held to the caller's commit, so a lifecycle
- *    apply cannot land between this decision and its effect, and a second
- *    admission for the same app cannot interleave with this one;
- * 2. the retained-key comparison — before new-input validation, before the
- *    eligibility verdict is applied, and therefore before intake closes to
- *    it. Identical original bytes recover the original job even when
- *    validation rules have since changed; different bytes conflict even when
- *    they are invalid for new work;
- * 3. new-work validation (the type's installed policy and its input
- *    contract) — refusing here creates no job and no key claim;
- * 4. the eligibility verdict — `closed` refuses new work finally, `unseen`
+ * 1. the retained-key comparison — before the admission lock, before
+ *    new-input validation, and before every gate that can close to new work.
+ *    Identical original bytes recover the original job even when validation
+ *    rules have since changed; different bytes conflict even when they are
+ *    invalid for new work; and a replay never queues behind the admission
+ *    lock, because it never takes it;
+ * 2. new-work validation (the type's installed policy and its input
+ *    contract) — refusing here creates no job and no key claim, and the
+ *    answer is about the payload even while intake is closed;
+ * 3. the server-wide admission lock (`JOBS_ADMISSION_LOCK_KEY`) — held to
+ *    the caller's commit, so the intake read, the eligibility verdicts and
+ *    the capacity count that follow cannot interleave with another
+ *    admission's, or with a concurrent intake apply (which takes the same
+ *    lock);
+ * 4. the intake check — this process's configured posture AND the durable
+ *    intake row must both admit; a closed intake refuses new work with 503
+ *    `jobs_disabled` while retained-key recovery above still works;
+ * 5. the eligibility verdict — `closed` refuses new work finally, `unseen`
  *    leaves the generation to the portal's delivery (retryable 503);
- * 5. the capacity comparison — new work is admitted only inside the
- *    server-wide admission lock's serialization (design §4), against the
- *    unfinished and retained occupancy of the app/environment and the whole
- *    server, under the platform's resolved limits. Full or lowered capacity
- *    refuses with no eviction and no slot taken;
- * 6. the runner enqueue over the borrowed connection, then the wrapper
+ * 6. the capacity comparison — new work is admitted only inside the
+ *    admission lock's serialization (design §4), against the unfinished and
+ *    retained occupancy of the app/environment and the whole server, under
+ *    the platform's resolved limits. Full or lowered capacity refuses with
+ *    no eviction and no slot taken;
+ * 7. the runner enqueue over the borrowed connection, then the wrapper
  *    insert — the unique scoped-key constraint is the concurrent-retry
  *    backstop; a claim lost to it rolls the already-enqueued runner job back
  *    with the transaction, and the retry identity is resolved against the
@@ -83,6 +89,7 @@ export type JobsAdmissionResult =
   | { outcome: "invalid_input" }
   | { outcome: "type_unknown" }
   | { outcome: "closed" }
+  | { outcome: "intake_closed" }
   | { outcome: "unseen" }
   | { outcome: "capacity_exceeded" }
   | { outcome: "not_found" };
@@ -186,17 +193,18 @@ const KEY_SCOPE_PREDICATE =
  * The new-work admission's serialization lock (design §4: "A local admission
  * lock and bounded indexed counts are sufficient for the initial scale") — one
  * transaction-scoped advisory lock per store. It is taken only for new work,
- * after the retained-key comparison and the eligibility verdict, and held to
- * the transaction's end, so an occupancy count and the insert it guards cannot
- * interleave with another admission's — across types, apps and replicas
- * (advisory locks are per-database state, and the store's replicas share one
- * database). Same-app admissions are already serialized by the lifecycle row
- * lock taken first; the advisory lock is taken second everywhere, so no
- * admission ordering can cycle. The jobs store is private to one server (the
- * deployment schema refuses two servers sharing a database), so one fixed key
- * cannot collide with another server's or another component's locks.
+ * after the retained-key comparison and validation, and held to the
+ * transaction's end: the intake read, the eligibility verdicts and the
+ * occupancy count it guards cannot interleave with another admission's, or
+ * with a concurrent intake apply — across types, apps and replicas (advisory
+ * locks are per-database state, and the store's replicas share one database).
+ * Same-app admissions serialize on this lock taken first and the lifecycle
+ * row lock second everywhere, so no admission ordering can cycle. The jobs
+ * store is private to one server (the deployment schema refuses two servers
+ * sharing a database), so one fixed key cannot collide with another server's
+ * or another component's locks.
  */
-const JOBS_ADMISSION_LOCK_KEY = 6_283_185_307;
+export const JOBS_ADMISSION_LOCK_KEY = 6_283_185_307;
 
 /** The occupancy one new-work admission is compared against (design §4's four controls). */
 interface JobsOccupancyCounts {
@@ -267,6 +275,12 @@ export interface JobsAcceptanceStoreOptions {
    * grant can change them.
    */
   limits: JobsCapacityLimits;
+  /**
+   * This process's configured intake posture (`JOBS_ACCEPTING`): new work is
+   * admitted only while BOTH this flag and the durable intake row admit.
+   * Required — a store that cannot say whether it admits work must not guess.
+   */
+  accepting: boolean;
   /** The runner enqueue borrowed into the transaction — the real adapter wraps the runtime pg-boss. */
   enqueuer: JobsEnqueuer;
   log: JobsAcceptanceLogger;
@@ -291,6 +305,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
   private readonly databaseUrl: string;
   private readonly statementTimeoutMs: number;
   private readonly limits: JobsCapacityLimits;
+  private readonly accepting: boolean;
   private readonly enqueuer: JobsEnqueuer;
   private readonly log: JobsAcceptanceLogger;
 
@@ -301,6 +316,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     this.databaseUrl = options.databaseUrl;
     this.statementTimeoutMs = options.statementTimeoutMs;
     this.limits = options.limits;
+    this.accepting = options.accepting;
     this.enqueuer = options.enqueuer;
     this.log = options.log;
   }
@@ -388,11 +404,10 @@ export class JobsAcceptanceStore implements JobsAdmission {
   ): Promise<JobsAdmissionResult> {
     const { claims } = request;
 
-    // The serialization boundary first — the lock held to this transaction's
-    // end. Its VERDICT is applied only to new work, after the retained-key
-    // comparison has had its chance to recover.
-    const eligibility = await lifecycleEligibilityInTx(client, claims.appId, claims.generation);
-
+    // The retained-key comparison first — before the admission lock, before
+    // validation, and before every gate that can close to new work: a replay
+    // recovers (or conflicts) immediately, never queuing behind the lock it
+    // must not take.
     if (claims.idempotencyKey !== null) {
       const existing = await this.findKeyMapping(client, claims, claims.idempotencyKey);
       if (existing) {
@@ -401,13 +416,37 @@ export class JobsAcceptanceStore implements JobsAdmission {
     }
 
     // New work: the type's installed policy and its input contract, before
-    // the eligibility verdict is applied (design §4's ordering: key, then
+    // the gates that close to it (design §4's ordering: key, then
     // validation, then intake). A refusal creates nothing.
     const policy = (JOBS_TYPE_POLICIES as Record<string, JobsTypePolicy | undefined>)[claims.type];
     if (!policy) {
       throw new JobsAdmissionRefusal({ outcome: "type_unknown" });
     }
     const input = validatedInput(policy, request.body);
+
+    // The serialization boundary — the lock held to this transaction's end.
+    // Every gate judged after it (intake, eligibility, capacity) and the
+    // insert it guards are indivisible against concurrent new work and
+    // against a concurrent intake apply, which takes the same lock.
+    await client.query("SELECT pg_advisory_xact_lock($1)", [JOBS_ADMISSION_LOCK_KEY]);
+
+    // Intake: this process's configured posture AND the durable row must
+    // both admit. The read is safe under the lock — an intake apply cannot
+    // land between this read and this commit, because it takes the same
+    // lock. A missing row refuses (the gate fails closed: the migration
+    // seeds it, and a store without it is not ready to serve).
+    const intake = await client.query<{ accepting: boolean; server: string | null }>(
+      `SELECT accepting, server FROM ${JOBS_INTAKE_QUALIFIED} WHERE singleton`,
+    );
+    const intakeRow = intake.rows[0];
+    const intakeOpen = intakeRow !== undefined && intakeRow.accepting;
+    const intakeBoundHere =
+      intakeRow === undefined || intakeRow.server === null || intakeRow.server === claims.server;
+    if (!this.accepting || !intakeOpen || !intakeBoundHere) {
+      throw new JobsAdmissionRefusal({ outcome: "intake_closed" });
+    }
+
+    const eligibility = await lifecycleEligibilityInTx(client, claims.appId, claims.generation);
 
     if (eligibility.verdict === "closed") {
       throw new JobsAdmissionRefusal({ outcome: "closed" });
@@ -417,14 +456,13 @@ export class JobsAcceptanceStore implements JobsAdmission {
     }
 
     // Capacity, at the design's position in the order (after validation and
-    // intake, before enqueue): under one server-wide serialization lock, so
-    // the count and the insert it guards are indivisible against concurrent
-    // new work — across types, apps and replicas. Only admissions consume
-    // capacity (completion and physical cleanup only free it), so nothing
-    // outside this lock can move the counts in the unsafe direction. A
-    // lowered limit refuses with no eviction; a retained-key replay above
-    // never reached this point (no lock, no slot).
-    await client.query("SELECT pg_advisory_xact_lock($1)", [JOBS_ADMISSION_LOCK_KEY]);
+    // intake, before enqueue): under the same server-wide serialization lock
+    // taken above, so the count and the insert it guards are indivisible
+    // against concurrent new work — across types, apps and replicas. Only
+    // admissions consume capacity (completion and physical cleanup only free
+    // it), so nothing outside this lock can move the counts in the unsafe
+    // direction. A lowered limit refuses with no eviction; a retained-key
+    // replay above never reached this point (no lock, no slot).
     const occupancy = await this.countOccupancy(client, claims);
     const saturated = saturatedCapacityCap(occupancy, this.limits);
     if (saturated) {

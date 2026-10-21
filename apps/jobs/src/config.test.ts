@@ -19,6 +19,7 @@ const ROOT_CALLBACK = "gDZ5bWRVuYC58CVmc4rXPjvCzEtuoQZ4Hn0v2UXPUaU=";
 const VALID = {
   JOBS_SERVER_ID: "jobs",
   JOBS_DATABASE_URL: "postgresql://helix_jobs:pw@db:5432/helix_jobs",
+  JOBS_ACCEPTING: "true",
   JOBS_EDGE_TO_JOBS_SECRET: ROOT_EDGE,
   JOBS_PORTAL_TO_JOBS_SECRET: ROOT_PORTAL,
   JOBS_JOBS_TO_EDGE_SECRET: ROOT_CALLBACK,
@@ -31,6 +32,7 @@ describe("loadJobsConfig", () => {
     const config = loadJobsConfig({ ...VALID });
     expect(config.serverId).toBe("jobs");
     expect(config.databaseUrl).toBe("postgresql://helix_jobs:pw@db:5432/helix_jobs");
+    expect(config.accepting).toBe(true);
     expect(config.statementTimeoutMs).toBe(DEFAULT_JOBS_STATEMENT_TIMEOUT_MS);
     // The roots derive to the direction keys the receiver verifies with —
     // HKDF over each root, domain-separated.
@@ -152,6 +154,26 @@ describe("loadJobsConfig", () => {
       JOBS_DATABASE_URL: "  postgresql://helix_jobs:pw@db:5432/helix_jobs  ",
     });
     expect(config.serverId).toBe("jobs");
+  });
+
+  test("JOBS_ACCEPTING resolves exactly true or false, trimmed", () => {
+    expect(loadJobsConfig({ ...VALID, JOBS_ACCEPTING: "true" }).accepting).toBe(true);
+    expect(loadJobsConfig({ ...VALID, JOBS_ACCEPTING: "false" }).accepting).toBe(false);
+    expect(loadJobsConfig({ ...VALID, JOBS_ACCEPTING: "  true  " }).accepting).toBe(true);
+  });
+
+  test("a missing, blank or misspelled JOBS_ACCEPTING is a boot error naming the key", () => {
+    // No default and no loose spelling: `1`, `yes` and `TRUE` are refusals —
+    // a deployment that cannot say whether it admits work must not boot into
+    // a half-known intake state, and a typo must never read as open.
+    const rest = { ...VALID } as Record<string, string>;
+    delete rest.JOBS_ACCEPTING;
+    expect(() => loadJobsConfig(rest)).toThrow(/JOBS_ACCEPTING is required/);
+    for (const bad of ["", "   ", "1", "yes", "TRUE", "False", "open"]) {
+      expect(() => loadJobsConfig({ ...VALID, JOBS_ACCEPTING: bad }), JSON.stringify(bad)).toThrow(
+        /JOBS_ACCEPTING/,
+      );
+    }
   });
 
   test("the three direction keys derive apart — no two directions share a key", () => {

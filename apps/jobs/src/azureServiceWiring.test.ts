@@ -256,6 +256,9 @@ function jobsAppEnv(fullEntry: Record<string, unknown>): Record<string, string> 
       env[entry.name] = expr.slice(1, -1);
     } else if (expr === "logLevel") {
       env[entry.name] = "info";
+    } else if (expr === "string(jobsServerConfig.accepting)") {
+      // Bicep's string() of a bool is its lowercase literal.
+      env[entry.name] = String(fullEntry.accepting);
     } else if (expr.startsWith("jobsServer.")) {
       env[entry.name] = resolveOnEntry(expr, fullEntry);
     } else if (expr.includes("deployTelemetry")) {
@@ -577,6 +580,7 @@ describe("each container app receives only its custody", () => {
     ).toEqual(
       [
         "HOST",
+        "JOBS_ACCEPTING",
         "JOBS_DATABASE_URL",
         "JOBS_EDGE_DEV_URL",
         "JOBS_EDGE_PROD_URL",
@@ -739,13 +743,14 @@ describe("callback destinations never cross tiers", () => {
 });
 
 describe("serving, retiring and the fully disabled deployment", () => {
-  it("the state param has exactly the two serving states, and retiring withdraws only the catalogue", () => {
+  it("the state param has exactly the two serving states, and retiring withdraws the catalogue and closes intake", () => {
     expect(MAIN).toMatch(
       /@allowed\(\['serving', 'retiring'\]\)\s*\nparam jobsServerState string = 'serving'/,
     );
+    expect(MAIN).toMatch(/\nparam jobsIntakeOpen bool = true\n/);
     const configBlock = varBlock("jobsServerConfig");
     expect(configBlock).toContain("state: jobsServerState");
-    expect(configBlock).toContain("accepting: jobsServerState == 'serving'");
+    expect(configBlock).toContain("accepting: jobsServerState == 'serving' && jobsIntakeOpen");
 
     // The edge projection carries no state: routing, credentials and the
     // service stay in place while retiring — only the catalogue changes.
@@ -770,6 +775,32 @@ describe("serving, retiring and the fully disabled deployment", () => {
       EDGE_JOBS_CONFIG: evaluateMap(projection("edgeJobsConfig").fields, { jobs: retiring }),
     });
     expect(Object.keys(retiringEdge.servers)).toEqual(["jobs"]);
+    expect(retiringEdge.servers.jobs?.endpoint).toBe(SAMPLE_ENDPOINT);
+    // The edge's document is byte-identical to the serving one: retirement
+    // changes no route and no credential.
+    expect(evaluateMap(projection("edgeJobsConfig").fields, { jobs: retiring })).toBe(
+      evaluateMap(projection("edgeJobsConfig").fields, { jobs: FULL_ENTRY }),
+    );
+    // A retiring entry that claims open intake is refused by the shared schema.
+    expect(JobsServerEntrySchema.safeParse({ ...retiring, accepting: true }).success).toBe(false);
+  });
+
+  it("the jobs service's intake follows the template's derivation for every state", () => {
+    // `accepting: jobsServerState == 'serving' && jobsIntakeOpen`, evaluated
+    // for each combination and fed through the real container-app env to the
+    // real loader.
+    const cases: Array<[string, boolean, boolean]> = [
+      ["serving", true, true],
+      ["serving", false, false],
+      ["retiring", true, false],
+      ["retiring", false, false],
+    ];
+    for (const [state, intakeOpen, expected] of cases) {
+      const accepting = state === "serving" && intakeOpen;
+      expect(accepting).toBe(expected);
+      const config = loadJobsConfig(jobsAppEnv({ ...FULL_ENTRY, state, accepting }));
+      expect(config.accepting, `${state} with jobsIntakeOpen=${intakeOpen}`).toBe(expected);
+    }
   });
 
   it("a fully disabled deployment evaluates to the empty map everywhere", () => {

@@ -2,6 +2,7 @@ import {
   JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
+  JOBS_INTAKE_CHECK,
   JOBS_LIFECYCLE_RECOVERY_CHECK,
   JOBS_SWEEPER_CHECK,
   JOBS_WORKER_CHECK,
@@ -12,6 +13,7 @@ import {
 } from "@azx-pbc/shared";
 
 import { JOBS_CLEANUP_STALE_AFTER_MS, type JobsCleanupSnapshot } from "./cleanup.js";
+import type { JobsIntakeSnapshot } from "./intake.js";
 import {
   JOBS_LIFECYCLE_RECOVERY_OVERDUE_MS,
   JOBS_RECOVERY_STALE_AFTER_MS,
@@ -100,6 +102,12 @@ export function jobsDatabaseCheck(snapshot: JobsStorageSnapshot): HealthCheck {
         ...base,
         status: "error",
         detail: `the app lifecycle store is absent${since} — run the migration command`,
+      };
+    case "intake_missing":
+      return {
+        ...base,
+        status: "error",
+        detail: `the intake store is absent${since} — run the migration command`,
       };
     case "record_missing":
       return {
@@ -449,6 +457,100 @@ export function jobsCapacityCheck(
         status: "ok",
         metrics,
         lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
+      };
+    }
+  }
+}
+
+/**
+ * Grade the intake applier's supervision into the `jobs_intake` health check
+ * — the same pure-lookup shape as the other checks. Until the configured
+ * posture is durably applied the check degrades (a replica whose apply has
+ * not landed is exactly the window where replicas can disagree about
+ * admitting work); a refusal is an error, because every admission of this
+ * server refuses while the store answers to another; and a closed intake
+ * reads its drain progress from the cleanup loop's measurement with the same
+ * freshness rule the `jobs_capacity` check applies — no fresh evidence, no
+ * claimed drain state.
+ */
+export function jobsIntakeCheck(
+  intake: JobsIntakeSnapshot,
+  cleanup: JobsCleanupSnapshot,
+  options?: { staleAfterMs?: number; nowMs?: number },
+): HealthCheck {
+  const staleAfterMs = options?.staleAfterMs ?? JOBS_CLEANUP_STALE_AFTER_MS;
+  const nowMs = options?.nowMs ?? Date.now();
+  const base = { name: JOBS_INTAKE_CHECK };
+
+  if (intake.phase === "not_started" || intake.phase === "pending") {
+    return {
+      ...base,
+      status: "degraded",
+      detail:
+        "the configured intake state has not been applied to the store yet" +
+        (intake.configuredAccepting
+          ? ""
+          : " — other replicas may still admit new work until it is"),
+    };
+  }
+  if (intake.phase === "refused") {
+    return {
+      ...base,
+      status: "error",
+      detail: `the store is bound to the "${intake.boundServer ?? "unknown"}" server namespace and is refused for this server — repoint the configuration or the store and restart`,
+    };
+  }
+  // Applied and configured open: the intake is simply admitting.
+  if (intake.configuredAccepting) {
+    return { ...base, status: "ok" };
+  }
+  // Applied and closed: the drain progress is the cleanup loop's own
+  // measurement, graded at the capacity check's freshness — no fresh
+  // evidence, no claimed drain state.
+  const freshness = passFreshness(cleanup, staleAfterMs, nowMs);
+  switch (freshness.kind) {
+    case "not_started":
+      return {
+        ...base,
+        status: "degraded",
+        detail:
+          "intake is closed; drain progress is unknown — the cleanup loop that measures retained storage is not running",
+      };
+    case "no_pass":
+      return {
+        ...base,
+        status: "degraded",
+        detail:
+          "intake is closed; drain progress is unknown — the cleanup loop that measures retained storage has completed no successful pass" +
+          lastPassAgeSuffix(freshness.lastPassSeconds),
+      };
+    case "stale":
+      return {
+        ...base,
+        status: "degraded",
+        detail: `intake is closed; drain progress is unknown — its last successful pass was ${freshness.sinceSeconds}s ago`,
+        lastSuccessAt: cleanup.lastOkPassAt ?? undefined,
+      };
+    case "fresh": {
+      const evidence = cleanup.evidence;
+      if (!evidence) {
+        // Unreachable through the loop (a fresh pass always measures) —
+        // refuse the healthy reading rather than assume one.
+        return { ...base, status: "error", detail: "the cleanup pass carried no measurement" };
+      }
+      const metrics = {
+        unfinishedServer: evidence.unfinishedServer,
+        retainedServer: evidence.retainedServer,
+      };
+      const drained = evidence.unfinishedServer === 0 && evidence.retainedServer === 0;
+      return {
+        ...base,
+        status: "ok",
+        metrics,
+        detail: drained
+          ? "intake is closed and drained — no unfinished or retained jobs remain"
+          : `intake is closed; ${evidence.unfinishedServer} unfinished and ${evidence.retainedServer} retained jobs remain — retirement is complete only when both reach zero`,
+        lastSuccessAt: cleanup.lastOkPassAt ?? undefined,
       };
     }
   }

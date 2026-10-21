@@ -15,6 +15,7 @@ import { migrateJobsStorage } from "./migrate.js";
 import {
   JOBS_APP_LIFECYCLE_QUALIFIED,
   JOBS_INSTRUCTION_BURNS_QUALIFIED,
+  JOBS_INTAKE_QUALIFIED,
   JOBS_JOB_RECORD_QUALIFIED,
   JOBS_QUEUE_NAME,
   JOBS_PGBOSS_SCHEMA,
@@ -161,6 +162,7 @@ describe("jobs storage migration and startup compatibility", () => {
       // itself; the summary's list names only what an OLDER store needed
       // added in place.
       jobRecordColumnsAdded: [],
+      intakeStoreExisted: false,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -189,6 +191,7 @@ describe("jobs storage migration and startup compatibility", () => {
       lifecycleStoreExisted: true,
       jobRecordExisted: true,
       jobRecordColumnsAdded: [],
+      intakeStoreExisted: true,
     });
     await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
       kind: "compatible",
@@ -368,6 +371,102 @@ describe("jobs storage migration and startup compatibility", () => {
       await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
         expect.objectContaining({ lifecycleStoreExisted: true }),
       );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test(
+    "a dropped intake store is its own verdict and the migration recreates it open and unbound",
+    slow,
+    async () => {
+      // The intake store is the durable admission gate: without it every
+      // admission refuses (the gate fails closed), so its absence is an
+      // operator-facing answer distinct from the runner schema's. The
+      // recreation seeds the row OPEN with no bound server — an existing
+      // installation keeps admitting until a service applies its configured
+      // state.
+      await asMigrateRole(`DROP TABLE ${JOBS_INTAKE_QUALIFIED}`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "intake_missing",
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ intakeStoreExisted: false }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+      const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        const row = (
+          await pool.query<{ accepting: boolean; server: string | null }>(
+            `SELECT accepting, server FROM ${JOBS_INTAKE_QUALIFIED}`,
+          )
+        ).rows[0];
+        expect(row).toEqual({ accepting: true, server: null });
+      } finally {
+        await pool.end();
+      }
+    },
+  );
+
+  test(
+    "missing intake-store privileges are detected and re-granted by the migration",
+    slow,
+    async () => {
+      await asMigrateRole(`REVOKE SELECT ON ${JOBS_INTAKE_QUALIFIED} FROM ${JOBS_RUNTIME_ROLE}`);
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "runtime_privileges",
+        missing: expect.arrayContaining([`SELECT on ${JOBS_INTAKE_QUALIFIED}`]),
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ intakeStoreExisted: true }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
+    },
+  );
+
+  test(
+    "the runtime role holds no INSERT or DELETE on the intake row, and a re-run never reopens a closed one",
+    slow,
+    async () => {
+      // The row always exists (the migration seeds it) and closure is
+      // durable: the runtime reads and updates it, never removes from it or
+      // re-inserts it, and a migration re-run must not reopen a row an
+      // operator closed — reopening is a service configured accepting
+      // applying itself.
+      await asMigrateRole(`UPDATE ${JOBS_INTAKE_QUALIFIED} SET accepting = false`);
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ intakeStoreExisted: true }),
+      );
+      const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
+      try {
+        const row = (
+          await pool.query<{ accepting: boolean }>(`SELECT accepting FROM ${JOBS_INTAKE_QUALIFIED}`)
+        ).rows[0];
+        expect(row?.accepting).toBe(false);
+        for (const privilege of ["INSERT", "DELETE"] as const) {
+          expect(
+            (
+              await pool.query<{ ok: boolean }>(
+                `SELECT has_table_privilege(current_user, '${JOBS_INTAKE_QUALIFIED}', '${privilege}') AS ok`,
+              )
+            ).rows[0]?.ok,
+            `the runtime role must not hold ${privilege} on the intake row`,
+          ).toBe(false);
+        }
+      } finally {
+        await pool.end();
+      }
+      // Restore the open row — the file's legs are serial, and the legs after
+      // this one expect the compatible store the migration last left.
+      await asMigrateRole(`UPDATE ${JOBS_INTAKE_QUALIFIED} SET accepting = true`);
       await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
         kind: "compatible",
         schemaVersion: PGBOSS_SCHEMA_VERSION,
