@@ -18,11 +18,16 @@ import {
   SPAN_CONSENT_START_DEV,
   SPAN_CONSENT_STATUS_EDGE,
   SPAN_JOBS_FETCH_EDGE,
+  SPAN_JOBS_SNAPSHOT_EDGE,
+  SPAN_JOBS_SNAPSHOT_DEV,
+  SPAN_JOBS_SUBMIT_EDGE,
+  SPAN_JOBS_SUBMIT_DEV,
 } from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
 import { buildDevGateway } from "./devGateway/app.js";
 import type { DevTokenStore } from "./devGateway/devTokenStore.js";
+import { SESSION_COOKIE } from "./auth/cookies.js";
 import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "./test/config.js";
 import {
   FakeBlobReader,
@@ -32,6 +37,16 @@ import {
   FakeSessionStore,
   registryEntry,
 } from "./test/fakes.js";
+import {
+  buildDevJobsEdge,
+  buildJobsEdge,
+  FakeJobsForwarder,
+  JOBS_DEV_BEARER,
+  JOBS_DEV_ORIGIN,
+  JOBS_HOST,
+  JOBS_ORIGIN,
+  seedJobsSession,
+} from "./test/jobsGateway.js";
 
 /**
  * ADR-0037 decision 7, end to end: propagation runs **inward only**.
@@ -384,6 +399,118 @@ describe("the jobs→edge fetch-callback route is a fresh root too", () => {
     expect(span).toBeDefined();
     expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
     expect(span?.parentSpanContext).toBeUndefined();
+    const dump = JSON.stringify(
+      recording.spans().map((sp) => ({ ...sp.attributes, ...sp.spanContext() })),
+    );
+    expect(dump).not.toContain(APP_TRACE_ID);
+    expect(dump).not.toContain("vendor=app-chosen");
+  });
+});
+
+describe("the app-facing jobs routes are fresh roots too", () => {
+  /**
+   * The jobs routes are plain app-host calls: a hosted app (and a dev-mode
+   * page) chooses every header on them, `traceparent` included. Both serving
+   * surfaces must open their own trace whatever the caller planted — and the
+   * forward to the jobs plane must happen inside that fresh root.
+   */
+  it("a hosted app's planted traceparent never parents the route spans", async () => {
+    propagation.setGlobalPropagator(propagatorFor("inject-only"));
+    const harness = buildJobsEdge();
+    const token = await seedJobsSession(harness.sessions, "alice");
+
+    const submitted = await harness.app.inject({
+      method: "POST",
+      url: "/_api/jobs/jobs/types/fetch",
+      headers: {
+        host: JOBS_HOST.host,
+        "sec-fetch-mode": "cors",
+        "content-type": "application/json",
+        origin: JOBS_ORIGIN,
+        cookie: `${SESSION_COOKIE}=${token}`,
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+      payload: '{"url":"https://api.vendor.test/v1"}',
+    });
+    expect(submitted.statusCode).toBe(202);
+
+    const polled = await harness.app.inject({
+      method: "GET",
+      url: "/_api/jobs/jobs/job-123",
+      headers: {
+        host: JOBS_HOST.host,
+        cookie: `${SESSION_COOKIE}=${token}`,
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+    });
+    expect(polled.statusCode).toBe(200);
+    await harness.app.close();
+
+    // The forwards happened: the spans under test covered real work, not an
+    // early refusal.
+    expect(harness.forwarder.submitSpecs).toHaveLength(1);
+    expect(harness.forwarder.recordSpecs.map((r) => r.operation)).toEqual(["snapshot"]);
+
+    const submitSpan = recording.spans().find((sp) => sp.name === SPAN_JOBS_SUBMIT_EDGE);
+    const snapshotSpan = recording.spans().find((sp) => sp.name === SPAN_JOBS_SNAPSHOT_EDGE);
+    for (const span of [submitSpan, snapshotSpan]) {
+      expect(span).toBeDefined();
+      expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
+      expect(span?.parentSpanContext).toBeUndefined();
+    }
+    const dump = JSON.stringify(
+      recording.spans().map((sp) => ({ ...sp.attributes, ...sp.spanContext() })),
+    );
+    expect(dump).not.toContain(APP_TRACE_ID);
+    expect(dump).not.toContain("vendor=app-chosen");
+  });
+
+  it("a dev-mode page's planted traceparent never parents the dev spans either", async () => {
+    propagation.setGlobalPropagator(propagatorFor("inject-only"));
+    const forwarder = new FakeJobsForwarder("jobs");
+    const devApp = await buildDevJobsEdge(forwarder);
+
+    const submitted = await devApp.inject({
+      method: "POST",
+      url: "/myapp/_api/jobs/jobs/types/fetch",
+      headers: {
+        host: "dev-api.local.helix.azxlabs.io",
+        "content-type": "application/json",
+        origin: JOBS_DEV_ORIGIN,
+        authorization: `Bearer ${JOBS_DEV_BEARER}`,
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+      payload: '{"url":"https://api.vendor.test/v1"}',
+    });
+    expect(submitted.statusCode).toBe(202);
+
+    const polled = await devApp.inject({
+      method: "GET",
+      url: "/myapp/_api/jobs/jobs/job-123",
+      headers: {
+        host: "dev-api.local.helix.azxlabs.io",
+        origin: JOBS_DEV_ORIGIN,
+        authorization: `Bearer ${JOBS_DEV_BEARER}`,
+        traceparent: APP_TRACEPARENT,
+        tracestate: "vendor=app-chosen",
+      },
+    });
+    expect(polled.statusCode).toBe(200);
+    await devApp.close();
+
+    expect(forwarder.submitSpecs).toHaveLength(1);
+    expect(forwarder.recordSpecs.map((r) => r.operation)).toEqual(["snapshot"]);
+
+    const submitSpan = recording.spans().find((sp) => sp.name === SPAN_JOBS_SUBMIT_DEV);
+    const snapshotSpan = recording.spans().find((sp) => sp.name === SPAN_JOBS_SNAPSHOT_DEV);
+    for (const span of [submitSpan, snapshotSpan]) {
+      expect(span).toBeDefined();
+      expect(span?.spanContext().traceId).not.toBe(APP_TRACE_ID);
+      expect(span?.parentSpanContext).toBeUndefined();
+    }
     const dump = JSON.stringify(
       recording.spans().map((sp) => ({ ...sp.attributes, ...sp.spanContext() })),
     );

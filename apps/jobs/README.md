@@ -835,11 +835,13 @@ role split; each provisions its own scratch database from
 `startRealStack()` boots the whole platform the way a developer runs it — every
 service from its normal `src/server.ts` entry point as a child process, on the
 ports `scripts/stack-env.mjs` resolves for the first offset between 5000 and
-8900 (in steps of 100) whose ports are all free. The stack env comes
+8900 (in steps of 100) whose ports are all free and which no other live stack
+has locked (an exclusive `helix-realstack-offset-<n>.lock` in the OS temp
+directory, released on close and taken over from a dead process). The stack env comes
 from `stack-env.mjs`; `scripts/ensure-db.mjs` provisions `helix_<suffix>` and
 `helix_jobs_<suffix>` and applies both migrations through the real role split.
 The harness mints its own self-signed TLS pair (trusted by the test process via
-`NODE_EXTRA_CA_CERTS` and per-request `ca`), leaves telemetry off, and sets
+`NODE_EXTRA_CA_CERTS` and per-request `ca`), leaves telemetry off by default, and sets
 exactly one dev relaxation: `EGRESS_ALLOW_PRIVATE=true`, so the outbound fetch
 can reach the harness's loopback JSON origin (`startJsonOrigin()`).
 
@@ -895,12 +897,36 @@ jobs listener; the relay forwards bytes unchanged and exposes `stack.jobsLink`:
 to the NEXT submission and then either destroys the edge-side connection
 without writing it (`drop` — a lost reply after commit) or keeps it until
 `release()` (`hold` — a reply delayed past the caller's patience), and
-`forwarded` lists every request the relay carried, in arrival order.
+`forwarded` lists every request the relay carried, in arrival order, each with
+the edge-side request headers exactly as received and the exact body bytes the
+relay forwarded.
 `stack.crash(name)` SIGKILLs a running service with no grace and no drain
 (restart it with `stack.start(name)`). `stack.jobsOwnerDsn` is the jobs
 database's owner DSN, for tests that must read a durable fact no route exposes;
-tests should prefer routes. `stack.request` and `session.api` accept a
+tests should prefer routes. `stack.jobsRoots` exposes the real jobs server's
+three signing roots (`null` under `jobsFixtures`, which expose their own) so
+tests can mint contract-valid instructions as an insider would — positive
+controls and replica races — never to bypass a route they could use instead.
+`stack.tlsCa` is the harness certificate, for a test that opens a raw TLS
+socket to the edge. `stack.request` and `session.api` accept a
 `signal` (`AbortSignal`) so a test can abandon an in-flight request.
+
+`startRealStack({ telemetry: true })` swaps the telemetry-off default for an
+in-process OTLP/HTTP JSON capture: every service exports its spans and metrics
+to `stack.telemetry.endpoint`, and `stack.telemetry.payloads` records each raw
+JSON payload in arrival order (`dropped` counts payloads past the capture's
+64 MiB storage cap). A service flushes its last export batch while it shuts
+down, so a suite that scans the payloads stops the services
+(`stack.stop(name)`) first — `stack.close()` stops every service before it
+closes the capture.
+
+`"jobsReplica"` is a second replica of the real jobs server on its own port
+(`stack.ports.jobsReplica`), sharing the database, server id, and signing roots
+with `jobs`: `startRealStack` never starts it — a test calls
+`await stack.start("jobsReplica")`, and `stop`/`restart`/`crash`/`logTail` work
+on it as on any service. It is for proving that durable burns and admission
+hold across replicas, and it cannot start under `jobsFixtures`, where the real
+jobs process does not exist.
 
 Multi-server routing and isolation are proven by contract testing, not a second
 production runner. `startRealStack({ jobsFixtures: ["alpha", "beta"] })` boots

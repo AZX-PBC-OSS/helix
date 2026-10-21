@@ -7,6 +7,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import * as http from "node:http";
@@ -51,13 +52,29 @@ import { createJobsContractFixture, type JobsContractFixture } from "./jobsContr
  * whose ports are all free at boot, so several can run side by side.
  */
 
-export type StackServiceName = "idp" | "portal" | "egress" | "jobs" | "edge" | "devGateway";
+export type StackServiceName =
+  | "idp"
+  | "portal"
+  | "egress"
+  | "jobs"
+  | "jobsReplica"
+  | "edge"
+  | "devGateway";
 
 export interface HttpReply {
   status: number;
   headers: Record<string, string | string[] | undefined>;
   text: string;
   json(): unknown;
+}
+
+export interface TelemetryCapture {
+  readonly endpoint: string;
+  /** Every OTLP payload received so far, in arrival order (raw JSON text). */
+  readonly payloads: ReadonlyArray<{ signal: "traces" | "metrics"; body: string; at: number }>;
+  /** Payloads refused by the size cap. */
+  readonly dropped: number;
+  close(): Promise<void>;
 }
 
 export interface RealStack {
@@ -73,6 +90,16 @@ export interface RealStack {
   readonly jobsOwnerDsn: string;
   /** The faultable edge→jobs relay, when the stack was started with `jobsLink: true`; otherwise null. */
   readonly jobsLink: JobsLink | null;
+  /** The harness's own TLS certificate (PEM), for a test that must open a raw TLS socket to the edge. */
+  readonly tlsCa: Buffer;
+  /** The OTLP/HTTP JSON capture the services export to, when started with `telemetry: true`; otherwise null. */
+  readonly telemetry: TelemetryCapture | null;
+  /**
+   * The real jobs server's three signing roots (base64); null under `jobsFixtures`,
+   * where the fixtures expose their own. Tests mint contract-valid instructions
+   * with them as an insider would — never to bypass a route they could use instead.
+   */
+  readonly jobsRoots: { edgeToJobs: string; jobsToEdge: string; portalToJobs: string } | null;
   /** The contract fixture servers, by id, when started with `jobsFixtures`; otherwise empty. */
   readonly jobsFixtures: Readonly<Record<string, JobsContractFixture>>;
   /**
@@ -212,7 +239,15 @@ const SCRUBBED_KEYS = new Set([
   "PORTAL_ALLOW_SELF_APPROVE",
 ]);
 
-const SERVICE_NAMES = ["idp", "portal", "egress", "jobs", "edge", "devGateway"] as const;
+const SERVICE_NAMES = [
+  "idp",
+  "portal",
+  "egress",
+  "jobs",
+  "jobsReplica",
+  "edge",
+  "devGateway",
+] as const;
 
 interface ServiceSpec {
   cwd: string;
@@ -224,6 +259,7 @@ const SERVICE_SPECS: Record<StackServiceName, ServiceSpec> = {
   portal: { cwd: "apps/portal", entry: "src/server.ts" },
   egress: { cwd: "apps/egress", entry: "src/server.ts" },
   jobs: { cwd: "apps/jobs", entry: "src/server.ts" },
+  jobsReplica: { cwd: "apps/jobs", entry: "src/server.ts" },
   edge: { cwd: "apps/edge", entry: "src/server.ts" },
   devGateway: { cwd: "apps/edge", entry: "src/devGateway/server.ts" },
 };
@@ -272,6 +308,8 @@ class BoundedLog {
 
 interface ServiceState {
   spec: ServiceSpec;
+  /** Per-service env merged over the shared stack env in spawnService — never folded into serviceEnv, which every service shares. */
+  env?: Readonly<Record<string, string>>;
   child: ChildProcess | null;
   fd: number | null;
   ring: BoundedLog;
@@ -291,10 +329,13 @@ interface StackInternals {
   databaseNames: string[];
   jobsLink: JobsLink | null;
   jobsFixtures: ReadonlyMap<string, JobsContractFixture>;
+  telemetry: TelemetryCapture | null;
   tlsCa: Buffer;
   tlsDir: string;
   request(url: string, init?: RawRequestInit): Promise<HttpReply>;
   closed: boolean;
+  /** The offset this process locked in `claimFreeOffset`, released on close; null when the caller chose the offset. */
+  lockedOffset: number | null;
 }
 
 interface RawRequestInit {
@@ -476,12 +517,81 @@ function portIsFree(port: number): Promise<boolean> {
   });
 }
 
+/** One free loopback port, claimed by listening on port 0 and reading the bound port back. */
+function claimFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createNetServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      if (address === null || typeof address === "string") {
+        probe.close(() =>
+          reject(new Error("realStack: the port allocator never bound a loopback port")),
+        );
+        return;
+      }
+      probe.close(() => resolve(address.port));
+    });
+  });
+}
+
+/** The lock file that reserves one offset for one live stack, across vitest worker processes. */
+function offsetLockPath(offset: number): string {
+  return path.join(tmpdir(), `helix-realstack-offset-${offset}.lock`);
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /**
- * The first candidate offset whose every port is free. Never frees a port:
- * a listener there may be another suite's live stack or a developer's
- * server. The order starts at a random candidate so parallel suites rarely
- * probe the same one; a lost race fails that suite's boot with the
- * listener's own error rather than corrupting another stack.
+ * Reserve an offset with an exclusively created lock file holding this
+ * process's pid. A port probe alone cannot do it: two suites booting in
+ * parallel workers can both see an offset's ports free before either binds,
+ * and the later one then dies on EADDRINUSE. A lock left by a process that no
+ * longer exists (a killed test run) is taken over.
+ */
+function tryLockOffset(offset: number): boolean {
+  const lockPath = offsetLockPath(offset);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(lockPath, String(process.pid), { flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    let holder = Number.NaN;
+    try {
+      holder = Number(readFileSync(lockPath, "utf8").trim());
+    } catch {
+      // Removed between the create and the read: retry the create.
+    }
+    if (Number.isInteger(holder) && holder > 0 && processAlive(holder)) return false;
+    rmSync(lockPath, { force: true });
+  }
+  return false;
+}
+
+function unlockOffset(offset: number): void {
+  const lockPath = offsetLockPath(offset);
+  try {
+    if (readFileSync(lockPath, "utf8").trim() === String(process.pid)) rmSync(lockPath);
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * The first candidate offset this process could lock and whose every port is
+ * free. Never frees a port: a listener there may be another suite's live
+ * stack or a developer's server. The order starts at a random candidate so
+ * parallel suites rarely contend for the same lock. The caller releases the
+ * lock with `unlockOffset` when the stack closes.
  */
 async function claimFreeOffset(env: NodeJS.ProcessEnv): Promise<number> {
   const start = (randomBytes(1)[0] ?? 0) % OFFSET_CANDIDATES.length;
@@ -490,8 +600,10 @@ async function claimFreeOffset(env: NodeJS.ProcessEnv): Promise<number> {
     if (offset === undefined) continue;
     const ports = stackPorts(offset, env);
     if (ports === null) continue;
+    if (!tryLockOffset(offset)) continue;
     const free = await Promise.all(ports.map(portIsFree));
     if (free.every(Boolean)) return offset;
+    unlockOffset(offset);
   }
   throw new Error(
     `realStack: no candidate port offset (${OFFSET_CANDIDATES[0]}–${OFFSET_CANDIDATES.at(-1)}) has all of its ports free`,
@@ -549,7 +661,7 @@ function spawnService(stack: StackInternals, name: StackServiceName): ChildProce
   }
   const child = spawn("node", ["--import", "tsx", state.spec.entry], {
     cwd: path.join(ROOT_DIR, state.spec.cwd),
-    env: stack.serviceEnv,
+    env: { ...stack.serviceEnv, ...state.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   state.child = child;
@@ -622,6 +734,8 @@ function readinessUrl(stack: StackInternals, name: StackServiceName): string {
       return `http://localhost:${ports.egress}/health`;
     case "jobs":
       return `http://localhost:${ports.jobs}/health`;
+    case "jobsReplica":
+      return `http://localhost:${ports.jobsReplica}/health`;
     case "edge":
       return `https://${baseDomain}:${ports.edge}/health`;
     case "devGateway":
@@ -639,7 +753,7 @@ function isReady(name: StackServiceName, body: HealthStatus): boolean {
   // The dev IdP has no /health: its discovery document is the readiness body.
   // The egress reports liveness only.
   if (name === "idp" || name === "egress") return true;
-  if (name === "portal" || name === "jobs") return body.status === "ok";
+  if (name === "portal" || name === "jobs" || name === "jobsReplica") return body.status === "ok";
   return checkOk(body, "jobs_reachability");
 }
 
@@ -706,6 +820,13 @@ async function waitServiceReady(
 }
 
 async function startService(stack: StackInternals, name: StackServiceName): Promise<void> {
+  // Under contract fixtures the real jobs process does not exist, so neither
+  // does a replica of it: the fixtures stand in for `jobs` itself.
+  if (name === "jobsReplica" && stack.jobsFixtures.size > 0) {
+    throw new Error(
+      "realStack: jobsReplica is a replica of the real jobs server, which does not run under jobsFixtures",
+    );
+  }
   spawnService(stack, name);
   await waitListener(stack, name, BOOT_LISTENER_TIMEOUT_MS);
   await waitServiceReady(stack, name, READY_TIMEOUT_MS);
@@ -756,9 +877,15 @@ async function closeStack(stack: StackInternals): Promise<void> {
   for (const name of [...SERVICE_NAMES].reverse()) {
     await stopService(stack, name);
   }
+  // The capture closes after the services: a SIGTERM'd service flushes its
+  // last export batch while it shuts down, and the capture must still be
+  // listening to receive it.
+  if (stack.telemetry !== null) await stack.telemetry.close();
   if (stack.jobsLink !== null) await stack.jobsLink.close();
   for (const fixture of stack.jobsFixtures.values()) await fixture.stop();
   rmSync(stack.tlsDir, { recursive: true, force: true });
+  // The listeners are gone: the offset may be reused even if the drop fails.
+  if (stack.lockedOffset !== null) unlockOffset(stack.lockedOffset);
   await dropStackDatabases(stack.platformOwnerDsn, stack.databaseNames);
 }
 
@@ -1109,6 +1236,84 @@ export async function startJsonOrigin(): Promise<ControlledJsonOrigin> {
   };
 }
 
+// ── the OTLP capture ─────────────────────────────────────────────────────────
+
+/** The capture's storage cap, across every signal: past it, payloads are dropped and counted. */
+const MAX_CAPTURED_BYTES = 64 * 1024 * 1024;
+
+const SIGNAL_PATHS: Readonly<Record<string, "traces" | "metrics">> = {
+  "/v1/traces": "traces",
+  "/v1/metrics": "metrics",
+};
+
+/**
+ * An in-process OTLP/HTTP JSON capture on a loopback port: the sink the
+ * services' exporters post to when a stack opts into telemetry. Every signal
+ * POST is answered with an empty 200 JSON body — telemetry must never be able
+ * to fail a request — and payloads are stored only while they fit under the
+ * cap, so the test process's memory stays bounded no matter what exports.
+ */
+async function startTelemetryCapture(): Promise<TelemetryCapture> {
+  const payloads: Array<{ signal: "traces" | "metrics"; body: string; at: number }> = [];
+  let storedBytes = 0;
+  let dropped = 0;
+
+  const server: Server = http.createServer((req, res) => {
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    const signal = req.method === "POST" ? SIGNAL_PATHS[pathname] : undefined;
+    const chunks: Buffer[] = [];
+    let received = 0;
+    let overCap = false;
+    req.on("data", (c: Buffer) => {
+      received += c.length;
+      // Bound the read itself: once the payload cannot possibly be stored,
+      // keep draining the socket but stop buffering.
+      if (storedBytes + received > MAX_CAPTURED_BYTES) overCap = true;
+      else chunks.push(c);
+    });
+    req.on("error", () => {});
+    req.on("end", () => {
+      if (signal === undefined) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      if (overCap) {
+        dropped += 1;
+      } else {
+        storedBytes += received;
+        payloads.push({
+          signal,
+          body: Buffer.concat(chunks).toString("utf8"),
+          at: Date.now(),
+        });
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("realStack: the telemetry capture never bound a loopback port");
+  }
+
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    payloads,
+    get dropped() {
+      return dropped;
+    },
+    close() {
+      return new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      });
+    },
+  };
+}
+
 // ── the faultable edge→jobs link ─────────────────────────────────────────────
 
 export interface JobsLinkReply {
@@ -1128,8 +1333,14 @@ export interface JobsLinkInterception {
 export interface JobsLink {
   /** The relay's base URL, as the edge and dev gateway see it. */
   readonly endpoint: string;
-  /** Every request the relay carried to jobs, in arrival order (method + path only). */
-  readonly forwarded: ReadonlyArray<{ method: string; path: string; at: number }>;
+  /** Every request the relay carried to jobs, in arrival order — with the edge-side request headers exactly as received, and the exact body bytes the relay forwarded. */
+  readonly forwarded: ReadonlyArray<{
+    method: string;
+    path: string;
+    headers: Readonly<Record<string, string | string[] | undefined>>;
+    body: Buffer;
+    at: number;
+  }>;
   /**
    * Intercept the NEXT submission (POST to the internal submit resource) the relay carries:
    * forward it to jobs unchanged and read jobs' complete reply, then either
@@ -1163,7 +1374,13 @@ interface PendingIntercept {
  */
 async function startJobsLink(upstreamBase: string): Promise<JobsLink> {
   const submitResource = buildJobsInternalResource("submit");
-  const forwarded: Array<{ method: string; path: string; at: number }> = [];
+  const forwarded: Array<{
+    method: string;
+    path: string;
+    headers: Readonly<Record<string, string | string[] | undefined>>;
+    body: Buffer;
+    at: number;
+  }> = [];
   let pending: PendingIntercept | null = null;
 
   /** Deliver a held reply: only after release(), and only if the edge is still waiting. */
@@ -1264,12 +1481,13 @@ async function startJobsLink(upstreamBase: string): Promise<JobsLink> {
     req.on("end", () => {
       const method = req.method ?? "GET";
       const path = req.url ?? "/";
-      forwarded.push({ method, path, at: Date.now() });
+      const body = Buffer.concat(chunks);
+      forwarded.push({ method, path, headers: { ...req.headers }, body, at: Date.now() });
       const pathname = new URL(path, "http://127.0.0.1").pathname;
       const intercept =
         pending !== null && method === "POST" && pathname === submitResource ? pending : null;
       if (intercept !== null) pending = null;
-      carry(req, res, Buffer.concat(chunks), intercept);
+      carry(req, res, body, intercept);
     });
   });
 
@@ -1510,6 +1728,8 @@ export async function startRealStack(
     diagnostics?: boolean;
     /** Server ids of in-process contract fixtures that stand in for the real jobs process. */
     jobsFixtures?: readonly string[];
+    /** Point every service's OTLP exporter at an in-process JSON capture (`stack.telemetry`) instead of leaving telemetry off. */
+    telemetry?: boolean;
   } = {},
 ): Promise<RealStack> {
   const label = (options.label ?? "journey").replace(/[^a-z0-9-]/gi, "") || "journey";
@@ -1578,6 +1798,10 @@ export async function startRealStack(
     idp: Number(stackEnv.IDP_PORT),
     jobs: Number(stackEnv.JOBS_PORT),
   };
+  // The replica's port is the harness's own allocation, not the stack env's:
+  // the stack env assigns one port per service, and the replica never starts
+  // with the stack, so `jobs` keeps its port even when a test later starts it.
+  ports.jobsReplica = await claimFreePort();
   for (const [name, port] of Object.entries(ports)) {
     if (!Number.isInteger(port) || port <= 0) {
       throw new Error(`realStack: the resolved stack env carries no usable ${name} port`);
@@ -1589,22 +1813,33 @@ export async function startRealStack(
   }
   const baseDomain = new URL(appPublicBase).hostname;
 
+  // The capture starts before any service spawns: the env below is the only
+  // chance to point the exporters at it.
+  const telemetry = options.telemetry === true ? await startTelemetryCapture() : null;
+
   const serviceEnv: NodeJS.ProcessEnv = {
     ...baseEnv,
     ...stackEnv,
     // The one dev-only policy relaxation: the outbound call may reach the
     // harness's loopback JSON origin. Telemetry stays off — the platform's
-    // default state.
+    // default state — unless the stack opts into the capture.
     EGRESS_ALLOW_PRIVATE: "true",
     EDGE_ALLOW_DEV_MODE: "true",
     OTEL_SDK_DISABLED: "1",
   };
+  if (telemetry !== null) {
+    delete serviceEnv.OTEL_SDK_DISABLED;
+    serviceEnv.OTEL_EXPORTER_OTLP_ENDPOINT = telemetry.endpoint;
+  }
 
   const logDir = mkdtempSync(path.join(tmpdir(), `helix-realstack-${label}-`));
   const services = new Map<StackServiceName, ServiceState>();
   for (const name of SERVICE_NAMES) {
     services.set(name, {
       spec: SERVICE_SPECS[name],
+      // The replica is the same entry point on its own port: the override
+      // rides on the state, merged over the shared stack env in spawnService.
+      ...(name === "jobsReplica" ? { env: { JOBS_PORT: String(ports.jobsReplica) } } : {}),
       child: null,
       fd: null,
       ring: new BoundedLog(),
@@ -1629,6 +1864,20 @@ export async function startRealStack(
   jobsOwnerUrl.pathname = new URL(jobsDsn).pathname;
   const jobsOwnerDsn = jobsOwnerUrl.toString();
 
+  // The real jobs server's signing roots, straight from the resolved stack
+  // env. Null under fixtures: those expose their own roots, and the real
+  // server they belong to is not running.
+  const edgeToJobsRoot = stackEnv.JOBS_EDGE_TO_JOBS_SECRET;
+  const jobsToEdgeRoot = stackEnv.JOBS_JOBS_TO_EDGE_SECRET;
+  const portalToJobsRoot = stackEnv.JOBS_PORTAL_TO_JOBS_SECRET;
+  const jobsRoots =
+    fixtureIds !== undefined ||
+    edgeToJobsRoot === undefined ||
+    jobsToEdgeRoot === undefined ||
+    portalToJobsRoot === undefined
+      ? null
+      : { edgeToJobs: edgeToJobsRoot, jobsToEdge: jobsToEdgeRoot, portalToJobs: portalToJobsRoot };
+
   // The faultable link must exist before any service spawns: the edge and the
   // dev gateway read EDGE_JOBS_CONFIG once at boot, so this rewrite is the
   // only chance to point them at the relay. Started last before the stack
@@ -1652,10 +1901,12 @@ export async function startRealStack(
     ],
     jobsLink,
     jobsFixtures,
+    telemetry,
     tlsCa,
     tlsDir: tls.dir,
     request: (url, init) => rawRequest(tlsCa, url, init),
     closed: false,
+    lockedOffset: options.offset === undefined ? offset : null,
   };
 
   try {
@@ -1717,6 +1968,9 @@ export async function startRealStack(
     platformOwnerDsn,
     jobsOwnerDsn,
     jobsLink,
+    jobsRoots,
+    telemetry,
+    tlsCa,
     jobsFixtures: Object.fromEntries(jobsFixtures),
     configureJobsFixtures: (states) => {
       if (jobsFixtures.size === 0) {
