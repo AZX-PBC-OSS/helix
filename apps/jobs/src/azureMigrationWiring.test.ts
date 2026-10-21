@@ -130,6 +130,34 @@ describe("main.bicep wires the jobs DSNs and the job", () => {
     expect(MAIN).toMatch(/jobsMigrateJob[\s\S]*?acaEnvId: appsEnv\.outputs\.environmentId/);
   });
 
+  it("the two migrate jobs are independent: neither depends on nor reads the other", () => {
+    // The upgrade procedure states the two migrations may run in either order;
+    // the real-stack composition suite proves both orders against a live
+    // store. This pins the deployment half: each job waits only for the vault
+    // write, and neither consumes the other's outputs.
+    const jobModule = (name: string): string => {
+      const call = MAIN.match(
+        new RegExp(`module ${name} 'modules/[a-z-]+\\.bicep'[\\s\\S]*?\\n\\}\\n`),
+      );
+      expect(call, `main.bicep must declare ${name}`).not.toBeNull();
+      return call![0];
+    };
+    for (const [name, other] of [
+      ["migrateJob", "jobsMigrateJob"],
+      ["jobsMigrateJob", "migrateJob"],
+    ] as const) {
+      const call = jobModule(name);
+      const dependsOn = call.match(/dependsOn: \[([\s\S]*?)\]/);
+      expect(dependsOn, `${name} declares its dependsOn`).not.toBeNull();
+      const deps = dependsOn![1]!
+        .split("\n")
+        .map((line) => line.replace(/\/\/.*$/, "").trim())
+        .filter((line) => line.length > 0);
+      expect(deps, `${name} waits only for the vault secrets`).toEqual(["platformSecrets"]);
+      expect(call, `${name} must not read ${other}`).not.toMatch(new RegExp(`\\b${other}\\b`));
+    }
+  });
+
   it("the job module is gated on deployApps && deployJobs", () => {
     expect(MAIN).toMatch(
       /module jobsMigrateJob 'modules\/jobs-migrate-job\.bicep' = if \(deployApps && deployJobs\)/,

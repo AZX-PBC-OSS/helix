@@ -872,6 +872,29 @@ describe("jobs storage migration and startup compatibility", () => {
         kind: "compatible",
         schemaVersion: PGBOSS_SCHEMA_VERSION,
       });
+
+      // Every grant gone: the runtime can no longer read the store's columns
+      // from the catalog, and the verdict must still name the privileges
+      // rather than report each column as missing.
+      await asMigrateRole(
+        `REVOKE SELECT, INSERT, UPDATE, DELETE ON ${JOBS_JOB_RECORD_QUALIFIED} FROM ${JOBS_RUNTIME_ROLE}`,
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "runtime_privileges",
+        missing: [
+          `SELECT on ${JOBS_JOB_RECORD_QUALIFIED}`,
+          `INSERT on ${JOBS_JOB_RECORD_QUALIFIED}`,
+          `UPDATE on ${JOBS_JOB_RECORD_QUALIFIED}`,
+          `DELETE on ${JOBS_JOB_RECORD_QUALIFIED}`,
+        ],
+      });
+      await expect(migrateJobsStorage(MIGRATE_DSN)).resolves.toEqual(
+        expect.objectContaining({ jobRecordExisted: true }),
+      );
+      await expect(compatibilityAs(JOBS_RUNTIME_ROLE)).resolves.toEqual({
+        kind: "compatible",
+        schemaVersion: PGBOSS_SCHEMA_VERSION,
+      });
     },
   );
 

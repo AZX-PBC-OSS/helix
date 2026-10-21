@@ -24,6 +24,7 @@ import {
   type PortalJobsDeliveryConfig,
 } from "../../portal/src/deployment.js";
 import { loadJobsConfig, type JobsServiceConfig } from "./config.js";
+import { appCall, envEntries } from "./test/bicep.js";
 
 /**
  * The Azure service wiring is a chain no test deploys: main.bicep builds one
@@ -51,50 +52,6 @@ const STEADY_PARAMS = read("infra/azure/main.bicepparam");
 const JOBS_DOCKERFILE = read("apps/jobs/Dockerfile");
 
 // ── Bicep-parsing helpers ────────────────────────────────────────────────────
-
-/** The text of one `module <name> 'modules/containerapp.bicep'` call in main.bicep. */
-function appCall(name: string): string {
-  const call = MAIN.match(
-    new RegExp(
-      `module ${name} 'modules/containerapp\\.bicep'[\\s\\S]*?(?=\\nmodule |\\n// -{10,})`,
-    ),
-  );
-  expect(call, `main.bicep must declare the ${name} container app`).not.toBeNull();
-  return call![0];
-}
-
-interface EnvEntry {
-  name: string;
-  /** The raw `value:` expression, for a plain-value entry. */
-  value?: string;
-  /** The referenced secret name, for a secretRef entry. */
-  secretRef?: string;
-}
-
-/**
- * Every env entry of a container app call, single-line or multi-line. The
- * `${...}` interpolations are flattened first: their braces would otherwise
- * cut a flat-object match short (they never carry an env name).
- */
-function envEntries(callText: string): EnvEntry[] {
-  const flat = callText.replace(/\$\{[^}]*\}/g, "I");
-  const entries: EnvEntry[] = [];
-  for (const match of flat.matchAll(/\{([^{}]*)\}/g)) {
-    const body = match[1]!;
-    const name = body.match(/name:\s*'([A-Z0-9_]+)'/);
-    if (!name) continue;
-    // `value:` is each entry's last property, single-line or multi-line; the
-    // match anchors to the end of the value's own line.
-    const value = body.match(/value:[ \t]*([^\n]*?)[ \t]*$/m);
-    const secretRef = body.match(/secretRef:\s*'([a-z0-9-]+)'/);
-    entries.push({ name: name[1]!, value: value?.[1]?.trim(), secretRef: secretRef?.[1] });
-  }
-  expect(
-    entries.length,
-    `no env entries parsed from the call — extend this test's envEntries parser`,
-  ).toBeGreaterThan(0);
-  return entries;
-}
 
 interface SecretEntry {
   /** The inline `value:` expression, when the secret is not a Key Vault reference. */

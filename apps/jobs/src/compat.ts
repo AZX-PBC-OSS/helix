@@ -354,6 +354,15 @@ async function readVerdict(client: PoolClient): Promise<JobsStorageCompatibility
     return { kind: "record_missing" };
   }
 
+  // The runtime's privileges are read before the record store's shape:
+  // information_schema.columns lists only the columns the reader holds some
+  // privilege on, so a runtime stripped of its grants would otherwise see an
+  // empty table and be told every column is missing.
+  const missing = await missingRuntimePrivileges(client);
+  if (missing.length > 0) {
+    return { kind: "runtime_privileges", missing };
+  }
+
   // The record store's execution columns: a table from before the execution
   // migration passes the presence probe but cannot carry an attempt, a
   // progress snapshot or an outcome — its absence is its own verdict, the
@@ -389,9 +398,5 @@ async function readVerdict(client: PoolClient): Promise<JobsStorageCompatibility
     return { kind: "record_schema", problems };
   }
 
-  const missing = await missingRuntimePrivileges(client);
-  if (missing.length > 0) {
-    return { kind: "runtime_privileges", missing };
-  }
   return { kind: "compatible", schemaVersion };
 }

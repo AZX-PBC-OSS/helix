@@ -150,6 +150,12 @@ export interface RealStack {
     overrides: Readonly<Record<string, string | null>> | null,
   ): void;
   /**
+   * The exact environment the service's NEXT start receives (shared stack env,
+   * the service's own env, then its overrides), for a test that must assert
+   * what credentials a process holds rather than what it was meant to hold.
+   */
+  serviceEnvOf(name: StackServiceName): Readonly<Record<string, string>>;
+  /**
    * Stop (SIGTERM, then SIGKILL after the harness's grace) / start / restart one
    * service by name. `stop` reports how the process ended. `start` waits for
    * the readiness body unless `until: "listener"` asks only for an answering
@@ -770,17 +776,25 @@ function hasExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
 
+/** The environment one service's next start receives: the shared stack env, its own state env, then its overrides. */
+function composeServiceEnv(stack: StackInternals, name: StackServiceName): NodeJS.ProcessEnv {
+  const state = stack.services.get(name);
+  if (!state) throw new Error(`realStack: no such service: ${name}`);
+  const env: NodeJS.ProcessEnv = { ...stack.serviceEnv, ...state.env };
+  for (const [key, value] of Object.entries(state.overrides ?? {})) {
+    if (value === null) delete env[key];
+    else env[key] = value;
+  }
+  return env;
+}
+
 function spawnService(stack: StackInternals, name: StackServiceName): ChildProcess {
   const state = stack.services.get(name);
   if (!state) throw new Error(`realStack: no such service: ${name}`);
   if (state.child !== null && !hasExited(state.child)) {
     throw new Error(`realStack: ${name} is already running`);
   }
-  const env: NodeJS.ProcessEnv = { ...stack.serviceEnv, ...state.env };
-  for (const [key, value] of Object.entries(state.overrides ?? {})) {
-    if (value === null) delete env[key];
-    else env[key] = value;
-  }
+  const env = composeServiceEnv(stack, name);
   const launch = serviceLaunch(name);
   const child = spawn(launch.argv[0] ?? "node", launch.argv.slice(1), {
     cwd: path.join(ROOT_DIR, launch.cwd),
@@ -2322,6 +2336,13 @@ export async function startRealStack(
       if (!state) throw new Error(`realStack: no such service: ${name}`);
       if (overrides === null) delete state.overrides;
       else state.overrides = { ...overrides };
+    },
+    serviceEnvOf: (name) => {
+      const env: Record<string, string> = {};
+      for (const [key, value] of Object.entries(composeServiceEnv(stack, name))) {
+        if (value !== undefined) env[key] = value;
+      }
+      return env;
     },
     stop: (name) => stopService(stack, name),
     start: (name, startOptions) => startService(stack, name, startOptions?.until),
